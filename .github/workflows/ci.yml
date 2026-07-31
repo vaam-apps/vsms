@@ -101,6 +101,11 @@ jobs:
               pathlib.Path(f'/tmp/mmd/d{i}.mmd').write_text(b)
           print(len(list(pathlib.Path('/tmp/mmd').glob('*.mmd'))), 'diagrams')
           PY
+          # ubuntu-latest disables unprivileged user namespaces, which breaks
+          # Chromium's default sandbox under Puppeteer. No untrusted input is
+          # rendered here (diagrams come from our own design doc), so
+          # --no-sandbox is safe in this CI context.
+          echo '{"args": ["--no-sandbox"]}' > /tmp/puppeteer-config.json
           for f in /tmp/mmd/*.mmd; do
-            mmdc -i "$f" -o "${f%.mmd}.svg" || { echo "::error::$f failed to render"; exit 1; }
+            mmdc -p /tmp/puppeteer-config.json -i "$f" -o "${f%.mmd}.svg" || { echo "::error::$f failed to render"; exit 1; }
           done
