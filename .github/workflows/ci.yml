@@ -1,0 +1,82 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  migrations:
+    name: migrations apply to an empty database
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: vsms
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/vsms
+      PGPASSWORD: postgres
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      # Milestone 0's gate: a fresh database, every migration in order, no errors.
+      - name: Apply migrations
+        run: ./ci/apply-migrations.sh
+
+      # Legal transitions accepted, illegal ones raise SM001, terminal states
+      # have no exits, timestamps auto-stamp, ids satisfy the Cuid guard,
+      # webhook dedupe rejects duplicates. Runs in a transaction, rolls back.
+      - name: State machines and invariants
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f ci/test-state-machine.sql
+
+      # 0002_bootstrap is generated from section 2.10 of the design doc.
+      # If they have drifted, the document and the SQL disagree.
+      - name: Bootstrap SQL matches the design doc
+        run: |
+          python3 ci/gen-bootstrap-sql.py /tmp/regenerated.sql
+          diff -u schema/migrations/postgres/0002_bootstrap/up.sql /tmp/regenerated.sql \
+            || { echo "::error::0002_bootstrap/up.sql is stale — regenerate it from docs/architecture.md §2.10"; exit 1; }
+
+  rules:
+    name: R1 — no raw sqlx
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./ci/assert-no-raw-sqlx.sh
+
+  diagrams:
+    name: mermaid diagrams parse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install -g @mermaid-js/mermaid-cli
+      - name: Render every diagram in the design doc
+        run: |
+          mkdir -p /tmp/mmd
+          python3 - <<'PY'
+          import re, pathlib
+          src = pathlib.Path('docs/architecture.md').read_text()
+          for i, b in enumerate(re.findall(r'```mermaid\n(.*?)```', src, re.S)):
+              pathlib.Path(f'/tmp/mmd/d{i}.mmd').write_text(b)
+          print(len(list(pathlib.Path('/tmp/mmd').glob('*.mmd'))), 'diagrams')
+          PY
+          for f in /tmp/mmd/*.mmd; do
+            mmdc -i "$f" -o "${f%.mmd}.svg" || { echo "::error::$f failed to render"; exit 1; }
+          done

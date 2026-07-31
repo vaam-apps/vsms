@@ -1,0 +1,591 @@
+// SMS Gateway - CrateStack schema
+// Validated against cratestack 0.4.16: parses, emits Postgres DDL, and expands
+// through include_server_schema! (no scalar list fields - see architecture.md 2.0)
+
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+enum MessageClass {
+  otp
+  transactional
+  notification
+  marketing
+}
+
+enum MessageState {
+  accepted
+  queued
+  routed
+  submitted
+  delivered
+  uncertain
+  undelivered
+  failed
+  expired
+  rejected
+  cancelled
+}
+
+enum JobState {
+  pending
+  running
+  succeeded
+  failed
+  dead
+  cancelled
+}
+
+enum Encoding {
+  gsm7
+  ucs2
+}
+
+enum OperatorCode {
+  mtn
+  orange
+  camtel
+  nexttel
+  unknown
+}
+
+enum ProviderKind {
+  orange_cm_http
+  mtn_http
+  aggregator_http
+  smpp
+}
+
+enum ProviderState {
+  active
+  degraded
+  disabled
+  draining
+}
+
+enum DeliveryOutcome {
+  delivered
+  uncertain
+  failed
+  expired
+  rejected
+  unknown
+}
+
+enum AttemptState {
+  pending
+  delivering
+  succeeded
+  failed
+  dead
+}
+
+enum OptOutSource {
+  inbound_stop
+  admin
+  import
+  operator
+}
+
+mixin Timestamps {
+  createdAt DateTime @default(dbgenerated())
+  updatedAt DateTime @default(dbgenerated())
+}
+
+auth Principal {
+  sub String
+  kind String
+  role String
+  appId Cuid
+}
+
+model App {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  name String @length(min: 2, max: 64)
+  slug String @unique @regex("^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$")
+  description String?
+  defaultSenderIdId Cuid?
+  defaultSender SenderId? @relation(fields: [defaultSenderIdId], references: [id])
+  monthlyQuota Int
+  ipAllowlist String
+  transliterateToGsm7 Boolean
+  active Boolean @default(true)
+  deletedAt DateTime?
+
+  clients AppClient[] @relation(fields: [id], references: [appId])
+  messages Message[] @relation(fields: [id], references: [appId])
+
+  @@soft_delete
+  @@audit
+  @@paged
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('developer'))
+  @@allow("create", hasRole('owner') || hasRole('admin'))
+  @@allow("update", hasRole('owner') || hasRole('admin'))
+  @@allow("delete", hasRole('owner'))
+  @@emit(created, updated, deleted)
+}
+
+model AppClient {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  appId Cuid
+  app App @relation(fields: [appId], references: [id])
+  clientId String @unique @length(min: 8, max: 64)
+  label String @length(min: 1, max: 64)
+  scopes String
+  active Boolean @default(true)
+  lastUsedAt DateTime?
+  retiredAt DateTime?
+
+  @@audit
+  @@paged
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @@allow("update", hasRole('owner') || hasRole('admin'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, updated, deleted)
+}
+
+model OauthClient {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  clientId String @unique @length(min: 8, max: 64)
+  appClientId Cuid?
+  appClient AppClient? @relation(fields: [appClientId], references: [id])
+  secretHash String
+  grantTypes String
+  scopes String
+  redirectUris String
+  requirePkce Boolean
+  active Boolean @default(true)
+
+  @@audit
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+model SenderId {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  value String @unique @length(min: 3, max: 11) @db_enforce
+  kind String
+  notes String?
+  active Boolean @default(false)
+
+  registrations SenderIdRegistration[] @relation(fields: [id], references: [senderIdId])
+
+  @@audit
+  @@allow("read", auth().kind == "user" || auth().kind == "app")
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@emit(created, updated)
+}
+
+model SenderIdRegistration {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  senderIdId Cuid
+  senderId SenderId @relation(fields: [senderIdId], references: [id])
+  providerId Cuid
+  provider Provider @relation(fields: [providerId], references: [id])
+  status String
+  submittedAt DateTime?
+  approvedAt DateTime?
+  reference String?
+  rejectionReason String?
+
+  @@audit
+  @@allow("read", auth().kind == "user")
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+}
+
+model Provider {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  key String @unique @regex("^[a-z][a-z0-9_]{2,31}$")
+  displayName String @length(min: 2, max: 64)
+  kind ProviderKind
+  state ProviderState @default('disabled')
+  config String
+  credentialRef String
+  maxTps Float
+  maxDailySubmissions Int
+  supportsDlr Boolean
+  supportsAlphaSender Boolean
+  supportsUcs2 Boolean
+  supportsConcat Boolean
+  costPerSegmentXaf Decimal
+  healthCheckedAt DateTime?
+  healthy Boolean @default(false)
+
+  routes Route[] @relation(fields: [id], references: [providerId])
+
+  @@audit
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
+  @@allow("create", hasRole('owner') || hasRole('admin'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("delete", hasRole('owner'))
+  @@emit(created, updated, deleted)
+}
+
+model Route {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  name String @length(min: 2, max: 64)
+  priority Int @range(min: 0, max: 1000)
+  weight Int @range(min: 0, max: 1000)
+  enabled Boolean
+  matchOperator OperatorCode?
+  matchClass MessageClass?
+  matchAppId Cuid?
+  matchPrefix String?
+  providerId Cuid
+  provider Provider @relation(fields: [providerId], references: [id])
+  failoverRouteId Cuid?
+
+  @@audit
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
+  @@allow("create", hasRole('owner') || hasRole('admin'))
+  @@allow("update", hasRole('owner') || hasRole('admin'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, updated, deleted)
+}
+
+model Message {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  appId Cuid
+  app App @relation(fields: [appId], references: [id])
+
+  clientRef String?
+  idempotencyKey String?
+
+  msisdn String @pii @length(min: 12, max: 15)
+  msisdnHash String
+  operator OperatorCode
+
+  senderIdValue String @length(min: 3, max: 11)
+  class MessageClass
+  priority Int @range(min: 0, max: 1000)
+
+  body String? @sensitive
+  bodyHash String
+  bodyLength Int
+  encoding Encoding
+  segments Int @range(min: 1, max: 10)
+
+  state MessageState @default('accepted')
+  stateReason String?
+  routeId Cuid?
+  providerId Cuid?
+  providerMessageRef String?
+  providerMessageRefAlt String?
+
+  attempts Int @default(0)
+  maxAttempts Int
+  leaseOwner String?
+  leaseUntil DateTime?
+  scheduledAt DateTime?
+  expiresAt DateTime
+  submittedAt DateTime?
+  finalizedAt DateTime?
+
+  costXaf Decimal @default(0)
+  version Int @version
+
+  parts MessagePart[] @relation(fields: [id], references: [messageId])
+  receipts DeliveryReceipt[] @relation(fields: [id], references: [messageId])
+
+  @@audit
+  @@paged
+  @@retain(days: 90)
+  @@allow("list", auth().kind == "user" || appId == auth().appId)
+  @@allow("detail", auth().kind == "user" || appId == auth().appId)
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+  @@emit(created, updated)
+}
+
+model MessagePart {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  messageId Cuid
+  message Message @relation(fields: [messageId], references: [id])
+  partIndex Int @range(min: 0, max: 9)
+  udhRef Int?
+  providerPartRef String?
+  state MessageState @default('queued')
+  submittedAt DateTime?
+  deliveredAt DateTime?
+
+  @@paged
+  @@allow("list", auth().kind == "user")
+  @@allow("detail", auth().kind == "user")
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+model DeliveryReceipt {
+  id Cuid @id @default(dbgenerated())
+  messageId Cuid
+  message Message @relation(fields: [messageId], references: [id])
+  providerId Cuid
+  providerMessageRef String
+  outcome DeliveryOutcome
+  rawStatus String
+  errorCode String?
+  networkCode OperatorCode
+  receivedAt DateTime @default(dbgenerated())
+  occurredAt DateTime?
+  rawPayload String
+
+  @@audit
+  @@paged
+  @@retain(days: 90)
+  @@allow("list", auth().kind == "user")
+  @@allow("detail", auth().kind == "user")
+  @@allow("create", hasRole('system'))
+}
+
+model Job {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  kind String @length(min: 2, max: 64)
+  dedupeKey String?
+  payload String
+  state JobState @default('pending')
+  priority Int @range(min: 0, max: 1000)
+  runAt DateTime
+  leaseOwner String?
+  leaseUntil DateTime?
+  attempts Int @default(0)
+  maxAttempts Int
+  lastError String?
+  startedAt DateTime?
+  finishedAt DateTime?
+  version Int @version
+
+  @@paged
+  @@retain(days: 14)
+  @@allow("list", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("detail", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+model OptOut {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  msisdnHash String @unique
+  msisdn String @pii
+  source OptOutSource
+  scope String
+  reason String?
+  optedOutAt DateTime
+
+  @@audit
+  @@paged
+  @@allow("read", auth().kind == "user" || auth().kind == "app")
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, deleted)
+}
+
+model WebhookEndpoint {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  appId Cuid
+  app App @relation(fields: [appId], references: [id])
+  url String @uri
+  eventTypes String
+  secret String
+  prevSecret String?
+  secretRotatedAt DateTime?
+  maskRecipient Boolean
+  active Boolean @default(true)
+  maxAttempts Int
+  circuitOpenUntil DateTime?
+  consecutiveFailures Int @default(0)
+
+  attempts WebhookAttempt[] @relation(fields: [id], references: [endpointId])
+
+  @@audit
+  @@allow("read", auth().kind == "user")
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, updated, deleted)
+}
+
+model WebhookAttempt {
+  id Cuid @id @default(dbgenerated())
+  endpointId Cuid
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id])
+  sourceEventId Uuid
+  aggregateId Cuid
+  eventType String
+  payload String
+  state AttemptState @default('pending')
+  attempts Int @default(0)
+  leaseOwner String?
+  leaseUntil DateTime?
+  nextAttemptAt DateTime?
+  lastStatusCode Int?
+  lastError String?
+  lastAttemptAt DateTime?
+  deliveredAt DateTime?
+  version Int @version
+
+  @@paged
+  @@retain(days: 30)
+  @@allow("list", auth().kind == "user" || endpoint.appId == auth().appId)
+  @@allow("detail", auth().kind == "user" || endpoint.appId == auth().appId)
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+model User {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  subject String @unique
+  email String @unique @email
+  displayName String @length(min: 1, max: 128)
+  roleKey String
+  role Role @relation(fields: [roleKey], references: [key])
+  active Boolean @default(true)
+  lastLoginAt DateTime?
+  mfaEnrolled Boolean @default(false)
+  deletedAt DateTime?
+
+  @@soft_delete
+  @@audit
+  @@paged
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('auditor'))
+  @@allow("create", hasRole('owner') || hasRole('admin'))
+  @@allow("update", hasRole('owner') || hasRole('admin'))
+  @@allow("delete", hasRole('owner'))
+  @@emit(created, updated, deleted)
+}
+
+model Role {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  key String @unique @regex("^[a-z][a-z0-9_]{2,31}$")
+  label String @length(min: 2, max: 64)
+  description String?
+  builtin Boolean @default(false)
+  permissions String
+
+  @@audit
+  @@allow("read", auth().kind == "user")
+  @@allow("create", hasRole('owner'))
+  @@allow("update", hasRole('owner'))
+  @@allow("delete", hasRole('owner'))
+  @@emit(created, updated, deleted)
+}
+
+type SendMessageInput {
+  to String
+  body String
+  senderId String?
+  class MessageClass?
+  clientRef String?
+  scheduledAt DateTime?
+  validityMinutes Int?
+}
+
+type SendMessageResult {
+  messageId Cuid
+  state MessageState
+  encoding Encoding
+  segments Int
+  operator OperatorCode
+  estimatedCostXaf Decimal
+}
+
+type PreviewInput {
+  body String
+  to String?
+}
+
+type PreviewResult {
+  encoding Encoding
+  segments Int
+  length Int
+  perSegment Int
+  offending String[]
+  suggestion String?
+  operator OperatorCode
+  normalizedTo String?
+}
+
+type ProvisionClientInput {
+  appId Cuid
+  label String
+  scopes String[]
+}
+
+type ProvisionClientResult {
+  clientId String
+  clientSecret String
+}
+
+type CancelInput {
+  messageId Cuid
+  reason String?
+}
+
+type EndpointInput {
+  endpointId Cuid
+}
+
+type EnqueueJobInput {
+  kind String
+  payload String
+  dedupeKey String?
+  runAt DateTime?
+}
+
+mutation procedure sendMessage(args: SendMessageInput): SendMessageResult
+  @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @isolation("read_committed")
+
+procedure previewMessage(args: PreviewInput): PreviewResult
+  @allow(auth() != null)
+
+procedure listMessagesPage(appId: Cuid?, state: MessageState?, limit: Int?, offset: Int?): Page<Message>
+  @allow(auth() != null)
+
+mutation procedure cancelMessage(args: CancelInput): Message
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @authorize(Message, detail, args.messageId)
+  @isolation("serializable")
+
+mutation procedure enqueueJob(args: EnqueueJobInput): Job
+  @allow(hasRole('owner') || hasRole('admin'))
+  @isolation("read_committed")
+
+mutation procedure provisionAppClient(args: ProvisionClientInput): ProvisionClientResult
+  @allow(hasRole('owner') || hasRole('admin'))
+  @isolation("serializable")
+
+mutation procedure rotateWebhookSecret(args: EndpointInput): WebhookEndpoint
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @isolation("serializable")

@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+Cargo.lock
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+/secrets/
+.DS_Store
+/node_modules
+/pgdata
