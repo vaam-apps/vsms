@@ -3,9 +3,19 @@
 # The allowlist lives here, in one place, so adding an exception is a review.
 set -euo pipefail
 
-[ -d crates ] || { echo "no crates/ yet — R1 lint vacuously passes"; exit 0; }
+# Both source roots: crates/ is libraries, app/ is binaries. Scanning only one
+# of them would leave the other free to reach past the delegates.
+roots=()
+for dir in crates app; do
+  [ -d "$dir" ] && roots+=("$dir")
+done
 
-hits=$(grep -rn --include='*.rs' -E 'sqlx::(query|query_as|query_scalar|raw_sql)\b' crates/ \
+if [ ${#roots[@]} -eq 0 ]; then
+  echo "no crates/ or app/ yet — R1 lint vacuously passes"
+  exit 0
+fi
+
+hits=$(grep -rn --include='*.rs' -E 'sqlx::(query|query_as|query_scalar|raw_sql)\b' "${roots[@]}" \
        | grep -vE 'sms-worker/src/(lease|notify)\.rs|sms-api/src/cache\.rs' || true)
 
 if [ -n "$hits" ]; then
@@ -16,4 +26,4 @@ if [ -n "$hits" ]; then
   echo "@@emit outbox rows and version bumping — all four, silently." >&2
   exit 1
 fi
-echo "R1 OK"
+echo "R1 OK (scanned: ${roots[*]})"

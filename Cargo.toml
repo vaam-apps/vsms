@@ -1,16 +1,46 @@
 [workspace]
-resolver = "2"
-members = ["crates/sms-encoding", "crates/sms-msisdn"]
+resolver = "3"
+members = [
+  "crates/sms-encoding",
+  "crates/sms-msisdn",
+  "crates/sms-api",
+  "app/sms-gateway",
+]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
 repository = "https://github.com/vymalo/vsms"
 authors = ["Vymalo"]
+publish = false
 
 [workspace.dependencies]
-thiserror = "2.0"
+# Internal crates. `crates/` is libraries, `app/` is binaries — a binary may
+# depend on any library, never the reverse.
+sms-encoding = { path = "./crates/sms-encoding" }
+sms-msisdn = { path = "./crates/sms-msisdn" }
+sms-api = { path = "./crates/sms-api" }
+
+# The rename is mandatory: generated code emits absolute `::cratestack::*`
+# paths, so the facade has to be in scope under exactly that name. Pinned
+# exactly — CrateStack is pre-1.0 and shipped 23 releases in 11 weeks; the
+# whole family must move in lockstep or the generated code stops matching the
+# runtime it calls into.
+cratestack = { package = "cratestack-pg", version = "=0.4.19" }
+cratestack-codec-json = "=0.4.19"
+
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 unicode-normalization = "0.1"
 
 [workspace.lints.rust]
@@ -20,9 +50,41 @@ missing_docs = "warn"
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
 # Every public fallible function documents its errors in prose already; the
-# `# Errors` section requirement is noise on a crate this small.
+# `# Errors` section requirement is noise on a workspace this small.
 missing_errors_doc = "allow"
 
+# `lto` is build-wide — Cargo cannot scope it per package — so it is set once
+# here for the whole graph. `thin` gets nearly all of fat LTO's win at a
+# fraction of the peak-memory and wall-clock cost during codegen. Fat LTO
+# together with a single codegen unit is the worst case for rustc/LLVM memory,
+# and the cost scales with how much code a crate has to optimise — which is
+# exactly what `include_server_schema!` generates a lot of (models × CRUD ×
+# policy × dispatch × relations, all in one compilation unit).
+#
+# This mirrors cratestack/cratestack#250, which found downstream production
+# builds reaching 12 GiB. Note that a dependency's profile never reaches us —
+# Cargo only honours profiles from the root workspace manifest — so the way
+# that setting spreads is copy-paste of the boilerplate into each new service's
+# own root manifest. This block is that copy, corrected.
 [profile.release]
 lto = "thin"
+opt-level = 3
+codegen-units = 16
+incremental = false
+
+# Max squeeze for artifacts we actually ship. Unlike cratestack-cli, ours are
+# long-running server binaries in containers, so `opt-level` stays at 3 —
+# throughput matters and download size does not. Runs once per release in CI,
+# never on a dev or service build.
+[profile.dist]
+inherits = "release"
+lto = true
 codegen-units = 1
+strip = true
+
+# Expanding 16 models through `include_server_schema!` is memory-hungry in the
+# compiler *frontend* — macro expansion and type checking, before LLVM is
+# involved at all. Cutting debug info to line tables keeps a dev build from
+# ballooning further without losing backtrace line numbers.
+[profile.dev]
+debug = "line-tables-only"

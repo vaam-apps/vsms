@@ -15,7 +15,11 @@ An A2P SMS gateway for Cameroon — OTP and notification delivery over MTN and O
 | `schema/migrations/postgres/0002_bootstrap/` | Everything the emitter doesn't produce: id and timestamp defaults, the `updated_at` trigger, both state machines, partial indexes, foreign keys. Generated from §2.10 of the design doc. |
 | `crates/sms-encoding/` | GSM 03.38 vs UCS-2 analysis, normalisation, transliteration. Milestone 0. |
 | `crates/sms-msisdn/` | E.164 `+237` parsing, line-type classification, operator-prefix lookup. Milestone 0. |
+| `crates/sms-api/` | Where `include_server_schema!` expands: generated models, policies, REST router, and the procedure registry. |
+| `app/sms-gateway/` | The API server binary. `serve` binds HTTP; `routes` prints the generated route table and needs no database. |
 | `ci/` | The R1 lint, the migration runner, the bootstrap-SQL generator, and the state-machine test. |
+
+`crates/` is libraries, `app/` is binaries, and nothing in `crates/` depends on anything in `app/`.
 
 ## Stack
 
@@ -41,8 +45,10 @@ The test asserts that legal transitions are accepted, that illegal ones raise `S
 `sms-encoding` and `sms-msisdn` need nothing but a Rust toolchain — no database, no framework.
 
 ```bash
-cargo test --workspace
+just test
 ```
+
+Use `just` rather than bare `cargo`: expanding 16 models through `include_server_schema!` costs multiple GB in a single rustc process and over ten minutes on a cold cache, and the recipes cap build concurrency so that stays survivable. `just jobs=8 test` raises the cap on a machine with headroom.
 
 `sms-encoding`'s milestone-0 gate is [`crates/sms-encoding/tests/french_corpus.rs`](crates/sms-encoding/tests/french_corpus.rs): a table of real French SMS bodies checked at each stage — raw, after unconditional normalisation, after opt-in transliteration — including the `ç` and `’` cases that motivated the crate.
 
