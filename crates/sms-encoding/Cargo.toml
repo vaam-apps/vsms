@@ -1,0 +1,15 @@
+[package]
+name = "sms-encoding"
+version = "0.1.0"
+description = "GSM 03.38 vs UCS-2 analysis, normalisation and transliteration for SMS bodies"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+unicode-normalization.workspace = true
+
+[lints]
+workspace = true

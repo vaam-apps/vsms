@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/sms-encoding", "crates/sms-msisdn"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/vymalo/vsms"
+authors = ["Vymalo"]
+
+[workspace.dependencies]
+thiserror = "2.0"
+unicode-normalization = "0.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Every public fallible function documents its errors in prose already; the
+# `# Errors` section requirement is noise on a crate this small.
+missing_errors_doc = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

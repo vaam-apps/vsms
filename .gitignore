@@ -1,6 +1,8 @@
 /target
 **/*.rs.bk
-Cargo.lock
+# Cargo.lock is committed. This workspace ships binaries (sms-api, sms-worker)
+# against a pre-1.0 framework pinned to =0.4.16; a floating lock file would
+# quietly undo that pin on every fresh checkout.
 .env
 .env.*
 !.env.example

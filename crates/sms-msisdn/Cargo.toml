@@ -1,0 +1,15 @@
+[package]
+name = "sms-msisdn"
+version = "0.1.0"
+description = "E.164 normalisation and line-type classification for Cameroon (+237)"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true
