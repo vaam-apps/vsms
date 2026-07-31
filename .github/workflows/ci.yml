@@ -51,6 +51,30 @@ jobs:
           diff -u schema/migrations/postgres/0002_bootstrap/up.sql /tmp/regenerated.sql \
             || { echo "::error::0002_bootstrap/up.sql is stale — regenerate it from docs/architecture.md §2.10"; exit 1; }
 
+  rust:
+    name: cargo fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo fmt --all --check
+
+      # Warnings are errors here. The two milestone-0 crates are small enough
+      # that there is no excuse for a backlog, and pedantic lints are on.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # Milestone 0's encoding gate lives in
+      # crates/sms-encoding/tests/french_corpus.rs.
+      - run: cargo test --workspace
+
+      # The lock file is committed; a build must not silently change it.
+      - name: Cargo.lock is up to date
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
   rules:
     name: R1 — no raw sqlx
     runs-on: ubuntu-latest
