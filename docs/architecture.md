@@ -938,11 +938,14 @@ ALTER TABLE webhook_endpoints       ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_attempts        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE users                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE roles                   ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE operator_prefixes       ALTER COLUMN id SET DEFAULT cs_cuid();
 
 -- Timestamps mixin, and other dbgenerated() columns.
 ALTER TABLE apps ALTER COLUMN created_at SET DEFAULT now(),
                  ALTER COLUMN updated_at SET DEFAULT now();
 -- ... repeat for every table using @use(Timestamps)
+ALTER TABLE operator_prefixes ALTER COLUMN created_at SET DEFAULT now(),
+                              ALTER COLUMN updated_at SET DEFAULT now();
 ALTER TABLE delivery_receipts ALTER COLUMN received_at SET DEFAULT now();
 
 -- Nothing in the framework touches updated_at on write, and remembering to set
@@ -961,6 +964,8 @@ END $$;
 CREATE TRIGGER apps_touch BEFORE UPDATE ON apps
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 -- ... repeat for every table using @use(Timestamps)
+CREATE TRIGGER operator_prefixes_touch BEFORE UPDATE ON operator_prefixes
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 
 -- Multi-value columns are space-delimited TEXT with sentinel separators (§2.2),
 -- because scalar list fields panic the server macro. Empty is a single space.

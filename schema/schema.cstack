@@ -101,6 +101,12 @@ enum OptOutSource {
   operator
 }
 
+enum PrefixSource {
+  seed
+  dlr
+  manual
+}
+
 mixin Timestamps {
   createdAt DateTime @default(dbgenerated())
   updatedAt DateTime @default(dbgenerated())
@@ -546,6 +552,25 @@ model Role {
   @@allow("create", hasRole('owner'))
   @@allow("update", hasRole('owner'))
   @@allow("delete", hasRole('owner'))
+  @@emit(created, updated, deleted)
+}
+
+model OperatorPrefix {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  prefix String @unique @length(min: 1, max: 8)
+  operator OperatorCode
+  source PrefixSource
+  confidence Int @range(min: 0, max: 100)
+  observedAt DateTime
+
+  @@audit
+  @@paged
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
   @@emit(created, updated, deleted)
 }
 
