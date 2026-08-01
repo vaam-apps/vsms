@@ -1,4 +1,38 @@
+ALTER TABLE webhook_attempts DROP CONSTRAINT webhook_attempts_state_enum_check;
+
 ALTER TABLE sender_ids DROP CONSTRAINT sender_ids_value_length_check;
+
+ALTER TABLE routes DROP CONSTRAINT routes_match_class_enum_check;
+
+ALTER TABLE routes DROP CONSTRAINT routes_match_operator_enum_check;
+
+ALTER TABLE providers DROP CONSTRAINT providers_state_enum_check;
+
+ALTER TABLE providers DROP CONSTRAINT providers_kind_enum_check;
+
+ALTER TABLE opt_outs DROP CONSTRAINT opt_outs_source_enum_check;
+
+ALTER TABLE operator_prefix_rules DROP CONSTRAINT operator_prefix_rules_confidence_enum_check;
+
+ALTER TABLE operator_prefix_rules DROP CONSTRAINT operator_prefix_rules_source_enum_check;
+
+ALTER TABLE operator_prefix_rules DROP CONSTRAINT operator_prefix_rules_operator_enum_check;
+
+ALTER TABLE messages DROP CONSTRAINT messages_state_enum_check;
+
+ALTER TABLE messages DROP CONSTRAINT messages_encoding_enum_check;
+
+ALTER TABLE messages DROP CONSTRAINT messages_class_enum_check;
+
+ALTER TABLE messages DROP CONSTRAINT messages_operator_enum_check;
+
+ALTER TABLE message_parts DROP CONSTRAINT message_parts_state_enum_check;
+
+ALTER TABLE jobs DROP CONSTRAINT jobs_state_enum_check;
+
+ALTER TABLE delivery_receipts DROP CONSTRAINT delivery_receipts_network_code_enum_check;
+
+ALTER TABLE delivery_receipts DROP CONSTRAINT delivery_receipts_outcome_enum_check;
 
 DROP INDEX users_email_key;
 
@@ -11,6 +45,8 @@ DROP INDEX roles_key_key;
 DROP INDEX providers_key_key;
 
 DROP INDEX opt_outs_msisdn_hash_key;
+
+DROP INDEX operator_prefix_rules_prefix_key;
 
 DROP INDEX oauth_clients_client_id_key;
 
@@ -36,6 +72,8 @@ DROP TABLE providers;
 
 DROP TABLE opt_outs;
 
+DROP TABLE operator_prefix_rules;
+
 DROP TABLE oauth_clients;
 
 DROP TABLE messages;
@@ -49,24 +87,4 @@ DROP TABLE delivery_receipts;
 DROP TABLE apps;
 
 DROP TABLE app_clients;
-
-DROP TYPE provider_state;
-
-DROP TYPE provider_kind;
-
-DROP TYPE opt_out_source;
-
-DROP TYPE operator_code;
-
-DROP TYPE message_state;
-
-DROP TYPE message_class;
-
-DROP TYPE job_state;
-
-DROP TYPE encoding;
-
-DROP TYPE delivery_outcome;
-
-DROP TYPE attempt_state;
 

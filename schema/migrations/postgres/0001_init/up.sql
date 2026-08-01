@@ -29,6 +29,9 @@
 --   - oauth_clients.created_at
 --   - oauth_clients.updated_at
 --   - oauth_clients.id
+--   - operator_prefix_rules.created_at
+--   - operator_prefix_rules.updated_at
+--   - operator_prefix_rules.id
 --   - opt_outs.created_at
 --   - opt_outs.updated_at
 --   - opt_outs.id
@@ -54,26 +57,6 @@
 --   - webhook_endpoints.created_at
 --   - webhook_endpoints.updated_at
 --   - webhook_endpoints.id
-
-CREATE TYPE attempt_state AS ENUM ('pending', 'delivering', 'succeeded', 'failed', 'dead');
-
-CREATE TYPE delivery_outcome AS ENUM ('delivered', 'uncertain', 'failed', 'expired', 'rejected', 'unknown');
-
-CREATE TYPE encoding AS ENUM ('gsm7', 'ucs2');
-
-CREATE TYPE job_state AS ENUM ('pending', 'running', 'succeeded', 'failed', 'dead', 'cancelled');
-
-CREATE TYPE message_class AS ENUM ('otp', 'transactional', 'notification', 'marketing');
-
-CREATE TYPE message_state AS ENUM ('accepted', 'queued', 'routed', 'submitted', 'delivered', 'uncertain', 'undelivered', 'failed', 'expired', 'rejected', 'cancelled');
-
-CREATE TYPE operator_code AS ENUM ('mtn', 'orange', 'camtel', 'nexttel', 'unknown');
-
-CREATE TYPE opt_out_source AS ENUM ('inbound_stop', 'admin', 'import', 'operator');
-
-CREATE TYPE provider_kind AS ENUM ('orange_cm_http', 'mtn_http', 'aggregator_http', 'smpp');
-
-CREATE TYPE provider_state AS ENUM ('active', 'degraded', 'disabled', 'draining');
 
 CREATE TABLE app_clients (
     created_at TIMESTAMPTZ NOT NULL,
@@ -110,10 +93,10 @@ CREATE TABLE delivery_receipts (
     message_id TEXT NOT NULL,
     provider_id TEXT NOT NULL,
     provider_message_ref TEXT NOT NULL,
-    outcome delivery_outcome NOT NULL,
+    outcome TEXT NOT NULL,
     raw_status TEXT NOT NULL,
     error_code TEXT,
-    network_code operator_code NOT NULL,
+    network_code TEXT NOT NULL,
     received_at TIMESTAMPTZ NOT NULL,
     occurred_at TIMESTAMPTZ,
     raw_payload TEXT NOT NULL,
@@ -127,7 +110,7 @@ CREATE TABLE jobs (
     kind TEXT NOT NULL,
     dedupe_key TEXT,
     payload TEXT NOT NULL,
-    state job_state NOT NULL DEFAULT 'pending',
+    state TEXT NOT NULL DEFAULT 'pending',
     priority BIGINT NOT NULL,
     run_at TIMESTAMPTZ NOT NULL,
     lease_owner TEXT,
@@ -149,7 +132,7 @@ CREATE TABLE message_parts (
     part_index BIGINT NOT NULL,
     udh_ref BIGINT,
     provider_part_ref TEXT,
-    state message_state NOT NULL DEFAULT 'queued',
+    state TEXT NOT NULL DEFAULT 'queued',
     submitted_at TIMESTAMPTZ,
     delivered_at TIMESTAMPTZ,
     PRIMARY KEY (id)
@@ -164,16 +147,16 @@ CREATE TABLE messages (
     idempotency_key TEXT,
     msisdn TEXT NOT NULL,
     msisdn_hash TEXT NOT NULL,
-    operator operator_code NOT NULL,
+    operator TEXT NOT NULL,
     sender_id_value TEXT NOT NULL,
-    class message_class NOT NULL,
+    class TEXT NOT NULL,
     priority BIGINT NOT NULL,
     body TEXT,
     body_hash TEXT NOT NULL,
     body_length BIGINT NOT NULL,
-    encoding encoding NOT NULL,
+    encoding TEXT NOT NULL,
     segments BIGINT NOT NULL,
-    state message_state NOT NULL DEFAULT 'accepted',
+    state TEXT NOT NULL DEFAULT 'accepted',
     state_reason TEXT,
     route_id TEXT,
     provider_id TEXT,
@@ -207,13 +190,27 @@ CREATE TABLE oauth_clients (
     PRIMARY KEY (id)
 );
 
+CREATE TABLE operator_prefix_rules (
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    id TEXT NOT NULL,
+    prefix TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    source TEXT NOT NULL DEFAULT 'seed',
+    confidence TEXT NOT NULL DEFAULT 'unverified',
+    last_observed_at TIMESTAMPTZ,
+    notes TEXT,
+    active BOOLEAN NOT NULL DEFAULT true,
+    PRIMARY KEY (id)
+);
+
 CREATE TABLE opt_outs (
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     id TEXT NOT NULL,
     msisdn_hash TEXT NOT NULL,
     msisdn TEXT NOT NULL,
-    source opt_out_source NOT NULL,
+    source TEXT NOT NULL,
     scope TEXT NOT NULL,
     reason TEXT,
     opted_out_at TIMESTAMPTZ NOT NULL,
@@ -226,8 +223,8 @@ CREATE TABLE providers (
     id TEXT NOT NULL,
     key TEXT NOT NULL,
     display_name TEXT NOT NULL,
-    kind provider_kind NOT NULL,
-    state provider_state NOT NULL DEFAULT 'disabled',
+    kind TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'disabled',
     config TEXT NOT NULL,
     credential_ref TEXT NOT NULL,
     max_tps DOUBLE PRECISION NOT NULL,
@@ -262,8 +259,8 @@ CREATE TABLE routes (
     priority BIGINT NOT NULL,
     weight BIGINT NOT NULL,
     enabled BOOLEAN NOT NULL,
-    match_operator operator_code,
-    match_class message_class,
+    match_operator TEXT,
+    match_class TEXT,
     match_app_id TEXT,
     match_prefix TEXT,
     provider_id TEXT NOT NULL,
@@ -318,7 +315,7 @@ CREATE TABLE webhook_attempts (
     aggregate_id TEXT NOT NULL,
     event_type TEXT NOT NULL,
     payload TEXT NOT NULL,
-    state attempt_state NOT NULL DEFAULT 'pending',
+    state TEXT NOT NULL DEFAULT 'pending',
     attempts BIGINT NOT NULL DEFAULT 0,
     lease_owner TEXT,
     lease_until TIMESTAMPTZ,
@@ -355,6 +352,8 @@ CREATE UNIQUE INDEX apps_slug_key ON apps (slug);
 
 CREATE UNIQUE INDEX oauth_clients_client_id_key ON oauth_clients (client_id);
 
+CREATE UNIQUE INDEX operator_prefix_rules_prefix_key ON operator_prefix_rules (prefix);
+
 CREATE UNIQUE INDEX opt_outs_msisdn_hash_key ON opt_outs (msisdn_hash);
 
 CREATE UNIQUE INDEX providers_key_key ON providers (key);
@@ -367,5 +366,39 @@ CREATE UNIQUE INDEX users_subject_key ON users (subject);
 
 CREATE UNIQUE INDEX users_email_key ON users (email);
 
+ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_outcome_enum_check CHECK (outcome IN ('delivered', 'uncertain', 'failed', 'expired', 'rejected', 'unknown'));
+
+ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_network_code_enum_check CHECK (network_code IN ('mtn', 'orange', 'camtel', 'nexttel', 'unknown'));
+
+ALTER TABLE jobs ADD CONSTRAINT jobs_state_enum_check CHECK (state IN ('pending', 'running', 'succeeded', 'failed', 'dead', 'cancelled'));
+
+ALTER TABLE message_parts ADD CONSTRAINT message_parts_state_enum_check CHECK (state IN ('accepted', 'queued', 'routed', 'submitted', 'delivered', 'uncertain', 'undelivered', 'failed', 'expired', 'rejected', 'cancelled'));
+
+ALTER TABLE messages ADD CONSTRAINT messages_operator_enum_check CHECK (operator IN ('mtn', 'orange', 'camtel', 'nexttel', 'unknown'));
+
+ALTER TABLE messages ADD CONSTRAINT messages_class_enum_check CHECK (class IN ('otp', 'transactional', 'notification', 'marketing'));
+
+ALTER TABLE messages ADD CONSTRAINT messages_encoding_enum_check CHECK (encoding IN ('gsm7', 'ucs2'));
+
+ALTER TABLE messages ADD CONSTRAINT messages_state_enum_check CHECK (state IN ('accepted', 'queued', 'routed', 'submitted', 'delivered', 'uncertain', 'undelivered', 'failed', 'expired', 'rejected', 'cancelled'));
+
+ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_operator_enum_check CHECK (operator IN ('mtn', 'orange', 'camtel', 'nexttel', 'unknown'));
+
+ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_source_enum_check CHECK (source IN ('seed', 'manual', 'dlr_observed'));
+
+ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_confidence_enum_check CHECK (confidence IN ('verified', 'likely', 'contested', 'unverified'));
+
+ALTER TABLE opt_outs ADD CONSTRAINT opt_outs_source_enum_check CHECK (source IN ('inbound_stop', 'admin', 'import', 'operator'));
+
+ALTER TABLE providers ADD CONSTRAINT providers_kind_enum_check CHECK (kind IN ('orange_cm_http', 'mtn_http', 'aggregator_http', 'smpp'));
+
+ALTER TABLE providers ADD CONSTRAINT providers_state_enum_check CHECK (state IN ('active', 'degraded', 'disabled', 'draining'));
+
+ALTER TABLE routes ADD CONSTRAINT routes_match_operator_enum_check CHECK (match_operator IN ('mtn', 'orange', 'camtel', 'nexttel', 'unknown'));
+
+ALTER TABLE routes ADD CONSTRAINT routes_match_class_enum_check CHECK (match_class IN ('otp', 'transactional', 'notification', 'marketing'));
+
 ALTER TABLE sender_ids ADD CONSTRAINT sender_ids_value_length_check CHECK (length(value) BETWEEN 3 AND 11);
+
+ALTER TABLE webhook_attempts ADD CONSTRAINT webhook_attempts_state_enum_check CHECK (state IN ('pending', 'delivering', 'succeeded', 'failed', 'dead'));
 
