@@ -49,8 +49,12 @@ impl ClientStore for SmsClientStore {
         Ok(found.into_iter().next().map(|c| ClientRegistration {
             client_id: c.clientId,
             // NOT NULL in the schema. A None hash disables authentication
-            // entirely — see sharp edge 1 below.
-            client_secret_hash: Some(c.secretHash),
+            // entirely, so we map an empty string to None.
+            client_secret_hash: if c.secretHash.trim().is_empty() {
+                None
+            } else {
+                Some(c.secretHash)
+            },
             redirect_uris: unpack(&c.redirectUris),
             // Built in Rust from a delimited column. serde never touches
             // GrantType, so the untagged bug cannot bite.
@@ -63,6 +67,8 @@ impl ClientStore for SmsClientStore {
                     other => GrantType::Custom(other.to_owned()),
                 })
                 .collect(),
+            // Scope validation (checking against registered scopes) is intentionally
+            // deferred to the provider, which enforces them during token issuance.
             scopes: unpack(&c.scopes),
             require_pkce: c.requirePkce,
             allowed_audiences: vec![],
