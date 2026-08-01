@@ -15,7 +15,15 @@ Milestone 0 in progress.
 - `crates/sms-api/` — **the schema expands.** `include_server_schema!`, the `Principal → CoolContext` projection, the seven-procedure registry, router assembly. 87 generated routes.
 - `app/sms-gateway/` — the binary: `serve` and `routes`.
 
-Still open on milestone 0: state-machine triggers exercised from Rust, and the create-input round-trip test. `previewMessage` is live; the other six procedures return an error naming the milestone that will build them.
+Still open on milestone 0: the operator-prefix table (#16), which is why `previewMessage` reports `operator: unknown`. `previewMessage` is otherwise live; the other six procedures return an error naming the milestone that will build them.
+
+## Invariants that fail the build rather than production
+
+Three silent failure modes are now loud. Do not delete these without reading why they exist:
+
+- **`ci/assert-state-machine-parity.py`** (R2) — every edge in the design doc's state diagrams must exist in `message_state_transitions` / `job_state_transitions`, and vice versa, terminal states included. Drift's first symptom would otherwise be a production `SM001` on an edge that looks legal in the diagram everyone reads. Run with `just parity`.
+- **`crates/sms-api/tests/create_inputs.rs`** — constructs every create input exhaustively, with no `..Default::default()`. Adding a `@default(...)` to a caller-settable field silently removes it from `CreateXInput`; `@server_only` removes it from create *and* update (R3). Both become compile errors naming the field.
+- **`crates/sms-api/src/errors.rs`** — `map_database_error` turns SQLSTATE `SM001` into `CoolError::Conflict` (409) and `23505` into a named conflict. Untranslated, an illegal transition is a `500 DATABASE_ERROR`, which callers retry and operators read as a gateway fault. Genuine database faults stay 500 on purpose.
 
 ## Layout
 
