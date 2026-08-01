@@ -3,9 +3,9 @@
 # The allowlist lives here, in one place, so adding an exception is a review.
 set -euo pipefail
 
-[ -d crates ] || { echo "no crates/ yet — R1 lint vacuously passes"; exit 0; }
+[ -d crates ] || [ -d app ] || { echo "no crates/ or app/ yet — R1 lint vacuously passes"; exit 0; }
 
-hits=$(grep -rn --include='*.rs' -E 'sqlx::(query|query_as|query_scalar|raw_sql)\b' crates/ \
+hits=$(grep -rn --include='*.rs' -E 'sqlx::(query|query_as|query_scalar|raw_sql)\b' crates/ app/ 2>/dev/null \
        | grep -vE 'sms-worker/src/(lease|notify)\.rs|sms-api/src/cache\.rs' || true)
 
 if [ -n "$hits" ]; then
