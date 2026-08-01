@@ -35,9 +35,11 @@ cratestack::include_server_schema!("../../schema/schema.cstack", db = Postgres);
 pub use crate::cratestack_schema as schema;
 
 pub mod auth;
+pub mod errors;
 pub mod procedures;
 pub mod router;
 
 pub use auth::{DenyAll, Principal, PrincipalKind};
+pub use errors::{is_illegal_transition, map_database_error};
 pub use procedures::Procedures;
 pub use router::{route_table, router};

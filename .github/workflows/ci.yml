@@ -86,11 +86,18 @@ jobs:
         run: cargo metadata --locked --format-version 1 > /dev/null
 
   rules:
-    name: R1 — no raw sqlx
+    name: R1 and R2 — engineering rules
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # R1: all data access goes through CrateStack delegates.
       - run: ./ci/assert-no-raw-sqlx.sh
+
+      # R2: the diagram everyone reads and the transition table the trigger
+      # enforces must agree. Drift shows up in production as an SM001 on an
+      # edge that looks legal in the documentation.
+      - run: python3 ci/assert-state-machine-parity.py
 
   diagrams:
     name: mermaid diagrams parse

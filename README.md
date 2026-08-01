@@ -2,7 +2,7 @@
 
 An A2P SMS gateway for Cameroon — OTP and notification delivery over MTN and Orange, with a provider abstraction that covers both HTTP APIs and SMPP.
 
-**Status: milestone 0 in progress.** The design, the `.cstack` schema and the migrations are done and verified against the real toolchain. The first two Rust crates — `sms-encoding` and `sms-msisdn`, both pure and dependency-free of the framework — now exist and pass their own gates. The API, the worker and everything that touches the database are not started. See [the roadmap](docs/architecture.md#12-milestones).
+**Status: milestone 0, nearly done.** The design, the schema and the migrations are verified against the real toolchain; `sms-encoding` and `sms-msisdn` are complete; and the schema now **expands** through `include_server_schema!`, which was milestone 0's central gate — `sms-api` compiles and generates 87 routes. `previewMessage` is implemented; the other six procedures return an error naming the milestone that will build them. The worker, real authentication and the admin console are not started. See [the roadmap](docs/architecture.md#12-milestones).
 
 ## What's here
 
@@ -17,7 +17,7 @@ An A2P SMS gateway for Cameroon — OTP and notification delivery over MTN and O
 | `crates/sms-msisdn/` | E.164 `+237` parsing, line-type classification, operator-prefix lookup. Milestone 0. |
 | `crates/sms-api/` | Where `include_server_schema!` expands: generated models, policies, REST router, and the procedure registry. |
 | `app/sms-gateway/` | The API server binary. `serve` binds HTTP; `routes` prints the generated route table and needs no database. |
-| `ci/` | The R1 lint, the migration runner, the bootstrap-SQL generator, and the state-machine test. |
+| `ci/` | The R1 lint, the R2 state-machine parity check, the migration runner, the bootstrap-SQL generator, and the state-machine SQL test. |
 
 `crates/` is libraries, `app/` is binaries, and nothing in `crates/` depends on anything in `app/`.
 
@@ -42,13 +42,13 @@ The test asserts that legal transitions are accepted, that illegal ones raise `S
 
 ## Try the crates
 
-`sms-encoding` and `sms-msisdn` need nothing but a Rust toolchain — no database, no framework.
+Nothing here needs a database — the whole suite runs on a bare Rust toolchain.
 
 ```bash
-just test
+just all-checks
 ```
 
-Use `just` rather than bare `cargo`: expanding 16 models through `include_server_schema!` costs multiple GB in a single rustc process and over ten minutes on a cold cache, and the recipes cap build concurrency so that stays survivable. `just jobs=8 test` raises the cap on a machine with headroom.
+That is fmt, clippy with warnings as errors, the full test suite, the R1 raw-`sqlx` lint and the R2 state-machine parity check — the same things CI runs, in CI's order. `just jobs=8 test` raises the build-concurrency cap on a machine with headroom.
 
 `sms-encoding`'s milestone-0 gate is [`crates/sms-encoding/tests/french_corpus.rs`](crates/sms-encoding/tests/french_corpus.rs): a table of real French SMS bodies checked at each stage — raw, after unconditional normalisation, after opt-in transliteration — including the `ç` and `’` cases that motivated the crate.
 
