@@ -10,7 +10,8 @@ use crate::schema;
 /// Build the HTTP surface: generated model CRUD plus the seven procedures.
 ///
 /// The auth provider is [`DenyAll`] until milestone 1 — see its documentation.
-#[must_use]
+// No `#[must_use]`: axum's `Router` already carries one, and doubling it is
+// what `clippy::double_must_use` objects to.
 pub fn router(db: schema::Cratestack) -> Router {
     schema::axum::router(db, Procedures, JsonCodec, DenyAll)
 }
@@ -49,10 +50,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn router_builds_without_a_live_database() {
-        // A lazy pool never connects, so this exercises router construction —
-        // the part that fails at compile time or not at all.
+    // Async because a lazy pool still spawns a background task on construction,
+    // so `connect_lazy` panics with "this functionality requires a Tokio
+    // context" outside a runtime — even though it never opens a connection.
+    #[tokio::test]
+    async fn router_builds_without_a_live_database() {
         let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1/none")
             .expect("a lazy pool only parses the URL");

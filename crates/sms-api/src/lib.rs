@@ -1,4 +1,4 @@
-//! The generated CrateStack surface for the SMS gateway.
+//! The generated `CrateStack` surface for the SMS gateway.
 //!
 //! This crate hosts `include_server_schema!` and the hand-written pieces that
 //! plug into it: the [`AuthProvider`](cratestack::AuthProvider) that turns a

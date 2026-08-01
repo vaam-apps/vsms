@@ -28,8 +28,8 @@ sms-api = { path = "./crates/sms-api" }
 # exactly — CrateStack is pre-1.0 and shipped 23 releases in 11 weeks; the
 # whole family must move in lockstep or the generated code stops matching the
 # runtime it calls into.
-cratestack = { package = "cratestack-pg", version = "=0.4.19" }
-cratestack-codec-json = "=0.4.19"
+cratestack = { package = "cratestack-pg", version = "=0.5.0" }
+cratestack-codec-json = "=0.5.0"
 
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }

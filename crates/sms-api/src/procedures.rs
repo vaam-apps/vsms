@@ -71,7 +71,8 @@ impl Procedures {
 
         Ok(schema::PreviewResult {
             encoding: encoding_of(report.encoding),
-            segments: i64::try_from(report.segments).unwrap_or(i64::from(u8::MAX)),
+            // `segments` is a u8, so this widening is infallible.
+            segments: i64::from(report.segments),
             length: i64::try_from(report.length).unwrap_or(i64::MAX),
             perSegment: i64::try_from(report.per_segment).unwrap_or(i64::MAX),
             offending: distinct_offending(&report),

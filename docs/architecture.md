@@ -2244,7 +2244,7 @@ vsms/
 
 The `.cstack` file stays at `schema/`, not inside `sms-api`. `include_server_schema!` resolves against `CARGO_MANIFEST_DIR` and the conventional layout is to keep the schema in the crate that expands it — but three other things already read this one (the migration diff, `ci/gen-bootstrap-sql.py`, and `sms-worker`), and separating the schema from its own migrations to satisfy a macro's default path resolution is the wrong trade. `sms-api` reaches back out with `../../schema/schema.cstack`.
 
-`sms-api` depends on `cratestack = { package = "cratestack-pg", version = "=0.4.16" }` — the rename is mandatory, because generated code emits absolute `::cratestack::*` paths. `JsonCodec` comes from the separate `cratestack-codec-json` crate.
+`sms-api` depends on `cratestack = { package = "cratestack-pg", version = "=0.5.0" }` — the rename is mandatory, because generated code emits absolute `::cratestack::*` paths. `JsonCodec` comes from the separate `cratestack-codec-json` crate.
 
 ### Admin console screens
 
@@ -2319,7 +2319,7 @@ Milestone 0 still comes first. The encoding crate has the highest ratio of busin
 | System context sets `kind` but not `role = "system"` → all message writes deny | Integration test on the first send |
 | SMPP hex/decimal `message_id` mismatch | `providerMessageRef` + `providerMessageRefAlt`, both indexed |
 | Grey route silently replaces sender ID | Monthly handset validation per route; alert on delivery-rate divergence |
-| CrateStack pre-1.0, 23 releases in 11 weeks | Pin `=0.4.16`; `cratestack diff` CI gate catches wire breaks |
+| CrateStack pre-1.0, 23 releases in 11 weeks | Pin `=0.5.0`; `cratestack diff` CI gate catches wire breaks |
 | Only in-memory rate-limit store ships | Implement `RateLimitStore` against Redis/Postgres before the second API replica |
 
 ---
