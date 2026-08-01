@@ -29,6 +29,9 @@
 --   - oauth_clients.created_at
 --   - oauth_clients.updated_at
 --   - oauth_clients.id
+--   - oauth_signing_keys.created_at
+--   - oauth_signing_keys.updated_at
+--   - oauth_signing_keys.id
 --   - operator_prefix_rules.created_at
 --   - operator_prefix_rules.updated_at
 --   - operator_prefix_rules.id
@@ -187,6 +190,16 @@ CREATE TABLE oauth_clients (
     redirect_uris TEXT NOT NULL,
     require_pkce BOOLEAN NOT NULL,
     active BOOLEAN NOT NULL DEFAULT true,
+    PRIMARY KEY (id)
+);
+
+CREATE TABLE oauth_signing_keys (
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    id TEXT NOT NULL,
+    private_key_pem TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT true,
+    expires_at TIMESTAMPTZ,
     PRIMARY KEY (id)
 );
 

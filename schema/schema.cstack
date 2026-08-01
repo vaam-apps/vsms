@@ -182,6 +182,20 @@ model OauthClient {
   @@allow("update", hasRole('system'))
 }
 
+model OauthSigningKey {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  privateKeyPem String @sensitive
+  active Boolean @default(true)
+  expiresAt DateTime?
+
+  @@audit
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
 model SenderId {
   @use(Timestamps)
 

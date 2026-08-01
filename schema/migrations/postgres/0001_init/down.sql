@@ -74,6 +74,8 @@ DROP TABLE opt_outs;
 
 DROP TABLE operator_prefix_rules;
 
+DROP TABLE oauth_signing_keys;
+
 DROP TABLE oauth_clients;
 
 DROP TABLE messages;

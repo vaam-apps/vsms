@@ -39,7 +39,7 @@ pub mod errors;
 pub mod procedures;
 pub mod router;
 
-pub use auth::{DenyAll, Principal, PrincipalKind};
+pub use auth::{OidcValidator, Principal, PrincipalKind};
 pub use errors::{is_illegal_transition, map_database_error};
 pub use procedures::Procedures;
 pub use router::{route_table, router};

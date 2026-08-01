@@ -3,17 +3,14 @@
 use cratestack::axum::Router;
 use cratestack_codec_json::JsonCodec;
 
-use crate::auth::DenyAll;
 use crate::procedures::Procedures;
 use crate::schema;
 
+use cratestack::{AuthProvider, CoolError};
+
 /// Build the HTTP surface: generated model CRUD plus the seven procedures.
-///
-/// The auth provider is [`DenyAll`] until milestone 1 — see its documentation.
-// No `#[must_use]`: axum's `Router` already carries one, and doubling it is
-// what `clippy::double_must_use` objects to.
-pub fn router(db: schema::Cratestack) -> Router {
-    schema::axum::router(db, Procedures, JsonCodec, DenyAll)
+pub fn router<A: AuthProvider<Error = CoolError>>(db: schema::Cratestack, auth: A) -> Router {
+    schema::axum::router(db, Procedures, JsonCodec, auth)
 }
 
 /// Every route the schema generated, for `sms-gateway routes`.
@@ -55,9 +52,21 @@ mod tests {
     // context" outside a runtime — even though it never opens a connection.
     #[tokio::test]
     async fn router_builds_without_a_live_database() {
+        #[derive(Clone)]
+        struct DummyAuth;
+        impl AuthProvider for DummyAuth {
+            type Error = CoolError;
+            fn authenticate(
+                &self,
+                _r: &cratestack::RequestContext<'_>,
+            ) -> impl core::future::Future<Output = Result<cratestack::CoolContext, Self::Error>> + Send
+            {
+                core::future::ready(Err(CoolError::Unauthorized(String::new())))
+            }
+        }
         let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1/none")
             .expect("a lazy pool only parses the URL");
-        let _router = router(schema::Cratestack::builder(pool).build());
+        let _router = router(schema::Cratestack::builder(pool).build(), DummyAuth);
     }
 }

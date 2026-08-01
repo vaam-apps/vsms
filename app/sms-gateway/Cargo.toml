@@ -13,6 +13,7 @@ description = "SMS gateway API server binary"
 
 [dependencies]
 sms-api.workspace = true
+sms-auth.workspace = true
 cratestack.workspace = true
 
 anyhow.workspace = true

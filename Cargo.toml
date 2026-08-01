@@ -22,6 +22,7 @@ publish = false
 sms-encoding = { path = "./crates/sms-encoding" }
 sms-msisdn = { path = "./crates/sms-msisdn" }
 sms-api = { path = "./crates/sms-api" }
+sms-auth = { path = "./crates/sms-auth" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`
 # paths, so the facade has to be in scope under exactly that name. Pinned
@@ -42,6 +43,9 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 authkestra-op = "0.3.2"
+authkestra-axum = { version = "0.3.2", features = ["op"] }
+authkestra-engine = "0.3.2"
+authkestra-resource = "0.3.2"
 async-trait = "0.1.80"
 unicode-normalization = "0.1"
 

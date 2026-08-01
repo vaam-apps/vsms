@@ -67,7 +67,35 @@ async fn main() -> Result<()> {
                 .context("connecting to Postgres")?;
 
             let db = sms_api::schema::Cratestack::builder(pool).build();
-            let app = sms_api::router(db);
+            let db_arc = std::sync::Arc::new(db.clone());
+
+            let sys_ctx = sms_api::auth::Principal {
+                sub: "system".to_string(),
+                kind: sms_api::auth::PrincipalKind::App,
+                role: "system".to_string(),
+                app_id: "system".to_string(),
+            }
+            .into_context();
+
+            let issuer_url = format!("http://{listen}");
+
+            let op_state = sms_auth::provider::setup_op_state(
+                db_arc.clone(),
+                sys_ctx.clone(),
+                issuer_url.clone(),
+            )
+            .await
+            .context("setting up OP state")?;
+
+            let op_router = sms_auth::provider::op_router(op_state);
+
+            let oidc_validator =
+                sms_api::auth::OidcValidator::new(&issuer_url, db_arc.clone(), sys_ctx.clone());
+            let api_router = sms_api::router(db, oidc_validator);
+
+            let app = cratestack::axum::Router::new()
+                .merge(op_router)
+                .merge(api_router);
 
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await

@@ -6,10 +6,10 @@ use authkestra_op::{ClientRegistration, ClientStore, GrantType, OpError};
 use cratestack::{CoolContext, FilterExpr};
 use std::sync::Arc;
 
-cratestack::include_server_schema!("../../schema/schema.cstack", db = Postgres);
-pub use crate::cratestack_schema as schema;
-
 use schema::{oauth_client, Cratestack};
+pub use sms_api::schema;
+
+pub mod provider;
 
 pub struct SmsClientStore {
     db: Arc<Cratestack>,

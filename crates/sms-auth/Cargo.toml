@@ -6,5 +6,11 @@ edition = "2021"
 [dependencies]
 cratestack.workspace = true
 authkestra-op.workspace = true
+authkestra-axum.workspace = true
+authkestra-engine.workspace = true
 async-trait.workspace = true
 serde.workspace = true
+sms-api.workspace = true
+rand = "0.8"
+rsa = { version = "0.9", features = ["pem"] }
+anyhow = "1"
