@@ -138,7 +138,7 @@ One worker binary rather than three services is a deliberate simplification over
 
 ### 2.0 Grammar and emitter constraints
 
-Mechanical properties of the 0.4.16 toolchain, each verified by running it. None are obvious from the docs and each costs an afternoon if you find it the hard way.
+Mechanical properties of the toolchain, each verified by running it — most against 0.4.16, two rows below marked 0.5.0 where the emitter's behaviour changed under us mid-project. None are obvious from the docs and each costs an afternoon if you find it the hard way.
 
 | Constraint | Consequence |
 |---|---|
@@ -159,6 +159,8 @@ Mechanical properties of the 0.4.16 toolchain, each verified by running it. None
 | **There is no `@@index`.** Only `@unique` emits an index. | Every non-unique index is hand-written. §2.10. |
 | **Foreign keys are never emitted.** No `REFERENCES` codepath exists in `cratestack-migrate` 0.4.16. | Hand-written too. |
 | **No triggers, no CHECK without `@db_enforce`, no partial indexes.** | **The state machines in §2.10 are entirely hand-written SQL.** The schema declares the states; Postgres enforces the edges. |
+| **`@db_enforce` promotes `@length`/`@range` into a real `CHECK` — and is a silent no-op on `@regex`.** Verified with an isolated two-field probe schema: identical `@db_enforce` on a `@length` field emits `ADD CONSTRAINT … CHECK (length(...) BETWEEN …)`; on a `@regex` field it emits nothing, no error. | Pattern constraints need a hand-written `CHECK (col ~ '...')` in §2.10. `@regex` alone is application-layer validation only. |
+| **0.5.0: enum-typed columns emit as `TEXT NOT NULL` + `CHECK (col IN (...))`, not a native `CREATE TYPE ... AS ENUM`.** 0.4.16 emitted real enum types; nothing announced the change. | Anything referencing an enum type name directly in hand-written SQL — our `message_state`/`job_state` transition-table columns — breaks silently at `psql` time (`type "message_state" does not exist`) on the next full regeneration. Now `TEXT` with a matching hand-written `CHECK`. |
 | **Scalar list fields (`String[]`, `Int[]`) PANIC `include_server_schema!`** — `proc macro panicked: unsupported SQLx value type for this slice`. The parser accepts them and the migration emitter happily writes `TEXT[]`; only the server macro fails. | **No model may declare a list field.** Multi-values are delimited `String` columns (see below). Lists inside `type` blocks are fine — they never touch SQLx. |
 | **`@version` emits `BIGINT NOT NULL` with no default.** | Seeds and raw SQL fail without a hand-added default. |
 | **ANY `@default(...)` excludes the field from `CreateXInput`** — literals included, not just `dbgenerated()`. `is_generated_on_create` is a bare `starts_with("@default")`. | Verified: `CreateMessageInput has no field named 'priority'` for `priority Int @default(100)`. **A `@default` on a caller-settable field is a bug.** Keep it only where being unsettable is the point. |
@@ -899,7 +901,7 @@ fn send_message(
 
 ### 2.10 Hand-written SQL: defaults, indexes, and the state machines
 
-The emitter produces no non-unique indexes, no foreign keys, no triggers, and — because of `dbgenerated()` — no column defaults. Generate the base migration:
+The emitter produces no non-unique indexes, no foreign keys, no triggers, and — because of `dbgenerated()` — no column defaults. It also, as of `cratestack-migrate` 0.5.0, produces **no native Postgres `ENUM` types**: every enum-typed field emits as `TEXT NOT NULL` plus a `CHECK (col IN (...))` constraint instead of `CREATE TYPE ... AS ENUM` plus a typed column. Earlier versions did emit real enum types, which is why the transition tables below are `TEXT`, matched with their own `CHECK` constraints, rather than `message_state`/`job_state` columns — those types no longer exist to reference. Generate the base migration:
 
 ```bash
 cratestack migrate diff --schema schema/schema.cstack \
@@ -931,6 +933,7 @@ ALTER TABLE routes                  ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE sender_ids              ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE sender_id_registrations ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE opt_outs                ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE operator_prefix_rules   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_endpoints       ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_attempts        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE users                   ALTER COLUMN id SET DEFAULT cs_cuid();
@@ -979,9 +982,15 @@ ALTER TABLE jobs             ALTER COLUMN version SET DEFAULT 0;
 
 ```sql
 CREATE TABLE message_state_transitions (
-    from_state message_state NOT NULL,
-    to_state   message_state NOT NULL,
-    PRIMARY KEY (from_state, to_state)
+    from_state TEXT NOT NULL,
+    to_state   TEXT NOT NULL,
+    PRIMARY KEY (from_state, to_state),
+    -- The native `message_state` enum type is gone as of cratestack-migrate
+    -- 0.5.0 (see above); these CHECKs are what used to be free with the type.
+    CONSTRAINT message_state_transitions_from_check
+        CHECK (from_state IN ('accepted', 'queued', 'routed', 'submitted', 'delivered', 'uncertain', 'undelivered', 'failed', 'expired', 'rejected', 'cancelled')),
+    CONSTRAINT message_state_transitions_to_check
+        CHECK (to_state IN ('accepted', 'queued', 'routed', 'submitted', 'delivered', 'uncertain', 'undelivered', 'failed', 'expired', 'rejected', 'cancelled'))
 );
 
 INSERT INTO message_state_transitions (from_state, to_state) VALUES
@@ -1035,9 +1044,13 @@ CREATE TRIGGER messages_state_guard
 
 ```sql
 CREATE TABLE job_state_transitions (
-    from_state job_state NOT NULL,
-    to_state   job_state NOT NULL,
-    PRIMARY KEY (from_state, to_state)
+    from_state TEXT NOT NULL,
+    to_state   TEXT NOT NULL,
+    PRIMARY KEY (from_state, to_state),
+    CONSTRAINT job_state_transitions_from_check
+        CHECK (from_state IN ('pending', 'running', 'succeeded', 'failed', 'dead', 'cancelled')),
+    CONSTRAINT job_state_transitions_to_check
+        CHECK (to_state IN ('pending', 'running', 'succeeded', 'failed', 'dead', 'cancelled'))
 );
 
 INSERT INTO job_state_transitions (from_state, to_state) VALUES
@@ -1159,6 +1172,33 @@ ALTER TABLE webhook_attempts ADD CONSTRAINT wha_endpoint_fk
     FOREIGN KEY (endpoint_id) REFERENCES webhook_endpoints(id) ON DELETE CASCADE;
 ALTER TABLE users ADD CONSTRAINT users_role_fk
     FOREIGN KEY (role_key) REFERENCES roles(key);
+```
+
+**Format constraints `@db_enforce` cannot express.** It backs `@length`/`@range` with a real `CHECK` — confirmed against `SenderId.value`, the schema's one other `@db_enforce` field — but is a silent no-op on `@regex`: no `CHECK`, no error, no warning. Verified with an isolated two-field probe schema (§2.0). Anything pattern-shaped needs its `CHECK` written by hand:
+
+```sql
+ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_format_check
+    CHECK (prefix ~ '^[0-9]{1,4}$');
+```
+
+**Seed data: operator prefix rules**, current best evidence per §3.4. `650`–`659` is fully partitioned between MTN and Orange, so no separate `65` row is needed; `66`, `640`–`642` and everything else are deliberately left unseeded rather than guessed — a gap here resolves to `OperatorCode::unknown` at lookup, which is honest, where a fabricated row would not be. `source` defaults to `'seed'`:
+
+```sql
+INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes) VALUES
+    ('62',  'camtel', 'unverified', 'Camtel; unverified per architecture.md §3.4'),
+    ('67',  'mtn',    'likely',     'MTN 67x per architecture.md §3.4'),
+    ('68',  'unknown','contested',  'Contested between sources per architecture.md §3.4 — do not treat as reliable'),
+    ('69',  'orange', 'likely',     'Orange 69x per architecture.md §3.4'),
+    ('650', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
+    ('651', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
+    ('652', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
+    ('653', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
+    ('654', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
+    ('655', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
+    ('656', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
+    ('657', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
+    ('658', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
+    ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4');
 ```
 
 **Three notes on the triggers.**

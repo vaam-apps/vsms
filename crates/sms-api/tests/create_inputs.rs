@@ -22,7 +22,10 @@
 
 use chrono::{TimeZone, Utc};
 use cratestack::Decimal;
-use sms_api::schema::{CreateJobInput, CreateMessageInput, Encoding, MessageClass, OperatorCode};
+use sms_api::schema::{
+    CreateJobInput, CreateMessageInput, CreateOperatorPrefixRuleInput, Encoding, MessageClass,
+    OperatorCode,
+};
 
 /// Every field `sendMessage` must control on the row it creates.
 ///
@@ -112,6 +115,27 @@ fn enqueue_job_can_set_every_field_it_owns() {
 
     // `state`, `attempts` and `version` are framework-owned.
     assert_eq!(input.kind, "reap_outbox");
+}
+
+/// Every field a manual or DLR-driven correction to an
+/// `OperatorPrefixRule` must control.
+///
+/// `source`, `confidence` and `active` are absent by design — each carries a
+/// `@default`, which is why `previewMessage` reporting `unknown` today isn't a
+/// bug: nothing writes this table yet, and being unable to default a brand
+/// new rule to `unverified` would be worse than the rule not existing.
+#[test]
+fn operator_prefix_correction_can_set_every_field_it_owns() {
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+    let input = CreateOperatorPrefixRuleInput {
+        prefix: "655".to_owned(),
+        operator: OperatorCode::orange,
+        lastObservedAt: Some(now),
+        notes: Some("corrected from a DLR-reported network code".to_owned()),
+    };
+
+    assert_eq!(input.prefix, "655");
 }
 
 /// `Decimal` is reachable and is the money type.

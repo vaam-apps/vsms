@@ -50,6 +50,19 @@ enum OperatorCode {
   unknown
 }
 
+enum OperatorPrefixSource {
+  seed
+  manual
+  dlr_observed
+}
+
+enum OperatorPrefixConfidence {
+  verified
+  likely
+  contested
+  unverified
+}
+
 enum ProviderKind {
   orange_cm_http
   mtn_http
@@ -257,6 +270,41 @@ model Route {
   @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
   @@allow("update", hasRole('owner') || hasRole('admin'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, updated, deleted)
+}
+
+// Feeds sms_msisdn::OperatorPrefixTable, which ships with zero built-in rows
+// on purpose (see §3.4) — prefix routing must never be load-bearing, so the
+// table lives here where operations can correct it without a deploy. Seeded
+// from best current evidence in 0002_bootstrap; corrected over time either by
+// an admin (source=manual) or automatically from DeliveryReceipt.networkCode
+// (source=dlr_observed, which is what lastObservedAt tracks).
+//
+// Named *Rule, not *Prefix: pluralize() is naive (ends_with('s') ? +"es" :
+// +"s") and does not know that "prefix" ends in x, so "OperatorPrefix" would
+// table as operator_prefixs. Same trap that made WebhookAttempt not
+// WebhookDelivery.
+model OperatorPrefixRule {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  // @db_enforce backs @length with a real CHECK but is a silent no-op on
+  // @regex — verified by probe, see §2.0. So the format guarantee for this
+  // column is hand-written in 0002_bootstrap instead, not the attribute
+  // below; @regex here is app-layer validation only.
+  prefix String @unique @regex("^[0-9]{1,4}$")
+  operator OperatorCode
+  source OperatorPrefixSource @default('seed')
+  confidence OperatorPrefixConfidence @default('unverified')
+  lastObservedAt DateTime?
+  notes String?
+  active Boolean @default(true)
+
+  @@audit
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
+  @@allow("create", hasRole('owner') || hasRole('admin'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('system'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))
   @@emit(created, updated, deleted)
 }

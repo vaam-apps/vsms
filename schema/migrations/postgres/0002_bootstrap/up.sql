@@ -27,6 +27,7 @@ ALTER TABLE routes                  ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE sender_ids              ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE sender_id_registrations ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE opt_outs                ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE operator_prefix_rules   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_endpoints       ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_attempts        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE users                   ALTER COLUMN id SET DEFAULT cs_cuid();
@@ -46,6 +47,8 @@ ALTER TABLE sender_id_registrations ALTER COLUMN created_at SET DEFAULT now(),
 ALTER TABLE providers ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
 ALTER TABLE routes ALTER COLUMN created_at SET DEFAULT now(),
+            ALTER COLUMN updated_at SET DEFAULT now();
+ALTER TABLE operator_prefix_rules ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
 ALTER TABLE messages ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
@@ -90,6 +93,8 @@ CREATE TRIGGER providers_touch BEFORE UPDATE ON providers
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER routes_touch BEFORE UPDATE ON routes
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER operator_prefix_rules_touch BEFORE UPDATE ON operator_prefix_rules
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER messages_touch BEFORE UPDATE ON messages
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER message_parts_touch BEFORE UPDATE ON message_parts
@@ -121,9 +126,15 @@ ALTER TABLE webhook_attempts ALTER COLUMN version SET DEFAULT 0;
 ALTER TABLE jobs             ALTER COLUMN version SET DEFAULT 0;
 
 CREATE TABLE message_state_transitions (
-    from_state message_state NOT NULL,
-    to_state   message_state NOT NULL,
-    PRIMARY KEY (from_state, to_state)
+    from_state TEXT NOT NULL,
+    to_state   TEXT NOT NULL,
+    PRIMARY KEY (from_state, to_state),
+    -- The native `message_state` enum type is gone as of cratestack-migrate
+    -- 0.5.0 (see above); these CHECKs are what used to be free with the type.
+    CONSTRAINT message_state_transitions_from_check
+        CHECK (from_state IN ('accepted', 'queued', 'routed', 'submitted', 'delivered', 'uncertain', 'undelivered', 'failed', 'expired', 'rejected', 'cancelled')),
+    CONSTRAINT message_state_transitions_to_check
+        CHECK (to_state IN ('accepted', 'queued', 'routed', 'submitted', 'delivered', 'uncertain', 'undelivered', 'failed', 'expired', 'rejected', 'cancelled'))
 );
 
 INSERT INTO message_state_transitions (from_state, to_state) VALUES
@@ -173,9 +184,13 @@ CREATE TRIGGER messages_state_guard
     FOR EACH ROW EXECUTE FUNCTION messages_guard_transition();
 
 CREATE TABLE job_state_transitions (
-    from_state job_state NOT NULL,
-    to_state   job_state NOT NULL,
-    PRIMARY KEY (from_state, to_state)
+    from_state TEXT NOT NULL,
+    to_state   TEXT NOT NULL,
+    PRIMARY KEY (from_state, to_state),
+    CONSTRAINT job_state_transitions_from_check
+        CHECK (from_state IN ('pending', 'running', 'succeeded', 'failed', 'dead', 'cancelled')),
+    CONSTRAINT job_state_transitions_to_check
+        CHECK (to_state IN ('pending', 'running', 'succeeded', 'failed', 'dead', 'cancelled'))
 );
 
 INSERT INTO job_state_transitions (from_state, to_state) VALUES
@@ -289,3 +304,22 @@ ALTER TABLE webhook_attempts ADD CONSTRAINT wha_endpoint_fk
     FOREIGN KEY (endpoint_id) REFERENCES webhook_endpoints(id) ON DELETE CASCADE;
 ALTER TABLE users ADD CONSTRAINT users_role_fk
     FOREIGN KEY (role_key) REFERENCES roles(key);
+
+ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_format_check
+    CHECK (prefix ~ '^[0-9]{1,4}$');
+
+INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes) VALUES
+    ('62',  'camtel', 'unverified', 'Camtel; unverified per architecture.md §3.4'),
+    ('67',  'mtn',    'likely',     'MTN 67x per architecture.md §3.4'),
+    ('68',  'unknown','contested',  'Contested between sources per architecture.md §3.4 — do not treat as reliable'),
+    ('69',  'orange', 'likely',     'Orange 69x per architecture.md §3.4'),
+    ('650', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
+    ('651', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
+    ('652', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
+    ('653', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
+    ('654', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
+    ('655', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
+    ('656', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
+    ('657', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
+    ('658', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
+    ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4');
