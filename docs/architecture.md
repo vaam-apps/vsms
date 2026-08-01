@@ -2209,7 +2209,7 @@ vsms/
 │   └── migrations/postgres/
 │       ├── 0001_init/              # cratestack migrate diff output
 │       └── 0002_bootstrap/         # generated from §2.10 by ci/gen-bootstrap-sql.py
-├── crates/
+├── crates/               # libraries only
 │   ├── sms-core/         # domain types, transition tables, error taxonomy
 │   ├── sms-encoding/     # GSM-7/UCS-2 — build this first
 │   ├── sms-msisdn/       # E.164 +237, operator inference
@@ -2218,23 +2218,33 @@ vsms/
 │   ├── sms-provider-mtn/
 │   ├── sms-provider-aggregator/
 │   ├── sms-provider-smpp/          # scaffold only, milestone 7
-│   ├── sms-api/          # Axum + include_server_schema! + procedures + subscribers
+│   ├── sms-api/          # include_server_schema! + AuthProvider + procedures + subscribers
+│   │   ├── src/auth.rs             # Principal → CoolContext; the only place field names live
+│   │   ├── src/procedures.rs       # ProcedureRegistry
+│   │   ├── src/router.rs           # generated router assembly
 │   │   └── src/cache.rs            # R1 exception: LISTEN for opt-out invalidation
 │   ├── sms-auth/         # authkestra-op =0.2.3 + delegate-backed ClientStore
-│   └── sms-worker/
+│   └── sms-worker/       # the worker as a library; the binary is app/sms-worker
 │       ├── src/lease.rs            # R1 exception: pg_try_advisory_lock
 │       ├── src/notify.rs           # R1 exception: NOTIFY
 │       ├── src/claim.rs            # the shared candidate + CAS lease loop
 │       └── src/roles/
 │           ├── dispatch.rs  drain.rs  scheduler.rs
 │           ├── hooks.rs     jobs.rs   smpp.rs
+├── app/                  # binaries only
+│   ├── sms-gateway/      # the API server: clap CLI, serve / routes
+│   └── sms-worker/       # role-selectable worker, milestone 2
 ├── packages/
 │   └── sms-client/       # generated TS, do not edit, checked in CI
 ├── admin/                # Next.js 15 App Router + shadcn/ui
 └── deploy/               # compose, Caddyfile, sops secrets
 ```
 
-`sms-api` depends on `cratestack = { package = "cratestack-pg", version = "=0.4.16" }` — the rename is mandatory, because generated code emits absolute `::cratestack::*` paths. `JsonCodec` comes from the separate `cratestack-codec-json` crate.
+**`crates/` is libraries, `app/` is binaries**, and the dependency arrow only ever points from `app/` into `crates/`. The split is worth the extra directory for two reasons: a library that cannot declare a `main` cannot quietly grow process-level concerns like signal handling or CLI parsing, and it makes "what do we actually ship" a directory listing rather than a grep for `[[bin]]`. Internal crates are wired through `[workspace.dependencies]` path entries, so a version or a feature flag is set once at the root rather than per consumer.
+
+The `.cstack` file stays at `schema/`, not inside `sms-api`. `include_server_schema!` resolves against `CARGO_MANIFEST_DIR` and the conventional layout is to keep the schema in the crate that expands it — but three other things already read this one (the migration diff, `ci/gen-bootstrap-sql.py`, and `sms-worker`), and separating the schema from its own migrations to satisfy a macro's default path resolution is the wrong trade. `sms-api` reaches back out with `../../schema/schema.cstack`.
+
+`sms-api` depends on `cratestack = { package = "cratestack-pg", version = "=0.5.0" }` — the rename is mandatory, because generated code emits absolute `::cratestack::*` paths. `JsonCodec` comes from the separate `cratestack-codec-json` crate.
 
 ### Admin console screens
 
@@ -2309,7 +2319,7 @@ Milestone 0 still comes first. The encoding crate has the highest ratio of busin
 | System context sets `kind` but not `role = "system"` → all message writes deny | Integration test on the first send |
 | SMPP hex/decimal `message_id` mismatch | `providerMessageRef` + `providerMessageRefAlt`, both indexed |
 | Grey route silently replaces sender ID | Monthly handset validation per route; alert on delivery-rate divergence |
-| CrateStack pre-1.0, 23 releases in 11 weeks | Pin `=0.4.16`; `cratestack diff` CI gate catches wire breaks |
+| CrateStack pre-1.0, 23 releases in 11 weeks | Pin `=0.5.0`; `cratestack diff` CI gate catches wire breaks |
 | Only in-memory rate-limit store ships | Implement `RateLimitStore` against Redis/Postgres before the second API replica |
 
 ---

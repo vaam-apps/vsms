@@ -54,6 +54,17 @@ jobs:
   rust:
     name: cargo fmt, clippy, test
     runs-on: ubuntu-latest
+
+    env:
+      # `include_server_schema!` expands 16 models into one compilation unit,
+      # which costs several GB in a single rustc process. Cap concurrency so
+      # peak memory stays roughly linear in the job count rather than in the
+      # core count. See cratestack/cratestack#250 for the same finding from the
+      # framework side, and the `[profile.release]` note in Cargo.toml.
+      CARGO_BUILD_JOBS: '4'
+      # Incremental state costs memory and disk for nothing on a cold checkout.
+      CARGO_INCREMENTAL: '0'
+
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -63,8 +74,7 @@ jobs:
 
       - run: cargo fmt --all --check
 
-      # Warnings are errors here. The two milestone-0 crates are small enough
-      # that there is no excuse for a backlog, and pedantic lints are on.
+      # Warnings are errors. Pedantic lints are on workspace-wide.
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
       # Milestone 0's encoding gate lives in
