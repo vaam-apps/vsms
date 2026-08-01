@@ -38,6 +38,11 @@ deny:
 # Everything CI runs, in CI's order
 all-checks: lint test
 	./ci/assert-no-raw-sqlx.sh
+	python3 ci/assert-state-machine-parity.py
+
+# R2: the state diagram and the transition table must agree
+parity:
+	python3 ci/assert-state-machine-parity.py
 
 # Print the generated route table. Needs no database.
 routes:

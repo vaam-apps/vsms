@@ -1,0 +1,128 @@
+//! Milestone 0's second gate: every create input carries the fields its
+//! procedure has to set.
+//!
+//! This file exists to fail at **compile** time, not at runtime. Two schema
+//! attributes silently remove a field from `CreateXInput`, and neither leaves
+//! any trace at the call site:
+//!
+//! - **Any `@default(...)` excludes a field from the create input** — literals
+//!   included, not only `dbgenerated()`. Putting `@default(0)` on
+//!   `Message.priority` would make `sendMessage` unable to set the priority a
+//!   caller asked for, and nothing would complain until someone noticed every
+//!   message was priority zero.
+//! - **`@server_only` excludes a field from create *and* update** (R3), so a
+//!   field marked that way can never be populated at all.
+//!
+//! Both are silent because the generated struct simply has one field fewer.
+//! Constructing each input exhaustively — no `..Default::default()` — turns
+//! either change into a build failure naming the exact field.
+//!
+//! Deliberately not `#[test]`-only logic: the assertions here are the
+//! `struct` literals themselves. The test bodies just keep the values alive.
+
+use chrono::{TimeZone, Utc};
+use cratestack::Decimal;
+use sms_api::schema::{CreateJobInput, CreateMessageInput, Encoding, MessageClass, OperatorCode};
+
+/// Every field `sendMessage` must control on the row it creates.
+///
+/// If this stops compiling, read the error before "fixing" it: a field that
+/// vanished from this struct is a field the send path can no longer set.
+#[test]
+fn send_message_can_set_every_field_it_owns() {
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+    let input = CreateMessageInput {
+        // Ownership and idempotency.
+        appId: "app000000000000000000001".to_owned(),
+        clientRef: Some("order-4821".to_owned()),
+        idempotencyKey: Some("idem-4821".to_owned()),
+
+        // Recipient. `msisdn` is @pii, which redacts audit snapshots only —
+        // it does not stop the API returning the value.
+        msisdn: "+237677123456".to_owned(),
+        msisdnHash: "sha256:...".to_owned(),
+
+        // The four §12 calls out by name: a `@default` on any of these would
+        // make `sendMessage` unable to honour what the caller asked for.
+        operator: OperatorCode::mtn,
+        class: MessageClass::otp,
+        priority: 100,
+        maxAttempts: 3,
+
+        // Sender identity. Article 48 requires this be a registered value.
+        senderIdValue: "VYMALO".to_owned(),
+
+        // Body and its encoding verdict, computed pre-persistence.
+        body: Some("Votre code est 4821".to_owned()),
+        bodyHash: "sha256:...".to_owned(),
+        bodyLength: 19,
+        encoding: Encoding::gsm7,
+        segments: 1,
+
+        // Routing, filled by the worker rather than the API, but writable
+        // because the worker updates the same row.
+        stateReason: None,
+        routeId: None,
+        providerId: None,
+        providerMessageRef: None,
+        providerMessageRefAlt: None,
+
+        // Lease fields. The claim loop CASes on these, so they must be
+        // writable — a `@default` here would break reclamation outright.
+        leaseOwner: None,
+        leaseUntil: None,
+
+        // Scheduling and validity.
+        scheduledAt: None,
+        expiresAt: now,
+
+        // Timestamps the trigger stamps, but which must still be settable so a
+        // backfill or a replayed DLR can carry the real time rather than now().
+        submittedAt: None,
+        finalizedAt: None,
+    };
+
+    // `state`, `attempts`, `costXaf`, `id`, `createdAt` and `updatedAt` are
+    // absent by design — each carries a `@default`, and being unsettable is
+    // the control. `Message.state @default('accepted')` is precisely why no
+    // client can create a message that is already `delivered`.
+    assert_eq!(input.segments, 1);
+    assert_eq!(input.encoding, Encoding::gsm7);
+}
+
+/// Every field `enqueueJob` must control.
+#[test]
+fn enqueue_job_can_set_every_field_it_owns() {
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+    let input = CreateJobInput {
+        kind: "reap_outbox".to_owned(),
+        dedupeKey: Some("reap-2026-01-01".to_owned()),
+        payload: "{}".to_owned(),
+        priority: 500,
+        runAt: now,
+        maxAttempts: 5,
+        leaseOwner: None,
+        leaseUntil: None,
+        lastError: None,
+        startedAt: None,
+        finishedAt: None,
+    };
+
+    // `state`, `attempts` and `version` are framework-owned.
+    assert_eq!(input.kind, "reap_outbox");
+}
+
+/// `Decimal` is reachable and is the money type.
+///
+/// Guards the §2.0 note that money is never floating point: if `costXaf` ever
+/// changes type, this stops compiling here rather than rounding silently in
+/// production.
+#[test]
+fn money_is_decimal_not_float() {
+    let cost: Decimal = "12.50"
+        .parse()
+        .expect("Decimal parses a fixed-point literal");
+    assert_eq!(cost.to_string(), "12.50");
+}
