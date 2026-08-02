@@ -82,6 +82,16 @@ struct Cli {
         default_value = "https://api.orange.com"
     )]
     orange_base_url: String,
+
+    /// `receiptRequest.notifyURL` on every submit (#95's DLR-correlation
+    /// fix — see `sms-provider-orange-cm`'s `dlr.rs` module doc). Optional:
+    /// Orange's own DLR webhook is documented elsewhere as "whitelisted per
+    /// a manual support ticket," which reads as pre-registered rather than
+    /// per-request, so `callbackData` (always sent, unconditionally) may be
+    /// all correlation actually needs. Set this only if a real Orange
+    /// sandbox turns out to require an explicit `notifyURL` too.
+    #[arg(long, env = "ORANGE_CM_DLR_NOTIFY_URL")]
+    orange_dlr_notify_url: Option<String>,
 }
 
 /// The one Orange provider `dispatch` submits through. `None` when
@@ -100,6 +110,7 @@ fn orange_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
                 sender_number.clone(),
             );
             config.base_url.clone_from(&cli.orange_base_url);
+            config.dlr_notify_url.clone_from(&cli.orange_dlr_notify_url);
             Ok(Some(Arc::new(
                 sms_provider_orange_cm::OrangeCmProvider::new(config),
             )))
