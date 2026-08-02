@@ -3007,8 +3007,10 @@ dependencies = [
 name = "sms-worker"
 version = "0.1.0"
 dependencies = [
+ "cratestack-pg",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -3021,6 +3023,7 @@ dependencies = [
  "dotenvy",
  "sms-worker",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

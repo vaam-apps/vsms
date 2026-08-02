@@ -10,14 +10,24 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+# For crates::sqlx only — cratestack::sqlx re-exports sqlx-core/sqlx-postgres
+# directly rather than the sqlx umbrella crate (see cratestack-sqlx's own
+# module doc), so this is the same connection type every other raw-sqlx R1
+# exception in this workspace uses, not a second sqlx dependency tree.
+# Depending on this crate does NOT run include_server_schema! — that macro
+# is invoked once, explicitly, in sms-api's lib.rs; linking cratestack-pg's
+# runtime types elsewhere is cheap, unlike the macro expansion AGENTS.md's
+# build-cost section warns about.
+cratestack.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-# test-util/time on top of the workspace's macros/rt-multi-thread/signal —
-# only this crate's tests pause the clock to prove a stub role never
-# resolves without waiting on a real timer.
-tokio = { workspace = true, features = ["test-util", "time"] }
+# test-util on top of dependencies' time — this crate's own tests pause the
+# clock to prove a stub role never resolves without waiting on a real timer.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

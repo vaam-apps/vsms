@@ -9,9 +9,20 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use sms_worker::Role;
+use sms_worker::{Cardinality, Role};
 use std::collections::HashSet;
-use tracing::info;
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
+
+/// How long a shutdown waits for singleton roles to release their leases
+/// before giving up and letting the process exit anyway. Generous relative
+/// to a single `pg_advisory_unlock` round trip — this is a backstop against
+/// a wedged connection, not the expected duration. If it fires, the lease's
+/// `Drop` and Postgres's own session semantics still release the lock (see
+/// `sms_worker::lease`'s module doc) — just via the slower path this exists
+/// to avoid.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 /// `sms-worker --roles dispatch,drain,scheduler,hooks,jobs` — see §9.2's
 /// deployment diagram for why a real deployment runs two of these with
@@ -24,6 +35,13 @@ struct Cli {
     /// one process wastes a task without changing what actually runs.
     #[arg(long, env = "SMS_WORKER_ROLES", value_delimiter = ',')]
     roles: Vec<String>,
+
+    /// Only singleton roles use this today (#28's advisory lock). Required
+    /// unconditionally anyway — a `--roles hooks,jobs`-only node not needing
+    /// it yet is happenstance of what #29 hasn't built, not a property of
+    /// this binary worth encoding as optional and re-deriving per role.
+    #[arg(long, env = "DATABASE_URL")]
+    database_url: String,
 }
 
 #[tokio::main]
@@ -46,25 +64,73 @@ async fn main() -> Result<()> {
         "sms-worker starting"
     );
 
+    let shutdown = CancellationToken::new();
     let mut tasks = tokio::task::JoinSet::new();
     for role in roles {
-        tasks.spawn(sms_worker::run(role));
+        match role.cardinality() {
+            Cardinality::Singleton => {
+                tasks.spawn(sms_worker::run_singleton(
+                    role,
+                    cli.database_url.clone(),
+                    shutdown.clone(),
+                ));
+            }
+            // No lease to hold, so nothing to release — but still routed
+            // through the same cancellation token as singleton roles, so
+            // every task in `tasks` is guaranteed to return once shutdown is
+            // requested and the drain loop below can't hang waiting on one
+            // that never observes it.
+            Cardinality::ScaleToN => {
+                let cancel = shutdown.clone();
+                tasks.spawn(async move {
+                    tokio::select! {
+                        () = sms_worker::run(role) => {}
+                        () = cancel.cancelled() => {}
+                    }
+                });
+            }
+        }
     }
 
     tokio::select! {
         () = shutdown_signal() => {
-            info!("shutdown signal received");
+            info!("shutdown signal received; releasing leases");
+            shutdown.cancel();
         }
-        // A role task never returns on its own (sms_worker::run idles
-        // forever) — so this branch firing means one panicked, which
-        // JoinSet surfaces as an Err here rather than silently vanishing.
+        // A role task returning at all — success or panic — is the one
+        // thing that should never happen before shutdown is requested:
+        // sms_worker::run idles forever, and run_singleton only returns
+        // once `shutdown` is cancelled. JoinSet surfaces a panic as Err
+        // here rather than letting it vanish silently.
         Some(finished) = tasks.join_next() => {
             finished.context("a role task panicked")?;
-            bail!("a role task returned, which sms_worker::run should never do");
+            bail!("a role task returned before shutdown was requested");
         }
     }
 
+    if tokio::time::timeout(SHUTDOWN_GRACE, drain(&mut tasks))
+        .await
+        .is_err()
+    {
+        warn!(
+            grace_secs = SHUTDOWN_GRACE.as_secs(),
+            "role tasks did not finish releasing leases within the shutdown grace period; \
+             exiting anyway — the connection closing still releases any held lock"
+        );
+    }
+
     Ok(())
+}
+
+/// Wait for every remaining task to finish, logging (not propagating) any
+/// panic — a panic during shutdown shouldn't turn a graceful exit into a
+/// failing one, but it also shouldn't vanish.
+async fn drain(tasks: &mut tokio::task::JoinSet<()>) {
+    while let Some(finished) = tasks.join_next().await {
+        if let Err(error) = finished {
+            warn!(%error, "a role task panicked while shutting down");
+        }
+    }
 }
 
 /// Parse and validate `--roles` before anything is spawned, so a typo or a
@@ -101,10 +167,10 @@ fn parse_roles(raw: &[String]) -> Result<Vec<Role>> {
 /// never fires under the deployment §9.2 actually describes, and the
 /// process would always hit the force-kill timeout instead: silently, since
 /// a container restarting slightly late looks identical to one restarting
-/// correctly, right up until #28 adds lease release here and a singleton
-/// role starts getting killed mid-hold instead of releasing cleanly — the
-/// exact case §7.2's warm-standby design exists to make harmless, undone by
-/// the signal never reaching this function.
+/// correctly — and now that `run_singleton` releases its lease from this
+/// branch (#28), missing SIGTERM would mean every restart falls back to the
+/// slower drop-triggered release path instead of the fast explicit one, on
+/// every single deploy, not just a hard kill.
 ///
 /// Unix-only because `tokio::signal::unix` is: §9.2's deployment is Docker
 /// Compose on a single VM, never Windows, so a `cfg(unix)` split with a
