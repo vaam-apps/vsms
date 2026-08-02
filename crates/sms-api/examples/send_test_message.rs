@@ -29,7 +29,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, procedures::send_message, procedures::ProcedureRegistry, provider, sender_id, Cratestack,
+    self, procedures::send_message, procedures::ProcedureRegistry, provider, sender_id,
+    sender_id_registration, Cratestack,
 };
 use sms_api::Procedures;
 
@@ -96,7 +97,28 @@ async fn ensure_provider(db: &Cratestack) -> anyhow::Result<String> {
         .run(&owner())
         .await?;
     if let Some(row) = existing.into_iter().next() {
-        println!("reusing existing Provider {} (key={PROVIDER_KEY})", row.id);
+        if row.state == schema::ProviderState::active {
+            println!("reusing existing Provider {} (key={PROVIDER_KEY})", row.id);
+        } else {
+            // A prior run created this row but was interrupted before
+            // activating it (or an operator disabled it since) — reusing
+            // it silently would leave dispatch's routing pass rejecting
+            // every message with "no active provider" while this tool
+            // keeps claiming the fixture is ready. Self-heal rather than
+            // just report the gap.
+            db.provider()
+                .update(row.id.clone())
+                .set(schema::UpdateProviderInput {
+                    state: Some(schema::ProviderState::active),
+                    ..Default::default()
+                })
+                .run(&owner())
+                .await?;
+            println!(
+                "reusing existing Provider {} (key={PROVIDER_KEY}) — was {:?}, activated it",
+                row.id, row.state
+            );
+        }
         return Ok(row.id);
     }
 
@@ -138,6 +160,58 @@ async fn ensure_provider(db: &Cratestack) -> anyhow::Result<String> {
     Ok(created.id)
 }
 
+/// `sendMessage`'s own `resolve_sender_id` (`procedures.rs`) requires both
+/// an `active` `SenderId` *and* an existing `approved`
+/// `SenderIdRegistration` — not just one or the other. Idempotent and
+/// self-healing: a prior run interrupted between creating the `SenderId`
+/// and finishing its registration/activation would otherwise leave a row
+/// this tool's "reuse" path trusted as ready when it wasn't.
+async fn ensure_sender_ready(
+    db: &Cratestack,
+    sender_id_row_id: &str,
+    provider_id: &str,
+    already_active: bool,
+) -> anyhow::Result<()> {
+    let has_approved_registration = !db
+        .sender_id_registration()
+        .find_many()
+        .where_expr(
+            FilterExpr::from(sender_id_registration::senderIdId().eq(sender_id_row_id.to_owned()))
+                .and(sender_id_registration::status().eq("approved".to_owned())),
+        )
+        .limit(1)
+        .run(&owner())
+        .await?
+        .is_empty();
+
+    if !has_approved_registration {
+        db.sender_id_registration()
+            .create(schema::CreateSenderIdRegistrationInput {
+                senderIdId: sender_id_row_id.to_owned(),
+                providerId: provider_id.to_owned(),
+                status: "approved".to_owned(),
+                submittedAt: Some(Utc::now()),
+                approvedAt: Some(Utc::now()),
+                reference: None,
+                rejectionReason: None,
+            })
+            .run(&owner())
+            .await?;
+    }
+
+    if !already_active {
+        db.sender_id()
+            .update(sender_id_row_id.to_owned())
+            .set(schema::UpdateSenderIdInput {
+                active: Some(true),
+                ..Default::default()
+            })
+            .run(&owner())
+            .await?;
+    }
+    Ok(())
+}
+
 async fn ensure_approved_sender(
     db: &Cratestack,
     value: &str,
@@ -151,6 +225,7 @@ async fn ensure_approved_sender(
         .run(&owner())
         .await?;
     if let Some(row) = existing.into_iter().next() {
+        ensure_sender_ready(db, &row.id, provider_id, row.active).await?;
         println!("reusing existing SenderId {:?} ({})", row.value, row.id);
         return Ok(row.value);
     }
@@ -169,27 +244,7 @@ async fn ensure_approved_sender(
         .run(&owner())
         .await?;
 
-    db.sender_id_registration()
-        .create(schema::CreateSenderIdRegistrationInput {
-            senderIdId: created.id.clone(),
-            providerId: provider_id.to_owned(),
-            status: "approved".to_owned(),
-            submittedAt: Some(Utc::now()),
-            approvedAt: Some(Utc::now()),
-            reference: None,
-            rejectionReason: None,
-        })
-        .run(&owner())
-        .await?;
-
-    db.sender_id()
-        .update(created.id.clone())
-        .set(schema::UpdateSenderIdInput {
-            active: Some(true),
-            ..Default::default()
-        })
-        .run(&owner())
-        .await?;
+    ensure_sender_ready(db, &created.id, provider_id, false).await?;
 
     println!(
         "created, registered and activated SenderId {:?} ({}) — must already be approved on the \
