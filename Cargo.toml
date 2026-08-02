@@ -6,7 +6,9 @@ members = [
   "crates/sms-msisdn",
   "crates/sms-api",
   "crates/sms-auth",
+  "crates/sms-worker",
   "app/sms-gateway",
+  "app/sms-worker",
 ]
 
 [workspace.package]
@@ -26,6 +28,7 @@ sms-encoding = { path = "./crates/sms-encoding" }
 sms-msisdn = { path = "./crates/sms-msisdn" }
 sms-api = { path = "./crates/sms-api" }
 sms-auth = { path = "./crates/sms-auth" }
+sms-worker = { path = "./crates/sms-worker" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`
 # paths, so the facade has to be in scope under exactly that name. Pinned

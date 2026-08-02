@@ -3004,6 +3004,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "sms-worker"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "sms-worker-bin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dotenvy",
+ "sms-worker",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
