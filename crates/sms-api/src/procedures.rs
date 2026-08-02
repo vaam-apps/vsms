@@ -325,6 +325,15 @@ impl Procedures {
 
     /// §3.2 step: `App.monthlyQuota`, counted over the current UTC calendar
     /// month.
+    ///
+    /// A soft cap, not a hard one: this count-then-`send()`-creates check is
+    /// a TOCTOU race across two separate operations, so N concurrent sends
+    /// for the same app that all pass this check can land the app at
+    /// `monthlyQuota + N - 1`. Flagged in review (#94), accepted as-is —
+    /// closing it needs either the count-and-create in one transaction or a
+    /// database-level check constraint, and nothing in §3.2 asks for a hard
+    /// cap precise to the message. Revisit if a real customer relies on
+    /// the quota as an exact ceiling rather than a monthly budget signal.
     async fn ensure_within_quota(
         db: &schema::Cratestack,
         sys: &CoolContext,

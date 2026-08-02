@@ -100,10 +100,41 @@ impl OrangeCmProvider {
     /// Build an adapter from `config`. Cheap and synchronous — the first
     /// real network call happens on the first [`SmsProvider::submit`] or
     /// [`SmsProvider::health`], not here.
+    ///
+    /// The client is built with explicit timeouts — `reqwest::Client::new()`
+    /// sets none, so a connection that hangs (Orange accepts the TCP
+    /// handshake but never responds) would otherwise stall `submit`
+    /// indefinitely. Once `dispatch` (§7.1, still a stub) holds this
+    /// provider, an indefinite hang there is an indefinite hang of the
+    /// worker's claim loop, not just one message.
+    ///
+    /// # Panics
+    ///
+    /// Never in practice — the only way `ClientBuilder::build` fails is a
+    /// TLS backend that can't initialise, and this crate's `rustls-tls`
+    /// feature has no such failure mode with only timeouts configured.
     #[must_use]
-    pub fn new(config: OrangeCmConfig) -> Self {
+    pub fn new(mut config: OrangeCmConfig) -> Self {
+        // `submit_url`/`submit` each add the `tel:` scheme themselves; a
+        // caller who already included it (the field is public, so
+        // `production()` isn't the only way to set it) would otherwise get
+        // `tel:tel:+2370000` on every request — rejected by Orange with no
+        // hint that the scheme was the problem. Stripped once here rather
+        // than validated and rejected, since a doubled scheme is always a
+        // caller mistake, never a legitimate value.
+        // clippy's own `clone_into` suggestion doesn't compile here: `stripped`
+        // borrows from `config.sender_number`, so writing back into that same
+        // field through it is E0502, not just a style preference.
+        #[allow(clippy::assigning_clones)]
+        if let Some(stripped) = config.sender_number.strip_prefix("tel:") {
+            config.sender_number = stripped.to_owned();
+        }
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .expect("reqwest client builder with only timeouts set never fails"),
             config,
             token: token::TokenCache::new(),
         }
@@ -112,6 +143,16 @@ impl OrangeCmProvider {
     /// A valid bearer token, fetching and caching a fresh one if the cached
     /// one has passed its 80%-of-lifetime refresh margin (§6.2, `token`'s
     /// module doc).
+    ///
+    /// No in-flight gate on a refresh: N concurrent `submit`/`health` calls
+    /// that all observe an expired token each fetch and store their own —
+    /// `TokenCache::store` makes the last write win, and every fetched
+    /// token is independently valid, so this is a burst of redundant
+    /// requests, not a correctness bug. Flagged in review (#94). Bounded by
+    /// the adapter's own 5 TPS ceiling (`capabilities().tps_ceiling`), so
+    /// the worst case is a handful of extra token requests at each ~hourly
+    /// refresh boundary — not worth a `tokio::sync::Mutex`/`OnceCell`
+    /// refresh gate until real traffic says otherwise.
     async fn access_token(&self) -> Result<String, ProviderError> {
         if let Some(token) = self.token.valid() {
             return Ok(token);
@@ -344,6 +385,23 @@ mod tests {
     #[test]
     fn key_is_the_providers_schema_key() {
         assert_eq!(provider(String::new()).key(), KEY);
+    }
+
+    #[test]
+    fn a_sender_number_that_already_has_the_tel_scheme_is_not_doubled() {
+        let with_scheme = OrangeCmProvider::new(OrangeCmConfig {
+            client_id: "client".to_owned(),
+            client_secret: "secret".to_owned(),
+            sender_number: "tel:+2370000".to_owned(),
+            base_url: "https://example.invalid".to_owned(),
+        });
+        let without_scheme = provider("https://example.invalid".to_owned());
+
+        assert_eq!(
+            with_scheme.submit_url().unwrap(),
+            without_scheme.submit_url().unwrap(),
+            "a caller-supplied `tel:` prefix must not produce `tel:tel:...`"
+        );
     }
 
     #[test]

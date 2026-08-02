@@ -66,6 +66,16 @@ where
     /// propagates straight out, leaving the cache exactly as it was, so a
     /// transient database error never poisons a future lookup with a
     /// negative result.
+    ///
+    /// No single-flight coordination on a miss: N concurrent callers racing
+    /// the same stale/absent key each run `fetch` and each write their own
+    /// result (last write wins, all of them correct). Flagged in review
+    /// (#94) as a thundering-herd risk on `operator_cache`, whose key is
+    /// `()` — every concurrent `sendMessage` call sees the same TTL expiry
+    /// at once. Accepted rather than fixed: a burst of duplicate reads
+    /// against a 14-row table on a 5-minute TTL costs nothing worth a
+    /// `tokio::sync::OnceCell`-style in-flight gate for. Revisit if a
+    /// future cached query is expensive enough that N-at-once matters.
     pub(crate) async fn get_or_fetch<F, Fut, E>(&self, key: K, fetch: F) -> Result<V, E>
     where
         F: FnOnce(K) -> Fut,

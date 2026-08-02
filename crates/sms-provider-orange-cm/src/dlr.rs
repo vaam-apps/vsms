@@ -10,6 +10,24 @@
 //! against a real callback payload, and add a fixture from Orange's sandbox
 //! the moment one exists — see `parses_a_delivered_notification` below for
 //! where it would slot in.
+//!
+//! **Known-broken, not just unverified: [`DeliveryUpdate::provider_ref`]
+//! cannot correlate against `Message.providerMessageRef` yet.** `submit()`
+//! (`lib.rs`) stores the `resource_id` UUID from `resourceURL` as
+//! `providerMessageRef`. The `OneAPI` `deliveryInfoNotification` shape's
+//! per-entry `address` field — the only per-entry identifier this shape
+//! carries — is the *destination MSISDN*, not that UUID (confirmed by this
+//! module's own test fixture: `"tel:+237677123456"` is a phone number, not
+//! a resource id). A UUID and a phone number will never match, so every DLR
+//! parsed by this module today would silently fail to find its message.
+//! Caught in review (#94) by two independent bots agreeing on the same root
+//! cause. Harmless right now — nothing calls [`parse`] outside this
+//! module's own tests, since `dispatch` (§7.1) is still a stub — but this
+//! **must** be resolved, most likely by echoing a correlation id through
+//! `OneAPI`'s subscription-level `callbackData` (set when registering the
+//! webhook, not derivable from this callback body alone), before any DLR
+//! receiver route is wired to this adapter. Tracked in
+//! [#95](https://github.com/vymalo/vsms/issues/95).
 
 use sms_provider::{DeliveryOutcome, DeliveryUpdate, ProviderError, RawCallback};
 
@@ -29,7 +47,12 @@ struct DeliveryInfo {
 
 #[derive(Debug, Deserialize)]
 struct DeliveryInfoEntry {
-    /// The resource reference from submission — our DLR correlation key.
+    /// The destination MSISDN, e.g. `"tel:+237677123456"` — **not** a
+    /// correlation key, despite that being the obvious guess for the one
+    /// per-entry identifier this shape carries. See the module doc: using
+    /// this as `provider_ref` is a known, tracked bug (#95), kept here only
+    /// because the field is real and worth carrying even though it can't
+    /// do correlation duty.
     address: String,
     #[serde(rename = "deliveryStatus")]
     delivery_status: String,
@@ -53,6 +76,13 @@ fn outcome_of(status: &str) -> DeliveryOutcome {
 }
 
 /// Parse a raw Orange DLR callback body into canonical delivery updates.
+///
+/// `provider_ref` is set from `address` below purely so the field is
+/// populated with *something* real from the payload — it is not, and
+/// cannot yet be, the correlation key `Message.providerMessageRef` needs.
+/// See the module doc and #95: nothing in this crate calls `parse` outside
+/// its own tests today, so this is a documented gap to close before
+/// wiring, not a silent one.
 pub(crate) fn parse(raw: &RawCallback) -> Result<Vec<DeliveryUpdate>, ProviderError> {
     let parsed: DeliveryInfoNotification =
         serde_json::from_slice(&raw.body).map_err(|error| ProviderError::Rejected {
