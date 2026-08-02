@@ -1,0 +1,25 @@
+[package]
+name = "sms-worker"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[package.metadata]
+description = "The worker as a library: role selection and (from #28/#29 on) leases and claim loops. The binary is app/sms-worker."
+
+[dependencies]
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# test-util/time on top of the workspace's macros/rt-multi-thread/signal —
+# only this crate's tests pause the clock to prove a stub role never
+# resolves without waiting on a real timer.
+tokio = { workspace = true, features = ["test-util", "time"] }
+
+[lints]
+workspace = true
