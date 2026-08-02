@@ -225,13 +225,14 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "authkestra-axum"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9b94e2f2cb8f24e9b7bfd7821b47fe03a62e3bac25b2d91eb50097157ef9252"
+checksum = "402d112993cde92ccef2efad6e6dfb223ec6049bff90fc7ce4a892a239d3de1f"
 dependencies = [
  "authkestra-engine",
  "authkestra-macros",
  "authkestra-op",
+ "authkestra-resource",
  "axum",
  "base64",
  "chrono",
@@ -245,9 +246,9 @@ dependencies = [
 
 [[package]]
 name = "authkestra-engine"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f2519f663d6003aed736297a03e0b37f8627d35d0a810e9c8c9b013fc6bc8cf"
+checksum = "b65e5bb58a5594e00380bb4882ecd72f8ca3ecc9c08607169a86df8e29f3e177"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -270,9 +271,9 @@ dependencies = [
 
 [[package]]
 name = "authkestra-macros"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a817e88028fd2957f2d6b4915fcc8d47e0e839d322502277b0a257405bab7358"
+checksum = "b13da158be40a6ea1997a3c45934d75422569adf83d3326b35b072ae5bbe57ec"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -281,9 +282,9 @@ dependencies = [
 
 [[package]]
 name = "authkestra-op"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "21fbe1f2ea300e48868d2bbabd8bdf5e71dfe48243543bf30381e200e4467b96"
+checksum = "e5b8e4e20265fa9fd3f41aaa064073b85c768d08f15afa0d534292f31e48f118"
 dependencies = [
  "argon2",
  "async-trait",
@@ -304,9 +305,9 @@ dependencies = [
 
 [[package]]
 name = "authkestra-resource"
-version = "0.3.2"
+version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abdbb0dc3a222445d4cda552e4277e6c05787e738dc2c6444133779fdbbc5268"
+checksum = "e68945158b34030674514fdba5d9c8dc67fe265ee1eb89fdda045a6db91add59"
 dependencies = [
  "async-trait",
  "authkestra-engine",
