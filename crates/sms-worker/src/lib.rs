@@ -4,8 +4,9 @@
 //! [`Role`]/[`run`] are #27's shape — a role-selectable binary — over
 //! [`lease`]'s advisory-lock leader election (#28) and [`claim`]'s CAS claim
 //! loop (#29). `Dispatch`'s real body ([`dispatch`], #33) is the first role
-//! to actually call into [`claim::claim_batch`]; every other role is still
-//! [`run`]'s idle stub until #35/#39/#40 land.
+//! to actually call into [`claim::claim_batch`]; `Jobs`/`Scheduler`
+//! ([`jobs`]/[`scheduler`], #35) are the second and third. `Drain`/`Hooks`
+//! are still [`run`]'s idle stub until #39/#40 land.
 //!
 //! This crate depends on `cratestack` (for [`lease`]'s raw-`sqlx` R1
 //! exception) and, since #29, `sms-api` (for the expanded schema
@@ -25,7 +26,9 @@ use tokio_util::sync::CancellationToken;
 
 pub mod claim;
 pub mod dispatch;
+pub mod jobs;
 pub mod lease;
+pub mod scheduler;
 
 /// What a role's real body needs beyond its own lease/claim mechanics.
 /// Cheap to clone — `Cratestack` wraps a pooled connection, `Arc<dyn
@@ -179,9 +182,20 @@ impl FromStr for Role {
 /// roles, but part of every role's signature rather than added role by
 /// role as each one starts claiming something.
 pub async fn run(role: Role, ctx: WorkerContext, worker: &str) {
-    if role == Role::Dispatch {
-        dispatch::run(ctx, worker).await;
-        return;
+    match role {
+        Role::Dispatch => {
+            dispatch::run(ctx, worker).await;
+            return;
+        }
+        Role::Jobs => {
+            jobs::run(ctx, worker).await;
+            return;
+        }
+        Role::Scheduler => {
+            scheduler::run(ctx, worker).await;
+            return;
+        }
+        _ => {}
     }
     tracing::warn!(
         role = %role,
@@ -324,10 +338,10 @@ mod tests {
     }
 
     /// A provider that must never actually be called — the roles this test
-    /// exercises are still stubs (#35/#39/#40 haven't landed), so `run()`
-    /// never reaches the branch that would touch it. `Dispatch` itself has
-    /// its own live tests (`dispatch`'s own test module) now that it's a
-    /// real body, not a stub — this test is about the ones that still are.
+    /// exercises are still stubs (#39/#40 haven't landed), so `run()` never
+    /// reaches the branch that would touch it. `Dispatch`/`Jobs`/`Scheduler`
+    /// each have their own live tests now that they're real bodies, not
+    /// stubs — this test is about the ones that still are.
     struct NeverCalledProvider;
 
     #[async_trait::async_trait]

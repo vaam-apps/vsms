@@ -14,16 +14,17 @@
 //! per model — "the job and webhook claims are the same function with
 //! different types" (§7.3). This module implements it for [`Message`]
 //! (`dispatch`'s claim, based on §7.3's own worked example, with one
-//! correction — see the doc comment on its `candidates` impl); `Job` (#35)
-//! and `WebhookAttempt` (M3 #40) each add their own `impl Claimable` when
-//! their stories land, reusing this loop rather than re-deriving it.
+//! correction — see the doc comment on its `candidates` impl) and for
+//! [`Job`] (`jobs`'s claim, #35). `WebhookAttempt` (M3 #40) adds its own
+//! `impl Claimable` when that story lands, reusing this loop rather than
+//! re-deriving it.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::schema::{
-    message, provider, Cratestack, Message, MessageState, Provider, ProviderState,
-    UpdateMessageInput,
+    job, message, provider, Cratestack, Job, JobState, Message, MessageState, Provider,
+    ProviderState, UpdateJobInput, UpdateMessageInput,
 };
 use tracing::warn;
 
@@ -298,6 +299,121 @@ impl Claimable for Message {
             }
             other => {
                 unreachable!("candidates() only returns accepted/queued/routed, got {other:?}")
+            }
+        }
+    }
+}
+
+/// How long a claimed job holds its lease before it's eligible for
+/// crash-reclaim. Generic across every `kind`, unlike [`DISPATCH_LEASE`]'s
+/// single provider-call duration — a conservative fixed value rather than
+/// per-kind config, since nothing about `jobs`'s own claim discipline
+/// varies by kind and per-kind tuning can be added later without touching
+/// this trait.
+const JOB_LEASE: Duration = Duration::minutes(5);
+
+#[async_trait]
+impl Claimable for Job {
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+
+    async fn candidates(
+        db: &Cratestack,
+        sys: &CoolContext,
+        now: DateTime<Utc>,
+        budget: i64,
+    ) -> Result<Vec<Self>, CoolError> {
+        // Two disjoint groups, matching the two partial indexes §2.10
+        // already commits to (`jobs_claim_idx` on `pending`,
+        // `jobs_lease_reclaim_idx` on `running`) — a single query spanning
+        // both states with one shared `leaseUntil` predicate, the way
+        // Message's own `candidates()` does, would use neither index for
+        // its `pending` half (a `pending` row's `leaseUntil` is always
+        // `NULL`, so an `OR` across states can't be satisfied by either
+        // partial index alone). `take_lease` tells the two groups apart by
+        // `self.state`, same as Message's does for its own three states.
+        let mut pending = db
+            .job()
+            .find_many()
+            .where_expr(
+                FilterExpr::from(job::state().eq(JobState::pending)).and(job::runAt().lte(now)),
+            )
+            .order_by(job::priority().desc())
+            .order_by(job::runAt().asc())
+            .limit(budget)
+            .run(sys)
+            .await?;
+
+        let remaining = budget - i64::try_from(pending.len()).unwrap_or(budget);
+        if remaining > 0 {
+            let reclaimable = db
+                .job()
+                .find_many()
+                .where_expr(
+                    FilterExpr::from(job::state().eq(JobState::running))
+                        .and(job::leaseUntil().lt(now)),
+                )
+                .order_by(job::priority().desc())
+                .order_by(job::runAt().asc())
+                .limit(remaining)
+                .run(sys)
+                .await?;
+            pending.extend(reclaimable);
+        }
+        Ok(pending)
+    }
+
+    /// Unlike Message's `routed` reclaim (a same-state write that resumes
+    /// the same in-flight attempt), a crashed job's lease reclaim targets
+    /// `running -> pending` — §7.5's own diagram edge, not an invented
+    /// same-state trick. A generic job handler has no equivalent of "we
+    /// already told the provider, don't double-submit"; the safe default
+    /// is "nothing is known to have completed, so re-queue it" rather than
+    /// assuming it's safe to resume mid-flight. Concretely this means a
+    /// reclaimed job takes **two** [`claim_batch`] calls to actually run
+    /// again: this one requeues it to `pending`, the *next* one (this tick
+    /// or a later one) claims it for real via the `pending` branch below.
+    /// Callers must filter a batch's results to `state == running` before
+    /// treating a row as "claimed, go run it" — a `pending` result means
+    /// "just requeued, not yet actually claimed."
+    async fn take_lease(
+        &self,
+        db: &Cratestack,
+        sys: &CoolContext,
+        worker: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Self, CoolError> {
+        match self.state {
+            JobState::pending => {
+                db.job()
+                    .update(self.id.clone())
+                    .set(UpdateJobInput {
+                        state: Some(JobState::running),
+                        attempts: Some(self.attempts + 1),
+                        leaseOwner: Some(Some(worker.to_owned())),
+                        leaseUntil: Some(Some(now + JOB_LEASE)),
+                        ..Default::default()
+                    })
+                    .if_match(self.version)
+                    .run(sys)
+                    .await
+            }
+            JobState::running => {
+                db.job()
+                    .update(self.id.clone())
+                    .set(UpdateJobInput {
+                        state: Some(JobState::pending),
+                        leaseOwner: Some(None),
+                        leaseUntil: Some(None),
+                        ..Default::default()
+                    })
+                    .if_match(self.version)
+                    .run(sys)
+                    .await
+            }
+            other => {
+                unreachable!("candidates() only returns pending/running, got {other:?}")
             }
         }
     }

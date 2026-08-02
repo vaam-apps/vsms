@@ -542,8 +542,8 @@ model Job {
 
   @@paged
   @@retain(days: 14)
-  @@allow("list", hasRole('owner') || hasRole('admin') || hasRole('operator'))
-  @@allow("detail", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("list", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("detail", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('system'))
   @@allow("update", hasRole('system'))
 }
