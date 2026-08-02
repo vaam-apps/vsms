@@ -3,23 +3,47 @@
 //!
 //! [`Role`]/[`run`] are #27's shape — a role-selectable binary — over
 //! [`lease`]'s advisory-lock leader election (#28) and [`claim`]'s CAS claim
-//! loop (#29). None of the three decide what a role *does* while holding its
-//! lock and claiming rows — [`run`] is still every role's entire body, still
-//! "nothing yet" until #30–#35 actually call into [`claim::claim_batch`].
+//! loop (#29). `Dispatch`'s real body ([`dispatch`], #33) is the first role
+//! to actually call into [`claim::claim_batch`]; every other role is still
+//! [`run`]'s idle stub until #35/#39/#40 land.
 //!
 //! This crate depends on `cratestack` (for [`lease`]'s raw-`sqlx` R1
 //! exception) and, since #29, `sms-api` (for the expanded schema
 //! [`claim`] claims against) — `include_server_schema!` is still invoked
 //! exactly once, in `sms-api`'s own `lib.rs`; linking its already-compiled
-//! output here doesn't re-run that expansion.
+//! output here doesn't re-run that expansion. Since #33, also `sms-provider`
+//! (for [`WorkerContext`]'s `Arc<dyn SmsProvider>` — this crate holds the
+//! trait, never a concrete adapter, the same way `sms-api` never does).
 
 use std::fmt;
 use std::str::FromStr;
+use std::sync::Arc;
 
+use sms_api::schema::Cratestack;
+use sms_provider::SmsProvider;
 use tokio_util::sync::CancellationToken;
 
 pub mod claim;
+pub mod dispatch;
 pub mod lease;
+
+/// What a role's real body needs beyond its own lease/claim mechanics.
+/// Cheap to clone — `Cratestack` wraps a pooled connection, `Arc<dyn
+/// SmsProvider>` is a pointer — so every role task gets its own owned
+/// copy rather than sharing borrows across `tokio::spawn` boundaries.
+///
+/// One provider, not a registry keyed by `Provider.key`: M2 has exactly
+/// one (`OrangeCmProvider`), and a real multi-provider registry is M5's
+/// routing rules engine (#62), not something to build ahead of the second
+/// provider that would actually need it.
+#[derive(Clone)]
+pub struct WorkerContext {
+    /// The pooled connection every role's queries run against.
+    pub db: Cratestack,
+    /// The one provider `dispatch` submits through — see the struct doc for
+    /// why this is a single instance, not a registry.
+    pub provider: Arc<dyn SmsProvider>,
+}
 
 /// A role `sms-worker` can run. §7.1's table, verbatim.
 ///
@@ -135,22 +159,30 @@ impl FromStr for Role {
 
 /// Run one role until cancelled.
 ///
-/// Every role is currently a stub: it logs once, names the story that will
-/// give it real work, and then idles — not a `sleep` loop burning a wakeup
-/// every tick, but a future that never resolves on its own, exactly the
-/// shape the real claim-loop-driven version will have once #28–#35 land.
-/// The caller (`app/sms-worker`) is what actually stops it, by dropping the
-/// task on shutdown; nothing in here decides when to exit.
+/// `Dispatch` (#33) is the first role with a real body — see [`dispatch`].
+/// Every other role is still a stub: it logs once, names the story that
+/// will give it real work, and then idles — not a `sleep` loop burning a
+/// wakeup every tick, but a future that never resolves on its own, exactly
+/// the shape each real claim-loop-driven version will have once #35/#39/#40
+/// land. The caller (`app/sms-worker`) is what actually stops any of
+/// these, by dropping the task on shutdown; nothing in here decides when
+/// to exit — `dispatch::run` keeps that same contract deliberately, not
+/// just the stubs.
 ///
-/// Mirrors `crates/sms-api/src/procedures.rs`'s `not_yet` in spirit:
-/// "clearly-labelled error naming the milestone that will build it, rather
-/// than a plausible-looking stub that would pass a smoke test and lie" —
-/// the same reasoning applies to a role loop as to a procedure. The
-/// difference is failure mode: a procedure stub returns an error per
-/// request; a role stub has no per-request boundary to fail at, so it logs
-/// once at startup and then genuinely does nothing, which is the honest
-/// worker-shaped equivalent.
-pub async fn run(role: Role) {
+/// Mirrors `crates/sms-api/src/procedures.rs`'s `not_yet` in spirit for the
+/// roles still stubbed: "clearly-labelled error naming the milestone that
+/// will build it, rather than a plausible-looking stub that would pass a
+/// smoke test and lie."
+///
+/// `worker` identifies this process to `claim::claim_batch` (logged on a
+/// denied claim, stored in `leaseOwner`) — not used by the still-stubbed
+/// roles, but part of every role's signature rather than added role by
+/// role as each one starts claiming something.
+pub async fn run(role: Role, ctx: WorkerContext, worker: &str) {
+    if role == Role::Dispatch {
+        dispatch::run(ctx, worker).await;
+        return;
+    }
     tracing::warn!(
         role = %role,
         cardinality = ?role.cardinality(),
@@ -175,7 +207,13 @@ pub async fn run(role: Role) {
 /// kill (`kill -9` skips this function entirely — the lease's `Drop` and
 /// Postgres's own session-lock semantics are what release it then; see
 /// [`lease`]'s module doc for why that's still correct, just slower).
-pub async fn run_singleton(role: Role, database_url: String, shutdown: CancellationToken) {
+pub async fn run_singleton(
+    role: Role,
+    database_url: String,
+    ctx: WorkerContext,
+    worker: String,
+    shutdown: CancellationToken,
+) {
     loop {
         let acquired = tokio::select! {
             () = shutdown.cancelled() => {
@@ -189,7 +227,7 @@ pub async fn run_singleton(role: Role, database_url: String, shutdown: Cancellat
             Ok(Some(held)) => {
                 tracing::info!(role = %role, "singleton lock acquired");
                 tokio::select! {
-                    () = run(role) => unreachable!("run() idles forever and never returns"),
+                    () = run(role, ctx.clone(), &worker) => unreachable!("run() idles forever and never returns"),
                     () = shutdown.cancelled() => {
                         tracing::info!(role = %role, "shutdown requested; releasing lock");
                         if let Err(error) = held.release().await {
@@ -240,7 +278,7 @@ const fn story_for(role: Role) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cardinality, Role, ALL};
+    use super::{Cardinality, Role, WorkerContext, ALL};
     use std::str::FromStr;
 
     #[test]
@@ -285,14 +323,61 @@ mod tests {
         assert_eq!(seen.len(), 6, "a variant was added without updating ALL");
     }
 
+    /// A provider that must never actually be called — the roles this test
+    /// exercises are still stubs (#35/#39/#40 haven't landed), so `run()`
+    /// never reaches the branch that would touch it. `Dispatch` itself has
+    /// its own live tests (`dispatch`'s own test module) now that it's a
+    /// real body, not a stub — this test is about the ones that still are.
+    struct NeverCalledProvider;
+
+    #[async_trait::async_trait]
+    impl sms_provider::SmsProvider for NeverCalledProvider {
+        fn key(&self) -> &str {
+            unimplemented!("stub roles never call the provider")
+        }
+        fn capabilities(&self) -> sms_provider::Capabilities {
+            unimplemented!("stub roles never call the provider")
+        }
+        async fn submit(
+            &self,
+            _req: &sms_provider::SubmitRequest,
+        ) -> Result<sms_provider::SubmitAck, sms_provider::ProviderError> {
+            unimplemented!("stub roles never call the provider")
+        }
+        fn parse_dlr(
+            &self,
+            _raw: &sms_provider::RawCallback,
+        ) -> Result<Vec<sms_provider::DeliveryUpdate>, sms_provider::ProviderError> {
+            unimplemented!("stub roles never call the provider")
+        }
+        async fn health(&self) -> sms_provider::Health {
+            unimplemented!("stub roles never call the provider")
+        }
+    }
+
+    fn unused_worker_context() -> WorkerContext {
+        // A lazy pool only parses the URL — never connects — matching the
+        // same pattern `sms-api`'s own `router.rs` test uses for the same
+        // reason: this context is never actually touched by a stub role.
+        let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1/none")
+            .expect("a lazy pool only parses the URL");
+        WorkerContext {
+            db: sms_api::schema::Cratestack::builder(pool).build(),
+            provider: std::sync::Arc::new(NeverCalledProvider),
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_stub_role_never_resolves_on_its_own() {
         // The real assertion is "run() doesn't return" — proven by racing it
         // against a generous timeout under a paused clock, which advances
         // instantly and would still time out if run() ever completed.
+        // Drain, not Dispatch: Dispatch has a real body now (#33) and is
+        // covered by `dispatch`'s own tests instead.
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(60 * 60 * 24 * 365),
-            super::run(Role::Dispatch),
+            super::run(Role::Drain, unused_worker_context(), "test-worker"),
         )
         .await;
         assert!(outcome.is_err(), "run() resolved; a stub role must idle");

@@ -3112,11 +3112,16 @@ dependencies = [
  "async-trait",
  "chrono",
  "cratestack-pg",
+ "serde_json",
  "sms-api",
+ "sms-encoding",
+ "sms-provider",
+ "sms-provider-orange-cm",
  "thiserror",
  "tokio",
  "tokio-util",
  "tracing",
+ "wiremock",
 ]
 
 [[package]]
@@ -3124,8 +3129,13 @@ name = "sms-worker-bin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
+ "cratestack-pg",
  "dotenvy",
+ "sms-api",
+ "sms-provider",
+ "sms-provider-orange-cm",
  "sms-worker",
  "tokio",
  "tokio-util",

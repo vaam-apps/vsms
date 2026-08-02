@@ -21,7 +21,10 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
-use sms_api::schema::{message, Cratestack, Message, MessageState, UpdateMessageInput};
+use sms_api::schema::{
+    message, provider, Cratestack, Message, MessageState, Provider, ProviderState,
+    UpdateMessageInput,
+};
 use tracing::warn;
 
 /// A model this crate knows how to claim.
@@ -111,11 +114,37 @@ pub async fn claim_batch<C: Claimable>(
     Ok(claimed)
 }
 
-/// `dispatch`'s claim: `accepted`/`queued`/`routed` → `routed`, a 2-minute
-/// lease. The state and duration are §7.3's own worked example, transcribed
-/// rather than newly decided — with one correction to the candidate state
-/// list; see the doc comment on `candidates` below.
+/// `dispatch`'s claim lease once a message actually reaches `routed` — the
+/// state and duration are §7.3's own worked example, transcribed rather
+/// than newly decided. See [`Claimable::take_lease`]'s impl below for why
+/// this isn't the target state for every candidate; §7.3's own worked
+/// example collapses `accepted`/`queued`/`routed` into one `-> routed`
+/// write, but `message_state_transitions` (§2.10) has no `accepted ->
+/// routed` edge — only `accepted -> queued` and `queued -> routed` — so
+/// that write is illegal for an `accepted` row.
 const DISPATCH_LEASE: Duration = Duration::minutes(2);
+
+/// No routing rules engine exists yet (M5, #62) — for M2, "routing" an
+/// `accepted` message is choosing the one active `Provider`, same
+/// cheapest-active-provider placeholder `sendMessage`'s own
+/// `estimate_cost()` already uses (`crates/sms-api/src/procedures.rs`).
+async fn cheapest_active_provider(
+    db: &Cratestack,
+    sys: &CoolContext,
+) -> Result<Option<Provider>, CoolError> {
+    Ok(db
+        .provider()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            provider::state().eq(ProviderState::active),
+        ))
+        .order_by(provider::costPerSegmentXaf().asc())
+        .limit(1)
+        .run(sys)
+        .await?
+        .into_iter()
+        .next())
+}
 
 #[async_trait]
 impl Claimable for Message {
@@ -172,6 +201,28 @@ impl Claimable for Message {
             .await
     }
 
+    /// What "claimed" means depends on which state the candidate arrived
+    /// in — the single `-> routed` write §7.3 illustrates only actually
+    /// applies to two of this candidate list's three states:
+    ///
+    /// - `accepted`: the routing pass (§7.4: "passes routing"). Picks the
+    ///   one active provider and stamps `providerId`, or — no active
+    ///   provider at all is a real, operator-visible outcome, not a
+    ///   silent stall — transitions straight to `rejected`. Either way
+    ///   this is an instant decision, not in-flight work, so it takes no
+    ///   real lease: `leaseUntil` is left at `now`, already expired, so
+    ///   the row is immediately eligible for the *next* claim rather than
+    ///   blocked behind a full [`DISPATCH_LEASE`] it never needed.
+    /// - `queued`: the actual dispatch claim. If `attempts` already
+    ///   reached `maxAttempts` (set by a previous `routed -> queued`
+    ///   backoff, see the dispatch loop), §7.4's `queued -> failed: max
+    ///   attempts` edge applies — no further attempt is made. Otherwise
+    ///   `-> routed`, `attempts` incremented (this is the one place a
+    ///   submission attempt is counted — the routing pass above isn't
+    ///   one), a real [`DISPATCH_LEASE`].
+    /// - `routed`: a reclaim of a lease abandoned by a crashed worker.
+    ///   Same-state write, `attempts` untouched (resuming the same
+    ///   attempt already counted, not starting a new one), lease renewed.
     async fn take_lease(
         &self,
         db: &Cratestack,
@@ -179,17 +230,75 @@ impl Claimable for Message {
         worker: &str,
         now: DateTime<Utc>,
     ) -> Result<Self, CoolError> {
-        db.message()
-            .update(self.id.clone())
-            .set(UpdateMessageInput {
-                state: Some(MessageState::routed),
-                attempts: Some(self.attempts + 1),
-                leaseOwner: Some(Some(worker.to_owned())),
-                leaseUntil: Some(Some(now + DISPATCH_LEASE)),
-                ..Default::default()
-            })
-            .if_match(self.version)
-            .run(sys)
-            .await
+        match self.state {
+            MessageState::accepted => match cheapest_active_provider(db, sys).await? {
+                Some(provider) => {
+                    db.message()
+                        .update(self.id.clone())
+                        .set(UpdateMessageInput {
+                            state: Some(MessageState::queued),
+                            providerId: Some(Some(provider.id)),
+                            leaseOwner: Some(Some(worker.to_owned())),
+                            leaseUntil: Some(Some(now)),
+                            ..Default::default()
+                        })
+                        .if_match(self.version)
+                        .run(sys)
+                        .await
+                }
+                None => {
+                    db.message()
+                        .update(self.id.clone())
+                        .set(UpdateMessageInput {
+                            state: Some(MessageState::rejected),
+                            stateReason: Some(Some("no active provider".to_owned())),
+                            leaseOwner: Some(Some(worker.to_owned())),
+                            leaseUntil: Some(Some(now)),
+                            ..Default::default()
+                        })
+                        .if_match(self.version)
+                        .run(sys)
+                        .await
+                }
+            },
+            MessageState::queued if self.attempts >= self.maxAttempts => {
+                db.message()
+                    .update(self.id.clone())
+                    .set(UpdateMessageInput {
+                        state: Some(MessageState::failed),
+                        stateReason: Some(Some(format!(
+                            "max attempts ({}) reached",
+                            self.maxAttempts
+                        ))),
+                        leaseOwner: Some(Some(worker.to_owned())),
+                        leaseUntil: Some(Some(now)),
+                        ..Default::default()
+                    })
+                    .if_match(self.version)
+                    .run(sys)
+                    .await
+            }
+            MessageState::queued | MessageState::routed => {
+                db.message()
+                    .update(self.id.clone())
+                    .set(UpdateMessageInput {
+                        state: Some(MessageState::routed),
+                        attempts: Some(if self.state == MessageState::queued {
+                            self.attempts + 1
+                        } else {
+                            self.attempts
+                        }),
+                        leaseOwner: Some(Some(worker.to_owned())),
+                        leaseUntil: Some(Some(now + DISPATCH_LEASE)),
+                        ..Default::default()
+                    })
+                    .if_match(self.version)
+                    .run(sys)
+                    .await
+            }
+            other => {
+                unreachable!("candidates() only returns accepted/queued/routed, got {other:?}")
+            }
+        }
     }
 }
