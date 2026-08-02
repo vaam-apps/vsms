@@ -38,6 +38,9 @@ tokio = { workspace = true, features = ["time"] }
 # dlr_ingestion_live_postgres.rs's FixedProvider — a test-only SmsProvider
 # fake, needing the same #[async_trait] the real trait is declared with.
 async-trait.workspace = true
+# examples/send_test_message.rs — the #36 acceptance gate's seed/send tool.
+clap.workspace = true
+anyhow.workspace = true
 
 [lints]
 workspace = true
