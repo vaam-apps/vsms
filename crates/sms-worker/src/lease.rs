@@ -31,7 +31,7 @@
 use std::time::Duration;
 
 use cratestack::sqlx::postgres::PgConnection;
-use cratestack::sqlx::{query, query_scalar, Connection};
+use cratestack::sqlx::{query_scalar, Connection};
 
 use crate::Role;
 
@@ -140,17 +140,34 @@ impl RoleLease {
     /// return matters: an ignored error here means the explicit release may
     /// not have happened, silently falling back to the slower drop-triggered
     /// path.
+    ///
+    /// `pg_advisory_unlock` itself returns a boolean — `true` if this
+    /// session actually held the lock, `false` otherwise — which a plain
+    /// `execute()` would discard, leaving `Ok(())` from this function claim
+    /// more than Postgres actually confirmed. Every `RoleLease` in existence
+    /// came from a `try_acquire` that confirmed the lock was held, so `false`
+    /// should be unreachable in practice; checked anyway, because "unreachable
+    /// in practice" is exactly the assumption a future refactor could break
+    /// silently otherwise.
     #[must_use = "an Err here means the explicit unlock may not have reached Postgres"]
     pub async fn release(mut self) -> Result<(), LeaseError> {
-        query("SELECT pg_advisory_unlock($1, $2)")
+        let released: bool = query_scalar("SELECT pg_advisory_unlock($1, $2)")
             .bind(NS)
             .bind(advisory_lock_key(self.role))
-            .execute(&mut self.conn)
+            .fetch_one(&mut self.conn)
             .await
             .map_err(|source| LeaseError::Query {
                 role: self.role,
                 source,
             })?;
+
+        if !released {
+            tracing::warn!(
+                role = %self.role,
+                "pg_advisory_unlock reported this session did not hold the lock; \
+                 a RoleLease should never reach release() in that state"
+            );
+        }
 
         let _ = self.conn.close().await;
         Ok(())
