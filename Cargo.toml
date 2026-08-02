@@ -39,28 +39,28 @@ sms-provider-orange-cm = { path = "./crates/sms-provider-orange-cm" }
 # exactly — CrateStack is pre-1.0 and shipped 23 releases in 11 weeks; the
 # whole family must move in lockstep or the generated code stops matching the
 # runtime it calls into.
-cratestack = { package = "cratestack-pg", version = "=0.5.0" }
-cratestack-codec-json = "=0.5.0"
+cratestack = { package = "cratestack-pg", version = "=0.6.3" }
+cratestack-codec-json = "=0.6.3"
 
 # OIDC provider. Pinned exactly, same reasoning as cratestack above — see
 # AGENTS.md. 0.3.2 fixed the `GrantType` serde bug that shaped early M1
 # design (#6): don't drop below it.
-authkestra-op = "=0.3.2"
+authkestra-op = "=0.3.3"
 # Underpins authkestra-op (TokenManager, Engine, the generic MemoryStore<T>
 # op.rs uses for the authorization-code/refresh-token/device-code slots
 # this deployment doesn't populate — see op.rs's own doc). Not used
 # directly by application code beyond that; pinned because the whole
 # authkestra family moves in lockstep.
-authkestra-engine = "=0.3.2"
+authkestra-engine = "=0.3.3"
 # JWKS-backed token validation for the real AuthProvider (#21). Same pin
 # discipline as authkestra-op — the whole family moves in lockstep.
-authkestra-resource = "=0.3.2"
+authkestra-resource = "=0.3.3"
 # Wraps authkestra-op's handler functions into axum routes for the OP
 # itself (#20). Only the `op` feature: this deployment never uses the
 # `session`/`resource` extractors this crate also offers, since #21's
 # AuthProvider validates tokens directly through authkestra-resource
 # instead of authkestra-axum's own session/guard machinery.
-authkestra-axum = { version = "=0.3.2", features = ["op"] }
+authkestra-axum = { version = "=0.3.3", features = ["op"] }
 # RSA signing keys for the OP (#20) — same rsa/rand versions authkestra-op
 # itself resolves to (verified against Cargo.lock), so this doesn't grow a
 # second copy of either crate's dependency tree.

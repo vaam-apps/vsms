@@ -18,7 +18,7 @@ A2P SMS gateway for Cameroon (MTN + Orange). OTP and notification delivery, prov
 
 `previewMessage` is the one live procedure; the other six return an error naming the milestone that will build them.
 
-**Milestone 1 in progress.** The auth shape is decided ([#6](https://github.com/vymalo/vsms/issues/6)): `authkestra-op` stays, pinned `=0.3.2`, and machine callers authenticate with **`private_key_jwt`** — no shared client secret exists anywhere in this system. The `GrantType` `#[serde(untagged)]` bug that shaped the original design is **fixed in 0.3.2** (verified by round-tripping every variant; see §4.2). Schema and migrations for it have landed: `OauthClient` lost `secretHash` and gained `tokenEndpointAuthMethod` + `jwks`, plus new `OauthSigningKey` and `ClientAssertion` models. `/token` rate limiting is explicitly out of scope — it is a reverse-proxy concern, and with no Argon2 at the token endpoint the original urgency is gone.
+**Milestone 1 in progress.** The auth shape is decided ([#6](https://github.com/vymalo/vsms/issues/6)): `authkestra-op` stays, pinned `=0.3.3`, and machine callers authenticate with **`private_key_jwt`** — no shared client secret exists anywhere in this system. The `GrantType` `#[serde(untagged)]` bug that shaped the original design is **fixed in 0.3.2** (verified by round-tripping every variant; see §4.2). Schema and migrations for it have landed: `OauthClient` lost `secretHash` and gained `tokenEndpointAuthMethod` + `jwks`, plus new `OauthSigningKey` and `ClientAssertion` models. `/token` rate limiting is explicitly out of scope — it is a reverse-proxy concern, and with no Argon2 at the token endpoint the original urgency is gone.
 
 Three things about that schema are load-bearing and easy to undo by accident:
 
@@ -32,7 +32,13 @@ Three things about that schema are load-bearing and easy to undo by accident:
 
 M1 is still open: #23 (`provisionAppClient` service-account provisioning), #24 (RBAC layers 1 and 2), #25 (gate: a persisted `client_credentials` client gets a token).
 
-`#87` tracks a real gap found while verifying `#19` live: `cratestack-sqlx =0.5.0` discards SQLSTATE/constraint on every generated write, so `map_database_error`'s `SM001`→409 mapping and `is_illegal_transition` don't fire against a real database despite `#78`'s claim — filed upstream as [cratestack/cratestack#267](https://github.com/cratestack/cratestack/issues/267). Matters for M2 too: the claim loop in §7.3 doesn't depend on it (`PreconditionFailed`/`Forbidden` come from row-count checks, not the SQLSTATE path), but anything that wants to distinguish "illegal transition" from "generic fault" does.
+**`aws-lc-rs` is in this tree from four independent paths, and authkestra is only one of them.** [marcjazz/authkestra#179](https://github.com/marcjazz/authkestra/pull/179) (in 0.3.3) made authkestra's TLS backend a feature so consumers can opt out of `aws-lc-rs` — but that alone does **not** remove it here. `cargo tree -i aws-lc-rs -e features` shows it also arriving via `cratestack-client-rust` → `reqwest 0.12`, `sqlx-core`, and `rustls-platform-verifier`. Cargo features are additive and unified: as #179's own description puts it, if anything in the graph still enables `rustls-aws-lc-rs`, it comes back. So a static musl/`scratch` build, or a `cargo-deny` policy banning `aws-lc-rs`, needs the *cratestack* side to offer the same opt-out first — bumping authkestra is necessary but nowhere near sufficient. Don't claim the bump removes it.
+
+Note also two `reqwest` majors coexist (0.12 via cratestack, 0.13 via authkestra). Pre-existing, harmless today, but it means TLS-feature reasoning has to be done per-major.
+
+**`#87` is fixed — and it is the reference example for why this repo distrusts a green `cargo test`.** Found while verifying `#19` against a live database: `cratestack-sqlx` `=0.5.0`–`=0.5.2` discarded SQLSTATE/constraint on *every* generated write, so `map_database_error`'s `SM001`→409 mapping and `is_illegal_transition` silently did nothing against a real database, despite `#78` shipping specifically to guarantee them. Filed as [cratestack/cratestack#267](https://github.com/cratestack/cratestack/issues/267), fixed in `cratestack-sqlx` 0.6.0 (all twelve write paths now route through `cool_error_from_sqlx`); the pin is `=0.6.3`.
+
+The reason it went unnoticed through `#78` is worth internalising: every test of that mapping constructed `CoolError::DatabaseTyped` **by hand**, which is correct unit coverage of the mapping function and structurally incapable of seeing the conversion feeding it. `cargo build`/`cratestack check` can't see it either — the signature is `Result<T, CoolError>` either way. `crates/sms-api/tests/errors_live_postgres.rs` now covers it end to end through a real delegate call, and was confirmed to fail against `=0.5.2` and pass against `=0.6.3` before being trusted. **Never pin the cratestack family below 0.6.0.**
 
 **Milestone 2 in progress.** `crates/sms-worker` (library) + `app/sms-worker` (binary, package `sms-worker-bin` — see its module doc for why the package name differs from the produced executable) exist: `--roles` parsing and validation, the six roles from §7.1 with their `Cardinality`, and a `run(role)` per-role stub that logs once and then genuinely idles (`std::future::pending`) rather than busy-looping, matching `sms-api`'s "clearly-labelled, not a lying stub" convention for the six unimplemented procedures (`#27`).
 
@@ -102,7 +108,7 @@ Retained because they are cheap and still correct, not because they are load-bea
 | | |
 |---|---|
 | [CrateStack](https://cratestack.dev/) `=0.5.0` | Schema-first. `.cstack` generates models, policies, audit, events, REST. Pre-1.0 and moving fast — pin exactly. Never below 0.5.0; see the build-cost section. |
-| [Authkestra](https://github.com/marcjazz/authkestra) `=0.3.2` | OIDC provider. Fixed the `GrantType` serde bug that shaped early M1 design (#6). Pin exactly — still moving fast. |
+| [Authkestra](https://github.com/marcjazz/authkestra) `=0.3.3` | OIDC provider. 0.3.2 fixed the `GrantType` serde bug that shaped early M1 design (#6). Pin exactly — still moving fast, and `authkestra-macros` is transitive, so `cargo update -p authkestra-macros` is needed to keep the family in true lockstep. |
 | PostgreSQL 16 | The only coordination mechanism. Queues (`SKIP LOCKED`), leader election (advisory locks), state machines (triggers). No broker, no Redis. |
 | Rust 2021, TypeScript / Next.js 15 | |
 
