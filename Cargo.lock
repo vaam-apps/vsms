@@ -3007,7 +3007,10 @@ dependencies = [
 name = "sms-worker"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
  "cratestack-pg",
+ "sms-api",
  "thiserror",
  "tokio",
  "tokio-util",

@@ -2,22 +2,23 @@
 //! [`Role`]s selected at startup — see §7.1 of the design doc.
 //!
 //! [`Role`]/[`run`] are #27's shape — a role-selectable binary — over
-//! [`lease`]'s advisory-lock leader election (#28). `claim.rs` (the CAS claim
-//! loop shared by every claiming role, #29) still lands as its own story:
-//! [`run`] is still every role's *entire* body, singleton or not — holding a
-//! [`lease::RoleLease`] only gates *whether* a singleton role's body runs,
-//! not what that body does, which stays "nothing yet" until #30–#35.
+//! [`lease`]'s advisory-lock leader election (#28) and [`claim`]'s CAS claim
+//! loop (#29). None of the three decide what a role *does* while holding its
+//! lock and claiming rows — [`run`] is still every role's entire body, still
+//! "nothing yet" until #30–#35 actually call into [`claim::claim_batch`].
 //!
 //! This crate depends on `cratestack` (for [`lease`]'s raw-`sqlx` R1
-//! exception) but still not `sms-api` — `include_server_schema!` is invoked
-//! exactly once, in `sms-api`'s own `lib.rs`, and linking `cratestack-pg`'s
-//! runtime types elsewhere doesn't re-run that expansion.
+//! exception) and, since #29, `sms-api` (for the expanded schema
+//! [`claim`] claims against) — `include_server_schema!` is still invoked
+//! exactly once, in `sms-api`'s own `lib.rs`; linking its already-compiled
+//! output here doesn't re-run that expansion.
 
 use std::fmt;
 use std::str::FromStr;
 
 use tokio_util::sync::CancellationToken;
 
+pub mod claim;
 pub mod lease;
 
 /// A role `sms-worker` can run. §7.1's table, verbatim.
