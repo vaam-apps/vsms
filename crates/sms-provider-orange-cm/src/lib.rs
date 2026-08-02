@@ -15,8 +15,11 @@
 //! by rereading the doc precisely, not against a live Orange sandbox (this
 //! repo has no Orange Developer credentials): the OAuth token endpoint and
 //! TTL handling ([`token`]), and the submit request/response shape below.
-//! The DLR callback shape ([`dlr`]) goes one step further than the doc and
-//! is honestly marked as such — see that module's doc.
+//! The submit body's `receiptRequest` (`notifyURL`/`callbackData`, #95) is
+//! one step further still — §6.2 doesn't mention it at all; it's grounded
+//! in the public `OneAPI` SMS Messaging REST binding this whole shape
+//! belongs to, not this repo's own design doc. The DLR callback shape
+//! ([`dlr`]) is the same distance from §6.2 — see that module's doc.
 
 mod dlr;
 mod token;
@@ -73,6 +76,15 @@ pub struct OrangeCmConfig {
     /// `https://api.orange.com` in production; overridable so tests can
     /// point this at a local mock server instead of the real API.
     pub base_url: String,
+    /// `receiptRequest.notifyURL` on every submit (§95's fix — see
+    /// `dlr.rs`'s module doc). `None` by default: the module doc's own
+    /// long-standing note is that Orange's real DLR webhook is "whitelisted
+    /// per a manual support ticket," which reads as a pre-registered,
+    /// account-level target rather than a per-request one — so
+    /// `callbackData` (always sent) may be all that's actually needed.
+    /// This is here as an explicit knob in case a real Orange sandbox says
+    /// otherwise, not because its necessity is confirmed.
+    pub dlr_notify_url: Option<String>,
 }
 
 impl OrangeCmConfig {
@@ -85,6 +97,7 @@ impl OrangeCmConfig {
             client_secret,
             sender_number,
             base_url: "https://api.orange.com".to_owned(),
+            dlr_notify_url: None,
         }
     }
 }
@@ -204,6 +217,22 @@ struct OutboundSmsTextMessage<'a> {
     message: &'a str,
 }
 
+/// #95's fix: `callback_data` is always `SubmitRequest::reference`
+/// (`Message.id`) so the delivery notification can echo it back as the
+/// correlation key `dlr.rs::parse` reads — see that module's doc for the
+/// full reasoning and the public `OneAPI` reference this is grounded in.
+/// `notify_url` is omitted from the request entirely when unset
+/// (`OrangeCmConfig::dlr_notify_url` is `None` by default) rather than sent
+/// as `null` — `skip_serializing_if` here, not an `Option` Orange has to
+/// specially handle.
+#[derive(Debug, Serialize)]
+struct ReceiptRequest<'a> {
+    #[serde(rename = "notifyURL", skip_serializing_if = "Option::is_none")]
+    notify_url: Option<&'a str>,
+    #[serde(rename = "callbackData")]
+    callback_data: &'a str,
+}
+
 #[derive(Debug, Serialize)]
 struct OutboundSmsMessageBody<'a> {
     address: Vec<String>,
@@ -213,6 +242,8 @@ struct OutboundSmsMessageBody<'a> {
     sender_name: &'a str,
     #[serde(rename = "outboundSMSTextMessage")]
     outbound_sms_text_message: OutboundSmsTextMessage<'a>,
+    #[serde(rename = "receiptRequest")]
+    receipt_request: ReceiptRequest<'a>,
 }
 
 #[derive(Debug, Serialize)]
@@ -269,6 +300,10 @@ impl SmsProvider for OrangeCmProvider {
                 sender_address: format!("tel:{}", self.config.sender_number),
                 sender_name: &req.sender_id,
                 outbound_sms_text_message: OutboundSmsTextMessage { message: &req.body },
+                receipt_request: ReceiptRequest {
+                    notify_url: self.config.dlr_notify_url.as_deref(),
+                    callback_data: &req.reference,
+                },
             },
         };
 
@@ -309,7 +344,25 @@ impl SmsProvider for OrangeCmProvider {
 
         Ok(SubmitAck {
             provider_ref,
-            provider_ref_alt: None,
+            // #95's fix, completed: `sms_api::dlr::ingest_one` matches a
+            // DLR's `provider_ref` against `Message.providerMessageRef` OR
+            // `providerMessageRefAlt` — generic, provider-agnostic
+            // correlation built on the assumption that whatever a
+            // `DeliveryUpdate::provider_ref` holds was already stored in
+            // one of those two columns at submit time. `provider_ref`
+            // above (the resource_id) satisfies that for
+            // `providerMessageRef`, but the DLR's own `provider_ref` is
+            // now `callbackData` (`req.reference`, i.e. `Message.id` —
+            // see the `receiptRequest` above), a *different* value. Found
+            // live dry-running #36: without this, a synthetic DLR with the
+            // exact `callbackData` the request itself carried still logged
+            // "no known message" and matched nothing.
+            // `SubmitAck::provider_ref_alt` exists precisely for this
+            // shape — "a provider reports the same submission two
+            // different ways, once at submit time, once at DLR time" — so
+            // this is that second form, not a new field or a change to
+            // `sms-api`'s generic matching logic.
+            provider_ref_alt: Some(req.reference.clone()),
         })
     }
 
@@ -368,6 +421,7 @@ mod tests {
             client_secret: "secret".to_owned(),
             sender_number: "+2370000".to_owned(),
             base_url,
+            dlr_notify_url: None,
         })
     }
 
@@ -394,6 +448,7 @@ mod tests {
             client_secret: "secret".to_owned(),
             sender_number: "tel:+2370000".to_owned(),
             base_url: "https://example.invalid".to_owned(),
+            dlr_notify_url: None,
         });
         let without_scheme = provider("https://example.invalid".to_owned());
 
@@ -445,7 +500,96 @@ mod tests {
             .unwrap();
 
         assert_eq!(ack.provider_ref, "res-42");
-        assert_eq!(ack.provider_ref_alt, None);
+        assert_eq!(
+            ack.provider_ref_alt,
+            Some("msg-1".to_owned()),
+            "the caller's own reference (== callbackData) must be the alt reference, so \
+             sms-api's generic providerMessageRefAlt matching finds the DLR — see submit()'s \
+             own doc"
+        );
+    }
+
+    /// #95's actual fix, proven at the wire level: the request Orange
+    /// receives carries `receiptRequest.callbackData` set to the caller's
+    /// own `reference` — this is what `dlr.rs::parse` reads back as
+    /// `provider_ref` once Orange echoes it in a delivery notification.
+    #[tokio::test]
+    async fn submit_sets_receipt_request_callback_data_to_the_reference() {
+        let server = MockServer::start().await;
+        mock_token_endpoint(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
+            .and(wiremock::matchers::body_partial_json(serde_json::json!({
+                "outboundSMSMessageRequest": {
+                    "receiptRequest": {"callbackData": "msg-77"}
+                }
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "outboundSMSMessageRequest": {
+                    "resourceReference": {"resourceURL": "https://x/res-77"}
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let ack = provider(server.uri())
+            .submit(&SubmitRequest {
+                to: "+237677123456".to_owned(),
+                sender_id: "VYMALO".to_owned(),
+                body: "hi".to_owned(),
+                encoding: SmsEncoding::Gsm7,
+                reference: "msg-77".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(ack.provider_ref, "res-77");
+    }
+
+    /// `notifyURL` is caller-configured and off by default
+    /// (`OrangeCmConfig::dlr_notify_url: None`) — when unset, it must not
+    /// appear in the request at all (`skip_serializing_if`, not a JSON
+    /// `null` Orange would have to specially tolerate). Inspects the
+    /// actual recorded request body rather than a matcher, since a
+    /// negative-presence matcher would only prove some other mock didn't
+    /// match, not that the real one lacks the field.
+    #[tokio::test]
+    async fn submit_omits_notify_url_when_unconfigured() {
+        let server = MockServer::start().await;
+        mock_token_endpoint(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "outboundSMSMessageRequest": {
+                    "resourceReference": {"resourceURL": "https://x/res-78"}
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        provider(server.uri())
+            .submit(&SubmitRequest {
+                to: "+237677123456".to_owned(),
+                sender_id: "VYMALO".to_owned(),
+                body: "hi".to_owned(),
+                encoding: SmsEncoding::Gsm7,
+                reference: "msg-78".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        let requests = server.received_requests().await.expect("recording enabled");
+        let submit_request = requests
+            .iter()
+            .find(|r| r.url.path().contains("/requests"))
+            .expect("the submit request was recorded");
+        let body: serde_json::Value = submit_request.body_json().unwrap();
+        let receipt_request = &body["outboundSMSMessageRequest"]["receiptRequest"];
+        assert_eq!(receipt_request["callbackData"], "msg-78");
+        assert!(
+            receipt_request.get("notifyURL").is_none(),
+            "notifyURL must be absent, not null, when unconfigured: {receipt_request}"
+        );
     }
 
     #[tokio::test]
