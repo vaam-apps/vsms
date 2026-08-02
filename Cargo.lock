@@ -3066,6 +3066,7 @@ dependencies = [
 name = "sms-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "authkestra-engine",
  "authkestra-resource",
  "chrono",
@@ -3076,6 +3077,7 @@ dependencies = [
  "sha2",
  "sms-encoding",
  "sms-msisdn",
+ "sms-provider",
  "thiserror",
  "tokio",
  "tracing",
@@ -3135,6 +3137,8 @@ dependencies = [
  "dotenvy",
  "sms-api",
  "sms-auth",
+ "sms-provider",
+ "sms-provider-orange-cm",
  "tokio",
  "tracing",
  "tracing-subscriber",

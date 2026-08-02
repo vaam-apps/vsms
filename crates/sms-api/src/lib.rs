@@ -36,6 +36,7 @@ pub use crate::cratestack_schema as schema;
 
 pub mod auth;
 mod cache;
+pub mod dlr;
 pub mod errors;
 pub mod procedures;
 pub mod router;

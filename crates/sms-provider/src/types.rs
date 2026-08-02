@@ -105,6 +105,23 @@ pub struct DeliveryUpdate {
     /// A provider-specific error code, when the outcome is a failure kind
     /// and the provider gave one.
     pub error_code: Option<String>,
+    /// The network that actually delivered (or attempted) the message,
+    /// when the provider's own DLR reports one — `"mtn"`/`"orange"`/
+    /// `"camtel"`/`"nexttel"`, the same lowercase-verbatim vocabulary
+    /// `OperatorPrefixRule.operator` and every operator-coded schema enum
+    /// already use, not a typed enum: this crate stays framework-free (no
+    /// dependency on the schema), and a raw string matching the wire
+    /// vocabulary is the same choice `sms-msisdn`'s own
+    /// `OperatorPrefixTable` already made for the identical reason.
+    ///
+    /// `None` when the provider's DLR shape doesn't carry this — most
+    /// providers don't. §7's own reasoning for wanting it at all: prefix
+    /// routing is a hint, never load-bearing, and "record the delivering
+    /// network where the DLR reports it" is what lets observed data
+    /// correct `OperatorPrefixRule` over time. A `None` here must fall
+    /// back to whatever the message's own prefix-based classification
+    /// already recorded, not to a guess this crate makes up.
+    pub delivering_network: Option<String>,
 }
 
 /// The result of [`crate::SmsProvider::health`].

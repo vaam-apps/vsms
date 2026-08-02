@@ -14,6 +14,11 @@ cratestack.workspace = true
 cratestack-codec-json.workspace = true
 sms-encoding.workspace = true
 sms-msisdn.workspace = true
+# dlr.rs's real dependency: the SmsProvider trait's DeliveryUpdate/
+# DeliveryOutcome/RawCallback/ProviderError types — never a concrete
+# adapter, the same reason sms-worker depends on this and not on
+# sms-provider-orange-cm directly.
+sms-provider.workspace = true
 # auth.rs's GatewayAuth (#21): JWKS-backed validation. authkestra-engine
 # for Claims/extract_bearer_token, authkestra-resource for JwksCache,
 # jsonwebtoken for Validation — see auth.rs's own doc for why JwtStrategy
@@ -30,6 +35,9 @@ tracing.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["time"] }
+# dlr_ingestion_live_postgres.rs's FixedProvider — a test-only SmsProvider
+# fake, needing the same #[async_trait] the real trait is declared with.
+async-trait.workspace = true
 
 [lints]
 workspace = true

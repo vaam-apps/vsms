@@ -57,7 +57,7 @@ fn distinct_offending(report: &sms_encoding::EncodingReport) -> Vec<String> {
 /// schema uses. A plain `match`, not a `Display` derive, so the mapping is
 /// exactly as wide as the enum and a new variant is a compile error here
 /// rather than a silent gap.
-const fn operator_code_str(code: schema::OperatorCode) -> &'static str {
+pub(crate) const fn operator_code_str(code: schema::OperatorCode) -> &'static str {
     match code {
         schema::OperatorCode::mtn => "mtn",
         schema::OperatorCode::orange => "orange",
@@ -71,7 +71,7 @@ const fn operator_code_str(code: schema::OperatorCode) -> &'static str {
 /// `OperatorPrefixRule` row with a value this crate doesn't recognise
 /// should not silently become `unknown`'s *meaning* ("no rule matched");
 /// it is a data problem worth surfacing, not swallowing.
-fn parse_operator_code(s: &str) -> Option<schema::OperatorCode> {
+pub(crate) fn parse_operator_code(s: &str) -> Option<schema::OperatorCode> {
     Some(match s {
         "mtn" => schema::OperatorCode::mtn,
         "orange" => schema::OperatorCode::orange,

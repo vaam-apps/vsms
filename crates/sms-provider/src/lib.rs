@@ -128,6 +128,7 @@ mod tests {
                 occurred_at: None,
                 raw_status: "OK".to_owned(),
                 error_code: None,
+                delivering_network: None,
             }])
         }
 
