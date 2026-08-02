@@ -111,9 +111,20 @@ async fn main() -> Result<()> {
                     "loading OP signing keys — run `sms-gateway rotate-signing-key` if this is \
                      a fresh database",
                 )?;
-            let op_store = sms_auth::op::machine_only_store(std::sync::Arc::new(db.clone()), sys);
+            let op_store =
+                sms_auth::op::machine_only_store(std::sync::Arc::new(db.clone()), sys.clone());
             let op_config = sms_auth::op::machine_only_config(issuer.clone());
             let op_state = op::OpState::new(op_store, signing, op_config, jwks);
+            // Keeps a rotate-signing-key run against this already-running
+            // process from silently never taking effect — see op.rs's own
+            // module doc.
+            op::spawn_key_refresh(
+                op_state.clone(),
+                db.clone(),
+                sys,
+                issuer.clone(),
+                op::DEFAULT_KEY_REFRESH_INTERVAL,
+            );
 
             let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer);
             let app = sms_api::router(db, auth).merge(op::router(op_state));

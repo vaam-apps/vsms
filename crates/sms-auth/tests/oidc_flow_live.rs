@@ -21,7 +21,8 @@
 //!     cargo test -p sms-auth --test oidc_flow_live -- --ignored
 //! ```
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+use std::time::Duration as StdDuration;
 
 use authkestra_axum::helpers::AxumError;
 use authkestra_axum::op::{axum_discovery_handler, axum_token_handler};
@@ -89,14 +90,37 @@ async fn db() -> Cratestack {
 }
 
 // --- The OP's routes, duplicated from app/sms-gateway/src/op.rs — see this
-// file's own module doc for why. ---
+// file's own module doc for why. Including the live key refresh: this
+// test's own rotation-overlap assertion exists specifically to prove that
+// refresh actually reaches the served `/jwks.json`, not just the database
+// `load_signing_keys` reads from (found live in review, #97 — the first
+// version of this test asserted against the DB layer, which doesn't
+// exercise the refresh loop at all). ---
+
+/// Short relative to `app/sms-gateway`'s own `DEFAULT_KEY_REFRESH_INTERVAL`
+/// (60s) so this test observes a refresh without a real production-length
+/// wait.
+const TEST_KEY_REFRESH_INTERVAL: StdDuration = StdDuration::from_millis(100);
 
 #[derive(Clone)]
 struct OpState {
     store: Arc<sms_auth::op::MachineOnlyOpStore>,
-    tokens: Arc<TokenManager>,
+    tokens: Arc<RwLock<Arc<TokenManager>>>,
     config: OpConfig,
-    jwks: Vec<Jwk>,
+    jwks: Arc<RwLock<Arc<Vec<Jwk>>>>,
+}
+
+impl OpState {
+    fn refresh(&self, tokens: Arc<TokenManager>, jwks: Vec<Jwk>) {
+        *self
+            .tokens
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = tokens;
+        *self
+            .jwks
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Arc::new(jwks);
+    }
 }
 
 impl FromRef<OpState> for Result<Arc<dyn OpStore>, AxumError> {
@@ -107,7 +131,11 @@ impl FromRef<OpState> for Result<Arc<dyn OpStore>, AxumError> {
 
 impl FromRef<OpState> for Result<Arc<TokenManager>, AxumError> {
     fn from_ref(state: &OpState) -> Self {
-        Ok(state.tokens.clone())
+        Ok(state
+            .tokens
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone())
     }
 }
 
@@ -118,7 +146,12 @@ impl FromRef<OpState> for OpConfig {
 }
 
 async fn jwks_handler(State(state): State<OpState>) -> Json<JwksResponse> {
-    Json(JwksResponse::new(state.jwks.clone()))
+    let jwks = state
+        .jwks
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    Json(JwksResponse::new((*jwks).clone()))
 }
 
 fn op_router(state: OpState) -> Router {
@@ -130,6 +163,18 @@ fn op_router(state: OpState) -> Router {
         )
         .route("/token", post(axum_token_handler::<OpState>))
         .with_state(state)
+}
+
+fn spawn_key_refresh(state: OpState, db: Cratestack, sys: CoolContext, issuer: String) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(TEST_KEY_REFRESH_INTERVAL);
+        loop {
+            ticker.tick().await;
+            if let Ok((tokens, jwks)) = sms_auth::op::load_signing_keys(&db, &sys, &issuer).await {
+                state.refresh(tokens, jwks);
+            }
+        }
+    });
 }
 
 /// Build the RSA keypair + JWK JSON a `private_key_jwt` client registers —
@@ -259,10 +304,12 @@ async fn spawn_test_server(db: &Cratestack) -> (String, usize) {
     let op_config = sms_auth::op::machine_only_config(issuer.clone());
     let op_state = OpState {
         store: Arc::new(op_store),
-        tokens: signing,
+        tokens: Arc::new(RwLock::new(signing)),
         config: op_config,
-        jwks,
+        jwks: Arc::new(RwLock::new(Arc::new(jwks))),
     };
+    spawn_key_refresh(op_state.clone(), db.clone(), sys(), issuer.clone());
+
     let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer.clone());
     let app = sms_api::router(db.clone(), auth).merge(op_router(op_state));
 
@@ -360,22 +407,39 @@ async fn a_real_private_key_jwt_flow_mints_a_token_gatewayauth_accepts() {
         "a machine token must never see any OauthSigningKey row: got {signing_keys_body:?}"
     );
 
-    // Rotation overlap: a second rotation must not drop the still-valid
-    // first key from JWKS. Measured as "count grows by exactly one" rather
-    // than an absolute "== 2" — this database is never reset between
-    // runs, so earlier runs' still-within-their-overlap-window keys are
-    // legitimately still present and would make an absolute count flaky,
-    // not the growth this assertion actually cares about.
+    // Rotation overlap, asserted against the actual served /jwks.json —
+    // not just the database `load_signing_keys` itself reads from. An
+    // earlier version of this test asserted the DB-layer result directly,
+    // which doesn't exercise the running server's own refresh loop at
+    // all — found live in review (#97) alongside the underlying bug: the
+    // first version of app/sms-gateway's op.rs captured JWKS once at
+    // startup and never refreshed it, so a rotation against a live server
+    // silently never took effect until a restart. `spawn_key_refresh`
+    // (both here and in app/sms-gateway/src/op.rs) is what this now
+    // proves actually works, end to end over real HTTP.
+    //
+    // Measured as "count grows by exactly one" rather than an absolute
+    // "== 2" — this database is never reset between runs, so earlier
+    // runs' still-within-their-overlap-window keys are legitimately still
+    // present and would make an absolute count flaky, not the growth this
+    // assertion actually cares about.
     sms_auth::op::rotate_signing_key(&db, &sys(), sms_auth::op::ROTATION_OVERLAP)
         .await
         .expect("rotating in a second signing key");
-    let (_, jwks_after_second_rotation) = sms_auth::op::load_signing_keys(&db, &sys(), &issuer)
+    tokio::time::sleep(TEST_KEY_REFRESH_INTERVAL * 3).await;
+    let jwks_after_second_rotation: JwksResponse = client
+        .get(format!("{issuer}/jwks.json"))
+        .send()
         .await
-        .expect("loading signing keys after a second rotation");
+        .expect("fetching /jwks.json after a second rotation")
+        .json()
+        .await
+        .expect("parsing /jwks.json as JSON");
     assert_eq!(
-        jwks_after_second_rotation.len(),
+        jwks_after_second_rotation.keys.len(),
         baseline_jwks_count + 1,
         "the first key must still publish during its rotation-overlap window, not just the \
-         newly active one"
+         newly active one — and the running server must actually have refreshed to see it, \
+         not just the database"
     );
 }

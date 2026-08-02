@@ -32,15 +32,21 @@
 //! - **`state_encryption_key`/`SessionConfig` is not part of the OP at
 //!   all** — it belongs to `authkestra_engine`'s *relying-party* flow
 //!   (this system consuming an external `IdP`), which nothing here does.
-//!   `Engine::builder()` still requires a `SessionStore` to satisfy its own
-//!   typestate, so one is wired (`MemoryStore<Session>`) even though
-//!   nothing on the client-credentials path ever touches it.
+//! - **No `Engine` is ever constructed.** The obvious-looking path —
+//!   `Engine::builder().session_store(...).token_manager(...).build()`,
+//!   then handing that to `Op::builder()` — turned out to be unnecessary:
+//!   `app/sms-gateway`'s own `op.rs` hand-wires `axum_token_handler`/
+//!   `axum_discovery_handler` directly, and those only need `Arc<dyn
+//!   OpStore>` + `Arc<TokenManager>` + `OpConfig` via `FromRef`, never a
+//!   full `Op`/`Engine`. An earlier version of this module built the
+//!   `Engine` anyway, unused — removed in review (#97) rather than kept
+//!   "for a future caller."
 
 use std::sync::Arc;
 
 use authkestra_engine::store::memory::MemoryStore;
 use authkestra_engine::token::jwk::Jwk;
-use authkestra_engine::{Engine, TokenManager};
+use authkestra_engine::TokenManager;
 use authkestra_op::config::OpConfig;
 use authkestra_op::store::CompositeOpStore;
 use chrono::{Duration, Utc};
@@ -229,23 +235,4 @@ pub fn machine_only_config(issuer: String) -> OpConfig {
         device_code_ttl_secs: 60,
         token_exchange_enabled: false,
     }
-}
-
-/// The `Engine` every OP handler needs, satisfying its typestate with a
-/// `SessionStore` this deployment never actually reads from (see the
-/// module doc) and the signing `TokenManager` from
-/// [`load_signing_keys`].
-#[must_use]
-pub fn machine_only_engine(
-    signing: Arc<TokenManager>,
-) -> Engine<
-    authkestra_engine::Configured<Arc<dyn authkestra_engine::auth::session::SessionStore>>,
-    authkestra_engine::Configured<Arc<TokenManager>>,
-> {
-    let session_store: Arc<dyn authkestra_engine::auth::session::SessionStore> =
-        Arc::new(MemoryStore::new());
-    Engine::builder()
-        .session_store(session_store)
-        .token_manager(signing)
-        .build()
 }

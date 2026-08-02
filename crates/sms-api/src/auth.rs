@@ -129,6 +129,17 @@ impl GatewayAuth {
         // claim with `InvalidAudience` when `self.aud` is empty, rather
         // than treating "nothing configured" as "nothing to check" — the
         // explicit `false` below is the actual off switch.
+        //
+        // This disables audience checking for every token this
+        // `Validation` ever sees, not just service-account ones — a
+        // correctness gap only if a human-login flow starts issuing
+        // tokens with a real `aud` (that flow doesn't exist yet, see this
+        // type's own doc). It's not a live hole today: `authenticate`
+        // rejects any token carrying `identity` before audience would
+        // ever matter, on a completely separate check. Revisit this line
+        // — restore a real per-audience check, most likely via a second
+        // `Validation` for the human-login path — before wiring
+        // `identity`-bearing tokens up to anything.
         validation.validate_aud = false;
         Self {
             jwks,
