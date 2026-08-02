@@ -10,12 +10,20 @@
 //! keeps the served surface matching what's actually implemented instead
 //! of exposing routes that would always fail.
 //!
-//! The one place this deviates from the crate's own handlers:
-//! `authkestra_axum::op::axum_jwks_handler` publishes exactly one key
-//! (whatever single `Arc<TokenManager>` the state carries) — it cannot
-//! serve an overlap-window JWKS with both the active and a still-valid
-//! previous key. [`jwks_handler`] below builds the response from the full
-//! key list `sms_auth::op::load_signing_keys` already computed instead.
+//! Two places this deviates from the crate's own handlers, both because the
+//! ready-made handler has no hook for what this deployment needs to do
+//! differently:
+//!
+//! - `authkestra_axum::op::axum_jwks_handler` publishes exactly one key
+//!   (whatever single `Arc<TokenManager>` the state carries) — it cannot
+//!   serve an overlap-window JWKS with both the active and a still-valid
+//!   previous key. [`jwks_handler`] below builds the response from the full
+//!   key list `sms_auth::op::load_signing_keys` already computed instead.
+//! - `authkestra_axum::op::axum_discovery_handler` builds the discovery
+//!   document straight from `OidcDiscovery::from_config`, with no way to
+//!   chain `.with_private_key_jwt()` onto the result — so a spec-compliant
+//!   client consulting discovery would never learn this OP accepts
+//!   `private_key_jwt` (#18). [`discovery_handler`] below calls it.
 //!
 //! **The signing key and JWKS are live-refreshed, not a startup
 //! snapshot.** Found in review (#97): the first version of this module
@@ -33,10 +41,11 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use authkestra_axum::helpers::AxumError;
-use authkestra_axum::op::{axum_discovery_handler, axum_token_handler};
+use authkestra_axum::op::axum_token_handler;
 use authkestra_engine::token::jwk::Jwk;
 use authkestra_engine::TokenManager;
 use authkestra_op::config::OpConfig;
+use authkestra_op::handlers::discovery::OidcDiscovery;
 use authkestra_op::handlers::jwks::JwksResponse;
 use authkestra_op::OpStore;
 use axum::extract::{FromRef, State};
@@ -121,6 +130,13 @@ async fn jwks_handler(State(state): State<OpState>) -> Json<JwksResponse> {
     Json(JwksResponse::new((*jwks).clone()))
 }
 
+/// Builds the discovery document with `private_key_jwt` advertised in
+/// `token_endpoint_auth_methods_supported` — see this module's own doc for
+/// why `authkestra_axum::op::axum_discovery_handler` can't do this itself.
+async fn discovery_handler(State(state): State<OpState>) -> Json<OidcDiscovery> {
+    Json(OidcDiscovery::from_config(&state.config).with_private_key_jwt())
+}
+
 /// The OP's routes, already `.with_state(...)` — mergeable directly with
 /// `sms_api::router`'s own already-stated `Router`.
 // No `#[must_use]`: axum's `Router` already carries one, and doubling it is
@@ -129,10 +145,7 @@ async fn jwks_handler(State(state): State<OpState>) -> Json<JwksResponse> {
 pub fn router(state: OpState) -> Router {
     Router::new()
         .route("/jwks.json", get(jwks_handler))
-        .route(
-            "/.well-known/openid-configuration",
-            get(axum_discovery_handler::<OpState>),
-        )
+        .route("/.well-known/openid-configuration", get(discovery_handler))
         .route("/token", post(axum_token_handler::<OpState>))
         .with_state(state)
 }
