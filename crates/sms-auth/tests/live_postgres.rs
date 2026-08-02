@@ -119,24 +119,20 @@ async fn find_client_returns_none_for_an_unknown_client() {
     assert!(found.is_none());
 }
 
-/// Asserts the **correct** behaviour, which cratestack-sqlx 0.5.0 does not
-/// currently deliver — see the crate root's `KNOWN ISSUE` doc for the full
-/// evidence. Every write-path query in `cratestack-sqlx` (`create`, `update`,
-/// `delete`, `upsert`, and their `_many`/`_exec` variants) maps the
-/// underlying `sqlx::Error` with `CoolError::Database(error.to_string())`
-/// rather than `cool_error_from_sqlx`, so `db_sqlstate()` is `None` on every
-/// database-rejected write, framework-wide — not something
-/// `SmsClientAssertionStore` can work around from the calling side, because
-/// the typed SQLSTATE is discarded before a `CoolError` ever reaches this
-/// crate.
+/// The replay check depends on `db_sqlstate()` surviving the framework's
+/// sqlx→`CoolError` conversion. Through `cratestack-sqlx` `=0.5.2` it did
+/// not — every generated write discarded SQLSTATE and constraint, so a
+/// replay fell through to "opaque fault" instead of "already spent"
+/// ([cratestack/cratestack#267](https://github.com/cratestack/cratestack/issues/267),
+/// [vymalo/vsms#87](https://github.com/vymalo/vsms/issues/87)). Fixed in
+/// `cratestack-sqlx` 0.6.0.
 ///
-/// This test is expected to **fail** until
-/// [cratestack/cratestack#267](https://github.com/cratestack/cratestack/issues/267)
-/// lands and the pin here moves past it — see
-/// [vymalo/vsms#87](https://github.com/vymalo/vsms/issues/87) for the
-/// tracking issue. Left failing rather than deleted so it goes green the
-/// moment the pin is bumped, instead of the regression going unnoticed a
-/// second time.
+/// This test was written to assert the correct behaviour and deliberately
+/// left failing while the bug was live, so it would go green the moment the
+/// pin moved rather than the regression going unnoticed a second time. It
+/// now passes. Keep it: a hand-constructed `CoolError::DatabaseTyped` never
+/// exercises that conversion, so this is the only shape of test that can
+/// see the regression come back.
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn record_jti_is_true_once_and_false_on_replay() {

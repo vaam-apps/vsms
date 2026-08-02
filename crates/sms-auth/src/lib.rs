@@ -17,61 +17,31 @@
 //! `authkestra_op::CompositeOpStore` and the OP router itself is #20; wiring
 //! their output into an `AuthProvider` is #21.
 //!
-//! # KNOWN ISSUE — `db_sqlstate()` is unpopulated on every write, framework-wide
+//! # Why `record_jti` reads `db_sqlstate()` rather than pre-checking
 //!
-//! Filed upstream as [cratestack/cratestack#267](https://github.com/cratestack/cratestack/issues/267);
-//! tracked in this repo as [vymalo/vsms#87](https://github.com/vymalo/vsms/issues/87),
-//! which also covers the blast radius beyond this crate (R2 generally,
-//! worker claim loops, `sendMessage`/`WebhookAttempt` dedupe).
+//! [`SmsClientAssertionStore::record_jti`]'s replay check is `create` plus
+//! catching `23505`, not a `SELECT` followed by an `INSERT` — the pre-check
+//! form races, and `upsert` does not exist when the `@id` carries a default
+//! (§2.0). That makes it dependent on the driver's SQLSTATE surviving the
+//! framework's sqlx→`CoolError` conversion.
 //!
-//! Found while writing `tests/live_postgres.rs` for this crate, not by
-//! reading source: [`SmsClientAssertionStore::record_jti`]'s replay check —
-//! "is this `23505`, or a real fault?" — never sees `23505`. Traced to
-//! `cratestack-sqlx =0.5.0`: **every** generated write query
-//! (`query/write/{create,create_exec,update_run,update_exec,update_many,
-//! update_many_exec,delete,delete_exec,delete_many,delete_many_exec,upsert,
-//! upsert_sql}.rs`) maps the driver error with
-//! `.map_err(|error| CoolError::Database(error.to_string()))`. The crate also
-//! ships `cool_error_from_sqlx`, which extracts the real SQLSTATE and
-//! constraint into `CoolError::DatabaseTyped` — but nothing in the generated
-//! delegate path calls it. It is reachable only at a manual `sqlx` call site,
-//! which R1 forbids everywhere except migrations, `pg_advisory_lock` and
-//! `LISTEN`/`NOTIFY`.
+//! For the whole of `cratestack-sqlx` `=0.5.0`–`=0.5.2` it did not: every
+//! generated write mapped through `CoolError::Database(error.to_string())`,
+//! discarding SQLSTATE and constraint before application code saw them, so
+//! `db_sqlstate()` was `None` on every database-rejected write. Filed as
+//! [cratestack/cratestack#267](https://github.com/cratestack/cratestack/issues/267),
+//! tracked here as [vymalo/vsms#87](https://github.com/vymalo/vsms/issues/87),
+//! **fixed in `cratestack-sqlx` 0.6.0** — all twelve write paths now route
+//! through `cool_error_from_sqlx`.
 //!
-//! Verified live against Postgres 16, both directions:
-//!
-//! ```text
-//! -- 23505, via ClientAssertion::create on a duplicate jti
-//! sqlstate = None   constraint = None
-//! display  = "database: error returned from database: duplicate key value
-//!              violates unique constraint \"client_assertions_jti_key\""
-//!
-//! -- SM001, via Message::update on accepted -> delivered (not a legal edge)
-//! sqlstate = None   constraint = None
-//! map_database_error(err).status_code() = 500   // not 409
-//! ```
-//!
-//! That second line is the one that matters beyond this crate:
-//! `crates/sms-api/src/errors.rs::map_database_error` and
-//! `is_illegal_transition` are exactly the mapping AGENTS.md calls
-//! load-bearing and PR #78 ("Make three silent failure modes fail the
-//! build") exists to guarantee. Against a live database, right now, on
-//! `main`, an illegal state transition is a raw `500 DATABASE_ERROR`, not the
-//! `409 Conflict` every doc comment and test in that file describes.
-//! `cargo test --workspace` cannot catch this: every existing test for that
-//! mapping constructs `CoolError::DatabaseTyped` by hand rather than going
-//! through a live delegate call, so the tests describe the intended
-//! behaviour, not the shipped one — `cratestack check` / `cargo build`
-//! stay green through it, the same shape as the 0.5.0 enum-type break this
-//! repo already learned to distrust that pair of gates for.
-//!
-//! [`SmsClientAssertionStore::record_jti`] is implemented against the
-//! *documented* API (`db_sqlstate() == Some(UNIQUE_VIOLATION)`) because that
-//! is what a fixed `cratestack-sqlx` will deliver, not because it works
-//! today. `tests/live_postgres.rs`'s `record_jti_is_true_once_and_false_on_replay`
-//! asserts the correct behaviour and is left failing under `--ignored`
-//! rather than weakened, so it goes green the moment the pin moves to a
-//! fixed version instead of the regression going unnoticed a second time.
+//! `tests/live_postgres.rs`'s `record_jti_is_true_once_and_false_on_replay`
+//! was written to assert the correct behaviour while that bug was live, and
+//! left failing rather than weakened, so it would go green the moment the
+//! pin moved. It does. Keep it, and the sibling assertions in
+//! `sms-api`'s `tests/errors_live_postgres.rs`: they are the only coverage
+//! that can see this class of regression, since a hand-constructed
+//! `CoolError::DatabaseTyped` never exercises the conversion, and
+//! `cargo build` / `cratestack check` stay green through it either way.
 
 pub mod op;
 
@@ -298,11 +268,10 @@ impl ClientAssertionStore for SmsClientAssertionStore {
             // assertion has been presented before and must be refused. Every
             // other database error is a real fault and stays opaque.
             //
-            // This arm is currently unreachable against cratestack-sqlx
-            // =0.5.0 — db_sqlstate() is None on every write, so a replay
-            // falls through to log_and_opaque instead. See this module's
-            // `# KNOWN ISSUE` doc. Written against the documented API, not
-            // the observed one, so it needs no change once that's fixed.
+            // This arm was unreachable through cratestack-sqlx =0.5.2,
+            // which discarded SQLSTATE on every write (vsms#87); fixed in
+            // 0.6.0. Written against the documented API throughout, so the
+            // fix needed no change here — only the pin moved.
             Err(e) if e.db_sqlstate() == Some(UNIQUE_VIOLATION) => Ok(false),
             Err(e) => Err(log_and_opaque("SmsClientAssertionStore::record_jti", &e)),
         }
