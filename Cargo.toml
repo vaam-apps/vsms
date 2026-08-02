@@ -46,6 +46,40 @@ cratestack-codec-json = "=0.5.0"
 # AGENTS.md. 0.3.2 fixed the `GrantType` serde bug that shaped early M1
 # design (#6): don't drop below it.
 authkestra-op = "=0.3.2"
+# Underpins authkestra-op (TokenManager, Engine, the generic MemoryStore<T>
+# op.rs uses for the authorization-code/refresh-token/device-code slots
+# this deployment doesn't populate — see op.rs's own doc). Not used
+# directly by application code beyond that; pinned because the whole
+# authkestra family moves in lockstep.
+authkestra-engine = "=0.3.2"
+# JWKS-backed token validation for the real AuthProvider (#21). Same pin
+# discipline as authkestra-op — the whole family moves in lockstep.
+authkestra-resource = "=0.3.2"
+# Wraps authkestra-op's handler functions into axum routes for the OP
+# itself (#20). Only the `op` feature: this deployment never uses the
+# `session`/`resource` extractors this crate also offers, since #21's
+# AuthProvider validates tokens directly through authkestra-resource
+# instead of authkestra-axum's own session/guard machinery.
+authkestra-axum = { version = "=0.3.2", features = ["op"] }
+# RSA signing keys for the OP (#20) — same rsa/rand versions authkestra-op
+# itself resolves to (verified against Cargo.lock), so this doesn't grow a
+# second copy of either crate's dependency tree.
+rsa = "0.9"
+rand = "0.8"
+# GatewayAuth (#21) builds its own JwksCache/Validation directly rather than
+# through authkestra-resource's JwtStrategy, whose cache/validation fields
+# are private — same jsonwebtoken version authkestra-op itself requires
+# (verified against Cargo.lock: both resolve to 11.0.0 with `rust_crypto`).
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+# The live OIDC-flow verification test builds a client JWK (n/e) by hand
+# from a generated RSA keypair — same base64 version already resolved
+# transitively through authkestra-op.
+base64 = "0.22"
+# app/sms-gateway's own op.rs mounts axum routes directly against
+# authkestra-axum's handler functions — same axum version cratestack-pg
+# and authkestra-axum both already resolve to (verified: Cargo.lock has
+# exactly one axum entry, 0.8.9), so this doesn't fork the tree.
+axum = "0.8"
 
 anyhow = "1"
 async-trait = "0.1"
