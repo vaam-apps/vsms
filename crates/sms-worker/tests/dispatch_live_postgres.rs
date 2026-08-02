@@ -216,6 +216,7 @@ fn provider(base_url: String) -> Arc<OrangeCmProvider> {
         client_secret: "secret".to_owned(),
         sender_number: "+2370000".to_owned(),
         base_url,
+        dlr_notify_url: None,
     }))
 }
 

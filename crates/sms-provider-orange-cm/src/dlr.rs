@@ -11,23 +11,33 @@
 //! the moment one exists — see `parses_a_delivered_notification` below for
 //! where it would slot in.
 //!
-//! **Known-broken, not just unverified: [`DeliveryUpdate::provider_ref`]
-//! cannot correlate against `Message.providerMessageRef` yet.** `submit()`
-//! (`lib.rs`) stores the `resource_id` UUID from `resourceURL` as
-//! `providerMessageRef`. The `OneAPI` `deliveryInfoNotification` shape's
-//! per-entry `address` field — the only per-entry identifier this shape
-//! carries — is the *destination MSISDN*, not that UUID (confirmed by this
-//! module's own test fixture: `"tel:+237677123456"` is a phone number, not
-//! a resource id). A UUID and a phone number will never match, so every DLR
-//! parsed by this module today would silently fail to find its message.
-//! Caught in review (#94) by two independent bots agreeing on the same root
-//! cause. Harmless right now — nothing calls [`parse`] outside this
-//! module's own tests, since `dispatch` (§7.1) is still a stub — but this
-//! **must** be resolved, most likely by echoing a correlation id through
-//! `OneAPI`'s subscription-level `callbackData` (set when registering the
-//! webhook, not derivable from this callback body alone), before any DLR
-//! receiver route is wired to this adapter. Tracked in
-//! [#95](https://github.com/vymalo/vsms/issues/95).
+//! # Correlation: fixed per #95, grounded in public `OneAPI` docs, still
+//! # sandbox-unverified
+//!
+//! [`DeliveryUpdate::provider_ref`] used to be set from each entry's
+//! `address` field — the destination MSISDN, not the `resource_id` UUID
+//! `submit()` (`lib.rs`) stores as `Message.providerMessageRef`. A phone
+//! number can never equal a UUID, so correlation could never have worked
+//! (#95, caught in review of #94 by two independent bots).
+//!
+//! The fix: `submit()` now sends `receiptRequest.callbackData` set to
+//! `SubmitRequest::reference` (`Message.id`) on every outbound request —
+//! confirmed against the public `OneAPI` SMS Messaging REST binding
+//! (Oracle Communications' `OneAPI` reference docs, which describe the same
+//! `outboundSMSMessageRequest`/`deliveryInfoNotification` family §6.2 is
+//! already modelled on) that `callbackData` is "passed back in the
+//! notification, allowing you to identify the message." The notification
+//! echoes it back as a **top-level** field of `deliveryInfoNotification`,
+//! sibling to the `deliveryInfo` array — not per-entry — which is what
+//! [`parse`] now reads as `provider_ref` instead of `address`.
+//!
+//! This is still unverified against Orange Cameroon's own live
+//! implementation specifically: `notifyURL`/`callbackData` is documented
+//! generic `OneAPI` behaviour, not confirmed Orange-Cameroon behaviour (the
+//! module doc above's own long-standing caveat). The first real DLR this
+//! adapter ever receives from a live Orange sandbox is also the first live
+//! verification of this fix — if `callbackData` doesn't come back exactly
+//! as sent, capture the raw payload and revisit.
 
 use sms_provider::{DeliveryOutcome, DeliveryUpdate, ProviderError, RawCallback};
 
@@ -41,19 +51,20 @@ struct DeliveryInfoNotification {
 
 #[derive(Debug, Deserialize)]
 struct DeliveryInfo {
+    /// Echoed back verbatim from the `callbackData` `submit()` sets on its
+    /// own `receiptRequest` (`lib.rs`) — `Message.id`, via
+    /// `SubmitRequest::reference`. The *only* correlation key this
+    /// notification carries; nothing in `deliveryInfo` itself identifies
+    /// which message it's about. See the module doc for why this replaced
+    /// the old (never-working) per-entry `address` approach.
+    #[serde(rename = "callbackData")]
+    callback_data: Option<String>,
     #[serde(rename = "deliveryInfo")]
     delivery_info: Vec<DeliveryInfoEntry>,
 }
 
 #[derive(Debug, Deserialize)]
 struct DeliveryInfoEntry {
-    /// The destination MSISDN, e.g. `"tel:+237677123456"` — **not** a
-    /// correlation key, despite that being the obvious guess for the one
-    /// per-entry identifier this shape carries. See the module doc: using
-    /// this as `provider_ref` is a known, tracked bug (#95), kept here only
-    /// because the field is real and worth carrying even though it can't
-    /// do correlation duty.
-    address: String,
     #[serde(rename = "deliveryStatus")]
     delivery_status: String,
 }
@@ -77,18 +88,27 @@ fn outcome_of(status: &str) -> DeliveryOutcome {
 
 /// Parse a raw Orange DLR callback body into canonical delivery updates.
 ///
-/// `provider_ref` is set from `address` below purely so the field is
-/// populated with *something* real from the payload — it is not, and
-/// cannot yet be, the correlation key `Message.providerMessageRef` needs.
-/// See the module doc and #95: nothing in this crate calls `parse` outside
-/// its own tests today, so this is a documented gap to close before
-/// wiring, not a silent one.
+/// # Errors
+///
+/// The body isn't valid JSON in the expected shape, or (per #95's fix) it
+/// carries no `callbackData` at all — without it there is nothing to set
+/// `provider_ref` to, so this rejects the whole notification rather than
+/// silently falling back to a per-entry field (`address`) that can never
+/// correlate to a `Message`, which is the exact bug this replaced.
 pub(crate) fn parse(raw: &RawCallback) -> Result<Vec<DeliveryUpdate>, ProviderError> {
     let parsed: DeliveryInfoNotification =
         serde_json::from_slice(&raw.body).map_err(|error| ProviderError::Rejected {
             code: "MALFORMED_DLR".to_owned(),
             message: format!("could not parse delivery notification: {error}"),
         })?;
+
+    let Some(provider_ref) = parsed.notification.callback_data else {
+        return Err(ProviderError::Rejected {
+            code: "MISSING_CALLBACK_DATA".to_owned(),
+            message: "delivery notification carried no callbackData to correlate against"
+                .to_owned(),
+        });
+    };
 
     Ok(parsed
         .notification
@@ -97,7 +117,7 @@ pub(crate) fn parse(raw: &RawCallback) -> Result<Vec<DeliveryUpdate>, ProviderEr
         .map(|entry| {
             let outcome = outcome_of(&entry.delivery_status);
             DeliveryUpdate {
-                provider_ref: entry.address,
+                provider_ref: provider_ref.clone(),
                 outcome,
                 // Orange's notification doesn't carry an event timestamp in
                 // this shape — the caller stamps arrival time
@@ -129,20 +149,20 @@ mod tests {
     #[test]
     fn parses_a_delivered_notification() {
         let updates = parse(&callback(
-            r#"{"deliveryInfoNotification":{"deliveryInfo":[
+            r#"{"deliveryInfoNotification":{"callbackData":"msg-1","deliveryInfo":[
                 {"address":"tel:+237677123456","deliveryStatus":"DeliveredToTerminal"}
             ]}}"#,
         ))
         .unwrap();
         assert_eq!(updates.len(), 1);
         assert_eq!(updates[0].outcome, DeliveryOutcome::Delivered);
-        assert_eq!(updates[0].provider_ref, "tel:+237677123456");
+        assert_eq!(updates[0].provider_ref, "msg-1");
     }
 
     #[test]
     fn parses_multiple_entries_in_one_callback() {
         let updates = parse(&callback(
-            r#"{"deliveryInfoNotification":{"deliveryInfo":[
+            r#"{"deliveryInfoNotification":{"callbackData":"msg-1","deliveryInfo":[
                 {"address":"a","deliveryStatus":"DeliveredToTerminal"},
                 {"address":"b","deliveryStatus":"DeliveryImpossible"}
             ]}}"#,
@@ -156,12 +176,50 @@ mod tests {
     #[test]
     fn an_unrecognised_status_is_unknown_not_a_guess() {
         let updates = parse(&callback(
-            r#"{"deliveryInfoNotification":{"deliveryInfo":[
+            r#"{"deliveryInfoNotification":{"callbackData":"msg-1","deliveryInfo":[
                 {"address":"a","deliveryStatus":"SomeFutureStatusThisCrateDoesNotKnowAbout"}
             ]}}"#,
         ))
         .unwrap();
         assert_eq!(updates[0].outcome, DeliveryOutcome::Unknown);
+    }
+
+    /// The core of #95's fix — proving `provider_ref` now comes from
+    /// `callbackData`, not the destination address, and that two
+    /// different messages' notifications are actually distinguishable.
+    #[test]
+    fn provider_ref_is_the_callback_data_not_the_address_and_differs_per_message() {
+        let a = parse(&callback(
+            r#"{"deliveryInfoNotification":{"callbackData":"msg-a","deliveryInfo":[
+                {"address":"tel:+237677000000","deliveryStatus":"DeliveredToTerminal"}
+            ]}}"#,
+        ))
+        .unwrap();
+        let b = parse(&callback(
+            r#"{"deliveryInfoNotification":{"callbackData":"msg-b","deliveryInfo":[
+                {"address":"tel:+237677000000","deliveryStatus":"DeliveredToTerminal"}
+            ]}}"#,
+        ))
+        .unwrap();
+        // Same destination address on both — the old, broken correlation
+        // key would have collided. The new one doesn't.
+        assert_eq!(a[0].provider_ref, "msg-a");
+        assert_eq!(b[0].provider_ref, "msg-b");
+        assert_ne!(a[0].provider_ref, b[0].provider_ref);
+    }
+
+    #[test]
+    fn a_notification_with_no_callback_data_is_rejected_not_matched_by_address() {
+        let error = parse(&callback(
+            r#"{"deliveryInfoNotification":{"deliveryInfo":[
+                {"address":"tel:+237677123456","deliveryStatus":"DeliveredToTerminal"}
+            ]}}"#,
+        ))
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            sms_provider::ProviderError::Rejected { .. }
+        ));
     }
 
     #[test]
