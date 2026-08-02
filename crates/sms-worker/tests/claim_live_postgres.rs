@@ -23,7 +23,7 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
 };
-use sms_worker::claim::claim_batch;
+use sms_worker::claim::{claim_batch, Claimable};
 
 fn sys() -> CoolContext {
     Principal {
@@ -176,15 +176,22 @@ async fn does_not_reclaim_a_row_with_an_unexpired_lease() {
     );
 }
 
+/// Not the crash-recovery scenario — `create()` can never actually produce
+/// an `accepted` row with `leaseUntil` set, since the only thing that ever
+/// sets `leaseUntil` is `take_lease`, which sets `state` to `routed` in the
+/// same update. This just isolates the `leaseUntil` OR-predicate itself:
+/// whatever state a row is in, a past `leaseUntil` must not exclude it.
+/// `reclaims_a_routed_row_abandoned_by_a_crashed_worker` below is the test
+/// for the real scenario.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn reclaims_a_row_with_an_expired_lease() {
+async fn an_expired_lease_value_does_not_exclude_a_row_regardless_of_state() {
     let db = db().await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(
         &db,
         &app_id,
-        Some(Utc::now() - Duration::minutes(10)), // abandoned by a crashed worker
+        Some(Utc::now() - Duration::minutes(10)),
         Utc::now() + Duration::hours(1),
     )
     .await;
@@ -196,6 +203,52 @@ async fn reclaims_a_row_with_an_expired_lease() {
     assert!(
         claimed.iter().any(|m| m.id == seeded.id),
         "an expired lease must be reclaimable — this is the only reaper the happy path has"
+    );
+}
+
+/// The actual crash-recovery scenario `claim_batch`'s whole reclaim
+/// mechanism exists for, and the milestone gate it has to satisfy ("kill -9
+/// the worker mid-submit and the lease reclaims the message", #26/#36):
+/// reach `routed` through the real `take_lease` path, then simulate the
+/// worker dying before it does anything else.
+///
+/// Forcing `leaseUntil` into the past with a raw `update()` is not something
+/// real code ever does — a lease expires because the clock moves, not
+/// because anyone rewrites it — but it's the only way to test "expired"
+/// without a 2-minute sleep in a test suite.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn reclaims_a_routed_row_abandoned_by_a_crashed_worker() {
+    let db = db().await;
+    let app_id = seed_app(&db).await;
+    let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
+
+    let routed = seeded
+        .take_lease(&db, &sys(), "worker-1", Utc::now())
+        .await
+        .expect("the first claim succeeds");
+    assert_eq!(routed.state, MessageState::routed);
+
+    let abandoned = db
+        .message()
+        .update(routed.id.clone())
+        .set(schema::UpdateMessageInput {
+            leaseUntil: Some(Some(Utc::now() - Duration::minutes(1))),
+            ..Default::default()
+        })
+        .if_match(routed.version)
+        .run(&sys())
+        .await
+        .expect("forcing the lease into the past to simulate a crashed worker");
+
+    let reclaimed = claim_batch::<Message>(&db, &sys(), "worker-2", 10)
+        .await
+        .expect("claim_batch succeeds");
+
+    assert!(
+        reclaimed.iter().any(|m| m.id == abandoned.id),
+        "a routed row abandoned by a crashed worker must be reclaimable — \
+         without this, any message a worker touches before crashing is stuck forever"
     );
 }
 
@@ -237,18 +290,32 @@ async fn respects_the_budget() {
 /// `PreconditionFailed` were mishandled, this would flake into claiming the
 /// same message twice under load — exactly the double-send this design
 /// exists to prevent.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn two_concurrent_claimers_never_both_win_the_same_row() {
-    let db = db().await;
+    let db = std::sync::Arc::new(db().await);
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
 
-    let (sys_a, sys_b) = (sys(), sys());
-    let (a, b) = tokio::join!(
-        claim_batch::<Message>(&db, &sys_a, "worker-a", 10),
-        claim_batch::<Message>(&db, &sys_b, "worker-b", 10),
-    );
+    // tokio::spawn onto independent tasks, not tokio::join! on two plain
+    // futures — join! polls its futures in argument order on the calling
+    // task, so if neither ever needs to yield (a fast loopback connection to
+    // Postgres might resolve every await instantly), the executor can drive
+    // worker-a's entire claim_batch to completion before worker-b's future
+    // is polled even once, which would prove nothing about the actual
+    // database-level race. Spawned tasks don't have that escape hatch — the
+    // multi-threaded runtime below can genuinely run them on separate OS
+    // threads at the same instant.
+    let (db_a, sys_a) = (db.clone(), sys());
+    let handle_a =
+        tokio::spawn(async move { claim_batch::<Message>(&db_a, &sys_a, "worker-a", 10).await });
+
+    let (db_b, sys_b) = (db.clone(), sys());
+    let handle_b =
+        tokio::spawn(async move { claim_batch::<Message>(&db_b, &sys_b, "worker-b", 10).await });
+
+    let a = handle_a.await.expect("worker-a's task must not panic");
+    let b = handle_b.await.expect("worker-b's task must not panic");
 
     let wins = a
         .expect("worker-a's claim_batch must not error just because it lost the race")

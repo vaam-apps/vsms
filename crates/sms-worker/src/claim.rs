@@ -13,9 +13,10 @@
 //! [`Claimable`] is what makes [`claim_batch`] one function rather than one
 //! per model — "the job and webhook claims are the same function with
 //! different types" (§7.3). This module implements it for [`Message`]
-//! (`dispatch`'s claim, per §7.3's own worked example); `Job` (#35) and
-//! `WebhookAttempt` (M3 #40) each add their own `impl Claimable` when their
-//! stories land, reusing this loop rather than re-deriving it.
+//! (`dispatch`'s claim, based on §7.3's own worked example, with one
+//! correction — see the doc comment on its `candidates` impl); `Job` (#35)
+//! and `WebhookAttempt` (M3 #40) each add their own `impl Claimable` when
+//! their stories land, reusing this loop rather than re-deriving it.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
@@ -110,9 +111,10 @@ pub async fn claim_batch<C: Claimable>(
     Ok(claimed)
 }
 
-/// `dispatch`'s claim: `accepted`/`queued` → `routed`, a 2-minute lease.
-/// §7.3's own worked example, verbatim — the state and duration aren't this
-/// module's decision, they're transcribed from the design doc.
+/// `dispatch`'s claim: `accepted`/`queued`/`routed` → `routed`, a 2-minute
+/// lease. The state and duration are §7.3's own worked example, transcribed
+/// rather than newly decided — with one correction to the candidate state
+/// list; see the doc comment on `candidates` below.
 const DISPATCH_LEASE: Duration = Duration::minutes(2);
 
 #[async_trait]
@@ -127,12 +129,32 @@ impl Claimable for Message {
         now: DateTime<Utc>,
         budget: i64,
     ) -> Result<Vec<Self>, CoolError> {
+        // `routed` belongs in this list, not just `accepted`/`queued` — §7.3's
+        // own illustrative query omits it, but `messages_lease_reclaim_idx`
+        // (§2.10, committed since milestone 0) is built `WHERE ... state IN
+        // ('queued','routed')`, and `routed -> queued` is a legal edge in
+        // §7.4's own state machine. Without `routed` here, a worker that
+        // crashes between claiming a message (accepted/queued -> routed) and
+        // finishing it leaves that row permanently unreachable: no future
+        // claim_batch call would ever see it again, contradicting this
+        // trait's own contract ("reclaims rows abandoned by a crashed
+        // worker... no separate reaper for the happy path") and the milestone
+        // gate this loop exists to satisfy ("kill -9 the worker mid-submit
+        // and the lease reclaims the message", #26/#36). A `routed` row only
+        // ever exists with `leaseUntil` set (take_lease always sets it), so
+        // the `leaseUntil IS NULL` branch below never matches for it — only
+        // the expiry branch does, which is exactly the reclaim this is for.
+        // Re-claiming sets state back to `routed`, a same-state assignment
+        // the guard trigger always permits (`NEW.state IS NOT DISTINCT FROM
+        // OLD.state` short-circuits before the transition-table check).
         db.message()
             .find_many()
             .where_expr(
-                FilterExpr::from(
-                    message::state().in_([MessageState::accepted, MessageState::queued]),
-                )
+                FilterExpr::from(message::state().in_([
+                    MessageState::accepted,
+                    MessageState::queued,
+                    MessageState::routed,
+                ]))
                 .and(message::expiresAt().gt(now))
                 .and(
                     FilterExpr::from(message::scheduledAt().is_null())
