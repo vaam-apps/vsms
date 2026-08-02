@@ -18,6 +18,8 @@ ALTER TABLE operator_prefix_rules DROP CONSTRAINT operator_prefix_rules_source_e
 
 ALTER TABLE operator_prefix_rules DROP CONSTRAINT operator_prefix_rules_operator_enum_check;
 
+ALTER TABLE oauth_clients DROP CONSTRAINT oauth_clients_token_endpoint_auth_method_enum_check;
+
 ALTER TABLE messages DROP CONSTRAINT messages_state_enum_check;
 
 ALTER TABLE messages DROP CONSTRAINT messages_encoding_enum_check;
@@ -50,6 +52,8 @@ DROP INDEX operator_prefix_rules_prefix_key;
 
 DROP INDEX oauth_clients_client_id_key;
 
+DROP INDEX client_assertions_jti_key;
+
 DROP INDEX apps_slug_key;
 
 DROP INDEX app_clients_client_id_key;
@@ -74,6 +78,8 @@ DROP TABLE opt_outs;
 
 DROP TABLE operator_prefix_rules;
 
+DROP TABLE oauth_signing_keys;
+
 DROP TABLE oauth_clients;
 
 DROP TABLE messages;
@@ -83,6 +89,8 @@ DROP TABLE message_parts;
 DROP TABLE jobs;
 
 DROP TABLE delivery_receipts;
+
+DROP TABLE client_assertions;
 
 DROP TABLE apps;
 

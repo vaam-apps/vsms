@@ -101,6 +101,21 @@ enum OptOutSource {
   operator
 }
 
+// The client-authentication method a registration is bound to at /token
+// (OIDC Core 9). There is deliberately no client_secret_basic and no
+// client_secret_post: machine callers authenticate with private_key_jwt and
+// the admin console is a public client protected by PKCE, so no shared
+// secret exists anywhere in this system to leak, hash, or rotate.
+//
+// authkestra maps a *missing* token_endpoint_auth_method to "registration
+// predates the field", which accepts a secret from either transport and
+// refuses assertions outright. Making this column NOT NULL with no default
+// means every row names its method and that branch is unreachable.
+enum ClientAuthMethod {
+  private_key_jwt
+  none
+}
+
 mixin Timestamps {
   createdAt DateTime @default(dbgenerated())
   updatedAt DateTime @default(dbgenerated())
@@ -169,7 +184,8 @@ model OauthClient {
   clientId String @unique @length(min: 8, max: 64)
   appClientId Cuid?
   appClient AppClient? @relation(fields: [appClientId], references: [id])
-  secretHash String
+  tokenEndpointAuthMethod ClientAuthMethod
+  jwks String?
   grantTypes String
   scopes String
   redirectUris String
@@ -180,6 +196,54 @@ model OauthClient {
   @@allow("read", hasRole('system'))
   @@allow("create", hasRole('system'))
   @@allow("update", hasRole('system'))
+}
+
+// The OP's RS256 signing keys. `id` doubles as the JWKS `kid`, which is why it
+// has to be a plain Cuid rather than anything structured.
+//
+// @sensitive redacts audit snapshots ONLY - it adds no serde attribute, so
+// this model's `hasRole('system')` read policy is the entire confidentiality
+// control over the private key. `system` is a synthetic internal role that no
+// token may ever carry; an AuthProvider that mints it for HTTP callers hands
+// them the key that signs every token. See 4.2.
+model OauthSigningKey {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  privateKeyPem String @sensitive
+  active Boolean @default(true)
+  expiresAt DateTime?
+
+  @@audit
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+// Spent private_key_jwt client-assertion `jti`s (RFC 7523 2.2), so a captured
+// assertion is single-use rather than a bearer credential good for its whole
+// lifetime.
+//
+// Insert-only, and that is the design: authkestra requires record_jti to be
+// atomic, and `create` + catching SQLSTATE 23505 on the @unique index is
+// exactly that. A read-then-write across two statements would be the TOCTOU
+// race this table exists to prevent - two concurrent replays would both
+// observe "not yet seen". Same reason upsert is unavailable here anyway
+// (2.0: no upsert when the @id has a default).
+//
+// No @@audit: one row per token request, and the audit row would carry no
+// information the row itself doesn't. Rows are reaped once expiresAt passes,
+// after which the assertion is refused on `exp` regardless.
+model ClientAssertion {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  jti String @unique @length(min: 1, max: 255)
+  expiresAt DateTime
+
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("delete", hasRole('system'))
 }
 
 model SenderId {

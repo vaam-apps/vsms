@@ -352,7 +352,8 @@ model OauthClient {
   clientId String @unique @length(min: 8, max: 64)
   appClientId Cuid?
   appClient AppClient? @relation(fields: [appClientId], references: [id])
-  secretHash String
+  tokenEndpointAuthMethod ClientAuthMethod
+  jwks String?
   grantTypes String
   scopes String
   redirectUris String
@@ -364,17 +365,49 @@ model OauthClient {
   @@allow("create", hasRole('system'))
   @@allow("update", hasRole('system'))
 }
+
+model OauthSigningKey {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  privateKeyPem String @sensitive
+  active Boolean @default(true)
+  expiresAt DateTime?
+
+  @@audit
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+model ClientAssertion {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  jti String @unique @length(min: 1, max: 255)
+  expiresAt DateTime
+
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("delete", hasRole('system'))
+}
 ```
 
-`OauthClient` is the OP's client registry, living in the gateway schema so `sms-auth` reads it through delegates rather than raw SQL (R1). Its policy is `hasRole('system')` on every action — **no HTTP principal can read this model at all**, which is what protects `secretHash` now that R3 rules out `@server_only` for a field the provisioning procedure has to write. `grantTypes` is a plain delimited `String`, deliberately: it never round-trips through `GrantType`'s broken serde (§4.2).
+`OauthClient` is the OP's client registry, living in the gateway schema so `sms-auth` reads it through delegates rather than raw SQL (R1). Its policy is `hasRole('system')` on every action — **no HTTP principal can read this model at all**. `grantTypes` is a plain delimited `String`, which is also the wire format OAuth uses.
+
+**There is no `secretHash`, and no column that could hold one.** Machine callers authenticate with `private_key_jwt`; the admin console is a public client protected by PKCE (§4.2). The database stores only public keys, so there is no shared secret in this system to leak, hash, rotate, or accidentally log. `tokenEndpointAuthMethod` is `NOT NULL` with **no `@default`** on purpose: a `@default` would drop it from `CreateOauthClientInput` (§2.0), leaving it unsettable, and a *missing* method is how authkestra spells "registration predates the field" — a state that accepts a secret from either transport and refuses assertions outright. Every row naming its method makes that branch unreachable. Two hand-written `CHECK`s in §2.10 finish the job: `private_key_jwt` must carry a `jwks`, and `none` must require PKCE.
+
+`OauthSigningKey` holds the OP's RS256 keys, with `id` doubling as the JWKS `kid`. Note what `@sensitive` does **not** do: it redacts audit snapshots only and adds no serde attribute (§2.0), so the model's `hasRole('system')` read policy is the whole confidentiality control over `privateKeyPem`. `system` is a synthetic internal role that no issued token may ever carry — an `AuthProvider` that mints `system` for HTTP callers hands them the key that signs every token in the system, through generated CRUD, with no other mistake required.
+
+`ClientAssertion` records spent `private_key_jwt` assertion `jti`s so a captured assertion is single-use rather than a bearer credential good for its whole lifetime. It is insert-only, and the write is `create` + catching SQLSTATE `23505` on the `@unique` index — authkestra requires `record_jti` to be atomic, and a read-then-write across two statements is precisely the TOCTOU race the table exists to prevent, where two concurrent replays both observe "not yet seen". No `@@audit`: one row per token request, and the audit row would carry nothing the row itself doesn't.
 
 **On delimited strings.** No model here declares a list field, because `String[]` and `Int[]` panic the server macro outright — the parser accepts them and the migration emitter writes `TEXT[]`, but `include_server_schema!` dies with `unsupported SQLx value type for this slice`. So every multi-value column is a space-delimited `String`, stored **with leading and trailing separators**: `" sms:send sms:read "`, not `"sms:send sms:read"`.
 
 The sentinel spaces are what make membership queries safe. `.contains("sms:send")` would also match a hypothetical `sms:sendall`; `.contains(" sms:send ")` cannot. `sms-core` owns `pack(&[&str]) -> String` and `unpack(&str) -> Vec<&str>` so no call site invents its own convention. For `scopes` and `grantTypes` this is barely a workaround — OAuth transmits both as space-delimited strings anyway, so the column and the wire format finally agree.
 
-`AppClient` exists because **`ClientRegistration` holds exactly one secret** — `client_secret_hash: Option<String>`, a single `VARCHAR(255)`, no next-secret field, no validity window. You cannot rotate with overlap inside one client. So you rotate by *identity*: provision `otp-svc-v2` alongside `otp-svc-v1`, both mapped to the same `App`, cut the caller over, retire v1.
+`AppClient` exists so a caller's *identity* is separable from its credential. Under `private_key_jwt` the inline `jwks` is a JWK **Set**, so key rotation no longer needs a second identity — publish both keys, cut the caller over, drop the old one. Rotating by identity (provision `otp-svc-v2` alongside `otp-svc-v1`, both mapped to the same `App`) stays available for the cases that want a clean audit boundary rather than a key swap.
 
-Note what is deliberately **absent**: no secret, no hash, no signing key. The secret lives only in the OP's client table, Argon2id-hashed, shown to a human exactly once. The gateway database never holds a credential for an app.
+Note what is deliberately **absent**: no secret and no hash — anywhere, for anyone. The only credential material in the database is the *public* half of a caller's keypair, in `OauthClient.jwks`, plus the OP's own signing key in `OauthSigningKey`. Nothing here is a bearer credential that leaks by being read.
 
 ### 2.3 Sender IDs
 
@@ -924,6 +957,8 @@ $$ LANGUAGE SQL VOLATILE;
 ALTER TABLE apps                    ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE app_clients             ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE oauth_clients           ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE oauth_signing_keys      ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE client_assertions       ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE messages                ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE message_parts           ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE delivery_receipts       ALTER COLUMN id SET DEFAULT cs_cuid();
@@ -1133,6 +1168,15 @@ CREATE INDEX receipts_message_idx ON delivery_receipts (message_id);
 CREATE INDEX app_clients_app_idx  ON app_clients (app_id);
 CREATE INDEX routes_match_idx     ON routes (enabled, priority DESC);
 
+-- The OP reads exactly one row at startup: the newest active signing key.
+CREATE INDEX oauth_signing_keys_active_idx ON oauth_signing_keys (created_at DESC)
+    WHERE active;
+
+-- Reaping spent client assertions. A `jti` need only be remembered until its
+-- own `exp`; after that the assertion is refused on `exp` regardless, so
+-- keeping the row would only grow the table.
+CREATE INDEX client_assertions_expiry_idx ON client_assertions (expires_at);
+
 -- The framework's own outbox. `ensure_event_outbox_table` creates this lazily
 -- on the first emitting write, which is too late to index it here: applying
 -- the migration to a fresh database fails with
@@ -1162,6 +1206,8 @@ ALTER TABLE messages ADD CONSTRAINT messages_app_fk
     FOREIGN KEY (app_id) REFERENCES apps(id);
 ALTER TABLE app_clients ADD CONSTRAINT app_clients_app_fk
     FOREIGN KEY (app_id) REFERENCES apps(id);
+ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_app_client_fk
+    FOREIGN KEY (app_client_id) REFERENCES app_clients(id);
 ALTER TABLE message_parts ADD CONSTRAINT parts_message_fk
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE;
 ALTER TABLE delivery_receipts ADD CONSTRAINT receipts_message_fk
@@ -1179,6 +1225,22 @@ ALTER TABLE users ADD CONSTRAINT users_role_fk
 ```sql
 ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_format_check
     CHECK (prefix ~ '^[0-9]{1,4}$');
+```
+
+**Client-registration invariants.** The schema can say a client names one auth method; it cannot say that the method and the rest of the row agree. Both of these are the difference between a misconfigured client failing at `INSERT` and failing at `/token`, where the symptom is an authentication error nobody can explain:
+
+```sql
+-- private_key_jwt without a key is a client that can never authenticate;
+-- `none` *with* a key is a public client someone believed was confidential.
+ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_auth_method_jwks_check
+    CHECK ((token_endpoint_auth_method = 'private_key_jwt' AND jwks IS NOT NULL)
+        OR (token_endpoint_auth_method = 'none'            AND jwks IS NULL));
+
+-- A client that presents no credential at all has only PKCE standing between
+-- it and anyone who can reach /token. `none` without require_pkce is an open
+-- token endpoint, so the database refuses to store one.
+ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_public_requires_pkce_check
+    CHECK (token_endpoint_auth_method <> 'none' OR require_pkce);
 ```
 
 **Seed data: operator prefix rules**, current best evidence per §3.4. `650`–`659` is fully partitioned between MTN and Orange, so no separate `65` row is needed; `66`, `640`–`642` and everything else are deliberately left unseeded rather than guessed — a gap here resolves to `OperatorCode::unknown` at lookup, which is honest, where a fabricated row would not be. `source` defaults to `'seed'`:
@@ -1355,33 +1417,22 @@ Internal traffic (worker ↔ smpp role, if ever split) uses mTLS with a private 
 
 ### 4.2 Machine callers: OAuth2 service accounts
 
-Every calling app authenticates with `client_credentials` and presents a Bearer token. One realm, one validation path, no API keys and no HMAC request signing.
+Every calling app uses the `client_credentials` grant and presents a Bearer token. It **authenticates with `private_key_jwt`** — a short-lived JWT assertion signed by the caller's own private key (RFC 7523 §2.2, OIDC Core §9). One realm, one validation path, no API keys, no HMAC request signing, and no shared client secret anywhere in the system.
 
-**On dropping request signing.** An earlier revision had HMAC-over-body, which exists because a long-lived API key needs replay protection. A 15-minute access token doesn't have the same exposure: the window is bounded, the credential never travels on the request, and `Idempotency-Key` handles duplicate submission. What you give up is proof-of-possession — a leaked bearer token is usable by whoever holds it until it expires. The standard answers are mTLS-bound tokens or `private_key_jwt` (RFC 7523). **Neither is supported by `authkestra-op` 0.2.3** — no `client_assertion` fields on `TokenRequest`, no certificate plumbing. Discovery advertises exactly `client_secret_basic`, `client_secret_post`, `none`, hardcoded. So proof-of-possession is an OP-replacement decision, not a config toggle. Compensate meanwhile with `App.ipAllowlist` at the edge.
+Those are two different things and it is worth keeping them apart: `client_credentials` is the *grant*, `private_key_jwt` is the *client-authentication method* at `/token`. Swapping the method does not change the grant.
 
-**⚠️ You must implement `ClientStore` yourself.** `GrantType` is `#[serde(untagged)]` over unit variants:
+**On dropping request signing.** An earlier revision had HMAC-over-body, which exists because a long-lived API key needs replay protection. A 15-minute access token doesn't have the same exposure: the window is bounded, the credential never travels on the request, and `Idempotency-Key` handles duplicate submission. `private_key_jwt` removes the shared secret from the picture entirely — the OP stores only the public half, so there is no credential in the database that is worth stealing. What it does *not* give you is proof-of-possession for the access token itself: a leaked bearer token remains usable by whoever holds it until it expires. That still wants mTLS-bound or DPoP-style tokens, which remains an open item. Compensate meanwhile with `App.ipAllowlist` at the edge.
 
-```rust
-#[serde(untagged)]
-pub enum GrantType {
-    AuthorizationCode, RefreshToken, ClientCredentials,
-    DeviceCode, TokenExchange, Custom(String),
-}
-```
-
-Every unit variant serialises to JSON `null`, and `null` deserialises to the first variant. Round-trip through the SQL or Redis store, verified by running it:
+**The `GrantType` serde bug is fixed as of `authkestra-op` 0.3.2.** Recording it because the workaround shaped this design and the schema still carries its fingerprints. In 0.2.3, `GrantType` was `#[serde(untagged)]` over unit variants, so every unit variant serialised to JSON `null` and `null` deserialised back to the first variant — a persisted `client_credentials` client silently became `authorization_code`, losing its own grant and gaining one it never registered for. 0.3.2 replaced that with hand-written `Serialize`/`Deserialize` impls over the real OAuth strings. Re-verified by round-tripping every variant against the published crate:
 
 ```
-BEFORE grant_types: [ClientCredentials]        allows(ClientCredentials) = true
-  serialized:  "grant_types": [ null ]
-AFTER  grant_types: [AuthorizationCode]        allows(ClientCredentials) = false
+ClientCredentials -> "client_credentials" -> ClientCredentials     OK
+AuthorizationCode -> "authorization_code" -> AuthorizationCode     OK
+DeviceCode        -> "urn:ietf:params:oauth:grant-type:device_code" -> DeviceCode  OK
+Custom("urn:example:custom") -> "urn:example:custom" -> Custom(..)  OK
 ```
 
-`handle_client_credentials` gates on `allows_grant_type(&GrantType::ClientCredentials)` and returns `400 unauthorized_client`. No JSON value produces `ClientCredentials` — `"client_credentials"` deserialises to `Custom("client_credentials")`, which `!=` the unit variant, and `/token` matches the literal grant string *before* the custom-grant arm, so storing it as `Custom` doesn't help either.
-
-The blast radius is wider than your use case: grant-type authorisation collapses globally. Refresh, device-code and token-exchange all break for persisted clients, and **every persisted client silently gains `authorization_code`** whether registered for it or not. That second half is a privilege escalation, worth filing upstream as a security bug rather than a serialisation nit.
-
-`ClientStore` is a one-method trait, so the fix is small — and per R1 it reads through the `OauthClient` delegate, not raw SQL:
+We still implement `ClientStore` ourselves, but now for the ordinary reason — clients live in `oauth_clients` and R1 says that read goes through a delegate, not raw SQL. `grantTypes` stays a delimited `String` column mapped in Rust, which is both what OAuth puts on the wire and one less thing depending on a serde impl staying correct:
 
 ```rust
 use cratestack::{CoolContext, FilterExpr};
@@ -1405,9 +1456,21 @@ impl ClientStore for SmsClientStore {
 
         Ok(found.into_iter().next().map(|c| ClientRegistration {
             client_id: c.clientId,
-            // NOT NULL in the schema. A None hash disables authentication
-            // entirely — see sharp edge 1 below.
-            client_secret_hash: Some(c.secretHash),
+            // No column can hold one. See sharp edge 1 below for what a
+            // `None` hash means when the auth method is also absent — the
+            // reason `token_endpoint_auth_method` is NOT NULL in §2.2.
+            client_secret_hash: None,
+            // Naming the method is what makes the assertion path reachable
+            // at all: authkestra refuses assertions for any registration
+            // that leaves this `None`.
+            token_endpoint_auth_method: Some(match c.tokenEndpointAuthMethod {
+                ClientAuthMethod::private_key_jwt => TokenEndpointAuthMethod::PrivateKeyJwt,
+                ClientAuthMethod::none            => TokenEndpointAuthMethod::NoAuth,
+            }),
+            // Inline JWK Set — the public half of the caller's keypair.
+            // authkestra deliberately has no `jwks_uri`, so the OP never
+            // becomes an HTTP client and there is no URL to point at.
+            jwks: c.jwks.as_deref().map(serde_json::from_str).transpose()?,
             redirect_uris: unpack(&c.redirectUris),
             // Built in Rust from a delimited column. serde never touches
             // GrantType, so the untagged bug cannot bite.
@@ -1425,19 +1488,25 @@ impl ClientStore for SmsClientStore {
 }
 ```
 
-The `sys` context is a `system`-role principal, which is the only thing `OauthClient`'s policy admits. Note `secretHash` reads back fine even though it holds a credential — `@server_only` would have made it *unwritable* (R3), so confidentiality here comes from the model policy instead, and the field never leaves `sms-auth`.
+The `sys` context is a `system`-role principal, which is the only thing `OauthClient`'s policy admits.
 
 `sms-auth` therefore also links `cratestack-pg` and expands the same schema; it mounts no router and uses delegates only.
 
-**Five more sharp edges, all verified in source:**
+**`private_key_jwt` is opt-in in three separate places, and missing any one of them refuses every assertion — silently, with a generic authentication error:**
 
-1. **`client_secret_hash: None` disables authentication entirely.** The handler only verifies `if client.client_secret_hash.is_some()`. A client with no hash gets a token from anyone who knows the `client_id`. Make the column `NOT NULL` and have `find_client` refuse to construct a registration without it.
-2. **Basic credentials are not URL-decoded.** RFC 6749 §2.3.1 requires form-decoding both halves after base64; the code does a raw `split_once(':')`. A secret containing `+ / = %` or a space fails via Basic but works via POST body. **Generate secrets from `[A-Za-z0-9._~-]` only.** Basic also silently overrides POST parameters on conflict, with no error.
-3. **Scopes are rejected, not filtered** — one unregistered scope fails the whole request with `invalid_scope`. And if `scope` is omitted the token is issued with **`scope: None`**; registered scopes are *not* applied as a default. Callers must always send an explicit `scope`, and your `sms:send` check must treat a missing scope as denial.
-4. **`aud == sub == client_id`.** For client_credentials the audience is hardcoded to the client's own id — self-referential and useless. `TokenRequest.audience` and `ClientRegistration.allowed_audiences` are both ignored on this path (they only apply to token exchange, unreachable here since exchange requires `claims.identity` and client tokens always have `identity: None`). **Validate `iss`, signature, expiry and `sub`-exists; disable audience validation.**
+1. `token_endpoint_auth_method: Some(PrivateKeyJwt)` and a `jwks` on the registration, as above. A registration that leaves the method `None` is treated as predating the field and refuses assertions outright.
+2. `CompositeOpStore::with_client_assertion_store(…)`. The fifth store slot defaults to `NoClientAssertionStore`, which refuses `private_key_jwt` rather than accepting an assertion it cannot replay-protect. The bundled `MemoryClientAssertionStore` is single-node only — an unshared map means one accepted replay per node — so ours is `ClientAssertion` (§2.2) behind a delegate, `create` catching `23505`.
+3. `OidcDiscovery::with_private_key_jwt()`. Discovery is deliberately quiet about the method otherwise, so clients relying on metadata would never attempt it.
+
+**Sharp edges, re-verified against 0.3.2 rather than carried over:**
+
+1. **`client_secret_hash: None` *with* `token_endpoint_auth_method: None` disables authentication entirely** — that pair reaches `(None, Cred::NoCredential) => Ok(())`, so the client gets a token from anyone who knows the `client_id`. This is why §2.2 makes `tokenEndpointAuthMethod` `NOT NULL` with no `@default`: with a method always named, that arm is unreachable and a mismatched credential falls to `(Some(_), _) => Err(AuthMethodNotPermitted)`.
+2. **Basic credentials are still not URL-decoded** (a raw `split_once(':')`, no form-decoding per RFC 6749 §2.3.1), and Basic silently overrides POST parameters on conflict. Moot for us — we present no secret over either transport — but it would bite immediately if anyone reintroduced one.
+3. **Scopes are rejected, not filtered** — one unregistered scope fails the whole request with `invalid_scope`. If `scope` is omitted the token is issued with **`scope: None`**; registered scopes are *not* applied as a default. Callers must always send an explicit `scope`, and the `sms:send` check must treat a missing scope as denial.
+4. **`aud == sub == client_id`.** `handle_client_credentials` calls `issue_client_token(&client_id, …, Some(client_id.clone()))` — the audience is hardcoded to the client's own id. `TokenRequest.audience` and `ClientRegistration.allowed_audiences` apply only to token exchange. **Validate `iss`, signature, expiry and `sub`-exists; disable audience validation.** (Assertion `aud` is separate and correct: 0.3.2 accepts either the token endpoint URL or the issuer identifier.)
 5. **Token TTL is global** — `OpConfig.access_token_ttl_secs`, no per-client override.
 
-**Rate limiting `/token` is mandatory.** There is no rate limiting, no lockout, no failed-attempt counter and no `429` anywhere in `authkestra-op`. Every failed attempt runs a full Argon2id verification at 19 MiB — so an unauthenticated attacker who knows one valid `client_id` can force ~19 MiB of memory-hard work per request. Put `tower_governor` in front of `/token`, keyed on **client_id *and* source IP** — client_id alone lets an attacker lock out a legitimate service account.
+**Rate limiting `/token` is an infrastructure concern, not a `sms-auth` one.** `authkestra-op` has no rate limiting, lockout, failed-attempt counter or `429`, and it is not going to grow one for us. The original urgency was Argon2id at 19 MiB turning every failed attempt into memory-hard work an unauthenticated caller could trigger; with `private_key_jwt` there is no password hashing at the token endpoint at all, and assertion verification is an RSA/ECDSA signature check. What remains is ordinary endpoint abuse, which belongs at the reverse proxy alongside every other rate limit, keyed on **client_id *and* source IP** — client_id alone lets an attacker lock out a legitimate service account.
 
 ### 4.3 Human callers
 
