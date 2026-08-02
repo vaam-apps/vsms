@@ -11,7 +11,15 @@ publish.workspace = true
 
 [dependencies]
 sms-api.workspace = true
+sms-auth.workspace = true
 cratestack.workspace = true
+# op.rs mounts the OP's routes directly against authkestra-axum's handler
+# functions (#20) — see that module's own doc for why not the crate's
+# all-in-one op_axum_router().
+authkestra-axum = { workspace = true, features = ["op"] }
+authkestra-engine.workspace = true
+authkestra-op.workspace = true
+axum.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true

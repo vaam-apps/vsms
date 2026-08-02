@@ -14,6 +14,13 @@ cratestack.workspace = true
 cratestack-codec-json.workspace = true
 sms-encoding.workspace = true
 sms-msisdn.workspace = true
+# auth.rs's GatewayAuth (#21): JWKS-backed validation. authkestra-engine
+# for Claims/extract_bearer_token, authkestra-resource for JwksCache,
+# jsonwebtoken for Validation — see auth.rs's own doc for why JwtStrategy
+# itself isn't used directly (its cache/validation fields are private).
+authkestra-engine.workspace = true
+authkestra-resource.workspace = true
+jsonwebtoken.workspace = true
 
 chrono.workspace = true
 serde.workspace = true

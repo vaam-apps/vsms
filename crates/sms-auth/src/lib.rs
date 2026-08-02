@@ -73,6 +73,8 @@
 //! rather than weakened, so it goes green the moment the pin moves to a
 //! fixed version instead of the regression going unnoticed a second time.
 
+pub mod op;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;

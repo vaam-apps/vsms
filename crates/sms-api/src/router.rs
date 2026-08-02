@@ -3,17 +3,18 @@
 use cratestack::axum::Router;
 use cratestack_codec_json::JsonCodec;
 
-use crate::auth::DenyAll;
+use crate::auth::GatewayAuth;
 use crate::procedures::Procedures;
 use crate::schema;
 
 /// Build the HTTP surface: generated model CRUD plus the seven procedures.
 ///
-/// The auth provider is [`DenyAll`] until milestone 1 — see its documentation.
+/// `auth` validates every request against the OP's own published JWKS —
+/// see [`GatewayAuth`]'s own documentation for what it accepts and why.
 // No `#[must_use]`: axum's `Router` already carries one, and doubling it is
 // what `clippy::double_must_use` objects to.
-pub fn router(db: schema::Cratestack) -> Router {
-    schema::axum::router(db, Procedures::new(), JsonCodec, DenyAll)
+pub fn router(db: schema::Cratestack, auth: GatewayAuth) -> Router {
+    schema::axum::router(db, Procedures::new(), JsonCodec, auth)
 }
 
 /// Every route the schema generated, for `sms-gateway routes`.
@@ -58,6 +59,12 @@ mod tests {
         let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1/none")
             .expect("a lazy pool only parses the URL");
-        let _router = router(schema::Cratestack::builder(pool).build());
+        let db = schema::Cratestack::builder(pool).build();
+        let auth = GatewayAuth::new(
+            db.clone(),
+            "https://auth.invalid/jwks.json".to_owned(),
+            "https://auth.invalid".to_owned(),
+        );
+        let _router = router(db, auth);
     }
 }
