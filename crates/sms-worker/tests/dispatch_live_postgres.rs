@@ -30,6 +30,19 @@ use std::sync::Arc;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// #102, found live: `dispatch::tick`'s own candidate query is
+/// deliberately global (§7.3 — a real claim loop must see every app's
+/// rows), so this binary's own tests, run concurrently by Rust's default
+/// multi-threaded test harness, race on the same shared pool of
+/// claimable messages. `no_active_provider_rejects_before_any_submission_is_attempted`
+/// in particular calls `deactivate_every_active_provider`, which would
+/// break every other concurrently-running test that depends on an active
+/// provider existing. See `claim_live_postgres.rs`'s own `TEST_MUTEX` doc
+/// for the full reasoning (including the first-use `pg_type` catalog
+/// race this also fixes) — same mechanism, same fix.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 fn sys() -> CoolContext {
     Principal {
         sub: "sms-worker-dispatch-test".to_owned(),
@@ -238,6 +251,7 @@ async fn reload(db: &Cratestack, id: &str) -> Message {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_well_formed_message_reaches_submitted() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let server = MockServer::start().await;
     mock_orange(&server).await;
@@ -283,6 +297,7 @@ async fn a_well_formed_message_reaches_submitted() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_rate_limited_submit_backs_off_to_queued() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let server = MockServer::start().await;
     mock_orange(&server).await;
@@ -321,6 +336,7 @@ async fn a_rate_limited_submit_backs_off_to_queued() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_rejected_submit_fails_the_message_outright() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let server = MockServer::start().await;
     mock_orange(&server).await;
@@ -353,6 +369,7 @@ async fn a_rejected_submit_fails_the_message_outright() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn exhausting_max_attempts_fails_the_message_without_a_further_submit_attempt() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let server = MockServer::start().await;
     mock_orange(&server).await;
@@ -406,6 +423,7 @@ async fn exhausting_max_attempts_fails_the_message_without_a_further_submit_atte
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn no_active_provider_rejects_before_any_submission_is_attempted() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     deactivate_every_active_provider(&db).await;
     let server = MockServer::start().await;

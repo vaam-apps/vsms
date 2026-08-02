@@ -21,6 +21,16 @@ use sms_api::schema::{self, ClientAuthMethod, Cratestack};
 use sms_auth::{SmsClientAssertionStore, SmsClientStore};
 use std::sync::Arc;
 
+/// #102, found live: on a genuinely fresh database, this binary's own
+/// tests — run concurrently by Rust's default multi-threaded test
+/// harness — can race on Postgres's own `pg_type` catalog the first time
+/// two of them prepare the exact same not-yet-cached query shape at the
+/// same instant. See `crates/sms-worker/tests/claim_live_postgres.rs`'s
+/// own `TEST_MUTEX` doc for the full reasoning — same mechanism, same
+/// fix.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 /// A `system`-role context — the only one `OauthClient` and `ClientAssertion`
 /// admit.
 fn sys() -> cratestack::CoolContext {
@@ -62,6 +72,7 @@ async fn db() -> Cratestack {
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn find_client_reads_a_persisted_private_key_jwt_client() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = Arc::new(db().await);
     let sys = sys();
 
@@ -109,6 +120,7 @@ async fn find_client_reads_a_persisted_private_key_jwt_client() {
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn find_client_returns_none_for_an_unknown_client() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = Arc::new(db().await);
     let store = SmsClientStore::new(db, sys());
 
@@ -136,6 +148,7 @@ async fn find_client_returns_none_for_an_unknown_client() {
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn record_jti_is_true_once_and_false_on_replay() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = Arc::new(db().await);
     let sys = sys();
     let store = SmsClientAssertionStore::new(db, sys);

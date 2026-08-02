@@ -38,6 +38,16 @@ use sms_api::schema::{
     self, Cratestack, Encoding, MessageClass, MessageState, OperatorCode, UpdateMessageInput,
 };
 
+/// #102, found live: on a genuinely fresh database, this binary's own
+/// tests — run concurrently by Rust's default multi-threaded test
+/// harness — can race on Postgres's own `pg_type` catalog the first time
+/// two of them prepare the exact same not-yet-cached query shape at the
+/// same instant. See `crates/sms-worker/tests/claim_live_postgres.rs`'s
+/// own `TEST_MUTEX` doc for the full reasoning — same mechanism, same
+/// fix.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 fn sys() -> CoolContext {
     Principal {
         sub: "errors-live-test".to_owned(),
@@ -153,6 +163,7 @@ async fn seed_accepted_message(
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn an_illegal_transition_surfaces_as_409_not_500() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
     let message = seed_accepted_message(&db, &app_id, None).await;
@@ -199,6 +210,7 @@ async fn an_illegal_transition_surfaces_as_409_not_500() {
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn a_duplicate_idempotency_key_surfaces_as_a_named_409() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
     let key = format!("errors-test-idem-{}", unique_suffix());
@@ -270,6 +282,7 @@ async fn a_duplicate_idempotency_key_surfaces_as_a_named_409() {
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn a_legal_transition_still_succeeds() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
     let message = seed_accepted_message(&db, &app_id, None).await;
