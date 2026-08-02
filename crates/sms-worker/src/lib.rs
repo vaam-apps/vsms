@@ -1,17 +1,24 @@
 //! The worker as a library. One binary, `sms-worker`, runs one or more
 //! [`Role`]s selected at startup — see §7.1 of the design doc.
 //!
-//! This crate is [`Role`] and [`run`] only. `lease.rs` (`pg_try_advisory_lock`
-//! for singleton roles, #28) and `claim.rs` (the CAS claim loop shared by
-//! every claiming role, #29) land as their own stories, not folded in here —
-//! #27 is the shape a role-selectable binary takes, not what any role
-//! actually does yet. Neither this crate nor `app/sms-worker` links
-//! `cratestack` or `sms-api` for that reason: nothing here touches a
-//! database, so adding that dependency now would be dead weight until #28
-//! gives it something to do.
+//! [`Role`]/[`run`] are #27's shape — a role-selectable binary — over
+//! [`lease`]'s advisory-lock leader election (#28). `claim.rs` (the CAS claim
+//! loop shared by every claiming role, #29) still lands as its own story:
+//! [`run`] is still every role's *entire* body, singleton or not — holding a
+//! [`lease::RoleLease`] only gates *whether* a singleton role's body runs,
+//! not what that body does, which stays "nothing yet" until #30–#35.
+//!
+//! This crate depends on `cratestack` (for [`lease`]'s raw-`sqlx` R1
+//! exception) but still not `sms-api` — `include_server_schema!` is invoked
+//! exactly once, in `sms-api`'s own `lib.rs`, and linking `cratestack-pg`'s
+//! runtime types elsewhere doesn't re-run that expansion.
 
 use std::fmt;
 use std::str::FromStr;
+
+use tokio_util::sync::CancellationToken;
+
+pub mod lease;
 
 /// A role `sms-worker` can run. §7.1's table, verbatim.
 ///
@@ -150,6 +157,69 @@ pub async fn run(role: Role) {
         "role started with no work implemented yet"
     );
     std::future::pending::<()>().await;
+}
+
+/// Run a singleton role behind a [`lease::RoleLease`], retrying every
+/// [`lease::RETRY_INTERVAL`] until cancelled.
+///
+/// Meaningless for a [`Cardinality::ScaleToN`] role — `app/sms-worker`'s
+/// `main` is what routes by cardinality; this function doesn't check, it
+/// just does what its name says with whatever `role` it's given.
+///
+/// Unlike [`run`], this **does** return — when `shutdown` is cancelled,
+/// whether that happens before a lock was ever acquired, while standing by,
+/// or while holding one. The holding case is the one that matters: on the
+/// way out it calls [`lease::RoleLease::release`], which is what makes a
+/// clean shutdown faster than the failover path §7.2 describes for a hard
+/// kill (`kill -9` skips this function entirely — the lease's `Drop` and
+/// Postgres's own session-lock semantics are what release it then; see
+/// [`lease`]'s module doc for why that's still correct, just slower).
+pub async fn run_singleton(role: Role, database_url: String, shutdown: CancellationToken) {
+    loop {
+        let acquired = tokio::select! {
+            () = shutdown.cancelled() => {
+                tracing::info!(role = %role, "cancelled before acquiring a lock");
+                return;
+            }
+            result = lease::RoleLease::try_acquire(&database_url, role) => result,
+        };
+
+        match acquired {
+            Ok(Some(held)) => {
+                tracing::info!(role = %role, "singleton lock acquired");
+                tokio::select! {
+                    () = run(role) => unreachable!("run() idles forever and never returns"),
+                    () = shutdown.cancelled() => {
+                        tracing::info!(role = %role, "shutdown requested; releasing lock");
+                        if let Err(error) = held.release().await {
+                            tracing::error!(
+                                role = %role, %error,
+                                "explicit lock release failed; the connection closing on \
+                                 process exit still releases it, just not as fast"
+                            );
+                        }
+                        return;
+                    }
+                }
+            }
+            Ok(None) => {
+                tracing::debug!(role = %role, "lock held elsewhere; standing by");
+            }
+            Err(error) => {
+                // The dangerous case: not "someone else has it" but "this
+                // attempt itself failed". If every node hits this for the
+                // same role, the role is unheld cluster-wide, which is
+                // exactly what §28 says to alert on rather than let blend
+                // into routine standby logging.
+                tracing::error!(role = %role, %error, "failed attempting the lock; retrying");
+            }
+        }
+
+        tokio::select! {
+            () = shutdown.cancelled() => return,
+            () = tokio::time::sleep(lease::RETRY_INTERVAL) => {}
+        }
+    }
 }
 
 /// Which open story gives a role its real loop body. Not `pub`: this is
