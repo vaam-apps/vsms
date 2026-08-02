@@ -18,6 +18,8 @@ $$ LANGUAGE SQL VOLATILE;
 ALTER TABLE apps                    ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE app_clients             ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE oauth_clients           ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE oauth_signing_keys      ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE client_assertions       ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE messages                ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE message_parts           ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE delivery_receipts       ALTER COLUMN id SET DEFAULT cs_cuid();
@@ -39,6 +41,10 @@ ALTER TABLE apps ALTER COLUMN created_at SET DEFAULT now(),
 ALTER TABLE app_clients ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
 ALTER TABLE oauth_clients ALTER COLUMN created_at SET DEFAULT now(),
+            ALTER COLUMN updated_at SET DEFAULT now();
+ALTER TABLE oauth_signing_keys ALTER COLUMN created_at SET DEFAULT now(),
+            ALTER COLUMN updated_at SET DEFAULT now();
+ALTER TABLE client_assertions ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
 ALTER TABLE sender_ids ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
@@ -84,6 +90,10 @@ CREATE TRIGGER apps_touch BEFORE UPDATE ON apps
 CREATE TRIGGER app_clients_touch BEFORE UPDATE ON app_clients
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER oauth_clients_touch BEFORE UPDATE ON oauth_clients
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER oauth_signing_keys_touch BEFORE UPDATE ON oauth_signing_keys
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER client_assertions_touch BEFORE UPDATE ON client_assertions
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER sender_ids_touch BEFORE UPDATE ON sender_ids
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
@@ -269,6 +279,15 @@ CREATE INDEX receipts_message_idx ON delivery_receipts (message_id);
 CREATE INDEX app_clients_app_idx  ON app_clients (app_id);
 CREATE INDEX routes_match_idx     ON routes (enabled, priority DESC);
 
+-- The OP reads exactly one row at startup: the newest active signing key.
+CREATE INDEX oauth_signing_keys_active_idx ON oauth_signing_keys (created_at DESC)
+    WHERE active;
+
+-- Reaping spent client assertions. A `jti` need only be remembered until its
+-- own `exp`; after that the assertion is refused on `exp` regardless, so
+-- keeping the row would only grow the table.
+CREATE INDEX client_assertions_expiry_idx ON client_assertions (expires_at);
+
 -- The framework's own outbox. `ensure_event_outbox_table` creates this lazily
 -- on the first emitting write, which is too late to index it here: applying
 -- the migration to a fresh database fails with
@@ -294,6 +313,8 @@ ALTER TABLE messages ADD CONSTRAINT messages_app_fk
     FOREIGN KEY (app_id) REFERENCES apps(id);
 ALTER TABLE app_clients ADD CONSTRAINT app_clients_app_fk
     FOREIGN KEY (app_id) REFERENCES apps(id);
+ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_app_client_fk
+    FOREIGN KEY (app_client_id) REFERENCES app_clients(id);
 ALTER TABLE message_parts ADD CONSTRAINT parts_message_fk
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE;
 ALTER TABLE delivery_receipts ADD CONSTRAINT receipts_message_fk
@@ -307,6 +328,39 @@ ALTER TABLE users ADD CONSTRAINT users_role_fk
 
 ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_format_check
     CHECK (prefix ~ '^[0-9]{1,4}$');
+
+-- private_key_jwt without a key is a client that can never authenticate;
+-- `none` *with* a key is a public client someone believed was confidential.
+--
+-- "Without a key" has to mean an empty key set too, not just a NULL column:
+-- `{"keys":[]}` is not null and is still keyless. The predicate is written to
+-- be *total* — it returns true or false for every JSON shape, never NULL —
+-- because a NULL in a CHECK passes. `jsonb_typeof(...) = 'array'` alone is
+-- NULL when `keys` is absent, and `jsonb_array_length` raises when `keys` is
+-- an object, so neither is usable on its own. Verified against Postgres 16
+-- for `{"keys":[{...}]}` (pass) and each of `{"keys":[]}`, `{}`,
+-- `{"keys":null}`, `{"keys":{}}`, `{"keys":"abc"}`, `null`, `[]` (all fail).
+--
+-- What this does NOT do is validate the keys themselves — `{"keys":[{}]}`
+-- passes. Structural JWK validation needs to parse each key and belongs in
+-- `provisionAppClient`, which parses them anyway. This constraint exists to
+-- catch the registration that is empty or malformed at the top level, which
+-- is the mistake people actually make.
+--
+-- A `jwks` that is not JSON at all fails on the `::jsonb` cast with a json
+-- syntax error rather than a constraint violation. Still rejected, just with
+-- a less obvious message.
+ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_auth_method_jwks_check
+    CHECK ((token_endpoint_auth_method = 'private_key_jwt'
+              AND COALESCE(jsonb_typeof(jwks::jsonb -> 'keys'), '') = 'array'
+              AND jsonb_path_exists(jwks::jsonb, '$.keys[0]'))
+        OR (token_endpoint_auth_method = 'none' AND jwks IS NULL));
+
+-- A client that presents no credential at all has only PKCE standing between
+-- it and anyone who can reach /token. `none` without require_pkce is an open
+-- token endpoint, so the database refuses to store one.
+ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_public_requires_pkce_check
+    CHECK (token_endpoint_auth_method <> 'none' OR require_pkce);
 
 INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes) VALUES
     ('62',  'camtel', 'unverified', 'Camtel; unverified per architecture.md §3.4'),

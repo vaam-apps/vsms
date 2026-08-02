@@ -15,6 +15,9 @@
 --   - apps.created_at
 --   - apps.updated_at
 --   - apps.id
+--   - client_assertions.created_at
+--   - client_assertions.updated_at
+--   - client_assertions.id
 --   - delivery_receipts.id
 --   - delivery_receipts.received_at
 --   - jobs.created_at
@@ -29,6 +32,9 @@
 --   - oauth_clients.created_at
 --   - oauth_clients.updated_at
 --   - oauth_clients.id
+--   - oauth_signing_keys.created_at
+--   - oauth_signing_keys.updated_at
+--   - oauth_signing_keys.id
 --   - operator_prefix_rules.created_at
 --   - operator_prefix_rules.updated_at
 --   - operator_prefix_rules.id
@@ -85,6 +91,15 @@ CREATE TABLE apps (
     transliterate_to_gsm7 BOOLEAN NOT NULL,
     active BOOLEAN NOT NULL DEFAULT true,
     deleted_at TIMESTAMPTZ,
+    PRIMARY KEY (id)
+);
+
+CREATE TABLE client_assertions (
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    id TEXT NOT NULL,
+    jti TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -181,12 +196,23 @@ CREATE TABLE oauth_clients (
     id TEXT NOT NULL,
     client_id TEXT NOT NULL,
     app_client_id TEXT,
-    secret_hash TEXT NOT NULL,
+    token_endpoint_auth_method TEXT NOT NULL,
+    jwks TEXT,
     grant_types TEXT NOT NULL,
     scopes TEXT NOT NULL,
     redirect_uris TEXT NOT NULL,
     require_pkce BOOLEAN NOT NULL,
     active BOOLEAN NOT NULL DEFAULT true,
+    PRIMARY KEY (id)
+);
+
+CREATE TABLE oauth_signing_keys (
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    id TEXT NOT NULL,
+    private_key_pem TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT true,
+    expires_at TIMESTAMPTZ,
     PRIMARY KEY (id)
 );
 
@@ -350,6 +376,8 @@ CREATE UNIQUE INDEX app_clients_client_id_key ON app_clients (client_id);
 
 CREATE UNIQUE INDEX apps_slug_key ON apps (slug);
 
+CREATE UNIQUE INDEX client_assertions_jti_key ON client_assertions (jti);
+
 CREATE UNIQUE INDEX oauth_clients_client_id_key ON oauth_clients (client_id);
 
 CREATE UNIQUE INDEX operator_prefix_rules_prefix_key ON operator_prefix_rules (prefix);
@@ -381,6 +409,8 @@ ALTER TABLE messages ADD CONSTRAINT messages_class_enum_check CHECK (class IN ('
 ALTER TABLE messages ADD CONSTRAINT messages_encoding_enum_check CHECK (encoding IN ('gsm7', 'ucs2'));
 
 ALTER TABLE messages ADD CONSTRAINT messages_state_enum_check CHECK (state IN ('accepted', 'queued', 'routed', 'submitted', 'delivered', 'uncertain', 'undelivered', 'failed', 'expired', 'rejected', 'cancelled'));
+
+ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_token_endpoint_auth_method_enum_check CHECK (token_endpoint_auth_method IN ('private_key_jwt', 'none'));
 
 ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_operator_enum_check CHECK (operator IN ('mtn', 'orange', 'camtel', 'nexttel', 'unknown'));
 
