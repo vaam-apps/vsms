@@ -172,7 +172,25 @@ fn to_registration(row: schema::OauthClient) -> Result<ClientRegistration, Regis
         // TokenRequest.audience and allowed_audiences apply only to token
         // exchange, which is unreachable on the client_credentials path this
         // system uses (§4.2) — token exchange needs claims.identity, and
-        // client-credentials tokens always have identity: None.
+        // client-credentials tokens always have identity: None. Kept
+        // deliberately empty rather than parsed from anywhere, because
+        // there is nowhere to parse it *from*: OauthClient has no
+        // allowed-audiences column, and grantTypes has no CHECK stopping a
+        // future row from listing "token_exchange" anyway (§2.10 enforces
+        // none of its values).
+        //
+        // If that ever happens before this comment is revisited: verified
+        // against authkestra_op::handlers::token that an *explicit*
+        // TokenRequest.audience fails closed here — `allowed_audiences`
+        // empty means `.contains(&requested_aud)` is always false, so the
+        // exchange is refused with `invalid_target`. But an *omitted*
+        // audience skips that check entirely and defaults to
+        // `config.issuer.clone()`, succeeding regardless of
+        // `allowed_audiences` — narrower than "accepts any audience," but
+        // still "exchanges to the gateway's own issuer with no
+        // per-resource scoping," which is not a decision this crate should
+        // make silently. A real token_exchange client needs a schema
+        // column here, not this empty vec.
         allowed_audiences: vec![],
         // Always Some: tokenEndpointAuthMethod is NOT NULL with no @default
         // (§2.2) precisely so this can never be the None that authkestra
