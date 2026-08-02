@@ -1,0 +1,26 @@
+[package]
+name = "sms-provider"
+description = "The SmsProvider trait every adapter (HTTP or SMPP) implements, plus the shared Capabilities and ProviderError types routing decisions read"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Pure crates only — matching sms-encoding/sms-msisdn's shape, not the
+# framework. SubmitRequest carries an SmsEncoding rather than reinventing a
+# third encoding enum alongside sms-encoding's and the schema's.
+sms-encoding.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+rust_decimal.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }
+
+[lints]
+workspace = true

@@ -13,7 +13,7 @@ use crate::schema;
 // No `#[must_use]`: axum's `Router` already carries one, and doubling it is
 // what `clippy::double_must_use` objects to.
 pub fn router(db: schema::Cratestack) -> Router {
-    schema::axum::router(db, Procedures, JsonCodec, DenyAll)
+    schema::axum::router(db, Procedures::new(), JsonCodec, DenyAll)
 }
 
 /// Every route the schema generated, for `sms-gateway routes`.
