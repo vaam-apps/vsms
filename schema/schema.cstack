@@ -149,7 +149,16 @@ model App {
   @@soft_delete
   @@audit
   @@paged
-  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('developer'))
+  // hasRole('system') added here alongside the human-facing roles — found
+  // live, the same way as AppClient's missing create policy just above:
+  // §3.2's own sequence diagram has the *gateway itself* doing
+  // "client_id -> AppClient -> App (cached 60s)" as an internal step on
+  // every authenticated request, which is a system operation, not a human
+  // admin-console one. Without this, sendMessage's own App lookup — under
+  // the system context every other cross-cutting read in that procedure
+  // already uses — returns nothing, so a caller sees "unknown client" on
+  // every request from a client that unquestionably exists.
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('developer') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
   @@allow("update", hasRole('owner') || hasRole('admin'))
   @@allow("delete", hasRole('owner'))
@@ -171,7 +180,21 @@ model AppClient {
 
   @@audit
   @@paged
-  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  // hasRole('system') added alongside the human roles — same root cause as
+  // App's own read policy just above: sendMessage's clientId -> AppClient
+  // lookup runs under a system context, and without this the row it just
+  // created under that same context is invisible to it a moment later.
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('developer') || hasRole('system'))
+  // No @@allow("create", ...) at all here previously — deny-by-default
+  // (§2.0) meant nobody, not even system, could ever write an AppClient
+  // row through the generated API. Found live: seeding one for #32's own
+  // test suite raised Forbidden("create policy denied this operation")
+  // under every role tried, owner included. hasRole('system') matches the
+  // convention every other model with a procedure-only write path already
+  // uses (OauthClient, ClientAssertion) — provisionAppClient (#23) is
+  // this model's intended sole writer, the same way SmsClientStore is
+  // OauthClient's.
+  @@allow("create", hasRole('system'))
   @@allow("update", hasRole('owner') || hasRole('admin'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))
   @@emit(created, updated, deleted)
@@ -278,8 +301,13 @@ model SenderIdRegistration {
   reference String?
   rejectionReason String?
 
+  // read: found live debugging #32's sendMessage — resolve_sender_id()'s
+  // approval lookup runs under Procedures::sys() (kind=App, role=system),
+  // which satisfied neither clause here, so a correctly-seeded approved
+  // registration was invisible to the procedure that needs to see it. Same
+  // root cause, same fix, as App and AppClient's own read policies above.
   @@audit
-  @@allow("read", auth().kind == "user")
+  @@allow("read", auth().kind == "user" || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator'))
   @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
 }
@@ -365,8 +393,14 @@ model OperatorPrefixRule {
   notes String?
   active Boolean @default(true)
 
+  // read: found live debugging #32's sendMessage — classify_operator()'s
+  // table-rebuild query runs under Procedures::sys() (kind=App,
+  // role=system), which satisfied none of the human-role clauses below, so
+  // every send silently classified as `unknown` instead of querying the
+  // seeded rows. Same root cause, same fix, as SenderIdRegistration's own
+  // read policy above.
   @@audit
-  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
   @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('system'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))

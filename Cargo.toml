@@ -7,6 +7,8 @@ members = [
   "crates/sms-api",
   "crates/sms-auth",
   "crates/sms-worker",
+  "crates/sms-provider",
+  "crates/sms-provider-orange-cm",
   "app/sms-gateway",
   "app/sms-worker",
 ]
@@ -29,6 +31,8 @@ sms-msisdn = { path = "./crates/sms-msisdn" }
 sms-api = { path = "./crates/sms-api" }
 sms-auth = { path = "./crates/sms-auth" }
 sms-worker = { path = "./crates/sms-worker" }
+sms-provider = { path = "./crates/sms-provider" }
+sms-provider-orange-cm = { path = "./crates/sms-provider-orange-cm" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`
 # paths, so the facade has to be in scope under exactly that name. Pinned
@@ -48,8 +52,14 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
+# rustls, not native-tls/openssl — matches every other reqwest already in
+# this dependency tree (cratestack-sqlx, authkestra-engine both resolve to
+# hyper-rustls), so this doesn't introduce a second TLS stack to build.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util = "0.7"
