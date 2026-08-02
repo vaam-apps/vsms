@@ -331,9 +331,30 @@ ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_fo
 
 -- private_key_jwt without a key is a client that can never authenticate;
 -- `none` *with* a key is a public client someone believed was confidential.
+--
+-- "Without a key" has to mean an empty key set too, not just a NULL column:
+-- `{"keys":[]}` is not null and is still keyless. The predicate is written to
+-- be *total* — it returns true or false for every JSON shape, never NULL —
+-- because a NULL in a CHECK passes. `jsonb_typeof(...) = 'array'` alone is
+-- NULL when `keys` is absent, and `jsonb_array_length` raises when `keys` is
+-- an object, so neither is usable on its own. Verified against Postgres 16
+-- for `{"keys":[{...}]}` (pass) and each of `{"keys":[]}`, `{}`,
+-- `{"keys":null}`, `{"keys":{}}`, `{"keys":"abc"}`, `null`, `[]` (all fail).
+--
+-- What this does NOT do is validate the keys themselves — `{"keys":[{}]}`
+-- passes. Structural JWK validation needs to parse each key and belongs in
+-- `provisionAppClient`, which parses them anyway. This constraint exists to
+-- catch the registration that is empty or malformed at the top level, which
+-- is the mistake people actually make.
+--
+-- A `jwks` that is not JSON at all fails on the `::jsonb` cast with a json
+-- syntax error rather than a constraint violation. Still rejected, just with
+-- a less obvious message.
 ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_auth_method_jwks_check
-    CHECK ((token_endpoint_auth_method = 'private_key_jwt' AND jwks IS NOT NULL)
-        OR (token_endpoint_auth_method = 'none'            AND jwks IS NULL));
+    CHECK ((token_endpoint_auth_method = 'private_key_jwt'
+              AND COALESCE(jsonb_typeof(jwks::jsonb -> 'keys'), '') = 'array'
+              AND jsonb_path_exists(jwks::jsonb, '$.keys[0]'))
+        OR (token_endpoint_auth_method = 'none' AND jwks IS NULL));
 
 -- A client that presents no credential at all has only PKCE standing between
 -- it and anyone who can reach /token. `none` without require_pkce is an open

@@ -154,7 +154,9 @@ fn provision_app_client_can_set_every_field_it_owns() {
         clientId: "otp-svc-v1".to_owned(),
         appClientId: Some("apc00000000000000000001".to_owned()),
         tokenEndpointAuthMethod: ClientAuthMethod::private_key_jwt,
-        jwks: Some(r#"{"keys":[]}"#.to_owned()),
+        // A real key set: §2.10's CHECK rejects `{"keys":[]}`, which is not
+        // null and still keyless.
+        jwks: Some(r#"{"keys":[{"kty":"RSA","kid":"k1","n":"…","e":"AQAB"}]}"#.to_owned()),
         grantTypes: " client_credentials ".to_owned(),
         scopes: " sms:send ".to_owned(),
         redirectUris: " ".to_owned(),

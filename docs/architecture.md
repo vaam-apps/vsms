@@ -395,7 +395,7 @@ model ClientAssertion {
 
 `OauthClient` is the OP's client registry, living in the gateway schema so `sms-auth` reads it through delegates rather than raw SQL (R1). Its policy is `hasRole('system')` on every action — **no HTTP principal can read this model at all**. `grantTypes` is a plain delimited `String`, which is also the wire format OAuth uses.
 
-**There is no `secretHash`, and no column that could hold one.** Machine callers authenticate with `private_key_jwt`; the admin console is a public client protected by PKCE (§4.2). The database stores only public keys, so there is no shared secret in this system to leak, hash, rotate, or accidentally log. `tokenEndpointAuthMethod` is `NOT NULL` with **no `@default`** on purpose: a `@default` would drop it from `CreateOauthClientInput` (§2.0), leaving it unsettable, and a *missing* method is how authkestra spells "registration predates the field" — a state that accepts a secret from either transport and refuses assertions outright. Every row naming its method makes that branch unreachable. Two hand-written `CHECK`s in §2.10 finish the job: `private_key_jwt` must carry a `jwks`, and `none` must require PKCE.
+**There is no `secretHash`, and no column that could hold one.** Machine callers authenticate with `private_key_jwt`; the admin console is a public client protected by PKCE (§4.2). The database stores only public keys, so there is no shared secret in this system to leak, hash, rotate, or accidentally log. `tokenEndpointAuthMethod` is `NOT NULL` with **no `@default`** on purpose: a `@default` would drop it from `CreateOauthClientInput` (§2.0), leaving it unsettable, and a *missing* method is how authkestra spells "registration predates the field" — a state that accepts a secret from either transport and refuses assertions outright. Every row naming its method makes that branch unreachable. Two hand-written `CHECK`s in §2.10 finish the job: `private_key_jwt` must carry a `jwks` holding **at least one key** — `{"keys":[]}` is not null and is still keyless — and `none` must require PKCE.
 
 `OauthSigningKey` holds the OP's RS256 keys, with `id` doubling as the JWKS `kid`. Note what `@sensitive` does **not** do: it redacts audit snapshots only and adds no serde attribute (§2.0), so the model's `hasRole('system')` read policy is the whole confidentiality control over `privateKeyPem`. `system` is a synthetic internal role that no issued token may ever carry — an `AuthProvider` that mints `system` for HTTP callers hands them the key that signs every token in the system, through generated CRUD, with no other mistake required.
 
@@ -1232,9 +1232,30 @@ ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_fo
 ```sql
 -- private_key_jwt without a key is a client that can never authenticate;
 -- `none` *with* a key is a public client someone believed was confidential.
+--
+-- "Without a key" has to mean an empty key set too, not just a NULL column:
+-- `{"keys":[]}` is not null and is still keyless. The predicate is written to
+-- be *total* — it returns true or false for every JSON shape, never NULL —
+-- because a NULL in a CHECK passes. `jsonb_typeof(...) = 'array'` alone is
+-- NULL when `keys` is absent, and `jsonb_array_length` raises when `keys` is
+-- an object, so neither is usable on its own. Verified against Postgres 16
+-- for `{"keys":[{...}]}` (pass) and each of `{"keys":[]}`, `{}`,
+-- `{"keys":null}`, `{"keys":{}}`, `{"keys":"abc"}`, `null`, `[]` (all fail).
+--
+-- What this does NOT do is validate the keys themselves — `{"keys":[{}]}`
+-- passes. Structural JWK validation needs to parse each key and belongs in
+-- `provisionAppClient`, which parses them anyway. This constraint exists to
+-- catch the registration that is empty or malformed at the top level, which
+-- is the mistake people actually make.
+--
+-- A `jwks` that is not JSON at all fails on the `::jsonb` cast with a json
+-- syntax error rather than a constraint violation. Still rejected, just with
+-- a less obvious message.
 ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_auth_method_jwks_check
-    CHECK ((token_endpoint_auth_method = 'private_key_jwt' AND jwks IS NOT NULL)
-        OR (token_endpoint_auth_method = 'none'            AND jwks IS NULL));
+    CHECK ((token_endpoint_auth_method = 'private_key_jwt'
+              AND COALESCE(jsonb_typeof(jwks::jsonb -> 'keys'), '') = 'array'
+              AND jsonb_path_exists(jwks::jsonb, '$.keys[0]'))
+        OR (token_endpoint_auth_method = 'none' AND jwks IS NULL));
 
 -- A client that presents no credential at all has only PKCE standing between
 -- it and anyone who can reach /token. `none` without require_pkce is an open
