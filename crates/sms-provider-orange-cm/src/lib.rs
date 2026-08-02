@@ -344,7 +344,25 @@ impl SmsProvider for OrangeCmProvider {
 
         Ok(SubmitAck {
             provider_ref,
-            provider_ref_alt: None,
+            // #95's fix, completed: `sms_api::dlr::ingest_one` matches a
+            // DLR's `provider_ref` against `Message.providerMessageRef` OR
+            // `providerMessageRefAlt` — generic, provider-agnostic
+            // correlation built on the assumption that whatever a
+            // `DeliveryUpdate::provider_ref` holds was already stored in
+            // one of those two columns at submit time. `provider_ref`
+            // above (the resource_id) satisfies that for
+            // `providerMessageRef`, but the DLR's own `provider_ref` is
+            // now `callbackData` (`req.reference`, i.e. `Message.id` —
+            // see the `receiptRequest` above), a *different* value. Found
+            // live dry-running #36: without this, a synthetic DLR with the
+            // exact `callbackData` the request itself carried still logged
+            // "no known message" and matched nothing.
+            // `SubmitAck::provider_ref_alt` exists precisely for this
+            // shape — "a provider reports the same submission two
+            // different ways, once at submit time, once at DLR time" — so
+            // this is that second form, not a new field or a change to
+            // `sms-api`'s generic matching logic.
+            provider_ref_alt: Some(req.reference.clone()),
         })
     }
 
@@ -482,7 +500,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(ack.provider_ref, "res-42");
-        assert_eq!(ack.provider_ref_alt, None);
+        assert_eq!(
+            ack.provider_ref_alt,
+            Some("msg-1".to_owned()),
+            "the caller's own reference (== callbackData) must be the alt reference, so \
+             sms-api's generic providerMessageRefAlt matching finds the DLR — see submit()'s \
+             own doc"
+        );
     }
 
     /// #95's actual fix, proven at the wire level: the request Orange
