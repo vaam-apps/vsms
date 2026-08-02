@@ -78,7 +78,7 @@ Retained because they are cheap and still correct, not because they are load-bea
 | | |
 |---|---|
 | [CrateStack](https://cratestack.dev/) `=0.5.0` | Schema-first. `.cstack` generates models, policies, audit, events, REST. Pre-1.0 and moving fast — pin exactly. Never below 0.5.0; see the build-cost section. |
-| [Authkestra](https://github.com/marcjazz/authkestra) `=0.2.3` | OIDC provider. Days old at time of writing. Pin exactly. |
+| [Authkestra](https://github.com/marcjazz/authkestra) `=0.3.2` | OIDC provider. Fixed the `GrantType` serde bug that shaped early M1 design (#6). Pin exactly — still moving fast. |
 | PostgreSQL 16 | The only coordination mechanism. Queues (`SKIP LOCKED`), leader election (advisory locks), state machines (triggers). No broker, no Redis. |
 | Rust 2021, TypeScript / Next.js 15 | |
 

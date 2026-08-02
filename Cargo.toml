@@ -1,9 +1,11 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/sms-core",
   "crates/sms-encoding",
   "crates/sms-msisdn",
   "crates/sms-api",
+  "crates/sms-auth",
   "app/sms-gateway",
 ]
 
@@ -19,9 +21,11 @@ publish = false
 [workspace.dependencies]
 # Internal crates. `crates/` is libraries, `app/` is binaries — a binary may
 # depend on any library, never the reverse.
+sms-core = { path = "./crates/sms-core" }
 sms-encoding = { path = "./crates/sms-encoding" }
 sms-msisdn = { path = "./crates/sms-msisdn" }
 sms-api = { path = "./crates/sms-api" }
+sms-auth = { path = "./crates/sms-auth" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`
 # paths, so the facade has to be in scope under exactly that name. Pinned
@@ -31,7 +35,13 @@ sms-api = { path = "./crates/sms-api" }
 cratestack = { package = "cratestack-pg", version = "=0.5.0" }
 cratestack-codec-json = "=0.5.0"
 
+# OIDC provider. Pinned exactly, same reasoning as cratestack above — see
+# AGENTS.md. 0.3.2 fixed the `GrantType` serde bug that shaped early M1
+# design (#6): don't drop below it.
+authkestra-op = "=0.3.2"
+
 anyhow = "1"
+async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
