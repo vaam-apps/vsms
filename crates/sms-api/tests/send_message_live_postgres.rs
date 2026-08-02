@@ -27,6 +27,16 @@ use sms_api::schema::{
 };
 use sms_api::Procedures;
 
+/// #102, found live: on a genuinely fresh database, this binary's own
+/// tests — run concurrently by Rust's default multi-threaded test
+/// harness — can race on Postgres's own `pg_type` catalog the first time
+/// two of them prepare the exact same not-yet-cached query shape at the
+/// same instant. See `crates/sms-worker/tests/claim_live_postgres.rs`'s
+/// own `TEST_MUTEX` doc for the full reasoning — same mechanism, same
+/// fix.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 fn owner() -> CoolContext {
     Principal {
         sub: "send-message-test-owner".to_owned(),
@@ -253,6 +263,7 @@ fn args(to: &str, body: &str, sender_id: Option<&str>) -> send_message::Args {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_well_formed_send_is_accepted_and_classified() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new();
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
@@ -279,6 +290,7 @@ async fn a_well_formed_send_is_accepted_and_classified() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_unknown_client_id_is_unauthorized() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new();
 
@@ -297,6 +309,7 @@ async fn an_unknown_client_id_is_unauthorized() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_human_caller_is_rejected_with_a_clear_reason_not_a_guess() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new();
     let human = Principal {
@@ -322,6 +335,7 @@ async fn a_human_caller_is_rejected_with_a_clear_reason_not_a_guess() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_opted_out_recipient_is_refused_before_persistence() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new();
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
@@ -377,6 +391,7 @@ fn sha_of(input: &str) -> String {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_full_monthly_quota_is_refused() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new();
     // Quota of 0: any send at all should already be "at" quota.
@@ -398,6 +413,7 @@ async fn a_full_monthly_quota_is_refused() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn no_sender_id_and_no_default_is_refused() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new();
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
@@ -417,6 +433,7 @@ async fn no_sender_id_and_no_default_is_refused() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_unregistered_sender_id_is_refused() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new();
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
@@ -436,6 +453,7 @@ async fn an_unregistered_sender_id_is_refused() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_app_default_sender_is_used_when_none_is_given() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new();
     let sender = seed_approved_sender(&db).await;
@@ -469,6 +487,7 @@ async fn an_app_default_sender_is_used_when_none_is_given() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_unrecognised_prefix_classifies_as_unknown_not_a_guess() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new();
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;

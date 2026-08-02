@@ -29,6 +29,20 @@ use sms_provider::{
     SubmitAck, SubmitRequest,
 };
 
+/// #102, found live: on a genuinely fresh database, this binary's own
+/// tests — run concurrently by Rust's default multi-threaded test
+/// harness — can race on Postgres's own `pg_type` catalog the first time
+/// two of them prepare the exact same not-yet-cached query shape (e.g.
+/// `db.provider().create(...)`) at the same instant: `duplicate key
+/// value violates unique constraint "pg_type_typname_nsp_index"`. See
+/// `crates/sms-worker/tests/claim_live_postgres.rs`'s own `TEST_MUTEX`
+/// doc for the full reasoning — same mechanism, same fix, applied here
+/// even though this file has no candidate-query contamination risk of
+/// its own (every test already scopes its own lookups to its own seeded
+/// message).
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 fn sys() -> CoolContext {
     Principal {
         sub: "dlr-ingestion-test-system".to_owned(),
@@ -282,6 +296,7 @@ fn empty_callback() -> RawCallback {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_delivered_dlr_transitions_a_submitted_message_and_writes_a_receipt() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let provider_id = seed_provider(&db).await;
     let app_id = seed_app(&db).await;
@@ -307,6 +322,7 @@ async fn a_delivered_dlr_transitions_a_submitted_message_and_writes_a_receipt() 
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_unmatched_provider_ref_is_ignored_not_an_error() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let provider_id = seed_provider(&db).await;
 
@@ -327,6 +343,7 @@ async fn an_unmatched_provider_ref_is_ignored_not_an_error() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_retryable_failure_from_submitted_goes_to_undelivered() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let provider_id = seed_provider(&db).await;
     let app_id = seed_app(&db).await;
@@ -347,6 +364,7 @@ async fn a_retryable_failure_from_submitted_goes_to_undelivered() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_retryable_failure_from_uncertain_goes_to_failed_not_undelivered() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let provider_id = seed_provider(&db).await;
     let app_id = seed_app(&db).await;
@@ -396,6 +414,7 @@ async fn a_retryable_failure_from_uncertain_goes_to_failed_not_undelivered() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_stale_dlr_after_the_message_already_finalised_is_swallowed_not_an_error() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let provider_id = seed_provider(&db).await;
     let app_id = seed_app(&db).await;

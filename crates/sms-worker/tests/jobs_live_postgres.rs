@@ -33,6 +33,17 @@ use sms_worker::jobs::{self, JobHandler, Registry};
 use sms_worker::scheduler::{self, RecurringJobSpec};
 use sms_worker::WorkerContext;
 
+/// #102, found live: `jobs::tick`/`scheduler::tick`'s own candidate
+/// queries are deliberately global, so this binary's own tests, run
+/// concurrently by Rust's default multi-threaded test harness, race on
+/// the same shared pool of claimable jobs — one test's `tick()` call can
+/// claim another test's seeded job before that test's own call does. See
+/// `claim_live_postgres.rs`'s own `TEST_MUTEX` doc for the full
+/// reasoning (including the first-use `pg_type` catalog race this also
+/// fixes) — same mechanism, same fix.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 fn sys() -> CoolContext {
     Principal {
         sub: "sms-worker-jobs-test".to_owned(),
@@ -183,6 +194,7 @@ fn registry_with(handler: ScriptedHandler) -> Registry {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_pending_job_is_claimed_run_and_marked_succeeded() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let kind = format!("test_succeed_{}", unique_suffix());
     let seeded = seed_job(&db, &kind, 3).await;
@@ -209,6 +221,7 @@ async fn a_pending_job_is_claimed_run_and_marked_succeeded() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_handler_error_backs_off_the_job_to_pending_with_a_future_run_at() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let kind = format!("test_fail_{}", unique_suffix());
     let seeded = seed_job(&db, &kind, 3).await;
@@ -243,6 +256,7 @@ async fn a_handler_error_backs_off_the_job_to_pending_with_a_future_run_at() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn exhausting_max_attempts_moves_a_failed_job_to_dead() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let kind = format!("test_fail_once_{}", unique_suffix());
     let seeded = seed_job(&db, &kind, 1).await;
@@ -273,6 +287,7 @@ async fn exhausting_max_attempts_moves_a_failed_job_to_dead() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_crashed_jobs_lease_reclaims_to_pending_and_only_actually_runs_on_the_next_claim() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let kind = format!("test_reclaim_{}", unique_suffix());
     let seeded = seed_job(&db, &kind, 3).await;
@@ -335,6 +350,7 @@ async fn a_crashed_jobs_lease_reclaims_to_pending_and_only_actually_runs_on_the_
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn scheduler_tick_does_not_double_enqueue_within_the_cadence_window() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let kind: &'static str =
         Box::leak(format!("test_cadence_{}", unique_suffix()).into_boxed_str());
@@ -366,6 +382,7 @@ async fn scheduler_tick_does_not_double_enqueue_within_the_cadence_window() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn scheduler_tick_enqueues_again_once_the_cadence_elapses() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let kind: &'static str =
         Box::leak(format!("test_cadence_elapsed_{}", unique_suffix()).into_boxed_str());
@@ -542,6 +559,7 @@ async fn reload_message(db: &Cratestack, id: &str) -> schema::Message {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn expire_stale_expires_a_submitted_message_past_its_validity_window() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
     let seeded = seed_submitted_message(&db, &app_id, Utc::now() - Duration::minutes(1)).await;
@@ -559,6 +577,7 @@ async fn expire_stale_expires_a_submitted_message_past_its_validity_window() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn expire_stale_expires_an_uncertain_message_past_its_six_hour_grace() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
     let submitted = seed_submitted_message(&db, &app_id, Utc::now() + Duration::hours(1)).await;
@@ -593,6 +612,7 @@ async fn expire_stale_expires_an_uncertain_message_past_its_six_hour_grace() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn expire_stale_leaves_a_fresh_uncertain_message_alone() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
     let submitted = seed_submitted_message(&db, &app_id, Utc::now() + Duration::hours(1)).await;

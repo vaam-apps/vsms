@@ -25,6 +25,29 @@ use sms_api::schema::{
 };
 use sms_worker::claim::{claim_batch, Claimable};
 
+/// #102, found live: `claim_batch::<Message>`'s candidate query is
+/// deliberately global (production's own claim loop must see every app's
+/// rows, not just one test's), so this binary's own tests — run
+/// concurrently by default, since Rust's test harness multi-threads
+/// within one binary unless told otherwise — steal and crowd each other's
+/// candidate rows: `respects_the_budget` claiming fewer than its own
+/// budget, `claims_an_unleased_accepted_message_and_transitions_it_to_routed`
+/// not finding its own seeded row in the batch it just claimed, and (on a
+/// genuinely fresh, empty database) a first-use race on Postgres's own
+/// `pg_type` catalog when two tests' never-before-prepared queries first
+/// run at the exact same instant (`duplicate key value violates unique
+/// constraint "pg_type_typname_nsp_index"`). `--test-threads=1` does fix
+/// this (verified: passing it to the outer `cargo test` invocation
+/// serializes this binary's own tests and every failure mode above goes
+/// away) — but nothing enforces it, and every test file's own documented
+/// run command in this workspace omits it. A mutex every test acquires
+/// for its whole body makes this binary self-serializing regardless of
+/// how it's invoked, fixing both failure modes with one mechanism: with
+/// no two tests' queries ever running concurrently, there is nothing left
+/// to race on, including the very first query of the whole run.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 fn sys() -> CoolContext {
     Principal {
         sub: "sms-worker-claim-test".to_owned(),
@@ -197,6 +220,7 @@ async fn seed_message(
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn claims_an_unleased_accepted_message_and_transitions_it_to_routed() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     // Not necessarily *the* provider this test seeds — this database is
     // never reset between runs, so a prior run's still-active provider can
@@ -241,6 +265,7 @@ async fn claims_an_unleased_accepted_message_and_transitions_it_to_routed() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn does_not_reclaim_a_row_with_an_unexpired_lease() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(
@@ -271,6 +296,7 @@ async fn does_not_reclaim_a_row_with_an_unexpired_lease() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_expired_lease_value_does_not_exclude_a_row_regardless_of_state() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(
@@ -304,6 +330,7 @@ async fn an_expired_lease_value_does_not_exclude_a_row_regardless_of_state() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn reclaims_a_routed_row_abandoned_by_a_crashed_worker() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     seed_provider(&db).await;
     let app_id = seed_app(&db).await;
@@ -350,6 +377,7 @@ async fn reclaims_a_routed_row_abandoned_by_a_crashed_worker() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_expired_message_is_never_a_candidate() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, None, Utc::now() - Duration::minutes(1)).await;
@@ -367,6 +395,7 @@ async fn an_expired_message_is_never_a_candidate() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn respects_the_budget() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
     for _ in 0..3 {
@@ -388,6 +417,7 @@ async fn respects_the_budget() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn two_concurrent_claimers_never_both_win_the_same_row() {
+    let _guard = TEST_MUTEX.lock().await;
     let db = std::sync::Arc::new(db().await);
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
