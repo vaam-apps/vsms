@@ -9,6 +9,8 @@
 //! integration test in a different crate. The ~30 lines this duplicates
 //! are wiring, not logic — the logic under test
 //! (`sms_auth::op`/`sms_api::GatewayAuth`) is the real, shared code.
+//! Future changes to the real `op.rs` (`discovery_handler` included) should
+//! be mirrored here.
 //!
 //! Ignored by default, same convention as this workspace's other live
 //! suites. Run explicitly:
@@ -25,10 +27,11 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration as StdDuration;
 
 use authkestra_axum::helpers::AxumError;
-use authkestra_axum::op::{axum_discovery_handler, axum_token_handler};
+use authkestra_axum::op::axum_token_handler;
 use authkestra_engine::token::jwk::Jwk;
 use authkestra_engine::TokenManager;
 use authkestra_op::config::OpConfig;
+use authkestra_op::handlers::discovery::OidcDiscovery;
 use authkestra_op::handlers::jwks::JwksResponse;
 use authkestra_op::OpStore;
 use axum::extract::{FromRef, State};
@@ -154,13 +157,17 @@ async fn jwks_handler(State(state): State<OpState>) -> Json<JwksResponse> {
     Json(JwksResponse::new((*jwks).clone()))
 }
 
+/// Mirrors `app/sms-gateway/src/op.rs`'s `discovery_handler` — see this
+/// file's own module doc for why the duplication, and that file's doc for
+/// why `authkestra_axum::op::axum_discovery_handler` can't be used as-is.
+async fn discovery_handler(State(state): State<OpState>) -> Json<OidcDiscovery> {
+    Json(OidcDiscovery::from_config(&state.config).with_private_key_jwt())
+}
+
 fn op_router(state: OpState) -> Router {
     Router::new()
         .route("/jwks.json", get(jwks_handler))
-        .route(
-            "/.well-known/openid-configuration",
-            get(axum_discovery_handler::<OpState>),
-        )
+        .route("/.well-known/openid-configuration", get(discovery_handler))
         .route("/token", post(axum_token_handler::<OpState>))
         .with_state(state)
 }
@@ -360,6 +367,32 @@ async fn a_real_private_key_jwt_flow_mints_a_token_gatewayauth_accepts() {
     let access_token = body["access_token"]
         .as_str()
         .expect("token response carries access_token");
+
+    // The gap found while closing out #18: `private_key_jwt` must be
+    // advertised in the discovery document, not just accepted at /token —
+    // a spec-compliant client consults discovery to decide which
+    // client-authentication method to use, and the request above already
+    // proves the OP accepts an assertion, so a discovery document that
+    // stayed silent about it would be a real interop gap, not just a
+    // cosmetic one.
+    let discovery: serde_json::Value = client
+        .get(format!("{issuer}/.well-known/openid-configuration"))
+        .send()
+        .await
+        .expect("fetching /.well-known/openid-configuration")
+        .json()
+        .await
+        .expect("parsing the discovery document as JSON");
+    let auth_methods = discovery["token_endpoint_auth_methods_supported"]
+        .as_array()
+        .expect("token_endpoint_auth_methods_supported is a JSON array");
+    assert!(
+        auth_methods
+            .iter()
+            .any(|method| method == "private_key_jwt"),
+        "discovery document must advertise private_key_jwt in \
+         token_endpoint_auth_methods_supported: {discovery}"
+    );
 
     // GatewayAuth accepts the token for a procedure call — the whole
     // validate-then-project chain works end to end.
