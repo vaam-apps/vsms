@@ -1,5 +1,6 @@
 [package]
 name = "sms-core"
+description = "Conventions shared across the gateway: the sentinel-delimited multi-value string encoding"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,9 +8,6 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish.workspace = true
-
-[package.metadata]
-description = "Conventions shared across the gateway: the sentinel-delimited multi-value string encoding"
 
 [dependencies]
 thiserror.workspace = true
