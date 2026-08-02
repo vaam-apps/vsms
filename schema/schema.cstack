@@ -334,8 +334,14 @@ model Provider {
 
   routes Route[] @relation(fields: [id], references: [providerId])
 
+  // read: found live building #33's dispatch role — its routing pass
+  // (cheapest_active_provider, crates/sms-worker/src/claim.rs) runs under
+  // a system context, same root cause as App/AppClient/SenderIdRegistration/
+  // OperatorPrefixRule's own read policies (see their comments for how
+  // this pattern keeps recurring: any model an internal procedure or
+  // worker role reads needs hasRole('system') alongside the human roles).
   @@audit
-  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
   @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
   @@allow("delete", hasRole('owner'))
@@ -453,11 +459,21 @@ model Message {
   parts MessagePart[] @relation(fields: [id], references: [messageId])
   receipts DeliveryReceipt[] @relation(fields: [id], references: [messageId])
 
+  // list/detail: found live running #29's own claim_live_postgres.rs
+  // suite for the first time (#33) — it had never been run against a real
+  // database before. Neither clause admitted a system context (kind="app",
+  // appId=""), so dispatch's own candidates() query — the one `find_many`
+  // the entire claim loop depends on — silently returned zero rows on
+  // every call. Same root cause as App/AppClient/SenderIdRegistration/
+  // OperatorPrefixRule/Provider's own read policies, just on the model
+  // the claim loop actually claims, which is why it was never caught by
+  // any test that only checked those models: nothing exercised dispatch's
+  // own query end to end against Postgres until now.
   @@audit
   @@paged
   @@retain(days: 90)
-  @@allow("list", auth().kind == "user" || appId == auth().appId)
-  @@allow("detail", auth().kind == "user" || appId == auth().appId)
+  @@allow("list", auth().kind == "user" || appId == auth().appId || hasRole('system'))
+  @@allow("detail", auth().kind == "user" || appId == auth().appId || hasRole('system'))
   @@allow("create", hasRole('system'))
   @@allow("update", hasRole('system'))
   @@emit(created, updated)

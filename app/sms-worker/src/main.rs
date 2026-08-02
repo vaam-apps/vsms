@@ -9,8 +9,10 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
-use sms_worker::{Cardinality, Role};
+use sms_provider::SmsProvider;
+use sms_worker::{Cardinality, Role, WorkerContext};
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -36,12 +38,124 @@ struct Cli {
     #[arg(long, env = "SMS_WORKER_ROLES", value_delimiter = ',')]
     roles: Vec<String>,
 
-    /// Only singleton roles use this today (#28's advisory lock). Required
-    /// unconditionally anyway — a `--roles hooks,jobs`-only node not needing
-    /// it yet is happenstance of what #29 hasn't built, not a property of
-    /// this binary worth encoding as optional and re-deriving per role.
+    /// Every role's queries run against this, not just singleton roles'
+    /// leases — required unconditionally, the same way `sms-gateway`
+    /// requires it.
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
+
+    /// Maximum pooled connections — mirrors `sms-gateway`'s own default.
+    #[arg(long, env = "SMS_WORKER_DB_MAX_CONNECTIONS", default_value_t = 10)]
+    db_max_connections: u32,
+
+    /// Identifies this process to the claim loop (`leaseOwner`, and logged
+    /// on a denied claim) — not a security boundary, just an operator-
+    /// visible label. Defaults to `hostname:pid`, which is stable enough to
+    /// recognise across a restart in logs without requiring every deploy to
+    /// set one explicitly.
+    #[arg(long, env = "SMS_WORKER_ID")]
+    worker_id: Option<String>,
+
+    /// `OAuth2` `client_credentials` client id for Orange Cameroon's SMS
+    /// API — required only when `dispatch` is one of `--roles`, since it's
+    /// the only role that submits through a provider today (#33).
+    #[arg(long, env = "ORANGE_CM_CLIENT_ID")]
+    orange_client_id: Option<String>,
+
+    /// Paired with `orange_client_id` — see its doc for when this is
+    /// required. Never logged; `OrangeCmConfig` holds it only long enough
+    /// to fetch and cache a bearer token (`sms-provider-orange-cm`'s own
+    /// `token` module).
+    #[arg(long, env = "ORANGE_CM_CLIENT_SECRET")]
+    orange_client_secret: Option<String>,
+
+    /// E.164 without the `tel:` scheme — see `OrangeCmConfig::sender_number`
+    /// for why the scheme is added by the adapter, not this binary.
+    #[arg(long, env = "ORANGE_CM_SENDER_NUMBER")]
+    orange_sender_number: Option<String>,
+
+    /// Overridable so a real Orange sandbox (not just this crate's own
+    /// `wiremock`-backed tests) can be pointed at without a code change.
+    #[arg(
+        long,
+        env = "ORANGE_CM_BASE_URL",
+        default_value = "https://api.orange.com"
+    )]
+    orange_base_url: String,
+}
+
+/// The one Orange provider `dispatch` submits through. `None` when
+/// `dispatch` isn't among `--roles` — nothing constructs it, and nothing
+/// needs to.
+fn orange_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
+    match (
+        &cli.orange_client_id,
+        &cli.orange_client_secret,
+        &cli.orange_sender_number,
+    ) {
+        (Some(client_id), Some(client_secret), Some(sender_number)) => {
+            let mut config = sms_provider_orange_cm::OrangeCmConfig::production(
+                client_id.clone(),
+                client_secret.clone(),
+                sender_number.clone(),
+            );
+            config.base_url.clone_from(&cli.orange_base_url);
+            Ok(Some(Arc::new(
+                sms_provider_orange_cm::OrangeCmProvider::new(config),
+            )))
+        }
+        (None, None, None) => Ok(None),
+        _ => bail!(
+            "--orange-client-id, --orange-client-secret and --orange-sender-number must all be \
+             set together, or none of them"
+        ),
+    }
+}
+
+/// A provider that panics if ever actually called — used only when
+/// `dispatch` isn't among `--roles`, so `WorkerContext` can hold a plain
+/// `Arc<dyn SmsProvider>` (no `Option`) uniformly across every role rather
+/// than threading an `Option` through `run`'s signature for the one role
+/// that needs it. The startup check above (`--roles` containing `dispatch`
+/// requires real Orange credentials) is what makes "never called" an
+/// actual guarantee here, not just a hope.
+struct NoProviderConfigured;
+
+#[async_trait::async_trait]
+impl SmsProvider for NoProviderConfigured {
+    fn key(&self) -> &str {
+        unreachable!("dispatch is the only caller, and it requires real credentials at startup")
+    }
+    fn capabilities(&self) -> sms_provider::Capabilities {
+        unreachable!("dispatch is the only caller, and it requires real credentials at startup")
+    }
+    async fn submit(
+        &self,
+        _req: &sms_provider::SubmitRequest,
+    ) -> Result<sms_provider::SubmitAck, sms_provider::ProviderError> {
+        unreachable!("dispatch is the only caller, and it requires real credentials at startup")
+    }
+    fn parse_dlr(
+        &self,
+        _raw: &sms_provider::RawCallback,
+    ) -> Result<Vec<sms_provider::DeliveryUpdate>, sms_provider::ProviderError> {
+        unreachable!("dispatch is the only caller, and it requires real credentials at startup")
+    }
+    async fn health(&self) -> sms_provider::Health {
+        unreachable!("dispatch is the only caller, and it requires real credentials at startup")
+    }
+}
+
+fn never_dispatched_provider() -> Arc<dyn SmsProvider> {
+    Arc::new(NoProviderConfigured)
+}
+
+/// `hostname:pid` — stable enough to recognise a given process across a
+/// restart in logs (the container id, under §9.2's Docker deployment)
+/// without requiring every deploy to set `--worker-id` explicitly.
+fn default_worker_id() -> String {
+    let host = std::env::var("HOSTNAME").unwrap_or_else(|_| "localhost".to_owned());
+    format!("{host}:{}", std::process::id())
 }
 
 #[tokio::main]
@@ -59,8 +173,35 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let roles = parse_roles(&cli.roles)?;
 
+    let provider = orange_provider(&cli)?;
+    if roles.contains(&Role::Dispatch) && provider.is_none() {
+        bail!(
+            "--roles includes dispatch, which needs --orange-client-id, \
+             --orange-client-secret and --orange-sender-number (or their env vars) to submit \
+             anything"
+        );
+    }
+    // A lazy pool for roles that never end up needing a provider (every
+    // role but `dispatch`, today) — constructing `WorkerContext`
+    // unconditionally, the same way `Cli` requires `database_url`
+    // unconditionally, keeps `run`'s signature uniform across roles rather
+    // than threading an `Option` through every stub.
+    let provider: Arc<dyn SmsProvider> = provider.unwrap_or_else(never_dispatched_provider);
+
+    let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
+        .max_connections(cli.db_max_connections)
+        .connect(&cli.database_url)
+        .await
+        .context("connecting to Postgres")?;
+    let ctx = WorkerContext {
+        db: sms_api::schema::Cratestack::builder(pool).build(),
+        provider,
+    };
+    let worker_id = cli.worker_id.clone().unwrap_or_else(default_worker_id);
+
     info!(
         roles = %roles.iter().copied().map(Role::as_str).collect::<Vec<_>>().join(","),
+        worker_id,
         "sms-worker starting"
     );
 
@@ -72,6 +213,8 @@ async fn main() -> Result<()> {
                 tasks.spawn(sms_worker::run_singleton(
                     role,
                     cli.database_url.clone(),
+                    ctx.clone(),
+                    worker_id.clone(),
                     shutdown.clone(),
                 ));
             }
@@ -82,9 +225,11 @@ async fn main() -> Result<()> {
             // that never observes it.
             Cardinality::ScaleToN => {
                 let cancel = shutdown.clone();
+                let ctx = ctx.clone();
+                let worker_id = worker_id.clone();
                 tasks.spawn(async move {
                     tokio::select! {
-                        () = sms_worker::run(role) => {}
+                        () = sms_worker::run(role, ctx, &worker_id) => {}
                         () = cancel.cancelled() => {}
                     }
                 });

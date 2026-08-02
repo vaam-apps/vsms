@@ -22,6 +22,12 @@ cratestack.workspace = true
 # sms-api here links its already-compiled output, the same way sms-auth
 # already does, not a second expansion.
 sms-api.workspace = true
+# dispatch.rs's real dependency: the SmsProvider trait itself, so this crate
+# can hold `Arc<dyn SmsProvider>` without depending on any one adapter.
+sms-provider.workspace = true
+# dispatch.rs converts the schema's Encoding onto SmsProvider::submit's
+# SubmitRequest.encoding — the reverse of sms-api's own encoding_of.
+sms-encoding.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 thiserror.workspace = true
@@ -33,6 +39,11 @@ tracing.workspace = true
 # test-util on top of dependencies' time — this crate's own tests pause the
 # clock to prove a stub role never resolves without waiting on a real timer.
 tokio = { workspace = true, features = ["test-util"] }
+# dispatch.rs's own live tests submit against a real OrangeCmProvider
+# pointed at a wiremock server — the only adapter that exists yet.
+sms-provider-orange-cm.workspace = true
+wiremock = "0.6"
+serde_json.workspace = true
 
 [lints]
 workspace = true

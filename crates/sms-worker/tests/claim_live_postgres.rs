@@ -68,6 +68,53 @@ async fn db() -> Cratestack {
     Cratestack::builder(pool).build()
 }
 
+/// An active `Provider`, so a candidate in `accepted` state has somewhere
+/// to route to — without one, `take_lease`'s routing pass sends every
+/// `accepted` row straight to `rejected` instead of `queued` (a real,
+/// correct outcome per §7.4, just not the one most of these tests are
+/// about).
+async fn seed_provider(db: &Cratestack) -> String {
+    // `state` has `@default('disabled')`, so it's excluded from
+    // CreateProviderInput (§2.0: any `@default` excludes a field from
+    // create, literals included) — activate with a separate update, same
+    // pattern `sendMessage`'s own live suite uses to activate a `SenderId`.
+    let provider = db
+        .provider()
+        .create(schema::CreateProviderInput {
+            key: format!("claim_test_{}", unique_suffix().to_lowercase())
+                .chars()
+                .take(32)
+                .collect(),
+            displayName: "Claim test provider".to_owned(),
+            kind: schema::ProviderKind::aggregator_http,
+            config: "{}".to_owned(),
+            credentialRef: "vault://test".to_owned(),
+            maxTps: 5.0,
+            maxDailySubmissions: 1000,
+            supportsDlr: true,
+            supportsAlphaSender: true,
+            supportsUcs2: true,
+            supportsConcat: true,
+            costPerSegmentXaf: "15".parse().unwrap(),
+            healthCheckedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a provider");
+
+    db.provider()
+        .update(provider.id.clone())
+        .set(schema::UpdateProviderInput {
+            state: Some(schema::ProviderState::active),
+            ..Default::default()
+        })
+        .run(&owner())
+        .await
+        .expect("activating the provider");
+
+    provider.id
+}
+
 /// A fresh `App` per test, so `messages_app_idem_key`'s per-app uniqueness
 /// can't make two tests' fixtures collide with each other.
 async fn seed_app(db: &Cratestack) -> String {
@@ -108,7 +155,15 @@ async fn seed_message(
             operator: OperatorCode::mtn,
             senderIdValue: "VYMALO".to_owned(),
             class: MessageClass::otp,
-            priority: 100,
+            // Max priority, not a plausible real value: `candidates()`
+            // orders by priority desc then createdAt asc, and this
+            // database is never reset between runs — a lower, "realistic"
+            // priority would sort behind whatever earlier runs' rows are
+            // still sitting in `accepted`/`queued`/`routed`, silently
+            // excluding a freshly seeded row from a small `budget` instead
+            // of testing it. Found live: this is exactly what happened
+            // before this fix.
+            priority: 1000,
             body: Some("claim loop test".to_owned()),
             bodyHash: "sha256:claim-test".to_owned(),
             bodyLength: 16,
@@ -132,21 +187,51 @@ async fn seed_message(
         .expect("seeding the message")
 }
 
+/// The full `accepted -> queued -> routed` chain takes two `claim_batch`
+/// calls, not one: `message_state_transitions` has no `accepted -> routed`
+/// edge, only `accepted -> queued` and `queued -> routed`. `take_lease`'s
+/// `accepted` branch (the routing pass, §7.4: "passes routing") is the
+/// first hop; this proves both, rather than seeding straight into `queued`
+/// and only proving the second — the routing pass is real behaviour worth
+/// its own assertions, not a step to route around in the fixture.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn claims_an_unleased_accepted_message_and_transitions_it_to_routed() {
     let db = db().await;
+    // Not necessarily *the* provider this test seeds — this database is
+    // never reset between runs, so a prior run's still-active provider can
+    // tie on cost and win instead. The routing pass's own contract is
+    // "picked some active provider", not "picked this specific one"; which
+    // one wins a cost tie is `cheapest_active_provider`'s own concern, not
+    // this test's.
+    seed_provider(&db).await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
 
-    let claimed = claim_batch::<Message>(&db, &sys(), "worker-1", 10)
+    let routed_pass = claim_batch::<Message>(&db, &sys(), "worker-1", 10)
         .await
         .expect("claim_batch succeeds");
-
-    let mine = claimed
+    let after_routing = routed_pass
         .iter()
         .find(|m| m.id == seeded.id)
-        .expect("the seeded message was claimed");
+        .expect("the routing pass claimed the seeded message");
+    assert_eq!(after_routing.state, MessageState::queued);
+    assert!(
+        after_routing.providerId.is_some(),
+        "the routing pass must stamp a provider"
+    );
+    assert_eq!(
+        after_routing.attempts, seeded.attempts,
+        "the routing pass is not a submission attempt"
+    );
+
+    let dispatch_pass = claim_batch::<Message>(&db, &sys(), "worker-1", 10)
+        .await
+        .expect("claim_batch succeeds");
+    let mine = dispatch_pass
+        .iter()
+        .find(|m| m.id == seeded.id)
+        .expect("the dispatch pass claimed the routed message");
     assert_eq!(mine.state, MessageState::routed);
     assert_eq!(mine.leaseOwner, Some("worker-1".to_owned()));
     assert!(mine.leaseUntil.is_some());
@@ -220,13 +305,23 @@ async fn an_expired_lease_value_does_not_exclude_a_row_regardless_of_state() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn reclaims_a_routed_row_abandoned_by_a_crashed_worker() {
     let db = db().await;
+    seed_provider(&db).await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
 
-    let routed = seeded
+    // Two hops to reach `routed` for real, same as
+    // `claims_an_unleased_accepted_message_and_transitions_it_to_routed`:
+    // `accepted -> queued` (the routing pass) has no direct edge to
+    // `routed`.
+    let queued = seeded
         .take_lease(&db, &sys(), "worker-1", Utc::now())
         .await
-        .expect("the first claim succeeds");
+        .expect("the routing pass succeeds");
+    assert_eq!(queued.state, MessageState::queued);
+    let routed = queued
+        .take_lease(&db, &sys(), "worker-1", Utc::now())
+        .await
+        .expect("the dispatch claim succeeds");
     assert_eq!(routed.state, MessageState::routed);
 
     let abandoned = db
