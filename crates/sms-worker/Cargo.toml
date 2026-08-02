@@ -1,5 +1,6 @@
 [package]
 name = "sms-worker"
+description = "The worker as a library: role selection and (from #28/#29 on) leases and claim loops. The binary is app/sms-worker."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,9 +8,6 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 publish.workspace = true
-
-[package.metadata]
-description = "The worker as a library: role selection and (from #28/#29 on) leases and claim loops. The binary is app/sms-worker."
 
 [dependencies]
 thiserror.workspace = true

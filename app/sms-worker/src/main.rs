@@ -92,13 +92,37 @@ fn parse_roles(raw: &[String]) -> Result<Vec<Role>> {
     Ok(roles)
 }
 
-/// Resolve on SIGINT so in-flight work finishes.
+/// Resolve on SIGINT *or* SIGTERM so in-flight work finishes.
 ///
-/// Milestone 2 adds lease release here (§7.2: `Drop` cannot do it, releasing
-/// an advisory lock needs an `await`) once #28 gives a singleton role
-/// something to release.
+/// `ctrl_c()` alone only catches SIGINT. §9.2 deploys this as a Docker
+/// container, and `docker stop` / `kubectl rollout restart` send SIGTERM
+/// first, SIGKILL only after the grace period elapses — SIGINT is never
+/// sent in that path at all. Missing SIGTERM here would mean this branch
+/// never fires under the deployment §9.2 actually describes, and the
+/// process would always hit the force-kill timeout instead: silently, since
+/// a container restarting slightly late looks identical to one restarting
+/// correctly, right up until #28 adds lease release here and a singleton
+/// role starts getting killed mid-hold instead of releasing cleanly — the
+/// exact case §7.2's warm-standby design exists to make harmless, undone by
+/// the signal never reaching this function.
+///
+/// Unix-only because `tokio::signal::unix` is: §9.2's deployment is Docker
+/// Compose on a single VM, never Windows, so a `cfg(unix)` split with a
+/// SIGINT-only fallback elsewhere costs nothing this binary needs.
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("installing a SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 #[cfg(test)]
