@@ -1,0 +1,250 @@
+# Runbook: #36 — real handset delivery, and `kill -9` lease reclaim
+
+Two deliberately physical acceptance tests, per [#36](https://github.com/vymalo/vsms/issues/36):
+
+1. Send to a real Orange handset and observe `delivered` within 15 seconds.
+2. `kill -9` the worker mid-submit and confirm the lease reclaims the message and it is not double-sent.
+
+Neither test can be run by an AI agent or in CI — they need real Orange Cameroon
+production credentials, a real Cameroon phone, and a human watching both a
+terminal and a handset at the same time. This document is what a human runs.
+
+Everything in this runbook was dry-run end to end against a local mock standing
+in for Orange before being written down — see "What the dry run already proved"
+below for what that covers and, more importantly, does not.
+
+## Prerequisites
+
+- **Orange Cameroon SMS API credentials** (`client_id`, `client_secret`,
+  `sender_number`) from a real contract on the Orange developer portal. This
+  repo has never had these — every provider-facing detail beyond §6.2's own
+  documented request/response shapes is inference from public `OneAPI` docs,
+  not confirmation against Orange's own implementation.
+- **An already-approved sender name or short code** on that same account.
+  `send_test_message` (below) registers whatever you pass as `--sender-id` as
+  `approved` in *this* database, but that's our own bookkeeping — if it isn't
+  genuinely approved on the real Orange account, the real send fails at
+  Orange's own API with a 400, not here.
+- **A real Cameroon MTN or Orange test phone**, reachable and watched during
+  both tests.
+- **A publicly reachable HTTPS endpoint** for `sms-gateway`'s
+  `POST /dlr/orange_cm` route, ideally whitelisted with Orange support (this
+  repo's own long-standing note: Orange's DLR webhook is "whitelisted per a
+  manual support ticket," which reads as a pre-registered target, not a
+  per-request one). `submit()` always sends `receiptRequest.callbackData`
+  regardless; `--orange-dlr-notify-url` is there as an explicit override if
+  Orange's support team says an explicit `notifyURL` is also required — set
+  it only if the first attempt at test 1 sends the SMS but never reaches
+  `delivered` in the database (see "If it doesn't reach `delivered`" below).
+- **A reachable Postgres 16 instance** — staging or production — that both
+  binaries below can connect to.
+- Built `sms-gateway` and `sms-worker` binaries (`cargo build --release -p
+  sms-gateway -p sms-worker-bin`, or whatever this deployment's normal build
+  step is).
+
+## One-time setup
+
+```bash
+export DATABASE_URL=postgres://...   # the real instance
+
+./ci/apply-migrations.sh
+sms-gateway rotate-signing-key
+```
+
+`rotate-signing-key` needs `max_connections >= 2` internally (fixed — see
+`app/sms-gateway/src/main.rs`'s own comment on `Command::RotateSigningKey` for
+why); nothing to configure here, just run it once against a fresh database.
+
+## Running both binaries
+
+```bash
+sms-gateway serve \
+  --database-url "$DATABASE_URL" \
+  --issuer https://your-real-https-front-end \
+  --orange-client-id "$ORANGE_CM_CLIENT_ID" \
+  --orange-client-secret "$ORANGE_CM_CLIENT_SECRET" \
+  --orange-sender-number "$ORANGE_CM_SENDER_NUMBER"
+  # --orange-base-url defaults to https://api.orange.com already
+
+sms-worker --roles dispatch,scheduler,jobs \
+  --database-url "$DATABASE_URL" \
+  --orange-client-id "$ORANGE_CM_CLIENT_ID" \
+  --orange-client-secret "$ORANGE_CM_CLIENT_SECRET" \
+  --orange-sender-number "$ORANGE_CM_SENDER_NUMBER"
+```
+
+`sms-gateway serve` fails fast with a clear message
+(`no Provider row has key "orange_cm" — seed one before serving DLR
+callbacks`) if nothing has sent a message yet — that's expected on a truly
+fresh database; the very first `send_test_message` run (next section) creates
+that row. If it still fails after that, something else is wrong; don't work
+around it.
+
+## Sending the test message
+
+`crates/sms-api/examples/send_test_message.rs` is the trigger for both tests —
+built specifically for this runbook, not a general-purpose tool. It seeds the
+minimal fixtures `sendMessage` needs (idempotently — safe to run repeatedly)
+and calls the real procedure:
+
+```bash
+cargo run -p sms-api --example send_test_message -- \
+    --database-url "$DATABASE_URL" \
+    --to +237677XXXXXX \
+    --sender-id YOUR_APPROVED_SENDER \
+    --body "Test message from the #36 acceptance gate"
+```
+
+It prints the new message's id and a ready-to-run `psql` command to watch its
+state.
+
+## Test 1: real delivery within 15 seconds
+
+1. Run `send_test_message` (above), noting the printed message id and the
+   time.
+2. Watch the phone. The SMS should arrive within a few seconds — `dispatch`
+   polls every second, and Orange's own submission latency is the only other
+   variable.
+3. Poll the database:
+   ```bash
+   psql "$DATABASE_URL" -c \
+     "SELECT state, provider_message_ref, provider_message_ref_alt, state_reason \
+      FROM messages WHERE id = '<message-id>';"
+   ```
+   Expect `accepted -> queued -> routed -> submitted` within the first second
+   or two, then `delivered` once Orange's real DLR callback arrives — all
+   within 15 seconds is the gate.
+4. Confirm a `DeliveryReceipt` was actually written, not just the state
+   change:
+   ```bash
+   psql "$DATABASE_URL" -c \
+     "SELECT outcome, raw_status, network_code, received_at \
+      FROM delivery_receipts WHERE message_id = '<message-id>';"
+   ```
+
+### If it doesn't reach `delivered`
+
+- **The SMS arrived on the phone but the state never leaves `submitted`.**
+  Check `sms-gateway`'s own logs for `DLR references a provider_ref no known
+  message currently has` — that means a DLR *did* arrive but didn't match.
+  Two live possibilities, both real findings worth capturing verbatim into
+  [#95](https://github.com/vymalo/vsms/issues/95) or a new issue rather than
+  guessed around:
+  - Orange's real `deliveryInfoNotification` doesn't carry `callbackData` at
+    all, or carries it somewhere other than the top level this repo assumed
+    from the public `OneAPI` reference docs (never Orange's own — see
+    `crates/sms-provider-orange-cm/src/dlr.rs`'s module doc).
+  - `receiptRequest` on the submit request isn't honoured the way the public
+    `OneAPI` docs describe for Orange's specific product.
+  Capture the raw payload (log it, or temporarily curl the same shape by
+  hand) and fix `crates/sms-provider-orange-cm/src/dlr.rs`'s `parse()` to
+  match reality — this is expected to be the first real test of that code's
+  own long-standing "not verified against a live sandbox" caveat.
+- **No DLR arrives at all.** The webhook likely isn't reaching `sms-gateway`
+  — check the HTTPS front-end is actually up and the URL is what Orange
+  support whitelisted, and consider setting `--orange-dlr-notify-url`
+  explicitly on `sms-worker` in case Orange's product needs a per-request
+  `notifyURL` after all.
+
+## Test 2: `kill -9` mid-submit, no double-send
+
+The real point of this test — see #36's own text: "lease reclamation is the
+kind of code that is easy to write and easy to never actually exercise."
+
+**Timing is the hard part.** A local dry run of this exact scenario (see
+below) used a proxy-delayed mock to get a comfortable multi-second window;
+against the real Orange API, the request/response round trip is normally too
+fast to reliably time a manual `kill -9` into. Two options, in order of
+preference:
+
+- **Insert a deliberate delay** between `sms-worker` and Orange for this one
+  test — point `--orange-base-url` at a local reverse proxy (e.g. `mitmproxy`,
+  `toxiproxy`, or a simple local HTTP relay) that forwards to the real Orange
+  API but delays the response by a few seconds. This is exactly what proved
+  the mechanic locally (see below) and is by far the more reliable approach.
+- **Or accept imprecise timing**: watch `sms-worker`'s logs, and `kill -9` the
+  process as soon as you see the tick that claims the message (state moves to
+  `routed`), accepting you may need a few attempts.
+
+Procedure:
+
+1. Note `sms-worker`'s PID.
+2. Run `send_test_message`.
+3. `kill -9 <pid>` during the submit window (see above).
+4. Confirm the crash state:
+   ```bash
+   psql "$DATABASE_URL" -c \
+     "SELECT state, attempts, lease_owner, lease_until, provider_message_ref \
+      FROM messages WHERE id = '<message-id>';"
+   ```
+   Expect `state = routed`, `provider_message_ref` still `NULL`, `lease_until`
+   roughly two minutes in the future.
+5. Either wait out that two-minute lease, or force it for a faster test:
+   ```bash
+   psql "$DATABASE_URL" -c \
+     "UPDATE messages SET lease_until = now() - interval '1 second' \
+      WHERE id = '<message-id>';"
+   ```
+6. Restart `sms-worker` (same command as before — a fresh process, matching
+   what a real crash-and-restart or a standby node taking over looks like).
+7. Confirm reclaim:
+   ```bash
+   psql "$DATABASE_URL" -c \
+     "SELECT state, attempts, provider_message_ref FROM messages WHERE id = '<message-id>';"
+   ```
+   Expect `state = submitted` with a **new** `provider_message_ref` — the
+   reclaim resubmits, it doesn't resume. `attempts` stays at the same value
+   as before the crash: a reclaim of a `routed` row is documented (`claim.rs`)
+   as resuming the *same* logical attempt, not starting a new one, regardless
+   of how many real HTTP requests that took.
+8. **Watch the phone.** This is the step that actually tells you something a
+   database query can't.
+
+### What "pass" looks like here — read before running
+
+The message must never be lost or stuck forever — it should always reach a
+real terminal state through the normal reclaim path, with a complete,
+inspectable history (both submit attempts show up as real
+`provider_message_ref` values if you check Orange's own dashboard/logs, even
+though only the second one is what this database remembers).
+
+**A second SMS arriving on the phone is not automatically a bug.** A local
+dry run of this exact scenario (below) proved, mechanically, that a crash
+between "Orange accepts the request" and "we write the outcome" can and does
+produce two real outbound submissions — nothing in the current request tells
+Orange to deduplicate by our own `callbackData`/reference, and `Message.id`
+is our own correlation key, not a documented Orange-side idempotency
+contract. If the phone receives two messages in this exact window, that is
+the gate doing its job: it surfaced a real, currently-unmitigated risk, not
+something to explain away. File it as a tracked follow-up (real Orange-side
+deduplication, or an idempotency layer here) rather than treating the gate as
+failed — the gate's own criteria (message not lost, reclaim works, no crash
+loop) are what determine pass/fail, not "did the phone buzz twice."
+
+## What the dry run already proved (and what it can't)
+
+Before writing this runbook, the full harness — a real Postgres, real
+`sms-gateway`/`sms-worker` binaries, and a local mock standing in for
+Orange's HTTP API — was run end to end. It proved:
+
+- The full pipeline mechanically works: `send_test_message` → `accepted` →
+  `dispatch` claims and submits → `submitted` → a synthetic DLR POSTed to
+  `/dlr/orange_cm` correctly correlates (via `callbackData`/
+  `providerMessageRefAlt`, [#95](https://github.com/vymalo/vsms/issues/95))
+  → `delivered`, with a real `DeliveryReceipt` row.
+- `rotate-signing-key` genuinely works against a live database (a real bug
+  in its connection pool sizing was found and fixed this way — see
+  `app/sms-gateway/src/main.rs`).
+- The `kill -9` mechanic works exactly as designed: a crash mid-submit
+  leaves the message in `routed` with a live lease; once that lease
+  expires, a (possibly different) `sms-worker` instance reclaims and
+  resubmits it. This dry run is also what proved the double-send risk
+  described above is real and mechanical, not hypothetical — the mock
+  received two submit requests for the same message in that exact window.
+
+What it **cannot** prove, because nothing about it is real: whether Orange's
+actual DLR payload shape matches what `dlr.rs` assumes from public docs,
+whether Orange's real API honours `receiptRequest` the way assumed, whether
+Orange's real submission latency leaves a wide or vanishingly narrow kill
+window, and whether a real handset actually receives the SMS at all. That's
+what this runbook's two tests are for.

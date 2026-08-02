@@ -3066,10 +3066,12 @@ dependencies = [
 name = "sms-api"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "authkestra-engine",
  "authkestra-resource",
  "chrono",
+ "clap",
  "cratestack-codec-json",
  "cratestack-pg",
  "jsonwebtoken",
