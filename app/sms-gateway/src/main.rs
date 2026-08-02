@@ -83,11 +83,36 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Resolve on SIGINT so in-flight requests finish.
+/// Resolve on SIGINT *or* SIGTERM so in-flight requests finish.
+///
+/// `ctrl_c()` alone only catches SIGINT. §9.2 deploys this as a Docker
+/// container, and `docker stop` / `kubectl rollout restart` send SIGTERM
+/// first, SIGKILL only after the grace period elapses — SIGINT is never
+/// sent in that path at all. Missing SIGTERM here would mean this branch
+/// never fires under the deployment §9.2 actually describes, and the
+/// process would always hit the force-kill timeout instead, silently,
+/// since a container restarting slightly late looks identical to one
+/// restarting correctly.
+///
+/// Unix-only because `tokio::signal::unix` is: §9.2's deployment is Docker
+/// Compose on a single VM, never Windows, so a `cfg(unix)` split with a
+/// SIGINT-only fallback elsewhere costs nothing this binary needs.
 ///
 /// Milestone 2 adds the advisory-lock release here — `Drop` cannot do it,
 /// because releasing needs an `await`.
 async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("installing a SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
     info!("shutdown signal received");
 }
