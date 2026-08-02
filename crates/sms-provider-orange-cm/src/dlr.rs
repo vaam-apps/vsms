@@ -105,6 +105,10 @@ pub(crate) fn parse(raw: &RawCallback) -> Result<Vec<DeliveryUpdate>, ProviderEr
                 occurred_at: None,
                 raw_status: entry.delivery_status,
                 error_code: None,
+                // The GSMA OneAPI shape this module follows carries no
+                // delivering-network field — same "unverified against a
+                // live sandbox" caveat as the rest of this module.
+                delivering_network: None,
             }
         })
         .collect())

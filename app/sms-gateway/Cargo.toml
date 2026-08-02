@@ -20,6 +20,10 @@ authkestra-axum = { workspace = true, features = ["op"] }
 authkestra-engine.workspace = true
 authkestra-op.workspace = true
 axum.workspace = true
+# dlr.rs's real dependency: the SmsProvider trait (#34), and the one
+# concrete adapter that exists to construct it from.
+sms-provider.workspace = true
+sms-provider-orange-cm.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true

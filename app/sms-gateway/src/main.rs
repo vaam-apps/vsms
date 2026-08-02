@@ -1,12 +1,17 @@
 //! The SMS gateway API server.
 
+mod dlr;
 mod op;
+
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use sms_api::schema::Cratestack;
+use cratestack::FilterExpr;
+use sms_api::schema::{provider as provider_filter, Cratestack};
 use sms_api::{GatewayAuth, Principal, PrincipalKind};
+use sms_provider::SmsProvider;
 use tracing::info;
 
 /// Command-line surface.
@@ -40,6 +45,31 @@ enum Command {
         /// this OP is actually served at.
         #[arg(long, env = "SMS_OIDC_ISSUER")]
         issuer: String,
+
+        /// `OAuth2` `client_credentials` client id for Orange Cameroon's
+        /// SMS API — required unconditionally, unlike `sms-worker`'s own
+        /// copy of this flag (optional there, only needed when `dispatch`
+        /// is selected): this binary always serves the DLR route (#34),
+        /// which always needs a provider to parse against.
+        #[arg(long, env = "ORANGE_CM_CLIENT_ID")]
+        orange_client_id: String,
+
+        /// Paired with `orange_client_id`. Never logged.
+        #[arg(long, env = "ORANGE_CM_CLIENT_SECRET")]
+        orange_client_secret: String,
+
+        /// E.164 without the `tel:` scheme.
+        #[arg(long, env = "ORANGE_CM_SENDER_NUMBER")]
+        orange_sender_number: String,
+
+        /// Overridable so a real Orange sandbox (not just this crate's own
+        /// `wiremock`-backed tests) can be pointed at without a code change.
+        #[arg(
+            long,
+            env = "ORANGE_CM_BASE_URL",
+            default_value = "https://api.orange.com"
+        )]
+        orange_base_url: String,
     },
     /// Print the generated route table and exit. Needs no database.
     Routes,
@@ -66,6 +96,46 @@ fn system_context() -> cratestack::CoolContext {
         app_id: String::new(),
     }
     .into_context()
+}
+
+/// `Provider.id` for the row matching `provider.key()` — resolved once at
+/// startup, not re-checked per DLR callback. Safe to cache: a `Provider`
+/// row's own id is immutable once created, and if the row genuinely needs
+/// to change (a different key), that's a restart-worthy reconfiguration,
+/// not something this route needs to notice live the way key rotation did
+/// (see `op.rs`'s own module doc for the contrast — that one needed a live
+/// refresh because the *key material* itself changes, not just which row
+/// backs a lookup).
+///
+/// # Errors
+///
+/// No `Provider` row has this `key` yet — an operator hasn't seeded one,
+/// which #34 has no CLI action for (unlike `rotate-signing-key`) since
+/// seeding a `Provider` is already `provisionAppClient`-adjacent, ordinary
+/// CRUD the admin console (M4) will do, not an ops action this binary
+/// should grow its own subcommand for.
+async fn resolve_provider_row_id(
+    db: &Cratestack,
+    sys: &cratestack::CoolContext,
+    provider: &dyn SmsProvider,
+) -> Result<String> {
+    let found = db
+        .provider()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            provider_filter::key().eq(provider.key().to_owned()),
+        ))
+        .limit(1)
+        .run(sys)
+        .await
+        .context("looking up the Provider row for the configured adapter")?;
+
+    found.into_iter().next().map(|row| row.id).with_context(|| {
+        format!(
+            "no Provider row has key {:?} — seed one before serving DLR callbacks",
+            provider.key()
+        )
+    })
 }
 
 #[tokio::main]
@@ -95,6 +165,10 @@ async fn main() -> Result<()> {
             database_url,
             max_connections,
             issuer,
+            orange_client_id,
+            orange_client_secret,
+            orange_sender_number,
+            orange_base_url,
         } => {
             let pool = PgPoolOptions::new()
                 .max_connections(max_connections)
@@ -121,13 +195,26 @@ async fn main() -> Result<()> {
             op::spawn_key_refresh(
                 op_state.clone(),
                 db.clone(),
-                sys,
+                sys.clone(),
                 issuer.clone(),
                 op::DEFAULT_KEY_REFRESH_INTERVAL,
             );
 
+            let mut orange_config = sms_provider_orange_cm::OrangeCmConfig::production(
+                orange_client_id,
+                orange_client_secret,
+                orange_sender_number,
+            );
+            orange_config.base_url = orange_base_url;
+            let provider: Arc<dyn SmsProvider> =
+                Arc::new(sms_provider_orange_cm::OrangeCmProvider::new(orange_config));
+            let provider_row_id = resolve_provider_row_id(&db, &sys, provider.as_ref()).await?;
+            let dlr_router = dlr::router(db.clone(), sys, provider, provider_row_id);
+
             let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer);
-            let app = sms_api::router(db, auth).merge(op::router(op_state));
+            let app = sms_api::router(db, auth)
+                .merge(op::router(op_state))
+                .merge(dlr_router);
 
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await
