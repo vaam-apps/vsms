@@ -1,16 +1,23 @@
 //! The seven procedures the schema declares.
 //!
-//! `previewMessage` and `sendMessage` are implemented. The other five touch
-//! the OIDC provider, the job queue, or webhooks, none of which exist yet;
-//! each returns a clearly-labelled error naming the milestone that will
-//! build it, rather than a plausible-looking stub that would pass a smoke
-//! test and lie.
+//! `previewMessage`, `sendMessage`, and `provisionAppClient` are
+//! implemented. The other four touch the job queue or webhooks, none of
+//! which exist yet; each returns a clearly-labelled error naming the
+//! milestone that will build it, rather than a plausible-looking stub that
+//! would pass a smoke test and lie.
 
 use std::fmt::Write as _;
 
+use authkestra_engine::TokenManager;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
-use cratestack::{CoolContext, CoolError, Decimal, FilterExpr, Value};
+use cratestack::{
+    run_in_isolated_tx, CoolContext, CoolError, Decimal, FilterExpr, TransactionIsolation, Value,
+};
+use rand::rngs::OsRng;
+use rsa::pkcs8::{EncodePrivateKey, LineEnding};
+use rsa::RsaPrivateKey;
 use sha2::{Digest, Sha256};
+use sms_core::pack;
 use sms_encoding::{analyse, normalise, transliterate_to_gsm7, SmsEncoding};
 use sms_msisdn::{Msisdn, OperatorPrefixTable};
 
@@ -20,6 +27,14 @@ use crate::schema::{
     self, app, app_client, message, operator_prefix_rule, opt_out, provider, sender_id,
     sender_id_registration,
 };
+
+/// RSA modulus size for a freshly generated client keypair. Matches
+/// `sms_auth::op::RSA_KEY_BITS` — same reasoning: the smallest size still
+/// considered acceptable for RS256 in 2026, and this deployment has no need
+/// for the extra headroom of 3072/4096 at the cost of a larger PEM the
+/// caller has to store. Duplicated rather than imported: `sms-api` cannot
+/// depend on `sms-auth` (the dependency runs the other way).
+const CLIENT_RSA_KEY_BITS: usize = 2048;
 
 /// Marker for a procedure whose backing subsystem is not built yet.
 fn not_yet(procedure: &str, milestone: &str) -> CoolError {
@@ -618,6 +633,157 @@ impl Procedures {
             estimatedCostXaf: estimated_cost,
         })
     }
+
+    /// #23: mint a fresh `AppClient` + `OauthClient` pair bound to
+    /// `private_key_jwt`, and hand back the generated private key exactly
+    /// once. No column anywhere holds it after this call returns — see
+    /// `OauthClient` in `schema.cstack` and `sms_auth::to_registration`'s
+    /// own comment on why no shared secret exists in this system (#6). This
+    /// is the asymmetric analogue of "secret shown once."
+    ///
+    /// Both rows are written in one `serializable` transaction (the
+    /// procedure's own `@isolation`, §2.10): `OauthClient.appClientId`
+    /// references `AppClient.id`, and a caller must never observe one row
+    /// without the other — either the client is fully provisioned or it
+    /// does not exist yet.
+    ///
+    /// **Retirement / overlap-window rotation is out of scope for this
+    /// procedure.** `OauthClient.update` is `hasRole('system')` only today
+    /// — there is no owner/admin-reachable write path to revoke or rotate a
+    /// client's key through the generated API yet, and a *true*
+    /// overlap-window rotation (publishing an old and a new public key
+    /// simultaneously, the way `sms_auth::op::rotate_signing_key` does for
+    /// the OP's own key) needs a per-client key-history model shaped like
+    /// `OauthSigningKey` — `OauthClient.jwks` holds exactly one JWK Set
+    /// per client today, not a history of them. Deactivating a client
+    /// (`AppClient.active` / `retiredAt`, already modelled) through the
+    /// generated `update` route is owner/admin-reachable today and, while
+    /// coarser than a real overlap window, is the honest scope this
+    /// procedure adds: it does not itself expose a bespoke retire/rotate
+    /// action. See #23's PR description for the full reasoning.
+    async fn provision_client(
+        &self,
+        db: &schema::Cratestack,
+        _ctx: &CoolContext,
+        args: schema::ProvisionClientInput,
+    ) -> Result<schema::ProvisionClientResult, CoolError> {
+        let sys = Self::sys();
+
+        // The app must exist and be active before a client is allowed to
+        // speak for it — provisioning a client for a deleted/deactivated
+        // app would silently mint working credentials for nothing.
+        let app = db
+            .app()
+            .find_many()
+            .where_expr(FilterExpr::from(app::id().eq(args.appId.clone())))
+            .limit(1)
+            .run(&sys)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoolError::NotFound(format!("no App with id {}", args.appId)))?;
+        if !app.active {
+            return Err(CoolError::Validation(format!(
+                "App {} is not active",
+                app.id
+            )));
+        }
+
+        // clientId is caller-visible immediately (it's what the token
+        // endpoint's `client_id` parameter and the assertion's `iss`/`sub`
+        // both carry), so it's generated here rather than left to a DB
+        // default — a `Cuid` default would also exclude it from
+        // CreateXInput entirely (§2.0). Not a `Cuid` itself: `AppClient`/
+        // `OauthClient.clientId` are plain `String @length(min: 8, max:
+        // 64)`, so there's no `[a-z0-9]{2,32}` format guard to satisfy.
+        let client_id = format!("appc_{}", cratestack::uuid::Uuid::new_v4().simple());
+
+        // Generate the client's own RSA keypair server-side. Only the
+        // public half is ever persisted (below); the private half is
+        // returned to the caller and never stored anywhere.
+        let mut rng = OsRng;
+        let key = RsaPrivateKey::new(&mut rng, CLIENT_RSA_KEY_BITS)
+            .map_err(|error| CoolError::Internal(format!("generating client keypair: {error}")))?;
+        let private_key_pem = key.to_pkcs8_pem(LineEnding::LF).map_err(|error| {
+            CoolError::Internal(format!("encoding client key to PKCS#8 PEM: {error}"))
+        })?;
+
+        // `TokenManager::new_asymmetric` + `public_jwk()` derives n/e from
+        // the key without hand-rolling base64url encoding — the same
+        // pattern `sms_auth::op::load_signing_keys` uses for the OP's own
+        // key. `authkestra_op::client_assertion::verify_client_assertion`
+        // reads exactly this shape at the token endpoint: a JWK Set
+        // (`{"keys": [...]}`) — see `select_key` in that module, vendored
+        // source checked directly rather than assumed.
+        let manager =
+            TokenManager::new_asymmetric(private_key_pem.as_bytes(), None, Some(client_id.clone()))
+                .map_err(|error| {
+                    CoolError::Internal(format!("deriving the client's public JWK: {error}"))
+                })?;
+        let public_jwk = manager.public_jwk().ok_or_else(|| {
+            CoolError::Internal(
+                "TokenManager produced no public JWK for a freshly generated asymmetric key"
+                    .to_owned(),
+            )
+        })?;
+        let jwks_json = serde_json::json!({ "keys": [public_jwk] }).to_string();
+
+        let scopes_packed =
+            pack(&args.scopes).map_err(|error| CoolError::Validation(error.to_string()))?;
+        // client_credentials only — the only grant type a machine caller in
+        // this system ever uses (§4.2; see `sms_auth::op`'s own module doc).
+        let grant_types_packed =
+            pack(["client_credentials"]).expect("a static literal always packs");
+
+        let app_id = args.appId;
+        let label = args.label;
+
+        run_in_isolated_tx(db.pool(), TransactionIsolation::Serializable, |mut tx| {
+            let sys = &sys;
+            let client_id = client_id.clone();
+            let app_id = app_id.clone();
+            let label = label.clone();
+            let scopes_packed = scopes_packed.clone();
+            let grant_types_packed = grant_types_packed.clone();
+            let jwks_json = jwks_json.clone();
+            async move {
+                let app_client = db
+                    .app_client()
+                    .create(schema::CreateAppClientInput {
+                        appId: app_id,
+                        clientId: client_id.clone(),
+                        label,
+                        scopes: scopes_packed.clone(),
+                        lastUsedAt: None,
+                        retiredAt: None,
+                    })
+                    .run_in_tx(&mut tx, sys)
+                    .await?;
+
+                db.oauth_client()
+                    .create(schema::CreateOauthClientInput {
+                        clientId: client_id,
+                        appClientId: Some(app_client.id),
+                        tokenEndpointAuthMethod: schema::ClientAuthMethod::private_key_jwt,
+                        jwks: Some(jwks_json),
+                        grantTypes: grant_types_packed,
+                        scopes: scopes_packed,
+                        redirectUris: sms_core::EMPTY.to_owned(),
+                        requirePkce: false,
+                    })
+                    .run_in_tx(&mut tx, sys)
+                    .await?;
+
+                Ok(((), tx))
+            }
+        })
+        .await?;
+
+        Ok(schema::ProvisionClientResult {
+            clientId: client_id,
+            privateKeyPem: private_key_pem.to_string(),
+        })
+    }
 }
 
 impl schema::procedures::ProcedureRegistry for Procedures {
@@ -677,16 +843,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn provision_app_client(
         &self,
-        _db: &schema::Cratestack,
-        _ctx: &CoolContext,
-        _args: schema::procedures::provision_app_client::Args,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::provision_app_client::Args,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::provision_app_client::Output, CoolError>,
     > + Send {
-        core::future::ready(Err(not_yet(
-            "provisionAppClient",
-            "milestone 1 (sms-auth and its custom ClientStore)",
-        )))
+        self.provision_client(db, ctx, args.args)
     }
 
     fn rotate_webhook_secret(

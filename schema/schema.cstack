@@ -704,9 +704,17 @@ type ProvisionClientInput {
   scopes String[]
 }
 
+// No clientSecret: #6 settled the auth shape as private_key_jwt-only, so
+// there is no shared secret anywhere in this system (see OauthClient's own
+// comment). provisionAppClient generates the client's RSA keypair
+// server-side, persists only the derived public JWK onto OauthClient.jwks,
+// and hands back the private key here exactly once — this is the
+// asymmetric analogue of "secret shown once." Nothing after this response
+// can ever recover it; a client that loses it needs a fresh provisioning
+// call (#23's PR description covers retirement/rotation scope).
 type ProvisionClientResult {
   clientId String
-  clientSecret String
+  privateKeyPem String
 }
 
 type CancelInput {
