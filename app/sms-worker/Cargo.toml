@@ -36,7 +36,7 @@ tracing-subscriber.workspace = true
 # wiremock-backed Orange stand-in for the process it spawns and kills.
 chrono.workspace = true
 serde_json.workspace = true
-wiremock = "0.6"
+wiremock.workspace = true
 
 [lints]
 workspace = true

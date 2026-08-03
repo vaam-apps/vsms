@@ -100,6 +100,11 @@ tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 unicode-normalization = "0.1"
+# Dev-only: every provider-facing live/unit test suite in this workspace
+# (sms-provider-orange-cm, sms-worker, app/sms-worker) mocks Orange's HTTP
+# API against the same wiremock server, so one version lives here rather
+# than three copies of the same string.
+wiremock = "0.6"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
