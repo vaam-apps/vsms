@@ -13,6 +13,17 @@ Everything in this runbook was dry-run end to end against a local mock standing
 in for Orange before being written down — see "What the dry run already proved"
 below for what that covers and, more importantly, does not.
 
+Test 2's mechanic — a real OS `kill -9` against the real `sms-worker` binary,
+against a wiremock-delayed stand-in for Orange — is now also a permanent,
+rerunnable regression test, not just a one-off manual dry run:
+`app/sms-worker/tests/kill9_reclaim_live.rs`. It proves the same thing Test 2
+below asks a human to reproduce by hand — crash mid-submit leaves the row
+`routed` and unlost, a second process reclaims and resubmits, and the
+resubmit is a genuinely new outbound call (double-send included, on
+purpose — see that test's own final assertion). Run it before Test 2 as a
+fast sanity check that the mechanic still works; it does not replace Test 2,
+since nothing about it touches a real Orange account or a real handset.
+
 ## Prerequisites
 
 - **Orange Cameroon SMS API credentials** (`client_id`, `client_secret`,
