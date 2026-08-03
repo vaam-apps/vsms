@@ -20,7 +20,7 @@
 //!   denied, and (c) a `scope` that does succeeds end to end (a real
 //!   `Message` row lands in Postgres).
 //!
-//! - **`PATCH /providers/{id}`** (`provider:write`), `sms-api`'s concrete
+//! - **`PATCH /providers/{id}`** (`provider:update`), `sms-api`'s concrete
 //!   anchor for #25 (`router::PROVIDER_WRITE_ROUTES`). Proves the same
 //!   primitive denies there too — an omitted scope, and separately a
 //!   *working* `sms:send`-scoped token that simply isn't the permission
@@ -283,7 +283,7 @@ async fn seed_app_and_client(db: &Cratestack, jwks_json: &str) -> String {
 
 /// An active `SenderId` with an `approved` registration against a fresh
 /// `Provider` row — `sendMessage` needs the former to accept a send at
-/// all, and this suite's `provider:write` assertions need a real,
+/// all, and this suite's `provider:update` route assertions need a real,
 /// existing row to `PATCH` against rather than a made-up id (a 403 on a
 /// row that actually exists is the meaningful assertion; a 403 that could
 /// just as easily be a 404 in disguise is not). Returns `(senderIdValue,
@@ -604,7 +604,7 @@ async fn provider_write_route_denies_a_token_with_no_scope_at_all() {
         body["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("provider:write"),
+            .contains("provider:update"),
         "expected the denial to name the missing permission: {body}"
     );
 }

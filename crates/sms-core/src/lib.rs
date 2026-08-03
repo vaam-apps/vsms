@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn pack_and_unpack_round_trip() {
-        let values = ["sms:send", "sms:read", "provider:write"];
+        let values = ["sms:send", "sms:read", "provider:update"];
         assert_eq!(unpack(&pack(values).unwrap()), values);
     }
 

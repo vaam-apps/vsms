@@ -10,10 +10,18 @@ use crate::procedures::Procedures;
 use crate::rbac::{enforce_route_permission, RbacState, RoutePermission};
 use crate::schema;
 
-/// #24's concrete `provider:write` anchor, for #25's gate test to target
-/// (see `docs/architecture.md` §5.2's role table: `operator` has
+/// #24's concrete write-route anchor, for #25's gate test to target (see
+/// `docs/architecture.md` §5.2's role table: `operator` has
 /// `provider:read/update`, `developer` has no `provider:*` permission at
-/// all).
+/// all). The permission literal enforced here is `provider:update` —
+/// §5.2's own name for it, not the informal "provider:write" phrasing the
+/// M1 gate description (§ milestone table) uses for the route in prose.
+/// Caught live by Lightbridge's review of #112: an earlier draft of this
+/// constant checked the literal `"provider:write"`, which appears nowhere
+/// in §5.2's actual vocabulary — it would have silently and permanently
+/// denied a legitimate `operator` token the moment a role-bearing token
+/// exists to present it, since that token's `perms` would carry
+/// `provider:update`, never `provider:write`.
 ///
 /// Picked over a procedure because none of the seven exists for this —
 /// `Provider.update`'s own generated route (`PATCH /providers/{id}`,
@@ -34,7 +42,7 @@ use crate::schema;
 const PROVIDER_WRITE_ROUTES: &[RoutePermission] = &[RoutePermission {
     method: Method::PATCH,
     path: "/providers/{id}",
-    permission: "provider:write",
+    permission: "provider:update",
 }];
 
 /// Build the HTTP surface: generated model CRUD plus the seven procedures.

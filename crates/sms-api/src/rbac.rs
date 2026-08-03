@@ -11,10 +11,11 @@
 //! - [`enforce_route_permission`] wraps it in an axum middleware for
 //!   *generated* CRUD routes, which have no procedure body to call it
 //!   from — the "a Tower layer" half. `router::PROVIDER_WRITE_ROUTES` is the
-//!   one route this milestone wires it onto (`PATCH /providers/{id}`, the
-//!   `provider:write` anchor #24 was asked to leave in place for #25); a
-//!   second route needs only another entry in that slice, not a new
-//!   mechanism.
+//!   one route this milestone wires it onto (`PATCH /providers/{id}`,
+//!   gated on the `provider:update` permission — §5.2's own name for it,
+//!   not the "provider:write" phrasing the milestone-gate prose uses for
+//!   the route itself — left in place for #25); a second route needs only
+//!   another entry in that slice, not a new mechanism.
 //!
 //! # Fail closed, per §5.2's own words
 //!
@@ -227,7 +228,7 @@ mod tests {
     fn an_empty_perms_list_is_denied() {
         let ctx = ctx_with(Some(&[]), None);
         assert!(matches!(
-            require_permission(&ctx, "provider:write"),
+            require_permission(&ctx, "provider:update"),
             Err(CoolError::Forbidden(_))
         ));
     }
@@ -274,7 +275,7 @@ mod tests {
             None,
         );
         assert!(matches!(
-            require_permission(&ctx, "provider:write"),
+            require_permission(&ctx, "provider:update"),
             Err(CoolError::Forbidden(_))
         ));
     }
