@@ -14,6 +14,11 @@ cratestack.workspace = true
 cratestack-codec-json.workspace = true
 sms-encoding.workspace = true
 sms-msisdn.workspace = true
+# provision_client (#23)'s pack() for the sentinel-delimited scopes/
+# grantTypes columns — sms-core has no internal dependencies of its own,
+# so pulling it in here doesn't risk a cycle with sms-auth (which depends
+# on both sms-api and sms-core already).
+sms-core.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait's DeliveryUpdate/
 # DeliveryOutcome/RawCallback/ProviderError types — never a concrete
 # adapter, the same reason sms-worker depends on this and not on
@@ -23,12 +28,22 @@ sms-provider.workspace = true
 # for Claims/extract_bearer_token, authkestra-resource for JwksCache,
 # jsonwebtoken for Validation — see auth.rs's own doc for why JwtStrategy
 # itself isn't used directly (its cache/validation fields are private).
+# provision_client (#23) reuses TokenManager::new_asymmetric/public_jwk from
+# the same crate to derive the client's public JWK, mirroring
+# sms_auth::op::rotate_signing_key's own pattern for the OP's key — sms-api
+# can't depend on sms-auth (sms-auth depends on sms-api), so the small
+# keygen snippet is duplicated here rather than shared.
 authkestra-engine.workspace = true
 authkestra-resource.workspace = true
 jsonwebtoken.workspace = true
+# provision_client (#23)'s RSA keypair generation — same crates and version
+# sms-auth::op::rotate_signing_key uses for the OP's own signing key.
+rsa.workspace = true
+rand.workspace = true
 
 chrono.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

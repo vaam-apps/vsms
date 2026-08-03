@@ -23,9 +23,9 @@
 use chrono::{TimeZone, Utc};
 use cratestack::Decimal;
 use sms_api::schema::{
-    ClientAuthMethod, CreateClientAssertionInput, CreateJobInput, CreateMessageInput,
-    CreateOauthClientInput, CreateOauthSigningKeyInput, CreateOperatorPrefixRuleInput, Encoding,
-    MessageClass, OperatorCode,
+    ClientAuthMethod, CreateAppClientInput, CreateClientAssertionInput, CreateJobInput,
+    CreateMessageInput, CreateOauthClientInput, CreateOauthSigningKeyInput,
+    CreateOperatorPrefixRuleInput, Encoding, MessageClass, OperatorCode,
 };
 
 /// Every field `sendMessage` must control on the row it creates.
@@ -167,6 +167,28 @@ fn provision_app_client_can_set_every_field_it_owns() {
         input.tokenEndpointAuthMethod,
         ClientAuthMethod::private_key_jwt
     );
+}
+
+/// `provisionAppClient` writes `AppClient` first, `OauthClient` second (its
+/// `appClientId` references the row this creates) — every field it controls
+/// on the `AppClient` half.
+///
+/// `active` has no entry here on purpose: `@default(true)` (like
+/// `OauthClient.active` above), so a freshly provisioned client is always
+/// born active and `active` is settable only on update — e.g. the
+/// deactivation path §23's PR description scopes retirement down to.
+#[test]
+fn app_client_can_set_every_field_it_owns() {
+    let input = CreateAppClientInput {
+        appId: "app00000000000000000001".to_owned(),
+        clientId: "otp-svc-v1".to_owned(),
+        label: "OTP service".to_owned(),
+        scopes: " sms:send ".to_owned(),
+        lastUsedAt: None,
+        retiredAt: None,
+    };
+
+    assert_eq!(input.clientId, "otp-svc-v1");
 }
 
 /// The OP's signing key, as `sms-auth` writes it on first boot.
