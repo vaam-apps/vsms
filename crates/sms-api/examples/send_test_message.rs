@@ -76,14 +76,25 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
+/// #24: `sendMessage` now gates on `require_permission(ctx, "sms:send")`
+/// (Layer 2) before anything else in the procedure runs. This tool calls
+/// `send_message` directly through `ProcedureRegistry`, bypassing
+/// `GatewayAuth` (see this file's own module doc — no admin console or
+/// `provisionAppClient` exists yet), so it has to carry the same claim a
+/// real token's `scope` would by hand.
 fn app_caller() -> CoolContext {
-    Principal {
+    let mut ctx = Principal {
         sub: CLIENT_ID.to_owned(),
         kind: PrincipalKind::App,
         role: "developer".to_owned(),
         app_id: String::new(),
     }
-    .into_context()
+    .into_context();
+    ctx.extensions.insert(
+        "scope".to_owned(),
+        cratestack::Value::String("sms:send".to_owned()),
+    );
+    ctx
 }
 
 async fn ensure_provider(db: &Cratestack) -> anyhow::Result<String> {

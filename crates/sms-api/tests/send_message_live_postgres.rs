@@ -19,7 +19,7 @@
 
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::CoolContext;
+use cratestack::{CoolContext, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, procedures::send_message, procedures::ProcedureRegistry, Cratestack, Encoding,
@@ -60,14 +60,25 @@ fn sys() -> CoolContext {
 /// The context a machine caller's validated token would eventually
 /// produce (#20/#21) — `kind == "app"`, `sub == clientId`. `role` doesn't
 /// affect `sendMessage` itself; only `kind` and `sub` do.
+///
+/// #24: `GatewayAuth::authenticate` now also projects the token's `scope`
+/// claim into `extensions`, which `sendMessage`'s own `require_permission(ctx,
+/// "sms:send")` gate (Layer 2) checks before anything else in the
+/// procedure runs. A hand-built context — this function never goes through
+/// `GatewayAuth` — has to carry the same claim by hand, or every test below
+/// would fail on that gate rather than on whatever it actually means to
+/// exercise.
 fn app_caller(client_id: &str) -> CoolContext {
-    Principal {
+    let mut ctx = Principal {
         sub: client_id.to_owned(),
         kind: PrincipalKind::App,
         role: "developer".to_owned(),
         app_id: String::new(),
     }
-    .into_context()
+    .into_context();
+    ctx.extensions
+        .insert("scope".to_owned(), Value::String("sms:send".to_owned()));
+    ctx
 }
 
 /// A counter folded together with wall-clock nanoseconds, not either alone:
@@ -312,13 +323,22 @@ async fn a_human_caller_is_rejected_with_a_clear_reason_not_a_guess() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let procedures = Procedures::new();
-    let human = Principal {
+    // #24: give this caller the `sms:send` scope it would need to clear
+    // `require_permission` (Layer 2), so the error asserted below is the
+    // one this test actually means to exercise — `caller_client_id`'s
+    // `kind == "app"` gap (Layer 1 admits an `owner` role here; nothing
+    // about "human" is what stops this call) — not an incidental Layer 2
+    // denial that would happen to contain neither "machine" nor "human".
+    let mut human = Principal {
         sub: "a-human-user-id".to_owned(),
         kind: PrincipalKind::User,
         role: "owner".to_owned(),
         app_id: String::new(),
     }
     .into_context();
+    human
+        .extensions
+        .insert("scope".to_owned(), Value::String("sms:send".to_owned()));
 
     let error = procedures
         .send_message(&db, &human, args("+237677123456", "hi", None))

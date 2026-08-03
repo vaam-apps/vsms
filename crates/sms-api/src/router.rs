@@ -1,20 +1,60 @@
 //! Assembling the generated router.
 
+use cratestack::axum::http::Method;
+use cratestack::axum::middleware::from_fn_with_state;
 use cratestack::axum::Router;
 use cratestack_codec_json::JsonCodec;
 
 use crate::auth::GatewayAuth;
 use crate::procedures::Procedures;
+use crate::rbac::{enforce_route_permission, RbacState, RoutePermission};
 use crate::schema;
+
+/// #24's concrete `provider:write` anchor, for #25's gate test to target
+/// (see `docs/architecture.md` §5.2's role table: `operator` has
+/// `provider:read/update`, `developer` has no `provider:*` permission at
+/// all).
+///
+/// Picked over a procedure because none of the seven exists for this —
+/// `Provider.update`'s own generated route (`PATCH /providers/{id}`,
+/// confirmed via `route_table()`) is the natural CRUD write action the
+/// design doc's role table is describing. Its own `@@allow` (`schema.cstack`):
+/// `hasRole('owner') || hasRole('admin') || hasRole('operator')` — no
+/// `hasRole('app')`, unlike `sendMessage`'s procedure-level `@allow`. Combined
+/// with `GatewayAuth` only ever minting `role: "app"` or `role: "system"`
+/// (see its own doc — this deployment has no human-login path yet, #23/#24/
+/// #25's own tracked scope cut), Layer 1 alone already refuses every token
+/// this deployment can currently issue on this route, developer-shaped or
+/// not. This gate is real and tested (see `rbac.rs`'s own tests plus
+/// `tests/rbac_layer2_live_postgres.rs`) but is defense in depth today, not
+/// yet the thing a live caller actually bounces off — it becomes load-
+/// bearing the moment a role-bearing token exists to test the *positive*
+/// case against, which is why this constant, not a bespoke one-off, is what
+/// #25 should extend.
+const PROVIDER_WRITE_ROUTES: &[RoutePermission] = &[RoutePermission {
+    method: Method::PATCH,
+    path: "/providers/{id}",
+    permission: "provider:write",
+}];
 
 /// Build the HTTP surface: generated model CRUD plus the seven procedures.
 ///
 /// `auth` validates every request against the OP's own published JWKS —
 /// see [`GatewayAuth`]'s own documentation for what it accepts and why.
+///
+/// Wrapped in [`enforce_route_permission`] (Layer 2, #24) gating
+/// [`PROVIDER_WRITE_ROUTES`] — every other route passes through unchanged;
+/// see that constant's own doc and `rbac.rs`'s module doc for the full
+/// reasoning.
 // No `#[must_use]`: axum's `Router` already carries one, and doubling it is
 // what `clippy::double_must_use` objects to.
 pub fn router(db: schema::Cratestack, auth: GatewayAuth) -> Router {
+    let rbac_state = RbacState {
+        auth: auth.clone(),
+        requirements: PROVIDER_WRITE_ROUTES,
+    };
     schema::axum::router(db, Procedures::new(), JsonCodec, auth)
+        .layer(from_fn_with_state(rbac_state, enforce_route_permission))
 }
 
 /// Every route the schema generated, for `sms-gateway routes`.
