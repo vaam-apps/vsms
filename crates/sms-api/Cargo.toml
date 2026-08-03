@@ -18,6 +18,12 @@ sms-msisdn.workspace = true
 # grantTypes columns — sms-core has no internal dependencies of its own,
 # so pulling it in here doesn't risk a cycle with sms-auth (which depends
 # on both sms-api and sms-core already).
+#
+# Also rbac.rs's `require_permission` (#24, Layer 2): the same sentinel-
+# delimited membership test `AppClient.scopes`/`OauthClient.scopes` already
+# use for their DB columns, reused here for the JWT `scope` claim rather
+# than reinvented — see sms-core's own module doc for why the sentinel form
+# matters even though `contains`/`unpack` tolerate the plain OAuth form too.
 sms-core.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait's DeliveryUpdate/
 # DeliveryOutcome/RawCallback/ProviderError types — never a concrete
@@ -43,6 +49,9 @@ rand.workspace = true
 
 chrono.workspace = true
 serde.workspace = true
+# `Claims.extra` (authkestra_engine::token::Claims, auth.rs) is a
+# `HashMap<String, serde_json::Value>` — needed to read the `perms` claim
+# out of it in `GatewayAuth::authenticate`.
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true

@@ -169,6 +169,29 @@ fn system_context() -> CoolContext {
     .into_context()
 }
 
+/// The `perms` claim (§5.3's human/role-token shape), pulled out of
+/// [`Claims::extra`] — it isn't a first-class field on that type, only
+/// `scope` is. Not reachable from any token this deployment can currently
+/// issue (see [`GatewayAuth`]'s own doc: every accepted token is a
+/// `client_credentials` one, and nothing in `sms_auth::op` ever sets a
+/// `perms` claim), but extracted unconditionally rather than special-cased
+/// away — a future human-login issuer only has to start setting the claim,
+/// not wait on a second change here. Absent, or present but not an array of
+/// strings, both become `vec![]`: [`require_permission`]'s job is to treat
+/// "no perms" as denial, not this extraction's.
+fn extract_perms(extra: &std::collections::HashMap<String, serde_json::Value>) -> Vec<String> {
+    extra
+        .get("perms")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|value| value.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 impl AuthProvider for GatewayAuth {
     type Error = CoolError;
 
@@ -200,6 +223,16 @@ impl AuthProvider for GatewayAuth {
                 ));
             }
 
+            // Layer 2 (#24, §5.1): read now, while `claims` is still whole —
+            // `scope` is a first-class field, `perms` lives in `extra`. Both
+            // survive into the returned `CoolContext` below regardless of
+            // whether either is actually present; an absent claim becoming
+            // an absent/empty context field, rather than the request
+            // failing here, is what lets `require_permission` be the one
+            // place that decides what "no permission" means.
+            let scope = claims.scope.clone();
+            let perms = extract_perms(&claims.extra);
+
             let client_id = claims.sub;
             let app_client = app_cache
                 .get_or_fetch(client_id.clone(), |client_id| {
@@ -222,7 +255,7 @@ impl AuthProvider for GatewayAuth {
                 })
                 .await?;
 
-            Ok(Principal {
+            let mut ctx = Principal {
                 sub: client_id,
                 kind: PrincipalKind::App,
                 // Never "system" — that role is constructed exactly once,
@@ -235,7 +268,24 @@ impl AuthProvider for GatewayAuth {
                 role: "app".to_owned(),
                 app_id: app_client.appId,
             }
-            .into_context())
+            .into_context();
+
+            // Stashed in `extensions`, not folded into `into_context`'s own
+            // four `auth.fields` — those four are Layer 1's vocabulary
+            // (`hasRole`/`inTenant`/`appId ==`), fixed by the schema's own
+            // `auth Principal` block (auth.rs's module doc). `perms`/`scope`
+            // are Layer 2's, read only by `require_permission`, never by a
+            // generated SQL policy — keeping them out of `auth.fields` means
+            // a typo'd extra claim can never accidentally start matching a
+            // `hasRole(...)` clause it was never meant to.
+            ctx.extensions.insert(
+                "perms".to_owned(),
+                Value::List(perms.into_iter().map(Value::String).collect()),
+            );
+            ctx.extensions
+                .insert("scope".to_owned(), scope.map_or(Value::Null, Value::String));
+
+            Ok(ctx)
         }
     }
 }

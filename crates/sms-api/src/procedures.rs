@@ -23,6 +23,7 @@ use sms_msisdn::{Msisdn, OperatorPrefixTable};
 
 use crate::auth::{Principal, PrincipalKind};
 use crate::cache::TtlCache;
+use crate::rbac::require_permission;
 use crate::schema::{
     self, app, app_client, message, operator_prefix_rule, opt_out, provider, sender_id,
     sender_id_registration,
@@ -526,6 +527,16 @@ impl Procedures {
         ctx: &CoolContext,
         args: schema::SendMessageInput,
     ) -> Result<schema::SendMessageResult, CoolError> {
+        // Layer 2 (#24, §5.1), checked before anything else runs. Layer 1's
+        // own `@allow` on `sendMessage` admits any authenticated
+        // `kind == "app"` caller unconditionally (schema.cstack:
+        // `auth().kind == "app" || hasRole('owner') || hasRole('admin') ||
+        // hasRole('operator')`) — nothing about *role* narrows a machine
+        // caller down further, so this is the only thing standing between
+        // "any client_credentials token this OP ever issues" and "sends
+        // SMS", per §5.2's service-account scope table (`sms:send`).
+        require_permission(ctx, "sms:send")?;
+
         let sys = Self::sys();
         let now = Utc::now();
 
