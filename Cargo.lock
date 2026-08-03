@@ -3239,9 +3239,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "clap",
  "cratestack-pg",
  "dotenvy",
+ "serde_json",
  "sms-api",
  "sms-provider",
  "sms-provider-orange-cm",
@@ -3250,6 +3252,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "wiremock",
 ]
 
 [[package]]
