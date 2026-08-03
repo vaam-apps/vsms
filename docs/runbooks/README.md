@@ -1,0 +1,8 @@
+# Runbooks
+
+Step-by-step operational procedures — as opposed to [`docs/architecture.md`](../architecture.md), which is the design spec, or [`CONTRIBUTING.md`](../../CONTRIBUTING.md), which is the engineering rules. A runbook is what you actually run, in order, to get a specific outcome.
+
+| Runbook | For |
+|---|---|
+| [Getting started](getting-started.md) | First-time setup: clone, build, apply migrations, run both binaries locally, send a real message through the whole pipeline against a scratch database. |
+| [#36 — real handset delivery gate](36-handset-gate.md) | The milestone 2 acceptance gate: a real SMS to a real Orange handset, and a `kill -9` lease-reclaim proof. Needs real Orange Cameroon credentials and a real phone — not runnable in CI or by an agent. |
