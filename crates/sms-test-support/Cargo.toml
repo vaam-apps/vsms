@@ -1,0 +1,20 @@
+[package]
+name = "sms-test-support"
+description = "Shared harness for this workspace's *_live_postgres.rs / *_live.rs suites — starts (or reuses) one Postgres 16 container and hands back a fully migrated connection URL. Test-only: no crate or app depends on this outside [dev-dependencies]."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# For `cratestack::sqlx` only — the advisory-lock-guarded migration check
+# below is a second, deliberate R1 exception alongside `sms-worker/src/
+# lease.rs` and `sms-api/src/cache.rs`. See lib.rs's own module doc.
+cratestack.workspace = true
+tokio = { workspace = true, features = ["process", "sync", "time", "rt-multi-thread"] }
+
+[lints]
+workspace = true

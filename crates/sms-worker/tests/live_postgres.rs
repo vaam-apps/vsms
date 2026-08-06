@@ -4,31 +4,29 @@
 //! `pool.acquire()` shape; a unit test can't demonstrate it since it needs a
 //! second, independent connection to observe the lock's state from outside.
 //!
-//! Ignored by default, same convention as `sms-auth`'s live suite — `just
-//! test` carries no `DATABASE_URL`. Run explicitly:
+//! Ignored by default, same convention as `sms-auth`'s live suite. `sms_
+//! test_support` provisions Postgres automatically (a shared, self-healing
+//! container — see its own module doc), so running this needs only Docker
+//! and:
 //!
 //! ```bash
-//! docker run --rm -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16
-//! createdb vsms_check
-//! DATABASE_URL=postgres://postgres:postgres@localhost/vsms_check \
-//!     cargo test -p sms-worker --test live_postgres -- --ignored
+//! cargo test -p sms-worker --test live_postgres -- --ignored
 //! ```
 //!
-//! No migration needed — advisory locks aren't backed by any table this
-//! schema declares, so an empty freshly-created database is enough.
+//! No migration is strictly needed for what this file tests — advisory
+//! locks aren't backed by any table this schema declares, an empty
+//! freshly-created database is enough — but `sms_test_support::database_url`
+//! applies them anyway, unconditionally, so every live suite shares the one
+//! container regardless of what any individual suite happens to need.
 
 use sms_worker::lease::RoleLease;
 use sms_worker::Role;
 use std::time::Duration;
 
-fn database_url() -> String {
-    std::env::var("DATABASE_URL").expect("DATABASE_URL must point at a reachable Postgres")
-}
-
 #[tokio::test]
 #[ignore = "needs a live Postgres — see module docs"]
 async fn a_second_attempt_for_the_same_role_is_none_while_the_first_holds_it() {
-    let url = database_url();
+    let url = sms_test_support::database_url().await;
 
     let first = RoleLease::try_acquire(&url, Role::Dispatch)
         .await
@@ -49,7 +47,7 @@ async fn a_second_attempt_for_the_same_role_is_none_while_the_first_holds_it() {
 #[tokio::test]
 #[ignore = "needs a live Postgres — see module docs"]
 async fn releasing_frees_the_lock_for_the_next_attempt() {
-    let url = database_url();
+    let url = sms_test_support::database_url().await;
 
     let first = RoleLease::try_acquire(&url, Role::Drain)
         .await
@@ -71,7 +69,7 @@ async fn releasing_frees_the_lock_for_the_next_attempt() {
 #[tokio::test]
 #[ignore = "needs a live Postgres — see module docs"]
 async fn dropping_an_unreleased_lease_still_frees_the_lock() {
-    let url = database_url();
+    let url = sms_test_support::database_url().await;
 
     let first = RoleLease::try_acquire(&url, Role::Scheduler)
         .await
@@ -103,7 +101,7 @@ async fn dropping_an_unreleased_lease_still_frees_the_lock() {
 #[tokio::test]
 #[ignore = "needs a live Postgres — see module docs"]
 async fn different_roles_do_not_contend_with_each_other() {
-    let url = database_url();
+    let url = sms_test_support::database_url().await;
 
     let a = RoleLease::try_acquire(&url, Role::Hooks).await.unwrap();
     let b = RoleLease::try_acquire(&url, Role::Jobs).await.unwrap();

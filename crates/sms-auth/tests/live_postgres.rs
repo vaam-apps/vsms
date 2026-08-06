@@ -7,12 +7,12 @@
 //! also true — a pure unit test passing is not proof the delegate call
 //! against a live database behaves the same way). Run explicitly:
 //!
+//! `sms_test_support` provisions Postgres and applies both migrations
+//! automatically (a shared, self-healing container — see its own module
+//! doc), so running this needs only Docker and:
+//!
 //! ```bash
-//! docker run --rm -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16
-//! createdb vsms_check
-//! DATABASE_URL=postgres://postgres:postgres@localhost/vsms_check ./ci/apply-migrations.sh
-//! DATABASE_URL=postgres://postgres:postgres@localhost/vsms_check \
-//!     cargo test -p sms-auth --test live_postgres -- --ignored
+//! cargo test -p sms-auth --test live_postgres -- --ignored
 //! ```
 
 use cratestack::sqlx::postgres::PgPoolOptions;
@@ -59,8 +59,7 @@ fn unique_suffix() -> String {
 }
 
 async fn db() -> Cratestack {
-    let url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must point at a migrated database — see module docs");
+    let url = sms_test_support::database_url().await;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&url)

@@ -37,6 +37,9 @@ base64.workspace = true
 jsonwebtoken.workspace = true
 reqwest.workspace = true
 serde.workspace = true
+# The four live suites in tests/ get their DATABASE_URL from this instead
+# of the environment.
+sms-test-support.workspace = true
 
 [lints]
 workspace = true

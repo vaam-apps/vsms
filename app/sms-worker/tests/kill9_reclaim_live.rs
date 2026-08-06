@@ -28,15 +28,13 @@
 //!
 //! Ignored by default, same convention as this workspace's other live
 //! suites, but doubly so here: it also needs the real `sms-worker` binary
-//! built first. Run explicitly:
+//! built first. `sms_test_support` provisions Postgres and applies both
+//! migrations automatically (a shared, self-healing container — see its
+//! own module doc), so running this needs only Docker and:
 //!
 //! ```bash
-//! docker run --rm -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16
-//! createdb vsms_check
-//! DATABASE_URL=postgres://postgres:postgres@localhost/vsms_check ./ci/apply-migrations.sh
 //! cargo build -p sms-worker-bin
-//! DATABASE_URL=postgres://postgres:postgres@localhost/vsms_check \
-//!     cargo test -p sms-worker-bin --test kill9_reclaim_live -- --ignored --nocapture
+//! cargo test -p sms-worker-bin --test kill9_reclaim_live -- --ignored --nocapture
 //! ```
 
 use chrono::{Duration as ChronoDuration, Utc};
@@ -95,18 +93,13 @@ fn unique_suffix() -> String {
 }
 
 async fn db() -> Cratestack {
-    let url = database_url();
+    let url = sms_test_support::database_url().await;
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&url)
         .await
         .expect("connecting to Postgres");
     Cratestack::builder(pool).build()
-}
-
-fn database_url() -> String {
-    std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must point at a fully migrated database — see module docs")
 }
 
 async fn seed_app(db: &Cratestack) -> String {
@@ -316,7 +309,7 @@ fn spawn_worker(database_url: &str, orange_base_url: &str, worker_id: &str) -> K
 #[ignore = "needs a live, fully migrated Postgres and the built sms-worker binary — see module \
             docs"]
 async fn kill_9_mid_submit_reclaims_and_resubmits_without_losing_the_message() {
-    let database_url = database_url();
+    let database_url = sms_test_support::database_url().await;
     let db = db().await;
     let server = MockServer::start().await;
     mount_orange(&server).await;

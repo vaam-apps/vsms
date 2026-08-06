@@ -18,9 +18,26 @@ help:
 check:
 	{{_cargo}} check --workspace --all-targets
 
-# Run the test suite
+# Run the test suite (unit + in-process — the 14 *_live_postgres.rs/*_live.rs
+# suites stay #[ignore]d here; see `test-live`)
 test:
 	{{_cargo}} test --workspace
+
+# Run every live-Postgres suite. `sms-test-support` starts (or reuses) one
+# shared, self-healing Postgres 16 container and applies both migrations —
+# needs Docker, nothing else. Safe to rerun: the container is named
+# deterministically and reused, not recreated, across runs.
+test-live:
+	{{_cargo}} test --workspace -- --ignored
+
+# Remove the shared test-harness container. Scoped by the exact label
+# `sms-test-support` itself sets (`dev.vsms.test-harness=true`) — never by
+# image or a bare name pattern, so this can never touch a container this
+# workspace's tests did not create. Not required for correctness (the
+# harness self-heals on its own next run) — this is just for a developer
+# who wants their machine back to zero right now.
+test-live-clean:
+	docker rm -f $(docker ps -aq --filter "label=dev.vsms.test-harness=true") 2>/dev/null || true
 
 # Format, then lint with warnings as errors
 lint:

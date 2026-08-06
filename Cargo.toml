@@ -9,6 +9,7 @@ members = [
   "crates/sms-worker",
   "crates/sms-provider",
   "crates/sms-provider-orange-cm",
+  "crates/sms-test-support",
   "app/sms-gateway",
   "app/sms-worker",
 ]
@@ -33,6 +34,10 @@ sms-auth = { path = "./crates/sms-auth" }
 sms-worker = { path = "./crates/sms-worker" }
 sms-provider = { path = "./crates/sms-provider" }
 sms-provider-orange-cm = { path = "./crates/sms-provider-orange-cm" }
+# Dev-only: the shared live-Postgres test harness (see its own module doc).
+# Depended on via [dev-dependencies] everywhere it's used, never
+# [dependencies] — no production binary links against it.
+sms-test-support = { path = "./crates/sms-test-support" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`
 # paths, so the facade has to be in scope under exactly that name. Pinned
