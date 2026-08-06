@@ -44,6 +44,9 @@ tokio = { workspace = true, features = ["test-util"] }
 sms-provider-orange-cm.workspace = true
 wiremock.workspace = true
 serde_json.workspace = true
+# The four live suites in tests/ (claim/dispatch/jobs/live_postgres.rs) get
+# their DATABASE_URL from this instead of the environment.
+sms-test-support.workspace = true
 
 [lints]
 workspace = true

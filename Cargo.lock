@@ -3111,6 +3111,7 @@ dependencies = [
  "sms-encoding",
  "sms-msisdn",
  "sms-provider",
+ "sms-test-support",
  "thiserror",
  "tokio",
  "tracing",
@@ -3137,6 +3138,7 @@ dependencies = [
  "serde_json",
  "sms-api",
  "sms-core",
+ "sms-test-support",
  "thiserror",
  "tokio",
  "tracing",
@@ -3180,6 +3182,7 @@ dependencies = [
  "sms-auth",
  "sms-provider",
  "sms-provider-orange-cm",
+ "sms-test-support",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3223,6 +3226,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sms-test-support"
+version = "0.1.0"
+dependencies = [
+ "cratestack-pg",
+ "tokio",
+]
+
+[[package]]
 name = "sms-worker"
 version = "0.1.0"
 dependencies = [
@@ -3234,6 +3245,7 @@ dependencies = [
  "sms-encoding",
  "sms-provider",
  "sms-provider-orange-cm",
+ "sms-test-support",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -3255,6 +3267,7 @@ dependencies = [
  "sms-api",
  "sms-provider",
  "sms-provider-orange-cm",
+ "sms-test-support",
  "sms-worker",
  "tokio",
  "tokio-util",

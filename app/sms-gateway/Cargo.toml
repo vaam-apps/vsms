@@ -48,6 +48,9 @@ reqwest.workspace = true
 rsa.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# tests/m1_acceptance_gate_live_postgres.rs gets its DATABASE_URL from this
+# instead of the environment.
+sms-test-support.workspace = true
 
 [lints]
 workspace = true

@@ -85,6 +85,48 @@ jobs:
       - name: Cargo.lock is up to date
         run: cargo metadata --locked --format-version 1 > /dev/null
 
+  live:
+    name: live-Postgres suites (sms-test-support)
+    runs-on: ubuntu-latest
+
+    env:
+      # Same reasoning and same cap as the `rust` job above — this job
+      # builds the identical `include_server_schema!`-expanding workspace,
+      # plus every *_live_postgres.rs/*_live.rs test binary on top.
+      CARGO_BUILD_JOBS: '4'
+      CARGO_INCREMENTAL: '0'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # sms-test-support shells out to `psql` to apply migrations (the same
+      # tool ci/apply-migrations.sh already uses) — not preinstalled on
+      # ubuntu-latest runners, same as the `migrations` job above.
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      # ubuntu-latest ships a running Docker daemon — sms-test-support
+      # starts (or reuses) one Postgres 16 container itself, keyed by a
+      # fixed name and a distinctive label
+      # (`dev.vsms.test-harness=true`), and applies both migrations before
+      # any test runs. This is a genuinely separate job from `rust` above,
+      # not an extra step in it: the `postgres:16` service container in
+      # the `migrations` job above is unrelated (used only to prove
+      # migrations apply to an empty database, never by these Rust
+      # suites), and keeping this on its own runner means a slow or flaky
+      # container start here can never block `rust`'s own fmt/clippy/test
+      # results, or vice versa.
+      - name: Run every live-Postgres suite
+        run: cargo test --workspace -- --ignored
+
+      # No teardown step: the container is deliberately left running for
+      # the rest of this job's lifetime (there is only ever one, and this
+      # runner is destroyed at job end regardless), matching the same
+      # "leave it running, the fixed name makes a rerun replace rather
+      # than add" strategy documented in crates/sms-test-support/src/lib.rs.
+
   rules:
     name: R1 and R2 — engineering rules
     runs-on: ubuntu-latest

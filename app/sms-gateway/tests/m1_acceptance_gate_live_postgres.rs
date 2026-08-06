@@ -65,14 +65,12 @@
 //! read.
 //!
 //! Ignored by default, same convention as this workspace's other live
-//! suites. Run explicitly:
+//! suites. `sms_test_support` provisions Postgres and applies both
+//! migrations automatically (a shared, self-healing container — see its
+//! own module doc), so running this needs only Docker and:
 //!
 //! ```bash
-//! docker run --rm -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16
-//! createdb vsms_check
-//! DATABASE_URL=postgres://postgres:postgres@localhost/vsms_check ./ci/apply-migrations.sh
-//! DATABASE_URL=postgres://postgres:postgres@localhost/vsms_check \
-//!     cargo test -p sms-gateway --test m1_acceptance_gate_live_postgres -- --ignored --nocapture
+//! cargo test -p sms-gateway --test m1_acceptance_gate_live_postgres -- --ignored --nocapture
 //! ```
 
 use std::collections::HashMap;
@@ -149,8 +147,7 @@ fn unique_mtn_msisdn() -> String {
 }
 
 async fn db() -> Cratestack {
-    let url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must point at a fully migrated database — see module docs");
+    let url = sms_test_support::database_url().await;
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&url)
@@ -571,8 +568,7 @@ async fn wait_until_ready(issuer: &str, child: &mut Child) {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_persisted_client_credentials_client_survives_a_process_restart_and_a_developer_token_is_refused(
 ) {
-    let db_url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must point at a fully migrated database — see module docs");
+    let db_url = sms_test_support::database_url().await;
     let db = db().await;
 
     // --- Setup: everything `sms-gateway serve` itself requires before it
