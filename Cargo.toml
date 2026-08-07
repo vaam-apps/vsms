@@ -9,6 +9,7 @@ members = [
   "crates/sms-worker",
   "crates/sms-provider",
   "crates/sms-provider-orange-cm",
+  "crates/sms-fake-orange",
   "crates/sms-test-support",
   "app/sms-gateway",
   "app/sms-worker",
@@ -38,6 +39,10 @@ sms-provider-orange-cm = { path = "./crates/sms-provider-orange-cm" }
 # Depended on via [dev-dependencies] everywhere it's used, never
 # [dependencies] — no production binary links against it.
 sms-test-support = { path = "./crates/sms-test-support" }
+# Dev-only, same discipline as sms-test-support above: a fault-injecting
+# fake of Orange's HTTP API for the chaos suite (see its own module doc).
+# No production binary links against it.
+sms-fake-orange = { path = "./crates/sms-fake-orange" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`
 # paths, so the facade has to be in scope under exactly that name. Pinned

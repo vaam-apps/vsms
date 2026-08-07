@@ -516,8 +516,17 @@ model DeliveryReceipt {
   @@audit
   @@paged
   @@retain(days: 90)
-  @@allow("list", auth().kind == "user")
-  @@allow("detail", auth().kind == "user")
+  // list/detail: found live via the chaos suite's own scripted
+  // `a_duplicate_delivered_dlr_is_idempotent` test — the seventh instance
+  // of the exact same policy-gap shape (App, AppClient,
+  // SenderIdRegistration, OperatorPrefixRule, Provider, Job before it):
+  // neither clause admitted a system context (kind="app", role="system"),
+  // so a system-context read of DeliveryReceipt — the shape any future
+  // reconciliation job, or a test proving `dlr::ingest` actually wrote a
+  // receipt, needs — silently returned zero rows instead of the rows that
+  // really exist.
+  @@allow("list", auth().kind == "user" || hasRole('system'))
+  @@allow("detail", auth().kind == "user" || hasRole('system'))
   @@allow("create", hasRole('system'))
 }
 

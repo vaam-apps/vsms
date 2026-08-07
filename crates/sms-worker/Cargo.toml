@@ -47,6 +47,14 @@ serde_json.workspace = true
 # The four live suites in tests/ (claim/dispatch/jobs/live_postgres.rs) get
 # their DATABASE_URL from this instead of the environment.
 sms-test-support.workspace = true
+# chaos_live_postgres.rs's own fault-injecting Orange fake.
+sms-fake-orange.workspace = true
+# chaos_live_postgres.rs stands up a minimal in-process axum server for
+# `POST /dlr/{providerKey}` — the real one lives in `app/sms-gateway`, a
+# binary crate with no `lib.rs` (same reason `oidc_flow_live.rs` duplicates
+# `op.rs`'s own route assembly, see AGENTS.md), so this is the same small
+# duplication, not a new pattern.
+axum.workspace = true
 
 [lints]
 workspace = true
