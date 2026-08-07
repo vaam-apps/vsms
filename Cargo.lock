@@ -3159,6 +3159,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "sms-fake-orange"
+version = "0.1.0"
+dependencies = [
+ "rand 0.8.7",
+ "reqwest 0.12.28",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "sms-gateway"
 version = "0.1.0"
 dependencies = [
@@ -3238,11 +3250,13 @@ name = "sms-worker"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "chrono",
  "cratestack-pg",
  "serde_json",
  "sms-api",
  "sms-encoding",
+ "sms-fake-orange",
  "sms-provider",
  "sms-provider-orange-cm",
  "sms-test-support",
