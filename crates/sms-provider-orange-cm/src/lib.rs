@@ -85,6 +85,18 @@ pub struct OrangeCmConfig {
     /// This is here as an explicit knob in case a real Orange sandbox says
     /// otherwise, not because its necessity is confirmed.
     pub dlr_notify_url: Option<String>,
+    /// TCP/TLS connect timeout for [`OrangeCmProvider::new`]'s client.
+    /// `production()` sets this to 10s. Exposed as a knob (rather than
+    /// hardcoded in `new`) so a live test can shrink it and prove the
+    /// connect-vs-read-timeout distinction in `classify_transport_error`
+    /// deterministically, without waiting on the production value.
+    pub connect_timeout: std::time::Duration,
+    /// Overall request timeout — connect *and* send *and* await the
+    /// response — for [`OrangeCmProvider::new`]'s client. `production()`
+    /// sets this to 30s. Same testing rationale as `connect_timeout`: a
+    /// wiremock response delayed past this value is what produces a
+    /// genuine, deterministic read timeout.
+    pub request_timeout: std::time::Duration,
 }
 
 impl OrangeCmConfig {
@@ -98,6 +110,8 @@ impl OrangeCmConfig {
             sender_number,
             base_url: "https://api.orange.com".to_owned(),
             dlr_notify_url: None,
+            connect_timeout: std::time::Duration::from_secs(10),
+            request_timeout: std::time::Duration::from_secs(30),
         }
     }
 }
@@ -114,12 +128,14 @@ impl OrangeCmProvider {
     /// real network call happens on the first [`SmsProvider::submit`] or
     /// [`SmsProvider::health`], not here.
     ///
-    /// The client is built with explicit timeouts — `reqwest::Client::new()`
-    /// sets none, so a connection that hangs (Orange accepts the TCP
-    /// handshake but never responds) would otherwise stall `submit`
-    /// indefinitely. Once `dispatch` (§7.1, still a stub) holds this
-    /// provider, an indefinite hang there is an indefinite hang of the
-    /// worker's claim loop, not just one message.
+    /// The client is built with explicit timeouts, from `config` —
+    /// `reqwest::Client::new()` sets none, so a connection that hangs
+    /// (Orange accepts the TCP handshake but never responds) would
+    /// otherwise stall `submit` indefinitely. Once `dispatch` (§7.1, still
+    /// a stub) holds this provider, an indefinite hang there is an
+    /// indefinite hang of the worker's claim loop, not just one message.
+    /// See `classify_transport_error` for why *which* of these two
+    /// timeouts fires changes whether a retry is safe.
     ///
     /// # Panics
     ///
@@ -144,8 +160,8 @@ impl OrangeCmProvider {
         }
         Self {
             client: reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(10))
-                .timeout(std::time::Duration::from_secs(30))
+                .connect_timeout(config.connect_timeout)
+                .timeout(config.request_timeout)
                 .build()
                 .expect("reqwest client builder with only timeouts set never fails"),
             config,
@@ -314,9 +330,7 @@ impl SmsProvider for OrangeCmProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|error| ProviderError::Unavailable {
-                message: format!("submit request failed: {error}"),
-            })?;
+            .map_err(|error| classify_transport_error(&error))?;
 
         let status = response.status();
         if status != StatusCode::CREATED {
@@ -324,12 +338,21 @@ impl SmsProvider for OrangeCmProvider {
             return Err(classify_submit_error(status, &text));
         }
 
+        // From here down, Orange already answered 201 — the submission was
+        // accepted. Any failure past this point (an unparseable body, a
+        // missing resourceURL) means we cannot recover the provider_ref to
+        // store, but we know for a fact the SMS may already be in flight,
+        // so `Indeterminate` applies, not `Unavailable`: retrying this
+        // "failed" submit would risk sending it a second time.
         let parsed: SubmitResponseEnvelope =
             response
                 .json()
                 .await
-                .map_err(|error| ProviderError::Unavailable {
-                    message: format!("submit response was not valid JSON: {error}"),
+                .map_err(|error| ProviderError::Indeterminate {
+                    message: format!(
+                        "submit returned 201 (accepted) but the response body was not valid \
+                         JSON, so no provider_ref could be recovered: {error}"
+                    ),
                 })?;
 
         let resource_url = parsed
@@ -337,8 +360,11 @@ impl SmsProvider for OrangeCmProvider {
             .resource_reference
             .resource_url;
         let provider_ref = resource_id_from_url(&resource_url)
-            .ok_or_else(|| ProviderError::Unavailable {
-                message: format!("no resource id in resourceURL {resource_url:?}"),
+            .ok_or_else(|| ProviderError::Indeterminate {
+                message: format!(
+                    "submit returned 201 (accepted) but no resource id was found in \
+                     resourceURL {resource_url:?}"
+                ),
             })?
             .to_owned();
 
@@ -378,6 +404,62 @@ impl SmsProvider for OrangeCmProvider {
     }
 }
 
+/// Classifies a *transport*-level failure from `.send()` itself — the
+/// network call never produced an HTTP response at all, as distinct from a
+/// well-formed response carrying a non-`201` status
+/// ([`classify_submit_error`]'s job).
+///
+/// The connect-vs-post-connect distinction is the whole point — a submit
+/// that times out after the request was already sent must never be
+/// resubmitted, since the provider may have already sent the SMS.
+/// [`reqwest::Error::is_connect`] is `true` only for a failure establishing
+/// the connection itself — DNS resolution, TCP handshake, TLS handshake,
+/// including a *connect-phase* timeout. At that point this adapter has not
+/// written a single byte of the request onto a socket Orange controls, so
+/// retrying — this provider or the next — is exactly as safe as it always
+/// was. Checked first, and returns early, so nothing below it re-examines
+/// a connect-phase error.
+///
+/// [`reqwest::Error::is_timeout`] is `true` for a timeout at *either*
+/// phase; by construction (`is_connect` already handled and returned
+/// above) reaching this check with `is_timeout() == true` means the
+/// connection was already established and the timeout fired while writing
+/// the request body or waiting on Orange's response. `req.json(&body)`
+/// fully buffers the request body before `.send()` starts writing it, so
+/// by the time any of this fires, the socket write of that buffer is
+/// either complete or in progress — Orange's server may already have the
+/// full request and be acting on it. Genuinely unknown, not safe to retry.
+///
+/// [`reqwest::Error::is_body`] covers the same "past the connect phase"
+/// territory from a different failure shape — the connection was reset or
+/// closed while a body (ours going out, or Orange's coming back) was being
+/// transferred, rather than the client's own timeout firing. Same
+/// reasoning applies, so it's grouped with the timeout case rather than
+/// falling through to the conservative default.
+///
+/// Anything else — a `Builder`/`Request`-kind error, a bad `Url`, a
+/// redirect-policy violation — never got as far as writing to a socket at
+/// all, so it stays `Unavailable`, matching this function's behaviour
+/// before this variant existed.
+fn classify_transport_error(error: &reqwest::Error) -> ProviderError {
+    if error.is_connect() {
+        return ProviderError::Unavailable {
+            message: format!("submit request failed to connect: {error}"),
+        };
+    }
+    if error.is_timeout() || error.is_body() {
+        return ProviderError::Indeterminate {
+            message: format!(
+                "submit request timed out or was interrupted after the connection was \
+                 already established; Orange may have received it: {error}"
+            ),
+        };
+    }
+    ProviderError::Unavailable {
+        message: format!("submit request failed: {error}"),
+    }
+}
+
 /// §6.2: 429 is the 5 TPS ceiling being hit — transient, retry, do not fail
 /// over. 5xx is Orange's own backend — unavailable, fail over and count
 /// toward the circuit breaker. Everything else 4xx, conservatively,
@@ -409,11 +491,20 @@ fn classify_submit_error(status: StatusCode, body: &str) -> ProviderError {
 
 #[cfg(test)]
 mod tests {
-    use super::{resource_id_from_url, OrangeCmConfig, OrangeCmProvider, KEY};
+    use super::{
+        classify_transport_error, resource_id_from_url, OrangeCmConfig, OrangeCmProvider, KEY,
+    };
     use sms_encoding::SmsEncoding;
     use sms_provider::{ProviderError, SmsProvider, SubmitRequest};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Generous enough that no existing test (all fast, local wiremock
+    /// responses) ever brushes against it, short enough that the
+    /// deliberately-slow indeterminate-timeout tests below don't need to
+    /// wait anywhere near the 10s/30s production defaults.
+    const TEST_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+    const TEST_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
     fn provider(base_url: String) -> OrangeCmProvider {
         OrangeCmProvider::new(OrangeCmConfig {
@@ -422,6 +513,8 @@ mod tests {
             sender_number: "+2370000".to_owned(),
             base_url,
             dlr_notify_url: None,
+            connect_timeout: TEST_CONNECT_TIMEOUT,
+            request_timeout: TEST_REQUEST_TIMEOUT,
         })
     }
 
@@ -449,6 +542,8 @@ mod tests {
             sender_number: "tel:+2370000".to_owned(),
             base_url: "https://example.invalid".to_owned(),
             dlr_notify_url: None,
+            connect_timeout: TEST_CONNECT_TIMEOUT,
+            request_timeout: TEST_REQUEST_TIMEOUT,
         });
         let without_scheme = provider("https://example.invalid".to_owned());
 
@@ -744,5 +839,144 @@ mod tests {
         let health = provider(server.uri()).health().await;
         assert!(!health.healthy);
         assert!(health.detail.is_some());
+    }
+
+    /// A 2xx response is Orange telling us the submission was accepted —
+    /// unparseable body or not. Treating this as `Unavailable` (safe to
+    /// retry) would resubmit an SMS Orange has already agreed to send.
+    #[tokio::test]
+    async fn submit_returns_201_but_an_unparseable_body_is_indeterminate() {
+        let server = MockServer::start().await;
+        mock_token_endpoint(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
+            .respond_with(ResponseTemplate::new(201).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let error = provider(server.uri())
+            .submit(&SubmitRequest {
+                to: "+237677123456".to_owned(),
+                sender_id: "VYMALO".to_owned(),
+                body: "hi".to_owned(),
+                encoding: SmsEncoding::Gsm7,
+                reference: "msg-1".to_owned(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, ProviderError::Indeterminate { .. }),
+            "expected Indeterminate, got {error:?}"
+        );
+    }
+
+    /// Same reasoning as the unparseable-body case, for the narrower
+    /// failure of a well-formed 201 body that just doesn't carry a usable
+    /// `resourceURL` — still a 201, still an accepted submission.
+    #[tokio::test]
+    async fn submit_returns_201_but_a_missing_resource_url_is_indeterminate() {
+        let server = MockServer::start().await;
+        mock_token_endpoint(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "outboundSMSMessageRequest": {
+                    "resourceReference": {"resourceURL": ""}
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let error = provider(server.uri())
+            .submit(&SubmitRequest {
+                to: "+237677123456".to_owned(),
+                sender_id: "VYMALO".to_owned(),
+                body: "hi".to_owned(),
+                encoding: SmsEncoding::Gsm7,
+                reference: "msg-1".to_owned(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, ProviderError::Indeterminate { .. }),
+            "expected Indeterminate, got {error:?}"
+        );
+    }
+
+    /// Proves `classify_transport_error`'s safe branch directly, with a
+    /// real connection-refused error rather than a mocked one: bind an
+    /// ephemeral port, then drop the listener so the address is valid but
+    /// refuses every connection. Nothing about a submission could have
+    /// reached whatever might eventually listen there, so this must stay
+    /// exactly as safe to retry as it always was.
+    #[tokio::test]
+    async fn a_connect_refusal_is_still_unavailable() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("binding an ephemeral port");
+        let addr = listener.local_addr().expect("reading the bound address");
+        drop(listener);
+
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .build()
+            .expect("building a plain reqwest client");
+        let error = client
+            .get(format!("http://{addr}"))
+            .send()
+            .await
+            .expect_err("nothing listens on a dropped ephemeral port");
+
+        assert!(
+            error.is_connect(),
+            "test setup: expected a connect-level failure, got {error:?}"
+        );
+        assert!(matches!(
+            classify_transport_error(&error),
+            ProviderError::Unavailable { .. }
+        ));
+    }
+
+    /// Proves `classify_transport_error`'s unsafe branch directly: a
+    /// connection that *does* establish, against a server that then never
+    /// answers before the client's own timeout fires. This is exactly the
+    /// shape a slow/hung Orange endpoint produces — the request may already
+    /// be sitting on Orange's side.
+    #[tokio::test]
+    async fn a_post_connect_timeout_is_indeterminate() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/slow"))
+            .respond_with(
+                ResponseTemplate::new(200).set_delay(std::time::Duration::from_millis(500)),
+            )
+            .mount(&server)
+            .await;
+
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .timeout(std::time::Duration::from_millis(50))
+            .build()
+            .expect("building a plain reqwest client");
+        let error = client
+            .get(format!("{}/slow", server.uri()))
+            .send()
+            .await
+            .expect_err("the mock's delay exceeds the client's own timeout");
+
+        assert!(
+            error.is_timeout(),
+            "test setup: expected a timeout, got {error:?}"
+        );
+        assert!(
+            !error.is_connect(),
+            "test setup: the connection must already be established when the timeout fires, \
+             or this isn't testing the branch it claims to"
+        );
+        assert!(matches!(
+            classify_transport_error(&error),
+            ProviderError::Indeterminate { .. }
+        ));
     }
 }

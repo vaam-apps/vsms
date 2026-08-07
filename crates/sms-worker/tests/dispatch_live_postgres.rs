@@ -23,6 +23,10 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
 };
+use sms_provider::{
+    Capabilities, DeliveryOutcome, DeliveryUpdate, Health, ProviderError, RawCallback, SmsProvider,
+    SubmitAck, SubmitRequest,
+};
 use sms_provider_orange_cm::{OrangeCmConfig, OrangeCmProvider};
 use sms_worker::dispatch::tick;
 use sms_worker::WorkerContext;
@@ -222,13 +226,33 @@ async fn mock_orange(server: &MockServer) {
         .await;
 }
 
+/// The production defaults (10s connect / 30s request) so every
+/// already-fast, immediate-response test here is unaffected.
 fn provider(base_url: String) -> Arc<OrangeCmProvider> {
+    provider_with_timeouts(
+        base_url,
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
+    )
+}
+
+/// Same as [`provider`], but with caller-chosen timeouts — the
+/// indeterminate-outcome test below needs a `request_timeout` short enough
+/// that a deliberately delayed mock response actually fires it inside a
+/// normal test run, rather than waiting on the 30s production default.
+fn provider_with_timeouts(
+    base_url: String,
+    connect_timeout: std::time::Duration,
+    request_timeout: std::time::Duration,
+) -> Arc<OrangeCmProvider> {
     Arc::new(OrangeCmProvider::new(OrangeCmConfig {
         client_id: "client".to_owned(),
         client_secret: "secret".to_owned(),
         sender_number: "+2370000".to_owned(),
         base_url,
         dlr_notify_url: None,
+        connect_timeout,
+        request_timeout,
     }))
 }
 
@@ -444,4 +468,257 @@ async fn no_active_provider_rejects_before_any_submission_is_attempted() {
     assert!(after
         .stateReason
         .is_some_and(|reason| reason.contains("no active provider")));
+}
+
+/// A provider whose `parse_dlr` always returns exactly the updates it was
+/// built with — every other method is unreachable from `sms_api::dlr::ingest`,
+/// which only ever calls `parse_dlr`. Copied from
+/// `crates/sms-api/tests/dlr_ingestion_live_postgres.rs`'s own
+/// `FixedProvider`: that file can't be reused directly (a binary/lib test
+/// boundary, same reason `op.rs`'s own routes get hand-rolled in more than
+/// one test file elsewhere in this workspace), so this is the same small
+/// shape re-declared here rather than a shared test-only crate for one
+/// struct.
+struct FixedProvider {
+    updates: Vec<DeliveryUpdate>,
+}
+
+#[async_trait::async_trait]
+impl SmsProvider for FixedProvider {
+    fn key(&self) -> &'static str {
+        "dispatch_test_fixed"
+    }
+    fn capabilities(&self) -> Capabilities {
+        unreachable!("dlr::ingest never calls capabilities")
+    }
+    async fn submit(&self, _req: &SubmitRequest) -> Result<SubmitAck, ProviderError> {
+        unreachable!("dlr::ingest never calls submit")
+    }
+    fn parse_dlr(&self, _raw: &RawCallback) -> Result<Vec<DeliveryUpdate>, ProviderError> {
+        Ok(self.updates.clone())
+    }
+    async fn health(&self) -> Health {
+        unreachable!("dlr::ingest never calls health")
+    }
+}
+
+fn delivery_update_for(provider_ref: &str, outcome: DeliveryOutcome) -> DeliveryUpdate {
+    DeliveryUpdate {
+        provider_ref: provider_ref.to_owned(),
+        outcome,
+        occurred_at: None,
+        raw_status: format!("{outcome:?}"),
+        error_code: None,
+        delivering_network: None,
+    }
+}
+
+fn empty_callback() -> RawCallback {
+    RawCallback {
+        headers: vec![],
+        body: b"{}".to_vec(),
+    }
+}
+
+/// The core of this ticket, proven end to end against a real database and
+/// a real (if deliberately delayed) HTTP round trip: a submit that times
+/// out *after* Orange already had the request must land the message in
+/// `uncertain`, and the claim loop must never touch it again — not "must
+/// not resubmit within this test," but genuinely never, since `uncertain`
+/// sits outside `claim::Claimable::candidates()`'s state filter.
+///
+/// The mock's `.expect(1)` on the submit route is the real assertion here,
+/// not the message's final state alone: a implementation that got the
+/// *state* right by luck (e.g. classified the timeout as `Permanent`
+/// instead of routing through `Indeterminate`) but still let some other
+/// path resubmit would pass a state-only check and fail this one.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_indeterminate_submit_lands_in_uncertain_and_is_never_resubmitted() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let server = MockServer::start().await;
+    mock_orange(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
+        // The delay exceeds the client's own request_timeout below, so
+        // reqwest gives up and returns a genuine read timeout — the
+        // connection was established (wiremock accepted it and is holding
+        // the response), so this is squarely the "sent, no reply" case,
+        // not a connect failure.
+        .respond_with(ResponseTemplate::new(201).set_delay(std::time::Duration::from_millis(600)))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    seed_active_provider(&db).await;
+    let app_id = seed_app(&db).await;
+    let seeded = seed_message(&db, &app_id, 3).await;
+
+    let ctx = WorkerContext {
+        db: db.clone(),
+        provider: provider_with_timeouts(
+            server.uri(),
+            std::time::Duration::from_secs(2),
+            std::time::Duration::from_millis(200),
+        ),
+    };
+    let sys = sys();
+
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // accepted -> queued
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // queued -> routed -> (timeout) -> uncertain
+
+    let after = reload(&db, &seeded.id).await;
+    assert_eq!(after.state, MessageState::uncertain);
+    assert_eq!(
+        after.providerMessageRefAlt,
+        Some(seeded.id.clone()),
+        "the reference sent as callbackData must be recorded even on a timed-out submit, or a \
+         later DLR echoing it back can never correlate"
+    );
+
+    // Run several more ticks. `uncertain` is outside candidates()'s state
+    // filter, so none of these should touch this message at all — and the
+    // mock's own .expect(1), checked when the MockServer drops at the end
+    // of this test, is what actually catches a resubmit if one happened.
+    for _ in 0..3 {
+        tick(&ctx, &sys, "worker-1").await.expect("tick succeeds");
+    }
+    let still_uncertain = reload(&db, &seeded.id).await;
+    assert_eq!(still_uncertain.state, MessageState::uncertain);
+    assert_eq!(
+        still_uncertain.version, after.version,
+        "no further write occurred at all"
+    );
+}
+
+/// The other half of the ticket's own instruction — proving the new
+/// variant wasn't over-applied: a failure that never got past the connect
+/// phase must keep behaving exactly as before (back off and retry via
+/// `queued`), not jump to `uncertain`.
+///
+/// This points the whole provider (token endpoint included) at an address
+/// nothing listens on, so the connect refusal is actually surfaced by
+/// `token::fetch`'s own hardcoded `Unavailable` mapping rather than
+/// `classify_transport_error`'s connect branch specifically — the two
+/// endpoints share one `base_url` and there is no way to fail only the
+/// second from here. `classify_transport_error`'s connect-vs-timeout
+/// predicate itself is unit-tested directly, against real reqwest errors,
+/// in `sms-provider-orange-cm`'s own `a_connect_refusal_is_still_unavailable`
+/// / `a_post_connect_timeout_is_indeterminate`. What this test proves is
+/// the end-to-end dispatch behaviour: a connect-level failure must still
+/// retry, never land in `uncertain`.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_connect_level_failure_still_backs_off_to_queued_not_uncertain() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binding an ephemeral port");
+    let dead_addr = listener.local_addr().expect("reading the bound address");
+    drop(listener);
+
+    seed_active_provider(&db).await;
+    let app_id = seed_app(&db).await;
+    let seeded = seed_message(&db, &app_id, 3).await;
+
+    let ctx = WorkerContext {
+        db: db.clone(),
+        provider: provider_with_timeouts(
+            format!("http://{dead_addr}"),
+            std::time::Duration::from_millis(500),
+            std::time::Duration::from_secs(2),
+        ),
+    };
+    let sys = sys();
+
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // accepted -> queued
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // queued -> routed -> (connect refused) -> queued
+
+    let after = reload(&db, &seeded.id).await;
+    assert_eq!(
+        after.state,
+        MessageState::queued,
+        "a connect-level failure must still be safe to retry, not land in uncertain"
+    );
+    assert!(after
+        .stateReason
+        .is_some_and(|reason| reason.contains("provider unavailable")));
+}
+
+/// Closes the loop the design doc's own reasoning depends on: an
+/// `uncertain` message is not abandoned, because
+/// `providerMessageRefAlt` was recorded at timeout time (see the first
+/// test above) and `sms_api::dlr::ingest_one` matches on
+/// `providerMessageRef` **or** `providerMessageRefAlt`. A DLR arriving
+/// later, echoing back the same reference Orange was sent as
+/// `callbackData`, must still correlate and drive the message to a real
+/// terminal state — proving the PR's own claim rather than asserting it
+/// from documentation alone.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_dlr_after_an_indeterminate_submit_still_correlates_and_resolves() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let server = MockServer::start().await;
+    mock_orange(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
+        .respond_with(ResponseTemplate::new(201).set_delay(std::time::Duration::from_millis(600)))
+        .mount(&server)
+        .await;
+
+    seed_active_provider(&db).await;
+    let app_id = seed_app(&db).await;
+    let seeded = seed_message(&db, &app_id, 3).await;
+
+    let ctx = WorkerContext {
+        db: db.clone(),
+        provider: provider_with_timeouts(
+            server.uri(),
+            std::time::Duration::from_secs(2),
+            std::time::Duration::from_millis(200),
+        ),
+    };
+    let sys = sys();
+
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // accepted -> queued
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // queued -> routed -> (timeout) -> uncertain
+
+    let uncertain = reload(&db, &seeded.id).await;
+    assert_eq!(uncertain.state, MessageState::uncertain);
+    // Not `seed_active_provider`'s own return value: this database is never
+    // reset between runs, and `cheapest_active_provider` (`crates/sms-worker/src/claim.rs`)
+    // picks *the* cheapest active `Provider` row across the whole table —
+    // every test in this file seeds one at the same fixed cost, so a
+    // leftover row from an earlier run can tie and win instead of the one
+    // this test just created. `ctx.provider` (this test's own wiremock
+    // server) is what actually receives the HTTP call regardless of which
+    // row wins that tie, but DLR correlation matches on the *row id* the
+    // message was actually stamped with — so that has to come from the
+    // message itself, not from an assumption about which row got picked.
+    let provider_row_id = uncertain
+        .providerId
+        .clone()
+        .expect("routing must have stamped a providerId before this message could reach routed");
+
+    let fixed_provider = FixedProvider {
+        updates: vec![delivery_update_for(&seeded.id, DeliveryOutcome::Delivered)],
+    };
+    sms_api::dlr::ingest(
+        &db,
+        &sys,
+        &fixed_provider,
+        &provider_row_id,
+        &empty_callback(),
+    )
+    .await
+    .expect("ingest succeeds");
+
+    let resolved = reload(&db, &seeded.id).await;
+    assert_eq!(
+        resolved.state,
+        MessageState::delivered,
+        "a late DLR echoing the callbackData reference must still resolve an uncertain message"
+    );
 }

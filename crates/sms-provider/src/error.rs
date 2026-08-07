@@ -65,6 +65,31 @@ pub enum ProviderError {
     /// something this adapter was never going to be able to do.
     #[error("not supported by this provider")]
     Unsupported,
+
+    /// The request reached the provider, or may have — a response/read
+    /// timeout after the request was already written, a connection reset
+    /// while awaiting or reading the response, or a `2xx` response we
+    /// cannot make sense of (unparseable body, missing the field a
+    /// provider ref is extracted from). In every one of these cases the
+    /// provider may already have accepted the submission and sent the SMS;
+    /// there is simply no way to tell from here.
+    ///
+    /// Distinct from [`Self::Unavailable`] in exactly the respect that
+    /// matters: `Unavailable` means the request never got anywhere near
+    /// being accepted (the provider refused the connection, or answered
+    /// broadly with server errors), so retrying — this provider or the
+    /// next — is safe. `Indeterminate` means retrying is *not* safe,
+    /// because a retry that lands on a provider that already sent the
+    /// first attempt is a duplicate SMS to a real handset. Callers must
+    /// not fail this submission over to another route and must not retry
+    /// it; the message should move to a state that waits for a delivery
+    /// receipt to resolve the ambiguity (or ages out), never one that
+    /// re-attempts sending.
+    #[error("submission outcome unknown, possibly sent: {message}")]
+    Indeterminate {
+        /// A human-readable description, for logs.
+        message: String,
+    },
 }
 
 /// The one routing decision a [`ProviderError`] variant implies.
@@ -85,6 +110,13 @@ pub enum RoutingConsequence {
     OpenCircuitAndTryNextRoute,
     /// Nothing about retrying or rerouting helps. Fail the message outright.
     FailMessage,
+    /// The submission's outcome is unknown and may already have reached
+    /// the recipient. Do not retry this provider, do not fail over to
+    /// another, and do not fail the message — any of those three risk a
+    /// second real SMS. The only safe move is to stop touching this
+    /// message from the send path entirely and let a delivery receipt (or
+    /// the grace-period expiry job, absent one) resolve it later.
+    HoldIndeterminate,
 }
 
 impl ProviderError {
@@ -101,6 +133,7 @@ impl ProviderError {
             },
             Self::Unavailable { .. } => RoutingConsequence::OpenCircuitAndTryNextRoute,
             Self::Rejected { .. } | Self::Unsupported => RoutingConsequence::FailMessage,
+            Self::Indeterminate { .. } => RoutingConsequence::HoldIndeterminate,
         }
     }
 }
@@ -143,6 +176,12 @@ mod tests {
                 RoutingConsequence::FailMessage,
             ),
             (ProviderError::Unsupported, RoutingConsequence::FailMessage),
+            (
+                ProviderError::Indeterminate {
+                    message: "read timeout after the request was sent".to_owned(),
+                },
+                RoutingConsequence::HoldIndeterminate,
+            ),
         ];
 
         for (error, expected) in cases {
@@ -163,5 +202,27 @@ mod tests {
             error.routing(),
             RoutingConsequence::OpenCircuitAndTryNextRoute
         );
+    }
+
+    /// The bug this whole ticket exists to prevent: an `Indeterminate`
+    /// routed as if it were `Unavailable`, `Permanent`, or `Transient`
+    /// would retry or fail over a submission that may have already sent
+    /// a real SMS — a duplicate to the recipient's handset.
+    #[test]
+    fn indeterminate_never_retries_or_fails_over() {
+        let error = ProviderError::Indeterminate {
+            message: "x".to_owned(),
+        };
+        assert_eq!(error.routing(), RoutingConsequence::HoldIndeterminate);
+        assert_ne!(error.routing(), RoutingConsequence::TryNextRoute);
+        assert_ne!(
+            error.routing(),
+            RoutingConsequence::OpenCircuitAndTryNextRoute
+        );
+        assert!(!matches!(
+            error.routing(),
+            RoutingConsequence::RetryThisProvider { .. }
+        ));
+        assert_ne!(error.routing(), RoutingConsequence::FailMessage);
     }
 }

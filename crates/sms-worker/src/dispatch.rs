@@ -113,6 +113,7 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
             MessageState::failed,
             Some("message body missing at submit time".to_owned()),
             None,
+            None,
         )
         .await;
         return;
@@ -138,8 +139,24 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
             .await;
         }
         Err(err) => {
+            // Known statically, independent of whether the provider ever
+            // answered: `req.reference` (== `message.id`) is exactly what
+            // was sent as `callbackData` before the network call was
+            // attempted. Only worth persisting for the one outcome a later
+            // DLR might still need it for — see `write_transition`'s doc.
+            let provider_ref_alt =
+                matches!(err, ProviderError::Indeterminate { .. }).then_some(message.id.as_str());
             let (next_state, reason, backoff) = classify(&err);
-            write_transition(ctx, sys, &message, next_state, Some(reason), backoff).await;
+            write_transition(
+                ctx,
+                sys,
+                &message,
+                next_state,
+                Some(reason),
+                backoff,
+                provider_ref_alt,
+            )
+            .await;
         }
     }
 }
@@ -156,6 +173,21 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
 /// duplicated here. The *next* claim attempt is what decides whether
 /// `attempts >= maxAttempts` turns this row's next cycle into `failed`
 /// instead of another `routed` attempt.
+///
+/// `ProviderError::Indeterminate` is the one arm that does not fit that
+/// pattern at all: it targets `uncertain`, not `queued`, and carries no
+/// backoff, because there must be no next attempt. `uncertain` is outside
+/// [`crate::claim::Claimable::candidates`]'s state filter
+/// (`accepted`/`queued`/`routed` only), so once a message lands there this
+/// loop never picks it up again — the only ways out are a later DLR
+/// (`sms_api::dlr`, correlating on `providerMessageRefAlt` since we may
+/// never have gotten a `providerMessageRef` to store) or
+/// `expire_stale`'s 6h grace (`crates/sms-worker/src/jobs/expire_stale.rs`).
+/// This is a deliberate trade: a message that really did fail silently on
+/// the provider's side, with no DLR ever coming, sits unresolved for up to
+/// 6 hours before `expired` rather than being retried quickly — accepted
+/// because the alternative is a real, if less likely, duplicate SMS to a
+/// real handset.
 fn classify(err: &ProviderError) -> (MessageState, String, Option<Duration>) {
     match err {
         ProviderError::Transient {
@@ -182,6 +214,11 @@ fn classify(err: &ProviderError) -> (MessageState, String, Option<Duration>) {
         ProviderError::Unsupported => (
             MessageState::failed,
             "operation not supported by this provider".to_owned(),
+            None,
+        ),
+        ProviderError::Indeterminate { message: msg } => (
+            MessageState::uncertain,
+            format!("submission outcome unknown, possibly already sent; not retrying: {msg}"),
             None,
         ),
     }
@@ -216,8 +253,27 @@ async fn write_submitted(
 }
 
 /// `routed -> queued` (backoff, `leaseUntil` set to enforce the delay
-/// through the same mechanism [`crate::claim`]'s reclaim uses) or
-/// `routed -> failed`, per [`classify`]'s outcome.
+/// through the same mechanism [`crate::claim`]'s reclaim uses),
+/// `routed -> failed`, or `routed -> uncertain`, per [`classify`]'s
+/// outcome.
+///
+/// `provider_ref_alt`, when given, is stamped onto
+/// `Message.providerMessageRefAlt` alongside the transition — used only
+/// for the `Indeterminate` -> `uncertain` case. `SubmitRequest::reference`
+/// (always `message.id`, see [`submit_one`]) is sent to the provider
+/// *before* the network call that might time out, so it's known
+/// regardless of whether a response ever comes back — unlike
+/// `SubmitAck::provider_ref`/`provider_ref_alt`, which only exist on
+/// success. Without recording it here, a message that lands in
+/// `uncertain` would have neither `providerMessageRef` nor
+/// `providerMessageRefAlt` set, and `sms_api::dlr::ingest_one`'s
+/// correlation query (`providerId` + (`providerMessageRef` OR
+/// `providerMessageRefAlt`)) would never match a DLR that later echoes
+/// this same reference back — see `OrangeCmProvider::submit`'s own doc on
+/// `callbackData` always being `req.reference`. Every other transition out
+/// of `routed` either retries (no correlation needed yet) or is terminal
+/// in a way no later DLR can revisit, so `None` elsewhere is deliberate,
+/// not an oversight.
 async fn write_transition(
     ctx: &WorkerContext,
     sys: &CoolContext,
@@ -225,6 +281,7 @@ async fn write_transition(
     next_state: MessageState,
     reason: Option<String>,
     backoff: Option<Duration>,
+    provider_ref_alt: Option<&str>,
 ) {
     let lease_until = backoff.map(|delay| {
         chrono::Utc::now()
@@ -238,6 +295,7 @@ async fn write_transition(
             state: Some(next_state),
             stateReason: Some(reason),
             leaseUntil: Some(lease_until),
+            providerMessageRefAlt: provider_ref_alt.map(|r| Some(r.to_owned())),
             ..Default::default()
         })
         .if_match(message.version)
@@ -331,5 +389,21 @@ mod tests {
         let (unsupported_state, _, unsupported_backoff) = classify(&ProviderError::Unsupported);
         assert_eq!(unsupported_state, MessageState::failed);
         assert_eq!(unsupported_backoff, None);
+    }
+
+    /// The whole point of this ticket: an indeterminate outcome must land
+    /// in `uncertain`, not `queued` (which `claim.rs`'s `candidates()`
+    /// would pick straight back up and resubmit) and not `failed` (which
+    /// would discard a message that might still resolve via a late DLR).
+    /// No backoff either — `uncertain` isn't in the claimable set at all,
+    /// so a `leaseUntil` on it would be meaningless.
+    #[test]
+    fn indeterminate_lands_in_uncertain_with_no_backoff_and_no_retry() {
+        let (state, reason, backoff) = classify(&ProviderError::Indeterminate {
+            message: "read timeout after the request was sent".to_owned(),
+        });
+        assert_eq!(state, MessageState::uncertain);
+        assert_eq!(backoff, None);
+        assert!(reason.contains("not retrying"));
     }
 }
