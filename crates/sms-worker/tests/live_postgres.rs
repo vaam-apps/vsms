@@ -23,9 +23,27 @@ use sms_worker::lease::RoleLease;
 use sms_worker::Role;
 use std::time::Duration;
 
+/// #102, found live: on a genuinely fresh database, this binary's own
+/// tests — run concurrently by Rust's default multi-threaded test
+/// harness — can race on Postgres's own `pg_type` catalog the first time
+/// two of them prepare the exact same not-yet-cached query shape at the
+/// same instant. See `crates/sms-worker/tests/claim_live_postgres.rs`'s
+/// own `TEST_MUTEX` doc for the full reasoning — same mechanism, same
+/// fix. This file predates `ca653a1` (#102) — its four tests were never
+/// updated to pick up the pattern, and being `#[ignore]`d by convention
+/// meant nothing caught the gap until #118 started running every live
+/// suite automatically in CI. The four tests using distinct `Role`
+/// values (see `different_roles_do_not_contend_with_each_other`'s own
+/// comment) avoids racing on lock *state*, but not on the unrelated
+/// `pg_type` catalog race, which is about first-time query-shape
+/// preparation, not about which advisory-lock key is held.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 #[tokio::test]
 #[ignore = "needs a live Postgres — see module docs"]
 async fn a_second_attempt_for_the_same_role_is_none_while_the_first_holds_it() {
+    let _guard = TEST_MUTEX.lock().await;
     let url = sms_test_support::database_url().await;
 
     let first = RoleLease::try_acquire(&url, Role::Dispatch)
@@ -47,6 +65,7 @@ async fn a_second_attempt_for_the_same_role_is_none_while_the_first_holds_it() {
 #[tokio::test]
 #[ignore = "needs a live Postgres — see module docs"]
 async fn releasing_frees_the_lock_for_the_next_attempt() {
+    let _guard = TEST_MUTEX.lock().await;
     let url = sms_test_support::database_url().await;
 
     let first = RoleLease::try_acquire(&url, Role::Drain)
@@ -69,6 +88,7 @@ async fn releasing_frees_the_lock_for_the_next_attempt() {
 #[tokio::test]
 #[ignore = "needs a live Postgres — see module docs"]
 async fn dropping_an_unreleased_lease_still_frees_the_lock() {
+    let _guard = TEST_MUTEX.lock().await;
     let url = sms_test_support::database_url().await;
 
     let first = RoleLease::try_acquire(&url, Role::Scheduler)
@@ -101,6 +121,7 @@ async fn dropping_an_unreleased_lease_still_frees_the_lock() {
 #[tokio::test]
 #[ignore = "needs a live Postgres — see module docs"]
 async fn different_roles_do_not_contend_with_each_other() {
+    let _guard = TEST_MUTEX.lock().await;
     let url = sms_test_support::database_url().await;
 
     let a = RoleLease::try_acquire(&url, Role::Hooks).await.unwrap();

@@ -101,39 +101,48 @@
 //! *different* test binaries that happen to share a file name) so reruns
 //! of the same binary reuse (after dropping and recreating — see below)
 //! rather than endlessly accumulate databases. [`ensure_binary_database`]
-//! drops and recreates it from a shared, lazily-migrated template database
-//! (`vsms_template`) on every call — "drop and recreate", not just
-//! "create if absent", is what actually stops row accumulation across
-//! reruns, not merely the per-binary split. Applying both migration files
-//! via `psql` 14 times (once per binary) measured slower than applying them
-//! once to a template and using Postgres's own `CREATE DATABASE ...
-//! TEMPLATE ...`, which is a filesystem-level copy — so the template is
-//! migrated at most once per container lifetime, and every binary's own
-//! database creation is just that copy plus a `DROP DATABASE ... WITH
-//! (FORCE)` first. `WITH (FORCE)` (Postgres 13+) terminates any lingering
-//! connections to the target database itself, which matters for exactly
-//! this test: a prior run's `kill -9`'d `sms-worker` subprocess could in
-//! principle leave a dangling connection open to its own scratch database.
+//! drops and recreates it from a shared template database (`vsms_template`)
+//! on every call — "drop and recreate", not just "create if absent", is
+//! what actually stops row accumulation across reruns, not merely the
+//! per-binary split. Applying both migration files via `psql` 14 times
+//! (once per binary) measured slower than applying them once to a template
+//! and using Postgres's own `CREATE DATABASE ... TEMPLATE ...`, which is a
+//! filesystem-level copy — so every binary's own database creation is just
+//! that copy plus a `DROP DATABASE ... WITH (FORCE)` first. `WITH (FORCE)`
+//! (Postgres 13+) terminates any lingering connections to the target
+//! database itself, which matters for exactly this test: a prior run's
+//! `kill -9`'d `sms-worker` subprocess could in principle leave a dangling
+//! connection open to its own scratch database.
+//!
+//! The template is re-migrated whenever [`migrations_fingerprint`] of the
+//! working tree's `schema/migrations/postgres/**` no longer matches the
+//! fingerprint stamped onto the template the last time it was built (via
+//! `COMMENT ON DATABASE`, checked against `pg_shdescription`) — not merely
+//! "at most once per container lifetime" the way an earlier version of
+//! this module worked. That earlier version asked only "does
+//! `public.messages` exist in the template?", which stayed true forever
+//! after the template's first-ever migration regardless of what the
+//! migration files looked like on any later run — since the container (and
+//! the template inside it) is deliberately left running between local
+//! `cargo test` invocations, that let a bootstrap-only schema edit run
+//! silently against a stale template until something forced a full
+//! `just test-live-clean`. See [`ensure_binary_database`]'s own doc for the
+//! fingerprint mechanism.
 //!
 //! Postgres refuses to `CREATE DATABASE ... TEMPLATE x` while any other
-//! session is connected to `x`, so [`ensure_template_ready`] explicitly
-//! closes its own connection pool before returning, and the whole
-//! ensure-template / drop-and-recreate-binary-db sequence runs under one
-//! held advisory lock (reusing [`MIGRATION_LOCK_NS`]/[`MIGRATION_LOCK_KEY`])
-//! so two processes can't interleave a template migration with another's
-//! `CREATE DATABASE ... TEMPLATE`. [`ensure_template_ready`] deliberately
-//! takes no advisory lock of its own — it runs from inside
-//! [`ensure_binary_database`], which already holds one on a *different*
-//! connection, and Postgres advisory locks are session-scoped, not
-//! reentrant across connections/sockets; a second acquire of the same key
-//! from a second session blocks for real rather than succeeding
-//! immediately, which would self-deadlock the process waiting on a lock it
-//! already holds elsewhere. `kill9_reclaim_live.rs` needs no change for
-//! this: it already reads its database URL once from [`database_url`] and
-//! passes that exact string to the `sms-worker` subprocess it spawns via
-//! `--database-url`, so both the test and the process it kills
-//! automatically share the same per-binary scratch database without either
-//! needing to know it's per-binary at all.
+//! session is connected to `x`, so remigrating the template always shells
+//! out to `psql` (its own separate, self-closing connections) rather than
+//! reusing [`ensure_binary_database`]'s own admin connection to run DDL
+//! against it directly, and the whole ensure-template / drop-and-recreate-
+//! binary-db sequence runs under one held advisory lock (reusing
+//! [`MIGRATION_LOCK_NS`]/[`MIGRATION_LOCK_KEY`]) so two processes can't
+//! interleave a template rebuild with another's `CREATE DATABASE ...
+//! TEMPLATE`. `kill9_reclaim_live.rs` needs no change for this: it already
+//! reads its database URL once from [`database_url`] and passes that exact
+//! string to the `sms-worker` subprocess it spawns via `--database-url`, so
+//! both the test and the process it kills automatically share the same
+//! per-binary scratch database without either needing to know it's
+//! per-binary at all.
 //!
 //! # R1
 //!
@@ -189,10 +198,11 @@ const IMAGE: &str = "postgres:16";
 const MIGRATION_LOCK_NS: i32 = 0x5654_5300; // "VTS\0" — Vsms Test Support
 const MIGRATION_LOCK_KEY: i32 = 1;
 
-/// The shared, lazily-migrated template every per-binary database is
-/// created from via `CREATE DATABASE ... TEMPLATE`. Migrated at most once
-/// per container lifetime (see [`ensure_template_ready`]) — never queried
-/// or written to directly by any test.
+/// The shared template every per-binary database is created from via
+/// `CREATE DATABASE ... TEMPLATE`. (Re)migrated whenever its stamped
+/// [`migrations_fingerprint`] no longer matches the working tree's (see
+/// [`ensure_binary_database`]) — never queried or written to directly by
+/// any test.
 const TEMPLATE_DB_NAME: &str = "vsms_template";
 
 /// Prefix for every per-binary scratch database name, so `psql -l` /
@@ -450,20 +460,51 @@ fn binary_database_name() -> String {
     name
 }
 
-/// Ensures [`TEMPLATE_DB_NAME`] exists and is fully migrated, then drops
-/// (if present) and recreates this test binary's own database as a copy
-/// of it — the "drop and recreate on every call", not just "create if
+/// Ensures [`TEMPLATE_DB_NAME`] exists and is migrated to *this build's*
+/// exact migration content — not merely "migrated to something" — then
+/// drops (if present) and recreates this test binary's own database as a
+/// copy of it. The "drop and recreate on every call", not just "create if
 /// absent", is what stops rows accumulating across reruns of the same
 /// binary. Runs the whole sequence under one held advisory lock so a
 /// concurrent process can never observe (or create from) a template that's
 /// only half-migrated, and never race this binary's own drop-then-create
 /// against another process doing the same for a different binary's
-/// database. See this module's "one database per test binary" doc section
-/// for the deadlock reason this does *not* reuse a helper that takes the
-/// same lock internally.
+/// database.
+///
+/// # Why staleness detection keys on migration *content*, not table
+/// existence
+///
+/// An earlier version of this function asked only "does `public.messages`
+/// exist in the template?" — true forever after the template's first
+/// migration, regardless of what `schema/migrations/postgres/**` looks
+/// like by the time a *later* run asks the same question. Because the
+/// container (and the `vsms_template` database inside it) is deliberately
+/// left running between local `cargo test` invocations (see this module's
+/// top-level doc), that made a bootstrap-only schema change — e.g. editing
+/// `0002_bootstrap` without touching `0001_init` — silently invisible to
+/// every suite until someone happened to run `just test-live-clean` or
+/// otherwise blew away the container. That already bit a real PR once: it
+/// only passed after a forced clean rebuild. A harness that silently runs
+/// tests against a schema older than the one in the working tree is the
+/// same class of defect as a CI job that never runs the tests at all — it
+/// reports green without having checked anything real.
+///
+/// The fix: [`migrations_fingerprint`] hashes every `up.sql`'s path and
+/// bytes, and that fingerprint is stamped onto the template database
+/// itself via `COMMENT ON DATABASE` (a shared, cluster-level catalog
+/// entry — `pg_shdescription` — rather than an application table, so it
+/// is never copied into any per-binary scratch database by `CREATE
+/// DATABASE ... TEMPLATE`, and Postgres's own `dropdb()` cleans it up for
+/// free the moment the template is dropped). Every call compares the
+/// stamped fingerprint against a freshly computed one; any mismatch —
+/// content changed, a migration added or removed, or no stamp at all
+/// (first run ever) — triggers a full drop-and-remigrate of the template,
+/// exactly as if the template had never existed. A matching fingerprint
+/// is the only case that reuses the existing template outright.
 async fn ensure_binary_database(base_url: &str) -> String {
     let name = binary_database_name();
     let admin_url = set_database_name(base_url, "postgres");
+    let current_fingerprint = migrations_fingerprint();
 
     let pool = PgPoolOptions::new()
         .max_connections(1)
@@ -488,21 +529,63 @@ async fn ensure_binary_database(base_url: &str) -> String {
             .fetch_one(&mut *conn)
             .await
             .expect("checking whether the template database exists");
-    if !template_exists {
+
+    // `pg_shdescription` is keyed by (objoid, classoid), joined here
+    // against `pg_database` by name; `LEFT JOIN` so a template that exists
+    // but was never stamped (shouldn't happen post-fix, but cheap to
+    // handle) reads as `None` — a mismatch, not a query error.
+    let stored_fingerprint: Option<String> = if template_exists {
+        query_scalar(
+            "SELECT sd.description FROM pg_database d \
+             LEFT JOIN pg_shdescription sd \
+               ON sd.objoid = d.oid AND sd.classoid = 'pg_database'::regclass \
+             WHERE d.datname = $1",
+        )
+        .bind(TEMPLATE_DB_NAME)
+        .fetch_one(&mut *conn)
+        .await
+        .expect("reading the template database's stamped migration fingerprint")
+    } else {
+        None
+    };
+
+    let stale = stored_fingerprint.as_deref() != Some(current_fingerprint.as_str());
+
+    if stale {
+        if template_exists {
+            query(&format!(
+                "DROP DATABASE IF EXISTS \"{TEMPLATE_DB_NAME}\" WITH (FORCE)"
+            ))
+            .execute(&mut *conn)
+            .await
+            .expect("dropping the stale template database before remigrating it");
+        }
         query(&format!("CREATE DATABASE \"{TEMPLATE_DB_NAME}\""))
             .execute(&mut *conn)
             .await
             .expect("creating the template database");
-    }
 
-    // Connects to (and fully disconnects from) the template on its own —
-    // Postgres refuses `CREATE DATABASE ... TEMPLATE x` while any session
-    // is still connected to `x`, so this must return with zero lingering
-    // connections before the `CREATE DATABASE` below runs. The admin
-    // connection above stays connected to `postgres`, a different
-    // database, so it never counts against that check.
-    let template_url = set_database_name(base_url, TEMPLATE_DB_NAME);
-    ensure_template_ready(&template_url).await;
+        // Connects to (and fully disconnects from) the template on its
+        // own — Postgres refuses `CREATE DATABASE ... TEMPLATE x` while
+        // any session is still connected to `x`, so this must return with
+        // zero lingering connections before the per-binary `CREATE
+        // DATABASE` below runs. The admin connection above stays
+        // connected to `postgres`, a different database, so it never
+        // counts against that check.
+        let template_url = set_database_name(base_url, TEMPLATE_DB_NAME);
+        run_psql_migrations(&template_url).await;
+
+        // Escaped by construction, not by string-escaping: `current_fingerprint`
+        // is always exactly 16 lowercase hex digits (see
+        // `migrations_fingerprint`), so it can never contain a `'` or
+        // otherwise break out of the literal.
+        query(&format!(
+            "COMMENT ON DATABASE \"{TEMPLATE_DB_NAME}\" IS '{current_fingerprint}'"
+        ))
+        .execute(&mut *conn)
+        .await
+        .expect("stamping the template database with its migration fingerprint");
+    }
 
     query(&format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"))
         .execute(&mut *conn)
@@ -525,40 +608,38 @@ async fn ensure_binary_database(base_url: &str) -> String {
     set_database_name(base_url, &name)
 }
 
-/// Checks whether `template_url` is already migrated (`public.messages`
-/// existing is a sufficient marker — it's the last table `0001_init`
-/// creates) and applies both migration directories in lexical order if
-/// not. Always leaves zero open connections to `template_url` on return —
-/// load-bearing for [`ensure_binary_database`]'s subsequent `CREATE
-/// DATABASE ... TEMPLATE`, not just tidiness.
-async fn ensure_template_ready(template_url: &str) {
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect(template_url)
-        .await
-        .expect("connecting to check whether the template database is migrated");
+/// A deterministic fingerprint of every `up.sql` this run would apply —
+/// both path and byte content, in [`migration_dirs`]'s own lexical order —
+/// so renaming, reordering, or editing a migration all change the result.
+/// FNV-1a rather than a cryptographic hash: nothing here is
+/// security-sensitive, this only needs to detect "did the input change"
+/// for a throwaway test database, and FNV-1a needs no extra dependency.
+/// Not guaranteed stable across changes to *this function* itself, which
+/// is fine — a fingerprint-algorithm change just forces one extra
+/// template rebuild on the next run, not a correctness gap.
+fn migrations_fingerprint() -> String {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
-    // `::text` is load-bearing, not cosmetic. `to_regclass` returns `regclass`,
-    // which sqlx cannot decode into `String` — but a NULL result decodes fine
-    // without ever consulting the type. So the uncast form works exactly once,
-    // against a fresh database where the table is absent, and then fails for
-    // every later caller once `0001_init` has actually run. That reads as an
-    // ordering bug (first suite passes, next one dies) rather than a decode bug.
-    let messages_table: Option<String> =
-        query_scalar("SELECT to_regclass('public.messages')::text")
-            .fetch_one(&pool)
-            .await
-            .expect("checking whether 0001_init has already run against the template");
+    let mut hash = FNV_OFFSET_BASIS;
+    let mut fold = |bytes: &[u8]| {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    };
 
-    // Explicit, not just drop-and-hope: `PgPool` closes its idle
-    // connections asynchronously in the background, which is not fast
-    // enough to guarantee "zero connections to the template" by the time
-    // the caller runs `CREATE DATABASE ... TEMPLATE` immediately after.
-    pool.close().await;
-
-    if messages_table.is_none() {
-        run_psql_migrations(template_url).await;
+    for dir in migration_dirs() {
+        let up = dir.join("up.sql");
+        if !up.exists() {
+            continue;
+        }
+        fold(up.to_string_lossy().as_bytes());
+        let bytes = std::fs::read(&up).unwrap_or_else(|e| panic!("reading {}: {e}", up.display()));
+        fold(&bytes);
     }
+
+    format!("{hash:016x}")
 }
 
 /// Shells out to `psql`, the same tool and the same per-file invocation
