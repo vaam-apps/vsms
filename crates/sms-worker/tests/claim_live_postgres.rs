@@ -409,10 +409,27 @@ async fn respects_the_budget() {
 }
 
 /// The actual point of the whole module: two claimers racing the exact same
-/// row must never both win. If `take_lease`'s `if_match` were dropped, or if
-/// `PreconditionFailed` were mishandled, this would flake into claiming the
-/// same message twice under load — exactly the double-send this design
-/// exists to prevent.
+/// row must never both reach `routed` — the only state that triggers a
+/// submission (see `dispatch.rs::tick()`, which submits iff
+/// `message.state == MessageState::routed`). If `take_lease`'s `if_match`
+/// were dropped, or if `PreconditionFailed` were mishandled, this would
+/// flake into two workers both driving the same message to `routed` under
+/// load — exactly the double-send this design exists to prevent.
+///
+/// This does **not** assert "the seeded row appears in at most one
+/// claimer's output" — an earlier version of this test did, and that was
+/// wrong, not merely stricter than necessary. `Claimable for Message`'s own
+/// `take_lease` doc (`claim.rs`) spells out why a fresh `accepted` row can
+/// legitimately show up in *both* batches: the `accepted -> queued` hop is
+/// an instant routing decision, not in-flight work, so it deliberately
+/// takes no real lease (`leaseUntil` is left at `now`, already expired —
+/// see `take_lease`'s own doc). That leaves the row immediately eligible
+/// for the very next `candidates()` query, so one worker doing the free
+/// `accepted -> queued` hop and the other doing the real `queued -> routed`
+/// claim right behind it is a legitimate, race-free sequence — not a
+/// double-claim — and both calls returning the row (once each, in
+/// different states) proves nothing wrong. What must never happen is two
+/// claimers *both* landing the row in `routed`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn two_concurrent_claimers_never_both_win_the_same_row() {
@@ -441,15 +458,17 @@ async fn two_concurrent_claimers_never_both_win_the_same_row() {
     let a = handle_a.await.expect("worker-a's task must not panic");
     let b = handle_b.await.expect("worker-b's task must not panic");
 
-    let wins = a
+    let routed_wins = a
         .expect("worker-a's claim_batch must not error just because it lost the race")
         .into_iter()
         .chain(b.expect("worker-b's claim_batch must not error just because it lost the race"))
-        .filter(|m| m.id == seeded.id)
+        .filter(|m| m.id == seeded.id && m.state == MessageState::routed)
         .count();
 
-    assert_eq!(
-        wins, 1,
-        "exactly one of the two concurrent claimers must win"
+    assert!(
+        routed_wins <= 1,
+        "at most one claimer may drive this row to routed — that's the only \
+         state that triggers a submission, so two here would mean a real \
+         double-send"
     );
 }

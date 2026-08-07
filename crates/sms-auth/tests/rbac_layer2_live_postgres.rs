@@ -75,6 +75,22 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack};
 use sms_api::GatewayAuth;
 
+/// #102, found live: on a genuinely fresh database, this binary's own
+/// tests — run concurrently by Rust's default multi-threaded test
+/// harness — can race on Postgres's own `pg_type` catalog the first time
+/// two of them prepare the exact same not-yet-cached query shape at the
+/// same instant. See `crates/sms-worker/tests/claim_live_postgres.rs`'s
+/// own `TEST_MUTEX` doc for the full reasoning — same mechanism, same
+/// fix. This file was added (#112) after `ca653a1` (#102) established the
+/// pattern but didn't pick it up, and every test here calls `setup()`,
+/// which itself calls `rotate_signing_key` (an insert) and seeds fresh
+/// rows via several distinct query shapes — exactly the kind of
+/// first-use-per-shape race `ca653a1` describes, confirmed live via CI's
+/// `pg_type_typname_nsp_index` duplicate-key failure inside
+/// `rotate_signing_key` before this mutex was added.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 fn sys() -> CoolContext {
     Principal {
         sub: "rbac-layer2-test-system".to_owned(),
@@ -465,6 +481,7 @@ fn access_token(token_response: &serde_json::Value) -> &str {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn send_message_denies_a_token_with_no_scope_at_all() {
+    let _guard = TEST_MUTEX.lock().await;
     let server = setup().await;
     let token_response = request_token(&server, None).await;
     // §5.2, verbatim: "an omitted scope yields scope: None" — confirmed
@@ -501,6 +518,7 @@ async fn send_message_denies_a_token_with_no_scope_at_all() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn send_message_denies_a_token_scoped_for_something_else() {
+    let _guard = TEST_MUTEX.lock().await;
     let server = setup().await;
     let token_response = request_token(&server, Some("sms:read")).await;
 
@@ -527,6 +545,7 @@ async fn send_message_denies_a_token_scoped_for_something_else() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn send_message_succeeds_for_a_token_carrying_sms_send() {
+    let _guard = TEST_MUTEX.lock().await;
     let server = setup().await;
     let token_response = request_token(&server, Some("sms:send")).await;
     assert_eq!(
@@ -563,6 +582,7 @@ async fn send_message_succeeds_for_a_token_carrying_sms_send() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn provider_write_route_rejects_an_unauthenticated_request() {
+    let _guard = TEST_MUTEX.lock().await;
     let server = setup().await;
 
     let response = reqwest::Client::new()
@@ -582,6 +602,7 @@ async fn provider_write_route_rejects_an_unauthenticated_request() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn provider_write_route_denies_a_token_with_no_scope_at_all() {
+    let _guard = TEST_MUTEX.lock().await;
     let server = setup().await;
     let token_response = request_token(&server, None).await;
 
@@ -617,6 +638,7 @@ async fn provider_write_route_denies_a_token_that_is_correctly_scoped_for_someth
     // Layer 2 narrows; it never widens (§5.1), and `sms:send` granting
     // access to `sendMessage` must never spill over into granting
     // anything else.
+    let _guard = TEST_MUTEX.lock().await;
     let server = setup().await;
     let token_response = request_token(&server, Some("sms:send")).await;
 
@@ -642,6 +664,7 @@ async fn a_route_this_middleware_does_not_gate_is_unaffected() {
     // match `PROVIDER_WRITE_ROUTES` — a scope-less token must still be
     // able to reach `previewMessage` (`@allow(auth() != null)`, no
     // permission requirement at all) exactly as it could before #24.
+    let _guard = TEST_MUTEX.lock().await;
     let server = setup().await;
     let token_response = request_token(&server, None).await;
 
