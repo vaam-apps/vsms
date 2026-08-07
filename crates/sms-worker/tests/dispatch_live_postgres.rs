@@ -44,6 +44,12 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// provider existing. See `claim_live_postgres.rs`'s own `TEST_MUTEX` doc
 /// for the full reasoning (including the first-use `pg_type` catalog
 /// race this also fixes) — same mechanism, same fix.
+///
+/// This mutex serializes *execution* only. It does nothing about
+/// *residual* state a previous test left behind in the same
+/// never-reset-between-runs database — see [`clear_claimable_backlog`]'s
+/// own doc for the second, independent isolation problem that turned out
+/// to be, found live via an intermittently failing CI run.
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -87,6 +93,99 @@ async fn db() -> Cratestack {
         .await
         .expect("connecting to Postgres");
     Cratestack::builder(pool).build()
+}
+
+/// Real test-isolation bug, found live via a ~30%-flaky CI run, not a
+/// theoretical one: `dispatch`'s claim loop (`claim.rs::candidates()`)
+/// selects *any* eligible `accepted`/`queued`/`routed` message system-wide
+/// with an expired-or-absent lease — exactly matching production, since
+/// the loop has no way to know which test seeded which row. This binary's
+/// database (`sms-test-support`'s per-*binary* design, #118) is shared by
+/// every test in this file and never reset between runs. `TEST_MUTEX`
+/// prevents two tests from *executing* concurrently, but it does nothing
+/// about *residual* state: a message a previous test (or a previous
+/// session) left non-terminal is exactly as claimable as the row the
+/// current test is about to seed, and `claim_batch`'s budget (up to
+/// `tps_ceiling` rows per tick, §7.3) means a single `tick()` call can
+/// claim *both* in the same batch — so a test's own `tick()` submits a
+/// foreign leftover message to its own `wiremock` server on top of its
+/// own, tripping that mock's `.expect(1)`. Confirmed as the actual
+/// mechanism (not a race) by the failure shape: intermittent and
+/// order-dependent, not constant, because it depends on what state a
+/// *previous* test happened to leave behind.
+///
+/// Fixed by draining the claimable backlog to a terminal state before
+/// every test seeds its own message, under the same `TEST_MUTEX` guard
+/// every test already holds — so by induction, whatever backlog exists
+/// when a test starts (from any earlier test, or an earlier session
+/// entirely) is gone before that test's own row exists, and the test that
+/// ran immediately before it cannot have left anything behind that
+/// survives to the next one either.
+///
+/// `cancelled` is reachable directly from all three claimable states
+/// (`accepted -> cancelled`, `queued -> cancelled`, `routed -> cancelled`
+/// — §2.10), so one target state handles every row regardless of which of
+/// the three it's currently sitting in; no need to branch on `state`
+/// first. Through `CrateStack` delegates only (R1) — `if_match` per row,
+/// same CAS discipline as every other writer of `Message`; a row that
+/// moved on since it was listed (the trigger's own guard, or a genuinely
+/// concurrent process) is logged and skipped, not fatal to this pass.
+/// Loops in batches, since a backlog accumulated across many historical
+/// runs before this fix existed can exceed one page.
+async fn clear_claimable_backlog(db: &Cratestack) {
+    const BATCH: usize = 500;
+    let sys = sys();
+    loop {
+        let backlog = db
+            .message()
+            .find_many()
+            .where_expr(cratestack::FilterExpr::from(schema::message::state().in_(
+                [
+                    MessageState::accepted,
+                    MessageState::queued,
+                    MessageState::routed,
+                ],
+            )))
+            .limit(i64::try_from(BATCH).expect("BATCH fits in an i64"))
+            .run(&sys)
+            .await
+            .expect("listing the claimable backlog");
+        let drained = backlog.len();
+
+        for message in backlog {
+            let result = db
+                .message()
+                .update(message.id.clone())
+                .set(schema::UpdateMessageInput {
+                    state: Some(MessageState::cancelled),
+                    ..Default::default()
+                })
+                .if_match(message.version)
+                .run(&sys)
+                .await;
+            if let Err(error) = result {
+                tracing::warn!(
+                    message_id = %message.id,
+                    %error,
+                    "clearing the claimable test backlog: one row could not be cancelled"
+                );
+            }
+        }
+
+        if drained < BATCH {
+            break;
+        }
+    }
+}
+
+/// [`db`] plus [`clear_claimable_backlog`] — what every test in this file
+/// should call instead of `db()` directly, so isolation can't be
+/// forgotten at a new test's call site. See `clear_claimable_backlog`'s
+/// own doc for why this matters.
+async fn isolated_db() -> Cratestack {
+    let db = db().await;
+    clear_claimable_backlog(&db).await;
+    db
 }
 
 async fn seed_app(db: &Cratestack) -> String {
@@ -275,7 +374,7 @@ async fn reload(db: &Cratestack, id: &str) -> Message {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_well_formed_message_reaches_submitted() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     let server = MockServer::start().await;
     mock_orange(&server).await;
     Mock::given(method("POST"))
@@ -321,7 +420,7 @@ async fn a_well_formed_message_reaches_submitted() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_rate_limited_submit_backs_off_to_queued() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     let server = MockServer::start().await;
     mock_orange(&server).await;
     Mock::given(method("POST"))
@@ -360,7 +459,7 @@ async fn a_rate_limited_submit_backs_off_to_queued() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_rejected_submit_fails_the_message_outright() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     let server = MockServer::start().await;
     mock_orange(&server).await;
     Mock::given(method("POST"))
@@ -393,7 +492,7 @@ async fn a_rejected_submit_fails_the_message_outright() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn exhausting_max_attempts_fails_the_message_without_a_further_submit_attempt() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     let server = MockServer::start().await;
     mock_orange(&server).await;
     Mock::given(method("POST"))
@@ -447,7 +546,7 @@ async fn exhausting_max_attempts_fails_the_message_without_a_further_submit_atte
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn no_active_provider_rejects_before_any_submission_is_attempted() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     deactivate_every_active_provider(&db).await;
     let server = MockServer::start().await;
     // No mocks registered at all — if dispatch ever tried to submit, the
@@ -536,7 +635,7 @@ fn empty_callback() -> RawCallback {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_indeterminate_submit_lands_in_uncertain_and_is_never_resubmitted() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     let server = MockServer::start().await;
     mock_orange(&server).await;
     Mock::given(method("POST"))
@@ -612,7 +711,7 @@ async fn an_indeterminate_submit_lands_in_uncertain_and_is_never_resubmitted() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_connect_level_failure_still_backs_off_to_queued_not_uncertain() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("binding an ephemeral port");
     let dead_addr = listener.local_addr().expect("reading the bound address");
@@ -659,7 +758,7 @@ async fn a_connect_level_failure_still_backs_off_to_queued_not_uncertain() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_dlr_after_an_indeterminate_submit_still_correlates_and_resolves() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     let server = MockServer::start().await;
     mock_orange(&server).await;
     Mock::given(method("POST"))
