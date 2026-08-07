@@ -1034,7 +1034,7 @@ INSERT INTO message_state_transitions (from_state, to_state) VALUES
     ('queued','routed'),        ('queued','cancelled'),     ('queued','expired'),
     ('queued','failed'),
     ('routed','submitted'),     ('routed','queued'),        ('routed','failed'),
-    ('routed','expired'),       ('routed','cancelled'),
+    ('routed','expired'),       ('routed','cancelled'),     ('routed','uncertain'),
     ('submitted','delivered'),  ('submitted','uncertain'),  ('submitted','undelivered'),
     ('submitted','failed'),     ('submitted','expired'),
     ('uncertain','delivered'),  ('uncertain','failed'),     ('uncertain','expired'),
@@ -1754,10 +1754,16 @@ pub enum ProviderError {
     /// Caller's fault. Fail the message; no failover.
     Rejected { code: String, message: String },
     Unsupported,
+    /// The request reached the provider, or may have — a post-connect
+    /// timeout, an interrupted read, or a `2xx` we can't make sense of.
+    /// Do not retry, do not fail over, do not fail the message: any of
+    /// those risks a duplicate SMS. `routed -> uncertain` (§7.4); a later
+    /// DLR or the grace-period expiry resolves it.
+    Indeterminate { message: String },
 }
 ```
 
-The error taxonomy is the important part. Most gateway failover bugs are really error-classification bugs: a provider returns a 400 that actually means "your sender ID isn't approved" and the router faithfully retries it on three more providers, burning credit each time. Four variants, each with exactly one routing consequence.
+The error taxonomy is the important part. Most gateway failover bugs are really error-classification bugs: a provider returns a 400 that actually means "your sender ID isn't approved" and the router faithfully retries it on three more providers, burning credit each time. Six variants, each with exactly one routing consequence — five of the six map onto §7.4's `routed` failure edges the way you'd expect; `Indeterminate` is the odd one out, because none of "retry," "fail over," or "fail the message" is safe when the provider might have already sent the SMS. See `crates/sms-provider/src/error.rs` for the full reasoning and `crates/sms-provider-orange-cm/src/lib.rs`'s `classify_transport_error` for how a real transport failure gets sorted into `Unavailable` vs `Indeterminate`.
 
 ### 6.2 Adapters
 
@@ -1984,6 +1990,7 @@ stateDiagram-v2
     routed --> failed: permanent error
     routed --> expired
     routed --> cancelled: operator
+    routed --> uncertain: indeterminate outcome, do not retry
 
     submitted --> delivered: DLR success
     submitted --> uncertain: DeliveryUncertain

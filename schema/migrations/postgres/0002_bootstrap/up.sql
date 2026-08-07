@@ -153,7 +153,7 @@ INSERT INTO message_state_transitions (from_state, to_state) VALUES
     ('queued','routed'),        ('queued','cancelled'),     ('queued','expired'),
     ('queued','failed'),
     ('routed','submitted'),     ('routed','queued'),        ('routed','failed'),
-    ('routed','expired'),       ('routed','cancelled'),
+    ('routed','expired'),       ('routed','cancelled'),     ('routed','uncertain'),
     ('submitted','delivered'),  ('submitted','uncertain'),  ('submitted','undelivered'),
     ('submitted','failed'),     ('submitted','expired'),
     ('uncertain','delivered'),  ('uncertain','failed'),     ('uncertain','expired'),
