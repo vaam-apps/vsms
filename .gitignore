@@ -14,6 +14,9 @@ node_modules/
 /pgdata
 .next/
 .turbo/
+# scripts/demo.sh's own scratch state — pepper, provisioned key, pidfiles,
+# process logs. Never committed; regenerated fresh on every `just demo`.
+/.demo/
 admin/public/sw*.js
 *.tsbuildinfo
 

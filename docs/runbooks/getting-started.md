@@ -169,6 +169,58 @@ paste into the console (or any other machine caller)'s environment:
 
 Those two lines are exactly `.env.example`'s `SMS_CONSOLE_CLIENT_ID` / `SMS_CONSOLE_PRIVATE_KEY_PATH` — paste them (plus `SMS_AUTH_ISSUER` matching whatever `--issuer` `serve` was started with, and a `SMS_CONSOLE_SCOPE` drawn from `--scope` above) straight into the admin console's own environment. `app/sms-gateway/tests/provision_client_cli_live_postgres.rs` is this command's own live acceptance test: it runs the real binary against a real Postgres, then spawns a genuinely separate `sms-gateway serve` process and proves the key file it wrote completes a real `private_key_jwt` exchange at `/token` and an authenticated `sendMessage` call — the exact thing `crates/sms-api/examples/send_test_message.rs` does *not* prove, since the `AppClient` row it writes directly has no `OauthClient.jwks` and could never complete that exchange.
 
+## 8. Run the admin console against it
+
+Everything above proves the gateway/worker chain over HTTP; nothing in steps 1–7 actually
+starts the Next.js console. This step was never written down before — the first end-to-end
+dry run of this whole chain found the gap.
+
+Prerequisites: **Node >= 22** and **pnpm 11** (`packageManager` in the root `package.json`
+pins the exact version; `corepack enable` will resolve it automatically).
+
+```bash
+# from the repo root — this is a pnpm workspace, not just admin/
+pnpm install
+```
+
+Then create `admin/.env.local` (gitignored — `.env.example` at the repo root is the
+template, but the console's own required keys are the ones listed in
+`packages/env/src/index.ts`) with the values `provision-client` printed above:
+
+```text
+DASHBOARD_AUTH=none
+
+SMS_API_URL=http://127.0.0.1:8080
+
+SMS_AUTH_ISSUER=http://127.0.0.1:8080
+SMS_CONSOLE_CLIENT_ID=appc_...                        # from provision-client's output
+SMS_CONSOLE_PRIVATE_KEY_PATH=/absolute/path/to/console-client-key.pem
+SMS_CONSOLE_SCOPE=sms:send sms:read
+
+MESSAGE_STREAM_POLL_MS=2000
+
+NEXT_PUBLIC_APP_NAME=vsms Admin Console
+NODE_ENV=development
+```
+
+`SMS_CONSOLE_PRIVATE_KEY_PATH` must be an absolute path (or resolve correctly relative to
+`admin/`, wherever Next actually runs from) — `provision-client --key-out` above accepts a
+relative path, but the console reads the file at request time from its own working
+directory, not the shell's.
+
+```bash
+pnpm --filter admin exec next dev -p 3100
+```
+
+`next dev` does not read a `PORT` value out of `.env.local` when choosing which port to
+bind — that file is only loaded once the server process is already up. Pass `-p` explicitly
+(or export `PORT` in the shell that launches it) rather than relying on the env file.
+
+Open `http://localhost:3100/`, send a message from the composer, and watch it move to
+`delivered` on `http://localhost:3100/messages` (polling, ~2s per `MESSAGE_STREAM_POLL_MS`
+above) — confirmed working end to end, composer through `sms-fake-orange`'s DLR, in the
+session that added this section.
+
 ## Where to go next
 
 - [`docs/architecture.md`](../architecture.md) — the full design: data model, provider abstraction, worker topology, security, compliance, and every framework constraint that shaped a decision.

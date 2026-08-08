@@ -115,3 +115,21 @@ client-gen:
 client-check: client-gen
 	{{_cargo}} build -p sms-gateway
 	node ci/assert-client-routes-match-server.mjs
+
+# Bring up the full demo chain — scratch Postgres, sms-gateway, sms-worker
+# (dispatch,scheduler,jobs), sms-fake-orange, and the admin console, wired
+# together with a provisioned client — and leave it running in the
+# background. NOT for production: sms-fake-orange impersonates Orange
+# Cameroon's API and sends no real SMS. See scripts/demo.sh and
+# docs/runbooks/getting-started.md §5-8 for what this automates.
+demo:
+	./scripts/demo.sh up
+
+# Stop everything `just demo` started and remove its scratch Postgres
+# container (by exact name only — never touches anything else).
+demo-down:
+	./scripts/demo.sh down
+
+# What's currently running from `just demo`.
+demo-status:
+	./scripts/demo.sh status
