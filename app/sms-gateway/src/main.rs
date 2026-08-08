@@ -13,7 +13,10 @@ use clap::{Parser, Subcommand};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::FilterExpr;
 use sms_api::schema::procedures::{provision_app_client, ProcedureRegistry};
-use sms_api::schema::{provider as provider_filter, Cratestack, ProvisionClientInput};
+use sms_api::schema::{
+    provider as provider_filter, Cratestack, CreateProviderInput, ProviderKind, ProviderState,
+    ProvisionClientInput, UpdateProviderInput,
+};
 use sms_api::{GatewayAuth, Principal, PrincipalKind, Procedures};
 use sms_provider::SmsProvider;
 use tracing::info;
@@ -162,6 +165,77 @@ enum Command {
         /// the same secret.
         #[arg(long, env = "SMS_HASH_PEPPER")]
         hash_pepper: String,
+    },
+    /// Seed (or reactivate) the `Provider` row `resolve_provider_row_id`
+    /// (this file) and `sms-worker`'s dispatch role both resolve at
+    /// startup/routing time — an operator action, not a generated-CRUD
+    /// route, for the same reason `RotateSigningKey`/`ProvisionClient`
+    /// above are one: `Provider`'s own `@allow` in `schema.cstack` admits
+    /// only `hasRole('owner') || hasRole('admin')` on create, and
+    /// `GatewayAuth::authenticate` never mints either for a real token (no
+    /// human-login flow exists yet — see `AGENTS.md`'s M1 section).
+    ///
+    /// See #148: nothing in this repo seeded this row before this command
+    /// existed, and `resolve_provider_row_id` fails at process start — not
+    /// lazily — the moment `serve` runs against a fresh database, so a
+    /// Helm install with no window for manual intervention between the
+    /// pre-install hooks completing and the gateway `Deployment` being
+    /// created crash-looped forever.
+    ///
+    /// Idempotent by construction: `create` is attempted first, and a
+    /// `23505` on `Provider.key`'s `@unique` index (this repo's documented
+    /// dedupe pattern — `upsert` doesn't exist when the `@id` carries a
+    /// default) is treated as "already seeded", not a failure, so a Helm
+    /// `pre-install`/`pre-upgrade` hook can run this on every install and
+    /// upgrade without erroring on the second run.
+    SeedProvider {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+
+        /// Must match `SmsProvider::key()` for whichever adapter is
+        /// actually configured — `resolve_provider_row_id` looks the row
+        /// up by exactly this key. `orange_cm` is the only adapter with a
+        /// real implementation (`sms-provider-orange-cm`) as of this
+        /// milestone, matching `Serve`'s own hard-coded Orange wiring.
+        #[arg(long, default_value = "orange_cm")]
+        key: String,
+
+        #[arg(long, default_value = "Orange Cameroon SMS API")]
+        display_name: String,
+
+        /// One of `ProviderKind`'s own variants (`schema.cstack`):
+        /// `orange_cm_http`, `mtn_http`, `aggregator_http`, `smpp`.
+        #[arg(long, default_value = "orange_cm_http")]
+        kind: String,
+
+        /// Never read by `sms-gateway` or `sms-worker` to construct the
+        /// real adapter — both build it from their own flags/env instead
+        /// (§2.4), confirmed against `send_test_message.rs`'s own doc
+        /// comment. This row's job is only to exist, carry the right
+        /// `key`, and end up `state = 'active'`.
+        #[arg(long, default_value = "{}")]
+        config: String,
+
+        #[arg(long, default_value = "env:ORANGE_CM_CLIENT_SECRET")]
+        credential_ref: String,
+
+        #[arg(long, default_value_t = 10.0)]
+        max_tps: f64,
+
+        #[arg(long, default_value_t = 100_000)]
+        max_daily_submissions: i64,
+
+        /// Parsed as a `cratestack::Decimal`, not a float — money stays
+        /// fixed-point throughout this codebase (§2.0).
+        #[arg(long, default_value = "0")]
+        cost_per_segment_xaf: String,
+
+        /// Which of `Provider`'s two create-admitted roles to run this
+        /// call under. Same choice, same reasoning as `ProvisionClient`'s
+        /// own `--role`: `owner` is the default because every existing
+        /// live Provider fixture in this repo already writes under it.
+        #[arg(long, default_value = "owner")]
+        role: String,
     },
 }
 
@@ -353,6 +427,8 @@ async fn main() -> Result<()> {
         }
 
         command @ Command::ProvisionClient { .. } => provision_client_command(command).await,
+
+        command @ Command::SeedProvider { .. } => seed_provider_command(command).await,
     }
 }
 
@@ -497,6 +573,180 @@ async fn provision_client_command(command: Command) -> Result<()> {
     println!("paste into the console (or any other machine caller)'s environment:");
     println!("  SMS_CONSOLE_CLIENT_ID={client_id}");
     println!("  SMS_CONSOLE_PRIVATE_KEY_PATH={}", key_out.display());
+    Ok(())
+}
+
+/// `ProviderKind`'s variants aren't `clap::ValueEnum` (it's a type generated
+/// by `include_server_schema!` in a downstream crate, not one this binary
+/// can derive a foreign trait on), so `--kind` stays a plain `String` and is
+/// matched by hand here — pulled out of [`seed_provider_command`] purely to
+/// keep that function under `clippy::too_many_lines`, the same reason
+/// [`rotate_signing_key_command`]/[`provision_client_command`] were already
+/// split out of `main`'s own `match`.
+fn parse_provider_kind(kind: &str) -> Result<ProviderKind> {
+    match kind {
+        "orange_cm_http" => Ok(ProviderKind::orange_cm_http),
+        "mtn_http" => Ok(ProviderKind::mtn_http),
+        "aggregator_http" => Ok(ProviderKind::aggregator_http),
+        "smpp" => Ok(ProviderKind::smpp),
+        other => bail!(
+            "--kind {other:?} is not a ProviderKind variant — one of orange_cm_http, mtn_http, \
+             aggregator_http, smpp"
+        ),
+    }
+}
+
+/// `create` the `Provider` row, or resolve the id of the one that already
+/// exists — pulled out of [`seed_provider_command`] purely to keep that
+/// function under `clippy::too_many_lines`.
+///
+/// A `23505` on `Provider.key`'s `@unique` index means some earlier run
+/// already created this row — a fresh install's `pre-install` hook and a
+/// later `pre-upgrade` hook both invoke this exact command, and Helm itself
+/// may retry a hook Job that failed for an unrelated reason — so that case
+/// falls back to looking the row up by key rather than treating the
+/// conflict as a failure. Returns the row id and whether it is already
+/// `state = 'active'`, so the caller can skip a needless activation write.
+async fn create_or_find_provider(
+    db: &Cratestack,
+    ctx: &cratestack::CoolContext,
+    key: &str,
+    input: CreateProviderInput,
+) -> Result<(String, bool)> {
+    match db.provider().create(input).run(ctx).await {
+        Ok(created) => {
+            println!("created Provider {} (key={key:?})", created.id);
+            Ok((created.id, false))
+        }
+        Err(e) if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION) => {
+            let existing = db
+                .provider()
+                .find_many()
+                .where_expr(FilterExpr::from(provider_filter::key().eq(key.to_owned())))
+                .limit(1)
+                .run(ctx)
+                .await
+                .context("looking up the existing Provider row after a duplicate-key create")?;
+            let row = existing.into_iter().next().with_context(|| {
+                format!(
+                    "Provider row with key {key:?} reported as a duplicate on create but not \
+                     found on lookup"
+                )
+            })?;
+            println!(
+                "Provider {} (key={key:?}) already exists — state={:?}",
+                row.id, row.state
+            );
+            Ok((row.id, row.state == ProviderState::active))
+        }
+        Err(e) => Err(e).context("creating the Provider row"),
+    }
+}
+
+/// `Command::SeedProvider`'s body, pulled out of `main`'s own `match` for
+/// the same reason `rotate_signing_key_command`/`provision_client_command`
+/// above are.
+///
+/// Idempotent: [`create_or_find_provider`] treats an already-existing row
+/// as success rather than failure, and the row is left `state = 'active'`
+/// either way — a freshly created row always starts `disabled`
+/// (`Provider.state`'s own `@default`) so it is unconditionally activated,
+/// but an *existing* row is only re-activated if it isn't already, so the
+/// steady-state case this command exists for (a `pre-upgrade` hook
+/// re-running against an already-seeded database) writes nothing at all,
+/// rather than bumping `updatedAt` and appending an `@@audit` row on every
+/// single upgrade for no behavioural change.
+async fn seed_provider_command(command: Command) -> Result<()> {
+    let Command::SeedProvider {
+        database_url,
+        key,
+        display_name,
+        kind,
+        config,
+        credential_ref,
+        max_tps,
+        max_daily_submissions,
+        cost_per_segment_xaf,
+        role,
+    } = command
+    else {
+        unreachable!("only ever called with Command::SeedProvider")
+    };
+
+    if role != "owner" && role != "admin" {
+        bail!(
+            "--role must be \"owner\" or \"admin\" — Provider's own @allow admits nothing else \
+             on create, got {role:?}"
+        );
+    }
+
+    let kind = parse_provider_kind(&kind)?;
+    let cost_per_segment_xaf: cratestack::Decimal = cost_per_segment_xaf
+        .parse()
+        .context("--cost-per-segment-xaf must parse as a decimal")?;
+
+    // Same conservative pool size as RotateSigningKey/ProvisionClient, and
+    // for the same reason: this is a one-shot CLI command writing one
+    // @@audit-backed row (Provider), the same shape of write that
+    // rotate_signing_key_command's own comment found deadlocks at
+    // max_connections(1).
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .context("connecting to Postgres")?;
+    let db = Cratestack::builder(pool).build();
+
+    let ctx = Principal {
+        sub: format!("sms-gateway:seed-provider:{role}"),
+        kind: PrincipalKind::User,
+        role: role.clone(),
+        app_id: String::new(),
+    }
+    .into_context();
+
+    let (provider_id, already_active) = create_or_find_provider(
+        &db,
+        &ctx,
+        &key,
+        CreateProviderInput {
+            key: key.clone(),
+            displayName: display_name,
+            kind,
+            config,
+            credentialRef: credential_ref,
+            maxTps: max_tps,
+            maxDailySubmissions: max_daily_submissions,
+            // Not read by either binary to construct the real adapter
+            // (see this variant's own doc comment) and not yet consulted
+            // by dispatch's routing pass either — placeholders, same as
+            // `config`/`credentialRef` above, matching every existing
+            // Provider fixture in this repo's live test suites.
+            supportsDlr: true,
+            supportsAlphaSender: true,
+            supportsUcs2: true,
+            supportsConcat: true,
+            costPerSegmentXaf: cost_per_segment_xaf,
+            healthCheckedAt: None,
+        },
+    )
+    .await?;
+
+    if already_active {
+        println!("already active — nothing to do");
+        return Ok(());
+    }
+
+    db.provider()
+        .update(provider_id.clone())
+        .set(UpdateProviderInput {
+            state: Some(ProviderState::active),
+            ..Default::default()
+        })
+        .run(&ctx)
+        .await
+        .context("activating the Provider row")?;
+    println!("activated Provider {provider_id} (key={key:?})");
     Ok(())
 }
 

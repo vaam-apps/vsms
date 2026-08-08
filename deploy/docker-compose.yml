@@ -91,6 +91,15 @@ services:
     # into yet:
     #   docker compose run --rm sms-gateway rotate-signing-key
     # See docs/runbooks/deployment.md's step 3.
+    #
+    # Same trap, same fix, for the `orange_cm` Provider row (#148):
+    # `resolve_provider_row_id` also runs before the listener binds, so a
+    # database with no Provider row crash-loops this container exactly
+    # like a missing signing key does. `seed-provider` is idempotent
+    # (create + catch the Provider.key unique-constraint conflict), so
+    # it's safe to run again later too, not just on a fresh database:
+    #   docker compose run --rm sms-gateway seed-provider
+    # See docs/runbooks/deployment.md's step 4.
 
   sms-worker:
     build:

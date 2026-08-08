@@ -121,7 +121,43 @@ to do as routine key hygiene, not just a bootstrap step, but only once
 `sms-gateway` is already up (`docker compose exec` works fine against an
 already-running container).
 
-## 4. Bring up sms-gateway and sms-worker
+## 4. Seed the `orange_cm` Provider row — before sms-gateway's first start
+
+`sms-gateway serve` resolves an `active` `Provider` row keyed `orange_cm`
+at startup — `resolve_provider_row_id` in `app/sms-gateway/src/main.rs` —
+*before* binding its listener, the same ordering trap step 3 above already
+documents for the OP signing key. Nothing seeded this row until
+[#148](https://github.com/vymalo/vsms/issues/148): a fresh database made
+the container exit immediately and crash-loop under
+`restart: unless-stopped`, exactly like a missing signing key does, and
+this runbook used to work around it with a raw `psql` `INSERT` run
+*after* bringing the containers up — which meant watching `sms-gateway`
+crash-loop, then fixing it by hand. `sms-gateway seed-provider` closes
+that gap: a real CLI subcommand, going through the CrateStack delegate
+under a hand-built `owner` context (never raw SQL — R1), idempotent by
+construction (`create` + catching the `23505` on `Provider.key`'s
+`@unique` index, so re-running it is a clean no-op). Same `run --rm`
+reasoning as step 3 — this needs a fresh one-off container, not the
+not-yet-running `sms-gateway` service:
+
+```bash
+docker compose --env-file .env run --rm sms-gateway seed-provider
+```
+
+Its own defaults already match the row this runbook used to hand-write —
+`--key orange_cm`, `--kind orange_cm_http`, `--credential-ref
+env:ORANGE_CM_CLIENT_SECRET`, `--max-tps 10`, `--max-daily-submissions
+100000`, `--cost-per-segment-xaf 0` — so no flags are required here.
+`config`/`credential-ref` stay placeholders regardless of what's passed:
+confirmed against `send_test_message.rs`'s own doc comment, neither
+binary reads this row's `config`/`credentialRef` to construct the real
+`OrangeCmProvider` — both build it from their own CLI flags/env instead
+(§2.4). This row's job is only to exist, carry `key = 'orange_cm'`, and
+end up `state = 'active'`, which the subcommand also guarantees (a fresh
+row is created `disabled` — `Provider.state`'s own `@default` — and
+activated in a second write).
+
+## 5. Bring up sms-gateway and sms-worker
 
 ```bash
 docker compose --env-file .env up -d sms-gateway sms-worker
@@ -136,46 +172,9 @@ either binary before it); `sms-worker` has no HTTP surface, so its
 touches every 15s (see `app/sms-worker/Dockerfile`'s own comment for why
 that's a more meaningful signal than a bare "is the process running"
 check). Give both `--start-period` a few seconds before checking status.
-`sms-gateway` should now report `(healthy)` on the first attempt — the
-signing key from step 3 already exists.
-
-## 5. Seed the `Provider` row
-
-`sms-gateway serve` and `sms-worker` (with `dispatch` in `--roles`) both
-resolve an `active` `Provider` row keyed `orange_cm` at startup —
-`resolve_provider_row_id` in `app/sms-gateway/src/main.rs` — and there is
-**no admin console or CLI path to create one yet** (M4 territory; the
-existing dev-only `cargo run -p sms-api --example send_test_message` also
-creates test `App`/`AppClient` fixtures you don't want in production, so
-it isn't a fit here either). Seed it directly:
-
-```bash
-docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
-INSERT INTO providers (
-  created_at, updated_at, id, key, display_name, kind, state, config,
-  credential_ref, max_tps, max_daily_submissions, supports_dlr,
-  supports_alpha_sender, supports_ucs2, supports_concat,
-  cost_per_segment_xaf, healthy
-) VALUES (
-  now(), now(), cs_cuid(), 'orange_cm', 'Orange Cameroon SMS API',
-  'orange_cm_http', 'active', '{}', 'env:ORANGE_CM_CLIENT_SECRET',
-  10, 100000, true, true, true, true, 0, true
-)
-ON CONFLICT (key) DO NOTHING;
-"
-```
-
-`config` and `credential_ref` are placeholders — confirmed against
-`send_test_message.rs`'s own doc comment: neither binary reads this row's
-`config`/`credentialRef` to construct the real `OrangeCmProvider`, both
-build it from their own CLI flags/env instead (§2.4). This row's job is
-only to exist, be `key = 'orange_cm'`, and be `state = 'active'`.
-
-Restart both so the now-successful lookup takes effect:
-
-```bash
-docker compose restart sms-gateway sms-worker
-```
+`sms-gateway` should now report `(healthy)` on the first attempt — both
+the signing key from step 3 and the `Provider` row from step 4 already
+exist, so neither startup dependency is missing this time.
 
 ## 6. Provision the admin console's OAuth client (manual, until #139's seam lands)
 
@@ -243,8 +242,8 @@ description for what specifically was and wasn't verified.
 | Component       | Waits on                                   | What "not ready" looks like |
 |------------------|---------------------------------------------|------------------------------|
 | `migrate`        | `postgres` healthy                          | exits non-zero; nothing downstream should start (compose enforces this via `service_completed_successfully`) |
-| `sms-gateway`     | `postgres` healthy, `migrate` completed      | **will not even start** without step 3's signing key — see that step for why this is stricter than `AGENTS.md`'s own prose currently describes |
-| `sms-worker`      | `postgres` healthy, `migrate` completed      | starts fine with no signing key (only `sms-gateway` loads one); `dispatch` role specifically needs step 5's `Provider` row, other roles don't |
+| `sms-gateway`     | `postgres` healthy, `migrate` completed      | **will not even start** without step 3's signing key or step 4's `orange_cm` `Provider` row — both are resolved before the listener ever binds, so either one missing crash-loops the container the same way (#148) |
+| `sms-worker`      | `postgres` healthy, `migrate` completed      | starts fine with no signing key (only `sms-gateway` loads one); `dispatch` role specifically needs step 4's `Provider` row to route anything, other roles don't, and none of them crash-loop on its absence the way `sms-gateway` does |
 | `admin`           | `sms-gateway` healthy                        | starts; token exchange fails until step 6's client is provisioned |
 | `caddy`           | `sms-gateway` and `admin` healthy            | won't route until both are up |
 
@@ -315,11 +314,11 @@ deploy working.
 ## Kubernetes (Helm)
 
 `deploy/charts/vsms` — the same three long-running processes as the
-compose path (`sms-gateway`, `sms-worker`, `admin`), plus the two one-shot
-steps compose's own runbook above walks through by hand (apply migrations,
-mint the first OP signing key), as Helm-hook Jobs that run automatically
-in the right order. Built directly on the bjw-s **common** library chart
-v4 (`^4.6.2`), per #145.
+compose path (`sms-gateway`, `sms-worker`, `admin`), plus the three
+one-shot steps compose's own runbook above walks through by hand (apply
+migrations, seed the `orange_cm` `Provider` row, mint the first OP signing
+key), as Helm-hook Jobs that run automatically in the right order. Built
+directly on the bjw-s **common** library chart v4 (`^4.6.2`), per #145.
 
 **One correction to #145's own text, found while building this, not
 assumed:** the issue named `oci://ghcr.io/bjw-s-labs/helm/common` as the
@@ -355,28 +354,42 @@ written.
 
 ### Ordering — why a Helm hook, not an init container
 
-`sms-gateway serve` calls `sms_auth::op::load_signing_keys(...)?` before
-binding its listener (this file's own step 3, above) — a fresh database
-makes the container exit immediately, not fail its first `/token` request.
-The chart's `rotateSigningKey` controller is a `pre-install` Helm hook
-Job for exactly this reason: Helm does not create *any* other release
-resource — including the `sms-gateway` Deployment — until every
+`sms-gateway serve` calls `sms_auth::op::load_signing_keys(...)?` and then
+`resolve_provider_row_id(...)?` before binding its listener (this file's
+own steps 3 and 4, above) — a fresh database makes the container exit
+immediately on either one missing, not fail its first `/token` request or
+DLR callback ([#148](https://github.com/vymalo/vsms/issues/148): the
+`orange_cm` `Provider` row used to have no seeding path under Helm at
+all — no window exists between the pre-install hooks completing and the
+gateway `Deployment` being created for an operator to seed anything by
+hand, unlike compose, where a human can at least `docker compose exec`
+into Postgres while the container crash-loops). The chart's
+`rotateSigningKey` and `seedProvider` controllers are both `pre-install`
+Helm hook Jobs for exactly this reason: Helm does not create *any* other
+release resource — including the `sms-gateway` Deployment — until every
 pre-install hook Job has succeeded. A post-install step or a readiness
 check on the gateway would both deadlock permanently, since the gateway
-can never become ready without this step having already run.
+can never become ready without these steps having already run.
 
-`migrate` is a `pre-install,pre-upgrade` hook (weight `-20`, so it always
-runs before `rotateSigningKey`'s `-10`) — safe on every deploy because
-it's genuinely idempotent (`deploy/migrate.sql`'s own advisory-lock-guarded
-`schema_migrations` tracking table). `rotateSigningKey` is deliberately
-**not** hooked to `pre-upgrade`: unlike migrate, it is not idempotent —
-every run mints a brand-new signing key with an overlap window, so
-hooking it to every upgrade would rotate the key on every `helm upgrade`,
-silently. Deliberate routine rotation later is a real operator action:
-`kubectl create job --from=job/<release>-rotate-signing-key <name> -n
-<namespace>` re-runs the same Job spec on demand (the `before-hook-creation`
-delete policy leaves the most recent run's Job object around after
-success for exactly this).
+`migrate` (weight `-20`) and `seedProvider` (weight `-15`) are both
+`pre-install,pre-upgrade` hooks — safe on every deploy because both are
+genuinely idempotent: `migrate` via `deploy/migrate.sql`'s own
+advisory-lock-guarded `schema_migrations` tracking table, `seedProvider`
+via `sms-gateway seed-provider`'s own `create` + catch-`23505` dedupe (see
+step 4 above). `rotateSigningKey` (weight `-10`, last in the chain) is
+deliberately **not** hooked to `pre-upgrade`: unlike the other two, it is
+not idempotent — every run mints a brand-new signing key with an overlap
+window, so hooking it to every upgrade would rotate the key on every
+`helm upgrade`, silently. Deliberate routine rotation later is a real
+operator action: `kubectl create job --from=job/<release>-rotate-signing-key
+<name> -n <namespace>` re-runs the same Job spec on demand (the
+`before-hook-creation` delete policy leaves the most recent run's Job
+object around after success for exactly this). `seedProvider` and
+`migrate` sitting at distinct weights either side of it (`-15` vs. `-20`
+and `-10`) is not a hard dependency — a `Provider` row and an OP signing
+key are unrelated domains — but it keeps all three hooks a single,
+strictly-ordered chain rather than two of them racing at a shared weight;
+see `values.yaml`'s own comment on `seedProvider` for the full reasoning.
 
 ### Installing
 
