@@ -1,0 +1,54 @@
+# vsms — sms-gateway, sms-worker, admin, and their one-shot startup jobs,
+# as a single umbrella release built directly on the bjw-s common library
+# chart (#145), the same "one chart, several controllers" shape §9.2's own
+# compose stack uses (one release, several services).
+#
+# Not built on bjw-s-labs/app-template: the issue this chart closes (#145)
+# asked for "the bjw-s common library chart v4" specifically, and
+# app-template is itself nothing more than a thin wrapper around common
+# (see its own templates/common.yaml) — building directly on common avoids
+# a second, redundant wrapper layer and matches what the issue actually
+# asked for.
+#
+# version below is a placeholder overwritten by release.yml's `helm
+# package --version` at publish time (both on a v*.*.* tag and on a push
+# to main — see that workflow's own comment for the two version shapes it
+# produces). It is never the version actually published; keep it valid
+# semver so `helm lint`/`helm template` run cleanly against an unpublished
+# checkout without extra flags.
+apiVersion: v2
+name: vsms
+description: >-
+  A2P SMS gateway for Cameroon (MTN + Orange) — sms-gateway, sms-worker,
+  and the admin console, as one Helm release built on bjw-s/common v4.
+type: application
+version: 0.0.0-dev
+appVersion: 0.0.0-dev
+kubeVersion: '>=1.28.0-0'
+home: https://github.com/vymalo/vsms
+sources:
+  - https://github.com/vymalo/vsms
+maintainers:
+  - name: vymalo
+    url: https://github.com/vymalo
+dependencies:
+  # No OCI reference exists for this chart today — verified against the
+  # GHCR API directly (`gh api orgs/bjw-s-labs/packages?package_type=container`
+  # lists 21 packages, `helm/app-template` and `helm/multus` among them,
+  # no `helm/common`) and against bjw-s-labs/helm-charts' own
+  # .github/workflows/charts-release.yaml, whose `release-library-charts`
+  # job calls the shared `chart-release-steps.yaml` with
+  # `publishToOciRegistry: false` — library charts (common is one) are
+  # published to the classic index.yaml repo
+  # (https://bjw-s-labs.github.io/helm-charts) and GitHub Pages only,
+  # never to GHCR as OCI. Only "other" (application) charts like
+  # app-template get `publishToOciRegistry: true`. `oci://ghcr.io/
+  # bjw-s-labs/helm/common` — the reference #145 named — is not a typo
+  # this chart can route around; it is a reference to an artifact that
+  # does not exist. The classic repo below carries byte-identical content
+  # (same source repo, same release pipeline, just a different
+  # distribution channel) and is pinned to the newest v4 release, 4.6.2 —
+  # confirmed against `helm search repo bjw-s-labs/common --versions`.
+  - name: common
+    version: 4.6.2
+    repository: https://bjw-s-labs.github.io/helm-charts

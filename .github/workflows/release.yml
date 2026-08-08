@@ -1,31 +1,111 @@
 name: release
 
 # Separate from ci.yml on purpose: ci.yml gates every push/PR against
-# main and must stay fast and cheap to run repeatedly; this workflow only
-# ever runs on a version tag and does the expensive thing (three
-# multi-stage image builds, one of them compiling the Rust workspace
-# twice over) exactly once per release, not once per commit.
+# main and must stay fast and cheap to run repeatedly; this workflow does
+# the expensive thing (four multi-stage image builds, one of them
+# compiling the Rust workspace twice over, plus a Helm chart publish) on
+# the two triggers that actually warrant a published artifact.
 #
 # #139: before this workflow, nothing in .github/workflows/ built or
-# published any artifact at all.
+# published any artifact at all. #145: extended (not rewritten) to also
+# publish on every push to main, and to publish deploy/charts/vsms as an
+# OCI Helm chart — until this PR, `v*.*.*` had never actually been pushed,
+# so the whole GHCR path was untested code in the release path.
+#
+# Three tag shapes on the same four images (see the `version` job below
+# for the one place all three are computed):
+#   push to main       -> :main (mutable, moves every push) and
+#                          :sha-<12 hex> (immutable, one commit)
+#   push v*.*.*        -> :<tag> (e.g. v0.4.0) and :latest — unchanged
+#                          from what this workflow did before this PR
+#   workflow_dispatch  -> :branch-<slug> and :sha-<12 hex> — a manual
+#                          smoke-test run from any other ref; see the
+#                          `on.workflow_dispatch` comment below for why
+#                          this exists and why it can never touch :main
+# The Helm chart gets an analogous split: a real semver on a version tag
+# (the tag verbatim, minus its leading "v" — Chart.yaml requires strict
+# semver, and v*.*.* already guarantees one), and a "0.0.0-main.<sha>" /
+# "0.0.0-dev.<sha>" prerelease version on the other two triggers (also
+# strict semver: a numeric prerelease identifier is legal per semver.org,
+# and "0.0.0" sorts below every real release so neither is ever mistaken
+# for older by `helm search`).
 
 on:
   push:
+    branches: [main]
     tags:
       - 'v*.*.*'
+  # Manual dispatch exists for exactly one reason: proving this pipeline
+  # actually works end to end (#145's own acceptance note — "untested
+  # code in the release path... fails the first time it matters") without
+  # waiting for a merge to main or cutting a real version tag. The
+  # `version` job below treats a dispatch from anything other than main
+  # as its own branch-scoped tag shape specifically so a smoke-test run
+  # from a feature branch can never overwrite the real, moving `:main`/
+  # `:latest` tags a production deploy might already be pinned to.
+  workflow_dispatch: {}
 
 permissions:
   contents: read
   packages: write
 
 jobs:
+  # One computation, reused by every image build and by the chart publish
+  # job below — AGENTS.md's own recorded lesson about duplicated
+  # hardcoded logic (there: a file list; here: the tag-derivation branch)
+  # silently drifting when only one copy gets updated is exactly what this
+  # job exists to avoid. Every other job in this workflow reads its
+  # outputs rather than re-deriving them.
+  version:
+    name: derive this trigger's tags and chart version
+    runs-on: ubuntu-latest
+    outputs:
+      tag_primary: ${{ steps.v.outputs.tag_primary }}
+      tag_secondary: ${{ steps.v.outputs.tag_secondary }}
+      chart_version: ${{ steps.v.outputs.chart_version }}
+      app_version: ${{ steps.v.outputs.app_version }}
+    steps:
+      - id: v
+        run: |
+          SHA_SHORT="${GITHUB_SHA:0:12}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            {
+              echo "tag_primary=${TAG}"
+              echo "tag_secondary=latest"
+              echo "chart_version=${TAG#v}"
+              echo "app_version=${TAG#v}"
+            } >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
+            {
+              echo "tag_primary=main"
+              echo "tag_secondary=sha-${SHA_SHORT}"
+              echo "chart_version=0.0.0-main.${SHA_SHORT}"
+              echo "app_version=main-${SHA_SHORT}"
+            } >> "$GITHUB_OUTPUT"
+          else
+            # workflow_dispatch from anything other than main (a smoke
+            # test of this pipeline itself — see the `on.workflow_dispatch`
+            # comment above). Never :main/:latest, and a chart_version
+            # namespace ("dev", not "main") that can't collide with a
+            # real main-triggered publish's own "0.0.0-main.<sha>".
+            BRANCH_SLUG="$(echo "${GITHUB_REF#refs/heads/}" | tr -c 'a-zA-Z0-9' '-' | tr '[:upper:]' '[:lower:]')"
+            {
+              echo "tag_primary=branch-${BRANCH_SLUG}"
+              echo "tag_secondary=sha-${SHA_SHORT}"
+              echo "chart_version=0.0.0-dev.${SHA_SHORT}"
+              echo "app_version=dev-${SHA_SHORT}"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
   build-and-push:
     name: build and push ${{ matrix.image }}
+    needs: version
     runs-on: ubuntu-latest
     strategy:
       # Independent images, independent failure domains: a broken admin
-      # build should not block sms-gateway and sms-worker from publishing,
-      # and vice versa.
+      # build should not block the other three from publishing, and vice
+      # versa.
       fail-fast: false
       matrix:
         include:
@@ -35,17 +115,18 @@ jobs:
             dockerfile: app/sms-worker/Dockerfile
           - image: admin
             dockerfile: admin/Dockerfile
+          # #145: deploy/charts/vsms's migrate Job (a pre-install/
+          # pre-upgrade Helm hook — see that chart's own values.yaml)
+          # needs a prebuilt image to pull from a registry; Kubernetes has
+          # no `build:` context the way docker-compose.yml does. This
+          # image already existed (deploy/migrate.Dockerfile, from #143)
+          # but was never published anywhere before this PR — the compose
+          # path always builds it locally from source.
+          - image: migrate
+            dockerfile: deploy/migrate.Dockerfile
 
     steps:
       - uses: actions/checkout@v4
-
-      # The image tag is the git tag verbatim (e.g. v0.3.1), not a
-      # recomputed version — the tag that triggered this run is the one
-      # source of truth for what's being released.
-      - name: Derive image tag from the pushed git tag
-        id: version
-        run: |
-          echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -56,9 +137,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build context is the repo root for all three images — see each
+      # Build context is the repo root for all four images — see each
       # Dockerfile's own header comment for why (schema/ for
-      # include_server_schema!, the pnpm workspace for admin).
+      # include_server_schema!/migrate's own copy of schema/migrations,
+      # the pnpm workspace for admin).
       - name: Build and push ${{ matrix.image }}
         uses: docker/build-push-action@v6
         with:
@@ -66,15 +148,65 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/vsms-${{ matrix.image }}:${{ steps.version.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/vsms-${{ matrix.image }}:latest
+            ghcr.io/${{ github.repository_owner }}/vsms-${{ matrix.image }}:${{ needs.version.outputs.tag_primary }}
+            ghcr.io/${{ github.repository_owner }}/vsms-${{ matrix.image }}:${{ needs.version.outputs.tag_secondary }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ steps.version.outputs.version }}
-          # Scoped per image: the three Dockerfiles share almost their
+            org.opencontainers.image.version=${{ needs.version.outputs.app_version }}
+          # Scoped per image: the four Dockerfiles share almost their
           # entire Rust dependency graph, but a single unscoped gha cache
           # would still serialise around one cache key across a matrix
           # that otherwise runs in parallel. Each image gets its own slot.
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+  # #145: deploy/charts/vsms, published as an OCI artifact alongside the
+  # images every install of it references by tag. Runs after
+  # build-and-push (not in parallel with it) so a chart never publishes
+  # pointing at an image tag whose push might still be in flight or might
+  # have failed.
+  publish-chart:
+    name: package and push the vsms Helm chart
+    needs: [version, build-and-push]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.4
+
+      # deploy/charts/vsms/Chart.yaml declares `common` as a dependency by
+      # its classic repository URL, not an OCI reference — see that
+      # Chart.yaml's own comment for why: bjw-s-labs/helm-charts publishes
+      # library charts (common is one) to https://bjw-s-labs.github.io/
+      # helm-charts only, never to GHCR as OCI (confirmed against that
+      # repo's own charts-release.yaml: `publishToOciRegistry: false` for
+      # `release-library-charts`). `helm dependency build` resolves that
+      # URL directly; no `helm repo add` needed first.
+      - name: Build chart dependencies
+        run: helm dependency build deploy/charts/vsms
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The version committed in Chart.yaml (0.0.0-dev) is a placeholder
+      # so `helm lint`/`helm template` run cleanly against an unpublished
+      # checkout — see that file's own comment. This is the one place
+      # that placeholder gets overwritten with the real version for this
+      # trigger, from the `version` job's single computation.
+      - name: Package the chart
+        run: |
+          helm package deploy/charts/vsms \
+            --version "${{ needs.version.outputs.chart_version }}" \
+            --app-version "${{ needs.version.outputs.app_version }}" \
+            --destination dist/
+
+      - name: Push to GHCR as an OCI artifact
+        run: |
+          helm push dist/vsms-*.tgz "oci://ghcr.io/${{ github.repository_owner }}/charts"

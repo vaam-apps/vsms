@@ -1,0 +1,546 @@
+# deploy/charts/vsms/values.yaml — every key below traces to a real
+# `#[arg(long, env = "...")]` in app/sms-gateway/src/main.rs or
+# app/sms-worker/src/main.rs, a docker-compose.yml service block, or an
+# admin/ env var — the same "nothing speculative" convention
+# deploy/.env.example documents for the compose path. Read
+# docs/runbooks/deployment.md's "Kubernetes (Helm)" section alongside this
+# file before a real install.
+#
+# Fields referenced with `{{ ... }}` below are evaluated by the bjw-s
+# common library's own `tpl` pass over specific value classes only —
+# `env` values, `image.{repository,tag,digest}`, `persistence.*.name`,
+# and `ingress.*.hosts` are documented ("Template enabled") and confirmed
+# against common's own templates/lib/**/*.tpl before relying on it here.
+# `image.pullPolicy` is NOT one of them — confirmed live, not assumed:
+# common/templates/lib/container/_spec.tpl reads
+# `$containerObject.image.pullPolicy` straight into `imagePullPolicy:`
+# with no `tpl` call around it (unlike repository/tag/digest one template
+# up in `_imageSpecificationToImage.tpl`), so a `{{ ... }}` string there
+# renders as a literal, invalid Kubernetes enum value instead of being
+# evaluated — caught by `helm template` failing on every container with
+# "invalid map key" before this was fixed. Every controller below sets it
+# as a plain literal for that reason, not cross-referenced from
+# `.Values.image.pullPolicy`. Scalar/typed fields (replicas, resources,
+# enabled, job.*) are NOT passed through `tpl` either — those stay plain
+# values, set directly per controller, never cross-referenced from the
+# convenience namespaces below.
+
+global:
+  # Set by templates/common.yaml from .Release.Name when left empty — see
+  # that file's own comment for why (the same pattern
+  # bjw-s-labs/app-template's own templates/common.yaml uses).
+  nameOverride: ""
+
+# ---------------------------------------------------------------------------
+# Images — one registry/owner pair, one tag, shared by all four images this
+# chart deploys (sms-gateway, sms-worker, admin, and the migrate runner —
+# release.yml's matrix builds and pushes all four to GHCR under this exact
+# owner). All four are always published together by the same workflow run,
+# so a single shared tag is correct, not a simplification that will drift.
+# ---------------------------------------------------------------------------
+image:
+  registry: ghcr.io
+  repositoryOwner: vymalo
+  # Required. One of: a semver release tag without the leading "v" (e.g.
+  # "0.4.0"), "main" (mutable, moves with every push to main), or
+  # "sha-<12-hex>" (immutable, pinned to one commit) — see release.yml's
+  # own comment for exactly which tags each image gets on each trigger.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# ---------------------------------------------------------------------------
+# Secrets — referenced, never templated in (#145's own acceptance note).
+# Every entry names a Secret this chart does not create; the operator's own
+# secret manager (sealed-secrets, external-secrets, a plain `kubectl create
+# secret`, whatever they already run) owns creating it. Nothing under
+# deploy/charts/vsms ever writes one of these values into a ConfigMap, an
+# env `value:`, or a rendered manifest.
+# ---------------------------------------------------------------------------
+existingSecrets:
+  # Must contain a key holding the full postgres:// connection string —
+  # the same shape docker-compose.yml's own DATABASE_URL assembles from
+  # POSTGRES_USER/PASSWORD/DB. This chart does not run Postgres — see
+  # #145's own scope note: "do not vendor a database dependency."
+  database:
+    name: ""
+    key: DATABASE_URL
+  # #134/#140 — HMAC-SHA256 pepper behind Message.msisdnHash/bodyHash.
+  # Minimum 32 bytes; sms-gateway validates this at boot and refuses to
+  # bind on a missing or too-short value. Generate with
+  # `openssl rand -base64 48`, exactly like the compose path.
+  hashPepper:
+    name: ""
+    key: SMS_HASH_PEPPER
+  # Orange Cameroon's OAuth2 client_credentials secret. The client id and
+  # sender number are not secret in the same sense (see .Values.orange
+  # below) and stay plain values, matching deploy/.env.example's own split.
+  orange:
+    name: ""
+    key: ORANGE_CM_CLIENT_SECRET
+  # "username:sha256hex,..." — see docs/runbooks/deployment.md for how to
+  # generate one. Not plaintext-reversible, but still an authentication
+  # credential; treated as a secret for the same reason
+  # docker-compose.yml's own DASHBOARD_BASIC_USERS never has a default.
+  dashboardBasicUsers:
+    name: ""
+    key: DASHBOARD_BASIC_USERS
+  # Must contain a key literally named `console-private-key.pem` — the
+  # admin console's private_key_jwt keypair (#111/#134), minted once by
+  # `sms-gateway provision-client` and never stored anywhere else in this
+  # system. Mounted whole (persistence.console-private-key below) rather
+  # than read through a single secretKeyRef env var, because the console
+  # reads it as a file path (SMS_CONSOLE_PRIVATE_KEY_PATH), the same way
+  # deploy/docker-compose.yml mounts deploy/secrets/console-private-key.pem
+  # read-only rather than passing key material through an env var.
+  consolePrivateKey:
+    name: ""
+
+# ---------------------------------------------------------------------------
+# Cross-cutting config, referenced only from templated env-value strings
+# below (never from a plain typed field — see this file's own header).
+# ---------------------------------------------------------------------------
+
+# Every token sms-gateway's OP mints carries this as `iss`; the admin
+# console validates incoming tokens against exactly this value too
+# (SMS_AUTH_ISSUER) — one field, not two, because a mismatch between them
+# is silent until the first token validation fails (AGENTS.md's own
+# warning about SMS_OIDC_ISSUER, verbatim).
+oidcIssuer: ""
+
+orange:
+  clientId: ""
+  senderNumber: ""
+  baseUrl: https://api.orange.com
+  # receiptRequest.notifyURL on every submit (#95) — optional, only the
+  # dispatch role (sms-worker) uses it. Leave empty unless a real Orange
+  # sandbox requires an explicit notifyURL rather than relying on
+  # callbackData alone — see app/sms-worker/src/main.rs's own doc comment.
+  dlrNotifyUrl: ""
+
+worker:
+  # Comma-separated, no spaces — any of dispatch,drain,scheduler,hooks,jobs
+  # (smpp is scaffold-only, milestone 7). Matches deploy/.env.example's own
+  # default: one node running every role, the compose stack's shape.
+  # Splitting into a second, scale-to-N-only controller (--roles hooks,jobs)
+  # is a day-2 step, not something this chart's default topology needs —
+  # see #145's own note on crates/sms-worker/src/lease.rs's Cardinality:
+  # dispatch/drain/scheduler are Singleton (RoleLease-guarded — extra
+  # replicas idle on standby, never double-run), hooks/jobs are ScaleToN.
+  roles: dispatch,drain,scheduler,hooks,jobs
+
+admin:
+  dashboardAuth: basic
+  dashboardBasicRealm: vsms Admin Console
+  # No provisioning CLI path exists yet from inside this chart (same gap
+  # docs/runbooks/deployment.md's compose path documents by hand) — set
+  # this after provisioning a client the same way that runbook describes.
+  consoleClientId: ""
+  consoleScope: "sms:send sms:read"
+  messageStreamPollMs: 2000
+  appName: vsms Admin Console
+
+# ---------------------------------------------------------------------------
+# Controllers — one Deployment per long-running process, plus two
+# Helm-hook Jobs that must complete, in order, before either Deployment's
+# Pods are ever scheduled.
+# ---------------------------------------------------------------------------
+controllers:
+  # Applies schema/migrations/postgres/{0001_init,0002_bootstrap} — see
+  # deploy/migrate.sql's own header for why this is safe to run
+  # concurrently or repeatedly (a session advisory lock plus a
+  # `schema_migrations` tracking table this deploy path owns). Hooked to
+  # both pre-install and pre-upgrade, unlike rotateSigningKey below,
+  # because it is genuinely idempotent — a second run against an
+  # already-migrated database is a documented no-op, not a repeated
+  # mutation. hook-weight -20 so it always runs before rotateSigningKey's
+  # -10 within the same Helm phase.
+  migrate:
+    type: job
+    annotations:
+      helm.sh/hook: pre-install,pre-upgrade
+      helm.sh/hook-weight: '-20'
+      helm.sh/hook-delete-policy: before-hook-creation
+    job:
+      backoffLimit: 3
+      ttlSecondsAfterFinished: 300
+    pod:
+      restartPolicy: Never
+    containers:
+      main:
+        image:
+          repository: '{{ printf "%s/%s/vsms-migrate" .Values.image.registry .Values.image.repositoryOwner }}'
+          tag: '{{ required "image.tag is required" .Values.image.tag }}'
+          pullPolicy: IfNotPresent
+        env:
+          DATABASE_URL:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.database.name is required — see docs/runbooks/deployment.md" .Values.existingSecrets.database.name }}'
+                key: '{{ .Values.existingSecrets.database.key }}'
+        resources: {}
+
+  # `sms-gateway rotate-signing-key` — mints the OP's first RS256 signing
+  # key. #145's own acceptance note, verbatim: sms-gateway's `serve` arm
+  # calls `load_signing_keys(...)?` *before* binding its listener, so a
+  # fresh database makes the container exit immediately and crash-loop —
+  # this Job has to complete, not just start, before the gateway
+  # Deployment's Pods are ever scheduled. A Helm pre-install hook gives
+  # exactly that ordering natively: Helm does not create any other
+  # release resource until every pre-install hook Job has succeeded,
+  # which also rules out the two anti-patterns #145 names explicitly (a
+  # post-install step, or waiting on gateway readiness — both would
+  # deadlock, the gateway can never become ready without this).
+  #
+  # pre-install only, deliberately not pre-upgrade: unlike migrate, this
+  # command is NOT idempotent — every run mints a brand new key with an
+  # overlap window (AGENTS.md: "safe to do as routine key hygiene, not
+  # just a bootstrap step"), so hooking it to pre-upgrade would rotate the
+  # signing key on every `helm upgrade`, silently, which is a real
+  # operational surprise this chart should not default to. Deliberate
+  # routine rotation later is a real operator action: `kubectl create job
+  # --from=job/<release>-rotate-signing-key <name> -n <namespace>` re-runs
+  # this exact Job spec on demand — see
+  # docs/runbooks/deployment.md's chart section. The `before-hook-creation`
+  # delete policy still leaves the most recent run's Job object in place
+  # after success (only a *new* hook invocation deletes the prior one), so
+  # that command has something to copy from.
+  rotateSigningKey:
+    type: job
+    annotations:
+      helm.sh/hook: pre-install
+      helm.sh/hook-weight: '-10'
+      helm.sh/hook-delete-policy: before-hook-creation
+    job:
+      backoffLimit: 3
+      ttlSecondsAfterFinished: 300
+    pod:
+      restartPolicy: Never
+    containers:
+      main:
+        image:
+          repository: '{{ printf "%s/%s/vsms-sms-gateway" .Values.image.registry .Values.image.repositoryOwner }}'
+          tag: '{{ .Values.image.tag }}'
+          pullPolicy: IfNotPresent
+        # The image ENTRYPOINT is already the binary (see
+        # app/sms-gateway/Dockerfile) — only the subcommand goes here,
+        # the same "run --rm sms-gateway rotate-signing-key" shape
+        # docs/runbooks/deployment.md's compose step 3 already documents.
+        args: ['rotate-signing-key']
+        env:
+          DATABASE_URL:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.database.name is required" .Values.existingSecrets.database.name }}'
+                key: '{{ .Values.existingSecrets.database.key }}'
+        resources: {}
+
+  gateway:
+    type: deployment
+    replicas: 1
+    containers:
+      main:
+        image:
+          repository: '{{ printf "%s/%s/vsms-sms-gateway" .Values.image.registry .Values.image.repositoryOwner }}'
+          tag: '{{ required "image.tag is required" .Values.image.tag }}'
+          pullPolicy: IfNotPresent
+        env:
+          # main.rs's own default (127.0.0.1:8080) is a bare-metal-deploy
+          # default only — inside a Pod, loopback is this container's own
+          # netns, unreachable from the Service. See
+          # app/sms-gateway/Dockerfile's own ENV for the same override.
+          SMS_LISTEN_ADDR:
+            value: '0.0.0.0:8080'
+          DATABASE_URL:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.database.name is required" .Values.existingSecrets.database.name }}'
+                key: '{{ .Values.existingSecrets.database.key }}'
+          SMS_DB_MAX_CONNECTIONS:
+            value: '10'
+          SMS_OIDC_ISSUER:
+            value: '{{ required "oidcIssuer is required — must equal the gateway public https origin" .Values.oidcIssuer }}'
+          ORANGE_CM_CLIENT_ID:
+            value: '{{ required "orange.clientId is required" .Values.orange.clientId }}'
+          ORANGE_CM_CLIENT_SECRET:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.orange.name is required" .Values.existingSecrets.orange.name }}'
+                key: '{{ .Values.existingSecrets.orange.key }}'
+          ORANGE_CM_SENDER_NUMBER:
+            value: '{{ required "orange.senderNumber is required" .Values.orange.senderNumber }}'
+          ORANGE_CM_BASE_URL:
+            value: '{{ .Values.orange.baseUrl }}'
+          SMS_HASH_PEPPER:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.hashPepper.name is required" .Values.existingSecrets.hashPepper.name }}'
+                key: '{{ .Values.existingSecrets.hashPepper.key }}'
+          RUST_LOG:
+            value: 'sms_gateway=info,sms_api=info,cratestack=info'
+        probes:
+          # /healthz is liveness-only by design (app/sms-gateway/src/health.rs's
+          # own doc: "It does not touch the database") — safe to reuse for
+          # both liveness and readiness since it never reports a false
+          # "ready" against a database that's actually down; a DB outage
+          # surfaces as request failures, not a killed container.
+          liveness:
+            enabled: true
+            type: HTTP
+            path: /healthz
+            port: 8080
+            spec:
+              initialDelaySeconds: 5
+              periodSeconds: 15
+              timeoutSeconds: 5
+              failureThreshold: 3
+          readiness:
+            enabled: true
+            type: HTTP
+            path: /healthz
+            port: 8080
+            spec:
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+          startup:
+            # Generous — this process opens a DB pool and loads OP signing
+            # keys before it ever binds the listener (the same ordering
+            # that makes rotateSigningKey's hook load-bearing); a slow
+            # Postgres on first boot should not be killed as a false
+            # startup failure.
+            enabled: true
+            type: HTTP
+            path: /healthz
+            port: 8080
+            spec:
+              periodSeconds: 5
+              timeoutSeconds: 5
+              failureThreshold: 30
+        resources: {}
+
+  worker:
+    type: deployment
+    # Safe above 1 even though several roles are Cardinality::Singleton:
+    # crates/sms-worker/src/lease.rs's RoleLease means only one replica
+    # ever actually holds dispatch/drain/scheduler at a time, the rest
+    # idle on standby — see AGENTS.md's #28 section for the verified
+    # kill -9 failover behaviour this relies on. Defaults to 1 anyway,
+    # matching deploy/docker-compose.yml's own single-node shape; raise
+    # deliberately for standby capacity, not because more replicas do
+    # more work under the default --roles (hooks/jobs are the only
+    # ScaleToN roles here, and they're a small fraction of the work).
+    replicas: 1
+    pod:
+      # RoleLease release on SIGTERM (crates/sms-worker/src/lib.rs's
+      # run_singleton) plus SHUTDOWN_GRACE (app/sms-worker/src/main.rs,
+      # 10s) needs real headroom beyond Kubernetes' own 30s default only
+      # if a lease's Postgres round-trip is slow; kept modestly above the
+      # binary's own grace constant rather than equal to it.
+      terminationGracePeriodSeconds: 30
+    containers:
+      main:
+        image:
+          repository: '{{ printf "%s/%s/vsms-sms-worker" .Values.image.registry .Values.image.repositoryOwner }}'
+          tag: '{{ required "image.tag is required" .Values.image.tag }}'
+          pullPolicy: IfNotPresent
+        env:
+          SMS_WORKER_ROLES:
+            value: '{{ .Values.worker.roles }}'
+          DATABASE_URL:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.database.name is required" .Values.existingSecrets.database.name }}'
+                key: '{{ .Values.existingSecrets.database.key }}'
+          SMS_WORKER_DB_MAX_CONNECTIONS:
+            value: '10'
+          ORANGE_CM_CLIENT_ID:
+            value: '{{ .Values.orange.clientId }}'
+          ORANGE_CM_CLIENT_SECRET:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.orange.name is required" .Values.existingSecrets.orange.name }}'
+                key: '{{ .Values.existingSecrets.orange.key }}'
+          ORANGE_CM_SENDER_NUMBER:
+            value: '{{ .Values.orange.senderNumber }}'
+          ORANGE_CM_BASE_URL:
+            value: '{{ .Values.orange.baseUrl }}'
+          ORANGE_CM_DLR_NOTIFY_URL:
+            value: '{{ .Values.orange.dlrNotifyUrl }}'
+          RUST_LOG:
+            value: 'sms_worker=info,sms_worker_bin=info'
+        probes:
+          # No HTTP surface (app/sms-worker/Dockerfile's own comment: six
+          # poll-loop roles, never a listener) — main.rs touches
+          # SMS_WORKER_HEALTH_FILE every 15s regardless of --roles; a
+          # stale mtime means a hung tokio runtime, not just an idling
+          # role. Reproduces the Dockerfile HEALTHCHECK's exact shell
+          # check as a custom exec probe rather than inventing a new one.
+          liveness:
+            enabled: true
+            custom: true
+            spec:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - 'f=/tmp/sms-worker-healthy; test -f "$f" && [ "$(( $(date +%s) - $(stat -c %Y "$f") ))" -lt 90 ]'
+              initialDelaySeconds: 20
+              periodSeconds: 30
+              timeoutSeconds: 5
+              failureThreshold: 3
+          readiness:
+            enabled: true
+            custom: true
+            spec:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - 'f=/tmp/sms-worker-healthy; test -f "$f" && [ "$(( $(date +%s) - $(stat -c %Y "$f") ))" -lt 90 ]'
+              initialDelaySeconds: 20
+              periodSeconds: 15
+              timeoutSeconds: 5
+              failureThreshold: 3
+        resources: {}
+
+  admin:
+    type: deployment
+    replicas: 1
+    containers:
+      main:
+        image:
+          repository: '{{ printf "%s/%s/vsms-admin" .Values.image.registry .Values.image.repositoryOwner }}'
+          tag: '{{ required "image.tag is required" .Values.image.tag }}'
+          pullPolicy: IfNotPresent
+        env:
+          DASHBOARD_AUTH:
+            value: '{{ .Values.admin.dashboardAuth }}'
+          DASHBOARD_BASIC_REALM:
+            value: '{{ .Values.admin.dashboardBasicRealm }}'
+          DASHBOARD_BASIC_USERS:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.dashboardBasicUsers.name is required" .Values.existingSecrets.dashboardBasicUsers.name }}'
+                key: '{{ .Values.existingSecrets.dashboardBasicUsers.key }}'
+          # Cluster-internal DNS to the gateway Service, never the
+          # public origin — mirrors deploy/docker-compose.yml's own
+          # `http://sms-gateway:8080` (plain http: Caddy/an ingress is
+          # the only TLS terminator, same reasoning that file's own
+          # comment gives for skipping @vsms/env's mTLS cross-field rule).
+          # "-gateway" is the Service identifier below
+          # (service.gateway); common's own resource-naming rule appends
+          # the identifier as a suffix whenever more than one Service is
+          # defined in one release, which is always true here (gateway +
+          # admin) — see bjw-s.common.lib.determineResourceNameFromValues.
+          SMS_API_URL:
+            value: 'http://{{ include "bjw-s.common.lib.chart.names.fullname" $ }}-gateway:8080'
+          SMS_AUTH_ISSUER:
+            value: '{{ required "oidcIssuer is required" .Values.oidcIssuer }}'
+          SMS_CONSOLE_CLIENT_ID:
+            value: '{{ required "admin.consoleClientId is required" .Values.admin.consoleClientId }}'
+          SMS_CONSOLE_PRIVATE_KEY_PATH:
+            value: '/secrets/console-private-key.pem'
+          SMS_CONSOLE_SCOPE:
+            value: '{{ .Values.admin.consoleScope }}'
+          MESSAGE_STREAM_POLL_MS:
+            value: '{{ .Values.admin.messageStreamPollMs }}'
+          NEXT_PUBLIC_APP_NAME:
+            value: '{{ .Values.admin.appName }}'
+          NODE_ENV:
+            value: production
+        probes:
+          # admin/app/api/health is unauthenticated on purpose (#139 —
+          # middleware.ts's matcher excludes it explicitly) and touches
+          # no external dependency, so liveness and readiness share it
+          # the same way the gateway's /healthz does.
+          liveness:
+            enabled: true
+            type: HTTP
+            path: /api/health
+            port: 8080
+            spec:
+              initialDelaySeconds: 5
+              periodSeconds: 15
+              timeoutSeconds: 5
+              failureThreshold: 3
+          readiness:
+            enabled: true
+            type: HTTP
+            path: /api/health
+            port: 8080
+            spec:
+              initialDelaySeconds: 5
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+        resources: {}
+
+# ---------------------------------------------------------------------------
+# Services — one per long-running HTTP surface. sms-worker has none (no
+# HTTP listener — see its probes above).
+# ---------------------------------------------------------------------------
+service:
+  gateway:
+    controller: gateway
+    primary: true
+    ports:
+      http:
+        port: 8080
+        protocol: HTTP
+  admin:
+    controller: admin
+    primary: true
+    ports:
+      http:
+        port: 8080
+        protocol: HTTP
+
+# ---------------------------------------------------------------------------
+# Ingress — disabled by default. An operator running Kubernetes has an
+# opinion about their own ingress controller and TLS story (the same
+# reasoning #145 gives for not vendoring a database); enable and fill in
+# per-environment rather than assuming one shape here.
+# ---------------------------------------------------------------------------
+ingress:
+  gateway:
+    enabled: false
+    className: ''
+    annotations: {}
+    hosts:
+      - host: api.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+            service:
+              identifier: gateway
+              port: http
+    tls: []
+  admin:
+    enabled: false
+    className: ''
+    annotations: {}
+    hosts:
+      - host: admin.example.com
+        paths:
+          - path: /
+            pathType: Prefix
+            service:
+              identifier: admin
+              port: http
+    tls: []
+
+# ---------------------------------------------------------------------------
+# The admin console's private_key_jwt private key — mounted whole from an
+# existingSecret, never templated into an env var. See
+# existingSecrets.consolePrivateKey above for the required key name.
+# ---------------------------------------------------------------------------
+persistence:
+  console-private-key:
+    type: secret
+    name: '{{ .Values.existingSecrets.consolePrivateKey.name }}'
+    advancedMounts:
+      admin:
+        main:
+          - path: /secrets
+            readOnly: true

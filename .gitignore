@@ -39,3 +39,10 @@ admin/public/sw*.js
 packages/sms-client/*
 !packages/sms-client/package.json
 !packages/sms-client/GENERATING.md
+
+# deploy/charts/vsms's `common` dependency, fetched by `helm dependency
+# build` (release.yml runs this before packaging) from Chart.lock — same
+# "generated, never committed" convention as packages/sms-client above.
+# Chart.lock itself IS committed (it's the pin, same role Cargo.lock
+# plays for the Rust workspace).
+deploy/charts/vsms/charts/
