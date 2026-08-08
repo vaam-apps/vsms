@@ -17,6 +17,7 @@
     "@vsms/hooks": "workspace:*",
     "@vsms/ui": "workspace:*",
     "next": "15.5.23",
+    "nuqs": "^2.7.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-hook-form": "7.85.0",

@@ -28,6 +28,7 @@ import {
   SelectTrigger,
   SelectValue,
   StatusPill,
+  ThemeToggle,
 } from "@vsms/ui";
 import { useEffect, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
@@ -124,27 +125,6 @@ function looksLikeAttemptedMsisdn(raw: string): boolean {
   return raw.replace(/\D/g, "").length >= 8;
 }
 
-function ThemeToggle() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-
-  useEffect(() => {
-    const current = document.documentElement.getAttribute("data-theme");
-    if (current === "light" || current === "dark") setTheme(current);
-  }, []);
-
-  function flip() {
-    const next = theme === "dark" ? "light" : "dark";
-    document.documentElement.setAttribute("data-theme", next);
-    setTheme(next);
-  }
-
-  return (
-    <Button variant="secondary" size="sm" onClick={flip} type="button">
-      {theme === "dark" ? "Switch to light" : "Switch to dark"}
-    </Button>
-  );
-}
-
 export default function ComposerPage() {
   const form = useForm<ComposerFormValues>({
     resolver: zodResolver(composerSchema),
@@ -237,6 +217,12 @@ export default function ComposerPage() {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
+          <a
+            href="/messages"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Messages
+          </a>
           <a
             href="/gallery"
             className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
