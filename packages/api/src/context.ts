@@ -27,10 +27,18 @@ import "server-only";
 //    Origin check, not a token)"). Every tRPC mutation arrives as a POST,
 //    so this is the one control this seam has: a cross-site POST will
 //    carry an `Origin` header that doesn't match the request's own
-//    origin (or, for many legacy/non-browser clients, none at all — a
-//    missing header is not proof of a cross-site request, so it is not
-//    treated as one here; modern browsers reliably send `Origin` on POST
-//    regardless of same/cross origin).
+//    origin. A POST carrying NO `Origin` at all is also refused: modern
+//    browsers reliably send it on a fetch POST regardless of same- or
+//    cross-origin, so the only callers that omit it are non-browser
+//    clients — precisely the case this control exists to stop. This
+//    endpoint reaches `sendMessage`, which sends a real billed SMS, so
+//    absence is treated as refusal rather than permission.
+//
+//    (An earlier revision of this file said the opposite, and the code
+//    matched it by returning early on a missing header. That was a real
+//    hole — plain `curl` with no headers bypassed the check entirely.
+//    Both were fixed; this note exists so the doc is never "corrected"
+//    back toward the unsafe behaviour.)
 
 import { TRPCError } from "@trpc/server";
 import type { FetchCreateContextFnOptions } from "@trpc/server/adapters/fetch";
