@@ -3188,6 +3188,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sms-fake-orange-bin"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dotenvy",
+ "sms-fake-orange",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "sms-gateway"
 version = "0.1.0"
 dependencies = [

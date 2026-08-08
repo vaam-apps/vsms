@@ -13,6 +13,7 @@ members = [
   "crates/sms-test-support",
   "app/sms-gateway",
   "app/sms-worker",
+  "app/sms-fake-orange",
 ]
 
 [workspace.package]
@@ -41,7 +42,9 @@ sms-provider-orange-cm = { path = "./crates/sms-provider-orange-cm" }
 sms-test-support = { path = "./crates/sms-test-support" }
 # Dev-only, same discipline as sms-test-support above: a fault-injecting
 # fake of Orange's HTTP API for the chaos suite (see its own module doc).
-# No production binary links against it.
+# No production binary links against it — app/sms-fake-orange, the one
+# binary that does, is itself a dev/demo tool, never referenced by a
+# production compose file (see that binary's own module doc).
 sms-fake-orange = { path = "./crates/sms-fake-orange" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`

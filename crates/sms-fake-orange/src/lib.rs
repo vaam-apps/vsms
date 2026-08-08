@@ -28,7 +28,7 @@
 //!    received this reference exactly once" from the provider's own side
 //!    rather than inferring it from this system's database.
 //!
-//! # Two policies, not a spectrum
+//! # Two test policies, not a spectrum — plus one for a long-lived process
 //!
 //! [`fault::FaultPolicy::Scripted`] is an exact, ordered sequence — what a
 //! deterministic CI-gate test scripts to assert one specific outcome.
@@ -36,6 +36,12 @@
 //! of realistic outcomes — reproducible by construction, since the same
 //! seed replayed against the same call sequence always draws the same
 //! decisions. Never unseeded randomness anywhere in this crate.
+//!
+//! Neither fits a process that outlives any one test: `Scripted` exhausts
+//! and falls back to a bare accept-with-no-DLR, and `Seeded` is tuned for a
+//! fuzz sweep's tail coverage, not a demo's happy path. See
+//! [`fault::FaultPolicy::Always`] for the third policy that exists
+//! specifically for `app/sms-fake-orange`.
 
 mod fault;
 mod ledger;
@@ -43,6 +49,7 @@ mod ledger;
 pub use fault::{DlrStatus, DlrStep, FaultPolicy, SubmitDecision, SubmitOutcome};
 pub use ledger::{Ledger, SubmitRecord};
 
+use std::net::TcpListener;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -97,7 +104,36 @@ impl FakeOrange {
         sender_number: &str,
     ) -> Self {
         let server = MockServer::start().await;
+        Self::mount(server, policy, token_policy, dlr_endpoint, sender_number).await
+    }
 
+    /// Same as [`Self::start`], but binds `listener` instead of an ephemeral
+    /// OS-assigned port. A test never needs this — parallel tests colliding
+    /// on a port is exactly what the ephemeral default avoids — but a
+    /// long-lived demo process does: it needs to publish a stable,
+    /// documented address (a compose file, a runbook command) rather than a
+    /// port picked fresh on every start. `app/sms-fake-orange` is the one
+    /// caller.
+    pub async fn start_on(
+        listener: TcpListener,
+        policy: FaultPolicy,
+        token_policy: TokenPolicy,
+        dlr_endpoint: impl Into<String>,
+        sender_number: &str,
+    ) -> Self {
+        let server = MockServer::builder().listener(listener).start().await;
+        Self::mount(server, policy, token_policy, dlr_endpoint, sender_number).await
+    }
+
+    /// Shared setup behind [`Self::start`] and [`Self::start_on`] — mounts
+    /// the token and submit endpoints on an already-bound `server`.
+    async fn mount(
+        server: MockServer,
+        policy: FaultPolicy,
+        token_policy: TokenPolicy,
+        dlr_endpoint: impl Into<String>,
+        sender_number: &str,
+    ) -> Self {
         let token_response = match token_policy {
             TokenPolicy::Always => ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token": "fake-orange-token",
@@ -123,6 +159,13 @@ impl FakeOrange {
                 let reference = extract_callback_data(request).unwrap_or_default();
                 let decision = policy.next();
                 ledger.record_submit(&reference, &decision.outcome, decision.response_delay);
+                tracing::info!(
+                    reference,
+                    outcome = ?decision.outcome,
+                    delay_ms = %decision.response_delay.as_millis(),
+                    dlrs_planned = decision.dlr_plan.len(),
+                    "fake orange: submit received"
+                );
 
                 for step in &decision.dlr_plan {
                     schedule_dlr(
@@ -195,13 +238,24 @@ fn schedule_dlr(
         tokio::time::sleep(step.delay).await;
         let reference = step.reference_override.unwrap_or(default_reference);
         let body = dlr_body(&reference, &step.status);
-        if let Err(error) = client.post(&endpoint).json(&body).send().await {
-            // A test's own DLR endpoint going away mid-run (e.g. the test
-            // process is shutting down) is not this crate's problem to
-            // surface as a panic from a detached background task — the
-            // caller's own invariant sweep is what notices a DLR that never
-            // arrived.
-            tracing::warn!(%error, endpoint, reference, "fake orange: DLR delivery failed");
+        match client.post(&endpoint).json(&body).send().await {
+            Ok(response) => {
+                tracing::info!(
+                    endpoint,
+                    reference,
+                    status = %step.status.wire(),
+                    http_status = response.status().as_u16(),
+                    "fake orange: DLR posted"
+                );
+            }
+            Err(error) => {
+                // A test's own DLR endpoint going away mid-run (e.g. the
+                // test process is shutting down) is not this crate's
+                // problem to surface as a panic from a detached background
+                // task — the caller's own invariant sweep is what notices a
+                // DLR that never arrived.
+                tracing::warn!(%error, endpoint, reference, "fake orange: DLR delivery failed");
+            }
         }
         ledger.mark_dlr_settled();
     });
