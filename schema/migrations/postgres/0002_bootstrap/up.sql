@@ -309,22 +309,15 @@ CREATE INDEX cratestack_event_outbox_undelivered_idx
     ON cratestack_event_outbox (occurred_at, event_id)
     WHERE delivered_at IS NULL;
 
-ALTER TABLE messages ADD CONSTRAINT messages_app_fk
-    FOREIGN KEY (app_id) REFERENCES apps(id);
-ALTER TABLE app_clients ADD CONSTRAINT app_clients_app_fk
-    FOREIGN KEY (app_id) REFERENCES apps(id);
-ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_app_client_fk
-    FOREIGN KEY (app_client_id) REFERENCES app_clients(id);
+ALTER TABLE message_parts DROP CONSTRAINT message_parts_message_id_fkey;
 ALTER TABLE message_parts ADD CONSTRAINT parts_message_fk
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE;
+ALTER TABLE delivery_receipts DROP CONSTRAINT delivery_receipts_message_id_fkey;
 ALTER TABLE delivery_receipts ADD CONSTRAINT receipts_message_fk
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE;
-ALTER TABLE routes ADD CONSTRAINT routes_provider_fk
-    FOREIGN KEY (provider_id) REFERENCES providers(id);
+ALTER TABLE webhook_attempts DROP CONSTRAINT webhook_attempts_endpoint_id_fkey;
 ALTER TABLE webhook_attempts ADD CONSTRAINT wha_endpoint_fk
     FOREIGN KEY (endpoint_id) REFERENCES webhook_endpoints(id) ON DELETE CASCADE;
-ALTER TABLE users ADD CONSTRAINT users_role_fk
-    FOREIGN KEY (role_key) REFERENCES roles(key);
 
 ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_format_check
     CHECK (prefix ~ '^[0-9]{1,4}$');

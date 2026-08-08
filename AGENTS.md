@@ -157,7 +157,7 @@ Retained because they are cheap and still correct, not because they are load-bea
 
 | | |
 |---|---|
-| [CrateStack](https://cratestack.dev/) `=0.5.0` | Schema-first. `.cstack` generates models, policies, audit, events, REST. Pre-1.0 and moving fast — pin exactly. Never below 0.5.0; see the build-cost section. |
+| [CrateStack](https://cratestack.dev/) `=0.7.8` | Schema-first. `.cstack` generates models, policies, audit, events, REST. Pre-1.0 and moving fast — pin exactly, and **keep the installed CLI on the same version**: a mismatched CLI emits DDL the compiled library never produces. Never below 0.6.0 (see `#87`) and never below 0.5.0 (see the build-cost section). |
 | [Authkestra](https://github.com/marcjazz/authkestra) `=0.3.3` | OIDC provider. 0.3.2 fixed the `GrantType` serde bug that shaped early M1 design (#6). Pin exactly — still moving fast, and `authkestra-macros` is transitive, so `cargo update -p authkestra-macros` is needed to keep the family in true lockstep. |
 | PostgreSQL 16 | The only coordination mechanism. Queues (`SKIP LOCKED`), leader election (advisory locks), state machines (triggers). No broker, no Redis. |
 | Rust 2021, TypeScript / Next.js 15 | |
@@ -196,7 +196,7 @@ Each of these was found by running the toolchain. Each will silently waste an af
 - **Defaulted fields *are* settable on update.** So `@default(auth().x)` protects creation only.
 - **`@pii` / `@sensitive` redact audit snapshots only** — they add no serde attribute, so the field is still returned by the API. Not confidentiality controls.
 - **Ids must be lowercase alphanumeric, no separator.** `Cuid` is format-guarded `[a-z0-9]{2,32}` on REST query filters, so a `msg_` prefix makes `GET /messages?id=…` return 400. `cs_cuid()` emits 23 chars.
-- **No `@@index`, no foreign keys, no triggers, no column defaults** come out of the emitter — all hand-written in `0002_bootstrap`.
+- **No `@@index`, no triggers, no column defaults** come out of the emitter — all hand-written in `0002_bootstrap`. **Foreign keys changed at `=0.7.8`**: the emitter now writes a plain `ON DELETE NO ACTION` `FOREIGN KEY` into `0001_init` for every `@relation`, so the seven hand-written duplicates left `0002_bootstrap`. The trap, found live: **two `FOREIGN KEY` constraints on the same column enforce independently.** Leaving the emitted `NO ACTION` beside a hand-written `CASCADE` does not resolve to the more permissive one — Postgres raises `violates foreign key constraint` on `NO ACTION` before `CASCADE` ever runs, silently reinstating the block. So the three relations that need cascade (`message_parts`, `delivery_receipts`, `webhook_attempts`) **drop the emitted constraint by name** and replace it, rather than adding a second beside it.
 - **`pluralize()` is naive** (`ends_with('s') ? +"es" : +"s"`) and there is no `@@map`. `WebhookDelivery` would become `webhook_deliverys` — the model is `WebhookAttempt` for that reason.
 - **`upsert` doesn't exist when the `@id` has a default.** Dedupe is `create` + catching SQLSTATE `23505` via `err.db_sqlstate()`.
 - **`SKIP LOCKED` is not expressible.** `.for_update()` is. Claim loops use optimistic CAS on `@version`, treating `PreconditionFailed` as "another worker won" — and **`Forbidden` is ambiguous** (policy denied *or* row gone), so log it rather than folding it into the race branch.

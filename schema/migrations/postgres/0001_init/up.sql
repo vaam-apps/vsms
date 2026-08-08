@@ -432,3 +432,27 @@ ALTER TABLE sender_ids ADD CONSTRAINT sender_ids_value_length_check CHECK (lengt
 
 ALTER TABLE webhook_attempts ADD CONSTRAINT webhook_attempts_state_enum_check CHECK (state IN ('pending', 'delivering', 'succeeded', 'failed', 'dead'));
 
+ALTER TABLE app_clients ADD CONSTRAINT app_clients_app_id_fkey FOREIGN KEY (app_id) REFERENCES apps (id);
+
+ALTER TABLE apps ADD CONSTRAINT apps_default_sender_id_id_fkey FOREIGN KEY (default_sender_id_id) REFERENCES sender_ids (id);
+
+ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_message_id_fkey FOREIGN KEY (message_id) REFERENCES messages (id);
+
+ALTER TABLE message_parts ADD CONSTRAINT message_parts_message_id_fkey FOREIGN KEY (message_id) REFERENCES messages (id);
+
+ALTER TABLE messages ADD CONSTRAINT messages_app_id_fkey FOREIGN KEY (app_id) REFERENCES apps (id);
+
+ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_app_client_id_fkey FOREIGN KEY (app_client_id) REFERENCES app_clients (id);
+
+ALTER TABLE routes ADD CONSTRAINT routes_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES providers (id);
+
+ALTER TABLE sender_id_registrations ADD CONSTRAINT sender_id_registrations_sender_id_id_fkey FOREIGN KEY (sender_id_id) REFERENCES sender_ids (id);
+
+ALTER TABLE sender_id_registrations ADD CONSTRAINT sender_id_registrations_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES providers (id);
+
+ALTER TABLE users ADD CONSTRAINT users_role_key_fkey FOREIGN KEY (role_key) REFERENCES roles (key);
+
+ALTER TABLE webhook_attempts ADD CONSTRAINT webhook_attempts_endpoint_id_fkey FOREIGN KEY (endpoint_id) REFERENCES webhook_endpoints (id);
+
+ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_app_id_fkey FOREIGN KEY (app_id) REFERENCES apps (id);
+
