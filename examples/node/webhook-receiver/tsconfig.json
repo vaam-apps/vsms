@@ -1,0 +1,16 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "types": ["node"],
+    // This example runs directly via `node src/index.ts` (Node's native
+    // TypeScript support — no build step, no ts-node/tsx dependency), which
+    // only resolves relative imports whose extension matches a real file on
+    // disk. Explicit `.ts` extensions in source, permitted for type-check
+    // purposes by this flag, are what makes that work.
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
