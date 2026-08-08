@@ -64,7 +64,15 @@ DATABASE_URL=postgres://localhost/vsms_check \
 
 Second, `sms-gateway serve` also refuses to start until an `active` `Provider` row keyed `orange_cm` exists — nothing seeds it automatically, and no admin console exists yet to create one by hand. The seed/send tool built for this milestone's own acceptance testing does it as a side effect, so run it *before* starting either binary, not after:
 
+It also needs `SMS_HASH_PEPPER` — the server-held key behind `msisdnHash`/`bodyHash`
+(#134, `sms_api::pepper`). Required, minimum 32 bytes, and it **must be the same value
+for every process in this walkthrough**: a hash computed under one pepper never equals one
+computed under another, and nothing detects the mismatch — opt-out matching and dedupe just
+silently stop working. So export it once, here, rather than generating one per command:
+
 ```bash
+export SMS_HASH_PEPPER="$(openssl rand -base64 48)"
+
 DATABASE_URL=postgres://localhost/vsms_check \
     cargo run -p sms-api --example send_test_message -- \
     --to +237677123456 --sender-id VYMALO --body "Hello from vsms"
@@ -78,6 +86,7 @@ Now, in separate terminals:
 # terminal 1 — the API server
 DATABASE_URL=postgres://localhost/vsms_check \
 SMS_OIDC_ISSUER=http://127.0.0.1:8080 \
+SMS_HASH_PEPPER="$SMS_HASH_PEPPER" \
 ORANGE_CM_CLIENT_ID=placeholder \
 ORANGE_CM_CLIENT_SECRET=placeholder \
 ORANGE_CM_SENDER_NUMBER=+2370000 \
