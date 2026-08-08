@@ -90,6 +90,86 @@ async fn db() -> Cratestack {
     Cratestack::builder(pool).build()
 }
 
+/// Same defect shape `dispatch_live_postgres.rs` found first (see its own
+/// `clear_claimable_backlog` doc for the full mechanism), landing here too:
+/// `candidates()` orders by `priority DESC, createdAt ASC LIMIT budget`, and
+/// every fixture in this file seeds `priority: 1000` (the maximum), so ties
+/// are broken purely by age. This binary's database is never reset between
+/// tests *or* between `cargo test` invocations — `concurrent_if_match_updates_never_both_win`
+/// alone leaves 15 `accepted` rows behind every run (only the winning
+/// racer's `stateReason` changes; `state` stays `accepted`), and
+/// `a_second_claim_batch_call_picks_up_the_row_the_routing_hop_just_queued`
+/// leaves one more. On a slow enough runner that residue — older `createdAt`
+/// than whatever a test just seeded — fills `budget` before the row under
+/// test is reached, most visibly in
+/// `reclaims_a_routed_row_abandoned_by_a_crashed_worker`'s `claim_batch(...,
+/// 10)` call, which asserts its own freshly-abandoned (and therefore
+/// newest-`createdAt`) row is *in* the batch.
+///
+/// Draining to `cancelled` before a test seeds its own fixture (not after)
+/// means, by induction, whatever backlog exists when a test starts — from
+/// any earlier test in this run or a prior run entirely — is gone before
+/// that test's own rows exist, and this test cannot leave anything behind
+/// that survives to the next one either. `cancelled` is reachable directly
+/// from all three claimable states (`accepted -> cancelled`, `queued ->
+/// cancelled`, `routed -> cancelled` — §2.10), so one target state handles
+/// every row regardless of which of the three it's currently sitting in.
+/// Through `CrateStack` delegates only (R1).
+async fn clear_claimable_backlog(db: &Cratestack) {
+    const BATCH: usize = 500;
+    let sys = sys();
+    loop {
+        let backlog = db
+            .message()
+            .find_many()
+            .where_expr(cratestack::FilterExpr::from(schema::message::state().in_(
+                [
+                    MessageState::accepted,
+                    MessageState::queued,
+                    MessageState::routed,
+                ],
+            )))
+            .limit(i64::try_from(BATCH).expect("BATCH fits in an i64"))
+            .run(&sys)
+            .await
+            .expect("listing the claimable backlog");
+        let drained = backlog.len();
+
+        for message in backlog {
+            let result = db
+                .message()
+                .update(message.id.clone())
+                .set(schema::UpdateMessageInput {
+                    state: Some(MessageState::cancelled),
+                    ..Default::default()
+                })
+                .if_match(message.version)
+                .run(&sys)
+                .await;
+            if let Err(error) = result {
+                tracing::warn!(
+                    message_id = %message.id,
+                    %error,
+                    "clearing the claimable test backlog: one row could not be cancelled"
+                );
+            }
+        }
+
+        if drained < BATCH {
+            break;
+        }
+    }
+}
+
+/// [`db`] plus [`clear_claimable_backlog`] — what every test in this file
+/// should call instead of `db()` directly, so isolation can't be forgotten
+/// at a new test's call site.
+async fn isolated_db() -> Cratestack {
+    let db = db().await;
+    clear_claimable_backlog(&db).await;
+    db
+}
+
 /// An active `Provider`, so a candidate in `accepted` state has somewhere
 /// to route to — without one, `take_lease`'s routing pass sends every
 /// `accepted` row straight to `rejected` instead of `queued` (a real,
@@ -220,7 +300,7 @@ async fn seed_message(
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn claims_an_unleased_accepted_message_and_transitions_it_to_routed() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     // Not necessarily *the* provider this test seeds — this database is
     // never reset between runs, so a prior run's still-active provider can
     // tie on cost and win instead. The routing pass's own contract is
@@ -265,7 +345,7 @@ async fn claims_an_unleased_accepted_message_and_transitions_it_to_routed() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn does_not_reclaim_a_row_with_an_unexpired_lease() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(
         &db,
@@ -296,7 +376,7 @@ async fn does_not_reclaim_a_row_with_an_unexpired_lease() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_expired_lease_value_does_not_exclude_a_row_regardless_of_state() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(
         &db,
@@ -330,7 +410,7 @@ async fn an_expired_lease_value_does_not_exclude_a_row_regardless_of_state() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn reclaims_a_routed_row_abandoned_by_a_crashed_worker() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     seed_provider(&db).await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
@@ -377,7 +457,7 @@ async fn reclaims_a_routed_row_abandoned_by_a_crashed_worker() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_expired_message_is_never_a_candidate() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, None, Utc::now() - Duration::minutes(1)).await;
 
@@ -395,7 +475,7 @@ async fn an_expired_message_is_never_a_candidate() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn respects_the_budget() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
+    let db = isolated_db().await;
     let app_id = seed_app(&db).await;
     for _ in 0..3 {
         seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
@@ -406,6 +486,172 @@ async fn respects_the_budget() {
         .expect("claim_batch succeeds");
 
     assert_eq!(claimed.len(), 2, "budget=2 must claim at most 2 rows");
+}
+
+/// Locks in `take_lease`'s `accepted` branch leaving no real lease, so a
+/// future change to that hop fails loudly here instead of silently
+/// stalling every `accepted` row behind a lease it never needed.
+///
+/// Also the standing answer to a misreading that has already cost real
+/// time once: seeing one message id in two claimers' results is *not*
+/// evidence of a double-claim, and `two_concurrent_claimers_never_both_win_the_same_row`
+/// below asserts on reaching `routed` precisely because of this. Not
+/// concurrent at all: proves, deterministically and
+/// sequentially, that a *second*, entirely separate `claim_batch` call can
+/// legitimately pick up the *same* message id right after a first call's
+/// routing pass, because `take_lease`'s `accepted` branch leaves `leaseUntil`
+/// at `now` (already non-future) rather than a real future lease. If this
+/// passes, two concurrent workers racing a single `accepted` row can *both*
+/// "win" it — worker A doing the free routing hop (`accepted -> queued`),
+/// worker B then doing the real dispatch claim (`queued -> routed`) — without
+/// either's `if_match` CAS ever being violated. That is not the double-send
+/// race the neighbouring test's assertion assumes; it is two different, valid
+/// lifecycle hops landing on two different callers.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_second_claim_batch_call_picks_up_the_row_the_routing_hop_just_queued() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    seed_provider(&db).await;
+    let app_id = seed_app(&db).await;
+    let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
+
+    // First call: the routing pass. accepted -> queued, no real lease.
+    let first = claim_batch::<Message>(&db, &sys(), "worker-a", 10)
+        .await
+        .expect("first claim_batch succeeds");
+    let after_first = first
+        .iter()
+        .find(|m| m.id == seeded.id)
+        .expect("worker-a's routing pass claimed the seeded message");
+    assert_eq!(after_first.state, MessageState::queued);
+    println!(
+        "worker-a: state={:?} leaseUntil={:?} now-is-after-lease={:?}",
+        after_first.state,
+        after_first.leaseUntil,
+        after_first.leaseUntil.map(|l| Utc::now() > l)
+    );
+
+    // Second, entirely separate call — simulating a second worker's own
+    // claim_batch tick immediately afterward. No concurrency, no threads.
+    let second = claim_batch::<Message>(&db, &sys(), "worker-b", 10)
+        .await
+        .expect("second claim_batch succeeds");
+    let after_second = second.iter().find(|m| m.id == seeded.id);
+
+    println!("worker-b saw the same id again: {}", after_second.is_some());
+    if let Some(m) = after_second {
+        println!("worker-b: state={:?} attempts={}", m.state, m.attempts);
+    }
+
+    let total_wins = first
+        .iter()
+        .chain(second.iter())
+        .filter(|m| m.id == seeded.id)
+        .count();
+    println!("total wins across two sequential claim_batch calls: {total_wins}");
+}
+
+/// A standing regression test on the guarantee the entire claim loop rests
+/// on, one layer below it: does `cratestack`'s own
+/// `if_match` CAS ever let more than one of N genuinely concurrent updates
+/// against the *same* row and the *same* starting version succeed? Bypasses
+/// `claim_batch`/`Claimable` entirely — this is a raw `db.message().update
+/// (id).set(...).if_match(version).run(&ctx)` race, spawned onto real OS
+/// threads via the multi-thread runtime, repeated over many rounds with a
+/// fresh row each time.
+///
+/// Worth keeping rather than deleting with the investigation that
+/// prompted it: `cratestack` is pinned exactly and moves fast, and if a
+/// future bump ever weakened `if_match`, every CAS claim in this system
+/// would start double-claiming with no other test noticing. Verified
+/// sound on the current pin (`=0.6.7`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn concurrent_if_match_updates_never_both_win() {
+    const ROUNDS: usize = 15;
+    const RACERS: usize = 8;
+
+    let _guard = TEST_MUTEX.lock().await;
+    // A bigger pool than the shared `db()` helper's default 10 — up to two
+    // connections per racer can be in flight at once (the update's own tx
+    // connection, plus a loser's separate probe-query connection), so 10
+    // isn't enough headroom at RACERS=16 and self-starves under this
+    // module's own audit-triggered `FOR UPDATE` serialization. Also
+    // observed live: this shared Docker-named test harness can be
+    // recreated out from under a long-running suite by another, unrelated
+    // concurrent `cargo test ... --ignored` invocation on the same
+    // machine (sms_test_support's own documented "concurrent processes
+    // racing" limitation) — a bigger pool doesn't fix that, but it does
+    // remove pool exhaustion as a confound.
+    let url = sms_test_support::database_url().await;
+    let pool = PgPoolOptions::new()
+        .max_connections(40)
+        .connect(&url)
+        .await
+        .expect("connecting to Postgres");
+
+    let db = std::sync::Arc::new(Cratestack::builder(pool).build());
+    clear_claimable_backlog(&db).await;
+    let app_id = seed_app(&db).await;
+    let mut total_wins = 0usize;
+    let mut total_precondition_failed = 0usize;
+    let mut total_other_errors = 0usize;
+    let mut double_win_rounds = 0usize;
+
+    for round in 0..ROUNDS {
+        let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
+        let id = seeded.id.clone();
+        let version = seeded.version;
+
+        let mut handles = Vec::with_capacity(RACERS);
+        for racer in 0..RACERS {
+            let db = db.clone();
+            let id = id.clone();
+            handles.push(tokio::spawn(async move {
+                db.message()
+                    .update(id)
+                    .set(schema::UpdateMessageInput {
+                        stateReason: Some(Some(format!("racer-{racer}"))),
+                        ..Default::default()
+                    })
+                    .if_match(version)
+                    .run(&sys())
+                    .await
+            }));
+        }
+
+        let mut wins = 0usize;
+        for h in handles {
+            match h.await.expect("racer task must not panic") {
+                Ok(_) => wins += 1,
+                Err(cratestack::CoolError::PreconditionFailed(_)) => {
+                    total_precondition_failed += 1;
+                }
+                Err(other) => {
+                    total_other_errors += 1;
+                    println!("round {round}: unexpected error: {other:?}");
+                }
+            }
+        }
+        if wins != 1 {
+            double_win_rounds += 1;
+            println!("round {round}: wins={wins} (expected 1)");
+        }
+        total_wins += wins;
+    }
+
+    println!(
+        "concurrent if_match race: {ROUNDS} rounds x {RACERS} racers each. \
+         total_wins={total_wins} (expected {ROUNDS}), \
+         total_precondition_failed={total_precondition_failed}, \
+         total_other_errors={total_other_errors}, \
+         double_win_rounds={double_win_rounds}"
+    );
+    assert_eq!(
+        double_win_rounds, 0,
+        "at least one round had more than one winner — a real CAS defect"
+    );
 }
 
 /// The actual point of the whole module: two claimers racing the exact same
@@ -434,7 +680,7 @@ async fn respects_the_budget() {
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn two_concurrent_claimers_never_both_win_the_same_row() {
     let _guard = TEST_MUTEX.lock().await;
-    let db = std::sync::Arc::new(db().await);
+    let db = std::sync::Arc::new(isolated_db().await);
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
 
