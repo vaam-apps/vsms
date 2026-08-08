@@ -183,10 +183,23 @@ jobs:
       # library charts (common is one) to https://bjw-s-labs.github.io/
       # helm-charts only, never to GHCR as OCI (confirmed against that
       # repo's own charts-release.yaml: `publishToOciRegistry: false` for
-      # `release-library-charts`). `helm dependency build` resolves that
-      # URL directly; no `helm repo add` needed first.
+      # `release-library-charts`).
+      #
+      # `helm dependency build` does **not** resolve that URL on its own:
+      # for a classic (index.yaml) repository it looks the dependency up in
+      # the runner's local repo list and fails with "no repository
+      # definition for ..." when it isn't registered. An earlier revision
+      # of this step assumed otherwise and this job failed on exactly that,
+      # having passed on a developer machine only because that machine
+      # already had the repo added — the class of difference only a real
+      # run surfaces. `helm repo add` is idempotent, so re-running is safe.
+      # An OCI dependency would need no registration at all; this one
+      # cannot be OCI, per the Chart.yaml note above.
       - name: Build chart dependencies
-        run: helm dependency build deploy/charts/vsms
+        run: |
+          helm repo add bjw-s-labs https://bjw-s-labs.github.io/helm-charts
+          helm repo update bjw-s-labs
+          helm dependency build deploy/charts/vsms
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
