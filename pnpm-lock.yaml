@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  typescript: 5.9.3
+
 importers:
 
   .:
@@ -181,6 +184,15 @@ importers:
       '@types/react-dom':
         specifier: ^19
         version: 19.2.4(@types/react@19.2.18)
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
+  packages/sms-client:
+    devDependencies:
+      '@tanstack/react-query':
+        specifier: ^5.0.0
+        version: 5.101.4(react@19.2.8)
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -1325,7 +1337,7 @@ packages:
     resolution: {integrity: sha512-sM7GYY+KL7H/Hl0BE0inWfk3nRHZOLhmVn7sHGxaZt9FAR6KqREXAE+6TqKfiavfXmpRxO/OZ2QgKRd+oiBYRQ==}
     peerDependencies:
       arktype: ^2.1.0
-      typescript: '>=5.0.0'
+      typescript: 5.9.3
       valibot: ^1.0.0-beta.7 || ^1.0.0
       zod: ^3.24.0 || ^4.0.0
     peerDependenciesMeta:
@@ -1342,7 +1354,7 @@ packages:
     resolution: {integrity: sha512-NC+3j7YWgpzdFu1t5y/8wqibTK0lm5RS4bjXA1n8uwik3wIR4iZM4Fa+U2BaMa5k3Qk8RZiYhoAIX0WogmGkzg==}
     peerDependencies:
       arktype: ^2.1.0
-      typescript: '>=5.0.0'
+      typescript: 5.9.3
       valibot: ^1.0.0-beta.7 || ^1.0.0
       zod: ^3.24.0 || ^4.0.0
     peerDependenciesMeta:
@@ -1460,7 +1472,7 @@ packages:
     hasBin: true
     peerDependencies:
       '@trpc/server': 11.18.0
-      typescript: '>=5.7.2'
+      typescript: 5.9.3
 
   '@trpc/react-query@11.18.0':
     resolution: {integrity: sha512-C1+Wwm2pCeUJucI+bnFpxGYjNuvV+ko1BC1T9tUxBVdrhHRCdn9ubxdevdLSAa49XRJRJiZnSuzl3Ys/yvs1vg==}
@@ -1469,13 +1481,13 @@ packages:
       '@trpc/client': 11.18.0
       '@trpc/server': 11.18.0
       react: '>=18.2.0'
-      typescript: '>=5.7.2'
+      typescript: 5.9.3
 
   '@trpc/server@11.18.0':
     resolution: {integrity: sha512-JAvXOuNTxgXjIDfQaOvDq1j66LMNfDJUH1IU7Slfn8EvRv2EkH6ehu3A7zpYhjO0syHHiYg77v2lG2JFJgvw7Q==}
     hasBin: true
     peerDependencies:
-      typescript: '>=5.7.2'
+      typescript: 5.9.3
 
   '@turbo/darwin-64@2.10.9':
     resolution: {integrity: sha512-Jh+pTGXLNz8+1tkUU13TI/f+ZOI+OvC4YbHi1H+57iSpLt5DR3xgptd+4sA07RdjdRR/RX/01uQQu2OkbzIefA==}
