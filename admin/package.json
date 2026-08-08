@@ -10,11 +10,13 @@
   },
   "dependencies": {
     "@vsms/env": "workspace:*",
+    "@vsms/ui": "workspace:*",
     "next": "15.5.23",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
