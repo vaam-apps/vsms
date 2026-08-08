@@ -1,8 +1,8 @@
-import type { NextConfig } from 'next';
+import type { NextConfig } from "next";
 
 const config: NextConfig = {
   reactStrictMode: true,
-  transpilePackages: ['@vsms/env'],
+  transpilePackages: ["@vsms/env", "@vsms/ui"],
 };
 
 export default config;

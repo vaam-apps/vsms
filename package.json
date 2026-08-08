@@ -10,5 +10,8 @@
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "format": "turbo run format"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7"
   }
 }

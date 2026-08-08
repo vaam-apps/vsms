@@ -1,0 +1,348 @@
+/*
+ * @vsms/ui design tokens (T6).
+ *
+ * Source of truth: dashboard-design-system.md §3 (tokens) and §4 (status
+ * system), as amended by dashboard-architecture-plan.md's DECISIONS §4/§5
+ * (daisyUI + Radix, `delivered` gets a green pill, eleven states).
+ *
+ * daisyUI v5 is CSS-first: `@plugin "daisyui/theme"` blocks below define the
+ * two themes daisyUI already ships under the built-in names "dark" and
+ * "light" (see the "Customize Built-in daisyUI Theme" pattern in daisyUI's
+ * own docs) so every native daisyUI class (`.btn`, `.input`, `.card`,
+ * `.badge`, `.table`, `.tabs`, …) themes correctly with zero patching, and
+ * so `admin/app/layout.tsx`'s existing `data-theme="dark"` needs no change
+ * — dark is the default theme both by daisyUI's own `default: true` flag
+ * and by that hardcoded attribute.
+ *
+ * Everything daisyUI has no concept of — the extra surface-3 hover step,
+ * hairline border tiers, muted/subtle text tiers, focus-ring colour, and
+ * above all the eleven-state status system — lives in plain CSS custom
+ * properties scoped by the same `[data-theme]` attribute immediately below
+ * each daisyUI theme block, then re-exposed as Tailwind utilities via
+ * `@theme inline` so component code can write `bg-surface-3` /
+ * `text-state-danger-fg` instead of `bg-[var(--surface-3)]` everywhere.
+ *
+ * One deliberate rename from the design doc: its `--border` token (default
+ * container border colour) is called `--edge` here instead. daisyUI
+ * reserves `--border` for component border *width* (see the `--border: 1px`
+ * key inside the theme blocks below) — reusing the name for a colour would
+ * silently overwrite that width value at `[data-theme=...]` scope. `--edge`
+ * carries the same three-step ladder (`--edge-subtle` / `--edge` /
+ * `--edge-strong`) the design doc specifies, just under a collision-free
+ * name.
+ *
+ * Font self-hosting/subsetting (design doc F2: Inter Variable + JetBrains
+ * Mono Variable, latin + latin-ext, `font-display: swap`) is explicitly
+ * NOT done here — that is a separate, later task per the design doc's own
+ * build order, and no font files are checked into this repo yet. The
+ * family stacks below are correct and will pick the right system fallback
+ * (`system-ui` / `ui-monospace`) until self-hosting lands.
+ */
+
+@plugin "daisyui/theme" {
+  name: "dark";
+  default: true;
+  prefersdark: true;
+  color-scheme: dark;
+
+  /* base-100/200/300 double as our --background / --surface-1 / --surface-2 —
+     see the surface ladder comment on the [data-theme="dark"] block below. */
+  --color-base-100: #0a0b0d;
+  --color-base-200: #101216;
+  --color-base-300: #16181d;
+  --color-base-content: #e8eaed;
+
+  /* §1.3: one accent, never a hue. Primary/secondary/accent all resolve to
+     the same achromatic inverse fill — there is no second brand colour to
+     assign them to, on purpose. */
+  --color-primary: #e8eaed;
+  --color-primary-content: #0a0b0d;
+  --color-secondary: #e8eaed;
+  --color-secondary-content: #0a0b0d;
+  --color-accent: #e8eaed;
+  --color-accent-content: #0a0b0d;
+  --color-neutral: #1c1f25;
+  --color-neutral-content: #e8eaed;
+
+  /* daisyUI's own semantic four. Not used by the eleven-state status system
+     (that is bespoke — §4) but kept coherent for any incidental native use
+     (e.g. a plain `alert-error`). info=neutral grey on purpose: blue is
+     selection-only per §1.3, never a status hue. */
+  --color-info: #9aa1ac;
+  --color-info-content: #0a0b0d;
+  --color-success: #4ade80;
+  --color-success-content: #06210f;
+  --color-warning: #fcd34d;
+  --color-warning-content: #241a00;
+  --color-error: #e5534b;
+  --color-error-content: #ffffff;
+
+  /* §3.5: 2px universally. Floating layers get 4px by hand (--radius-md
+     below) since daisyUI has no separate "floating" radius category. */
+  --radius-selector: 2px;
+  --radius-field: 2px;
+  --radius-box: 2px;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+@plugin "daisyui/theme" {
+  name: "light";
+  color-scheme: light;
+
+  /* base-300 == base-100 here on purpose: §3.1 light-theme surface-2 is
+     "separated by border, not fill" — cards are white-on-white. */
+  --color-base-100: #ffffff;
+  --color-base-200: #f7f8f9;
+  --color-base-300: #ffffff;
+  --color-base-content: #14161a;
+
+  --color-primary: #14161a;
+  --color-primary-content: #ffffff;
+  --color-secondary: #14161a;
+  --color-secondary-content: #ffffff;
+  --color-accent: #14161a;
+  --color-accent-content: #ffffff;
+  --color-neutral: #f1f3f5;
+  --color-neutral-content: #14161a;
+
+  --color-info: #5c636e;
+  --color-info-content: #ffffff;
+  --color-success: #15803d;
+  --color-success-content: #ffffff;
+  --color-warning: #b54708;
+  --color-warning-content: #ffffff;
+  --color-error: #b42318;
+  --color-error-content: #ffffff;
+
+  --radius-selector: 2px;
+  --radius-field: 2px;
+  --radius-box: 2px;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
+/*
+ * Surface ladder (§3.1): --color-base-100/200/300 above already carry
+ * background / surface-1 / surface-2. --surface-3 (row hover, pressed,
+ * selected fill) is one step daisyUI's own three-tier base system doesn't
+ * have, so it lives here as a plain extra token.
+ */
+[data-theme="dark"] {
+  --surface-3: #1c1f25;
+
+  /* §3.6: borders, not shadows, for cards/tables/panels — only floating
+     layers (popover, dropdown, dialog, tooltip, sheet/drawer) get one. */
+  --shadow-popover: 0 8px 24px -6px rgb(0 0 0 / 0.65), 0 0 0 1px var(--edge);
+  --shadow-dialog: 0 24px 56px -12px rgb(0 0 0 / 0.75), 0 0 0 1px var(--edge);
+
+  --edge-subtle: #1f232a;
+  --edge: #2a2f37;
+  --edge-strong: #3d434d;
+
+  --muted-foreground: #9aa1ac;
+  --subtle-foreground: #6b727d;
+
+  --ring: #5b8def;
+  --ring-subtle: rgb(91 141 239 / 0.24);
+
+  --destructive: #e5534b;
+  --destructive-foreground: #ffffff;
+
+  /* §4.4 — the eleven-state status system's only saturated colours. */
+  --state-neutral-fg: #9aa1ac;
+  --state-neutral-bg: transparent;
+  --state-neutral-border: transparent;
+
+  --state-success-fg: #4ade80;
+  --state-success-bg: transparent;
+  --state-success-border: transparent;
+
+  --state-danger-fg: #fca5a5;
+  --state-danger-bg: rgb(248 113 113 / 0.1);
+  --state-danger-border: rgb(248 113 113 / 0.28);
+
+  --state-uncertain-fg: #fcd34d;
+  --state-uncertain-bg: rgb(251 191 36 / 0.1);
+  --state-uncertain-border: rgb(251 191 36 / 0.28);
+
+  --state-expired-fg: #a8a29e;
+  --state-expired-bg: rgb(168 162 158 / 0.1);
+  --state-expired-border: rgb(168 162 158 / 0.26);
+
+  --state-parked-fg: #c4b5fd;
+  --state-parked-bg: rgb(167 139 250 / 0.1);
+  --state-parked-border: rgb(167 139 250 / 0.28);
+}
+
+[data-theme="light"] {
+  --surface-3: #f1f3f5;
+
+  --shadow-popover: 0 4px 12px -2px rgb(16 18 22 / 0.1), 0 0 0 1px var(--edge);
+  --shadow-dialog: 0 16px 40px -8px rgb(16 18 22 / 0.16), 0 0 0 1px var(--edge);
+
+  --edge-subtle: #ebedf0;
+  --edge: #dde0e5;
+  --edge-strong: #c3c8d0;
+
+  --muted-foreground: #5c636e;
+  --subtle-foreground: #868e9a;
+
+  --ring: #2563eb;
+  --ring-subtle: rgb(37 99 235 / 0.14);
+
+  --destructive: #b42318;
+  --destructive-foreground: #ffffff;
+
+  --state-neutral-fg: #5c636e;
+  --state-neutral-bg: transparent;
+  --state-neutral-border: transparent;
+
+  --state-success-fg: #15803d;
+  --state-success-bg: transparent;
+  --state-success-border: transparent;
+
+  --state-danger-fg: #b42318;
+  --state-danger-bg: #fef3f2;
+  --state-danger-border: #fecdc9;
+
+  --state-uncertain-fg: #b54708;
+  --state-uncertain-bg: #fffaeb;
+  --state-uncertain-border: #fedf89;
+
+  --state-expired-fg: #57534e;
+  --state-expired-bg: #f5f5f4;
+  --state-expired-border: #e7e5e4;
+
+  --state-parked-fg: #6941c6;
+  --state-parked-bg: #f4f3ff;
+  --state-parked-border: #d9d6fe;
+}
+
+/*
+ * Re-expose the theme-varying tokens above as Tailwind utilities
+ * (`bg-surface-3`, `border-edge`, `text-state-danger-fg`, …). `var()`
+ * indirection is late-bound at computed-value time, so these correctly
+ * pick up whichever `[data-theme]` block is in scope.
+ */
+@theme inline {
+  /* Aliases onto daisyUI's own base-100/base-content so component code can
+     reach for the conventional `background`/`foreground` names instead of
+     remembering daisyUI's base-100/base-content vocabulary. */
+  --color-background: var(--color-base-100);
+  --color-foreground: var(--color-base-content);
+
+  --color-surface-3: var(--surface-3);
+
+  --color-edge-subtle: var(--edge-subtle);
+  --color-edge: var(--edge);
+  --color-edge-strong: var(--edge-strong);
+
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle-foreground: var(--subtle-foreground);
+
+  --color-ring: var(--ring);
+  --color-ring-subtle: var(--ring-subtle);
+
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+
+  --color-state-neutral-fg: var(--state-neutral-fg);
+  --color-state-neutral-bg: var(--state-neutral-bg);
+  --color-state-neutral-border: var(--state-neutral-border);
+
+  --color-state-success-fg: var(--state-success-fg);
+  --color-state-success-bg: var(--state-success-bg);
+  --color-state-success-border: var(--state-success-border);
+
+  --color-state-danger-fg: var(--state-danger-fg);
+  --color-state-danger-bg: var(--state-danger-bg);
+  --color-state-danger-border: var(--state-danger-border);
+
+  --color-state-uncertain-fg: var(--state-uncertain-fg);
+  --color-state-uncertain-bg: var(--state-uncertain-bg);
+  --color-state-uncertain-border: var(--state-uncertain-border);
+
+  --color-state-expired-fg: var(--state-expired-fg);
+  --color-state-expired-bg: var(--state-expired-bg);
+  --color-state-expired-border: var(--state-expired-border);
+
+  --color-state-parked-fg: var(--state-parked-fg);
+  --color-state-parked-bg: var(--state-parked-bg);
+  --color-state-parked-border: var(--state-parked-border);
+}
+
+/*
+ * Theme-invariant tokens: radius, fonts, type scale. Redeclaring Tailwind's
+ * own `--radius-sm` / `--radius-md` / `--font-sans` / `--font-mono` /
+ * `--text-*` keys overrides Tailwind's stock scale app-wide, which is the
+ * point — `rounded-sm` now literally means 2px everywhere, not Tailwind's
+ * default 0.125rem.
+ */
+@theme {
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  /* --radius-full (9999px) is already Tailwind's default; not redeclared. */
+
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono:
+    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo,
+    monospace;
+
+  --text-micro: 11px;
+  --text-micro--line-height: 16px;
+  --text-caption: 12px;
+  --text-caption--line-height: 18px;
+  --text-body: 13px;
+  --text-body--line-height: 20px;
+  --text-prose: 14px;
+  --text-prose--line-height: 21px;
+  --text-title-sm: 16px;
+  --text-title-sm--line-height: 24px;
+  --text-title: 20px;
+  --text-title--line-height: 28px;
+  --text-metric: 28px;
+  --text-metric--line-height: 34px;
+  --text-metric-lg: 40px;
+  --text-metric-lg--line-height: 44px;
+}
+
+@layer base {
+  :root {
+    /* §3.8 motion tokens. Not Tailwind-registered (no `duration-*` utility
+       needs them beyond the couple of components below) — used directly
+       via `var()` in the status wash and inline pending states. */
+    --dur-instant: 90ms;
+    --dur-fast: 150ms;
+    --dur-state: 240ms;
+    --dur-enter: 400ms;
+    --ease-out: cubic-bezier(0.2, 0, 0, 1);
+    --ease-in: cubic-bezier(0.4, 0, 1, 1);
+    --ease-linear: linear;
+  }
+
+  html {
+    letter-spacing: -0.011em;
+  }
+
+  /* §3.3: mono is the voice of data. tabular-nums + slashed-zero everywhere
+     JetBrains Mono is used — an operator tells `0` from `O` in a `cs_cuid()`
+     at 12px only because of the slash. */
+  .font-mono {
+    font-variant-numeric: tabular-nums slashed-zero;
+  }
+
+  /* §3.6: one focus-ring definition, every focusable element, no exceptions.
+     outline (not box-shadow) so it is never clipped by an ancestor's
+     `overflow: hidden` — a real failure mode in sticky table headers. */
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}
