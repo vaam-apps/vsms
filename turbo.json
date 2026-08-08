@@ -24,13 +24,30 @@
       "outputs": []
     },
     "typecheck": {
-      "dependsOn": ["build"],
       "outputs": []
     },
     "test": {
       "dependsOn": ["build"],
       "outputs": []
+    },
+    // packages/sms-client (T3) is generated at build time and gitignored
+    // (see .gitignore's comment there and GENERATING.md) — everything
+    // except its package.json. Turbo's default task hashing only looks at
+    // git-tracked (and untracked-but-not-ignored) files, so a regenerated
+    // src/ that happens to be gitignored is INVISIBLE to it by default:
+    // confirmed live — mutating a gitignored file under
+    // packages/sms-client/src and rerunning `turbo run build` served a
+    // stale `cache hit` with the old output, no rebuild at all. Declaring
+    // `inputs` explicitly overrides that default and forces turbo to hash
+    // these globs regardless of .gitignore, which is exactly what's
+    // needed: the generator must run before this task (see justfile's
+    // `client-gen`/CI's `js` job ordering), and every run after that has
+    // to be seen as a real content change, not silently served from a
+    // build made against a different schema.
+    "@vsms/sms-client#build": {
+      "outputs": ["dist/**"],
+      "inputs": ["src/**", "package.json", "tsconfig.json"]
     }
   },
-  "globalEnv": ["NODE_ENV", "SKIP_ENV_VALIDATION"]
+  "globalEnv": ["NODE_ENV", "SKIP_ENV_VALIDATION", "CRATESTACK_BIN"]
 }
