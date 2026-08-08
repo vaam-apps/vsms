@@ -1,0 +1,8 @@
+# A separate Cargo workspace, deliberately not a member of the root one
+# (see the root Cargo.toml's own `exclude` entry and examples/README.md).
+# This lets the example pick its own dependency versions and never shows
+# up in `cargo check --workspace`/`cargo test --workspace` run from the
+# repo root.
+[workspace]
+resolver = "3"
+members = ["sms-send"]

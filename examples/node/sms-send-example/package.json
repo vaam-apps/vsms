@@ -1,0 +1,16 @@
+{
+  "name": "@vsms-examples/sms-send",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runnable example: authenticate to vsms with private_key_jwt and send a message over real HTTP.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.mjs"
+  },
+  "dependencies": {
+    "jose": "^5.9.6"
+  }
+}

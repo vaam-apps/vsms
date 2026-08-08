@@ -1,0 +1,11 @@
+packages:
+  - "node/*"
+
+# Same trap the root pnpm-workspace.yaml documents (see AGENTS.md): pnpm 11
+# blocks postinstall scripts unless allowed here, and pnpm 10's
+# `onlyBuiltDependencies` key is silently ignored under pnpm 11 — it wants
+# `allowBuilds` (a map), not a list. No package under examples/node builds
+# a native dependency today, so this starts empty; add an entry here
+# rather than re-discovering the ERR_PNPM_IGNORED_BUILDS trap if one ever
+# does.
+allowBuilds: {}

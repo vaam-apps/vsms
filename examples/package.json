@@ -1,0 +1,6 @@
+{
+  "name": "vsms-examples",
+  "private": true,
+  "version": "0.0.0",
+  "description": "pnpm workspace root for the Node.js integration examples under examples/node/. Deliberately separate from the repo root's own pnpm workspace (see examples/README.md) — installing here never touches admin/'s or packages/*'s lockfile."
+}
