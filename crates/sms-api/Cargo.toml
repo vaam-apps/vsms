@@ -54,6 +54,8 @@ serde.workspace = true
 # out of it in `GatewayAuth::authenticate`.
 serde_json.workspace = true
 sha2.workspace = true
+# #134: HMAC-SHA256 for the keyed `msisdnHash`/`bodyHash` — see `pepper.rs`.
+hmac.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

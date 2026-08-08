@@ -6,6 +6,7 @@ use cratestack::axum::Router;
 use cratestack_codec_json::JsonCodec;
 
 use crate::auth::GatewayAuth;
+use crate::pepper::HashPepper;
 use crate::procedures::Procedures;
 use crate::rbac::{enforce_route_permission, RbacState, RoutePermission};
 use crate::schema;
@@ -50,18 +51,23 @@ const PROVIDER_WRITE_ROUTES: &[RoutePermission] = &[RoutePermission {
 /// `auth` validates every request against the OP's own published JWKS —
 /// see [`GatewayAuth`]'s own documentation for what it accepts and why.
 ///
+/// `pepper` is real secret material (#134) — see `pepper.rs`'s module doc
+/// for the scheme and the rotation consequence. `sms-gateway serve`'s CLI
+/// parsing rejects a missing or too-short pepper before this is ever
+/// called, so this function itself never needs to.
+///
 /// Wrapped in [`enforce_route_permission`] (Layer 2, #24) gating
 /// [`PROVIDER_WRITE_ROUTES`] — every other route passes through unchanged;
 /// see that constant's own doc and `rbac.rs`'s module doc for the full
 /// reasoning.
 // No `#[must_use]`: axum's `Router` already carries one, and doubling it is
 // what `clippy::double_must_use` objects to.
-pub fn router(db: schema::Cratestack, auth: GatewayAuth) -> Router {
+pub fn router(db: schema::Cratestack, auth: GatewayAuth, pepper: HashPepper) -> Router {
     let rbac_state = RbacState {
         auth: auth.clone(),
         requirements: PROVIDER_WRITE_ROUTES,
     };
-    schema::axum::router(db, Procedures::new(), JsonCodec, auth)
+    schema::axum::router(db, Procedures::new(pepper), JsonCodec, auth)
         .layer(from_fn_with_state(rbac_state, enforce_route_permission))
 }
 
@@ -113,6 +119,7 @@ mod tests {
             "https://auth.invalid/jwks.json".to_owned(),
             "https://auth.invalid".to_owned(),
         );
-        let _router = router(db, auth);
+        let pepper = HashPepper::new("a".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
+        let _router = router(db, auth, pepper);
     }
 }

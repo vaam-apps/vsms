@@ -45,7 +45,7 @@ fn send_message_can_set_every_field_it_owns() {
         // Recipient. `msisdn` is @pii, which redacts audit snapshots only —
         // it does not stop the API returning the value.
         msisdn: "+237677123456".to_owned(),
-        msisdnHash: "sha256:...".to_owned(),
+        msisdnHash: "hmac-sha256-v1:...".to_owned(),
 
         // The four §12 calls out by name: a `@default` on any of these would
         // make `sendMessage` unable to honour what the caller asked for.
@@ -59,7 +59,7 @@ fn send_message_can_set_every_field_it_owns() {
 
         // Body and its encoding verdict, computed pre-persistence.
         body: Some("Votre code est 4821".to_owned()),
-        bodyHash: "sha256:...".to_owned(),
+        bodyHash: "hmac-sha256-v1:...".to_owned(),
         bodyLength: 19,
         encoding: Encoding::gsm7,
         segments: 1,

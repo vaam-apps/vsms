@@ -47,7 +47,7 @@ use rsa::traits::PublicKeyParts;
 use rsa::RsaPrivateKey;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack};
-use sms_api::GatewayAuth;
+use sms_api::{GatewayAuth, HashPepper};
 
 fn sys() -> CoolContext {
     Principal {
@@ -317,7 +317,12 @@ async fn spawn_test_server(db: &Cratestack) -> (String, usize) {
     spawn_key_refresh(op_state.clone(), db.clone(), sys(), issuer.clone());
 
     let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer.clone());
-    let app = sms_api::router(db.clone(), auth).merge(op_router(op_state));
+    // #134: this suite never sends a message, so — like
+    // `provision_app_client_live_postgres.rs` — any pepper over the
+    // minimum length works.
+    let pepper = HashPepper::new("oidc-flow-live-test-pepper-well-over-the-minimum-length")
+        .expect("test pepper meets HashPepper::new's minimum length");
+    let app = sms_api::router(db.clone(), auth, pepper).merge(op_router(op_state));
 
     tokio::spawn(async move {
         axum::serve(listener, app.into_make_service())

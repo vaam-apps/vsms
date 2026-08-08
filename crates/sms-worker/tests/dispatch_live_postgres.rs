@@ -281,7 +281,7 @@ async fn seed_message(db: &Cratestack, app_id: &str, max_attempts: i64) -> Messa
             clientRef: None,
             idempotencyKey: Some(format!("dispatch-test-{}", unique_suffix())),
             msisdn: "+237677123456".to_owned(),
-            msisdnHash: format!("sha256:dispatch-test-{}", unique_suffix()),
+            msisdnHash: format!("hmac-sha256-v1:dispatch-test-{}", unique_suffix()),
             operator: OperatorCode::mtn,
             senderIdValue: "VYMALO".to_owned(),
             class: MessageClass::otp,
@@ -292,7 +292,7 @@ async fn seed_message(db: &Cratestack, app_id: &str, max_attempts: i64) -> Messa
             // silently drops out of a small budget.
             priority: 1000,
             body: Some("dispatch loop test".to_owned()),
-            bodyHash: "sha256:dispatch-test".to_owned(),
+            bodyHash: "hmac-sha256-v1:dispatch-test".to_owned(),
             bodyLength: 19,
             encoding: Encoding::gsm7,
             segments: 1,

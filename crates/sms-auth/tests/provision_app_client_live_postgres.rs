@@ -58,7 +58,7 @@ use sms_api::schema::{
     self, procedures::provision_app_client, procedures::ProcedureRegistry, ClientAuthMethod,
     Cratestack,
 };
-use sms_api::Procedures;
+use sms_api::{HashPepper, Procedures};
 
 /// #102, found live: on a genuinely fresh database, this binary's own
 /// tests — run concurrently by Rust's default multi-threaded test
@@ -90,6 +90,15 @@ fn sys() -> CoolContext {
         app_id: String::new(),
     }
     .into_context()
+}
+
+/// #134: `provision_app_client` never hashes anything — only `sendMessage`
+/// does — so this suite has no stake in *which* pepper `Procedures` holds,
+/// only that it holds a valid one. Any fixed value over the minimum length
+/// works.
+fn test_pepper() -> HashPepper {
+    HashPepper::new("provision-app-client-live-postgres-test-pepper-over-the-minimum")
+        .expect("test pepper meets HashPepper::new's minimum length")
 }
 
 fn unique_suffix() -> String {
@@ -246,7 +255,7 @@ async fn provisioning_persists_linked_app_client_and_oauth_client_rows() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app = seed_app(&db).await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
 
     let result = procedures
         .provision_app_client(
@@ -331,7 +340,7 @@ async fn the_returned_private_key_builds_an_assertion_the_op_accepts() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app = seed_app(&db).await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
     let issuer = spawn_token_endpoint(&db).await;
 
     let result = procedures

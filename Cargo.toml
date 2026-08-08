@@ -104,6 +104,11 @@ rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+# #134: keys `sha2` for `Procedures`'s `msisdnHash`/`bodyHash` HMAC under a
+# server-held pepper. Already present in Cargo.lock transitively (0.12.1,
+# via authkestra's `rust_crypto` stack) — this doesn't add a second digest
+# tree, just names the dependency directly for the crate that now calls it.
+hmac = "0.12"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util = "0.7"

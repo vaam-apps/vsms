@@ -38,12 +38,14 @@ pub mod auth;
 mod cache;
 pub mod dlr;
 pub mod errors;
+pub mod pepper;
 pub mod procedures;
 pub mod rbac;
 pub mod router;
 
 pub use auth::{GatewayAuth, Principal, PrincipalKind};
 pub use errors::{is_illegal_transition, map_database_error};
+pub use pepper::{hmac_sha256_hex, HashPepper, PepperError};
 pub use procedures::Procedures;
 pub use rbac::require_permission;
 pub use router::{route_table, router};

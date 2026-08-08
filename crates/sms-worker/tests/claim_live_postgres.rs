@@ -253,7 +253,7 @@ async fn seed_message(
             clientRef: None,
             idempotencyKey: Some(format!("claim-test-{}", unique_suffix())),
             msisdn: "+237677123456".to_owned(),
-            msisdnHash: "sha256:claim-test".to_owned(),
+            msisdnHash: "hmac-sha256-v1:claim-test".to_owned(),
             operator: OperatorCode::mtn,
             senderIdValue: "VYMALO".to_owned(),
             class: MessageClass::otp,
@@ -267,7 +267,7 @@ async fn seed_message(
             // before this fix.
             priority: 1000,
             body: Some("claim loop test".to_owned()),
-            bodyHash: "sha256:claim-test".to_owned(),
+            bodyHash: "hmac-sha256-v1:claim-test".to_owned(),
             bodyLength: 16,
             encoding: Encoding::gsm7,
             segments: 1,

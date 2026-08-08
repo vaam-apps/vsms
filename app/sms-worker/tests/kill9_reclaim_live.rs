@@ -165,7 +165,7 @@ async fn seed_message(db: &Cratestack, app_id: &str) -> Message {
             clientRef: None,
             idempotencyKey: Some(format!("kill9-test-{}", unique_suffix())),
             msisdn: "+237677123456".to_owned(),
-            msisdnHash: format!("sha256:kill9-test-{}", unique_suffix()),
+            msisdnHash: format!("hmac-sha256-v1:kill9-test-{}", unique_suffix()),
             operator: OperatorCode::mtn,
             senderIdValue: "VYMALO".to_owned(),
             class: MessageClass::otp,
@@ -175,7 +175,7 @@ async fn seed_message(db: &Cratestack, app_id: &str) -> Message {
             // earlier runs left claimable.
             priority: 1000,
             body: Some("kill9 reclaim test".to_owned()),
-            bodyHash: "sha256:kill9-test".to_owned(),
+            bodyHash: "hmac-sha256-v1:kill9-test".to_owned(),
             bodyLength: 19,
             encoding: Encoding::gsm7,
             segments: 1,
