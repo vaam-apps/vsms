@@ -2,97 +2,127 @@
 
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
+import { Button } from "../primitives/button";
 import { Textarea } from "../primitives/textarea";
 
 /**
- * Mirrors `compose.preview`'s expected shape (architecture doc §5.3's
- * `preview: PreviewMessageResult | null`). Defined locally rather than
- * imported — `@vsms/ui` has zero internal dependencies (T6 package rule),
- * so it cannot depend on `@vsms/api`'s generated types. This type is a
- * best-effort mirror pending the real tRPC procedure landing (T11); when
- * it does, that call site owns keeping the two in sync.
+ * Mirrors `@vsms/gateway`'s real `PreviewResult` (`packages/gateway/src/client.ts`,
+ * transcribed from `schema/schema.cstack`'s `PreviewResult` type, verified
+ * live against `crates/sms-api/src/procedures.rs::preview`). Defined
+ * locally, as a deliberate subset, rather than imported — `@vsms/ui` has
+ * zero internal dependencies (T6 package rule), so it cannot depend on
+ * `@vsms/gateway`'s types. Callers may pass the full `PreviewResult`
+ * straight through; TypeScript's structural typing accepts the extra
+ * `operator`/`normalizedTo` fields it doesn't use.
+ *
+ * **`offending` is an array of the offending CHARACTERS, not byte or
+ * codepoint offsets.** An earlier revision of this component (and the
+ * architecture plan it was drafted from) assumed per-occurrence
+ * `{ offset, length }` flags — that was written before anyone read the
+ * real wire type. `crates/sms-api/src/procedures.rs::distinct_offending`
+ * collapses every occurrence to its first appearance, so twenty copies of
+ * `ç` arrive as one entry. Highlighting therefore matches characters
+ * against `value` directly (below), not positions.
  */
-export interface EncodingFlag {
-  /** UTF-16 code-unit offset into `value`. */
-  offset: number;
-  length: number;
-  char: string;
-  reason: string;
-  suggestion?: string;
-}
-
-export interface PreviewMessageResult {
-  charset: "gsm7" | "ucs2";
+export interface EncodingPreviewResult {
+  encoding: "gsm7" | "ucs2";
   segments: number;
-  charsUsed: number;
-  charsPerSegment: number;
-  flags: EncodingFlag[];
-  transliteration?: {
-    preview: string;
-    charset: "gsm7" | "ucs2";
-    segments: number;
-  };
+  length: number;
+  perSegment: number;
+  /** Distinct offending characters, first-occurrence order. */
+  offending: string[];
+  /** The transliterated body — present only when the body is UCS-2 *and*
+   * transliterating it would actually land it back in GSM-7
+   * (`sms_encoding::analyse`'s own doc: "`Some` only when ... transliteration
+   * would actually rescue it"). Applying it does not predict the resulting
+   * segment count here; the natural debounced re-preview after the body
+   * changes shows the real new numbers rather than this component guessing
+   * them. `| undefined` explicit, not just `?:` — `tsconfig.base.json`'s
+   * `exactOptionalPropertyTypes` would otherwise reject assigning the real
+   * `PreviewResult` (whose own `suggestion` is typed the same explicit way,
+   * per `@vsms/gateway/client.ts`'s own module doc) straight into this
+   * prop. */
+  suggestion?: string | undefined;
 }
 
 export interface EncodingPreviewProps {
   value: string;
   onChange: (value: string) => void;
-  preview: PreviewMessageResult | null;
+  onBlur?: () => void;
+  /** Forwarded to the underlying `<textarea>` for label association
+   * (`<Label htmlFor>`) and `react-hook-form`'s `Controller` wiring. */
+  id?: string;
+  name?: string;
+  "aria-invalid"?: boolean;
+  preview: EncodingPreviewResult | null;
+  /** A preview request is in flight. Dims the stat line rather than
+   * clearing it — a flicker on live-typing feedback is worse than a
+   * 200ms-stale number (design doc §5.3). */
   isLoading?: boolean;
-  transliterateEnabled?: boolean;
-  onApplyTransliteration?: () => void;
-  unitCostXaf?: number;
+  /** The last preview request failed (most often: `to` doesn't parse as a
+   * recipient yet). `preview` still holds the last successful result;
+   * this only marks it as no longer current. */
+  isStale?: boolean;
+  onApplySuggestion?: () => void;
+  className?: string;
 }
 
 /**
- * Composer support component (#51) — makes `sms-encoding` visible to a
- * human. Deliberately a lighter build than the full design-doc spec (§5.3
- * names it, alongside `StateTimeline`/`LiveRow`, as one the data shape
- * hasn't settled for yet, so a correct-but-simpler stub is expected here):
+ * The composer's (#51) encoding surface — makes `sms-encoding` visible to a
+ * human before a `ç` silently doubles a send's cost. Three bands: the
+ * editor, an annotated read-only line calling out offending characters,
+ * and a status line (charset · segments · units).
  *
- * the design doc wants an absolutely-positioned highlight layer sitting
- * exactly behind the live-editable textarea, matching its font metrics
- * pixel-for-pixel — "a real implementation trap". Without a live composer
- * screen to verify that alignment against, this renders the flagged
- * characters in a separate, read-only annotated line below the editor
- * instead of an overlay. Same information, same character-level
- * precision, no risk of a silently-misaligned overlay. Swap in the overlay
- * once #51's real composer exists to verify metrics against.
+ * Deliberately lighter than the design doc's full `EncodingPreview` spec in
+ * one respect, kept from the component's original build: the design doc
+ * wants an absolutely-positioned highlight layer sitting pixel-for-pixel
+ * behind the live-editable textarea. That alignment is "a real
+ * implementation trap" per the doc's own words, and a misaligned overlay is
+ * worse than no overlay — a separate annotated line below the editor
+ * carries the same character-level information with no alignment risk.
  */
 export function EncodingPreview({
   value,
   onChange,
+  onBlur,
+  id,
+  name,
+  "aria-invalid": ariaInvalid,
   preview,
   isLoading = false,
-  transliterateEnabled = false,
-  onApplyTransliteration,
-  unitCostXaf,
+  isStale = false,
+  onApplySuggestion,
+  className,
 }: EncodingPreviewProps) {
-  const isUcs2 = preview?.charset === "ucs2";
-  const showRemedy =
-    transliterateEnabled &&
-    preview?.transliteration != null &&
-    (preview.transliteration.charset !== preview.charset ||
-      preview.transliteration.segments !== preview.segments);
+  const isUcs2 = preview?.encoding === "ucs2";
+  const offendingSet = new Set(preview?.offending ?? []);
+  const dimmed = isLoading || isStale;
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className={cn("flex flex-col gap-2", className)}>
       <Textarea
+        id={id}
+        name={name}
+        aria-invalid={ariaInvalid}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        rows={4}
+        onBlur={onBlur}
+        rows={5}
         className="font-mono text-body"
         placeholder="Message body…"
       />
 
-      {preview != null && preview.flags.length > 0 && (
+      {offendingSet.size > 0 && (
         <p className="rounded-sm bg-base-100 px-2 py-1.5 font-mono text-[12px] text-subtle-foreground leading-relaxed">
-          {renderAnnotated(value, preview.flags)}
+          {renderAnnotated(value, offendingSet)}
         </p>
       )}
 
       <div
-        className={cn("flex items-center gap-2 font-mono text-caption", isLoading && "opacity-60")}
+        className={cn(
+          "flex flex-wrap items-center gap-2 font-mono text-caption",
+          dimmed && "opacity-60",
+        )}
       >
         <span
           className={cn(
@@ -113,57 +143,75 @@ export function EncodingPreview({
         <span className="text-muted-foreground">
           {preview == null
             ? "—"
-            : `${preview.charsUsed}/${preview.charsPerSegment * preview.segments} chars`}
+            : `${preview.length}/${preview.perSegment * preview.segments} chars`}
         </span>
-        {unitCostXaf != null && preview != null && (
-          <>
-            <span className="text-muted-foreground">·</span>
-            <span className="text-muted-foreground">~{unitCostXaf * preview.segments} FCFA</span>
-          </>
-        )}
+        {isStale && <span className="text-state-uncertain-fg">· stale</span>}
       </div>
 
-      {showRemedy && preview?.transliteration != null && (
+      {offendingSet.size > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-caption text-subtle-foreground">Not in GSM-7:</span>
+          {[...offendingSet].map((ch) => (
+            <span
+              key={ch}
+              title={`U+${(ch.codePointAt(0) ?? 0)
+                .toString(16)
+                .toUpperCase()
+                .padStart(4, "0")} — not in the GSM-7 default alphabet, forces UCS-2`}
+              className="rounded-sm border border-state-uncertain-border bg-state-uncertain-bg px-1.5 py-0.5 font-mono text-[12px] text-state-uncertain-fg"
+            >
+              {ch}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {preview?.suggestion != null && (
         <div className="flex items-center justify-between gap-3 rounded-sm border border-edge bg-surface-2 px-3 py-2">
           <p className="text-caption text-muted-foreground">
-            Transliteration would drop this to{" "}
-            <span className="font-mono text-foreground">
-              {preview.transliteration.charset.toUpperCase()} · {preview.transliteration.segments}{" "}
-              seg
-            </span>
-            .
+            Removing accents would fit this in{" "}
+            <span className="font-mono text-foreground">GSM-7</span>.
           </p>
-          <button
-            type="button"
-            onClick={onApplyTransliteration}
-            className="shrink-0 rounded-sm border border-edge-strong px-2 py-1 text-caption text-foreground hover:bg-surface-3"
-          >
+          <Button type="button" variant="secondary" size="sm" onClick={onApplySuggestion}>
             Apply
-          </button>
+          </Button>
         </div>
       )}
     </div>
   );
 }
 
-function renderAnnotated(value: string, flags: EncodingFlag[]) {
-  const sorted = [...flags].sort((a, b) => a.offset - b.offset);
+/** Wraps every occurrence of a character in `offending` in a `<mark>`,
+ * iterating `value` by Unicode code point (`for...of` on a string, not
+ * index access) so a character outside the BMP is never split across a
+ * surrogate pair. */
+function renderAnnotated(value: string, offending: Set<string>): ReactNode[] {
   const parts: ReactNode[] = [];
-  let cursor = 0;
-  for (const flag of sorted) {
-    if (flag.offset > cursor) parts.push(value.slice(cursor, flag.offset));
-    const chunk = value.slice(flag.offset, flag.offset + flag.length);
-    parts.push(
-      <mark
-        key={`${flag.offset}-${flag.length}`}
-        title={flag.suggestion != null ? `${flag.reason} — try "${flag.suggestion}"` : flag.reason}
-        className="rounded-[1px] bg-transparent text-state-uncertain-fg underline decoration-2 decoration-state-uncertain-fg underline-offset-2"
-      >
-        {chunk}
-      </mark>,
-    );
-    cursor = flag.offset + flag.length;
+  let buffer = "";
+  let key = 0;
+
+  const flush = () => {
+    if (buffer !== "") {
+      parts.push(buffer);
+      buffer = "";
+    }
+  };
+
+  for (const ch of value) {
+    if (offending.has(ch)) {
+      flush();
+      parts.push(
+        <mark
+          key={`${key++}-${ch}`}
+          className="rounded-[1px] bg-transparent text-state-uncertain-fg underline decoration-2 decoration-state-uncertain-fg underline-offset-2"
+        >
+          {ch}
+        </mark>,
+      );
+    } else {
+      buffer += ch;
+    }
   }
-  if (cursor < value.length) parts.push(value.slice(cursor));
+  flush();
   return parts;
 }
