@@ -130,6 +130,20 @@ Five things about it are load-bearing, each learned by something breaking:
 
 `ca653a1` (#102)'s per-binary `tokio::sync::Mutex` remains load-bearing on top of all this: tests *within* one binary still share that binary's database, and Postgres's own `pg_type` catalog race on first use is what it exists to serialize. **Two suites never picked that pattern up** — `rbac_layer2_live_postgres.rs` (added by #112 ten hours *after* `ca653a1` landed) and `sms-worker/tests/live_postgres.rs` (predating it, shielded only by being unrun) — and both flaked in CI within hours of #118 turning the lights on. Any new live suite must take the mutex.
 
+## The demo runs, and the deployment exists — both landed 2026-08-08
+
+**`just demo` brings up the whole system and a message reaches `delivered`.** Proven end to end twice, once from a cold reset, including a send from the admin console's composer showing up on `/messages` — cross-checked three ways (the UI, the Postgres row, and `sms-fake-orange`'s own log for that exact message id). Three things had to land first, and each was a real hole rather than a packaging exercise:
+
+- **`#134`** — `msisdnHash`/`bodyHash` were plain unkeyed `SHA-256`, reversible in seconds over Cameroon's ~10^7 numbering space, while `docs/architecture.md` had always claimed HMAC-under-a-pepper. Now `hmac-sha256-v1:<hex>` keyed by `SMS_HASH_PEPPER` (`crates/sms-api/src/pepper.rs`). `Procedures::default()` is **deleted** so no construction site can silently get an unpeppered one, and the pepper is validated before the pool connects. Rotation does **not** rehash stored rows; see that module's doc.
+- **`#137`** — nothing could produce an HTTP-usable credential. `provisionAppClient` needs `owner`/`admin`; `GatewayAuth` only ever mints `role: "app"`. `sms-gateway provision-client` closes it, writing `privateKeyPem` once with `O_EXCL` + `0600`. Its live test spawns a genuinely separate `serve` process and completes a real `private_key_jwt` exchange — the thing `send_test_message.rs` never proved, since the `AppClient` it writes has no `OauthClient.jwks`.
+- **`#138`** — `crates/sms-fake-orange` had no binary target, so nothing could demo past `routed`. `app/sms-fake-orange` runs it as a process on a fixed port. Note `FaultPolicy::Scripted` *silently degrades to a bare accept with no DLR* when its queue empties — fine for a test that scripts exactly as many entries as it expects, wrong for a long-lived server, which is why `FaultPolicy::Always` exists.
+
+**`#139` built the deployment**: three non-root glibc Dockerfiles (**not** musl — `AGENTS.md`'s own note says `rustls-no-provider` panics at `reqwest::Client::new()` without a `CryptoProvider` installed in `main`, and that path is unverified), a `deploy/` compose stack with a Caddy edge, an advisory-lock-guarded one-shot migrate job that **applies but never regenerates** migrations, `GET /healthz` on the gateway, and a GHCR release workflow on `v*.*.*`. Unverified and worth not assuming: real ACME issuance (tested with `tls internal` only), the GHCR publish path (no tag pushed at the time), and concurrent `migrate` racing under load.
+
+**Two corrections to this file, both found by running the system rather than reading it.** First: the M1 paragraph above used to say the gateway "fails loudly on the first `/token` request if no active key exists, not at process start". **That was wrong** — `serve` calls `load_signing_keys(...)?` before binding the listener, so it exits at startup. It matters for orchestration: anything that waits for the gateway to be healthy before rotating a key deadlocks permanently, which is why the deploy runbook uses `docker compose run --rm` rather than `exec`. Second: `rust-version` claimed `1.85` while the committed `Cargo.lock` needs `1.88`; no CI job ever checked the claim, so it drifted silently.
+
+One more of the same shape, caught wiring a container `HEALTHCHECK`: `admin/app/api/health` was behind Basic Auth, so under `DASHBOARD_AUTH=basic` — the only mode `NODE_ENV=production` accepts — an unauthenticated liveness probe got a permanent `401` and the container sat `unhealthy` while the process was fine.
+
 ## Invariants that fail the build rather than production
 
 Three silent failure modes are now loud. Do not delete these without reading why they exist:
@@ -261,6 +275,13 @@ just jobs=8 check   # raise the concurrency cap on a big machine
 # Don't run two of these concurrently: the container name is global.
 just test-live
 just test-live-clean   # remove the harness container (label-scoped; never prune)
+
+# the full demo, one command: scratch Postgres, migrations, a signing key, a
+# freshly provisioned client, sms-fake-orange, the gateway, the worker, and the
+# admin console. Cleanup removes only the container it created, by exact name.
+just demo
+just demo-status
+just demo-down
 
 # apply migrations to a scratch database by hand — still what the psql-side
 # CI job does; NOT needed for the Rust live suites any more
