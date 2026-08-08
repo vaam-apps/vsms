@@ -9,7 +9,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@trpc/server": "11.18.0",
+    "@vsms/api": "workspace:*",
     "@vsms/env": "workspace:*",
+    "@vsms/gateway": "workspace:*",
+    "@vsms/hooks": "workspace:*",
     "@vsms/ui": "workspace:*",
     "next": "15.5.23",
     "react": "19.2.8",

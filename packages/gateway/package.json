@@ -1,0 +1,22 @@
+{
+  "name": "@vsms/gateway",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vsms/env": "workspace:*",
+    "jose": "6.2.8",
+    "server-only": "0.0.1",
+    "undici": "8.10.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "5.9.3"
+  }
+}

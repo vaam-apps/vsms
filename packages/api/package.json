@@ -1,0 +1,24 @@
+{
+  "name": "@vsms/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@trpc/server": "11.18.0",
+    "@vsms/env": "workspace:*",
+    "@vsms/gateway": "workspace:*",
+    "server-only": "0.0.1",
+    "superjson": "2.2.6",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "typescript": "5.9.3"
+  }
+}
