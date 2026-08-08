@@ -1,80 +1,128 @@
 "use client";
 
+// The composer (#51, T13) — the console's landing screen and its flagship.
+// §3.3 of the architecture doc, in one sentence: catch a `ç` before it
+// silently doubles the segment count of a send to 50,000 recipients.
+//
+// `to` and `body` feed a debounced `compose.preview` query as the operator
+// types, rendered through `@vsms/ui`'s `EncodingPreview`; submitting calls
+// `compose.send`, which triggers a real `sendMessage` against the gateway
+// on the console's own machine credential (`SMS_CONSOLE_CLIENT_ID` —
+// nothing here proves who the human at the keyboard was, see the
+// architecture plan's DECISIONS §1).
+
+import { zodResolver } from "@hookform/resolvers/zod";
+import { trpc } from "@vsms/hooks";
 import {
-  Badge,
   Button,
   Card,
   CardBody,
   CardHeader,
-  CommandMenu,
-  CommandMenuEmpty,
-  CommandMenuGroup,
-  CommandMenuInput,
-  CommandMenuItem,
-  CommandMenuList,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-  Drawer,
-  DrawerClose,
-  DrawerContent,
-  DrawerTrigger,
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-  type EncodingFlag,
   EncodingPreview,
-  InlineEmptyState,
+  type EncodingPreviewResult,
   Input,
   Label,
-  LiveRow,
-  MESSAGE_STATES,
-  type MessageState,
-  PayloadInspector,
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Separator,
-  Skeleton,
-  StateTimeline,
   StatusPill,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-  Textarea,
-  Toaster,
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-  toast,
 } from "@vsms/ui";
-import { type ReactNode, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import { Controller, useForm } from "react-hook-form";
+import { z } from "zod";
 
-const QUIET_STATES = MESSAGE_STATES.filter((s) =>
-  ["accepted", "queued", "routed", "submitted", "delivered", "cancelled"].includes(s),
-);
-const LOUD_STATES = MESSAGE_STATES.filter((s) =>
-  ["uncertain", "undelivered", "failed", "expired", "rejected"].includes(s),
-);
+const MESSAGE_CLASSES = ["otp", "transactional", "notification", "marketing"] as const;
+
+const MESSAGE_CLASS_LABELS: Record<(typeof MESSAGE_CLASSES)[number], string> = {
+  otp: "OTP",
+  transactional: "Transactional",
+  notification: "Notification",
+  marketing: "Marketing",
+};
+
+// Mirrors `packages/api/src/routers/compose.ts`'s `sendInput` — read, not
+// guessed. `to` and `body` are the only fields `sendInput` actually
+// requires; everything else is optional there and stays optional here.
+// Client-side bounds mirror the schema's own stored-value constraints
+// (`Message.senderIdValue @length(min: 3, max: 11)`, `Message.msisdn
+// @length(min: 12, max: 15)`) as a fast-fail UX nicety — `sms-msisdn`'s
+// real Cameroon-specific parsing is server-side and is the actual source
+// of truth; a value that passes here can still come back 422.
+const composerSchema = z.object({
+  to: z
+    .string()
+    .trim()
+    .min(1, "Enter a recipient number")
+    .max(20, "That's too long for a phone number")
+    .regex(/^[+0-9 ]+$/, "Digits, spaces and a leading + only"),
+  body: z.string().trim().min(1, "Message body is required"),
+  senderId: z
+    .string()
+    .trim()
+    .max(11, "Sender ids are 3–11 characters")
+    .refine((v) => v === "" || v.length >= 3, "Sender ids are 3–11 characters")
+    .optional(),
+  class: z.enum(MESSAGE_CLASSES),
+  clientRef: z.string().trim().max(120, "Keep it under 120 characters").optional(),
+  scheduledAt: z.string().optional(),
+  validityMinutes: z
+    .string()
+    .trim()
+    .refine((v) => v === "" || /^\d+$/.test(v), "Whole minutes only")
+    .optional(),
+});
+
+type ComposerFormValues = z.infer<typeof composerSchema>;
+
+const DEFAULT_VALUES: ComposerFormValues = {
+  to: "",
+  body: "",
+  senderId: "",
+  class: "transactional",
+  clientRef: "",
+  scheduledAt: "",
+  validityMinutes: "",
+};
+
+const COMPOSER_FIELDS = [
+  "to",
+  "body",
+  "senderId",
+  "class",
+  "clientRef",
+  "scheduledAt",
+  "validityMinutes",
+] as const;
+
+function isComposerField(field: string): field is (typeof COMPOSER_FIELDS)[number] {
+  return (COMPOSER_FIELDS as readonly string[]).includes(field);
+}
+
+/** 250ms per the task brief — long enough that a fast typist doesn't fire
+ * a query per keystroke, short enough that the preview still reads as
+ * "live." */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timeout = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timeout);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+/** Only include `to` in the preview call once it looks like an attempted
+ * number, not a fragment of one — `previewMessage` validates a supplied
+ * `to` as a real Cameroon mobile (`Msisdn::parse_mobile`) and 422s the
+ * *whole call* if it doesn't parse, which would otherwise blank out the
+ * encoding stats every keystroke while the operator is still typing the
+ * recipient. Once it looks complete, a real invalid number still 422s —
+ * `isStale` below is what surfaces that, keeping the last good encoding
+ * numbers on screen rather than clearing them. */
+function looksLikeAttemptedMsisdn(raw: string): boolean {
+  return raw.replace(/\D/g, "").length >= 8;
+}
 
 function ThemeToggle() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -91,475 +139,285 @@ function ThemeToggle() {
   }
 
   return (
-    <Button variant="secondary" size="sm" onClick={flip}>
+    <Button variant="secondary" size="sm" onClick={flip} type="button">
       {theme === "dark" ? "Switch to light" : "Switch to dark"}
     </Button>
   );
 }
 
-function Section({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="flex flex-col gap-3">
-      <div>
-        <h2 className="font-medium text-foreground text-title-sm">{title}</h2>
-        {description != null && (
-          <p className="mt-1 text-caption text-muted-foreground">{description}</p>
-        )}
-      </div>
-      {children}
-    </section>
+export default function ComposerPage() {
+  const form = useForm<ComposerFormValues>({
+    resolver: zodResolver(composerSchema),
+    defaultValues: DEFAULT_VALUES,
+    mode: "onBlur",
+  });
+
+  const toValue = form.watch("to");
+  const bodyValue = form.watch("body");
+  const debouncedTo = useDebouncedValue(toValue, 250);
+  const debouncedBody = useDebouncedValue(bodyValue, 250);
+  const previewTo = looksLikeAttemptedMsisdn(debouncedTo) ? debouncedTo : undefined;
+
+  const previewQuery = trpc.compose.preview.useQuery(
+    { body: debouncedBody, to: previewTo },
+    {
+      enabled: debouncedBody.trim().length > 0,
+      placeholderData: (prev) => prev,
+      retry: false,
+    },
   );
-}
 
-function StatusPillGallery() {
-  const [grayscale, setGrayscale] = useState(false);
+  const sendMutation = trpc.compose.send.useMutation({
+    onSuccess: () => {
+      form.reset(DEFAULT_VALUES);
+    },
+    onError: (error) => {
+      const fieldErrors = error.data?.fieldErrors;
+      if (fieldErrors == null) return;
+      for (const [field, messages] of Object.entries(fieldErrors)) {
+        if (isComposerField(field) && messages[0] != null) {
+          form.setError(field, { type: "server", message: messages[0] });
+        }
+      }
+    },
+  });
+
+  function applySuggestion() {
+    const suggestion = previewQuery.data?.suggestion;
+    if (suggestion != null) {
+      form.setValue("body", suggestion, { shouldDirty: true, shouldTouch: true });
+    }
+  }
+
+  function onSubmit(values: ComposerFormValues) {
+    sendMutation.mutate({
+      to: values.to,
+      body: values.body,
+      senderId: values.senderId === "" ? undefined : values.senderId,
+      class: values.class,
+      clientRef: values.clientRef === "" ? undefined : values.clientRef,
+      scheduledAt:
+        values.scheduledAt === "" || values.scheduledAt == null
+          ? undefined
+          : new Date(values.scheduledAt).toISOString(),
+      validityMinutes:
+        values.validityMinutes === "" || values.validityMinutes == null
+          ? undefined
+          : Number(values.validityMinutes),
+    });
+  }
+
+  // `placeholderData: (prev) => prev` (below) intentionally keeps showing
+  // the last successful result across a query-key change — that's what
+  // makes an in-flight retype not blank the stats (design doc: "a flicker
+  // ... is worse than a stale number"). But it does that unconditionally,
+  // including once the body/recipient is genuinely empty again (e.g. right
+  // after a successful send resets the form) — without this guard the
+  // encoding stats and "Normalises to" line would keep showing the
+  // *previous* message's numbers forever, which reads as a bug, not as
+  // staleness. Gate on the live input, not on `previewQuery.data`, so an
+  // empty field always means an empty preview.
+  const encodingPreview: EncodingPreviewResult | null =
+    debouncedBody.trim().length > 0 ? (previewQuery.data ?? null) : null;
+  const showRecipientStatus = debouncedTo.trim().length > 0 && previewQuery.data != null;
+  const hasFieldErrors = sendMutation.error?.data?.fieldErrors != null;
+  const generalError = sendMutation.isError && !hasFieldErrors ? sendMutation.error.message : null;
 
   return (
-    <Section
-      title="Status system — eleven states"
-      description="Every state messages_state_enum_check can produce, rendered in its natural (§4.5) attention treatment. delivered carries the owner's green-pill override; the rest of the ladder is unchanged."
-    >
-      <label className="flex w-fit items-center gap-2 text-caption text-muted-foreground">
-        <input
-          type="checkbox"
-          checked={grayscale}
-          onChange={(e) => setGrayscale(e.target.checked)}
-          className="checkbox checkbox-sm"
-        />
-        Accessibility check: render at grayscale(1) — all eleven must stay distinguishable (§4.6)
-      </label>
-      <div className={grayscale ? "grayscale" : undefined}>
-        <div className="flex flex-col gap-4">
-          <div>
-            <p className="mb-2 text-micro text-subtle-foreground tracking-[0.03em]">
-              Quiet — on track / uneventful terminal
-            </p>
-            <div className="flex flex-wrap gap-3">
-              {QUIET_STATES.map((s) => (
-                <StatusPill key={s} state={s} showLiteral />
-              ))}
-            </div>
-          </div>
-          <div>
-            <p className="mb-2 text-micro text-subtle-foreground tracking-[0.03em]">
-              Loud — needs a human
-            </p>
-            <div className="flex flex-wrap gap-3">
-              {LOUD_STATES.map((s) => (
-                <StatusPill key={s} state={s} showLiteral />
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
-    </Section>
-  );
-}
-
-function ButtonGallery() {
-  return (
-    <Section
-      title="Button"
-      description="daisyUI's btn class; no success/warning variant on purpose — those hues are status-only (§1.3)."
-    >
-      <div className="flex flex-wrap items-center gap-3">
-        <Button variant="primary">Primary</Button>
-        <Button variant="secondary">Secondary</Button>
-        <Button variant="ghost">Ghost</Button>
-        <Button variant="destructive">Destructive</Button>
-        <Button variant="primary" size="sm">
-          Small
-        </Button>
-        <Button variant="secondary" disabled>
-          Disabled
-        </Button>
-      </div>
-    </Section>
-  );
-}
-
-function FormGallery() {
-  return (
-    <Section title="Inputs, textarea, select, label, badge, separator">
-      <div className="grid max-w-xl grid-cols-2 gap-4">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="gallery-input">Sender ID</Label>
-          <Input id="gallery-input" placeholder="VSMS-OTP" />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="gallery-select">Environment</Label>
-          <Select defaultValue="staging">
-            <SelectTrigger id="gallery-select">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="staging">Staging</SelectItem>
-              <SelectItem value="production">Production</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="col-span-2 flex flex-col gap-1.5">
-          <Label htmlFor="gallery-textarea">Message body</Label>
-          <Textarea id="gallery-textarea" rows={3} placeholder="Votre code est 482913." />
-        </div>
-      </div>
-      <div className="flex items-center gap-2">
-        <Badge>orange-cm</Badge>
-        <Badge variant="outline">worker-2</Badge>
-        <Separator orientation="vertical" className="h-4" />
-        <Badge>staging</Badge>
-      </div>
-    </Section>
-  );
-}
-
-const DEMO_ROWS: Array<{ id: string; state: MessageState; recipient: string; version: number }> = [
-  { id: "cs_msg_001", state: "delivered", recipient: "+237 6 77 12 34 56", version: 3 },
-  { id: "cs_msg_002", state: "uncertain", recipient: "+237 6 91 22 10 09", version: 2 },
-  { id: "cs_msg_003", state: "queued", recipient: "+237 6 55 40 18 77", version: 1 },
-];
-
-function TableGallery() {
-  const [tick, setTick] = useState(0);
-  return (
-    <Section
-      title="Table + LiveRow"
-      description="Status column first (§6.4). Click the button to trigger a 240ms wash on the first row, as if its state had just changed — nothing else in the row moves."
-    >
-      <Button variant="secondary" size="sm" onClick={() => setTick((t) => t + 1)}>
-        Simulate a state change on row 1
-      </Button>
-      <Card>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Status</TableHead>
-              <TableHead>Recipient</TableHead>
-              <TableHead>Id</TableHead>
-              <TableHead align="end">Version</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {DEMO_ROWS.map((row, i) => (
-              <LiveRow key={row.id} washTrigger={i === 0 ? tick : row.version} washHue="success">
-                <TableCell>
-                  <StatusPill state={row.state} />
-                </TableCell>
-                <TableCell mono>{row.recipient}</TableCell>
-                <TableCell mono>{row.id}</TableCell>
-                <TableCell align="end" mono>
-                  {row.version}
-                </TableCell>
-              </LiveRow>
-            ))}
-          </TableBody>
-        </Table>
-      </Card>
-      <InlineEmptyState
-        message="No webhook attempts match the current filters."
-        action={{ label: "Clear filters", onClick: () => {} }}
-      />
-      <div className="flex flex-col gap-1">
-        <p className="text-caption text-muted-foreground">Loading skeleton (static, no shimmer):</p>
-        <Skeleton className="h-10 w-full" />
-        <Skeleton className="h-10 w-full" />
-      </div>
-    </Section>
-  );
-}
-
-function TabsGallery() {
-  return (
-    <Section title="Tabs" description="Underline variant only — no pill/segmented chrome.">
-      <Tabs defaultValue="overview" className="max-w-md">
-        <TabsList>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="timeline">Timeline</TabsTrigger>
-          <TabsTrigger value="payloads">Payloads</TabsTrigger>
-        </TabsList>
-        <TabsContent value="overview">
-          <p className="text-body text-muted-foreground">Message accepted at 14:03:07 UTC.</p>
-        </TabsContent>
-        <TabsContent value="timeline">
-          <p className="text-body text-muted-foreground">See the State timeline section below.</p>
-        </TabsContent>
-        <TabsContent value="payloads">
-          <p className="text-body text-muted-foreground">
-            See the Payload inspector section below.
+    <main className="mx-auto flex max-w-[720px] flex-col gap-8 px-6 py-10">
+      <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
+        <div>
+          <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
+            vsms admin console
           </p>
-        </TabsContent>
-      </Tabs>
-    </Section>
-  );
-}
-
-function OverlaysGallery() {
-  return (
-    <Section
-      title="Dialog, dropdown menu, tooltip, popover, drawer, command menu, toast"
-      description="Radix behaviour (focus trap, keyboard nav, ARIA) under daisyUI styling."
-    >
-      <div className="flex flex-wrap items-center gap-3">
-        <Dialog>
-          <DialogTrigger asChild>
-            <Button variant="secondary">Open dialog</Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Cancel message?</DialogTitle>
-              <DialogDescription>
-                This proposes a cancellation to the API — Postgres still decides.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="flex justify-end gap-2">
-              <Button variant="destructive" size="sm">
-                Cancel message
-              </Button>
-            </div>
-          </DialogContent>
-        </Dialog>
-
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="secondary">Row actions</Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent>
-            <DropdownMenuLabel>cs_msg_001</DropdownMenuLabel>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem>Copy id</DropdownMenuItem>
-            <DropdownMenuItem>Open detail</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="secondary">Hover me</Button>
-            </TooltipTrigger>
-            <TooltipContent>Inferred from prefix — not authoritative.</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="secondary">Open popover</Button>
-          </PopoverTrigger>
-          <PopoverContent>
-            <p className="text-body text-foreground">ç — LATIN SMALL LETTER C WITH CEDILLA</p>
-            <p className="mt-1 text-caption text-muted-foreground">
-              U+00E7. Forces UCS-2. Try "c" instead.
-            </p>
-          </PopoverContent>
-        </Popover>
-
-        <Drawer direction="right">
-          <DrawerTrigger asChild>
-            <Button variant="secondary">Open drawer</Button>
-          </DrawerTrigger>
-          <DrawerContent>
-            <div className="flex items-center justify-between p-4">
-              <p className="font-medium text-foreground text-title-sm">cs_msg_001</p>
-              <DrawerClose asChild>
-                <Button variant="ghost" size="sm">
-                  Close
-                </Button>
-              </DrawerClose>
-            </div>
-          </DrawerContent>
-        </Drawer>
-
-        <Button
-          variant="secondary"
-          onClick={() =>
-            toast({
-              title: "Copied",
-              description: "cs_msg_001 copied to clipboard.",
-              variant: "success",
-            })
-          }
-        >
-          Fire a toast
-        </Button>
-      </div>
-
-      <CommandMenu className="max-w-md">
-        <CommandMenuInput placeholder="Search messages, apps, routes…" />
-        <CommandMenuList>
-          <CommandMenuEmpty>No results.</CommandMenuEmpty>
-          <CommandMenuGroup heading="Recent">
-            <CommandMenuItem>cs_msg_001 — delivered</CommandMenuItem>
-            <CommandMenuItem>cs_msg_002 — uncertain</CommandMenuItem>
-          </CommandMenuGroup>
-        </CommandMenuList>
-      </CommandMenu>
-    </Section>
-  );
-}
-
-function PayloadInspectorGallery() {
-  return (
-    <Section title="Payload inspector">
-      <PayloadInspector
-        exchanges={[
-          {
-            direction: "request",
-            method: "POST",
-            url: "https://api.orange.cm/smsmessaging/v1/outbound/tel:+237.../requests",
-            status: 201,
-            durationMs: 214,
-            headers: { "content-type": "application/json" },
-            body: '{\n  "outboundSMSMessageRequest": {\n    "address": "tel:+237677123456",\n    "senderAddress": "tel:VSMS-OTP"\n  }\n}',
-          },
-          {
-            direction: "callback",
-            method: "POST",
-            url: "/dlr/orange-cm",
-            status: 200,
-            durationMs: 4,
-            body: '{"deliveryInfo":{"deliveryStatus":"DeliveredToTerminal"}}',
-          },
-        ]}
-      />
-    </Section>
-  );
-}
-
-function StateTimelineGallery() {
-  return (
-    <Section
-      title="State timeline — the epic gate"
-      description="Diagnose a message without touching SQL. The annotation nodes carry the §4.7 copy for uncertain/undelivered verbatim."
-    >
-      <Card>
-        <CardHeader title="cs_msg_002" meta="+237 6 91 22 10 09 · MTN" />
-        <CardBody>
-          <StateTimeline
-            currentState="uncertain"
-            isTerminal={false}
-            transitions={[
-              { toState: "accepted", at: "2026-08-08T14:03:07.412Z", actor: "app:vsms-console" },
-              { toState: "queued", at: "2026-08-08T14:03:07.690Z" },
-              { toState: "routed", at: "2026-08-08T14:03:08.010Z", providerKey: "orange-cm" },
-              {
-                toState: "submitted",
-                at: "2026-08-08T14:03:08.312Z",
-                providerKey: "orange-cm",
-                workerNode: "worker-2",
-                attempt: 1,
-                maxAttempts: 3,
-              },
-              {
-                toState: "uncertain",
-                at: "2026-08-08T14:03:38.312Z",
-                providerKey: "orange-cm",
-                workerNode: "worker-2",
-                attempt: 1,
-                maxAttempts: 3,
-              },
-            ]}
-          />
-        </CardBody>
-      </Card>
-    </Section>
-  );
-}
-
-const ENCODING_FLAGS: EncodingFlag[] = [
-  {
-    offset: 19,
-    length: 1,
-    char: "ç",
-    reason:
-      "ç is not in the GSM-7 default alphabet (lowercase — only uppercase Ç is). This alone forces UCS-2.",
-    suggestion: "c",
-  },
-];
-
-function EncodingPreviewGallery() {
-  const [value, setValue] = useState("Votre code a été reçu");
-  return (
-    <Section
-      title="Encoding preview"
-      description="Composer support component (#51) — makes sms-encoding visible before 50,000 sends."
-    >
-      <div className="max-w-xl">
-        <EncodingPreview
-          value={value}
-          onChange={setValue}
-          isLoading={false}
-          transliterateEnabled
-          unitCostXaf={6}
-          onApplyTransliteration={() => setValue((v) => v.replace(/ç/g, "c"))}
-          preview={{
-            charset: "ucs2",
-            segments: 1,
-            charsUsed: value.length,
-            charsPerSegment: 70,
-            flags: value.includes("ç") ? ENCODING_FLAGS : [],
-            // exactOptionalPropertyTypes: spread the optional key in rather
-            // than assigning it `undefined` when there's nothing to offer.
-            ...(value.includes("ç")
-              ? {
-                  transliteration: {
-                    preview: value.replace(/ç/g, "c"),
-                    charset: "gsm7" as const,
-                    segments: 1,
-                  },
-                }
-              : {}),
-          }}
-        />
-      </div>
-    </Section>
-  );
-}
-
-export default function GalleryPage() {
-  return (
-    <TooltipProvider>
-      <main className="mx-auto flex max-w-5xl flex-col gap-10 px-6 py-10">
-        <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
-          <div>
-            <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-              @vsms/ui — T6
-            </p>
-            <h1 className="mt-1 font-medium text-foreground text-title">Component gallery</h1>
-            <p className="mt-1 max-w-2xl text-body text-muted-foreground">
-              An honest rendering of the status system and every primitive — not a fake dashboard.
-              This page's only job is to prove the design tokens, daisyUI theming, and Radix
-              behaviour actually work, in both themes.
-            </p>
-          </div>
+          <h1 className="mt-1 font-medium text-foreground text-title">Composer</h1>
+          <p className="mt-1 max-w-md text-body text-muted-foreground">
+            See exactly what a message will cost before you send it — GSM-7 vs UCS-2, segment count,
+            and every character that would force the more expensive encoding.
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          <a
+            href="/gallery"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Component gallery
+          </a>
           <ThemeToggle />
-        </header>
+        </div>
+      </header>
 
-        <StatusPillGallery />
-        <Separator />
-        <ButtonGallery />
-        <Separator />
-        <FormGallery />
-        <Separator />
-        <TableGallery />
-        <Separator />
-        <TabsGallery />
-        <Separator />
-        <OverlaysGallery />
-        <Separator />
-        <PayloadInspectorGallery />
-        <Separator />
-        <StateTimelineGallery />
-        <Separator />
-        <EncodingPreviewGallery />
-      </main>
-      <Toaster />
-    </TooltipProvider>
+      <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-6">
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="composer-to">Recipient</Label>
+          <Input
+            id="composer-to"
+            placeholder="+237 677 123 456"
+            aria-invalid={form.formState.errors.to != null}
+            {...form.register("to")}
+          />
+          {form.formState.errors.to != null ? (
+            <p className="text-caption text-state-danger-fg">{form.formState.errors.to.message}</p>
+          ) : (
+            showRecipientStatus &&
+            previewQuery.data?.normalizedTo != null && (
+              <p className="text-caption text-muted-foreground">
+                Normalises to{" "}
+                <span className="font-mono text-foreground">{previewQuery.data.normalizedTo}</span>
+                {previewQuery.data.operator !== "unknown" && (
+                  <>
+                    {" "}
+                    · <span className="font-mono uppercase">{previewQuery.data.operator}</span>
+                  </>
+                )}
+              </p>
+            )
+          )}
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="composer-body">Message</Label>
+          <Controller
+            control={form.control}
+            name="body"
+            render={({ field }) => (
+              <EncodingPreview
+                id="composer-body"
+                name={field.name}
+                value={field.value}
+                onChange={field.onChange}
+                onBlur={field.onBlur}
+                aria-invalid={form.formState.errors.body != null}
+                preview={encodingPreview}
+                isLoading={previewQuery.isFetching}
+                isStale={previewQuery.isError}
+                onApplySuggestion={applySuggestion}
+              />
+            )}
+          />
+          {form.formState.errors.body != null && (
+            <p className="text-caption text-state-danger-fg">
+              {form.formState.errors.body.message}
+            </p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-4">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="composer-sender-id">Sender id</Label>
+            <Input
+              id="composer-sender-id"
+              placeholder="Default for this app"
+              aria-invalid={form.formState.errors.senderId != null}
+              {...form.register("senderId")}
+            />
+            {form.formState.errors.senderId != null && (
+              <p className="text-caption text-state-danger-fg">
+                {form.formState.errors.senderId.message}
+              </p>
+            )}
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="composer-class">Class</Label>
+            <Controller
+              control={form.control}
+              name="class"
+              render={({ field }) => (
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <SelectTrigger id="composer-class">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {MESSAGE_CLASSES.map((cls) => (
+                      <SelectItem key={cls} value={cls}>
+                        {MESSAGE_CLASS_LABELS[cls]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+          </div>
+        </div>
+
+        <details className="rounded-sm border border-edge">
+          <summary className="cursor-pointer px-3 py-2 text-body text-foreground">Advanced</summary>
+          <div className="flex flex-col gap-4 border-edge border-t p-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="composer-client-ref">Client reference</Label>
+              <Input
+                id="composer-client-ref"
+                placeholder="Your own idempotency / correlation id"
+                {...form.register("clientRef")}
+              />
+              {form.formState.errors.clientRef != null && (
+                <p className="text-caption text-state-danger-fg">
+                  {form.formState.errors.clientRef.message}
+                </p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="composer-scheduled-at">Scheduled at</Label>
+                <Input
+                  id="composer-scheduled-at"
+                  type="datetime-local"
+                  {...form.register("scheduledAt")}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="composer-validity">Validity (minutes)</Label>
+                <Input
+                  id="composer-validity"
+                  inputMode="numeric"
+                  placeholder="Class default"
+                  aria-invalid={form.formState.errors.validityMinutes != null}
+                  {...form.register("validityMinutes")}
+                />
+                {form.formState.errors.validityMinutes != null && (
+                  <p className="text-caption text-state-danger-fg">
+                    {form.formState.errors.validityMinutes.message}
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        </details>
+
+        {generalError != null && (
+          <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
+            {generalError}
+          </div>
+        )}
+
+        <div className="flex items-center gap-3">
+          <Button type="submit" disabled={sendMutation.isPending}>
+            {sendMutation.isPending ? "Sending…" : "Send message"}
+          </Button>
+        </div>
+      </form>
+
+      {sendMutation.data != null && (
+        <Card>
+          <CardHeader title="Message accepted" meta={sendMutation.data.messageId} />
+          <CardBody className="flex flex-wrap items-center gap-3">
+            <StatusPill state={sendMutation.data.state} showLiteral />
+            <span className="font-mono text-caption text-muted-foreground">
+              {sendMutation.data.encoding.toUpperCase()} · {sendMutation.data.segments} seg
+            </span>
+            <span className="font-mono text-caption text-muted-foreground">
+              {sendMutation.data.operator === "unknown"
+                ? "operator unknown"
+                : sendMutation.data.operator.toUpperCase()}
+            </span>
+            <span className="font-mono text-caption text-muted-foreground">
+              ~{sendMutation.data.estimatedCostXaf} FCFA
+            </span>
+          </CardBody>
+        </Card>
+      )}
+    </main>
   );
 }

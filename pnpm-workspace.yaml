@@ -24,3 +24,4 @@ minimumReleaseAgeExclude:
   - '@turbo/windows-64@2.10.9'
   - '@turbo/windows-arm64@2.10.9'
   - turbo@2.10.9
+  - react-hook-form@7.85.0
