@@ -141,6 +141,34 @@ happy one.
 This still doesn't close [`36-handset-gate.md`](36-handset-gate.md) — nothing here proves
 Orange's real DLR payload shape, or that a handset actually buzzes.
 
+## 7. Provision a client the console (or any HTTP caller) can actually use
+
+Steps 1–5 prove the pipeline moves a message end to end, but nothing in them produces a credential anything *outside* this process could authenticate with: `sendMessage` there runs through `send_test_message`'s own in-process `Procedures` call, not over HTTP. `provisionAppClient`'s own policy (`hasRole('owner') || hasRole('admin')`) also means no token `sms-gateway serve` can actually issue is ever allowed to call it — see `AGENTS.md`'s notes on `GatewayAuth` always minting `role: "app"`. `sms-gateway provision-client` closes that gap: it calls the real `provisionAppClient` procedure directly, under an operator-supplied `owner`/`admin` context, and hands back a private key file a real `/token` exchange can use.
+
+```bash
+# `SMS_HASH_PEPPER` is already exported from step 5 — provision-client requires it
+# too, and it must be the same value every other process here uses.
+DATABASE_URL=postgres://localhost/vsms_check \
+    cargo run -p sms-gateway -- provision-client \
+    --app-id <an App.id, e.g. from `psql ... -c 'select id from app'`> \
+    --label "admin console" \
+    --scope sms:send --scope sms:read \
+    --key-out ./console-client-key.pem
+```
+
+`--key-out` is created with `0600` permissions and the command refuses to run if that path already exists — it will not overwrite a key still in use. The private key is written there once and printed nowhere, including on failure; only the client id and the key path are echoed:
+
+```text
+provisioned client: appc_...
+private key written to: ./console-client-key.pem
+
+paste into the console (or any other machine caller)'s environment:
+  SMS_CONSOLE_CLIENT_ID=appc_...
+  SMS_CONSOLE_PRIVATE_KEY_PATH=./console-client-key.pem
+```
+
+Those two lines are exactly `.env.example`'s `SMS_CONSOLE_CLIENT_ID` / `SMS_CONSOLE_PRIVATE_KEY_PATH` — paste them (plus `SMS_AUTH_ISSUER` matching whatever `--issuer` `serve` was started with, and a `SMS_CONSOLE_SCOPE` drawn from `--scope` above) straight into the admin console's own environment. `app/sms-gateway/tests/provision_client_cli_live_postgres.rs` is this command's own live acceptance test: it runs the real binary against a real Postgres, then spawns a genuinely separate `sms-gateway serve` process and proves the key file it wrote completes a real `private_key_jwt` exchange at `/token` and an authenticated `sendMessage` call — the exact thing `crates/sms-api/examples/send_test_message.rs` does *not* prove, since the `AppClient` row it writes directly has no `OauthClient.jwks` and could never complete that exchange.
+
 ## Where to go next
 
 - [`docs/architecture.md`](../architecture.md) — the full design: data model, provider abstraction, worker topology, security, compliance, and every framework constraint that shaped a decision.

@@ -3,14 +3,17 @@
 mod dlr;
 mod op;
 
+use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::FilterExpr;
-use sms_api::schema::{provider as provider_filter, Cratestack};
-use sms_api::{GatewayAuth, Principal, PrincipalKind};
+use sms_api::schema::procedures::{provision_app_client, ProcedureRegistry};
+use sms_api::schema::{provider as provider_filter, Cratestack, ProvisionClientInput};
+use sms_api::{GatewayAuth, Principal, PrincipalKind, Procedures};
 use sms_provider::SmsProvider;
 use tracing::info;
 
@@ -95,6 +98,99 @@ enum Command {
         #[arg(long, env = "DATABASE_URL")]
         database_url: String,
     },
+    /// Mint a real, HTTP-usable `private_key_jwt` client through the real
+    /// `provisionAppClient` procedure — an operator action, not a
+    /// generated-CRUD route, for the identical reason `RotateSigningKey`
+    /// above is one: `provisionAppClient`'s own `@allow` in
+    /// `schema.cstack` is `hasRole('owner') || hasRole('admin')`, and
+    /// `GatewayAuth::authenticate` never mints either role for a real
+    /// token (no human-login flow exists yet — see `AGENTS.md`'s M1
+    /// section). So nothing this deployment can issue over HTTP can call
+    /// it; this subcommand calls `Procedures::provision_app_client`
+    /// directly, under a hand-built `owner`/`admin` context, the same way
+    /// `app/sms-gateway/tests/m1_acceptance_gate_live_postgres.rs` already
+    /// does for its own acceptance gate. See #137.
+    ///
+    /// `ProvisionClientResult` returns `privateKeyPem` exactly once and it
+    /// is never stored anywhere in this system (#23/#111) — this command
+    /// writes it straight to `--key-out` with `0600` permissions and
+    /// refuses to overwrite an existing file, and it is never logged or
+    /// printed alongside anything else.
+    ProvisionClient {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+
+        /// The `App.id` this client acts on behalf of. Must already exist
+        /// and be active — `provision_client` checks both and refuses
+        /// otherwise.
+        #[arg(long)]
+        app_id: String,
+
+        /// A human-readable label for the resulting `AppClient`, e.g.
+        /// `"admin console"` or `"otp sender"`.
+        #[arg(long)]
+        label: String,
+
+        /// One or more scopes to provision the client with, e.g.
+        /// `--scope sms:send --scope sms:read`. At least one is required —
+        /// an unscoped client can authenticate but can call nothing.
+        #[arg(long = "scope", required = true)]
+        scopes: Vec<String>,
+
+        /// Which of `provisionAppClient`'s two admitted roles to run the
+        /// call under. Both are equally privileged for this call; `owner`
+        /// is the default because it's the role every existing live test
+        /// already provisions under (`m1_acceptance_gate_live_postgres.rs`,
+        /// `provision_app_client_live_postgres.rs`).
+        #[arg(long, default_value = "owner")]
+        role: String,
+
+        /// Where to write the returned private key, PEM-encoded. Created
+        /// with `0600` permissions; this command refuses to run if the
+        /// path already exists rather than silently overwriting a key
+        /// someone may still be using.
+        #[arg(long)]
+        key_out: PathBuf,
+
+        /// #134: `Procedures::new` now requires a `HashPepper` unconditionally,
+        /// even though `provision_app_client` itself never hashes anything —
+        /// only `sendMessage` does. Same flag name and env var as `Serve`'s
+        /// own `--hash-pepper`/`SMS_HASH_PEPPER`, so an operator running
+        /// this alongside `serve` supplies the identical value once via
+        /// their environment rather than learning two different names for
+        /// the same secret.
+        #[arg(long, env = "SMS_HASH_PEPPER")]
+        hash_pepper: String,
+    },
+}
+
+/// Writes `pem` to a freshly created file at `path`, `0600` on Unix,
+/// refusing to overwrite an existing file (`O_EXCL` via
+/// [`std::fs::OpenOptions::create_new`]) — both the mode and the
+/// exclusivity are applied atomically at `open(2)` time, so there is no
+/// window where the file exists with looser permissions or already-visible
+/// contents. See `Command::ProvisionClient`'s own doc comment for why this
+/// exists: `ProvisionClientResult::privateKeyPem` is returned exactly once
+/// and this is the only place in this system it is ever persisted.
+fn write_private_key_pem(path: &std::path::Path, pem: &str) -> Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path).with_context(|| {
+        format!(
+            "creating {} — refusing to overwrite an existing file, since it may hold a private \
+             key still in use",
+            path.display()
+        )
+    })?;
+    file.write_all(pem.as_bytes())
+        .with_context(|| format!("writing the private key to {}", path.display()))?;
+    file.flush()
+        .with_context(|| format!("flushing the private key to {}", path.display()))
 }
 
 /// The `system`-role context every OP-adjacent database write in this
@@ -288,7 +384,111 @@ async fn main() -> Result<()> {
             );
             Ok(())
         }
+
+        command @ Command::ProvisionClient { .. } => provision_client_command(command).await,
     }
+}
+
+/// `Command::ProvisionClient`'s body, pulled out of `main`'s own `match`
+/// purely to stay under `clippy::too_many_lines` — see that variant's own
+/// doc comment for what this does and why it exists. Takes the whole
+/// matched `Command` (rather than its fields individually) so the
+/// multi-line destructure lives here instead of adding more lines to the
+/// already-large `match` in `main`; the `unreachable!()` below can never
+/// fire because the only caller is `main`'s own `command @
+/// Command::ProvisionClient { .. }` guard.
+async fn provision_client_command(command: Command) -> Result<()> {
+    let Command::ProvisionClient {
+        database_url,
+        app_id,
+        label,
+        scopes,
+        role,
+        key_out,
+        hash_pepper,
+    } = command
+    else {
+        unreachable!("only ever called with Command::ProvisionClient")
+    };
+
+    if role != "owner" && role != "admin" {
+        bail!(
+            "--role must be \"owner\" or \"admin\" — provisionAppClient's own @allow admits \
+             nothing else, got {role:?}"
+        );
+    }
+    // Refuse up front, before touching the database at all, so a typo'd
+    // --key-out never causes a real provisioning call (and a real,
+    // now-orphaned private key) that this process then fails to hand back
+    // to the operator.
+    if key_out.exists() {
+        bail!(
+            "{} already exists — refusing to overwrite a file that may hold a private key \
+             still in use; pass a different --key-out",
+            key_out.display()
+        );
+    }
+    // #134: validated up front for the same reason `Serve` validates its
+    // own copy before doing anything else — `provision_app_client` never
+    // hashes anything itself, but `Procedures::new` takes an unconditional
+    // `HashPepper` regardless, so a bad pepper must fail before a real
+    // provisioning call happens, not after.
+    let pepper = sms_api::HashPepper::new(hash_pepper)
+        .context("SMS_HASH_PEPPER is invalid — see sms_api::pepper's module doc")?;
+
+    // Same conservative pool size as `RotateSigningKey`, and for the same
+    // reason: this is a one-shot CLI command writing two `@@audit`-backed
+    // rows (`AppClient`, `OauthClient`) in one transaction, the same shape
+    // of write that command's own comment found deadlocks at
+    // `max_connections(1)`. Never empirically re-tested at 1 here, so the
+    // same modest margin is kept rather than assumed safe at the minimum.
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .context("connecting to Postgres")?;
+    let db = Cratestack::builder(pool).build();
+
+    let ctx = Principal {
+        sub: format!("sms-gateway:provision-client:{role}"),
+        kind: PrincipalKind::User,
+        role: role.clone(),
+        app_id: String::new(),
+    }
+    .into_context();
+
+    let procedures = Procedures::new(pepper);
+    let provisioned = procedures
+        .provision_app_client(
+            &db,
+            &ctx,
+            provision_app_client::Args {
+                args: ProvisionClientInput {
+                    appId: app_id,
+                    label,
+                    scopes,
+                },
+            },
+        )
+        .await
+        .context("provisioning the client")?;
+
+    // Destructured immediately and never reassembled: nothing past this
+    // point may hold, log, or `{:?}`-print `provisioned` as a whole — see
+    // `write_private_key_pem`'s own doc for why the file below is the
+    // only place this value's private key is ever allowed to land.
+    let client_id = provisioned.clientId;
+    let private_key_pem = provisioned.privateKeyPem;
+
+    write_private_key_pem(&key_out, &private_key_pem)?;
+
+    println!("provisioned client: {client_id}");
+    println!("private key written to: {}", key_out.display());
+    println!();
+    println!("paste into the console (or any other machine caller)'s environment:");
+    println!("  SMS_CONSOLE_CLIENT_ID={client_id}");
+    println!("  SMS_CONSOLE_PRIVATE_KEY_PATH={}", key_out.display());
+    Ok(())
 }
 
 /// Resolve on SIGINT *or* SIGTERM so in-flight requests finish.
