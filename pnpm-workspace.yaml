@@ -13,7 +13,10 @@ packages:
 # and pnpm rewrites this file with an `allowBuilds` placeholder instead.
 #
 # sharp is Next.js's image optimiser and needs its native binary built.
+# esbuild is a transitive dependency of vitest (packages/gateway's test
+# runner, T10) and needs its own native binary build the same way.
 allowBuilds:
+  esbuild: true
   sharp: true
 
 minimumReleaseAgeExclude:

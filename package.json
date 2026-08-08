@@ -9,7 +9,8 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
-    "format": "turbo run format"
+    "format": "turbo run format",
+    "test": "turbo run test"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.7",

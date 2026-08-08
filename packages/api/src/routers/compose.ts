@@ -7,9 +7,8 @@ import "server-only";
 // AGENTS.md's Milestone 0 section); `send` is a tRPC *mutation*, matching
 // `mutation procedure sendMessage`.
 
-import { TRPCError } from "@trpc/server";
-import { GatewayError } from "@vsms/gateway";
 import { z } from "zod";
+import { rethrowGatewayError } from "../gateway-error";
 import { publicProcedure, router } from "../trpc";
 
 const previewInput = z.object({
@@ -28,22 +27,6 @@ const sendInput = z.object({
   scheduledAt: z.string().datetime().optional(),
   validityMinutes: z.number().int().positive().optional(),
 });
-
-/** Re-throws a {@link GatewayError} as the `TRPCError` it already knows
- * how to be (`trpcCode` was computed in `@vsms/gateway/errors.ts` from
- * sms-api's real HTTP status); anything else propagates unchanged so
- * tRPC's default `INTERNAL_SERVER_ERROR` handling still applies to
- * genuinely unexpected failures (a thrown network error, a bug). */
-function rethrowGatewayError(error: unknown): never {
-  if (error instanceof GatewayError) {
-    throw new TRPCError({
-      code: error.trpcCode,
-      message: error.message,
-      cause: error,
-    });
-  }
-  throw error;
-}
 
 export const composeRouter = router({
   preview: publicProcedure.input(previewInput).query(async ({ ctx, input }) => {
