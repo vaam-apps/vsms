@@ -15,6 +15,13 @@ members = [
   "app/sms-worker",
   "app/sms-fake-orange",
 ]
+# examples/rust is its own, separate [workspace] (see its own Cargo.toml
+# and examples/README.md) — an integrator's copy-pasteable client, kept
+# out of this workspace's dependency graph and version pins on purpose.
+# `exclude` isn't strictly load-bearing today (nothing above adds it via a
+# glob), but it documents the boundary explicitly and keeps it true if
+# `members` above ever grows a glob.
+exclude = ["examples/rust"]
 
 [workspace.package]
 version = "0.1.0"

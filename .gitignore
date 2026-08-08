@@ -1,4 +1,8 @@
 /target
+# `/target` above only anchors to the repo root — examples/rust/ is its
+# own separate Cargo workspace (see its own Cargo.toml and
+# examples/README.md), so its build output needs its own entry.
+/examples/rust/target
 **/*.rs.bk
 # Cargo.lock is committed. This workspace ships binaries (sms-api, sms-worker)
 # against a pre-1.0 framework pinned to =0.4.16; a floating lock file would
