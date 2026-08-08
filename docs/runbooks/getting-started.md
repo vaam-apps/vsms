@@ -64,7 +64,15 @@ DATABASE_URL=postgres://localhost/vsms_check \
 
 Second, `sms-gateway serve` also refuses to start until an `active` `Provider` row keyed `orange_cm` exists — nothing seeds it automatically, and no admin console exists yet to create one by hand. The seed/send tool built for this milestone's own acceptance testing does it as a side effect, so run it *before* starting either binary, not after:
 
+It also needs `SMS_HASH_PEPPER` — the server-held key behind `msisdnHash`/`bodyHash`
+(#134, `sms_api::pepper`). Required, minimum 32 bytes, and it **must be the same value
+for every process in this walkthrough**: a hash computed under one pepper never equals one
+computed under another, and nothing detects the mismatch — opt-out matching and dedupe just
+silently stop working. So export it once, here, rather than generating one per command:
+
 ```bash
+export SMS_HASH_PEPPER="$(openssl rand -base64 48)"
+
 DATABASE_URL=postgres://localhost/vsms_check \
     cargo run -p sms-api --example send_test_message -- \
     --to +237677123456 --sender-id VYMALO --body "Hello from vsms"
@@ -78,6 +86,7 @@ Now, in separate terminals:
 # terminal 1 — the API server
 DATABASE_URL=postgres://localhost/vsms_check \
 SMS_OIDC_ISSUER=http://127.0.0.1:8080 \
+SMS_HASH_PEPPER="$SMS_HASH_PEPPER" \
 ORANGE_CM_CLIENT_ID=placeholder \
 ORANGE_CM_CLIENT_SECRET=placeholder \
 ORANGE_CM_SENDER_NUMBER=+2370000 \
@@ -101,6 +110,36 @@ Placeholder Orange credentials are enough to prove the whole pipeline moves the 
 -----+--------+-----------------------+-------------------------------------------------------
  ... | failed |                       | oauth_401: token endpoint rejected credentials: ...
 ```
+
+## 6. See it reach `delivered` without a real Orange account
+
+Everything above proves routing; it can't prove delivery, because `routed` is exactly
+where a placeholder credential dies. `app/sms-fake-orange` closes that gap for a demo or
+local run — it's a standalone process that impersonates Orange's token and submit
+endpoints and independently POSTs a `delivered` DLR back, so `sms-worker`/`sms-gateway`
+need no code change to talk to it, only `ORANGE_CM_BASE_URL` pointed elsewhere. **It is a
+development/demo tool, not a real provider — never point a production deployment at it**
+(see the binary's own module doc, `app/sms-fake-orange/src/main.rs`).
+
+```bash
+# terminal 3 — the fake, bound on its own port
+cargo run -p sms-fake-orange-bin -- \
+    --bind-addr 127.0.0.1:8090 \
+    --dlr-endpoint http://127.0.0.1:8080/dlr/orange_cm \
+    --sender-number +2370000
+```
+
+Then start terminals 1 and 2 exactly as in step 5, but with
+`ORANGE_CM_BASE_URL=http://127.0.0.1:8090` added to both (still with placeholder
+`ORANGE_CM_CLIENT_ID`/`ORANGE_CM_CLIENT_SECRET` — the fake accepts any credentials by
+default) and send a fresh message. Watch the same `psql` query this time land on
+`delivered`, and `app/sms-fake-orange`'s own log show the submit it received and the DLR
+it posted back. `--fault-mode seeded --seed <n>` drives the same weighted failure mix
+`crates/sms-worker`'s chaos suite uses, for demoing the interesting paths instead of the
+happy one.
+
+This still doesn't close [`36-handset-gate.md`](36-handset-gate.md) — nothing here proves
+Orange's real DLR payload shape, or that a handset actually buzzes.
 
 ## Where to go next
 

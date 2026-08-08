@@ -238,7 +238,8 @@ impl SubmitDecision {
     }
 }
 
-/// Two policies, deliberately, not a spectrum of knobs:
+/// Three policies. The first two, deliberately, are not a spectrum of
+/// knobs:
 ///
 /// - [`Self::Scripted`] — an exact, ordered queue. What the CI gate's
 ///   deterministic tests use: assert one specific outcome, not a
@@ -254,6 +255,14 @@ impl SubmitDecision {
 /// exactly the CI flake this workspace has already spent real effort
 /// removing (see `crates/sms-worker/tests/dispatch_live_postgres.rs`'s own
 /// `TEST_MUTEX`/`clear_claimable_backlog` history).
+///
+/// The third, [`Self::Always`], answers a different need entirely: neither
+/// a CI test's exact expectations nor a fuzz sweep's realistic mix, but a
+/// long-lived demo/dev process (`app/sms-fake-orange`) that must never run
+/// out of scripted decisions the way [`Self::Scripted`] does (see
+/// [`FaultPolicy::next`]'s own doc on that fallback) — it repeats one fixed
+/// decision forever, by construction, rather than approximating "forever"
+/// with a very long scripted queue.
 pub enum FaultPolicy {
     /// An exact, ordered queue of decisions, one per submit call.
     Scripted(Mutex<VecDeque<SubmitDecision>>),
@@ -261,6 +270,8 @@ pub enum FaultPolicy {
     /// — `StdRng`'s own state is large enough that an unboxed variant would
     /// make every `FaultPolicy` pay for it, `Scripted` included.
     Seeded(Box<Mutex<StdRng>>),
+    /// The same [`SubmitDecision`] repeated indefinitely, never exhausted.
+    Always(SubmitDecision),
 }
 
 impl FaultPolicy {
@@ -278,12 +289,23 @@ impl FaultPolicy {
         Self::Seeded(Box::new(Mutex::new(StdRng::seed_from_u64(seed))))
     }
 
+    /// Repeats `decision` forever — every submit call gets an identical
+    /// clone of it. The right policy for a long-lived server: pass
+    /// [`SubmitDecision::accepted_with_dlrs`] with a single
+    /// [`DlrStep::after`] `DlrStatus::Delivered` for the happy-path demo
+    /// default.
+    #[must_use]
+    pub fn always(decision: SubmitDecision) -> Self {
+        Self::Always(decision)
+    }
+
     /// The next decision. A `Scripted` policy that runs out of entries falls
     /// back to a plain accept with no DLR — a test that scripts exactly as
     /// many entries as it expects submit calls never observes this; it
     /// exists so an unexpected *extra* call (a retry the test didn't
     /// anticipate) degrades to something harmless and self-resolving rather
-    /// than panicking the whole suite.
+    /// than panicking the whole suite. `Always` never hits this fallback —
+    /// it has no end to run out of.
     pub(crate) fn next(&self) -> SubmitDecision {
         match self {
             Self::Scripted(queue) => queue
@@ -296,6 +318,7 @@ impl FaultPolicy {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             ),
+            Self::Always(decision) => decision.clone(),
         }
     }
 }
