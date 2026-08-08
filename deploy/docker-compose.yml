@@ -68,6 +68,13 @@ services:
       ORANGE_CM_CLIENT_SECRET: ${ORANGE_CM_CLIENT_SECRET:?}
       ORANGE_CM_SENDER_NUMBER: ${ORANGE_CM_SENDER_NUMBER:?}
       ORANGE_CM_BASE_URL: ${ORANGE_CM_BASE_URL:-https://api.orange.com}
+      # #134/#140: the server-held pepper behind Message.msisdnHash/bodyHash
+      # (HMAC-SHA256, sms_api::pepper) — real secret material, minimum 32
+      # bytes, validated at startup (`sms-gateway serve` refuses to bind on
+      # a missing or too-short value, never silently at the first
+      # sendMessage call). Only sms-gateway needs this; sms-worker never
+      # computes either hash.
+      SMS_HASH_PEPPER: ${SMS_HASH_PEPPER:?generate one via `openssl rand -base64 48`}
       RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,cratestack=info}
     depends_on:
       postgres:

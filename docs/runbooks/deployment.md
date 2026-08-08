@@ -61,11 +61,20 @@ which. At minimum:
 ```bash
 # a real, random Postgres password
 openssl rand -base64 24
+# a real, random SMS_HASH_PEPPER (minimum 32 bytes) — #134/#140
+openssl rand -base64 48
 ```
 
 `SMS_OIDC_ISSUER` must equal `https://` + `SMS_GATEWAY_DOMAIN` exactly —
 every token this deployment issues carries it as `iss`, and a mismatch
 here is silent until the first token validation fails.
+
+`SMS_HASH_PEPPER` backs `Message.msisdnHash`/`bodyHash` (HMAC-SHA256) —
+`sms-gateway serve` validates it (minimum 32 bytes) before doing anything
+else, so a missing or too-short value fails the container at boot, not at
+the first `sendMessage` call. Generate it once and keep it: rotating later
+does not retroactively rehash rows already written under the old value —
+see `crates/sms-api/src/pepper.rs`'s own module doc.
 
 ## 2. Build and bring up Postgres + migrations first
 
