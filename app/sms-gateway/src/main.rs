@@ -151,6 +151,16 @@ enum Command {
         /// someone may still be using.
         #[arg(long)]
         key_out: PathBuf,
+
+        /// #134: `Procedures::new` now requires a `HashPepper` unconditionally,
+        /// even though `provision_app_client` itself never hashes anything —
+        /// only `sendMessage` does. Same flag name and env var as `Serve`'s
+        /// own `--hash-pepper`/`SMS_HASH_PEPPER`, so an operator running
+        /// this alongside `serve` supplies the identical value once via
+        /// their environment rather than learning two different names for
+        /// the same secret.
+        #[arg(long, env = "SMS_HASH_PEPPER")]
+        hash_pepper: String,
     },
 }
 
@@ -395,6 +405,7 @@ async fn provision_client_command(command: Command) -> Result<()> {
         scopes,
         role,
         key_out,
+        hash_pepper,
     } = command
     else {
         unreachable!("only ever called with Command::ProvisionClient")
@@ -417,6 +428,13 @@ async fn provision_client_command(command: Command) -> Result<()> {
             key_out.display()
         );
     }
+    // #134: validated up front for the same reason `Serve` validates its
+    // own copy before doing anything else — `provision_app_client` never
+    // hashes anything itself, but `Procedures::new` takes an unconditional
+    // `HashPepper` regardless, so a bad pepper must fail before a real
+    // provisioning call happens, not after.
+    let pepper = sms_api::HashPepper::new(hash_pepper)
+        .context("SMS_HASH_PEPPER is invalid — see sms_api::pepper's module doc")?;
 
     // Same conservative pool size as `RotateSigningKey`, and for the same
     // reason: this is a one-shot CLI command writing two `@@audit`-backed
@@ -439,7 +457,7 @@ async fn provision_client_command(command: Command) -> Result<()> {
     }
     .into_context();
 
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(pepper);
     let provisioned = procedures
         .provision_app_client(
             &db,

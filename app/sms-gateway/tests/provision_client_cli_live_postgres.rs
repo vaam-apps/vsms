@@ -45,6 +45,14 @@ use sms_api::schema::{self, provider as provider_filter, Cratestack};
 /// that crate's own `lib.rs`).
 const ORANGE_PROVIDER_KEY: &str = "orange_cm";
 
+/// #134: both `provision-client` and `serve` now refuse to start without
+/// `--hash-pepper`/`SMS_HASH_PEPPER`, even though neither this suite's CLI
+/// invocation nor its `sendMessage` call cares which pepper is in effect —
+/// see `m1_acceptance_gate_live_postgres.rs`'s own identical
+/// `TEST_HASH_PEPPER`/`test_pepper` for the same reasoning. Only the value's
+/// length matters (`HashPepper::new`'s own minimum).
+const TEST_HASH_PEPPER: &str = "provision-client-cli-live-postgres-test-pepper-over-minimum";
+
 /// #102, found live: within one test binary, Rust's default
 /// multi-threaded harness can race two tests preparing the same
 /// not-yet-cached query shape against Postgres's own `pg_type` catalog at
@@ -270,7 +278,9 @@ fn run_provision_client_cli(
         .arg("--role")
         .arg(role)
         .arg("--key-out")
-        .arg(key_out);
+        .arg(key_out)
+        .arg("--hash-pepper")
+        .arg(TEST_HASH_PEPPER);
     for scope in scopes {
         command.arg("--scope").arg(scope);
     }
@@ -381,6 +391,8 @@ impl GatewayProcess {
             .arg("provision-client-cli-test-orange-client-secret")
             .arg("--orange-sender-number")
             .arg("+237600000000")
+            .arg("--hash-pepper")
+            .arg(TEST_HASH_PEPPER)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
