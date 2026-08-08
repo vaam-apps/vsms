@@ -1,0 +1,20 @@
+# Patterns to ignore when building packages.
+.DS_Store
+.git/
+.gitignore
+*.orig
+.vscode/
+
+# Anchored to the chart root on purpose — NOT a bare `*.tgz`, which is what
+# `helm create` scaffolds and what broke this chart's first real publish.
+# `helm dependency build` fetches the `common` dependency as
+# `charts/common-<ver>.tgz`, and a bare `*.tgz` hides it from the loader, so
+# `helm package` then fails with:
+#
+#   Error: found in Chart.yaml, but missing in charts/ directory: common
+#
+# It reproduces only when `charts/` holds the tarball *alone*. A working
+# tree that also has an unpacked `charts/common/` from an earlier
+# `helm dependency update` packages fine, which is exactly why this passed
+# locally and failed in CI.
+/*.tgz

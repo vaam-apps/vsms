@@ -1,0 +1,21 @@
+---
+{{- include "bjw-s.common.loader.init" . }}
+
+{{/*
+Same pattern bjw-s-labs/app-template's own templates/common.yaml uses
+(that chart is itself nothing but this file plus a Chart.yaml dependency
+on common) — set a sane default nameOverride from the release name so
+`helm install vsms deploy/charts/vsms` without any --set flags still
+produces predictable, DNS-safe resource names, while leaving
+`.Values.global.nameOverride` free for an operator who wants something
+else.
+*/}}
+{{- define "vsms.hardcodedValues" -}}
+{{- if not .Values.global.nameOverride }}
+global:
+  nameOverride: "{{ .Release.Name }}"
+{{- end }}
+{{- end -}}
+{{- $_ := mergeOverwrite .Values (include "vsms.hardcodedValues" . | fromYaml) -}}
+
+{{ include "bjw-s.common.loader.generate" . }}

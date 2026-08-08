@@ -279,8 +279,26 @@ doesn't cover would be worse than being honest about the current gap.
 
 ## Releasing a new version
 
-`.github/workflows/release.yml` builds and pushes all three images to GHCR
-on any `v*.*.*` tag, tagged both `:$TAG` and `:latest`. On the VM:
+`.github/workflows/release.yml` builds and pushes four images
+(`sms-gateway`, `sms-worker`, `admin`, and `migrate` — #145 added the
+fourth, for the Helm chart's migrate Job below) to GHCR, plus the
+`deploy/charts/vsms` Helm chart as an OCI artifact, on two triggers:
+
+- **Every push to `main`** — `:main` (mutable, moves with each push) and
+  `:sha-<12 hex>` (immutable, one commit). The chart publishes as
+  `0.0.0-main.<sha>`.
+- **Any `v*.*.*` tag** — `:$TAG` and `:latest`, unchanged from what this
+  workflow did before #145. The chart publishes as `$TAG` with its
+  leading `v` stripped (Chart.yaml requires strict semver).
+
+A third trigger, `workflow_dispatch`, exists only to smoke-test the
+pipeline itself from a branch that isn't `main` and isn't tagged — it
+tags images `:branch-<slug>` / `:sha-<12 hex>` and the chart
+`0.0.0-dev.<sha>`, deliberately never touching `:main`/`:latest`. #145's
+own PR used this to prove the pipeline works before this section existed
+to document it — see that PR for the exact GHCR references it produced.
+
+On the VM (compose path):
 
 ```bash
 cd deploy
@@ -293,3 +311,117 @@ locally from source (`build:`, not `image:`). Pulling pre-built GHCR images
 instead of building on the VM is a reasonable follow-up once release
 cadence picks up; not done here since it wasn't needed to get a first
 deploy working.
+
+## Kubernetes (Helm)
+
+`deploy/charts/vsms` — the same three long-running processes as the
+compose path (`sms-gateway`, `sms-worker`, `admin`), plus the two one-shot
+steps compose's own runbook above walks through by hand (apply migrations,
+mint the first OP signing key), as Helm-hook Jobs that run automatically
+in the right order. Built directly on the bjw-s **common** library chart
+v4 (`^4.6.2`), per #145.
+
+**One correction to #145's own text, found while building this, not
+assumed:** the issue named `oci://ghcr.io/bjw-s-labs/helm/common` as the
+dependency reference. That artifact does not exist — confirmed against
+GHCR's own API (`gh api orgs/bjw-s-labs/packages?package_type=container`
+lists 21 packages; `helm/app-template` and `helm/multus` are there,
+`helm/common` is not) and against bjw-s-labs/helm-charts' own
+`.github/workflows/charts-release.yaml`, whose `release-library-charts`
+job runs with `publishToOciRegistry: false` — library charts (`common` is
+one) publish to the classic index.yaml repo
+(`https://bjw-s-labs.github.io/helm-charts`) only, never to GHCR as OCI.
+`deploy/charts/vsms/Chart.yaml` depends on `common` through that classic
+repository URL instead — byte-identical content, same source repo, same
+release pipeline, just a different distribution channel — pinned to
+4.6.2, the newest v4 release as of this PR. Only `deploy/charts/vsms`
+itself publishes to GHCR as OCI; that part of #145's ask stands as
+written.
+
+### What the chart does not do
+
+- **Does not run Postgres.** `existingSecrets.database.name` names a
+  Secret containing a `DATABASE_URL` key the operator's own database (or
+  their own operator/subscription in front of one) supplies — the same
+  "bring your own database" split the compose path already documents for
+  why it doesn't use `sops`.
+- **Does not create any Secret.** Every credential (`DATABASE_URL`,
+  `SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `DASHBOARD_BASIC_USERS`,
+  the admin console's private key PEM) is referenced by name from an
+  `existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
+  ever writes one into a ConfigMap or a rendered manifest. See
+  `values.yaml`'s own `existingSecrets` block for the exact key each
+  Secret must contain.
+
+### Ordering — why a Helm hook, not an init container
+
+`sms-gateway serve` calls `sms_auth::op::load_signing_keys(...)?` before
+binding its listener (this file's own step 3, above) — a fresh database
+makes the container exit immediately, not fail its first `/token` request.
+The chart's `rotateSigningKey` controller is a `pre-install` Helm hook
+Job for exactly this reason: Helm does not create *any* other release
+resource — including the `sms-gateway` Deployment — until every
+pre-install hook Job has succeeded. A post-install step or a readiness
+check on the gateway would both deadlock permanently, since the gateway
+can never become ready without this step having already run.
+
+`migrate` is a `pre-install,pre-upgrade` hook (weight `-20`, so it always
+runs before `rotateSigningKey`'s `-10`) — safe on every deploy because
+it's genuinely idempotent (`deploy/migrate.sql`'s own advisory-lock-guarded
+`schema_migrations` tracking table). `rotateSigningKey` is deliberately
+**not** hooked to `pre-upgrade`: unlike migrate, it is not idempotent —
+every run mints a brand-new signing key with an overlap window, so
+hooking it to every upgrade would rotate the key on every `helm upgrade`,
+silently. Deliberate routine rotation later is a real operator action:
+`kubectl create job --from=job/<release>-rotate-signing-key <name> -n
+<namespace>` re-runs the same Job spec on demand (the `before-hook-creation`
+delete policy leaves the most recent run's Job object around after
+success for exactly this).
+
+### Installing
+
+```bash
+helm repo add bjw-s-labs https://bjw-s-labs.github.io/helm-charts   # or use --repository-config
+helm dependency build deploy/charts/vsms
+
+# Pre-create every Secret existingSecrets.* names — see values.yaml's own
+# comments for the exact key each one must contain. Example for two of
+# them:
+kubectl create secret generic vsms-hash-pepper \
+  --from-literal=SMS_HASH_PEPPER="$(openssl rand -base64 48)"
+kubectl create secret generic vsms-console-key \
+  --from-file=console-private-key.pem=./console-private-key.pem
+
+helm install vsms deploy/charts/vsms \
+  --set image.tag=<a real tag published by release.yml — see above> \
+  --set oidcIssuer=https://api.example.com \
+  --set orange.clientId=... \
+  --set orange.senderNumber=... \
+  --set admin.consoleClientId=... \
+  --set existingSecrets.database.name=vsms-database \
+  --set existingSecrets.hashPepper.name=vsms-hash-pepper \
+  --set existingSecrets.orange.name=vsms-orange \
+  --set existingSecrets.dashboardBasicUsers.name=vsms-dashboard-users \
+  --set existingSecrets.consolePrivateKey.name=vsms-console-key
+```
+
+Every one of `image.tag`, `oidcIssuer`, `orange.clientId`,
+`orange.senderNumber`, `admin.consoleClientId`, and all five
+`existingSecrets.*.name` fields is enforced with Helm's `required`
+function — an install with any of them missing fails immediately with a
+named field, not a cryptic render error or a silently-broken Pod.
+
+### Verification actually performed for this PR
+
+`helm lint --strict` and `helm template` (with a full set of test values —
+no chart default was left to guess at) both ran clean, and the rendered
+output was read, not assumed clean: hook annotations and weights land in
+the order described above, no `existingSecrets` value's *contents* ever
+appear in a rendered manifest (only Secret *names*/*keys* do), and the
+probe paths match `/healthz` (gateway), `/api/health` (admin), and the
+worker's heartbeat-file exec check exactly. See the PR description for
+whether this also reached a real `kind`/`k3d` cluster and, separately,
+whether the GHCR artifacts this section references were confirmed to
+exist (`docker buildx imagetools inspect` / `helm pull --version`), not
+just a green workflow run — this repo has been bitten by exactly that
+gap before (`#87`, `AGENTS.md`).
