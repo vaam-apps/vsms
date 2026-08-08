@@ -10,5 +10,8 @@
 *.key
 /secrets/
 .DS_Store
-/node_modules
+node_modules/
 /pgdata
+.next/
+.turbo/
+admin/public/sw*.js

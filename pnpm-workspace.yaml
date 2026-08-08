@@ -1,0 +1,17 @@
+packages:
+  - "admin"
+  - "packages/*"
+
+# pnpm 11 blocks dependency postinstall scripts unless explicitly allowed here.
+# This is not optional polish: `pnpm run <script>` performs a deps-status check
+# that re-runs `pnpm install`, so an unapproved build script makes EVERY script
+# fail with ERR_PNPM_IGNORED_BUILDS behind a stack trace that reads like an
+# internal pnpm crash rather than a config gap.
+#
+# NOTE the spelling: pnpm 10 called this `onlyBuiltDependencies` (a list);
+# pnpm 11 renamed it to `allowBuilds` (a map). The old key is silently ignored
+# and pnpm rewrites this file with an `allowBuilds` placeholder instead.
+#
+# sharp is Next.js's image optimiser and needs its native binary built.
+allowBuilds:
+  sharp: true
