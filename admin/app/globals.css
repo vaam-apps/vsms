@@ -1,0 +1,15 @@
+@import 'tailwindcss';
+@plugin 'daisyui';
+
+/* @source directive for packages/ui — required for proper styling
+   of all @vsms/ui components. This must be kept in place even though
+   packages/ui does not exist yet (created in T6). Omitting it causes
+   every @vsms/ui class to render unstyled, a silent bug that is
+   miserable to debug. */
+@source '../../packages/ui/src';
+
+@layer base {
+  :root {
+    color-scheme: dark light;
+  }
+}
