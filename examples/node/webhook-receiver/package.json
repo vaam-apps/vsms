@@ -1,0 +1,25 @@
+{
+  "name": "@vsms-examples/webhook-receiver",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Reference Express receiver for vsms delivery webhooks — the inbound half of #150. Signature scheme is provisional; see README.",
+  "scripts": {
+    "start": "node src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "format": "biome format --write .",
+    "lint": "biome check ."
+  },
+  "engines": {
+    "node": ">=23.6.0"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7",
+    "@types/express": "^5.0.1",
+    "@types/node": "^24.0.0",
+    "typescript": "5.9.3"
+  }
+}
