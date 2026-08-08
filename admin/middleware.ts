@@ -36,9 +36,21 @@ const ACTOR_HEADER = "x-vsms-actor";
  * `/api/trpc` is included on purpose. Protecting pages while leaving the RPC
  * endpoint open is the classic version of this bug, and it is the endpoint
  * that actually sends messages.
+ *
+ * `api/health` is excluded — found live wiring up admin/Dockerfile's own
+ * container `HEALTHCHECK` (#139): with `DASHBOARD_AUTH=basic` (the only
+ * mode `NODE_ENV=production` accepts, per @vsms/env's own cross-field
+ * rule), this middleware previously gated `/api/health` the same as every
+ * other route, so an unauthenticated liveness probe got a `401` forever —
+ * `docker compose ps` showed the container permanently `unhealthy` despite
+ * the process being fine. The route's own body is `{ ok: true }`, nothing
+ * more; exempting it leaks no more than "this process is answering HTTP,"
+ * which is the entire point of a liveness check.
  */
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|icons/|manifest.webmanifest|sw.js).*)"],
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|icons/|manifest.webmanifest|sw.js|api/health).*)",
+  ],
 };
 
 function unauthorized(realm: string): NextResponse {

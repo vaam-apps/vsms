@@ -1,0 +1,80 @@
+name: release
+
+# Separate from ci.yml on purpose: ci.yml gates every push/PR against
+# main and must stay fast and cheap to run repeatedly; this workflow only
+# ever runs on a version tag and does the expensive thing (three
+# multi-stage image builds, one of them compiling the Rust workspace
+# twice over) exactly once per release, not once per commit.
+#
+# #139: before this workflow, nothing in .github/workflows/ built or
+# published any artifact at all.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: build and push ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      # Independent images, independent failure domains: a broken admin
+      # build should not block sms-gateway and sms-worker from publishing,
+      # and vice versa.
+      fail-fast: false
+      matrix:
+        include:
+          - image: sms-gateway
+            dockerfile: app/sms-gateway/Dockerfile
+          - image: sms-worker
+            dockerfile: app/sms-worker/Dockerfile
+          - image: admin
+            dockerfile: admin/Dockerfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image tag is the git tag verbatim (e.g. v0.3.1), not a
+      # recomputed version — the tag that triggered this run is the one
+      # source of truth for what's being released.
+      - name: Derive image tag from the pushed git tag
+        id: version
+        run: |
+          echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build context is the repo root for all three images — see each
+      # Dockerfile's own header comment for why (schema/ for
+      # include_server_schema!, the pnpm workspace for admin).
+      - name: Build and push ${{ matrix.image }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/vsms-${{ matrix.image }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/vsms-${{ matrix.image }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}
+          # Scoped per image: the three Dockerfiles share almost their
+          # entire Rust dependency graph, but a single unscoped gha cache
+          # would still serialise around one cache key across a matrix
+          # that otherwise runs in parallel. Each image gets its own slot.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

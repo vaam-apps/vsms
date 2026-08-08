@@ -1,0 +1,180 @@
+# §9.2's deployment shape: Docker Compose on one VM, Caddy terminating TLS
+# in front of sms-gateway and admin, Postgres as the only coordination
+# mechanism, sms-worker running the singleton + scale-to-N roles. Run from
+# this directory: `docker compose --env-file .env up -d --build`.
+#
+# Not built here, deliberately (see the brief this PR was scoped against):
+# a `provision-client` step to mint the admin console's own OAuth client
+# and private key, and a `fake-orange` profile for a demo without real
+# Orange credentials. Both are landing in parallel elsewhere — see
+# docs/runbooks/deployment.md's own "known seams" section for where they
+# plug in.
+#
+# postgres's own port is intentionally never published to the host: every
+# other service reaches it over this compose network's internal DNS
+# (`postgres:5432`). This machine may already be running an unrelated
+# postgres container on 5432 — nothing here should be able to collide
+# with it even by accident.
+
+name: vsms
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vsms}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-vsms}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: applies schema/migrations/postgres/{0001_init,0002_bootstrap}
+  # exactly once each (tracked in a `schema_migrations` table this deploy
+  # path owns — see migrate.sql's own header), guarded by a Postgres
+  # advisory lock so a redeploy that starts this alongside a still-running
+  # previous instance can't apply the same migration twice concurrently.
+  # Exits 0 and stops; sms-gateway and sms-worker both wait on
+  # `service_completed_successfully`, not just `service_started`.
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/migrate.Dockerfile
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  sms-gateway:
+    build:
+      context: ..
+      dockerfile: app/sms-gateway/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
+      # The externally reachable https origin Caddy fronts this service
+      # at — never the in-container listen address. Every token this OP
+      # mints carries this as `iss`; get it wrong and every token this
+      # deployment issues validates against the wrong issuer.
+      SMS_OIDC_ISSUER: ${SMS_OIDC_ISSUER:?set to the public https origin, e.g. https://api.example.com}
+      ORANGE_CM_CLIENT_ID: ${ORANGE_CM_CLIENT_ID:?}
+      ORANGE_CM_CLIENT_SECRET: ${ORANGE_CM_CLIENT_SECRET:?}
+      ORANGE_CM_SENDER_NUMBER: ${ORANGE_CM_SENDER_NUMBER:?}
+      ORANGE_CM_BASE_URL: ${ORANGE_CM_BASE_URL:-https://api.orange.com}
+      # #134/#140: the server-held pepper behind Message.msisdnHash/bodyHash
+      # (HMAC-SHA256, sms_api::pepper) — real secret material, minimum 32
+      # bytes, validated at startup (`sms-gateway serve` refuses to bind on
+      # a missing or too-short value, never silently at the first
+      # sendMessage call). Only sms-gateway needs this; sms-worker never
+      # computes either hash.
+      SMS_HASH_PEPPER: ${SMS_HASH_PEPPER:?generate one via `openssl rand -base64 48`}
+      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,cratestack=info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # sms-gateway needs an active OP signing key to start AT ALL — found
+    # live (#139): `Command::Serve` in app/sms-gateway/src/main.rs loads
+    # signing keys before binding the listener, so a fresh database makes
+    # this container crash-loop, not just fail its first /token request
+    # (AGENTS.md's own M1 prose describes the latter; it's stale). Run
+    # once, on a fresh database, BEFORE the first `up` of this service —
+    # `run --rm`, not `exec`, since there's no running container to exec
+    # into yet:
+    #   docker compose run --rm sms-gateway rotate-signing-key
+    # See docs/runbooks/deployment.md's step 3.
+
+  sms-worker:
+    build:
+      context: ..
+      dockerfile: app/sms-worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
+      # §7.1's five implemented roles (smpp is M7 scaffold-only). §9.2's
+      # own diagram runs a second, scale-to-N-only node
+      # (--roles hooks,jobs) alongside this singleton-holding one once
+      # load calls for it — not added here by default; see
+      # docs/runbooks/deployment.md for that as a documented day-2 step
+      # rather than a service this compose file stands up unused.
+      SMS_WORKER_ROLES: ${SMS_WORKER_ROLES:-dispatch,drain,scheduler,hooks,jobs}
+      ORANGE_CM_CLIENT_ID: ${ORANGE_CM_CLIENT_ID:?}
+      ORANGE_CM_CLIENT_SECRET: ${ORANGE_CM_CLIENT_SECRET:?}
+      ORANGE_CM_SENDER_NUMBER: ${ORANGE_CM_SENDER_NUMBER:?}
+      ORANGE_CM_BASE_URL: ${ORANGE_CM_BASE_URL:-https://api.orange.com}
+      RUST_LOG: ${SMS_WORKER_LOG:-sms_worker=info,sms_worker_bin=info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  admin:
+    build:
+      context: ..
+      dockerfile: admin/Dockerfile
+    restart: unless-stopped
+    environment:
+      DASHBOARD_AUTH: ${DASHBOARD_AUTH:-basic}
+      DASHBOARD_BASIC_REALM: ${DASHBOARD_BASIC_REALM:-vsms Admin Console}
+      DASHBOARD_BASIC_USERS: ${DASHBOARD_BASIC_USERS:?set to username:sha256hex — see docs/runbooks/deployment.md}
+      # Plain http: the gateway is reached over this compose network's own
+      # internal DNS, never the public internet — Caddy is the only thing
+      # that terminates TLS (§9.2). @vsms/env's own cross-field rule
+      # would otherwise demand the three mTLS cert paths below for an
+      # https:// upstream, which don't exist in this deployment.
+      SMS_API_URL: http://sms-gateway:8080
+      SMS_AUTH_ISSUER: ${SMS_OIDC_ISSUER:?}
+      # Provisioning seam: no `provisionAppClient` CLI path exists yet in
+      # this repo (landing in parallel — see this file's own header), so
+      # these two have no automated way to be filled in today. Fill them
+      # in by hand after a manual provisioning call — see
+      # docs/runbooks/deployment.md — and mount the resulting private key
+      # read-only rather than passing it as a plain env var.
+      SMS_CONSOLE_CLIENT_ID: ${SMS_CONSOLE_CLIENT_ID:?}
+      SMS_CONSOLE_PRIVATE_KEY_PATH: /secrets/console-private-key.pem
+      SMS_CONSOLE_SCOPE: ${SMS_CONSOLE_SCOPE:-sms:send sms:read}
+      MESSAGE_STREAM_POLL_MS: ${MESSAGE_STREAM_POLL_MS:-2000}
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-vsms Admin Console}
+      NODE_ENV: production
+    volumes:
+      - ./secrets/console-private-key.pem:/secrets/console-private-key.pem:ro
+    depends_on:
+      sms-gateway:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?}
+      SMS_GATEWAY_DOMAIN: ${SMS_GATEWAY_DOMAIN:?}
+      SMS_ADMIN_DOMAIN: ${SMS_ADMIN_DOMAIN:?}
+    ports:
+      # Not hardcoded 80/443: this machine may already have something
+      # bound to those. Set to 80/443 in .env for a real deploy with a
+      # public DNS record; the defaults here are for a local/demo run.
+      - '${CADDY_HTTP_PORT:-8080}:80'
+      - '${CADDY_HTTPS_PORT:-8443}:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      sms-gateway:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
