@@ -42,47 +42,67 @@ export const env = createEnv({
 });
 
 // Cross-field validation rules
-if (env.DASHBOARD_AUTH === "basic") {
-  if (!env.DASHBOARD_BASIC_USERS || env.DASHBOARD_BASIC_USERS.trim() === "") {
+// The cross-field rules below read `env` values directly. When
+// SKIP_ENV_VALIDATION is set (CI builds, where no real auth config or TLS
+// upstream exists), those values are unvalidated and may be undefined — so
+// running these checks would throw `TypeError: Invalid URL` rather than
+// skipping, which defeats the escape hatch entirely. Skip them together.
+const skipValidation = !!process.env.SKIP_ENV_VALIDATION;
+
+if (!skipValidation) {
+  if (env.DASHBOARD_AUTH === "basic") {
+    if (!env.DASHBOARD_BASIC_USERS || env.DASHBOARD_BASIC_USERS.trim() === "") {
+      throw new Error(
+        'DASHBOARD_AUTH=basic requires DASHBOARD_BASIC_USERS to be non-empty (format: "username:sha256hex,...")',
+      );
+    }
+
+    const userPattern = /^[^:,]+:[0-9a-f]{64}$/;
+    const users = env.DASHBOARD_BASIC_USERS.split(",").map((u) => u.trim());
+    for (const user of users) {
+      if (!userPattern.test(user)) {
+        throw new Error(
+          `DASHBOARD_BASIC_USERS entry '${user}' does not match expected format "username:sha256hex" (64 hex chars)`,
+        );
+      }
+    }
+  }
+
+  // `next build` sets NODE_ENV=production while *compiling*, which is not the
+  // same thing as *running* a production server. Next signals the compile with
+  // NEXT_PHASE=phase-production-build. The two rules below exist to stop a
+  // production deployment being served open to the internet or over plaintext —
+  // they are deploy-time guarantees, not compile-time ones — so applying them
+  // during a build makes the workspace unbuildable on a developer machine and in
+  // CI (where no real auth config or TLS upstream exists) while protecting
+  // nothing. Runtime boot is still fully checked: this only exempts the build.
+  const isProductionBuild = process.env.NEXT_PHASE === "phase-production-build";
+  const enforceDeploymentRules = env.NODE_ENV === "production" && !isProductionBuild;
+
+  if (enforceDeploymentRules && env.DASHBOARD_AUTH === "none") {
     throw new Error(
-      'DASHBOARD_AUTH=basic requires DASHBOARD_BASIC_USERS to be non-empty (format: "username:sha256hex,...")',
+      "NODE_ENV=production requires DASHBOARD_AUTH to be set (basic or other auth method)",
     );
   }
 
-  const userPattern = /^[^:,]+:[0-9a-f]{64}$/;
-  const users = env.DASHBOARD_BASIC_USERS.split(",").map((u) => u.trim());
-  for (const user of users) {
-    if (!userPattern.test(user)) {
+  const apiUrl = new URL(env.SMS_API_URL);
+  const isHttps = apiUrl.protocol === "https:";
+
+  if (isHttps) {
+    if (!env.SMS_API_CLIENT_CERT_PATH || !env.SMS_API_CLIENT_KEY_PATH || !env.SMS_API_CA_PATH) {
       throw new Error(
-        `DASHBOARD_BASIC_USERS entry '${user}' does not match expected format "username:sha256hex" (64 hex chars)`,
+        "SMS_API_URL uses https: protocol, so all three cert paths must be set: SMS_API_CLIENT_CERT_PATH, SMS_API_CLIENT_KEY_PATH, SMS_API_CA_PATH",
+      );
+    }
+  } else {
+    if (env.SMS_API_CLIENT_CERT_PATH || env.SMS_API_CLIENT_KEY_PATH || env.SMS_API_CA_PATH) {
+      throw new Error(
+        "SMS_API_URL uses http: protocol, so cert paths must NOT be set: SMS_API_CLIENT_CERT_PATH, SMS_API_CLIENT_KEY_PATH, SMS_API_CA_PATH",
       );
     }
   }
-}
 
-if (env.NODE_ENV === "production" && env.DASHBOARD_AUTH === "none") {
-  throw new Error(
-    "NODE_ENV=production requires DASHBOARD_AUTH to be set (basic or other auth method)",
-  );
-}
-
-const apiUrl = new URL(env.SMS_API_URL);
-const isHttps = apiUrl.protocol === "https:";
-
-if (isHttps) {
-  if (!env.SMS_API_CLIENT_CERT_PATH || !env.SMS_API_CLIENT_KEY_PATH || !env.SMS_API_CA_PATH) {
-    throw new Error(
-      "SMS_API_URL uses https: protocol, so all three cert paths must be set: SMS_API_CLIENT_CERT_PATH, SMS_API_CLIENT_KEY_PATH, SMS_API_CA_PATH",
-    );
+  if (enforceDeploymentRules && !isHttps) {
+    throw new Error("NODE_ENV=production requires SMS_API_URL to use https: protocol");
   }
-} else {
-  if (env.SMS_API_CLIENT_CERT_PATH || env.SMS_API_CLIENT_KEY_PATH || env.SMS_API_CA_PATH) {
-    throw new Error(
-      "SMS_API_URL uses http: protocol, so cert paths must NOT be set: SMS_API_CLIENT_CERT_PATH, SMS_API_CLIENT_KEY_PATH, SMS_API_CA_PATH",
-    );
-  }
-}
-
-if (env.NODE_ENV === "production" && !isHttps) {
-  throw new Error("NODE_ENV=production requires SMS_API_URL to use https: protocol");
 }

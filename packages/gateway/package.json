@@ -1,5 +1,5 @@
 {
-  "name": "@vsms/env",
+  "name": "@vsms/gateway",
   "version": "0.0.1",
   "private": true,
   "type": "module",
@@ -10,11 +10,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@t3-oss/env-nextjs": "0.13.11",
-    "zod": "4.4.3"
+    "@vsms/env": "workspace:*",
+    "jose": "6.2.8",
+    "server-only": "0.0.1",
+    "undici": "8.10.0"
   },
   "devDependencies": {
-    "typescript": "5.9.3",
-    "@types/node": "^24.0.0"
+    "@types/node": "^20",
+    "typescript": "5.9.3"
   }
 }
