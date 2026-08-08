@@ -1199,25 +1199,22 @@ CREATE INDEX cratestack_event_outbox_undelivered_idx
     WHERE delivered_at IS NULL;
 ```
 
-**Referential integrity**, since the framework emits none:
+**Referential integrity.** At `=0.6.7`, `cratestack migrate diff` emitted none of this — every FK below was hand-written for that reason. As of the `=0.7.8` bump, the emitter itself now writes a plain (`ON DELETE NO ACTION`) `FOREIGN KEY` into `0001_init` for every `@relation(fields:[...], references:[...])` in the schema — all twelve of them, covering every relation below. Most of those are exactly what we want and need no help from here any more.
+
+Three are not: `message_parts`, `delivery_receipts`, and `webhook_attempts` need `ON DELETE CASCADE` so a purged parent takes its children with it, and the framework's emitted default doesn't provide that. Two `FOREIGN KEY` constraints on the same column enforce independently — leaving the emitted `NO ACTION` constraint in place alongside a hand-written `CASCADE` one does not "win" toward the more permissive behaviour, it silently reintroduces the block: Postgres checks both, and the `NO ACTION` one raises `violates foreign key constraint` before the `CASCADE` one ever runs. Confirmed live: deleting a `messages` row with a `message_parts` child against that combination fails instead of cascading. So for those three, the migration drops the emitted constraint by name and replaces it with the cascading one, rather than adding a second constraint beside it.
+
+The other five relations (`messages`, `app_clients`, `oauth_clients`, `routes`, `users`) get exactly the emitted default already, so nothing further is written here for them — a hand-written duplicate would be redundant, not additive, and this section only earns its keep by doing what the framework can't.
 
 ```sql
-ALTER TABLE messages ADD CONSTRAINT messages_app_fk
-    FOREIGN KEY (app_id) REFERENCES apps(id);
-ALTER TABLE app_clients ADD CONSTRAINT app_clients_app_fk
-    FOREIGN KEY (app_id) REFERENCES apps(id);
-ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_app_client_fk
-    FOREIGN KEY (app_client_id) REFERENCES app_clients(id);
+ALTER TABLE message_parts DROP CONSTRAINT message_parts_message_id_fkey;
 ALTER TABLE message_parts ADD CONSTRAINT parts_message_fk
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE;
+ALTER TABLE delivery_receipts DROP CONSTRAINT delivery_receipts_message_id_fkey;
 ALTER TABLE delivery_receipts ADD CONSTRAINT receipts_message_fk
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE;
-ALTER TABLE routes ADD CONSTRAINT routes_provider_fk
-    FOREIGN KEY (provider_id) REFERENCES providers(id);
+ALTER TABLE webhook_attempts DROP CONSTRAINT webhook_attempts_endpoint_id_fkey;
 ALTER TABLE webhook_attempts ADD CONSTRAINT wha_endpoint_fk
     FOREIGN KEY (endpoint_id) REFERENCES webhook_endpoints(id) ON DELETE CASCADE;
-ALTER TABLE users ADD CONSTRAINT users_role_fk
-    FOREIGN KEY (role_key) REFERENCES roles(key);
 ```
 
 **Format constraints `@db_enforce` cannot express.** It backs `@length`/`@range` with a real `CHECK` — confirmed against `SenderId.value`, the schema's one other `@db_enforce` field — but is a silent no-op on `@regex`: no `CHECK`, no error, no warning. Verified with an isolated two-field probe schema (§2.0). Anything pattern-shaped needs its `CHECK` written by hand:

@@ -1,3 +1,27 @@
+ALTER TABLE webhook_endpoints DROP CONSTRAINT webhook_endpoints_app_id_fkey;
+
+ALTER TABLE webhook_attempts DROP CONSTRAINT webhook_attempts_endpoint_id_fkey;
+
+ALTER TABLE users DROP CONSTRAINT users_role_key_fkey;
+
+ALTER TABLE sender_id_registrations DROP CONSTRAINT sender_id_registrations_provider_id_fkey;
+
+ALTER TABLE sender_id_registrations DROP CONSTRAINT sender_id_registrations_sender_id_id_fkey;
+
+ALTER TABLE routes DROP CONSTRAINT routes_provider_id_fkey;
+
+ALTER TABLE oauth_clients DROP CONSTRAINT oauth_clients_app_client_id_fkey;
+
+ALTER TABLE messages DROP CONSTRAINT messages_app_id_fkey;
+
+ALTER TABLE message_parts DROP CONSTRAINT message_parts_message_id_fkey;
+
+ALTER TABLE delivery_receipts DROP CONSTRAINT delivery_receipts_message_id_fkey;
+
+ALTER TABLE apps DROP CONSTRAINT apps_default_sender_id_id_fkey;
+
+ALTER TABLE app_clients DROP CONSTRAINT app_clients_app_id_fkey;
+
 ALTER TABLE webhook_attempts DROP CONSTRAINT webhook_attempts_state_enum_check;
 
 ALTER TABLE sender_ids DROP CONSTRAINT sender_ids_value_length_check;
