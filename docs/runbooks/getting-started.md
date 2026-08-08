@@ -62,7 +62,14 @@ DATABASE_URL=postgres://localhost/vsms_check \
     cargo run -p sms-gateway -- rotate-signing-key
 ```
 
-Second, `sms-gateway serve` also refuses to start until an `active` `Provider` row keyed `orange_cm` exists — nothing seeds it automatically, and no admin console exists yet to create one by hand. The seed/send tool built for this milestone's own acceptance testing does it as a side effect, so run it *before* starting either binary, not after:
+Second, `sms-gateway serve` also refuses to start until an `active` `Provider` row keyed `orange_cm` exists — no admin console exists yet to create one by hand, so run something that seeds it *before* starting either binary, not after. Two options: `send_test_message` below also creates it as a side effect (along with the `App`/`AppClient`/`SenderId` fixtures this walkthrough's message needs anyway), or, if you only want the `Provider` row and nothing else, `sms-gateway seed-provider` (#148) does exactly that — same idempotent `create` + catch-`23505` dedupe, no message/fixtures attached:
+
+```bash
+DATABASE_URL=postgres://localhost/vsms_check \
+    cargo run -p sms-gateway -- seed-provider
+```
+
+This walkthrough uses `send_test_message` below instead, since it needs the message/App/AppClient fixtures regardless and `send_test_message` already creates the `Provider` row along with them — no need to run both.
 
 It also needs `SMS_HASH_PEPPER` — the server-held key behind `msisdnHash`/`bodyHash`
 (#134, `sms_api::pepper`). Required, minimum 32 bytes, and it **must be the same value
