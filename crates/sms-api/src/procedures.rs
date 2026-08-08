@@ -6,8 +6,6 @@
 //! milestone that will build it, rather than a plausible-looking stub that
 //! would pass a smoke test and lie.
 
-use std::fmt::Write as _;
-
 use authkestra_engine::TokenManager;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
 use cratestack::{
@@ -16,13 +14,13 @@ use cratestack::{
 use rand::rngs::OsRng;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use rsa::RsaPrivateKey;
-use sha2::{Digest, Sha256};
 use sms_core::pack;
 use sms_encoding::{analyse, normalise, transliterate_to_gsm7, SmsEncoding};
 use sms_msisdn::{Msisdn, OperatorPrefixTable};
 
 use crate::auth::{Principal, PrincipalKind};
 use crate::cache::TtlCache;
+use crate::pepper::{hmac_sha256_hex, HashPepper};
 use crate::rbac::require_permission;
 use crate::schema::{
     self, app, app_client, message, operator_prefix_rule, opt_out, provider, sender_id,
@@ -98,21 +96,6 @@ pub(crate) fn parse_operator_code(s: &str) -> Option<schema::OperatorCode> {
     })
 }
 
-/// `sha256:<hex>` — the convention already visible in this crate's own test
-/// fixtures (`msisdnHash: "sha256:...".to_owned()`). Prefixed so a future
-/// second hash scheme (a salted one, say) is distinguishable from this one
-/// by the stored value alone, not by column-wide convention nobody wrote
-/// down.
-fn sha256_hex(input: &str) -> String {
-    let digest = Sha256::digest(input.as_bytes());
-    let mut hex = String::with_capacity(digest.len() * 2 + 7);
-    hex.push_str("sha256:");
-    for byte in digest {
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
-}
-
 /// The first instant of `now`'s UTC calendar month — the quota window's
 /// start. UTC because nothing in the schema carries a timezone; a
 /// documented, simple boundary beats a locally-correct one this crate has
@@ -160,23 +143,38 @@ pub struct Procedures {
     /// months, not seconds, and this is queried on *every* send and
     /// preview, not just once per client.
     operator_cache: std::sync::Arc<TtlCache<(), OperatorPrefixTable>>,
+    /// #134: the server-held pepper behind `msisdnHash`/`bodyHash` — see
+    /// `pepper.rs`'s module doc for the scheme, and for the rotation
+    /// consequence of ever changing it. `Clone` on `HashPepper` is a cheap
+    /// `Arc` bump, matching the two caches above.
+    pepper: HashPepper,
 }
 
-impl Default for Procedures {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+// No `Default` impl on purpose (#134): a default would have to invent a
+// pepper, and this repo's own standing preference is a hard cutover, never
+// a silently-weaker fallback — see AGENTS.md's "Delivery style" section.
+// Every construction site must supply a real one explicitly.
 
 impl Procedures {
+    /// `pepper` is real secret material — see `pepper.rs`'s module doc.
+    /// There is no default: every caller (the router, every live-Postgres
+    /// test, `examples/send_test_message.rs`) must supply one explicitly.
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(pepper: HashPepper) -> Self {
         Self {
             app_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_secs(60))),
             operator_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_secs(
                 5 * 60,
             ))),
+            pepper,
         }
+    }
+
+    /// `{HASH_SCHEME}:{hex}` — see `pepper.rs`'s `hmac_sha256_hex` for the
+    /// algorithm. The one place `sendMessage` turns a plaintext MSISDN or
+    /// body into the value persisted in `msisdnHash`/`bodyHash`.
+    fn keyed_hash_hex(&self, input: &str) -> String {
+        hmac_sha256_hex(&self.pepper, input)
     }
 
     /// A `system`-role context — the only one `OauthClient`-adjacent app
@@ -548,7 +546,7 @@ impl Procedures {
         // unallocated ranges — failing here beats failing on a DLR later.
         let msisdn = Msisdn::parse_mobile(&args.to)
             .map_err(|error| CoolError::Validation(error.to_string()))?;
-        let msisdn_hash = sha256_hex(msisdn.as_e164());
+        let msisdn_hash = self.keyed_hash_hex(msisdn.as_e164());
 
         // 3. Opt-out check, before anything else persists.
         Self::ensure_not_opted_out(db, &sys, &msisdn_hash).await?;
@@ -597,7 +595,16 @@ impl Procedures {
             .map_or_else(|| default_validity(class), ChronoDuration::minutes);
         let expires_at = args.scheduledAt.unwrap_or(now) + validity;
 
-        let body_hash = sha256_hex(&body);
+        // #134: peppered under the same scheme as `msisdnHash`. A
+        // templated OTP body ("Votre code est 4821") is low-entropy and
+        // enumerable by the exact same brute-force argument the issue makes
+        // for MSISDNs — grepped for every reader of `bodyHash` before
+        // deciding this (`rg bodyHash`, this crate and the admin console's
+        // generated TS client): it is write-only, never read back or
+        // cross-compared against a value computed outside this system, so
+        // there is no external party this would break by keying it. Pepper
+        // it too rather than leave a second, weaker hash in the same row.
+        let body_hash = self.keyed_hash_hex(&body);
         let body_len = i64::try_from(body.len()).unwrap_or(i64::MAX);
 
         // create()'s own @@emit(created, updated) writes the transactional
@@ -962,16 +969,35 @@ mod tests {
         assert_eq!(parse_operator_code("mtn_typo"), None);
     }
 
+    /// #134: `Procedures::keyed_hash_hex` is a thin wrapper over
+    /// `pepper::hmac_sha256_hex` — that function's own unit tests
+    /// (`pepper.rs`) already cover determinism, the stored-value prefix,
+    /// and pepper-sensitivity in isolation. This just proves the wrapper
+    /// actually threads `self.pepper` through rather than, say, silently
+    /// falling back to some other value.
     #[test]
-    fn sha256_hex_is_stable_and_prefixed() {
-        let hash = sha256_hex("+237677123456");
-        assert!(hash.starts_with("sha256:"));
-        assert_eq!(hash.len(), "sha256:".len() + 64);
-        assert_eq!(hash, sha256_hex("+237677123456"), "must be deterministic");
+    fn keyed_hash_hex_uses_this_procedures_own_pepper() {
+        let pepper_a = HashPepper::new("a".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
+        let pepper_b = HashPepper::new("b".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
+        let procedures_a = Procedures::new(pepper_a.clone());
+        let procedures_b = Procedures::new(pepper_b);
+
+        let hash = procedures_a.keyed_hash_hex("+237677123456");
+        assert!(hash.starts_with("hmac-sha256-v1:"));
+        assert_eq!(
+            hash,
+            procedures_a.keyed_hash_hex("+237677123456"),
+            "must be deterministic under the same pepper"
+        );
         assert_ne!(
             hash,
-            sha256_hex("+237677123457"),
-            "must not collide trivially"
+            procedures_b.keyed_hash_hex("+237677123456"),
+            "a different Procedures instance's pepper must produce a different hash"
+        );
+        assert_eq!(
+            hash,
+            hmac_sha256_hex(&pepper_a, "+237677123456"),
+            "must match the free function directly, not some independent computation"
         );
     }
 

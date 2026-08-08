@@ -87,7 +87,7 @@ use sms_api::schema::{
     self, oauth_signing_key, procedures::provision_app_client, procedures::ProcedureRegistry,
     provider as provider_filter, Cratestack,
 };
-use sms_api::Procedures;
+use sms_api::{HashPepper, Procedures};
 
 /// The `Provider.key` `sms-provider-orange-cm::OrangeCmProvider` reports —
 /// `app/sms-gateway/src/main.rs`'s own `resolve_provider_row_id` looks up
@@ -97,6 +97,18 @@ use sms_api::Procedures;
 /// `lib.rs` (`examples/send_test_message.rs` duplicates it the same way,
 /// for the same reason).
 const ORANGE_PROVIDER_KEY: &str = "orange_cm";
+
+/// #134: `sms-gateway serve` now refuses to start without `--hash-pepper`
+/// (env `SMS_HASH_PEPPER`) — both spawned `GatewayProcess`es below pass
+/// this. This suite never sends a message (it provisions and exchanges
+/// tokens, not `sendMessage`), so — like `provision_app_client_live_postgres.rs`
+/// — the exact value doesn't matter, only that it clears `HashPepper::new`'s
+/// minimum length.
+const TEST_HASH_PEPPER: &str = "m1-acceptance-gate-live-postgres-test-pepper-over-minimum";
+
+fn test_pepper() -> HashPepper {
+    HashPepper::new(TEST_HASH_PEPPER).expect("test pepper meets HashPepper::new's minimum length")
+}
 
 fn sys() -> CoolContext {
     Principal {
@@ -485,6 +497,8 @@ impl GatewayProcess {
             .arg("m1-acceptance-gate-test-orange-client-secret")
             .arg("--orange-sender-number")
             .arg("+237600000000")
+            .arg("--hash-pepper")
+            .arg(TEST_HASH_PEPPER)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
@@ -596,7 +610,7 @@ async fn a_persisted_client_credentials_client_survives_a_process_restart_and_a_
     // RSA keygen, real transaction. See this file's own module doc for
     // why this is a direct procedure call rather than an HTTP request to
     // process #1.
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
     let provisioned = procedures
         .provision_app_client(
             &db,

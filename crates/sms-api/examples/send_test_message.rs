@@ -23,6 +23,7 @@
 //!     --to +237677123456 --sender-id VYMALO --body "Test message, #36 gate"
 //! ```
 
+use anyhow::Context;
 use chrono::Utc;
 use clap::Parser;
 use cratestack::sqlx::postgres::PgPoolOptions;
@@ -54,6 +55,11 @@ struct Cli {
     sender_id: String,
     #[arg(long, default_value = "Test message from the #36 acceptance gate")]
     body: String,
+    /// #134: same pepper `sms-gateway serve` would need — this tool calls
+    /// `sendMessage` directly rather than over HTTP, so it needs its own
+    /// copy to construct a `Procedures`. See `sms_api::pepper`'s module doc.
+    #[arg(long, env = "SMS_HASH_PEPPER")]
+    hash_pepper: String,
 }
 
 fn owner() -> CoolContext {
@@ -328,6 +334,8 @@ async fn ensure_app_and_client(db: &Cratestack) -> anyhow::Result<()> {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let pepper = sms_api::HashPepper::new(cli.hash_pepper.clone())
+        .context("SMS_HASH_PEPPER is invalid — see sms_api::pepper's module doc")?;
 
     let pool = PgPoolOptions::new()
         .max_connections(5)
@@ -339,7 +347,7 @@ async fn main() -> anyhow::Result<()> {
     let sender_value = ensure_approved_sender(&db, &cli.sender_id, &provider_id).await?;
     ensure_app_and_client(&db).await?;
 
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(pepper);
     let result = procedures
         .send_message(
             &db,

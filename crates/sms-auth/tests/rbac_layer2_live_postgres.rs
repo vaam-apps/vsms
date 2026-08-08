@@ -73,7 +73,7 @@ use rsa::traits::PublicKeyParts;
 use rsa::RsaPrivateKey;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack};
-use sms_api::GatewayAuth;
+use sms_api::{GatewayAuth, HashPepper};
 
 /// #102, found live: on a genuinely fresh database, this binary's own
 /// tests — run concurrently by Rust's default multi-threaded test
@@ -397,7 +397,12 @@ async fn spawn_test_server(db: &Cratestack) -> String {
     };
 
     let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer.clone());
-    let app = sms_api::router(db.clone(), auth).merge(op_router(op_state));
+    // #134: this suite exercises Layer 2 (`require_permission`), never
+    // `sendMessage` — like `oidc_flow_live.rs`, any pepper over the
+    // minimum length works.
+    let pepper = HashPepper::new("rbac-layer2-live-test-pepper-well-over-the-minimum-length")
+        .expect("test pepper meets HashPepper::new's minimum length");
+    let app = sms_api::router(db.clone(), auth, pepper).merge(op_router(op_state));
 
     tokio::spawn(async move {
         axum::serve(listener, app.into_make_service())

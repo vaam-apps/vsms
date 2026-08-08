@@ -70,6 +70,18 @@ enum Command {
             default_value = "https://api.orange.com"
         )]
         orange_base_url: String,
+
+        /// #134: the server-held pepper behind `Message.msisdnHash`/
+        /// `Message.bodyHash` — real secret material, config only, never
+        /// the database, a migration, or a log line (see `sms_api::pepper`'s
+        /// module doc for the scheme and the rotation consequence).
+        /// Required unconditionally and validated (minimum length) before
+        /// this process does anything else, so a missing or trivially weak
+        /// pepper fails loudly at startup — never silently at the first
+        /// `sendMessage` call. Never logged: `HashPepper`'s own `Debug`
+        /// impl redacts it even if this struct were ever printed.
+        #[arg(long, env = "SMS_HASH_PEPPER")]
+        hash_pepper: String,
     },
     /// Print the generated route table and exit. Needs no database.
     Routes,
@@ -169,7 +181,17 @@ async fn main() -> Result<()> {
             orange_client_secret,
             orange_sender_number,
             orange_base_url,
+            hash_pepper,
         } => {
+            // #134: validated before anything else in this branch runs —
+            // failing loudly on a missing/too-short pepper at startup, not
+            // at the first `sendMessage` call. `clap`'s own `env`/required
+            // handling already refuses a *missing* value before `main`
+            // ever reaches this line; this is the length check clap can't
+            // express.
+            let pepper = sms_api::HashPepper::new(hash_pepper)
+                .context("SMS_HASH_PEPPER is invalid — see sms_api::pepper's module doc")?;
+
             let pool = PgPoolOptions::new()
                 .max_connections(max_connections)
                 .connect(&database_url)
@@ -212,7 +234,7 @@ async fn main() -> Result<()> {
             let dlr_router = dlr::router(db.clone(), sys, provider, provider_row_id);
 
             let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer);
-            let app = sms_api::router(db, auth)
+            let app = sms_api::router(db, auth, pepper)
                 .merge(op::router(op_state))
                 .merge(dlr_router);
 

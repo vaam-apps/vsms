@@ -25,7 +25,7 @@ use sms_api::schema::{
     self, procedures::send_message, procedures::ProcedureRegistry, Cratestack, Encoding,
     MessageState, OperatorCode,
 };
-use sms_api::Procedures;
+use sms_api::{HashPepper, Procedures};
 
 /// #102, found live: on a genuinely fresh database, this binary's own
 /// tests — run concurrently by Rust's default multi-threaded test
@@ -125,6 +125,16 @@ fn unique_mtn_msisdn() -> String {
         .subsec_nanos();
     let unique = (u64::from(nanos) + n) % 1_000_000;
     format!("+237677{unique:06}")
+}
+
+/// #134: the pepper every `Procedures` in this suite is built with, unless
+/// a test is specifically about pepper *divergence* (see
+/// `the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn`). Fixed and
+/// well over `HashPepper`'s own minimum, so it never needs touching when
+/// that minimum changes.
+fn test_pepper() -> HashPepper {
+    HashPepper::new("send-message-live-postgres-test-pepper-well-over-the-minimum-length")
+        .expect("test pepper meets HashPepper::new's minimum length")
 }
 
 async fn db() -> Cratestack {
@@ -275,7 +285,7 @@ fn args(to: &str, body: &str, sender_id: Option<&str>) -> send_message::Args {
 async fn a_well_formed_send_is_accepted_and_classified() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
 
@@ -302,7 +312,7 @@ async fn a_well_formed_send_is_accepted_and_classified() {
 async fn an_unknown_client_id_is_unauthorized() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
 
     let error = procedures
         .send_message(
@@ -321,7 +331,7 @@ async fn an_unknown_client_id_is_unauthorized() {
 async fn a_human_caller_is_rejected_with_a_clear_reason_not_a_guess() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
     // #24: give this caller the `sms:send` scope it would need to clear
     // `require_permission` (Layer 2), so the error asserted below is the
     // one this test actually means to exercise — `caller_client_id`'s
@@ -356,7 +366,7 @@ async fn a_human_caller_is_rejected_with_a_clear_reason_not_a_guess() {
 async fn an_opted_out_recipient_is_refused_before_persistence() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
 
@@ -396,15 +406,18 @@ async fn an_opted_out_recipient_is_refused_before_persistence() {
     assert_eq!(count, 0, "an opted-out send must not persist a row at all");
 }
 
+/// #134: this **must** match what `sendMessage` actually persists, or
+/// `an_opted_out_recipient_is_refused_before_persistence` above would pass
+/// for the wrong reason — a hand-rolled hash that never collides with the
+/// real one would make the opt-out lookup always miss, and the test would
+/// only be proving `sendMessage` accepts a well-formed send, not that
+/// opt-out matching works. Delegates to `sms_api::hmac_sha256_hex` — the
+/// same function `Procedures::keyed_hash_hex` calls internally — instead of
+/// duplicating the algorithm, which is exactly how this file's own
+/// pre-#134 `sha_of` silently stopped matching production the moment the
+/// scheme changed underneath it.
 fn sha_of(input: &str) -> String {
-    use sha2::{Digest, Sha256};
-    use std::fmt::Write;
-    let digest = Sha256::digest(input.as_bytes());
-    let mut hex = String::from("sha256:");
-    for byte in digest {
-        let _ = write!(hex, "{byte:02x}");
-    }
-    hex
+    sms_api::hmac_sha256_hex(&test_pepper(), input)
 }
 
 #[tokio::test]
@@ -412,7 +425,7 @@ fn sha_of(input: &str) -> String {
 async fn a_full_monthly_quota_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
     // Quota of 0: any send at all should already be "at" quota.
     let (client_id, _app) = seed_app_and_client(&db, 0, None).await;
     let sender = seed_approved_sender(&db).await;
@@ -434,7 +447,7 @@ async fn a_full_monthly_quota_is_refused() {
 async fn no_sender_id_and_no_default_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
 
     let error = procedures
@@ -454,7 +467,7 @@ async fn no_sender_id_and_no_default_is_refused() {
 async fn an_unregistered_sender_id_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
 
     let error = procedures
@@ -474,7 +487,7 @@ async fn an_unregistered_sender_id_is_refused() {
 async fn an_app_default_sender_is_used_when_none_is_given() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
     let sender = seed_approved_sender(&db).await;
     let sender_row = db
         .sender_id()
@@ -508,7 +521,7 @@ async fn an_app_default_sender_is_used_when_none_is_given() {
 async fn an_unrecognised_prefix_classifies_as_unknown_not_a_guess() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new();
+    let procedures = Procedures::new(test_pepper());
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
 
@@ -525,4 +538,79 @@ async fn an_unrecognised_prefix_classifies_as_unknown_not_a_guess() {
         .expect("an unrecognised prefix is still a valid send");
 
     assert_eq!(result.operator, OperatorCode::unknown);
+}
+
+/// Reads back a single `Message`'s `msisdnHash`, under the system context
+/// the way `sendMessage`'s own internal reads do.
+async fn msisdn_hash_of(db: &Cratestack, message_id: &str) -> String {
+    db.message()
+        .find_many()
+        .where_expr(cratestack::FilterExpr::from(
+            schema::message::id().eq(message_id.to_owned()),
+        ))
+        .limit(1)
+        .run(&sys())
+        .await
+        .expect("reading back the message")
+        .into_iter()
+        .next()
+        .expect("the message just created must exist")
+        .msisdnHash
+}
+
+/// #134's own acceptance test, end to end through the real send path
+/// rather than calling `hmac_sha256_hex` directly: the same MSISDN sent
+/// under two different `Procedures` (two different peppers) must persist
+/// two different `msisdnHash` values, and sent again under the *first*
+/// pepper must persist the same value as the first time — proving the
+/// stored hash is keyed by the pepper, not just a function of the MSISDN
+/// the way the pre-#134 unkeyed `sha256_hex` was.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let sender = seed_approved_sender(&db).await;
+    let to = unique_mtn_msisdn();
+    let to = to.as_str();
+
+    let other_pepper =
+        HashPepper::new("a-completely-different-send-message-live-postgres-pepper-value")
+            .expect("the other test pepper meets HashPepper::new's minimum length");
+    assert_ne!(
+        sms_api::hmac_sha256_hex(&test_pepper(), "sanity-check"),
+        sms_api::hmac_sha256_hex(&other_pepper, "sanity-check"),
+        "the two test peppers in this test must actually differ"
+    );
+
+    let (client_a, _app_a) = seed_app_and_client(&db, 1000, None).await;
+    let sent_a = Procedures::new(test_pepper())
+        .send_message(&db, &app_caller(&client_a), args(to, "hi", Some(&sender)))
+        .await
+        .expect("sending under pepper A");
+    let hash_a = msisdn_hash_of(&db, &sent_a.messageId).await;
+
+    let (client_b, _app_b) = seed_app_and_client(&db, 1000, None).await;
+    let sent_b = Procedures::new(other_pepper)
+        .send_message(&db, &app_caller(&client_b), args(to, "hi", Some(&sender)))
+        .await
+        .expect("sending under pepper B — a distinct App, so quota/dedupe don't interfere");
+    let hash_b = msisdn_hash_of(&db, &sent_b.messageId).await;
+
+    assert_ne!(
+        hash_a, hash_b,
+        "the same MSISDN under two different peppers must persist two different hashes"
+    );
+
+    let (client_c, _app_c) = seed_app_and_client(&db, 1000, None).await;
+    let sent_c = Procedures::new(test_pepper())
+        .send_message(&db, &app_caller(&client_c), args(to, "hi", Some(&sender)))
+        .await
+        .expect("sending under pepper A again, from an independent Procedures instance");
+    let hash_c = msisdn_hash_of(&db, &sent_c.messageId).await;
+
+    assert_eq!(
+        hash_a, hash_c,
+        "the same pepper must hash the same MSISDN identically, even from a fresh Procedures"
+    );
 }
