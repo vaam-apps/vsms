@@ -89,7 +89,12 @@ jobs:
             # comment above). Never :main/:latest, and a chart_version
             # namespace ("dev", not "main") that can't collide with a
             # real main-triggered publish's own "0.0.0-main.<sha>".
-            BRANCH_SLUG="$(echo "${GITHUB_REF#refs/heads/}" | tr -c 'a-zA-Z0-9' '-' | tr '[:upper:]' '[:lower:]')"
+            # printf, not echo: `tr -c` rewrites echo's own trailing
+            # newline into a '-' as well, which is why this workflow's very
+            # first run really did publish images tagged
+            # `branch-claude-145-release-and-helm-chart-`. Cosmetic, but not
+            # a tag anyone would type by hand.
+            BRANCH_SLUG="$(printf '%s' "${GITHUB_REF#refs/heads/}" | tr -c 'a-zA-Z0-9' '-' | tr '[:upper:]' '[:lower:]')"
             {
               echo "tag_primary=branch-${BRANCH_SLUG}"
               echo "tag_secondary=sha-${SHA_SHORT}"
