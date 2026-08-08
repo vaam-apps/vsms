@@ -108,27 +108,15 @@ pnpm install
 pnpm start
 ```
 
-**A temporary wrinkle, expected to resolve on its own:** this package lives
-outside the root `pnpm-workspace.yaml` (which only covers `admin` and
-`packages/*`), and the shared `examples/` pnpm workspace (glob `node/*`)
-that's meant to pick it up automatically is being added concurrently by the
-[#149](https://github.com/vymalo/vsms/issues/149) PR. Until this branch is
-rebased on top of that, running `pnpm install` from a plain checkout of
-*this* PR alone gets swallowed by the *root* workspace (it walks up and
-finds `pnpm-workspace.yaml` there first, sees this directory isn't a
-declared member, and silently installs nothing for it). If you're checking
-out this PR in isolation before #149 has landed, use:
+This package is a member of the `examples/` pnpm workspace (`examples/pnpm-workspace.yaml`,
+glob `node/*`), which is a *separate* workspace from the repo root's — so installing here
+never touches `admin/`'s lockfile. `pnpm install` from this directory resolves
+`examples/` as its nearest workspace root and works with no flags.
 
-```bash
-pnpm install --ignore-workspace
-pnpm start
-```
-
-Once both PRs are merged (or once you rebase this branch on top of #149),
-plain `pnpm install && pnpm start` from this directory works exactly as
-written above — no flag needed, because `examples/pnpm-workspace.yaml`'s
-`node/*` glob will pick this package up as the nearest workspace root
-before pnpm ever reaches the repo root's.
+One trap worth knowing if you ever add an example *outside* that glob: pnpm walks up to
+the nearest `pnpm-workspace.yaml`, and if the directory is not a declared member it
+**installs nothing and exits successfully** — no error, no warning. This package hit
+exactly that before the `node/*` glob existed.
 
 `pnpm start` boots the receiver on `http://localhost:4790` (override with
 `WEBHOOK_RECEIVER_PORT`), then runs the local emitter against it, then
