@@ -1,0 +1,38 @@
+# Terminates TLS for both public-facing services — §9.2's own diagram: a
+# single Caddy edge, everything else reachable only on the compose
+# network. Two domains, not one domain with path-based routing: sms-gateway
+# is an OIDC issuer, and `SMS_OIDC_ISSUER` must be its own https origin —
+# `/.well-known/openid-configuration` and `/jwks.json` are only
+# well-defined at an origin's root (RFC 8414), and `authkestra_op`'s
+# discovery handler builds absolute URLs off the configured issuer, not off
+# whatever path Caddy happened to route through. A shared domain would need
+# Caddy to rewrite those URLs in the response body, which is not something
+# a reverse proxy does for you.
+#
+# Both domain vars are required (deploy/docker-compose.yml's own
+# `${SMS_GATEWAY_DOMAIN:?}` / `${SMS_ADMIN_DOMAIN:?}` fail the whole stack
+# rather than start half-configured) — set them in deploy/.env.
+#
+# Real deploy, real DNS pointed at this VM: nothing further needed below.
+# Caddy's automatic HTTPS (ACME via Let's Encrypt, using CADDY_ACME_EMAIL)
+# takes over on its own the moment it can complete an HTTP-01 or TLS-ALPN
+# challenge against a real hostname.
+#
+# Local/demo run with no public DNS: swap the commented `tls internal`
+# line in for the real cert flow in both blocks below — Caddy then mints
+# its own local CA and self-signed certs. See
+# docs/runbooks/deployment.md for trusting that CA on your own machine.
+
+{
+	email {$CADDY_ACME_EMAIL}
+}
+
+{$SMS_GATEWAY_DOMAIN} {
+	# tls internal
+	reverse_proxy sms-gateway:8080
+}
+
+{$SMS_ADMIN_DOMAIN} {
+	# tls internal
+	reverse_proxy admin:8080
+}

@@ -17,6 +17,18 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+/// Where the heartbeat task below touches a file for the container's
+/// `HEALTHCHECK` to read the mtime of. Not a CLI flag — this is
+/// operational plumbing for the container (#139), not worker behavior an
+/// operator would ever want to tune per deployment.
+const DEFAULT_HEALTH_FILE: &str = "/tmp/sms-worker-healthy";
+
+/// How often [`spawn_heartbeat`] touches the health file. Well under the
+/// container `HEALTHCHECK`'s own staleness threshold (90s, see
+/// `app/sms-worker/Dockerfile`) so a couple of missed ticks under load
+/// don't false-positive a restart.
+const HEALTH_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
+
 /// How long a shutdown waits for singleton roles to release their leases
 /// before giving up and letting the process exit anyway. Generous relative
 /// to a single `pg_advisory_unlock` round trip — this is a backstop against
@@ -169,6 +181,39 @@ fn default_worker_id() -> String {
     format!("{host}:{}", std::process::id())
 }
 
+/// This binary has no HTTP surface (six poll-loop roles, never a
+/// listener — see this module's own doc), so there is nothing for a
+/// `curl`-style container `HEALTHCHECK` to hit (#139). A heartbeat file is
+/// the substitute: spawned unconditionally, independent of which `--roles`
+/// this process runs, so it says something a bare `pgrep sms-worker` in the
+/// `HEALTHCHECK` command could not — a hung tokio runtime (a role
+/// deadlocked rather than merely idling on `run`'s own
+/// `std::future::pending` stub, or a claim loop wedged on a connection)
+/// stops touching this file even though the process is still very much
+/// alive as far as `pgrep` is concerned.
+fn spawn_heartbeat(path: std::path::PathBuf, shutdown: CancellationToken) {
+    tokio::spawn(async move {
+        // `tokio::time::interval`'s first `tick()` resolves immediately, so
+        // the file exists before the container's `HEALTHCHECK
+        // --start-period` elapses rather than only after the first full
+        // interval.
+        let mut ticker = tokio::time::interval(HEALTH_HEARTBEAT_INTERVAL);
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => {
+                    // A brief, infrequent local file write — not worth a
+                    // tokio::fs dependency just to keep it off this task's
+                    // own thread.
+                    if let Err(error) = std::fs::write(&path, std::process::id().to_string()) {
+                        warn!(%error, path = %path.display(), "failed to write worker heartbeat file");
+                    }
+                }
+                () = shutdown.cancelled() => break,
+            }
+        }
+    });
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Variables already in the environment win; dotenvy never overwrites.
@@ -217,6 +262,12 @@ async fn main() -> Result<()> {
     );
 
     let shutdown = CancellationToken::new();
+
+    let health_file = std::env::var("SMS_WORKER_HEALTH_FILE")
+        .unwrap_or_else(|_| DEFAULT_HEALTH_FILE.to_owned())
+        .into();
+    spawn_heartbeat(health_file, shutdown.clone());
+
     let mut tasks = tokio::task::JoinSet::new();
     for role in roles {
         match role.cardinality() {

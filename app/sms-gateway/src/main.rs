@@ -1,6 +1,7 @@
 //! The SMS gateway API server.
 
 mod dlr;
+mod health;
 mod op;
 
 use std::io::Write as _;
@@ -332,7 +333,8 @@ async fn main() -> Result<()> {
             let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer);
             let app = sms_api::router(db, auth, pepper)
                 .merge(op::router(op_state))
-                .merge(dlr_router);
+                .merge(dlr_router)
+                .merge(health::router());
 
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await

@@ -1,0 +1,42 @@
+# Shared build context for every Dockerfile in this repo (app/sms-gateway,
+# app/sms-worker, admin) — all three build from the repo root, because
+# include_server_schema! needs schema/ and the pnpm workspace needs
+# packages/. This file keeps that root context small; without it, `target/`
+# and `node_modules/` alone turn a multi-second `docker build` context
+# upload into a multi-minute one.
+
+# Rust
+target/
+**/*.rs.bk
+
+# Node / pnpm — node_modules can exist at the root and per-package
+node_modules/
+**/node_modules/
+.turbo/
+**/.next/
+**/dist/
+# generated at build time inside the image, never from the host — see
+# packages/sms-client/GENERATING.md
+packages/sms-client/src/
+packages/sms-client/dist/
+
+# VCS / editor / OS
+.git/
+.gitignore
+.DS_Store
+.vscode/
+.idea/
+
+# Local env files — never bake secrets into an image layer
+.env
+.env.*
+!.env.example
+deploy/.env
+deploy/.env.*
+!deploy/.env.example
+
+# Docs and CI artifacts not needed inside a build context
+docs/
+.github/
+*.md
+!README.md
