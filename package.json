@@ -12,6 +12,7 @@
     "format": "turbo run format"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.7"
+    "@biomejs/biome": "2.5.7",
+    "turbo": "2.10.9"
   }
 }

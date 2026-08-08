@@ -3,7 +3,22 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": [".next/**", "dist/**"]
+      "outputs": [".next/**", "dist/**"],
+      "env": [
+        "DASHBOARD_AUTH",
+        "DASHBOARD_BASIC_REALM",
+        "DASHBOARD_BASIC_USERS",
+        "SMS_API_URL",
+        "SMS_API_CLIENT_CERT_PATH",
+        "SMS_API_CLIENT_KEY_PATH",
+        "SMS_API_CA_PATH",
+        "SMS_AUTH_ISSUER",
+        "SMS_CONSOLE_CLIENT_ID",
+        "SMS_CONSOLE_PRIVATE_KEY_PATH",
+        "SMS_CONSOLE_SCOPE",
+        "MESSAGE_STREAM_POLL_MS",
+        "NEXT_PUBLIC_APP_NAME"
+      ]
     },
     "lint": {
       "outputs": []
@@ -15,5 +30,6 @@
       "dependsOn": ["build"],
       "outputs": []
     }
-  }
+  },
+  "globalEnv": ["NODE_ENV", "SKIP_ENV_VALIDATION"]
 }
