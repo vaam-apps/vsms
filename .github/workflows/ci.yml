@@ -127,6 +127,41 @@ jobs:
       # "leave it running, the fixed name makes a rerun replace rather
       # than add" strategy documented in crates/sms-test-support/src/lib.rs.
 
+  js:
+    name: pnpm biome, typecheck, build, test
+    runs-on: ubuntu-latest
+
+    # The TypeScript half had NO automated gate at all until this job existed:
+    # six PRs of real application code (the workspace, @vsms/env, @vsms/ui, the
+    # gateway/tRPC/hooks spine, the composer, the messages list) landed with
+    # nothing checking that they built, linted, typechecked, or passed their
+    # own tests. The only Node step in this workflow installed mermaid-cli for
+    # docs. This repo already learned the same lesson once on the Rust side —
+    # see AGENTS.md on the 14 live-Postgres suites CI never ran.
+    env:
+      # `next build` sets NODE_ENV=production, which would otherwise trip the
+      # deploy-time env rules in @vsms/env (production requires DASHBOARD_AUTH
+      # and an https upstream). Those are deployment guarantees, not compile
+      # ones, and CI has neither real auth config nor a TLS upstream. Runtime
+      # boot still enforces them; this only exempts the build.
+      SKIP_ENV_VALIDATION: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Enable corepack (pins pnpm from packageManager)
+        run: corepack enable
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Biome (format + lint)
+        run: pnpm biome ci .
+      - name: Typecheck and build
+        run: pnpm turbo run typecheck build
+      - name: Tests
+        run: pnpm turbo run test
+
   rules:
     name: R1 and R2 — engineering rules
     runs-on: ubuntu-latest
