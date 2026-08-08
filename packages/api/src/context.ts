@@ -48,7 +48,16 @@ function assertSameOriginForMutations(req: Request): void {
   if (req.method !== "POST") return;
 
   const origin = req.headers.get("origin");
-  if (origin === null) return;
+  // A POST with no Origin at all is NOT trusted. Browsers always set Origin on
+  // a fetch POST, so the only callers that omit it are non-browser clients —
+  // which is exactly the case an early `return` here waved through. This
+  // endpoint triggers a real `sendMessage`, so the default must be refusal.
+  if (origin === null) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "cross-origin request rejected: POST requires an Origin header",
+    });
+  }
 
   const expected = new URL(req.url).origin;
   if (origin !== expected) {
