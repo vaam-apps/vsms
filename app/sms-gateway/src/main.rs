@@ -349,46 +349,53 @@ async fn main() -> Result<()> {
         }
 
         Command::RotateSigningKey { database_url } => {
-            // Found live prepping #36 (this repo's first time ever running
-            // this command against a real database): `max_connections(1)`
-            // deadlocks with `CoolError::Database("pool timed out waiting
-            // for an open connection")` on the very first
-            // `OauthSigningKey::create` — reproduced twice, and confirmed
-            // fixed at exactly `max_connections(2)`, one shy of that. Most
-            // likely cause: `OauthSigningKey`'s `@@audit` writes its audit
-            // row on a connection acquired separately from (and held
-            // concurrently with) the row write's own, rather than sharing
-            // one — unconfirmed against `cratestack`'s own generated code,
-            // but the connection-count boundary itself is empirically
-            // solid. A one-shot CLI command needs no real concurrency, so
-            // this stays small — a modest margin above the confirmed
-            // minimum, not `serve`'s pooled-server-sized default, in case
-            // a rotation with several still-active-but-expiring keys to
-            // deactivate needs more than one such pair in flight.
-            let pool = PgPoolOptions::new()
-                .max_connections(4)
-                .connect(&database_url)
-                .await
-                .context("connecting to Postgres")?;
-            let db = Cratestack::builder(pool).build();
-
-            let id = sms_auth::op::rotate_signing_key(
-                &db,
-                &system_context(),
-                sms_auth::op::ROTATION_OVERLAP,
-            )
-            .await
-            .context("rotating the OP signing key")?;
-            println!("rotated: new signing key {id} is now active");
-            println!(
-                "the previous key keeps publishing in JWKS for {} minutes",
-                sms_auth::op::ROTATION_OVERLAP.num_minutes()
-            );
-            Ok(())
+            rotate_signing_key_command(database_url).await
         }
 
         command @ Command::ProvisionClient { .. } => provision_client_command(command).await,
     }
+}
+
+/// `Command::RotateSigningKey`'s body, pulled out of `main`'s own `match`
+/// for the same reason [`provision_client_command`] below is — see that
+/// function's doc. `main` crossed `clippy::too_many_lines` the moment
+/// #139 added the health route to the `Serve` arm; extracting the two
+/// one-shot CLI arms keeps the long-running server arm readable inline,
+/// where the startup ordering actually matters.
+async fn rotate_signing_key_command(database_url: String) -> Result<()> {
+    // Found live prepping #36 (this repo's first time ever running
+    // this command against a real database): `max_connections(1)`
+    // deadlocks with `CoolError::Database("pool timed out waiting
+    // for an open connection")` on the very first
+    // `OauthSigningKey::create` — reproduced twice, and confirmed
+    // fixed at exactly `max_connections(2)`, one shy of that. Most
+    // likely cause: `OauthSigningKey`'s `@@audit` writes its audit
+    // row on a connection acquired separately from (and held
+    // concurrently with) the row write's own, rather than sharing
+    // one — unconfirmed against `cratestack`'s own generated code,
+    // but the connection-count boundary itself is empirically
+    // solid. A one-shot CLI command needs no real concurrency, so
+    // this stays small — a modest margin above the confirmed
+    // minimum, not `serve`'s pooled-server-sized default, in case
+    // a rotation with several still-active-but-expiring keys to
+    // deactivate needs more than one such pair in flight.
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .context("connecting to Postgres")?;
+    let db = Cratestack::builder(pool).build();
+
+    let id =
+        sms_auth::op::rotate_signing_key(&db, &system_context(), sms_auth::op::ROTATION_OVERLAP)
+            .await
+            .context("rotating the OP signing key")?;
+    println!("rotated: new signing key {id} is now active");
+    println!(
+        "the previous key keeps publishing in JWKS for {} minutes",
+        sms_auth::op::ROTATION_OVERLAP.num_minutes()
+    );
+    Ok(())
 }
 
 /// `Command::ProvisionClient`'s body, pulled out of `main`'s own `match`
