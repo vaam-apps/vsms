@@ -19,11 +19,16 @@ import type { WebhookEnvelope } from "./types.ts";
  *
  * (plus a bonus rotation check: a signature made with the *previous*
  * secret, proving the receiver's overlap-window handling live rather than
- * just asserting it in prose.)
+ * just asserting it in prose; and an additional check, not one of #150's
+ * required scenarios, that demonstrates — rather than just asserts in a
+ * comment — that `X-Sms-Timestamp` is not checked for freshness/age. See
+ * `signature.ts`'s module doc for why.)
  *
  * The signing it performs uses the same `computeSignature` the receiver
  * verifies with (signature.ts) — this emitter is not a second, drifting
- * reimplementation of that provisional scheme.
+ * reimplementation of that scheme. The scheme itself is §4.4's, transcribed
+ * exactly except for its one genuine gap (the MAC algorithm) — see
+ * signature.ts.
  */
 
 export interface EmitterOptions {
@@ -54,9 +59,10 @@ async function post(
   baseUrl: string,
   envelope: WebhookEnvelope,
   signing: { secret: string } | { forged: true },
+  timestampOverride?: string,
 ): Promise<PostOutcome> {
   const rawBody = Buffer.from(JSON.stringify(envelope), "utf8");
-  const timestamp = String(Math.floor(Date.now() / 1000));
+  const timestamp = timestampOverride ?? String(Math.floor(Date.now() / 1000));
 
   const signatureHeader =
     "forged" in signing
@@ -95,7 +101,9 @@ export async function runEmitterScenarios(options: EmitterOptions): Promise<void
   const retry = await post(baseUrl, delivered, { secret }); // byte-identical resend
   await settle();
   console.log(`   first delivery   -> HTTP ${first.status}`);
-  console.log(`   duplicate resend -> HTTP ${retry.status} (same event id, same signature)`);
+  console.log(
+    `   duplicate resend -> HTTP ${retry.status} (same X-Sms-Event-Id — the §4.4 primary dedupe key)`,
+  );
 
   console.log("\n-- case 2: out-of-order arrival (delivered before submitted) --");
   const msgB = randomUUID();
@@ -121,5 +129,21 @@ export async function runEmitterScenarios(options: EmitterOptions): Promise<void
   await settle();
   console.log(
     `   forged signature -> HTTP ${rBad.status} (expect 401 — rejected before any processing)`,
+  );
+
+  console.log(
+    "\n-- additional check (not one of #150's required cases): X-Sms-Timestamp freshness --",
+  );
+  const msgD = randomUUID();
+  const stale = makeEnvelope("message.delivered", msgD, { state: "delivered" });
+  const thirtyDaysAgo = String(Math.floor(Date.now() / 1000) - 60 * 60 * 24 * 30);
+  // Correctly signed FOR that 30-day-old timestamp — this is not a forged
+  // signature, it's a genuine one over stale material, which is exactly
+  // what "no freshness window enforced" means in practice.
+  const rStale = await post(baseUrl, stale, { secret }, thirtyDaysAgo);
+  await settle();
+  console.log(
+    `   30-day-old but correctly-signed timestamp -> HTTP ${rStale.status} ` +
+      "(accepted — no freshness window is enforced; see signature.ts's module doc for why)",
   );
 }

@@ -35,11 +35,28 @@ function rankOf(eventType: string): number {
   return EVENT_RANK[eventType] ?? 0;
 }
 
+export type DuplicateReason = "event-id" | "aggregate-tuple" | null;
+
 export class WebhookStore {
-  // Dedupe tuple, mirroring `webhook_attempts`' own unique index shape,
-  // (endpoint_id, aggregate_id, event_type) — see §2.10 and §8.3. This
-  // receiver serves exactly one endpoint, so endpoint_id is constant here
-  // and dropped from the key rather than threaded through for no reason.
+  // PRIMARY dedupe key, and the documented receiver contract: §4.4 says,
+  // in so many words, "Send X-Sms-Event-Id and mean it — delivery is
+  // at-least-once and receivers need a dedupe key." This is NOT the same
+  // thing as `webhook_attempts`' own unique index — that index,
+  // (endpoint_id, aggregate_id, event_type) (§2.10), is vsms's *sender-side*
+  // guard against creating duplicate WebhookAttempt rows in the first
+  // place. It says nothing about what a *receiver* should key on once
+  // at-least-once HTTP delivery (retries, replays — §8.5) reaches it. §4.4
+  // does, and it names `X-Sms-Event-Id`.
+  private readonly seenEventIds = new Set<string>();
+
+  // SECONDARY, defensive, and explicitly NOT part of §4.4's contract: also
+  // recognise a duplicate by (aggregateId, eventType) even when the event
+  // id differs. Nothing in §4.4 says a retry reuses the same event id —
+  // if a real sender ever regenerated one per retry, keying only on
+  // `X-Sms-Event-Id` would silently reprocess it. This mirrors
+  // `webhook_attempts`' own dedupe shape (§2.10, §8.3) and is strictly
+  // stronger than the documented contract, kept as belt-and-braces on top
+  // of it rather than instead of it.
   private readonly seenTuples = new Set<string>();
   private readonly aggregates = new Map<string, AggregateState>();
 
@@ -48,21 +65,22 @@ export class WebhookStore {
   }
 
   /**
-   * True the first time this (aggregateId, eventType) tuple is seen, false
-   * on every repeat. At-least-once delivery (§8.2/§8.5) means the same
-   * tuple WILL arrive again — a retried attempt, a replay from the admin
-   * console (§8.5), or (before dedupe even reaches this receiver)
-   * `Message.updated` firing on every touch server-side. Keying on
-   * `sourceEventId` instead would treat each of those as new; the design
-   * doc is explicit that aggregate + derived type is the correct tuple
-   * (§2.10, §8.3), so this receiver uses the same one rather than
-   * inventing its own.
+   * Returns which check caught a duplicate, or `null` if this is genuinely
+   * new. Checked, not recorded — see `recordSeen`, called separately so
+   * the caller can decide whether to actually do the "processing" a
+   * duplicate should skip.
    */
-  recordIfNew(aggregateId: string, eventType: string): boolean {
-    const key = this.tupleKey(aggregateId, eventType);
-    if (this.seenTuples.has(key)) return false;
-    this.seenTuples.add(key);
-    return true;
+  checkDuplicate(eventId: string, aggregateId: string, eventType: string): DuplicateReason {
+    if (this.seenEventIds.has(eventId)) return "event-id";
+    if (this.seenTuples.has(this.tupleKey(aggregateId, eventType))) return "aggregate-tuple";
+    return null;
+  }
+
+  /** Records both keys for a newly-processed event. Call only after
+   *  `checkDuplicate` returned `null` for the same arguments. */
+  recordSeen(eventId: string, aggregateId: string, eventType: string): void {
+    this.seenEventIds.add(eventId);
+    this.seenTuples.add(this.tupleKey(aggregateId, eventType));
   }
 
   /**

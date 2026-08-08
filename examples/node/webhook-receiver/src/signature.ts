@@ -2,46 +2,66 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 /**
  * ============================================================================
- * PROVISIONAL SEAM — replace this file, and only this file, when #41 lands.
+ * PARTIALLY-PROVISIONAL SEAM — replace this file, and only this file, when
+ * #41 lands. Read the distinction below before assuming more of this is a
+ * guess than actually is.
  * ============================================================================
  *
- * vsms has never shipped outbound webhook signing. #41 tracks it and it is
- * not implemented. What follows is this receiver's best-effort read of
- * `docs/architecture.md` §4.4, which documents an *intended* design, not a
- * verified one — nothing in this repo has generated a signature with it,
- * live, ever. Treat every detail below as "vsms's current design intent,"
- * subject to change the moment #41 actually lands and gets tested against a
- * real sender.
+ * vsms has never shipped outbound webhook signing — #41 tracks it and it is
+ * not implemented, so nothing here has generated a signature that a real
+ * vsms verified, or verified one a real vsms generated. But
+ * `docs/architecture.md` §4.4 is NOT vague about the shape: it specifies,
+ * literally, the four header names, the exact rotation semantics (two
+ * `v1=` values allowed, accept if either verifies), and the exact
+ * four-part signing string. This implementation is a transcription of
+ * that spec, not a guess, for everything except one thing (see below).
  *
- * §4.4's documented shape:
+ * §4.4's documented shape, quoted exactly:
  *
  *   X-Sms-Event:     message.delivered
  *   X-Sms-Event-Id:  <sourceEventId>
  *   X-Sms-Timestamp: <unix seconds>
- *   X-Sms-Signature: v1=<hex>[,v1=<hex during rotation>]
+ *   X-Sms-Signature: v1=<hex>,v1=<hex during rotation>
  *
- *   signing string = "v1\n{timestamp}\n{eventId}\n{sha256(body)}"
- *   key            = WebhookEndpoint.secret (or .prevSecret during rotation)
+ *   signing string = v1 \n {timestamp} \n {eventId} \n {sha256(body)}
+ *   key            = WebhookEndpoint.secret
  *
- * Two things the doc does NOT say, that this implementation had to decide:
+ * "Two `v1=` values during rotation, oldest last; receivers accept if any
+ * verifies, which makes rotation a non-event for them." — during a
+ * rotation, `key` is `.prevSecret` for the older of the two values.
+ * `rotateWebhookSecret` moves `secret` → `prevSecret`, generates a new
+ * `secret`, and — per §4.4 — "a job clears `prevSecret` after 24 hours."
+ * This receiver has no such job to sync against (there is no live vsms to
+ * sync from), so it's handed both secrets directly at startup; a real
+ * deployment needs to keep `prevSecret` around for that same 24-hour
+ * window and drop it after, matching whatever vsms itself does server-side.
  *
- * 1. The MAC algorithm. §4.4 shows "v1=<hex>" and a "v1 \n ..." signing
- *    string but never names the algorithm. HMAC-SHA256 is the obvious,
- *    Stripe-style reading of that shape (versioned scheme prefix + hex
- *    digest), and is what's implemented here — but it is a guess filling a
- *    real gap, not a documented fact.
- * 2. Replay/freshness tolerance on `X-Sms-Timestamp`. §4.4 doesn't specify a
- *    tolerance window, so none is enforced here beyond requiring the header
- *    to be present (it's folded into the signed string, so a tampered
- *    timestamp already fails verification). A real deployment will likely
- *    want a bounded window once #41 defines one; this receiver's own
- *    dedupe (see store.ts) only protects against replaying an event this
- *    receiver has already *successfully* processed, not a stolen-signature
- *    replay of a not-yet-seen event.
+ * THE ONE GENUINE GUESS: the MAC algorithm. §4.4 shows the "v1=<hex>"
+ * wrapper and the four-line signing string but never names the primitive
+ * that turns that string into the hex digest. HMAC-SHA256 is this
+ * implementation's reading of that shape (a versioned-scheme prefix plus a
+ * hex digest is the obvious, Stripe-style convention it's modelled on) —
+ * that substitution, and only that one, is unverified against anything
+ * upstream.
+ *
+ * SEPARATELY, NOT FILLING A GAP IN §4.4 — §4.4 says nothing about this
+ * either way, so this isn't an inferred reading of an ambiguous spec, it's
+ * an explicit scope decision by this example: no bounded freshness/replay
+ * window is enforced on `X-Sms-Timestamp`. It is folded into the signed
+ * bytes, so a *tampered* timestamp already fails verification (proven by
+ * the emitter's forged-signature case) — but a byte-for-byte replay of a
+ * previously-valid, correctly-signed request, no matter how old its
+ * timestamp, verifies successfully here. The only thing that stops a
+ * replay of an *already-processed* event from being acted on twice is
+ * `store.ts`'s dedupe (keyed on `X-Sms-Event-Id`, per §4.4's own
+ * "receivers need a dedupe key" line) — not this file. A stale-but-never-
+ * before-seen forged timestamp on an otherwise-valid signature (impossible
+ * without the secret, but worth being explicit about) would still verify;
+ * this is demonstrated live by the emitter's "timestamp freshness" check.
  *
  * Everything callers need is this one function: `verifySignature`. Nothing
  * else in this example inspects a header or does crypto — when #41 settles
- * the real scheme, this file is the entire diff.
+ * the MAC primitive for real, this file is the entire diff.
  */
 
 export interface VerifyInput {

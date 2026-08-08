@@ -72,6 +72,15 @@ export function createReceiver(options: ReceiverOptions): Receiver {
         res.status(401).json({ error: "invalid signature", reason: verdict.reason });
         return;
       }
+      // `verifySignature` already requires `eventId` to be present to reach
+      // `ok: true`, so this is unreachable — kept only so TS narrows
+      // `eventId` from `string | undefined` to `string` below, and as a
+      // defensive belt on the one header §4.4 says a receiver must key on.
+      if (!eventId) {
+        options.onProcessed?.({ status: "rejected-malformed", detail: "missing X-Sms-Event-Id" });
+        res.status(400).json({ error: "missing X-Sms-Event-Id" });
+        return;
+      }
 
       let envelope: WebhookEnvelope;
       try {
@@ -89,16 +98,25 @@ export function createReceiver(options: ReceiverOptions): Receiver {
       queue.push(async () => {
         const aggregateId = extractAggregateId(envelope);
 
-        const isNewTuple = store.recordIfNew(aggregateId, envelope.type);
-        if (!isNewTuple) {
+        // PRIMARY check, per §4.4's documented receiver contract: dedupe on
+        // X-Sms-Event-Id. The (aggregateId, eventType) tuple is a SECONDARY,
+        // defensive check beyond that contract — see store.ts's own doc
+        // comment for why it's kept.
+        const duplicateReason = store.checkDuplicate(eventId, aggregateId, envelope.type);
+        if (duplicateReason) {
           options.onProcessed?.({
             status: "accepted-duplicate",
             eventType: envelope.type,
             aggregateId,
-            detail: `duplicate of an already-processed (aggregateId, eventType) tuple — skipped, no re-processing`,
+            detail:
+              duplicateReason === "event-id"
+                ? `duplicate X-Sms-Event-Id "${eventId}" — already processed, skipped (§4.4's documented contract)`
+                : `distinct X-Sms-Event-Id but duplicate (aggregateId, eventType) tuple — skipped ` +
+                  `(secondary, defensive check beyond §4.4's contract)`,
           });
           return;
         }
+        store.recordSeen(eventId, aggregateId, envelope.type);
 
         // Simulated slow work — e.g. a real DB write — proving it happens
         // strictly after the HTTP response already went out.
@@ -117,7 +135,8 @@ export function createReceiver(options: ReceiverOptions): Receiver {
             aggregateId,
             detail:
               `arrived after a higher-precedence state ("${current.eventType}") already recorded for ` +
-              `${aggregateId} — dedupe tuple kept, displayed state left unchanged ` +
+              `${aggregateId} — dedupe keys recorded (won't reprocess a retry of this event), ` +
+              `displayed state left unchanged ` +
               `(ack->processed in ${processedAt - ackedAt}ms, request total ${processedAt - receivedAt}ms)`,
           });
           return;

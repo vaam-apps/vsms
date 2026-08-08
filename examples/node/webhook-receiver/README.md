@@ -16,10 +16,13 @@ this example exists in its current shape:
   `crates/sms-api/src/procedures.rs` — there is no way to even provision a
   live `WebhookEndpoint` secret today.
 - **The outbound signature this receiver verifies is [#41](https://github.com/vymalo/vsms/issues/41)
-  — not implemented, and not fully specified.** `docs/architecture.md` §4
-  is explicit that request signing was dropped for *inbound* API calls in
-  favour of `private_key_jwt`; that decision says nothing about *this*,
-  the outbound signature vsms would attach to a webhook it sends you.
+  — not implemented.** It IS specified in real detail, in §4.4 — see below
+  for exactly how much of this example is a transcription of that spec
+  versus an actual guess. `docs/architecture.md` §4 is explicit that
+  request signing was dropped for *inbound* API calls in favour of
+  `private_key_jwt`; that decision says nothing about *this*, the outbound
+  signature vsms would attach to a webhook it sends you — §4.4 is the
+  relevant section instead.
 
 So: **this example cannot be verified end to end against a live vsms, and
 nothing here should be read as implying it has been.** What you can verify,
@@ -32,33 +35,49 @@ that stands in for vsms. That is a real, load-bearing distinction; see
 
 ## What's settled vs. what's provisional
 
-Settled, from `docs/architecture.md` (cited inline in the source):
+**Most of this is settled, not provisional.** `docs/architecture.md` §4.4
+specifies, literally: the four header names, the exact rotation semantics
+(`X-Sms-Signature` can carry two `v1=` values, accept if either verifies),
+and the exact signing string
+(`v1 \n {timestamp} \n {eventId} \n {sha256(body)}`, keyed by
+`WebhookEndpoint.secret`/`.prevSecret`). `src/signature.ts` is a
+transcription of that spec, not a guess, for all of the above.
 
-- `WebhookAttempt` has a unique dedupe index on
-  `(endpoint_id, aggregate_id, event_type)` — §2.10, §8.3. This receiver
-  keys its own idempotency store on that same tuple (`aggregateId` +
-  `eventType`), not on `sourceEventId`, because the doc is explicit that
-  keying on the event id alone would treat every retry and every
-  `Message.updated` touch as a distinct event.
+Settled, cited inline in the source:
+
+- **The dedupe key.** §4.4, in its own words: *"Send `X-Sms-Event-Id` and
+  mean it — delivery is at-least-once and receivers need a dedupe key."*
+  That's the documented **receiver** contract, and this receiver's primary
+  idempotency key. It is a different thing from `WebhookAttempt`'s own
+  unique index on `(endpoint_id, aggregate_id, event_type)` (§2.10, §8.3),
+  which is vsms's **sender-side** guard against creating duplicate
+  `WebhookAttempt` rows — that index says nothing about what a receiver
+  should key on once at-least-once HTTP delivery reaches it. This receiver
+  also keeps the `(aggregateId, eventType)` tuple as a **secondary,
+  defensive** check, strictly stronger than but *not* part of §4.4's
+  contract — see `store.ts`'s doc comment for why.
 - `WebhookEndpoint` holds both `secret` and `prevSecret` — rotation has a
-  designed 24-hour overlap window (§4.4), and a correct receiver accepts
-  either.
+  designed 24-hour overlap window (§4.4: *"a job clears `prevSecret` after
+  24 hours"*), and a correct receiver accepts either while that window is
+  open.
 - §8.5: delivery order is not guaranteed; receivers must tolerate
   `message.delivered` arriving before `message.submitted`.
 
-Provisional, because #41 hasn't shipped:
+Provisional, because #41 hasn't shipped, and narrowly so:
 
-- **The signature algorithm.** §4.4 documents the header names
-  (`X-Sms-Event`, `X-Sms-Event-Id`, `X-Sms-Timestamp`, `X-Sms-Signature:
-  v1=<hex>[,v1=<hex>]`) and a signing string
-  (`v1\n{timestamp}\n{eventId}\n{sha256(body)}`), but never names the MAC
-  algorithm. `src/signature.ts` implements HMAC-SHA256 as the obvious
-  Stripe-style reading of that shape — **that choice is a guess, not a
-  documented fact**, and is the entire reason this file exists as one
-  isolated seam rather than logic folded into the handler.
-- Any replay/freshness tolerance on `X-Sms-Timestamp` — §4.4 doesn't specify
-  one, so none is enforced beyond the timestamp being part of the signed
-  bytes (a tampered timestamp already fails verification).
+- **The one genuine guess is the MAC algorithm.** §4.4 shows the
+  `v1=<hex>` wrapper and the four-line signing string but never names the
+  primitive that turns that string into the hex digest. `src/signature.ts`
+  implements HMAC-SHA256 as the obvious Stripe-style reading of that shape
+  — that one substitution, and only that one, is unverified against
+  anything upstream.
+- **Separately** (not filling a gap in §4.4 — the doc says nothing about
+  this either way, so it's a scope decision by this example, not an
+  inferred reading): no bounded freshness/replay window is enforced on
+  `X-Sms-Timestamp`. It's folded into the signed bytes, so a *tampered*
+  timestamp already fails verification — but a correctly-signed request
+  with a stale timestamp still verifies. Demonstrated live, not just
+  asserted; see "What it demonstrates, live" below.
 
 When #41 lands for real, `src/signature.ts` — specifically
 `computeSignature` and `verifySignature` — is the entire diff this example
@@ -70,10 +89,10 @@ should need. Nothing else touches a header or does crypto.
 src/
   index.ts       entry point: starts the receiver, runs the local emitter, prints a summary
   server.ts       the Express app: raw-body capture, fast ack, off-path processing
-  signature.ts    THE PROVISIONAL SEAM — replace this file when #41 lands
-  store.ts        in-memory idempotency + out-of-order-tolerant state tracking
+  signature.ts    THE SEAM — a §4.4 transcription except for one guess (the MAC algorithm); replace/update when #41 lands
+  store.ts        in-memory idempotency (primary: X-Sms-Event-Id; secondary: aggregateId+eventType) + out-of-order-tolerant state tracking
   work-queue.ts   a tiny off-request-path queue (what "work off the request path" means, made concrete)
-  emitter.ts      local stand-in for vsms; drives the three required scenarios
+  emitter.ts      local stand-in for vsms; drives #150's required scenarios plus a timestamp-freshness check
   types.ts        the §8.4 envelope shape
 ```
 
@@ -118,14 +137,15 @@ prints a summary and exits. Nothing here binds port 3000, 8080, 8090, or
 
 ## What it demonstrates, live
 
-The emitter drives four sequences against the receiver over real HTTP
+The emitter drives these sequences against the receiver over real HTTP
 (loopback), in order:
 
-1. **Duplicate delivery.** The exact same `message.delivered` event is
-   POSTed twice (an at-least-once sender retrying). First call: processed,
-   `HTTP 202`. Second call: recognised via the `(aggregateId, eventType)`
-   tuple as already-processed, `HTTP 202` again, but explicitly *not*
-   reprocessed — logged as `accepted-duplicate`.
+1. **Duplicate delivery.** The exact same `message.delivered` event
+   (same `X-Sms-Event-Id`) is POSTed twice (an at-least-once sender
+   retrying). First call: processed, `HTTP 202`. Second call: recognised
+   as a duplicate by §4.4's own documented key — `X-Sms-Event-Id` — `HTTP
+   202` again, but explicitly *not* reprocessed, logged
+   `accepted-duplicate` and tagged "primary contract per §4.4".
 2. **Out-of-order arrival.** `message.delivered` for a message is POSTed
    *before* `message.submitted` for the same message. The receiver applies
    `delivered` (a higher-precedence, more-settled state) first; when the
@@ -141,6 +161,13 @@ The emitter drives four sequences against the receiver over real HTTP
 4. **Bad signature.** An event signed with neither known secret is POSTed.
    Rejected with `HTTP 401` *before* the body is even parsed as JSON — a
    receiver should not act on bytes it can't attribute to vsms.
+5. **Additional check, not one of #150's four required cases — timestamp
+   freshness.** An event is signed correctly, but for a timestamp 30 days
+   in the past (a genuine signature over stale material, not a forged
+   one). It's accepted, `HTTP 202` — proving live, rather than only
+   asserting in `signature.ts`'s doc comment, that `X-Sms-Timestamp` is
+   not checked for age. See "What's settled vs. what's provisional" above
+   for why that's a deliberate scope decision, not an oversight.
 
 Run it yourself and read the log; every line above is something the
 process actually printed on this machine, not a description of expected
@@ -157,12 +184,18 @@ work queue decoupling the response from the "database write" it simulates.
 Specifically unverified, and unverifiable until the corresponding work
 lands:
 
-- Whether HMAC-SHA256 is really the algorithm #41 ships with.
-- Whether the header names, casing, or the exact signing-string layout in
-  §4.4 survive unchanged once #41 is implemented and tested against a real
-  sender.
-- Whether the `X-Sms-Event-Id` value vsms sends is actually the WebhookAttempt's
-  `sourceEventId` as this example assumes, or something else.
+- Whether HMAC-SHA256 is really the algorithm #41 ships with — the one
+  genuine gap in an otherwise-specified scheme (see above).
+- Whether the `X-Sms-Event-Id` value vsms sends is actually the
+  `WebhookAttempt`'s `sourceEventId` as this example assumes, or something
+  else — §4.4 names the header but the doc's worked JSON example (§8.4)
+  doesn't show the header alongside the body, so this is a reasonable but
+  unconfirmed reading.
+- Whether #41's implementation matches §4.4's design doc exactly once it's
+  actually built and tested against a real sender — everything else in
+  "What's settled vs. what's provisional" above is specified, but
+  "specified" and "implemented-and-verified" are still two different
+  things.
 - Any latency, retry timing, or backoff behaviour (§8.5 documents 1s, 5s,
   25s, 2m, 10m, 1h, 6h, 24h, eight attempts then `dead` — this example's
   emitter does not attempt to reproduce that schedule; it just proves the
@@ -171,15 +204,20 @@ lands:
 
 ## Revisit this when M3 (webhooks) lands
 
-- Replace `src/signature.ts`'s algorithm/format with whatever #41 actually
-  ships, and delete the "provisional" framing throughout this README and
-  the source comments.
+- Replace `src/signature.ts`'s MAC algorithm with whatever #41 actually
+  ships (the rest of the file should need no change, since it already
+  transcribes §4.4's specified header names, rotation semantics, and
+  signing string), and delete the narrower "one genuine guess" framing
+  throughout this README and the source comments once it's confirmed
+  correct.
 - Point the emitter (or better, delete it) at a real, running vsms with a
   provisioned `WebhookEndpoint`, once `rotateWebhookSecret` and outbound
-  delivery both exist, and re-verify the three scenarios against that
+  delivery both exist, and re-verify the scenarios above against that
   instead of the local stand-in.
 - Confirm the `X-Sms-Event-Id` → `sourceEventId` assumption above, and the
   `data.messageId` → aggregate id assumption in `server.ts`'s
   `extractAggregateId`, against real payloads.
-- Consider whether a bounded freshness/replay window on `X-Sms-Timestamp`
-  is worth adding, once #41 states whether vsms intends one.
+- Decide, deliberately, whether a bounded freshness/replay window on
+  `X-Sms-Timestamp` is worth adding on top of the dedupe-based protection
+  this receiver already has — #41 may or may not settle vsms's own intent
+  on this.
