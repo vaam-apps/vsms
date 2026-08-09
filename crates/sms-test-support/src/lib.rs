@@ -639,6 +639,18 @@ fn migrations_fingerprint() -> String {
         fold(&bytes);
     }
 
+    // #153: folded in too, so editing `ci/idempotency-table.sql` (e.g. to
+    // re-copy a changed `IDEMPOTENCY_TABLE_DDL` after a cratestack version
+    // bump) invalidates the cached template the same way editing a real
+    // migration already does — see [`idempotency_table_sql_path`]'s own doc
+    // for why this file, despite living outside `schema/migrations/postgres`,
+    // still needs to be part of "this build's exact migration content".
+    let idem = idempotency_table_sql_path();
+    fold(idem.to_string_lossy().as_bytes());
+    let idem_bytes =
+        std::fs::read(&idem).unwrap_or_else(|e| panic!("reading {}: {e}", idem.display()));
+    fold(&idem_bytes);
+
     format!("{hash:016x}")
 }
 
@@ -669,6 +681,27 @@ async fn run_psql_migrations(url: &str) {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    // #153: `IdempotencyLayer` is now mounted unconditionally on every
+    // route `sms_api::router` builds, so any live suite that spins up a
+    // real `sms-gateway serve` process (or calls `sms_api::router`
+    // directly) against this template needs `cratestack_idempotency` to
+    // exist too — same file, same `IF NOT EXISTS` DDL,
+    // `ci/apply-migrations.sh` applies for the CI/scratch path.
+    let idem = idempotency_table_sql_path();
+    let output = Command::new("psql")
+        .arg(url)
+        .args(["-v", "ON_ERROR_STOP=1", "-q", "-f"])
+        .arg(&idem)
+        .output()
+        .await
+        .expect("spawning `psql` — is the postgresql-client package installed?");
+    assert!(
+        output.status.success(),
+        "applying {} failed: {}",
+        idem.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Every subdirectory of `schema/migrations/postgres`, sorted lexically —
@@ -698,6 +731,23 @@ fn migrations_root() -> PathBuf {
         .canonicalize()
         .expect(
             "schema/migrations/postgres must exist two levels up from \
+             crates/sms-test-support — has the workspace layout changed?",
+        )
+}
+
+/// `ci/idempotency-table.sql`, resolved the same way [`migrations_root`]
+/// resolves its own path — relative to `CARGO_MANIFEST_DIR`, not the
+/// current working directory. Deliberately outside `schema/migrations/
+/// postgres` (see that file's own header: it is cratestack library
+/// bookkeeping, not a generated migration), but every template database
+/// this harness builds still needs it, now that `IdempotencyLayer` is
+/// mounted unconditionally — see `run_psql_migrations`'s own doc.
+fn idempotency_table_sql_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../ci/idempotency-table.sql")
+        .canonicalize()
+        .expect(
+            "ci/idempotency-table.sql must exist two levels up from \
              crates/sms-test-support — has the workspace layout changed?",
         )
 }

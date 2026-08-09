@@ -42,6 +42,14 @@ sms-provider.workspace = true
 authkestra-engine.workspace = true
 authkestra-resource.workspace = true
 jsonwebtoken.workspace = true
+# router.rs's `client_id_fingerprint` (#153): a lightweight, unverified
+# base64url decode of a bearer JWT's payload segment, to partition
+# IdempotencyLayer/RateLimitLayer by the token's stable `sub` (client_id)
+# claim rather than the library defaults' raw-header hash — see that
+# function's own doc for why the default breaks across a token refresh.
+# Same version already resolved transitively through authkestra-op
+# (`Cargo.toml`'s own comment on the workspace-level pin).
+base64.workspace = true
 # provision_client (#23)'s RSA keypair generation — same crates and version
 # sms-auth::op::rotate_signing_key uses for the OP's own signing key.
 rsa.workspace = true

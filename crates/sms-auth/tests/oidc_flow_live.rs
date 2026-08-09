@@ -322,7 +322,14 @@ async fn spawn_test_server(db: &Cratestack) -> (String, usize) {
     // minimum length works.
     let pepper = HashPepper::new("oidc-flow-live-test-pepper-well-over-the-minimum-length")
         .expect("test pepper meets HashPepper::new's minimum length");
-    let app = sms_api::router(db.clone(), auth, pepper).merge(op_router(op_state));
+    let app = sms_api::router(
+        db.clone(),
+        auth,
+        pepper,
+        sms_api::DEFAULT_IDEMPOTENCY_TTL,
+        sms_api::default_rate_limit_config(),
+    )
+    .merge(op_router(op_state));
 
     tokio::spawn(async move {
         axum::serve(listener, app.into_make_service())

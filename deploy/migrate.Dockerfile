@@ -18,5 +18,8 @@ FROM postgres:16-alpine
 
 COPY schema/migrations/postgres /migrations
 COPY deploy/migrate.sql /migrate.sql
+# #153: the cratestack_idempotency bookkeeping table's DDL — see
+# ci/idempotency-table.sql's own header and migrate.sql's `\i` of this path.
+COPY ci/idempotency-table.sql /idempotency-table.sql
 
 ENTRYPOINT ["sh", "-c", "psql \"$DATABASE_URL\" -v ON_ERROR_STOP=1 -f /migrate.sql"]

@@ -575,13 +575,19 @@ impl Procedures {
         let operator = self.classify_operator(db, &sys, &msisdn).await?;
 
         // 8. Idempotency: the DB-level defence described in §4.5 as
-        // independent of the HTTP `Idempotency-Key` layer, which never
-        // reaches procedure code at all. `clientRef` is the only
-        // caller-supplied correlation string `SendMessageInput` carries,
-        // so it doubles as `idempotencyKey` when present; a caller that
-        // supplies neither gets no DB-level dedupe, the same way a caller
-        // that skips the `Idempotency-Key` header gets no HTTP-level
-        // replay protection (§4.5: "document loudly").
+        // independent of the HTTP `Idempotency-Key` layer (#153,
+        // `router.rs`'s `IdempotencyLayer` — a real, mounted Tower layer
+        // as of #153, not a hypothetical one) — that layer wraps the whole
+        // router and never reaches procedure code at all, so this DB-level
+        // check runs regardless of whether a caller sent an
+        // `Idempotency-Key`. `clientRef` is the only caller-supplied
+        // correlation string `SendMessageInput` carries, so it doubles as
+        // `idempotencyKey` when present; a caller that supplies neither
+        // gets no DB-level dedupe, the same way a caller that skips the
+        // `Idempotency-Key` header gets no HTTP-level replay protection
+        // (§4.5: "document loudly"). The two are independent, complementary
+        // defences, not a primary and a decoy — see §4.5 for which failure
+        // mode each one alone leaves open.
         let idempotency_key = args.clientRef.clone();
 
         // 9. Cost estimate for the response — see `estimate_cost`'s own

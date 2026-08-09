@@ -155,28 +155,44 @@ The tradeoff is real and worth stating: no generated types, no compile-time
 route checking. For a monorepo-internal caller, `@vsms/sms-client` is
 still the better choice; this example is deliberately for everyone else.
 
-### Idempotency: `clientRef`, not an `Idempotency-Key` header
+### Idempotency: two independent mechanisms, both live as of #153
 
 `docs/architecture.md` §4.5 documents an HTTP-level `IdempotencyLayer`
-(`cratestack_axum::idempotency::IdempotencyLayer`, keyed on an
-`Idempotency-Key` request header). **It is not wired into this
-deployment** — `crates/sms-api/src/router.rs` and
-`app/sms-gateway/src/main.rs` never construct or `.layer()` it. Sending an
-`Idempotency-Key` header today does nothing; the gateway ignores it
-entirely.
+(`cratestack::idempotency::IdempotencyLayer`, keyed on an `Idempotency-Key`
+request header). **An earlier revision of this section said it wasn't
+wired into this deployment — that was true when this section was written,
+and is no longer true.** [#153](https://github.com/vymalo/vsms/issues/153)
+mounted it in `crates/sms-api/src/router.rs`; sending an `Idempotency-Key`
+header now does exactly what §4.5 always said it would.
 
-What *is* live: `sendMessage`'s own `clientRef` field
-(`crates/sms-api/src/procedures.rs`) doubles as `idempotencyKey` at the
-database layer, backed by the real `messages_app_idem_key` unique index.
-Two `sendMessage` calls under the same `App` with the same `clientRef`
-result in exactly one `Message` row — the second attempt fails with `409
-Conflict` (verified above, not asserted from reading the source). Both
-examples accept an optional `--client-ref`/`--client-ref` flag and print
-an explanation, not a bare error, when that 409 fires.
+Both examples demonstrate both mechanisms, and they protect against
+different failures:
 
-If the HTTP `IdempotencyLayer` is wired up in a future change, these
-examples' own claim about which layer protects what will need updating —
-this section exists precisely so that update isn't missed.
+- **`--client-ref`** (`sendMessage`'s own `clientRef` field,
+  `crates/sms-api/src/procedures.rs`) doubles as `idempotencyKey` at the
+  database layer, backed by the real `messages_app_idem_key` unique index,
+  scoped per `App`. Two `sendMessage` calls under the same `App` with the
+  same `clientRef` result in exactly one `Message` row — the second
+  attempt fails with `409 Conflict` (verified below, not asserted from
+  reading the source). This runs regardless of which HTTP header a caller
+  sends, or doesn't.
+- **`--idempotency-key`** sets the `Idempotency-Key` HTTP header, handled
+  entirely outside procedure code by `IdempotencyLayer`, scoped per
+  caller's own `Authorization` header (not per `App`). A repeat within the
+  TTL window (24h by default) never re-executes `sendMessage` at all — it
+  replays the exact first response (`Idempotency-Replayed: true`). This is
+  the one that protects a caller who *doesn't know* whether their first
+  attempt landed (a timeout, a dropped connection) — `clientRef` alone
+  still protects that case today (the DB-level index doesn't care why a
+  second call arrived), but a caller relying only on `clientRef` pays for
+  a second full `sendMessage` execution — sender-id resolution, quota
+  checks, encoding analysis — before hitting the `409`, where
+  `Idempotency-Key` short-circuits before any of that runs.
+
+Reusing an `Idempotency-Key` with a *different* request body/path/method
+returns `422 idempotency_key_conflict` rather than either sending or
+replaying — both examples print an explanation, not a bare error, when
+that fires.
 
 ### `aud` on the client assertion
 
