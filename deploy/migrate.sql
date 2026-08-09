@@ -53,6 +53,29 @@ SELECT EXISTS(SELECT 1 FROM public.schema_migrations WHERE name = '0002_bootstra
   INSERT INTO public.schema_migrations (name) VALUES ('0002_bootstrap');
 \endif
 
+-- #153: the `cratestack_idempotency` table `IdempotencyLayer`/
+-- `SqlxIdempotencyStore` need. This is the library's own bookkeeping table,
+-- never part of the committed `schema/migrations/` tree and never touched
+-- by `cratestack migrate diff` — the same "not cratestack's own schema,
+-- still tracked here" shape `schema_migrations` bookkeeping above already
+-- has, and it belongs in the same guarded, run-once place for the same
+-- reason: `sms-gateway serve` deliberately never calls
+-- `SqlxIdempotencyStore::ensure_schema()` itself (see `router()`'s own doc
+-- in `crates/sms-api/src/router.rs`), so the serving process needs no DDL
+-- privilege at all and two replicas starting together never race a
+-- `CREATE TABLE`. `ci/idempotency-table.sql` is copied into this image
+-- (see `deploy/migrate.Dockerfile`) — that file, not this one, is the
+-- single copy of the upstream DDL text; `ci/apply-migrations.sh` (the
+-- CI/scratch-database path) applies the exact same file directly.
+SELECT EXISTS(SELECT 1 FROM public.schema_migrations WHERE name = 'cratestack_idempotency_table') AS applied \gset
+\if :applied
+  \echo 'cratestack_idempotency_table already applied — skipping'
+\else
+  \echo 'applying cratestack_idempotency_table'
+  \i /idempotency-table.sql
+  INSERT INTO public.schema_migrations (name) VALUES ('cratestack_idempotency_table');
+\endif
+
 SELECT pg_advisory_unlock(hashtext('vsms_migrate'));
 
 \echo 'migrations up to date'

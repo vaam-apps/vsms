@@ -1581,28 +1581,37 @@ Send `X-Sms-Event-Id` and mean it — delivery is at-least-once and receivers ne
 
 ### 4.5 Idempotency
 
-`SqlxIdempotencyStore` is the **only shipped implementation** — no Redis or in-memory variant — which makes it correct for multi-replica by default:
+**Mounted as of #153** — `crates/sms-api/src/router.rs`'s `router()` builds both layers below; nothing here is aspirational any more. `SqlxIdempotencyStore` is the **only shipped implementation** — no Redis or in-memory variant — which makes it correct for multi-replica by default. The real import paths, verified against the pinned `cratestack =0.7.8`, are one level shallower than an earlier revision of this section claimed: `sms-api` depends only on the `cratestack` (née `cratestack-pg`) facade crate, not on `cratestack-axum` directly, and the facade's own `pub use cratestack_axum::*;` re-exports `idempotency`/`ratelimit` as submodules of `cratestack` itself:
 
 ```rust
-use cratestack_axum::idempotency::IdempotencyLayer;
-use cratestack_axum::ratelimit::{RateLimitConfig, RateLimitLayer};
-use cratestack_codec_json::JsonCodec;   // separate crate — add to Cargo.toml
+use cratestack::idempotency::{IdempotencyLayer, IdempotencyStore};
+use cratestack::ratelimit::{InMemoryRateLimitStore, RateLimitConfig, RateLimitLayer, RateLimitStore};
 use cratestack::SqlxIdempotencyStore;
+use cratestack_codec_json::JsonCodec;   // separate crate — add to Cargo.toml
 
-let idem = Arc::new(SqlxIdempotencyStore::new(pool.clone()));
-idem.ensure_schema().await?;
+let idempotency_store: Arc<dyn IdempotencyStore> =
+    Arc::new(SqlxIdempotencyStore::new(db.pool().clone()));
+let rate_limit_store: Arc<dyn RateLimitStore> = Arc::new(InMemoryRateLimitStore::new());
 
+// `.layer()` composes outside-in: the *last* call is what a request meets
+// *first*. RateLimitLayer sits outermost — a cheap 429 before any body is
+// buffered or the idempotency store is touched — then IdempotencyLayer,
+// then the RBAC layer and the generated router underneath both.
 let router = cratestack_schema::axum::router(db, procedures, JsonCodec, auth)
-    .layer(IdempotencyLayer::new(idem, Duration::from_secs(24 * 3600)))
-    .layer(RateLimitLayer::new(rl_store, RateLimitConfig::new(120, 2.0))  // burst 120, 2 tok/s
-             .with_key_fn(principal_key));
+    .layer(from_fn_with_state(rbac_state, enforce_route_permission))
+    .layer(IdempotencyLayer::new(idempotency_store, idempotency_ttl))
+    .layer(RateLimitLayer::new(rate_limit_store, rate_limit_config));
 ```
 
-Fresh key reserves and runs; repeat returns the cached response with `Idempotency-Replayed: true`; concurrent repeat gets `409` + `Retry-After: 1`; **same key with a different body gets `422 idempotency_key_conflict`**. The request hash covers method, full path *including query string*, content-type and body.
+Fresh key reserves and runs; repeat returns the cached response with `Idempotency-Replayed: true`; concurrent repeat gets `409` + `Retry-After: 1`; **same key with a different body gets `422 idempotency_key_conflict`**. The request hash covers method, full path *including query string*, content-type and body. Default principal fingerprinting hashes the `Authorization` header when present (true for every caller this deployment can currently authenticate — see §4.2) and only falls back to a shared `"anonymous"` bucket when it's absent and the server isn't served through `into_make_service_with_connect_info` (this deployment isn't); `sms-gateway` never needed `IdempotencyLayer::with_principal_fingerprint`/`RateLimitLayer::with_key_fn` for this reason.
 
 **A missing `Idempotency-Key` bypasses the layer entirely** — document loudly that OTP callers must send one, because a retried OTP send without a key is a second SMS and a second charge. Cluster-wide idempotency replication is explicitly not implemented; the SQL store is shared state, which is what makes multiple replicas safe, but don't assume more.
 
-The `messages_app_idem_key` unique index is a second, independent line of defence at the data layer.
+The `messages_app_idem_key` unique index (driven by `sendMessage`'s `clientRef`, §3's own procedure walkthrough) is a second, independent line of defence at the data layer — independent in the literal sense that it runs regardless of whether a caller ever sends `Idempotency-Key` at all, not a fallback for when the HTTP layer is absent.
+
+**`SqlxIdempotencyStore::ensure_schema()` is never called by `sms-gateway` itself.** The `cratestack_idempotency` table it writes is library bookkeeping, not part of `schema/schema.cstack` or the committed `schema/migrations/` tree, but the deploy path's own rule against runtime DDL applies to it anyway: `ci/idempotency-table.sql` is the one committed, drift-tested copy of `IDEMPOTENCY_TABLE_DDL`'s exact text, and every path that needs the table applies that same file rather than each keeping its own copy — `deploy/migrate.sql`'s advisory-lock-guarded one-shot migrate job (`\i`s it, tracked in that script's own `schema_migrations` bookkeeping table under the name `cratestack_idempotency_table`, so the serving process needs no `CREATE TABLE` privilege and two replicas starting together never race a DDL statement), `ci/apply-migrations.sh` (the CI/scratch-database path), and `crates/sms-test-support` (the live-suite harness's own per-binary template database). `crates/sms-api/tests/idempotency_table_ddl_matches_ci_sql.rs` asserts the copy hasn't drifted from the pinned library's constant.
+
+`idempotency_ttl`/`rate_limit_config` above are `sms-gateway serve`'s `--idempotency-ttl-secs`/`--rate-limit-burst`/`--rate-limit-refill-per-second` (`SMS_IDEMPOTENCY_TTL_SECS`/`SMS_RATE_LIMIT_BURST`/`SMS_RATE_LIMIT_REFILL_PER_SECOND`), defaulting to this section's own figures (24h / burst 120 / 2 tok/s) — configuration, not a feature flag; every construction site (the real binary and the live HTTP test suites) shares `sms_api::DEFAULT_IDEMPOTENCY_TTL`/`sms_api::default_rate_limit_config()` as the one source of truth for those defaults.
 
 ### 4.6 Rate limiting
 
@@ -1611,11 +1620,13 @@ Four limiters, easy to conflate:
 | Limiter | Where | Purpose |
 |---|---|---|
 | `/token` | `tower_governor` at `sms-auth` | Argon2 DoS amplification + credential stuffing. **Mandatory** (§4.2). |
-| Per-principal ingress | `RateLimitLayer` on `sms-api` | Stop a buggy caller flooding you. `429` + `Retry-After`. |
+| Per-principal ingress | `RateLimitLayer` on `sms-api` | Stop a buggy caller flooding you. `429` + `Retry-After`. Mounted as of #153 — see §4.5. |
 | Per-MSISDN OTP | in `sendMessage` | Stop SMS-pumping fraud. E.g. 3 OTP / 10 min / number, 10 / day. |
 | Per-provider egress TPS | in the worker's `dispatch` role | Respect **Orange's hard 5 TPS cap**. |
 
 `RateLimitConfig::new(burst, refill_per_second)`. **`InMemoryRateLimitStore` is the only shipped store**, with an unbounded key map and no persistence — single-replica dev only. For production implement the `RateLimitStore` trait (which *is* `#[async_trait]`) against Redis or Postgres. The bucket is wall-clock-driven, so a process pause longer than one fill window grants a fresh burst on resume.
+
+`sms-gateway`'s current deployment (`deploy/docker-compose.yml`) runs exactly one gateway replica, so `InMemoryRateLimitStore`'s per-process nature is correct today, not a gap papered over — a second replica would need the Redis/Postgres-backed store this paragraph already says doesn't exist yet, before horizontal scaling is safe.
 
 The per-MSISDN OTP limiter is the one that protects your money. SMS pumping — cycling OTP requests against premium-rate ranges — is the most common way a new gateway loses its balance overnight.
 

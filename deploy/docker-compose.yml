@@ -75,6 +75,15 @@ services:
       # sendMessage call). Only sms-gateway needs this; sms-worker never
       # computes either hash.
       SMS_HASH_PEPPER: ${SMS_HASH_PEPPER:?generate one via `openssl rand -base64 48`}
+      # #153: IdempotencyLayer/RateLimitLayer configuration — see
+      # docs/architecture.md §4.5/§4.6 and sms_api::router's own doc for
+      # what each does and why these particular defaults are safe.
+      # Optional: each falls back to `sms-gateway serve`'s own CLI default
+      # (24h / burst 120 / 2 tok/s) when unset here, same as SMS_GATEWAY_LOG
+      # below.
+      SMS_IDEMPOTENCY_TTL_SECS: ${SMS_IDEMPOTENCY_TTL_SECS:-86400}
+      SMS_RATE_LIMIT_BURST: ${SMS_RATE_LIMIT_BURST:-120}
+      SMS_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_RATE_LIMIT_REFILL_PER_SECOND:-2.0}
       RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,cratestack=info}
     depends_on:
       postgres:

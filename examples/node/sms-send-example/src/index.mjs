@@ -63,6 +63,7 @@ function parseCli() {
       "sender-id": { type: "string" },
       body: { type: "string", default: "Hello from the vsms Node.js integration example" },
       "client-ref": { type: "string" },
+      "idempotency-key": { type: "string" },
     },
   });
 
@@ -73,8 +74,8 @@ function parseCli() {
     console.error(`missing required flag(s): ${missing.map((k) => `--${k}`).join(", ")}`);
     console.error(
       "usage: node src/index.mjs --client-id <id> --private-key-path <pem> --to <e164> " +
-        "--sender-id <senderId> [--body <text>] [--client-ref <key>] [--issuer <url>] " +
-        "[--scope <scopes>]",
+        "--sender-id <senderId> [--body <text>] [--client-ref <key>] " +
+        "[--idempotency-key <key>] [--issuer <url>] [--scope <scopes>]",
     );
     process.exit(1);
   }
@@ -88,6 +89,7 @@ function parseCli() {
     senderId: values["sender-id"],
     body: values.body,
     clientRef: values["client-ref"],
+    idempotencyKey: values["idempotency-key"],
   };
 }
 
@@ -195,19 +197,32 @@ class TokenCache {
   }
 }
 
-async function sendMessage(issuer, accessToken, { to, body, senderId, clientRef }) {
+// `idempotencyKey`, when passed, is sent as the `Idempotency-Key` request
+// header — vsms's own `IdempotencyLayer` (#153,
+// crates/sms-api/src/router.rs). Pass the *same* value across two calls
+// within the TTL window (24h by default) and the second never re-executes
+// sendMessage: it replays the first response verbatim
+// (`Idempotency-Replayed: true`), no second SMS, no second Message row.
+// This is distinct from `clientRef`'s database-level dedupe — see this
+// package's README for how the two differ and why both exist.
+async function sendMessage(issuer, accessToken, { to, body, senderId, clientRef, idempotencyKey }) {
   const args = { to, body, senderId };
   if (clientRef) {
     args.clientRef = clientRef;
   }
 
+  const headers = {
+    authorization: `Bearer ${accessToken}`,
+    "content-type": "application/json",
+    accept: "application/json",
+  };
+  if (idempotencyKey) {
+    headers["idempotency-key"] = idempotencyKey;
+  }
+
   const response = await fetch(`${issuer}/$procs/sendMessage`, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${accessToken}`,
-      "content-type": "application/json",
-      accept: "application/json",
-    },
+    headers,
     body: JSON.stringify({ args }),
   });
 
@@ -220,8 +235,21 @@ async function sendMessage(issuer, accessToken, { to, body, senderId, clientRef 
     );
     return null;
   }
+  if (response.status === 422) {
+    console.log(
+      "sendMessage returned 422 — if --idempotency-key was passed, that key was already used " +
+        `with a *different* request body. This is IdempotencyLayer's own conflict check: ${text}`,
+    );
+    return null;
+  }
   if (!response.ok) {
     throw new Error(`sendMessage failed (${response.status}): ${text}`);
+  }
+  if (response.headers.get("idempotency-replayed") === "true") {
+    console.log(
+      "Idempotency-Replayed: true — this is the cached response from the first call under " +
+        "this --idempotency-key, not a new send",
+    );
   }
   return JSON.parse(text);
 }

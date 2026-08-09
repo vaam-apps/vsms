@@ -89,6 +89,27 @@ enum Command {
         /// impl redacts it even if this struct were ever printed.
         #[arg(long, env = "SMS_HASH_PEPPER")]
         hash_pepper: String,
+
+        /// #153: how long a cached `Idempotency-Key` response stays
+        /// replayable before a repeat with the same key is treated as a
+        /// brand-new request. Matches `docs/architecture.md` §4.5's own
+        /// figure (24h) as the default.
+        #[arg(long, env = "SMS_IDEMPOTENCY_TTL_SECS", default_value_t = 24 * 60 * 60)]
+        idempotency_ttl_secs: u64,
+
+        /// #153: per-principal token-bucket capacity for
+        /// `sms_api::router`'s `RateLimitLayer` — the burst a caller can
+        /// spend before throttling kicks in. Matches §4.5's own suggested
+        /// default; see `sms_api::default_rate_limit_config`'s doc for why
+        /// that default is safe against this workspace's actual live-suite
+        /// call volume. Distinct from `/token`'s own rate limiting, which
+        /// §4.2 scopes to the reverse-proxy edge instead.
+        #[arg(long, env = "SMS_RATE_LIMIT_BURST", default_value_t = 120)]
+        rate_limit_burst: u32,
+
+        /// #153: refill rate, in tokens/second, for the same bucket.
+        #[arg(long, env = "SMS_RATE_LIMIT_REFILL_PER_SECOND", default_value_t = 2.0)]
+        rate_limit_refill_per_second: f64,
     },
     /// Print the generated route table and exit. Needs no database.
     Routes,
@@ -353,6 +374,9 @@ async fn main() -> Result<()> {
             orange_sender_number,
             orange_base_url,
             hash_pepper,
+            idempotency_ttl_secs,
+            rate_limit_burst,
+            rate_limit_refill_per_second,
         } => {
             // #134: validated before anything else in this branch runs —
             // failing loudly on a missing/too-short pepper at startup, not
@@ -409,10 +433,19 @@ async fn main() -> Result<()> {
             let health_router = health::router(db.clone());
 
             let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer);
-            let app = sms_api::router(db, auth, pepper)
-                .merge(op::router(op_state))
-                .merge(dlr_router)
-                .merge(health_router);
+            let app = sms_api::router(
+                db,
+                auth,
+                pepper,
+                std::time::Duration::from_secs(idempotency_ttl_secs),
+                cratestack::ratelimit::RateLimitConfig::new(
+                    rate_limit_burst,
+                    rate_limit_refill_per_second,
+                ),
+            )
+            .merge(op::router(op_state))
+            .merge(dlr_router)
+            .merge(health_router);
 
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await

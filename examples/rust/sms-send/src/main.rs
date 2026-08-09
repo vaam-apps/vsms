@@ -100,11 +100,28 @@ struct Cli {
     /// A caller-chosen dedupe key, forwarded as `sendMessage`'s
     /// `clientRef`. Optional — but pass the *same* value across two runs
     /// and the second is rejected as `409 Conflict` instead of sending a
-    /// second real SMS. This, not an `Idempotency-Key` HTTP header, is
-    /// the dedupe mechanism actually wired up in this deployment today;
-    /// see this crate's own README for why.
+    /// second real SMS. This is the DB-level defence (`messages_app_idem_key`)
+    /// — see `--idempotency-key` below for the HTTP-level one, and this
+    /// crate's own README for how the two differ.
     #[arg(long)]
     client_ref: Option<String>,
+
+    /// Sent as the `Idempotency-Key` request header on the `sendMessage`
+    /// call — vsms's own `IdempotencyLayer` (#153,
+    /// `crates/sms-api/src/router.rs`). Optional — but pass the *same*
+    /// value across two runs within the TTL window (24h by default) and
+    /// the second call never re-executes `sendMessage` at all: it replays
+    /// the exact first response, `Idempotency-Replayed: true`, with no
+    /// second SMS and no second `Message` row. Distinct from
+    /// `--client-ref`: this key is scoped by the caller's own
+    /// `Authorization` header, not by `App`, and works even when the
+    /// request never reaches procedure code (a client that never learns
+    /// whether its first attempt was received — a timeout, a dropped
+    /// connection — is exactly the case this exists for). Reusing the
+    /// same key with a *different* body/path/method returns `422
+    /// idempotency_key_conflict` instead of either sending or replaying.
+    #[arg(long)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -302,14 +319,28 @@ async fn main() -> Result<()> {
     }
 
     let send_url = format!("{}/$procs/sendMessage", cli.issuer.trim_end_matches('/'));
-    let response = http
+    let mut request = http
         .post(&send_url)
         .bearer_auth(&access_token)
-        .header(reqwest::header::ACCEPT, "application/json")
+        .header(reqwest::header::ACCEPT, "application/json");
+    if let Some(idempotency_key) = &cli.idempotency_key {
+        request = request.header("Idempotency-Key", idempotency_key);
+    }
+    let response = request
         .json(&serde_json::json!({ "args": args }))
         .send()
         .await
         .with_context(|| format!("POSTing to {send_url}"))?;
+    if response
+        .headers()
+        .get("Idempotency-Replayed")
+        .is_some_and(|v| v == "true")
+    {
+        println!(
+            "Idempotency-Replayed: true — this is the cached response from the first call \
+             under this --idempotency-key, not a new send"
+        );
+    }
 
     let status = response.status();
     let body = response
