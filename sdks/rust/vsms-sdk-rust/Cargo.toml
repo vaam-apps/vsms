@@ -2,7 +2,7 @@
 name = "vsms-sdk-rust"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.95.0"
 license = "MIT"
 description = "Rust client for vsms: owns the private_key_jwt credential lifecycle so integrators stop hand-rolling token acquisition."
 repository = "https://github.com/vymalo/vsms"
@@ -19,21 +19,24 @@ path = "src/lib.rs"
 [dependencies]
 # `include_client_schema!` (the compile-time generated typed surface for
 # models/inputs/procedure stubs — see `src/lib.rs`'s module doc) lives in
-# `cratestack-macros`, re-exported only by the `cratestack-pg` facade today
-# (`cratestack = { package = "cratestack-pg" }` is the mandatory rename —
-# generated code emits absolute `::cratestack::*` paths). `default-features
-# = false` drops the `postgres` feature (no sqlx in a pure HTTP client's
-# dependency graph); `decimal-rust-decimal` stays on because
-# `SendMessageResult.estimatedCostXaf` is a `Decimal` field and `codec-json`
-# is what makes `cratestack::client_rust::JsonCodec` available.
-#
-# One real, unavoidable cost, not a packaging choice made here: even with
-# `postgres` off, `cratestack-pg` unconditionally depends on
-# `cratestack-axum` (`pub use cratestack_axum::*` in its own lib.rs is not
-# feature-gated) — a full axum server framework — because there is no
-# lighter "client-only" facade published yet. See this crate's own module
-# doc for the measured cost and a note back to cratestack's own tracker.
-cratestack = { package = "cratestack-pg", version = "=0.7.8", default-features = false, features = [
+# `cratestack-macros`. Through cratestack 0.7.8 the only way to reach it was
+# the `cratestack-pg` facade (`cratestack = { package = "cratestack-pg" }`
+# was the mandatory rename — generated code emits absolute `::cratestack::*`
+# paths), which unconditionally dragged in `cratestack-axum` — a full axum
+# server framework — regardless of `postgres`/`default-features`. That was
+# filed upstream as
+# [cratestack#490](https://github.com/cratestack/cratestack/issues/490);
+# cratestack 0.7.10 fixes it with a fourth, client-only facade,
+# `cratestack-client` ([cratestack#492](https://github.com/cratestack/cratestack/pull/492)),
+# which re-exports `include_client_schema!` and the generated Rust client
+# runtime with `cratestack-axum` structurally absent from its dependency
+# graph. This crate moved onto it — same mandatory `cratestack` rename, same
+# `codec-json` (for `cratestack::client_rust::JsonCodec`) and
+# `decimal-rust-decimal` (for `SendMessageResult.estimatedCostXaf`) features,
+# just a lighter facade underneath. Confirmed via `cargo tree --depth 1`:
+# `axum`/`tower`/`hyper`/`tower-http`/`cratestack-axum` are gone from this
+# crate's dependency tree — see the PR description for the before/after.
+cratestack = { package = "cratestack-client", version = "=0.7.10", default-features = false, features = [
   "codec-json",
   "decimal-rust-decimal",
 ] }

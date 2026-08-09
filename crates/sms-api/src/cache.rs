@@ -104,7 +104,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_miss_fetches_and_caches() {
-        let cache: TtlCache<&str, i32> = TtlCache::new(Duration::from_secs(60));
+        let cache: TtlCache<&str, i32> = TtlCache::new(Duration::from_mins(1));
         let calls = AtomicUsize::new(0);
 
         let first: Result<i32, std::convert::Infallible> = cache
@@ -151,7 +151,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_failed_fetch_does_not_poison_the_cache() {
-        let cache: TtlCache<&str, i32> = TtlCache::new(Duration::from_secs(60));
+        let cache: TtlCache<&str, i32> = TtlCache::new(Duration::from_mins(1));
 
         let failed = cache
             .get_or_fetch("k", |_| async { Err::<i32, _>("boom") })
@@ -170,7 +170,7 @@ mod tests {
 
     #[tokio::test]
     async fn different_keys_are_independent() {
-        let cache: TtlCache<&str, i32> = TtlCache::new(Duration::from_secs(60));
+        let cache: TtlCache<&str, i32> = TtlCache::new(Duration::from_mins(1));
         cache
             .get_or_fetch("a", |_| async { Ok::<_, std::convert::Infallible>(1) })
             .await

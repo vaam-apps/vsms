@@ -167,7 +167,7 @@ jobs:
       # calling routes the compiled server does not serve, which is what the
       # route gate below exists to catch.
       - name: Install cratestack CLI (matched to the library pin)
-        run: cargo install cratestack-cli --version 0.7.8 --locked
+        run: cargo install cratestack-cli --version 0.7.10 --locked
       # `just` is not preinstalled on GitHub runners, and no other job in this
       # workflow needed it — they call cargo and ci/*.sh directly. Installing
       # it keeps one definition of what generation and the route gate actually

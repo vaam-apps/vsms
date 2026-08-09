@@ -162,10 +162,8 @@ impl Procedures {
     #[must_use]
     pub fn new(pepper: HashPepper) -> Self {
         Self {
-            app_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_secs(60))),
-            operator_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_secs(
-                5 * 60,
-            ))),
+            app_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_mins(1))),
+            operator_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_mins(5))),
             pepper,
         }
     }

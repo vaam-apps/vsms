@@ -116,9 +116,8 @@ impl GatewayAuth {
         // missing `kid`, which the moment two keys are published during
         // rotation (`sms-auth::op::ROTATION_OVERLAP`) picks wrong close to
         // half the time.
-        let jwks = std::sync::Arc::new(
-            JwksCache::new(jwks_url, Duration::from_secs(300)).require_kid(true),
-        );
+        let jwks =
+            std::sync::Arc::new(JwksCache::new(jwks_url, Duration::from_mins(5)).require_kid(true));
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[issuer]);
         // A service-account token's `aud` echoes `sub` (the client_id,
@@ -149,7 +148,7 @@ impl GatewayAuth {
             // isn't a database hit per request — same tradeoff and TTL
             // `Procedures::resolve_app` already makes for the same lookup
             // shape.
-            app_cache: std::sync::Arc::new(TtlCache::new(Duration::from_secs(60))),
+            app_cache: std::sync::Arc::new(TtlCache::new(Duration::from_mins(1))),
             db,
             sys: system_context(),
         }

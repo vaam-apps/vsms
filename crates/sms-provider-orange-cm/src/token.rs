@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn a_just_stored_token_is_valid() {
         let cache = TokenCache::new();
-        cache.store("tok-1".to_owned(), Duration::from_secs(3600));
+        cache.store("tok-1".to_owned(), Duration::from_hours(1));
         assert_eq!(cache.valid().as_deref(), Some("tok-1"));
     }
 
@@ -160,8 +160,8 @@ mod tests {
     #[test]
     fn storing_a_new_token_replaces_the_old_one() {
         let cache = TokenCache::new();
-        cache.store("tok-1".to_owned(), Duration::from_secs(3600));
-        cache.store("tok-2".to_owned(), Duration::from_secs(3600));
+        cache.store("tok-1".to_owned(), Duration::from_hours(1));
+        cache.store("tok-2".to_owned(), Duration::from_hours(1));
         assert_eq!(cache.valid().as_deref(), Some("tok-2"));
     }
 }
