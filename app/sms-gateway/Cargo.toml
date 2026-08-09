@@ -20,6 +20,9 @@ authkestra-axum = { workspace = true, features = ["op"] }
 authkestra-engine.workspace = true
 authkestra-op.workspace = true
 axum.workspace = true
+# token_rate_limit.rs's client_id extraction (#168) — see that module's
+# own doc.
+form_urlencoded.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait (#34), and the one
 # concrete adapter that exists to construct it from.
 sms-provider.workspace = true
@@ -51,6 +54,9 @@ serde_json.workspace = true
 # tests/m1_acceptance_gate_live_postgres.rs gets its DATABASE_URL from this
 # instead of the environment.
 sms-test-support.workspace = true
+# token_rate_limit.rs's own unit tests (#168) — tower::ServiceExt::oneshot
+# against an in-process router.
+tower.workspace = true
 
 [lints]
 workspace = true

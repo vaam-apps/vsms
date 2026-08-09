@@ -68,7 +68,14 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["time"] }
+# router.rs's #163 live-server tests bind a real ephemeral-port listener
+# (`net`) and drive it with a real HTTP client (`reqwest`, below) — the
+# only way to prove `ConnectInfo<SocketAddr>` behaves the way the two
+# `RateLimitLayer`s' key functions assume, short of a live-Postgres suite
+# these tests deliberately avoid needing (the lazy pool never connects,
+# same trick `router_builds_without_a_live_database` already uses).
+tokio = { workspace = true, features = ["time", "net"] }
+reqwest.workspace = true
 # dlr_ingestion_live_postgres.rs's FixedProvider — a test-only SmsProvider
 # fake, needing the same #[async_trait] the real trait is declared with.
 async-trait.workspace = true

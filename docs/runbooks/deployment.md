@@ -319,20 +319,36 @@ just with a static instead of a dynamic key (i.e. strictly simpler:
 "one bucket for everyone" rather than "one bucket per key value").
 
 **Composite `client_id` + source-IP keying on `/token`, as
-`docs/architecture.md` §4.2 asks for, is not what this actually
-implements** — it keys on source IP only, for a real reason checked
-during this work, not an oversight: `client_id` on `/token` arrives only
-in the URL-encoded POST body, and every way this edge could read it out
+`docs/architecture.md` §4.2 asks for, is not what *this edge* implements
+— it keys on source IP only, for a real reason checked during this work,
+not an oversight**: `client_id` on `/token` arrives only in the
+URL-encoded POST body, and every way this edge could read it out
 (Caddy's own `{http.request.body}` placeholder, explicitly documented
 "inefficient; use only for debugging"; the one third-party module that
 parses form bodies into placeholders, a single-contributor, zero-star,
 recently-created repository) was rejected as unfit for a TLS-terminating
 production edge parsing OAuth request bodies. See `deploy/Caddyfile`'s
-own comment on the `token_per_ip`/`token_global` zones for the full
-reasoning and the two real fixes that remain open (a first-party Caddy
-module, or a second limiter inside `sms-auth`'s own `/token` handler,
-which already has the parsed body) — filed as
-[#168](https://github.com/vymalo/vsms/issues/168), not silently accepted.
+own comment on the `token_per_ip`/`token_global` zones for that
+reasoning in full.
+
+**#168 closed the composite key at the *application* layer instead** —
+not this edge, and not `sms-auth`: `app/sms-gateway/src/token_rate_limit.rs`
+is a second, defense-in-depth limiter mounted on `/token` itself
+(`app/sms-gateway/src/op.rs`, which already owns route assembly for that
+path), keyed on the real `client_id` it reads from the request body it
+already has to buffer. It buffers with a bounded 64 KiB limit and always
+reconstructs the body before the real OAuth handler runs — a `/token`
+handler that received a consumed body would break every real exchange,
+not just an attacker's, so this was proven directly (a round-trip test
+asserting the handler sees the identical bytes it was sent) rather than
+assumed safe. Operator-tunable via `SMS_TOKEN_RATE_LIMIT_BURST`/
+`SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND` (`deploy/.env.example`), default
+10 burst / 20 per minute — mirroring `token_per_ip`'s own figure above,
+now attributed to a specific `client_id` instead of a shared source IP.
+The two layers stay complementary, not redundant: this edge's zones bound
+abuse by source IP before it ever reaches the application; the new layer
+bounds abuse by claimed identity, the dimension this edge structurally
+cannot reach.
 
 ## Ordering and failure modes, summarized
 

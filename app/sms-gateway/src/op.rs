@@ -49,11 +49,14 @@ use authkestra_op::handlers::discovery::OidcDiscovery;
 use authkestra_op::handlers::jwks::JwksResponse;
 use authkestra_op::OpStore;
 use axum::extract::{FromRef, State};
+use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use cratestack::CoolContext;
 use sms_api::schema::Cratestack;
 use sms_auth::op::MachineOnlyOpStore;
+
+use crate::token_rate_limit::{enforce_token_client_rate_limit, TokenRateLimitState};
 
 /// How often a running process reloads signing keys from the database —
 /// short relative to `sms_auth::op::ROTATION_OVERLAP` (30 minutes), so a
@@ -139,14 +142,35 @@ async fn discovery_handler(State(state): State<OpState>) -> Json<OidcDiscovery> 
 
 /// The OP's routes, already `.with_state(...)` — mergeable directly with
 /// `sms_api::router`'s own already-stated `Router`.
+///
+/// `token_rate_limit` (#168) wraps **only** `/token`, never `/jwks.json` or
+/// discovery — those are cacheable, unauthenticated, read-only documents a
+/// client (and this module's own `spawn_key_refresh` machinery, and every
+/// `/token` caller's own discovery lookup) may fetch far more often than
+/// any real token request, and throttling them buys nothing `token_per_ip`/
+/// `token_global` at the Caddy edge don't already cover for `/token`
+/// itself. Built as its own small sub-router with the layer applied before
+/// `.merge()`, the standard axum pattern for "this middleware applies to
+/// one route, not every route this function mounts" — see
+/// `token_rate_limit`'s own module doc for what the layer does and why it
+/// lives here rather than in `sms_api::router` (which never wraps `/token`
+/// at all) or `deploy/Caddyfile` (which structurally cannot key on
+/// `client_id` — that module's doc has the receipts).
 // No `#[must_use]`: axum's `Router` already carries one, and doubling it is
 // what `clippy::double_must_use` objects to — same reasoning as
 // `sms_api::router`'s own doc comment on this.
-pub fn router(state: OpState) -> Router {
+pub fn router(state: OpState, token_rate_limit: TokenRateLimitState) -> Router {
+    let token_route = Router::new()
+        .route("/token", post(axum_token_handler::<OpState>))
+        .layer(from_fn_with_state(
+            token_rate_limit,
+            enforce_token_client_rate_limit,
+        ));
+
     Router::new()
         .route("/jwks.json", get(jwks_handler))
         .route("/.well-known/openid-configuration", get(discovery_handler))
-        .route("/token", post(axum_token_handler::<OpState>))
+        .merge(token_route)
         .with_state(state)
 }
 

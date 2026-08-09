@@ -328,6 +328,7 @@ async fn spawn_test_server(db: &Cratestack) -> (String, usize) {
         pepper,
         sms_api::DEFAULT_IDEMPOTENCY_TTL,
         sms_api::default_rate_limit_config(),
+        sms_api::default_source_rate_limit_config(),
     )
     .merge(op_router(op_state));
 
