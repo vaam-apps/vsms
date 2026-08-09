@@ -13,6 +13,12 @@
 *.pem
 *.key
 /secrets/
+# deploy/secrets/rclone.conf (#69) — rclone remote credentials for
+# backups; same gitignored/chmod-600/mounted-read-only convention as
+# deploy/secrets/console-private-key.pem (already covered by *.pem above;
+# rclone.conf needs its own entry since it isn't a .pem/.key file, and
+# `/secrets/` above only anchors to the repo root, not deploy/secrets/).
+deploy/secrets/rclone.conf
 .DS_Store
 node_modules/
 /pgdata
