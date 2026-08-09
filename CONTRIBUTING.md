@@ -32,8 +32,9 @@ A raw query against `messages` is therefore not the same query written by hand. 
 | DDL and migrations | `schema/migrations/**` | Triggers, partial indexes, foreign keys, column defaults. Not data access; the emitter produces none of it. |
 | Advisory locks | `crates/sms-worker/src/lease.rs` | `pg_try_advisory_lock` / `pg_advisory_unlock`. Not a table. |
 | `LISTEN` / `NOTIFY` | `crates/sms-worker/src/notify.rs`, `crates/sms-api/src/cache.rs` | Cache-invalidation fan-out. No delegate expression exists. |
+| Readiness probe | `app/sms-gateway/src/health.rs` | `GET /readyz` (#157) round-trips a bare `SELECT 1` on the pool to prove the database is reachable. There is no model this check is *about* — it reads no application row — so there is nothing for row-level policy, audit, outbox, or `@version` to apply to. A delegate call would also fail #157's other named trap: any real table read on an unauthenticated route is a query-amplification DoS surface, which a policy-free connectivity ping is not. |
 
-That is the complete list, and `ci/assert-no-raw-sqlx.sh` enforces it. Adding a fourth entry should feel like a design decision, because it is one — put the reasoning in the PR.
+That is the complete list, and `ci/assert-no-raw-sqlx.sh` enforces it. Adding a fifth entry should feel like a design decision, because it is one — put the reasoning in the PR.
 
 Two things people reach for that are **not** exceptions:
 

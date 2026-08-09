@@ -339,11 +339,14 @@ controllers:
           RUST_LOG:
             value: 'sms_gateway=info,sms_api=info,cratestack=info'
         probes:
-          # /healthz is liveness-only by design (app/sms-gateway/src/health.rs's
-          # own doc: "It does not touch the database") — safe to reuse for
-          # both liveness and readiness since it never reports a false
-          # "ready" against a database that's actually down; a DB outage
-          # surfaces as request failures, not a killed container.
+          # #157: /healthz stays liveness-only by design
+          # (app/sms-gateway/src/health.rs's own doc: "It does not touch the
+          # database") — a DB outage should surface as failed requests, not
+          # as an orchestrator killing a container it cannot fix by
+          # restarting it. /readyz is the new, separate route that *does*
+          # round-trip the database (a bare SELECT 1, no application table),
+          # so a pod whose database has gone away is pulled out of the
+          # gateway Service's endpoints without also being restarted.
           liveness:
             enabled: true
             type: HTTP
@@ -357,12 +360,40 @@ controllers:
           readiness:
             enabled: true
             type: HTTP
-            path: /healthz
+            path: /readyz
             port: 8080
             spec:
+              # Deliberately not the defaults, and not copied from
+              # liveness's own numbers — a readiness probe that flips too
+              # eagerly turns one brief database blip into every replica
+              # going unready at once (#157's own "stampede" warning).
+              # periodSeconds=5 * failureThreshold=3 gives ~15s of
+              # sustained failure before a pod is pulled from the Service's
+              # endpoints — long enough to ride out a Postgres failover or
+              # a momentary connection-pool hiccup, short enough that a
+              # genuine outage still stops receiving traffic quickly.
+              # timeoutSeconds=3 sits just above /readyz's own internal 2s
+              # budget (health.rs's READINESS_TIMEOUT), so a slow database
+              # round-trip is reported by the route itself (a fast,
+              # explicit 503) rather than by the probe's own timeout (which
+              # would look identical to a hung process from outside).
+              #
+              # No successThreshold here on purpose, not merely left at the
+              # Kubernetes default (1, which is what's wanted — one good
+              # round-trip should be enough to trust again). Checked live
+              # against common 4.6.2's own
+              # templates/lib/container/fields/_probes.tpl: the non-`custom`
+              # HTTP-probe branch copies exactly `initialDelaySeconds`,
+              # `failureThreshold`, `timeoutSeconds`, `periodSeconds` out of
+              # `spec` — a `successThreshold` key here would be silently
+              # dropped from the rendered manifest, not defaulted, the same
+              # "will compile/render and be silently wrong" shape AGENTS.md
+              # warns about for a different templating layer. Confirmed with
+              # `helm template`: the key does not appear in the rendered
+              # `readinessProbe` either way.
               initialDelaySeconds: 5
-              periodSeconds: 10
-              timeoutSeconds: 5
+              periodSeconds: 5
+              timeoutSeconds: 3
               failureThreshold: 3
           startup:
             # Generous — this process opens a DB pool and loads OP signing
