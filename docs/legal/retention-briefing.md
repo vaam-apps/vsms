@@ -16,13 +16,13 @@ The concrete data categories, and where each lives, drawn from the system's sche
 |---|---|---|---|---|
 | Recipient phone number (MSISDN), plaintext | `msisdn` | `Message`, `OptOut` | Yes — marked `@pii` in the schema | E.164 format, e.g. `+237...` |
 | Recipient phone number, hashed | `msisdnHash` | `Message`, `OptOut` | Pseudonymised — see §1a below | Used for dedupe, opt-out matching, analytics |
-| Message text | `body` | `Message` | Yes, when populated | **Null for OTP messages by design** — see below |
+| Message text | `body` | `Message` | Yes | **Stored in plaintext for all classes, including OTP** — see below |
 | Message text, hashed | `bodyHash` | `Message` | Pseudonymised — same scheme as `msisdnHash` | |
 | Delivery status / carrier response | `state`, provider refs, raw carrier payload | `Message`, `DeliveryReceipt` | Metadata; `DeliveryReceipt.rawPayload` may echo carrier-side data | |
 | Audit trail (before/after snapshots of every write) | — | `cratestack_audit` (framework table, not a schema model) | Redacted at write time — see §1a | Captures actor, operation, timestamps |
 | Outbound event/webhook payloads | `to` (recipient), `clientRef`, state, etc. | `cratestack_event_outbox` → delivered to app-configured webhook endpoints | Yes, unless masked | `to` is masked by default (`WebhookEndpoint.maskRecipient`, default-on per the design doc), but an app can turn masking off for its own webhook |
 
-**Design decision already made, not up for legal reconsideration in this doc:** for `class = otp` messages, the send procedure sets `body = null` at write time — OTP message text is never stored, only its hash and length. The design doc's own reasoning: "An OTP gateway that stores OTP plaintext for 90 days is a credential database." This briefing surfaces that fact for completeness; it is not asking counsel to bless it, though counsel may want to know it exists.
+**A known defect, disclosed here because it changes the facts counsel is reasoning about.** The design document states that for `class = otp` the send procedure sets `body = null`, storing only the hash and length, on the reasoning that "an OTP gateway that stores OTP plaintext for 90 days is a credential database." **The implementation does not do this.** `crates/sms-api/src/procedures.rs:624` writes `body: Some(body)` unconditionally, with no message-class check, so one-time-password text is currently retained in plaintext for the full 90-day window and is readable over the API (the `@sensitive` marker redacts audit snapshots only — it is not a confidentiality control). This is tracked as issue #165 and is intended to be fixed. Counsel should treat OTP content as **currently stored** when answering the questions below, and may wish to indicate whether the answers change once it is not.
 
 ### 1a. The hash is keyed, and that distinction matters for minimisation
 
@@ -87,7 +87,7 @@ These are framed to be answerable, and each answer changes what gets built:
 3. **What is the lawful retention period for each of the following, specifically:** (a) plaintext recipient MSISDN, (b) message content/body, (c) hashed MSISDN + delivery metadata, (d) the opt-out/suppression list (which the system currently proposes to retain indefinitely, since its purpose — never messaging someone who opted out — has no natural expiry)?
 4. **Is VSMS (an A2P messaging gateway routing through licensed carriers, not itself a network operator) within the class of entities Article 25(1) applies to** ("operators and electronic communications service providers"), or is that duty scoped to the carriers (MTN/Orange) rather than to a service built on top of them?
 5. **If the split-ledger approach in §3 is broadly the right shape, what specific fields may the long-retained record contain** — is a hashed MSISDN acceptable, or does the ten-year record need to be structured differently (e.g., a separate, more restricted-access table; additional consent language; a different pseudonymisation technique)?
-6. **Does the answer differ by message class** (OTP vs. notification/marketing)? OTP message bodies are already never stored (see §1); notification bodies currently are, until the 90-day purge.
+6. **Does the answer differ by message class** (OTP vs. notification/marketing)? Note the correction in §1: contrary to the design document, OTP bodies are **currently stored** in plaintext for 90 days (issue #165), alongside notification bodies. If the answer to any question above turns on whether one-time-password content is retained, please say so explicitly — that defect is being fixed, and knowing it matters legally would raise its priority.
 
 ---
 
