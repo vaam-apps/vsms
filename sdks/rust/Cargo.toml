@@ -1,0 +1,9 @@
+# A separate Cargo workspace, deliberately not a member of the root one —
+# same reasoning and same shape as `examples/rust/Cargo.toml`. This lets
+# the SDK pick its own dependency versions, publish independently to
+# crates.io, and never show up in `cargo check --workspace`/`cargo test
+# --workspace` run from the repo root. See the root Cargo.toml's own
+# `exclude` entry and this directory's crate for why it exists.
+[workspace]
+resolver = "3"
+members = ["vsms-sdk-rust"]

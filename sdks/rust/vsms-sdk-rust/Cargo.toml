@@ -1,0 +1,88 @@
+[package]
+name = "vsms-sdk-rust"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+description = "Rust client for vsms: owns the private_key_jwt credential lifecycle so integrators stop hand-rolling token acquisition."
+repository = "https://github.com/vymalo/vsms"
+readme = "README.md"
+# Kept separate from the product workspace (see the root Cargo.toml's
+# `exclude` and this crate's own module doc) so it can be published to
+# crates.io independently, on its own version and dependency schedule.
+publish = true
+
+[lib]
+name = "vsms_sdk"
+path = "src/lib.rs"
+
+[dependencies]
+# `include_client_schema!` (the compile-time generated typed surface for
+# models/inputs/procedure stubs — see `src/lib.rs`'s module doc) lives in
+# `cratestack-macros`, re-exported only by the `cratestack-pg` facade today
+# (`cratestack = { package = "cratestack-pg" }` is the mandatory rename —
+# generated code emits absolute `::cratestack::*` paths). `default-features
+# = false` drops the `postgres` feature (no sqlx in a pure HTTP client's
+# dependency graph); `decimal-rust-decimal` stays on because
+# `SendMessageResult.estimatedCostXaf` is a `Decimal` field and `codec-json`
+# is what makes `cratestack::client_rust::JsonCodec` available.
+#
+# One real, unavoidable cost, not a packaging choice made here: even with
+# `postgres` off, `cratestack-pg` unconditionally depends on
+# `cratestack-axum` (`pub use cratestack_axum::*` in its own lib.rs is not
+# feature-gated) — a full axum server framework — because there is no
+# lighter "client-only" facade published yet. See this crate's own module
+# doc for the measured cost and a note back to cratestack's own tracker.
+cratestack = { package = "cratestack-pg", version = "=0.7.8", default-features = false, features = [
+  "codec-json",
+  "decimal-rust-decimal",
+] }
+# Needed to implement `cratestack::client_rust::RequestAuthorizer` — its
+# `authorize` method is `#[async_trait]` as of cratestack-client-rust 0.7.x
+# (issue #453: a real credential provider needs to make an HTTP call on a
+# cache miss, which a sync `fn` can't do without `block_on`). The version
+# just has to match whatever `#[async_trait::async_trait]` the trait
+# definition itself was built with; not pinned exactly since this isn't
+# part of the cratestack family's own lockstep-release discipline.
+async-trait = "0.1"
+# RFC 7523 client-assertion signing. `rust_crypto`, not the default
+# `aws_lc_rs` backend — same choice `examples/rust/sms-send` and vsms
+# itself make, for the identical reason (AGENTS.md's aws-lc-rs section):
+# one fewer crypto backend in the dependency graph. `use_pem` has to be
+# named explicitly once `default-features = false` is set — it's what
+# makes `EncodingKey::from_rsa_pem`/`from_ec_pem` available.
+jsonwebtoken = { version = "11", default-features = false, features = [
+  "rust_crypto",
+  "use_pem",
+] }
+# `cratestack-client-rust` 0.7.8 (pulled in via the `cratestack` facade
+# above) forces the whole graph's `reqwest` to major 0.13 with
+# `rustls-no-provider` (see its own Cargo.toml) — matched here rather than
+# adding a second `reqwest` major, or a second TLS backend, to the graph.
+# `rustls-no-provider` ships no crypto provider at all and PANICS at
+# `Client::build()` unless one is installed first; `src/client.rs`'s
+# `ensure_crypto_provider` installs `ring` (matching every other reqwest
+# consumer in this repo — AGENTS.md's aws-lc-rs section) before building
+# either this crate's own token-fetch client or the `CratestackClient`'s
+# internal one, whichever runs first.
+reqwest = { version = "0.13", default-features = false, features = [
+  "json",
+  "form",
+  "rustls-no-provider",
+] }
+rustls = { version = "0.23", default-features = false, features = [
+  "ring",
+  "std",
+  "tls12",
+  "logging",
+] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

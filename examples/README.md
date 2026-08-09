@@ -22,6 +22,12 @@ Both mirror `packages/gateway/src/token.ts` — the admin console's own
 token acquisition — for steps 1-3, rather than inventing a second
 interpretation of the same exchange.
 
+**The Rust example now does steps 1-3 by depending on `vsms-sdk-rust`**
+(`sdks/rust/vsms-sdk-rust`, [#171](https://github.com/vymalo/vsms/issues/171))
+instead of hand-rolling them — see that crate's own module doc for what it
+owns (the `private_key_jwt` credential lifecycle) and this file's own
+"Design decisions" section below for what that did to this example's size.
+
 ## Layout
 
 ```
@@ -140,6 +146,23 @@ message. See "Idempotency" below for exactly what this does and doesn't
 prove.
 
 ## Design decisions
+
+### Rust: `vsms-sdk-rust`, not a hand-rolled token dance
+
+`examples/rust/sms-send/src/main.rs` used to hand-roll RFC 7523 assertion
+signing, the `/token` exchange, and token caching itself (~230 lines of
+it) — the exact duplication [#171](https://github.com/vymalo/vsms/issues/171)
+was filed to stop, since `packages/gateway/src/token.ts` and
+`app/sms-gateway/tests/provision_client_cli_live_postgres.rs` each
+implemented the identical dance separately. It now depends on
+`sdks/rust/vsms-sdk-rust` (a path dependency here — a real integrator
+outside this monorepo would depend on the published crates.io version
+instead) and shrank from 377 to 152 lines; `Cargo.toml` dropped
+`jsonwebtoken`, `reqwest`, `serde`, `serde_json`, and `uuid` as direct
+dependencies (they're still there transitively, via the SDK). See that
+crate's own module doc for what's generated (`cratestack::
+include_client_schema!` — the model/input/procedure surface) versus
+hand-written (the auth layer, which is the part that used to live here).
 
 ### Node: plain `fetch` + `jose`, not `@vsms/sms-client`
 

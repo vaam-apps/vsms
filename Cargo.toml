@@ -21,7 +21,12 @@ members = [
 # `exclude` isn't strictly load-bearing today (nothing above adds it via a
 # glob), but it documents the boundary explicitly and keeps it true if
 # `members` above ever grows a glob.
-exclude = ["examples/rust"]
+#
+# sdks/rust is the same shape for the same reason (#171): vsms-sdk-rust is
+# meant for external, independent publishing to crates.io, so it picks its
+# own dependency versions and never shows up in this workspace's own
+# `cargo check`/`cargo test --workspace`.
+exclude = ["examples/rust", "sdks/rust"]
 
 [workspace.package]
 version = "0.1.0"
