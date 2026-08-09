@@ -23,7 +23,21 @@
     "lint": {
       "outputs": []
     },
+    // typecheck must not run ahead of (or concurrently with) this package's
+    // own build: admin/tsconfig.json's `include` lists
+    // `.next/types/**/*.ts`, which `next build` generates partway through
+    // its own run. This dependency was added in #133, then silently lost
+    // during #135's merge (its turbo.json diff shows the line removed with
+    // no mention in the commit body) — #135 branched before #133 landed
+    // and the rebase/merge dropped it. Confirmed live rather than assumed:
+    // `.turbo/runs/*.json` from a forced `typecheck build` run shows
+    // `admin#typecheck` starting at the same millisecond as `admin#build`
+    // and finishing ~17s before it — silently type-checking without the
+    // generated `.next/types` in scope, not erroring (tsc tolerates an
+    // `include` glob matching nothing), so the failure mode is a false
+    // pass, not a crash.
     "typecheck": {
+      "dependsOn": ["build"],
       "outputs": []
     },
     "test": {
