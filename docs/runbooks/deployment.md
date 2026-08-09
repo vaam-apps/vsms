@@ -222,6 +222,18 @@ admin domains have to stay two separate origins rather than one
 path-routed domain (the OIDC discovery document's URLs are only
 well-defined at an origin root).
 
+**As of #156, `deploy/Caddyfile` uses `rate_limit`, a third-party module
+the stock `caddy:2-alpine` image does not carry** — `deploy/docker-compose.yml`'s
+`caddy` service still points `image:` at that stock image (that edit was
+deliberately left out of #156 — see `deploy/caddy.Dockerfile`'s own
+header for why and for the exact one-line change it needs). Until
+`docker-compose.yml` is updated to `build:` from `deploy/caddy.Dockerfile`
+instead, `docker compose up -d --build admin caddy` brings up a `caddy`
+that fails to start (`Caddyfile:NN - Error during parsing: unrecognized
+directive: rate_limit`, since the stock binary has no `http.handlers.rate_limit`
+module) rather than silently running unlimited — a fail-loud gap, not a
+silent one, but real until that compose edit lands.
+
 ## 8. Verify
 
 ```bash
@@ -236,6 +248,84 @@ five containers, real health checks, a real Caddy TLS hop in front of
 both origins — was run end to end against a throwaway config while
 building this PR, using `tls internal` in place of real DNS; see the PR
 description for what specifically was and wasn't verified.
+
+## Rate limiting (#156) — what was actually proven, against a real stack
+
+`deploy/Caddyfile`'s `rate_limit` block was verified against a genuinely
+separate compose project (`-p vsms156`, non-default host port `18080`,
+built from `deploy/caddy.Dockerfile` and the same `sms-gateway`/`migrate`
+images this tree produces elsewhere), not asserted from reading the
+config. Real `/token` and `/dlr/{providerKey}` requests, garbage
+credentials and all — the point was to prove the edge throttles before
+`authkestra-op`'s RS256 check and Postgres ever see the excess requests,
+not to complete a real token exchange.
+
+**`/token`, per-source-IP zone** (tested at a scaled-down `events=5,
+window=20s` for a fast burst — the shipped default is `20/1m`, same
+mechanism): the first 5 requests from one source got real application
+responses (`401 invalid_client` — the garbage assertion was rejected by
+`sms-auth`, proving the request reached it), the 6th through 10th all got
+`429 Too Many Requests` with `Retry-After` set, straight from Caddy
+(`Server: Caddy`, no application body). Waiting out the window recovered
+it — a request sent ~20s later got a fresh `401`, not a `429`.
+
+**Keying, verified both directions, not just claimed:**
+
+- A second, genuinely different source IP (a separate container on the
+  compose network, confirmed via Caddy's own `log_key`-enabled logs to
+  be a distinct `remote_ip`) sending the *same* `client_id` got its own,
+  independent budget — unaffected by the first source's bucket already
+  reading `429`. This is the literal acceptance criterion: one abusive
+  caller cannot exhaust a bucket a different, legitimate caller shares a
+  client_id with, because there is no such shared bucket.
+- That second source's own budget throttled identically once *it*
+  sent enough requests (5 through before `429`), proving the limit isn't
+  one-sided.
+- Sending `X-Forwarded-For: 1.2.3.4` and, on a separate request,
+  `X-Forwarded-For: 9.9.9.9` from that same already-throttled source
+  did **not** create new buckets and did **not** lift the throttle —
+  both still got `429`. Confirms the key is genuinely
+  `{http.request.remote.host}` (the real TCP peer Caddy accepted the
+  connection from), not anything a client-supplied header can influence
+  — the exact bypass this task named as a risk to check for, not assume
+  away.
+
+**`/dlr/{providerKey}`, per-(IP, path) zone** (tested at a scaled-down
+`events=4, window=20s`; shipped default `100/10s`): the first 4 requests
+to `/dlr/orange_cm` got a real `400` from `sms-gateway` (malformed DLR
+payload, on purpose — proves the request reached the app), the 5th
+onward got `429`. A request to a *different* path,
+`/dlr/other_provider`, from the same source and in the same window, got
+through to the app (`404`, unknown provider) rather than being throttled
+— confirming the path component of the key genuinely isolates buckets
+per `providerKey`, not just per source IP.
+
+**Not verified by this burst test, and worth being explicit about:**
+the two aggregate/global zones (`token_global`, `dlr_global`) were
+confirmed to parse and load (`caddy validate`, and `log_key` showed them
+evaluating on every request) but were not driven past their own
+(120/min, 200/10s) thresholds by volume — doing so meaningfully would
+mean sending on the order of a hundred-plus requests in this runbook's
+own verification pass, which wasn't judged worth the added noise given
+they share the exact same sliding-window mechanism already proven above,
+just with a static instead of a dynamic key (i.e. strictly simpler:
+"one bucket for everyone" rather than "one bucket per key value").
+
+**Composite `client_id` + source-IP keying on `/token`, as
+`docs/architecture.md` §4.2 asks for, is not what this actually
+implements** — it keys on source IP only, for a real reason checked
+during this work, not an oversight: `client_id` on `/token` arrives only
+in the URL-encoded POST body, and every way this edge could read it out
+(Caddy's own `{http.request.body}` placeholder, explicitly documented
+"inefficient; use only for debugging"; the one third-party module that
+parses form bodies into placeholders, a single-contributor, zero-star,
+recently-created repository) was rejected as unfit for a TLS-terminating
+production edge parsing OAuth request bodies. See `deploy/Caddyfile`'s
+own comment on the `token_per_ip`/`token_global` zones for the full
+reasoning and the two real fixes that remain open (a first-party Caddy
+module, or a second limiter inside `sms-auth`'s own `/token` handler,
+which already has the parsed body) — filed as
+[#168](https://github.com/vymalo/vsms/issues/168), not silently accepted.
 
 ## Ordering and failure modes, summarized
 
