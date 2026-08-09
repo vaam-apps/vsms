@@ -22,6 +22,117 @@
 # line in for the real cert flow in both blocks below — Caddy then mints
 # its own local CA and self-signed certs. See
 # docs/runbooks/deployment.md for trusting that CA on your own machine.
+#
+# #156 — rate limiting `/token` and `/dlr/{providerKey}` at this edge.
+# `docs/architecture.md` §4.2/§4.6 assign this duty to "the reverse proxy",
+# not `sms-auth` — #22 closed the Argon2-amplification version of this
+# concern on that reasoning, and #139 then built this Caddy edge without
+# ever picking the duty up (`grep rate_limit deploy/Caddyfile` found
+# nothing before this change). `rate_limit` is a third-party Caddy module
+# (github.com/mholt/caddy-ratelimit) — stock `caddy:2-alpine` does not
+# have it (confirmed: `caddy version`/`caddy list-modules` in that image
+# has no `http.handlers.rate_limit`). This deploy tree now builds its own
+# image from `deploy/caddy.Dockerfile` instead — see that file's own
+# header for exactly what changes and why, and this PR's description for
+# the `deploy/docker-compose.yml` edit it requires (not made here — #156
+# scopes this agent to this file, `deploy/.env.example`, and
+# `docs/runbooks/deployment.md` only).
+#
+# Every numeric limit below is env-tunable with a documented default (see
+# `deploy/.env.example`'s own "Caddy rate limiting" section for the
+# reasoning behind each number) so an operator can retune without a
+# rebuild — only the *keys* (what a limiter buckets requests by) are
+# hardcoded, since getting those wrong is a security property, not a
+# capacity tuning knob.
+#
+# **What "client_id and source IP" from §4.2 actually reduces to here,
+# and why — read before changing the keys below.** §4.2 requires `/token`
+# be keyed on client_id *and* source IP, not client_id alone, because a
+# client_id is not secret (it is a public identifier — every worked
+# example in `examples/` prints it) and a global-per-client_id bucket
+# would let an attacker who merely knows a legitimate client_id exhaust
+# it and deny that real client service. This edge cannot key on client_id
+# at all, for a real, checked-not-assumed reason: `client_id` on `/token`
+# arrives only in the `application/x-www-form-urlencoded` POST body (see
+# `packages/gateway/src/token.ts`'s and `examples/rust/sms-send`'s own
+# request construction — no header, no query string, no Basic auth carries
+# it under `private_key_jwt`), and every way this edge could read a
+# specific form field out of that body was checked and rejected:
+#   - Core Caddy's own `{http.request.body}` placeholder exists, but
+#     `modules/caddyhttp/app.go` documents it "⚠️ inefficient; use only
+#     for debugging" — and reading it risks not leaving `reverse_proxy`
+#     an intact body to forward, which would break every real `/token`
+#     exchange, not just the attacker's.
+#   - `RussellLuo/caddy-ext/requestbodyvar` (the one third-party module
+#     built for exactly this) only parses `application/json` and `*/xml`
+#     (read from its own `querier.go`) — form-urlencoded is not one of
+#     the two, and hits `unsupported Media Type`.
+#   - The one third-party module found that does parse form bodies,
+#     `erfianugrah/caddy-body-matcher`, is a single-contributor repo with
+#     0 stars and 0 forks, created within the last few months (checked
+#     against the GitHub API, not assumed) — an unacceptable supply-chain
+#     bar for code parsing OAuth request bodies on a TLS-terminating,
+#     internet-facing production edge.
+# So this edge keys `/token` on source IP only (`token_per_ip` below),
+# which already satisfies the specific attack #156's own acceptance
+# criteria names — "a single abusive caller must not be able to deny
+# service to a legitimate client sharing its client_id" — an attacker at
+# one IP can only ever exhaust *that IP's own* bucket; a legitimate
+# client at a different IP, sharing the same client_id, is unaffected,
+# because there is no shared client_id-keyed bucket to exhaust. What
+# per-IP-only keying does *not* give you is §4.2's other half: an
+# attacker sharing a legitimate client's *source IP* (realistic behind a
+# NAT gateway or shared egress, not for a dedicated service-account
+# caller) could still exhaust that shared IP bucket. Tracked as a real,
+# not cosmetic, gap — filed as #168, not silently accepted — with two
+# real fixes, neither of which belongs in this file: a small first-party
+# Caddy module (new Go code, its own PR), or a second, defense-in-depth
+# limiter inside `sms-auth`'s own `/token` handler, which has the parsed
+# body already. `token_global` below is a
+# third mitigation in the meantime — a single aggregate budget across
+# *all* callers, which bounds the worst case (many IPs, one or many
+# claimed client_ids, all hammering `/token` at once) even though it
+# can't attribute blame to one caller the way a real composite key would.
+#
+# `/dlr/{providerKey}` does not have this problem: `providerKey` is a URL
+# *path* segment (`app/sms-gateway/src/dlr.rs` mounts
+# `POST /dlr/{providerKey}`), not a body field, so it is one of Caddy's
+# most ordinary placeholders (`{http.request.uri.path}`) — no body
+# parsing, no third-party risk. `dlr_per_source` below keys on IP *and*
+# path together, which is the real "client_id and source IP" shape §4.2
+# asks for, just spelled with the identifier this route actually carries
+# in the clear. It is also worth rate limiting for the same reason as
+# `/token`: also unauthenticated by design (a provider webhook carries no
+# bearer token — #34's own module doc), and also a Postgres write on
+# every call (`dlr.rs` matches against `Message` and writes a
+# `DeliveryReceipt` per request).
+#
+# Neither zone below trusts `X-Forwarded-For`/`client_ip` — deliberately:
+# `deploy/docker-compose.yml` publishes Caddy's own ports directly to the
+# host (`grep -n 'ports:' -A3 deploy/docker-compose.yml`), there is no
+# upstream load balancer or CDN in front of it in this topology, so
+# `{http.request.remote.host}` (the actual TCP peer address Caddy
+# accepted the connection from) is the real client IP and cannot be
+# spoofed by a request header. If this deployment ever grows a real
+# upstream proxy (a cloud LB, a CDN), these zones need `trusted_proxies`
+# configured globally and their keys switched to a placeholder that
+# honors it — keying on `remote.host` unchanged in that topology would
+# silently bucket every request behind the LB into one IP, collapsing
+# per-client isolation rather than merely losing it loudly.
+#
+# `ipv6_prefix 64` on both per-source zones: caddy-ratelimit's own README
+# names the exact attack this defends — an attacker with a routed IPv6
+# `/64` can cycle through billions of individual addresses to dodge a
+# naive per-address bucket; masking to `/64` buckets the whole prefix
+# together instead. No IPv4 equivalent is set — an attacker would need to
+# actually control a `/N` block of IPv4 space to get the same effect,
+# meaningfully rarer.
+#
+# Single Caddy instance in this compose stack (`deploy/docker-compose.yml`
+# runs exactly one `caddy` service, no replicas) — caddy-ratelimit's
+# in-memory state is authoritative as-is. A `distributed { }` block only
+# matters the moment a second Caddy replica exists; add it then, not
+# preemptively against a topology this stack doesn't have.
 
 {
 	email {$CADDY_ACME_EMAIL}
@@ -29,6 +140,103 @@
 
 {$SMS_GATEWAY_DOMAIN} {
 	# tls internal
+
+	rate_limit {
+		# Per-IP budget on /token. Sized against real caller behaviour,
+		# not a round number: `packages/gateway/src/token.ts` and
+		# `examples/rust/sms-send` both cache the access token until
+		# `exp - 60s` off a 15-minute default TTL, i.e. one legitimate
+		# `/token` call roughly every 14 minutes per running client
+		# process under steady state. 20 events/minute is >20x that
+		# steady-state rate — generous enough that a fleet restart (every
+		# instance of one client re-minting a token at once) or a burst
+		# of retries after a transient failure never gets throttled,
+		# while still capping a single-IP flood to a small, fixed
+		# multiple of real usage instead of an unbounded rate hammering
+		# `authkestra-op`'s RS256 verification and the `ClientAssertion`
+		# replay check on every request.
+		zone token_per_ip {
+			match {
+				path /token
+			}
+			key {http.request.remote.host}
+			events {$RATE_LIMIT_TOKEN_PER_IP_EVENTS:20}
+			window {$RATE_LIMIT_TOKEN_PER_IP_WINDOW:1m}
+			ipv6_prefix 64
+		}
+
+		# Aggregate budget across every caller — the mitigation named
+		# above for the gap per-IP-only keying leaves open (many source
+		# IPs, one or many claimed client_ids, all hammering `/token`
+		# at once). A static key means exactly one bucket for the whole
+		# zone. 120 events/minute mirrors `docs/architecture.md` §4.5's
+		# own worked `RateLimitLayer` example (`RateLimitConfig::new(120,
+		# 2.0)`, burst 120) for the authenticated surface — reusing a
+		# number this codebase already reasoned about once, rather than
+		# inventing an unrelated one for the same order-of-magnitude
+		# concern.
+		zone token_global {
+			match {
+				path /token
+			}
+			key token-aggregate
+			events {$RATE_LIMIT_TOKEN_GLOBAL_EVENTS:120}
+			window {$RATE_LIMIT_TOKEN_GLOBAL_WINDOW:1m}
+		}
+
+		# Per-(IP, providerKey) budget on DLR callbacks. Sized against
+		# §4.6's own documented constraint, not a round number: the
+		# worker's `dispatch` role respects "Orange's hard 5 TPS cap" on
+		# *outbound* submissions, so real inbound DLR traffic for one
+		# provider is bounded by a small multiple of 5/s (a message can
+		# receive more than one status callback — e.g. an intermediate
+		# then a final state). 10 events/second leaves 2x headroom above
+		# that 5 TPS ceiling before throttling engages.
+		#
+		# Keyed on the bare source IP, NOT the composite
+		# `{remote.host}_{uri.path}` an earlier revision used. That
+		# composite silently disabled `ipv6_prefix`: the module's
+		# `applyNetworkPrefix` does `ip := net.ParseIP(key); if ip == nil
+		# { return key }`, and `2001:db8::1_/dlr/orange_cm` never parses
+		# as an IP, so masking was skipped and an IPv6 attacker could
+		# rotate addresses inside a /64 to mint a fresh bucket per
+		# request. Verified against the module source, not its docs.
+		#
+		# The cost is losing per-providerKey isolation, which buys
+		# nothing today: `orange_cm` is the only provider wired up
+		# (AGENTS.md), so the path dimension has exactly one value. When
+		# a second provider lands (#63), add a second zone rather than
+		# reinstating a composite key here — the IPv6 masking is the
+		# security property, the path split is only fairness.
+		zone dlr_per_source {
+			match {
+				path /dlr/*
+			}
+			key {http.request.remote.host}
+			events {$RATE_LIMIT_DLR_PER_KEY_EVENTS:100}
+			window {$RATE_LIMIT_DLR_PER_KEY_WINDOW:10s}
+			ipv6_prefix 64
+		}
+
+		# Aggregate DLR budget, same defense-in-depth reasoning as
+		# token_global — bounds total Postgres write load from this route
+		# regardless of how many distinct (IP, providerKey) buckets an
+		# attacker spreads across. 4x the per-source ceiling: generous
+		# enough that legitimate concurrent traffic across every
+		# configured provider never trips it, since only one provider
+		# (`orange_cm`) is wired up in this milestone (AGENTS.md).
+		zone dlr_global {
+			match {
+				path /dlr/*
+			}
+			key dlr-aggregate
+			events {$RATE_LIMIT_DLR_GLOBAL_EVENTS:200}
+			window {$RATE_LIMIT_DLR_GLOBAL_WINDOW:10s}
+		}
+
+		log_key
+	}
+
 	reverse_proxy sms-gateway:8080
 }
 
