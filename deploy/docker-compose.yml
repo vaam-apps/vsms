@@ -81,6 +81,38 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    # #157: overrides the image's own baked-in `HEALTHCHECK`
+    # (app/sms-gateway/Dockerfile), which is deliberately liveness-only
+    # (curl against /healthz — see app/sms-gateway/src/health.rs's module
+    # doc for why that route never touches the database). Compose has only
+    # one health-check concept, and it drives two things: the container's
+    # own reported status, and every `depends_on: condition: service_healthy`
+    # below (admin, caddy) that waits on this service. Both are better
+    # served by readiness than liveness here — `admin` and `caddy` should
+    # not start routing to a gateway that's up but can't reach its
+    # database, and an operator running `docker compose ps` should see
+    # "unhealthy" reflect a real inability to serve, not just "the process
+    # is running." /readyz does a bare `SELECT 1` on the pool (see
+    # health.rs's own doc for why that's the R1-exception-worthy version of
+    # this check, not a CrateStack delegate call).
+    #
+    # interval=5s, retries=3 (~15s to flip unhealthy) mirrors
+    # deploy/charts/vsms/values.yaml's own readiness `periodSeconds`/
+    # `failureThreshold` choice and its reasoning: long enough to ride out
+    # a brief Postgres blip without flapping, short enough that a real
+    # outage is visible quickly. timeout=3s matches the chart's own
+    # readiness `timeoutSeconds`, sized just above /readyz's internal 2s
+    # budget (health.rs's READINESS_TIMEOUT) so a slow database round-trip
+    # is reported by the route itself, not by this healthcheck's own
+    # timeout. start_period=10s matches the image's own liveness
+    # `--start-period`, since /readyz can't return anything meaningful
+    # before the process has even bound its listener.
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:8080/readyz || exit 1']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     # sms-gateway needs an active OP signing key to start AT ALL — found
     # live (#139): `Command::Serve` in app/sms-gateway/src/main.rs loads
     # signing keys before binding the listener, so a fresh database makes

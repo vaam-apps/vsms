@@ -403,12 +403,16 @@ async fn main() -> Result<()> {
                 Arc::new(sms_provider_orange_cm::OrangeCmProvider::new(orange_config));
             let provider_row_id = resolve_provider_row_id(&db, &sys, provider.as_ref()).await?;
             let dlr_router = dlr::router(db.clone(), sys, provider, provider_row_id);
+            // #157: /readyz needs the same pooled handle every other router
+            // shares — cloned here, before `sms_api::router` below takes
+            // `db` by value as its own last use.
+            let health_router = health::router(db.clone());
 
             let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer);
             let app = sms_api::router(db, auth, pepper)
                 .merge(op::router(op_state))
                 .merge(dlr_router)
-                .merge(health::router());
+                .merge(health_router);
 
             let listener = tokio::net::TcpListener::bind(&listen)
                 .await

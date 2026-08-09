@@ -192,7 +192,7 @@ Retained because they are cheap and still correct, not because they are load-bea
 
 Full reasoning in [CONTRIBUTING.md](CONTRIBUTING.md). In short:
 
-- **R1 — all data access goes through CrateStack delegates. Never raw `sqlx`.** Raw SQL bypasses row-level policy, audit rows, `@@emit` outbox rows and `@version` bumping — all four, silently. Three named exceptions only: migrations, `pg_advisory_lock`, `LISTEN`/`NOTIFY`. Enforced by `ci/assert-no-raw-sqlx.sh`.
+- **R1 — all data access goes through CrateStack delegates. Never raw `sqlx`.** Raw SQL bypasses row-level policy, audit rows, `@@emit` outbox rows and `@version` bumping — all four, silently. Four named exceptions only: migrations, `pg_advisory_lock`, `LISTEN`/`NOTIFY`, and the `/readyz` probe's bare `SELECT 1` (#157 — it touches no table, so there is no policy to bypass and no audit row to skip, and the delegate alternative would read a real table on an unauthenticated route, which is the DoS amplifier that endpoint must not become). Enforced by `ci/assert-no-raw-sqlx.sh`; `CONTRIBUTING.md` carries the reasoning for each.
 - **R2 — state transitions are proposed by Rust and decided by Postgres.** Legal edges live in `message_state_transitions` / `job_state_transitions`; triggers reject the rest with SQLSTATE `SM001`. Map it to `CoolError::Conflict` → 409.
 - **R3 — nothing that must be written can be `@server_only`.** It excludes a field from create *and* update, so such a field can never be populated.
 
