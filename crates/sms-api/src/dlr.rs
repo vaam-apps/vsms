@@ -13,18 +13,61 @@
 //!
 //! Landing a message in `delivered`/`uncertain`/`undelivered`/`failed`/
 //! `expired` from a DLR is the whole of this module. What happens *after*
-//! `undelivered` — `undelivered -> queued: retry` (§7.4) — is a separate,
-//! not-yet-built concern: `dispatch`'s own claim (`crates/sms-worker/src/claim.rs`)
-//! only selects `accepted`/`queued`/`routed`, so nothing currently picks an
-//! `undelivered` message back up. Tracked as a known gap, not silently
-//! assumed to work.
+//! `undelivered` — `undelivered -> queued: retry` (§7.4) — used to be a
+//! separate, not-yet-built concern (#122's own bug report: nothing drove
+//! that edge, so a message that received exactly one retryable-failure DLR
+//! sat in `undelivered` forever). `crates/sms-worker/src/claim.rs`'s
+//! `Claimable for Message::candidates()` now selects `undelivered` too, and
+//! `Claimable::take_lease` drives it onward (retry via `-> queued`, or
+//! straight to `-> failed` once `maxAttempts` is exhausted). This module's
+//! own contribution to that fix is [`undelivered_retry_backoff`]: the write
+//! below that lands a message in `undelivered` also stamps a backoff
+//! `leaseUntil`, so `claim.rs`'s shared lease filter — the same mechanism
+//! `routed -> queued`'s own backoff already relies on
+//! (`dispatch::write_transition`) — holds the row back from being retried
+//! immediately. A message whose `expiresAt` elapses before (or during) that
+//! backoff is reaped to `expired` by `expire_stale`
+//! (`crates/sms-worker/src/jobs/expire_stale.rs`), not left to retry forever
+//! either.
 
+use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_provider::{DeliveryOutcome, DeliveryUpdate, ProviderError, RawCallback, SmsProvider};
 use tracing::warn;
 
 use crate::procedures::parse_operator_code;
 use crate::schema::{self, message, Cratestack, MessageState};
+
+/// §7.4's own backoff schedule for retryable failures ("Backoff on
+/// retryable failures: 5s, 30s, 2m, 10m, 30m, capped by `maxAttempts` and
+/// hard-stopped by `expiresAt`") — the exact same five values
+/// `crates/sms-worker/src/jobs.rs`'s own `BACKOFF_SCHEDULE` already reuses
+/// for `Job` retries. Duplicated here rather than imported: the dependency
+/// arrow only points from `app/` into `crates/`, and `sms-worker` already
+/// depends on `sms-api` (for its generated schema), so `sms-api` cannot
+/// depend back on `sms-worker` without a cycle. These are the same *values
+/// from the spec*, reused independently in each crate that needs them —
+/// exactly what `jobs.rs`'s own comment already documents for its side of
+/// this, not a new drift risk.
+const UNDELIVERED_BACKOFF_SCHEDULE: [ChronoDuration; 5] = [
+    ChronoDuration::seconds(5),
+    ChronoDuration::seconds(30),
+    ChronoDuration::minutes(2),
+    ChronoDuration::minutes(10),
+    ChronoDuration::minutes(30),
+];
+
+/// The backoff to apply before a message that just landed in `undelivered`
+/// becomes retry-eligible again, keyed by how many submission attempts it
+/// has already made. `attempts` is always >= 1 by the time a message can
+/// reach `undelivered` (`queued -> routed` increments it before any submit
+/// is attempted), so this indexes the same way
+/// `crates/sms-worker/src/jobs.rs::backoff_for` does.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn undelivered_retry_backoff(attempts: i64) -> ChronoDuration {
+    let index = (attempts - 1).max(0) as usize;
+    UNDELIVERED_BACKOFF_SCHEDULE[index.min(UNDELIVERED_BACKOFF_SCHEDULE.len() - 1)]
+}
 
 /// Parse `raw` through `provider` and land each resulting update — never
 /// fails the whole callback for one bad update; see [`ingest_one`]'s own
@@ -144,11 +187,23 @@ async fn ingest_one(
         return Ok(());
     }
 
+    // Only `undelivered` needs a fresh `leaseUntil` here — it's the one
+    // non-terminal target this function ever proposes, and `claim.rs`'s
+    // candidate query uses this same field, for this same message, as its
+    // backoff gate (see the module doc). Every other target is either
+    // terminal (no `candidates()` ever selects it again) or a same-state
+    // no-op already returned above, so leaving `leaseUntil` untouched
+    // (`None` — this is `Option<Option<_>>`, so `None` means "don't touch
+    // the column") is correct for all of them.
+    let lease_until = (target == MessageState::undelivered)
+        .then(|| Some(Utc::now() + undelivered_retry_backoff(found.attempts)));
+
     match db
         .message()
         .update(found.id.clone())
         .set(schema::UpdateMessageInput {
             state: Some(target),
+            leaseUntil: lease_until,
             ..Default::default()
         })
         .if_match(found.version)
@@ -217,11 +272,37 @@ const fn to_schema_outcome(outcome: DeliveryOutcome) -> schema::DeliveryOutcome 
 
 #[cfg(test)]
 mod tests {
-    use super::{next_state, to_schema_outcome};
+    use chrono::Duration as ChronoDuration;
+
+    use super::{next_state, to_schema_outcome, undelivered_retry_backoff};
     use schema::MessageState;
     use sms_provider::DeliveryOutcome;
 
     use crate::schema;
+
+    #[test]
+    fn undelivered_retry_backoff_follows_the_documented_schedule() {
+        assert_eq!(undelivered_retry_backoff(1), ChronoDuration::seconds(5));
+        assert_eq!(undelivered_retry_backoff(2), ChronoDuration::seconds(30));
+        assert_eq!(undelivered_retry_backoff(3), ChronoDuration::minutes(2));
+        assert_eq!(undelivered_retry_backoff(4), ChronoDuration::minutes(10));
+        assert_eq!(undelivered_retry_backoff(5), ChronoDuration::minutes(30));
+    }
+
+    #[test]
+    fn undelivered_retry_backoff_caps_at_the_last_schedule_entry() {
+        assert_eq!(undelivered_retry_backoff(6), ChronoDuration::minutes(30));
+        assert_eq!(undelivered_retry_backoff(1000), ChronoDuration::minutes(30));
+    }
+
+    #[test]
+    fn undelivered_retry_backoff_never_panics_on_a_non_positive_attempts_value() {
+        // Defensive only — `attempts` is a schema `Int @default(0)` and a
+        // message can't reach `undelivered` with `attempts == 0` in
+        // practice (a submit attempt is always counted first), but this
+        // function must not panic if it somehow did.
+        assert_eq!(undelivered_retry_backoff(0), ChronoDuration::seconds(5));
+    }
 
     #[test]
     fn delivered_uncertain_expired_rejected_are_state_independent() {

@@ -13,8 +13,8 @@
 //! [`Claimable`] is what makes [`claim_batch`] one function rather than one
 //! per model — "the job and webhook claims are the same function with
 //! different types" (§7.3). This module implements it for [`Message`]
-//! (`dispatch`'s claim, based on §7.3's own worked example, with one
-//! correction — see the doc comment on its `candidates` impl) and for
+//! (`dispatch`'s claim, based on §7.3's own worked example, with two
+//! corrections — see the doc comment on its `candidates` impl) and for
 //! [`Job`] (`jobs`'s claim, #35). `WebhookAttempt` (M3 #40) adds its own
 //! `impl Claimable` when that story lands, reusing this loop rather than
 //! re-deriving it.
@@ -147,6 +147,34 @@ async fn cheapest_active_provider(
         .next())
 }
 
+/// Shared "-> failed: max attempts" write for both the `queued` and
+/// `undelivered` branches of `take_lease` below — same target state, same
+/// lease bookkeeping, different only in the human-readable `reason`. Pulled
+/// out mainly to keep `take_lease` itself under clippy's line-count limit
+/// now that it has two "max attempts" arms instead of one (#122).
+async fn fail_max_attempts(
+    db: &Cratestack,
+    sys: &CoolContext,
+    id: String,
+    version: i64,
+    worker: &str,
+    now: DateTime<Utc>,
+    reason: String,
+) -> Result<Message, CoolError> {
+    db.message()
+        .update(id)
+        .set(UpdateMessageInput {
+            state: Some(MessageState::failed),
+            stateReason: Some(Some(reason)),
+            leaseOwner: Some(Some(worker.to_owned())),
+            leaseUntil: Some(Some(now)),
+            ..Default::default()
+        })
+        .if_match(version)
+        .run(sys)
+        .await
+}
+
 #[async_trait]
 impl Claimable for Message {
     fn id(&self) -> String {
@@ -177,6 +205,21 @@ impl Claimable for Message {
         // Re-claiming sets state back to `routed`, a same-state assignment
         // the guard trigger always permits (`NEW.state IS NOT DISTINCT FROM
         // OLD.state` short-circuits before the transition-table check).
+        //
+        // `undelivered` belongs here too, as of #122: a retryable DLR
+        // failure (`submitted -> undelivered`, `sms_api::dlr::ingest_one`)
+        // is exactly the kind of failure `undelivered -> queued: retry`
+        // (§7.4, §2.10 — the edge has existed in `message_state_transitions`
+        // since the initial schema commit) exists to drive, and until this
+        // fix nothing ever selected `undelivered` here, so nothing ever
+        // exercised that edge — the message just sat there forever (#122).
+        // `dlr::ingest_one` stamps a backoff `leaseUntil` on that write
+        // (§7.4's own "5s, 30s, 2m, 10m, 30m" schedule, keyed by
+        // `attempts`), so the shared `leaseUntil` filter below is what holds
+        // an `undelivered` row back from being retried immediately — the
+        // exact same mechanism `routed -> queued`'s own backoff
+        // (`dispatch::write_transition`) already relies on, not a new one
+        // invented for this state.
         db.message()
             .find_many()
             .where_expr(
@@ -184,6 +227,7 @@ impl Claimable for Message {
                     MessageState::accepted,
                     MessageState::queued,
                     MessageState::routed,
+                    MessageState::undelivered,
                 ]))
                 .and(message::expiresAt().gt(now))
                 .and(
@@ -204,7 +248,7 @@ impl Claimable for Message {
 
     /// What "claimed" means depends on which state the candidate arrived
     /// in — the single `-> routed` write §7.3 illustrates only actually
-    /// applies to two of this candidate list's three states:
+    /// applies to two of this candidate list's four states:
     ///
     /// - `accepted`: the routing pass (§7.4: "passes routing"). Picks the
     ///   one active provider and stamps `providerId`, or — no active
@@ -224,6 +268,16 @@ impl Claimable for Message {
     /// - `routed`: a reclaim of a lease abandoned by a crashed worker.
     ///   Same-state write, `attempts` untouched (resuming the same
     ///   attempt already counted, not starting a new one), lease renewed.
+    /// - `undelivered`: a retry (#122). If `attempts` already reached
+    ///   `maxAttempts`, `undelivered -> failed: max attempts` (§7.4)
+    ///   applies directly — the same outcome the `queued` branch above
+    ///   would reach anyway on its next claim, just without the extra,
+    ///   pointless round trip through `queued` first. Otherwise
+    ///   `-> queued`, `attempts` untouched (mirrors `accepted`'s branch:
+    ///   this hop is a decision, not new in-flight work, so no real lease
+    ///   is needed — the row is immediately eligible for the very next
+    ///   claim). The actual attempt is still counted exactly once, at
+    ///   `queued -> routed`, same as every other path into `queued`.
     async fn take_lease(
         &self,
         db: &Cratestack,
@@ -263,21 +317,16 @@ impl Claimable for Message {
                 }
             },
             MessageState::queued if self.attempts >= self.maxAttempts => {
-                db.message()
-                    .update(self.id.clone())
-                    .set(UpdateMessageInput {
-                        state: Some(MessageState::failed),
-                        stateReason: Some(Some(format!(
-                            "max attempts ({}) reached",
-                            self.maxAttempts
-                        ))),
-                        leaseOwner: Some(Some(worker.to_owned())),
-                        leaseUntil: Some(Some(now)),
-                        ..Default::default()
-                    })
-                    .if_match(self.version)
-                    .run(sys)
-                    .await
+                fail_max_attempts(
+                    db,
+                    sys,
+                    self.id.clone(),
+                    self.version,
+                    worker,
+                    now,
+                    format!("max attempts ({}) reached", self.maxAttempts),
+                )
+                .await
             }
             MessageState::queued | MessageState::routed => {
                 db.message()
@@ -297,8 +346,38 @@ impl Claimable for Message {
                     .run(sys)
                     .await
             }
+            MessageState::undelivered if self.attempts >= self.maxAttempts => {
+                fail_max_attempts(
+                    db,
+                    sys,
+                    self.id.clone(),
+                    self.version,
+                    worker,
+                    now,
+                    format!(
+                        "max attempts ({}) reached after a retryable delivery failure",
+                        self.maxAttempts
+                    ),
+                )
+                .await
+            }
+            MessageState::undelivered => {
+                db.message()
+                    .update(self.id.clone())
+                    .set(UpdateMessageInput {
+                        state: Some(MessageState::queued),
+                        leaseOwner: Some(Some(worker.to_owned())),
+                        leaseUntil: Some(Some(now)),
+                        ..Default::default()
+                    })
+                    .if_match(self.version)
+                    .run(sys)
+                    .await
+            }
             other => {
-                unreachable!("candidates() only returns accepted/queued/routed, got {other:?}")
+                unreachable!(
+                    "candidates() only returns accepted/queued/routed/undelivered, got {other:?}"
+                )
             }
         }
     }

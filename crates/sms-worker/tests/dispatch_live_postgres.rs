@@ -176,6 +176,56 @@ async fn clear_claimable_backlog(db: &Cratestack) {
             break;
         }
     }
+    clear_undelivered_backlog(db).await;
+}
+
+/// #122: `undelivered` joined the claimable set (`Claimable for
+/// Message::candidates()` now selects it for retry), so it needs the same
+/// draining discipline as `accepted`/`queued`/`routed` above, for the same
+/// cross-test-contamination reason `clear_claimable_backlog` itself exists
+/// for. Separate loop, not folded into the one above: `cancelled` is
+/// unreachable from `undelivered` (§2.10 has no such edge), so `failed` —
+/// the legal terminal edge this state actually has — is the target here.
+async fn clear_undelivered_backlog(db: &Cratestack) {
+    const BATCH: usize = 500;
+    let sys = sys();
+    loop {
+        let backlog = db
+            .message()
+            .find_many()
+            .where_expr(cratestack::FilterExpr::from(
+                schema::message::state().eq(MessageState::undelivered),
+            ))
+            .limit(i64::try_from(BATCH).expect("BATCH fits in an i64"))
+            .run(&sys)
+            .await
+            .expect("listing the undelivered backlog");
+        let drained = backlog.len();
+
+        for message in backlog {
+            let result = db
+                .message()
+                .update(message.id.clone())
+                .set(schema::UpdateMessageInput {
+                    state: Some(MessageState::failed),
+                    ..Default::default()
+                })
+                .if_match(message.version)
+                .run(&sys)
+                .await;
+            if let Err(error) = result {
+                tracing::warn!(
+                    message_id = %message.id,
+                    %error,
+                    "clearing the undelivered test backlog: one row could not be failed"
+                );
+            }
+        }
+
+        if drained < BATCH {
+            break;
+        }
+    }
 }
 
 /// [`db`] plus [`clear_claimable_backlog`] — what every test in this file

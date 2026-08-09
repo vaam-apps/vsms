@@ -1,8 +1,9 @@
 //! `expire_stale` — the one real `kind` this milestone wires up. §7.5's
 //! own table: "`submitted`/`uncertain` past validity → `expired`", 1-minute
-//! cadence.
+//! cadence. #122 added a third rule for `undelivered`, on the same
+//! `expiresAt` clock as `submitted` — see below.
 //!
-//! Two separate rules, not one, because the two states measure "past
+//! Three separate rules, not one, because the states measure "past
 //! validity" against different clocks:
 //!
 //! - `submitted -> expired: no DLR in window` (§7.4) uses `Message.expiresAt`
@@ -20,6 +21,20 @@
 //!   writes to an `uncertain` message before this job or a late DLR does,
 //!   which holds: `uncertain` is not itself a target of any operator or
 //!   retry action in §7.4's diagram, only DLRs and this job ever move it.
+//! - `undelivered -> expired` (§7.4, #122) uses `Message.expiresAt` directly,
+//!   the same clock as `submitted`, deliberately *not* a fresh grace period
+//!   like `uncertain`'s: `undelivered` is a genuinely retryable failure —
+//!   `crates/sms-worker/src/claim.rs`'s `Claimable for Message` now selects
+//!   it and retries via `-> queued` — but a retry that would only deliver
+//!   after the message's own original validity budget is gone is exactly
+//!   the outcome `expiresAt` exists to prevent (§7.4's own backoff
+//!   paragraph: "capped by `maxAttempts` and hard-stopped by `expiresAt`").
+//!   `claim.rs`'s shared `expiresAt` filter already stops retrying such a
+//!   row; this rule is what actually moves it off `undelivered` once that
+//!   happens, since retry exhaustion alone (`maxAttempts`) already reaches
+//!   `failed` on its own via `claim.rs`'s own `undelivered` branch and
+//!   never needs this job at all — this rule exists for the row that's
+//!   still under `maxAttempts` but has simply run out of time.
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -73,6 +88,15 @@ impl ExpireStale {
         )
         .await
         .map_err(|error| format!("expiring stale uncertain messages: {error}"))?;
+
+        expire_matching(
+            db,
+            sys,
+            FilterExpr::from(message::state().eq(MessageState::undelivered))
+                .and(message::expiresAt().lte(now)),
+        )
+        .await
+        .map_err(|error| format!("expiring stale undelivered messages: {error}"))?;
 
         Ok(())
     }

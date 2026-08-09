@@ -240,7 +240,7 @@ CREATE INDEX messages_dispatch_idx
 
 CREATE INDEX messages_lease_reclaim_idx
     ON messages (lease_until)
-    WHERE lease_until IS NOT NULL AND state IN ('queued','routed');
+    WHERE lease_until IS NOT NULL AND state IN ('queued','routed','undelivered');
 
 CREATE INDEX messages_app_created_idx   ON messages (app_id, created_at DESC);
 CREATE INDEX messages_state_created_idx ON messages (state, created_at DESC);

@@ -159,6 +159,58 @@ async fn clear_claimable_backlog(db: &Cratestack) {
             break;
         }
     }
+    clear_undelivered_backlog(db).await;
+}
+
+/// #122: `undelivered` joined the claimable set (`Claimable for
+/// Message::candidates()` now selects it for retry), so it needs the same
+/// draining discipline as `accepted`/`queued`/`routed` above, for the same
+/// reason — a leftover row from an earlier test run is exactly as claimable
+/// as this test's own freshly seeded one. Separate loop, not folded into
+/// the one above, because `cancelled` is unreachable from `undelivered`
+/// (§2.10 has `accepted -> cancelled`, `queued -> cancelled`, `routed ->
+/// cancelled`, but no `undelivered -> cancelled`); `failed` is the legal
+/// terminal edge this state actually has.
+async fn clear_undelivered_backlog(db: &Cratestack) {
+    const BATCH: usize = 500;
+    let sys = sys();
+    loop {
+        let backlog = db
+            .message()
+            .find_many()
+            .where_expr(cratestack::FilterExpr::from(
+                schema::message::state().eq(MessageState::undelivered),
+            ))
+            .limit(i64::try_from(BATCH).expect("BATCH fits in an i64"))
+            .run(&sys)
+            .await
+            .expect("listing the undelivered backlog");
+        let drained = backlog.len();
+
+        for message in backlog {
+            let result = db
+                .message()
+                .update(message.id.clone())
+                .set(schema::UpdateMessageInput {
+                    state: Some(MessageState::failed),
+                    ..Default::default()
+                })
+                .if_match(message.version)
+                .run(&sys)
+                .await;
+            if let Err(error) = result {
+                tracing::warn!(
+                    message_id = %message.id,
+                    %error,
+                    "clearing the undelivered test backlog: one row could not be failed"
+                );
+            }
+        }
+
+        if drained < BATCH {
+            break;
+        }
+    }
 }
 
 /// [`db`] plus [`clear_claimable_backlog`] — what every test in this file
@@ -451,6 +503,154 @@ async fn reclaims_a_routed_row_abandoned_by_a_crashed_worker() {
         "a routed row abandoned by a crashed worker must be reclaimable — \
          without this, any message a worker touches before crashing is stuck forever"
     );
+}
+
+/// Walks a fresh `accepted` message to `undelivered` for the three tests
+/// below. `routed -> submitted -> undelivered` has no `Claimable` step of
+/// its own (those hops live in `dispatch`/`sms_api::dlr`, not this trait),
+/// so the last two are direct updates through the same legal edges those
+/// modules use — same pattern `reclaims_a_routed_row_abandoned_by_a_crashed_worker`
+/// already uses for forcing a lease. `lease_until` lets each caller control
+/// whether the simulated retry backoff (`sms_api::dlr`'s own
+/// `undelivered_retry_backoff`) has already elapsed.
+async fn walk_to_undelivered(
+    db: &Cratestack,
+    seeded: &Message,
+    lease_until: Option<DateTime<Utc>>,
+) -> Message {
+    let queued = seeded
+        .take_lease(db, &sys(), "worker-1", Utc::now())
+        .await
+        .expect("the routing pass succeeds");
+    let routed = queued
+        .take_lease(db, &sys(), "worker-1", Utc::now())
+        .await
+        .expect("the dispatch claim succeeds");
+    let submitted = db
+        .message()
+        .update(routed.id.clone())
+        .set(schema::UpdateMessageInput {
+            state: Some(MessageState::submitted),
+            ..Default::default()
+        })
+        .if_match(routed.version)
+        .run(&sys())
+        .await
+        .expect("routed -> submitted");
+    db.message()
+        .update(submitted.id.clone())
+        .set(schema::UpdateMessageInput {
+            state: Some(MessageState::undelivered),
+            leaseUntil: Some(lease_until),
+            ..Default::default()
+        })
+        .if_match(submitted.version)
+        .run(&sys())
+        .await
+        .expect("submitted -> undelivered")
+}
+
+/// #122: the whole point of adding `undelivered` to `candidates()` — a
+/// message whose retry backoff has elapsed must be picked back up, not left
+/// to sit in `undelivered` forever.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn reclaims_an_undelivered_message_once_its_backoff_lease_elapses_and_requeues_it_for_retry()
+{
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    seed_provider(&db).await;
+    let app_id = seed_app(&db).await;
+    let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
+
+    let undelivered =
+        walk_to_undelivered(&db, &seeded, Some(Utc::now() - Duration::minutes(1))).await;
+    assert_eq!(
+        undelivered.attempts, 1,
+        "queued -> routed is the one place a submission attempt is counted"
+    );
+
+    let claimed = claim_batch::<Message>(&db, &sys(), "worker-2", 10)
+        .await
+        .expect("claim_batch succeeds");
+
+    let retried = claimed.iter().find(|m| m.id == undelivered.id).expect(
+        "an undelivered row past its own backoff lease must be retried, not stuck forever (#122)",
+    );
+    assert_eq!(retried.state, MessageState::queued);
+    assert_eq!(
+        retried.attempts, undelivered.attempts,
+        "undelivered -> queued is a decision, not a new attempt — attempts only changes at \
+         queued -> routed"
+    );
+}
+
+/// The backoff half of #122's fix: retrying immediately would defeat the
+/// point of backing off at all.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_undelivered_message_is_not_retried_before_its_backoff_lease_elapses() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    seed_provider(&db).await;
+    let app_id = seed_app(&db).await;
+    let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
+
+    let undelivered =
+        walk_to_undelivered(&db, &seeded, Some(Utc::now() + Duration::minutes(10))).await;
+
+    let claimed = claim_batch::<Message>(&db, &sys(), "worker-2", 10)
+        .await
+        .expect("claim_batch succeeds");
+
+    assert!(
+        !claimed.iter().any(|m| m.id == undelivered.id),
+        "an undelivered row must not be retried before its own backoff lease elapses"
+    );
+}
+
+/// The bounded half of #122's fix: `undelivered -> queued: retry` must stop
+/// once `maxAttempts` is exhausted, going straight to `undelivered ->
+/// failed: max attempts` instead — otherwise this would be an infinite
+/// resend loop, not a bounded retry.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_undelivered_message_at_max_attempts_fails_outright_instead_of_retrying() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    seed_provider(&db).await;
+    let app_id = seed_app(&db).await;
+    let seeded = seed_message(&db, &app_id, None, Utc::now() + Duration::hours(1)).await;
+
+    // The one hop through `queued -> routed` this walk performs counts a
+    // real attempt (`attempts` becomes 1) — cap `maxAttempts` at that same
+    // value so the message has already exhausted its retry budget by the
+    // time it reaches `undelivered`.
+    let seeded = db
+        .message()
+        .update(seeded.id.clone())
+        .set(schema::UpdateMessageInput {
+            maxAttempts: Some(1),
+            ..Default::default()
+        })
+        .if_match(seeded.version)
+        .run(&sys())
+        .await
+        .expect("lowering maxAttempts to 1");
+
+    let undelivered =
+        walk_to_undelivered(&db, &seeded, Some(Utc::now() - Duration::minutes(1))).await;
+    assert_eq!(undelivered.attempts, 1);
+    assert_eq!(undelivered.maxAttempts, 1);
+
+    let claimed = claim_batch::<Message>(&db, &sys(), "worker-2", 10)
+        .await
+        .expect("claim_batch succeeds");
+
+    let failed = claimed.iter().find(|m| m.id == undelivered.id).expect(
+        "a row at max attempts must still be claimed — claiming is what moves it to failed",
+    );
+    assert_eq!(failed.state, MessageState::failed);
 }
 
 #[tokio::test]

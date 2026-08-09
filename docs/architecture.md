@@ -1129,7 +1129,7 @@ CREATE INDEX messages_dispatch_idx
 
 CREATE INDEX messages_lease_reclaim_idx
     ON messages (lease_until)
-    WHERE lease_until IS NOT NULL AND state IN ('queued','routed');
+    WHERE lease_until IS NOT NULL AND state IN ('queued','routed','undelivered');
 
 CREATE INDEX messages_app_created_idx   ON messages (app_id, created_at DESC);
 CREATE INDEX messages_state_created_idx ON messages (state, created_at DESC);
@@ -2020,9 +2020,9 @@ It closes the races that optimistic locking alone leaves open. `@version` tells 
 
 And it makes the state machine legible and diffable. `SELECT * FROM message_state_transitions` is the authoritative answer to "can a message go from X to Y", and adding an edge is a migration with a review, not a code change buried in a match arm.
 
-Backoff on retryable failures: 5s, 30s, 2m, 10m, 30m, capped by `maxAttempts` and hard-stopped by `expiresAt`. Default validity 15 minutes for `otp` (a code that arrives after the user gave up is worse than no code), 24 hours for `notification`.
+Backoff on retryable failures: 5s, 30s, 2m, 10m, 30m, capped by `maxAttempts` and hard-stopped by `expiresAt`. Default validity 15 minutes for `otp` (a code that arrives after the user gave up is worse than no code), 24 hours for `notification`. This is the schedule `undelivered -> queued: retry` uses (`sms_api::dlr::undelivered_retry_backoff`, #122): `dlr::ingest_one` stamps it onto `Message.leaseUntil` the moment a retryable DLR failure lands a message in `undelivered`, and `crates/sms-worker/src/claim.rs`'s `Claimable for Message::candidates()` — the same shared lease filter every other claim uses — is what actually holds the row back until it elapses. A row whose `expiresAt` runs out first (the "hard-stopped by `expiresAt`" half) is excluded from further retries by that same `candidates()` filter and reaped to `expired` by `expire_stale` instead of retried past its own validity window.
 
-`uncertain` gets its own 6-hour timer, then `expired`. Never retried automatically — a retry on `uncertain` is exactly the double-send you're avoiding.
+`uncertain` gets its own 6-hour timer, then `expired`. Never retried automatically — a retry on `uncertain` is exactly the double-send you're avoiding. `undelivered` is different in kind, not just in name: it's the state a DLR reports when Orange itself says the failure is retryable, not an ambiguous outcome this system merely suspects might be safe to retry.
 
 Billing note that shapes reconciliation: **Orange bills on submission, not delivery, and does not refund `DeliveryImpossible`.** Your cost ledger increments at `submitted`, not `delivered`, so the delivery-rate dashboard and the spend dashboard measure genuinely different things.
 
