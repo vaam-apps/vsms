@@ -105,6 +105,11 @@ up() {
     echo "could not parse an App id out of send_test_message's output" >&2
     exit 1
   fi
+  # Persisted so a second script (scripts/e2e-integration.sh) can
+  # provision an additional client against this same App without
+  # reparsing send_test_message's own stdout — this file is this
+  # script's own committed contract for that reuse, not incidental.
+  echo -n "$app_id" >"$RUN_DIR/app-id"
 
   log "provisioning a console client for App $app_id"
   rm -f "$KEY_FILE"
@@ -115,6 +120,8 @@ up() {
     --scope sms:send --scope sms:read --key-out "$KEY_FILE")"
   echo "$prov_out"
   client_id="$(echo "$prov_out" | sed -n 's/^provisioned client: \(.*\)$/\1/p')"
+  # Same reuse contract as app-id above.
+  echo -n "$client_id" >"$RUN_DIR/console-client-id"
 
   log "starting sms-fake-orange on :$ORANGE_PORT (impersonation only — no real SMS)"
   start_bg fake-orange "$RUN_DIR/fake-orange.log" \
