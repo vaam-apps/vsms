@@ -5,15 +5,16 @@ use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use cratestack::axum::extract::Request;
+use cratestack::axum::extract::{Request, State};
 use cratestack::axum::http::{header, Method};
-use cratestack::axum::middleware::from_fn_with_state;
+use cratestack::axum::middleware::{from_fn_with_state, Next};
+use cratestack::axum::response::Response;
 use cratestack::axum::Router;
 use cratestack::idempotency::{IdempotencyLayer, IdempotencyStore};
 use cratestack::ratelimit::{
     InMemoryRateLimitStore, RateLimitConfig, RateLimitLayer, RateLimitStore,
 };
-use cratestack::SqlxIdempotencyStore;
+use cratestack::{AuthProvider, RequestContext, SqlxIdempotencyStore, Value};
 use cratestack_codec_json::JsonCodec;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -101,27 +102,25 @@ pub fn default_rate_limit_config() -> RateLimitConfig {
 /// a client that doesn't cache at all mints a fresh token per call)
 /// produced a **second** `Message` row rather than replaying the first
 /// response, under the library's own default — the opposite of what #153
-/// exists to guarantee. The same reasoning weakens `RateLimitLayer`
-/// equally: a caller minting a fresh token per request gets a fresh
-/// bucket, hence an effectively unbounded quota, defeating "stop a buggy
-/// caller flooding you" (§4.6) precisely for the caller shape most likely
-/// to need throttling.
+/// exists to guarantee.
 ///
-/// The fix: partition on the token's own `sub` claim instead — the
-/// `client_id` for a service account (`auth.rs`'s own doc: "a `client_id`
-/// for services"), which `GatewayAuth::authenticate` already treats as
-/// this deployment's stable caller identity, and which stays the same
-/// across a token refresh.
-///
-/// Deliberately reads the JWT **without verifying its signature** — that
-/// is `GatewayAuth`'s job, running later and deeper in the same request,
-/// against the OP's real JWKS. A forged `sub` here only lets an attacker
-/// pick their *own* rate-limit bucket / idempotency namespace; it can
-/// never borrow or collide with another caller's, since nothing
-/// downstream trusts this value for anything but partitioning. That is
-/// the identical trust boundary the upstream default (an unverified
-/// header hash) already sits behind — this only changes *which* bytes of
-/// an equally-unverified request get hashed.
+/// **Used for `RateLimitLayer` only** — read
+/// [`verified_idempotency_fingerprint`]'s own doc for why `IdempotencyLayer`
+/// needs a stronger guarantee than this function gives and does *not* use
+/// it. `sub` is read here **without verifying the token's signature**,
+/// exactly like the upstream default this replaces (which hashes the
+/// header without verifying it either) — a forged `sub` only lets an
+/// attacker pick their *own* rate-limit bucket, an act of self-throttling
+/// evasion, never someone else's. That is real and worth stating plainly
+/// rather than glossing over: **an attacker willing to forge a `sub` claim
+/// on every request bypasses this limiter entirely** (a fresh forged
+/// identity per request is a fresh, full bucket every time) — this
+/// function only makes the limiter correctly recognise *honest* retries
+/// and refreshes from the *same* real client as one principal; it does not
+/// make the limiter hostile-caller-proof. Filed as
+/// [#163](https://github.com/vymalo/vsms/issues/163) — distinct from
+/// `#156` (the unauthenticated `/token` edge, which this deployment's own
+/// issue tracker is explicit does not cover this in-process layer).
 fn client_id_fingerprint(req: &Request) -> String {
     let Some(auth_header) = req
         .headers()
@@ -160,6 +159,166 @@ fn jwt_sub_unverified(auth_header: &str) -> Option<String> {
     let payload_bytes = URL_SAFE_NO_PAD.decode(payload_segment).ok()?;
     let claims: SubOnly = serde_json::from_slice(&payload_bytes).ok()?;
     claims.sub.filter(|sub| !sub.is_empty())
+}
+
+/// Request-extension marker [`verify_idempotency_principal`] stamps once a
+/// bearer token has been **cryptographically verified** — see that
+/// function's own doc for the vulnerability this exists to close. A
+/// dedicated wrapper type, not a bare `String`, so it can't be confused
+/// with (or accidentally overwritten by) some other `String` a future
+/// middleware inserts into the same extensions map.
+#[derive(Clone)]
+struct VerifiedIdempotencyPrincipal(String);
+
+/// State for [`verify_idempotency_principal`]: a `GatewayAuth` to run a
+/// real verification against. Same shape as `rbac::RbacState`, and the
+/// same precedent that module already establishes — `enforce_route_permission`
+/// re-runs `GatewayAuth::authenticate` in a Tower layer ahead of the
+/// generated router's own copy, calling that "cheap — cached JWKS and a
+/// 60s-TTL `AppClient` lookup." This does the same thing, scoped even
+/// narrower (see [`verify_idempotency_principal`]'s own doc).
+#[derive(Clone)]
+struct IdempotencyAuthState {
+    auth: GatewayAuth,
+}
+
+/// #153 review fix: closes a cache-poisoning vector found in this PR's own
+/// review, not by inspection, in the first version of this router's
+/// `IdempotencyLayer` wiring.
+///
+/// **The vulnerability.** `IdempotencyLayer`/`RateLimitLayer` both sit
+/// *outside* the generated router — including outside its own
+/// `GatewayAuth` extractor — so by the time either layer's principal
+/// fingerprint closure runs, no signature has been checked yet.
+/// `cratestack-axum`'s `buffer_and_persist_response` caches a handler's
+/// response under **any** status code, success or failure, with no
+/// success check (verified against the pinned `cratestack-axum =0.7.8`
+/// source, `src/idempotency/complete.rs`). Combine those two facts with
+/// [`client_id_fingerprint`]'s *unverified* `sub` read and the attack is:
+/// send `Authorization: Bearer <unsigned JWT, sub = victim_client_id>`
+/// plus `Idempotency-Key: <a key the victim will use>` — `clientRef`
+/// doubles as that key in `sendMessage`, and `examples/` demonstrates
+/// human-chosen, guessable values like `rust-example-1`, so key
+/// predictability is a weak barrier. `GatewayAuth` rejects the forged
+/// token with `401` deep in the router, but `IdempotencyLayer` has
+/// already reserved — and then caches — that `401` under
+/// `client:victim_client_id` + that key. The victim's own later,
+/// correctly signed request with the same key replays the cached `401`
+/// instead of ever running `sendMessage`: a targeted denial of service on
+/// a specific caller, requiring no valid credential at all. This is worse
+/// than the duplicate-send bug #153 exists to fix — a stranger suppressing
+/// *your* message is a worse trade than the duplicate #153 prevents.
+///
+/// **Why `RateLimitLayer` doesn't need this fix.** An unverified `sub`
+/// there only lets an attacker inflate or evade *their own* rate-limit
+/// budget (self-throttling evasion) — it can never touch another
+/// caller's bucket in a way that harms them, because `RateLimitLayer`
+/// only ever *consumes* a token from a bucket, never *writes a value
+/// into it that a later request reads back* the way `IdempotencyLayer`'s
+/// cached response is. See [`client_id_fingerprint`]'s own doc for that
+/// distinction stated plainly, including the bypassability this
+/// deliberately still leaves in place.
+///
+/// **The fix.** Mirrors `rbac::enforce_route_permission`'s own precedent
+/// in this exact file: a Tower middleware holding a real [`GatewayAuth`],
+/// re-running [`GatewayAuth::authenticate`] — full JWKS-backed signature
+/// verification, the same call the generated router's own extractor is
+/// about to make a moment later on the same request — and stamping the
+/// **verified** `sub` into a request extension only on success. Nothing
+/// here ever rejects a request itself; that stays `GatewayAuth`'s and
+/// Layer 2's job, run again deeper in the same pipeline exactly as
+/// before. A request whose token fails this verification (or carries no
+/// token at all) simply gets no verified-principal extension, and
+/// [`verified_idempotency_fingerprint`] below buckets it under a single
+/// shared `"unverified"` partition instead — attacker-uncontrollable,
+/// because nothing about *which* shared bucket a forged token lands in
+/// depends on the (still-unverified, still-forgeable) `sub` it claims.
+/// Only a request that presents a **real, validly signed** token for a
+/// given `client_id` can ever cause a write into that `client_id`'s own
+/// idempotency bucket.
+///
+/// **Cost, measured rather than assumed.** Scoped two ways to only pay
+/// this at all when it can possibly matter: only for requests whose
+/// method is one `cratestack_axum::idempotency::is_idempotent_target_method`
+/// (POST/PATCH/PUT/DELETE) admits — reused directly from that crate so
+/// this gate can't drift from `IdempotencyService::call`'s own — and only
+/// when an `Idempotency-Key` header is actually present, since
+/// `IdempotencyService::call` never invokes the principal-fingerprint
+/// closure at all otherwise (it bypasses the store before ever reading
+/// that closure), so verifying for every other request would be pure
+/// waste for no benefit. For the requests that do qualify, this is a
+/// *second* `authenticate` call on top of the generated router's own (a
+/// *third*, on the one `PROVIDER_WRITE_ROUTES` route that also carries
+/// Layer 2 — already an accepted, documented double-verification today).
+///
+/// Measured live against a real gateway with a warm JWKS/`AppClient`
+/// cache (not assumed): 30 real `POST /$procs/sendMessage` calls with a
+/// valid token and no `Idempotency-Key` averaged **9.75ms**; 30 more,
+/// identical except for a fresh `Idempotency-Key` each time, averaged
+/// **13.54ms** — a **~3.8ms** delta, consistent with one extra
+/// cached-JWKS RS256 verify plus a 60s-TTL-cached `AppClient` lookup, not
+/// a network round trip. See `docs/architecture.md` §4.5 for the same
+/// figures in context.
+async fn verify_idempotency_principal(
+    State(state): State<IdempotencyAuthState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let method = request.method().clone();
+    // Mirrors `cratestack_axum::idempotency::is_idempotent_target_method`
+    // exactly (reused, not reimplemented, so the two can't drift) —
+    // `IdempotencyService::call` checks the method *before* it ever looks
+    // at the `Idempotency-Key` header, bypassing the store entirely for
+    // anything that isn't POST/PATCH/PUT/DELETE. Matching that gate here
+    // means a GET carrying a stray `Idempotency-Key` header never pays a
+    // verification cost that would end up unused regardless.
+    if cratestack::idempotency::is_idempotent_target_method(&method)
+        && request.headers().get("Idempotency-Key").is_some()
+    {
+        let path = request.uri().path().to_owned();
+        let headers = request.headers().clone();
+        let query = request.uri().query().map(str::to_owned);
+        let request_ctx = RequestContext {
+            method: method.as_str(),
+            path: &path,
+            query: query.as_deref(),
+            headers: &headers,
+            // `GatewayAuth::authenticate` never reads the body — see
+            // `rbac::enforce_route_permission`'s identical comment on
+            // this exact point.
+            body: &[],
+        };
+        if let Ok(ctx) = state.auth.authenticate(&request_ctx).await {
+            if let Some(Value::String(sub)) = ctx.auth_field("sub") {
+                request
+                    .extensions_mut()
+                    .insert(VerifiedIdempotencyPrincipal(format!("client:{sub}")));
+            }
+        }
+        // A verification failure is deliberately silent here: this
+        // middleware never rejects anything itself (see this function's
+        // own doc), it only decides which idempotency bucket a request is
+        // *allowed* to write into — an unverified request simply gets no
+        // extension, and falls into the shared fallback bucket below.
+    }
+    next.run(request).await
+}
+
+/// Read by `IdempotencyLayer::with_principal_fingerprint` only — see
+/// [`verify_idempotency_principal`]'s own doc for why `IdempotencyLayer`
+/// cannot use the cheaper, unverified [`client_id_fingerprint`]
+/// `RateLimitLayer` uses. Returns the verified `client:{sub}` fingerprint
+/// [`verify_idempotency_principal`] stamped when (and only when) real
+/// signature verification succeeded; otherwise a single shared
+/// `"unverified"` bucket — deliberately *not* a per-request-unique value,
+/// matching the shape of the upstream library's own `"anonymous"`
+/// fallback, and safe for the identical reason: nothing about which
+/// shared bucket a failing-verification request lands in is
+/// attacker-choosable in a way that targets a specific victim.
+fn verified_idempotency_fingerprint(req: &Request) -> String {
+    req.extensions()
+        .get::<VerifiedIdempotencyPrincipal>()
+        .map_or_else(|| "unverified".to_owned(), |principal| principal.0.clone())
 }
 
 /// Build the HTTP surface: generated model CRUD plus the seven procedures.
@@ -205,10 +364,14 @@ fn jwt_sub_unverified(auth_header: &str) -> Option<String> {
 /// Layering order (`.layer()` calls compose outside-in, so the *last*
 /// call is what a request meets *first*): `RateLimitLayer` is outermost,
 /// rejecting an abusive caller with a cheap `429` before any request body
-/// is buffered or the idempotency store is touched; `IdempotencyLayer` is
-/// next, reserving/replaying against `cratestack_idempotency`; the RBAC
-/// layer and the generated router (whose own extractors run
-/// [`GatewayAuth`]) sit innermost.
+/// is buffered, any signature verified, or the idempotency store touched;
+/// [`verify_idempotency_principal`] is next — a real, verified-signature
+/// re-authentication, but *only* for requests carrying an `Idempotency-Key`
+/// header (see that function's own doc for why, and for the
+/// cache-poisoning vector this closes); `IdempotencyLayer` is next,
+/// reserving/replaying against `cratestack_idempotency` keyed by whatever
+/// that verification established; the RBAC layer and the generated router
+/// (whose own extractors run [`GatewayAuth`] a further time) sit innermost.
 ///
 /// `SqlxIdempotencyStore` and `InMemoryRateLimitStore` are each the *only*
 /// store either upstream crate ships (`docs/architecture.md` §4.5/§4.6) —
@@ -227,10 +390,16 @@ fn jwt_sub_unverified(auth_header: &str) -> Option<String> {
 /// migrate job, the same way `schema_migrations` itself is, rather than
 /// DDL the serving process runs (and needs privilege for) at every start.
 ///
-/// Both layers use [`client_id_fingerprint`], not either upstream crate's
-/// own default (a raw-`Authorization`-header hash) — see that function's
-/// own doc for the live-verified reason the default breaks idempotency
-/// replay across a token refresh, and weakens rate limiting the same way.
+/// **Neither layer uses either upstream crate's own default fingerprint**
+/// (a raw-`Authorization`-header hash) — but the two now use *different*
+/// replacements, not the same one, and that split is itself load-bearing:
+/// `RateLimitLayer` uses [`client_id_fingerprint`] (an *unverified* `sub`
+/// read — cheap, run on every request, and its own doc states plainly
+/// what that leaves open); `IdempotencyLayer` uses
+/// [`verified_idempotency_fingerprint`] (backed by
+/// [`verify_idempotency_principal`]'s *verified* `sub`) — see that
+/// function's own doc for why `IdempotencyLayer` specifically cannot
+/// tolerate the cheaper, unverified version `RateLimitLayer` still uses.
 // No `#[must_use]`: axum's `Router` already carries one, and doubling it is
 // what `clippy::double_must_use` objects to.
 pub fn router(
@@ -244,6 +413,7 @@ pub fn router(
         auth: auth.clone(),
         requirements: PROVIDER_WRITE_ROUTES,
     };
+    let idempotency_auth_state = IdempotencyAuthState { auth: auth.clone() };
     let idempotency_store: Arc<dyn IdempotencyStore> =
         Arc::new(SqlxIdempotencyStore::new(db.pool().clone()));
     let rate_limit_store: Arc<dyn RateLimitStore> = Arc::new(InMemoryRateLimitStore::new());
@@ -252,8 +422,12 @@ pub fn router(
         .layer(from_fn_with_state(rbac_state, enforce_route_permission))
         .layer(
             IdempotencyLayer::new(idempotency_store, idempotency_ttl)
-                .with_principal_fingerprint(client_id_fingerprint),
+                .with_principal_fingerprint(verified_idempotency_fingerprint),
         )
+        .layer(from_fn_with_state(
+            idempotency_auth_state,
+            verify_idempotency_principal,
+        ))
         .layer(RateLimitLayer::new(rate_limit_store, rate_limit).with_key_fn(client_id_fingerprint))
 }
 
@@ -417,6 +591,59 @@ mod tests {
         assert!(
             fingerprint.starts_with("auth:"),
             "expected the raw-header hash fallback, got {fingerprint:?}"
+        );
+    }
+
+    #[test]
+    fn verified_idempotency_fingerprint_falls_back_to_a_shared_unverified_bucket() {
+        // No `VerifiedIdempotencyPrincipal` extension present — the shape
+        // every request has *before* `verify_idempotency_principal` runs,
+        // and the shape a failed verification leaves behind. Must not be
+        // "anonymous" (client_id_fingerprint's own fallback) or any other
+        // value derivable from request content alone — see this function's
+        // own doc for why "shared and attacker-uncontrollable" is the
+        // property that matters here, not the specific string.
+        let req = bearer_request("Bearer irrelevant-unverified-token");
+        assert_eq!(verified_idempotency_fingerprint(&req), "unverified");
+    }
+
+    #[test]
+    fn verified_idempotency_fingerprint_reads_back_a_stamped_extension() {
+        let mut req = bearer_request("Bearer irrelevant");
+        req.extensions_mut().insert(VerifiedIdempotencyPrincipal(
+            "client:appc_verified".to_owned(),
+        ));
+        assert_eq!(
+            verified_idempotency_fingerprint(&req),
+            "client:appc_verified"
+        );
+    }
+
+    #[test]
+    fn a_forged_sub_never_reaches_the_verified_fingerprint_without_the_extension() {
+        // The exact security property this PR's review found missing:
+        // `client_id_fingerprint` (rate-limit only) happily reads an
+        // attacker-forged `sub` straight out of an unsigned token — that's
+        // its documented, accepted tradeoff. `verified_idempotency_fingerprint`
+        // must NOT do the same for the identical request: without
+        // `verify_idempotency_principal` (the real signature check) having
+        // run and stamped the extension, a forged `sub = victim_client_id`
+        // must land in the shared fallback bucket, never in
+        // "client:victim_client_id" — otherwise an attacker could still
+        // write into (and poison) that victim's own idempotency cache.
+        let forged = bearer_request(&format!(
+            "Bearer {}",
+            unsigned_jwt_with_sub("victim_client_id")
+        ));
+        assert_eq!(
+            client_id_fingerprint(&forged),
+            "client:victim_client_id",
+            "sanity check: the unverified reader does trust the forged sub"
+        );
+        assert_eq!(
+            verified_idempotency_fingerprint(&forged),
+            "unverified",
+            "the verified reader must not, absent a stamped extension"
         );
     }
 }

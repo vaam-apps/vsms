@@ -1595,15 +1595,28 @@ let rate_limit_store: Arc<dyn RateLimitStore> = Arc::new(InMemoryRateLimitStore:
 
 // `.layer()` composes outside-in: the *last* call is what a request meets
 // *first*. RateLimitLayer sits outermost — a cheap 429 before any body is
-// buffered or the idempotency store is touched — then IdempotencyLayer,
-// then the RBAC layer and the generated router underneath both.
+// buffered, any signature verified, or the idempotency store touched —
+// then `verify_idempotency_principal` (only for Idempotency-Key-bearing
+// mutations — see below), then IdempotencyLayer, then the RBAC layer and
+// the generated router underneath both.
 let router = cratestack_schema::axum::router(db, procedures, JsonCodec, auth)
     .layer(from_fn_with_state(rbac_state, enforce_route_permission))
-    .layer(IdempotencyLayer::new(idempotency_store, idempotency_ttl))
-    .layer(RateLimitLayer::new(rate_limit_store, rate_limit_config));
+    .layer(IdempotencyLayer::new(idempotency_store, idempotency_ttl)
+        .with_principal_fingerprint(verified_idempotency_fingerprint))
+    .layer(from_fn_with_state(idempotency_auth_state, verify_idempotency_principal))
+    .layer(RateLimitLayer::new(rate_limit_store, rate_limit_config)
+        .with_key_fn(client_id_fingerprint));
 ```
 
-Fresh key reserves and runs; repeat returns the cached response with `Idempotency-Replayed: true`; concurrent repeat gets `409` + `Retry-After: 1`; **same key with a different body gets `422 idempotency_key_conflict`**. The request hash covers method, full path *including query string*, content-type and body. Default principal fingerprinting hashes the `Authorization` header when present (true for every caller this deployment can currently authenticate — see §4.2) and only falls back to a shared `"anonymous"` bucket when it's absent and the server isn't served through `into_make_service_with_connect_info` (this deployment isn't); `sms-gateway` never needed `IdempotencyLayer::with_principal_fingerprint`/`RateLimitLayer::with_key_fn` for this reason.
+Fresh key reserves and runs; repeat returns the cached response with `Idempotency-Replayed: true`; concurrent repeat gets `409` + `Retry-After: 1`; **same key with a different body gets `422 idempotency_key_conflict`**. The request hash covers method, full path *including query string*, content-type and body.
+
+**Neither layer uses the upstream default fingerprint (a raw `Authorization`-header hash), and the two use *different* replacements — this split was itself a bug fix, found live in this PR's own review, not by inspection.** Both layers sit *outside* the generated router, including outside its own `GatewayAuth` extractor, so by the time either layer's fingerprint function runs, no signature has been checked yet. `cratestack-axum`'s `buffer_and_persist_response` (`src/idempotency/complete.rs`) caches a handler's response under **any** status code — no success check. Combine an unverified `sub` read with that fact and the attack is: send `Authorization: Bearer <unsigned JWT, sub = victim_client_id>` plus an `Idempotency-Key` the victim will predictably reuse (`clientRef`-shaped keys like `rust-example-1` are exactly the guessable kind integrators use) — `GatewayAuth` rejects the forged token with `401` deep in the router, but the layer has already reserved, and then caches, that `401` under the victim's own identity and that key. The victim's later, correctly signed request with the same key replays the cached `401` instead of ever running `sendMessage`: a targeted denial of service requiring no valid credential at all, worse than the duplicate-send bug this section exists to prevent.
+
+The fix, verified live (see below): `IdempotencyLayer` uses `verified_idempotency_fingerprint`, backed by a small middleware (`verify_idempotency_principal`) that re-runs `GatewayAuth::authenticate` — real, JWKS-backed signature verification, the same call `rbac::enforce_route_permission` already makes as its own established precedent for "a Tower layer re-authenticating ahead of the generated router" — and stamps the **verified** `sub` into a request extension only on success. A request that fails verification (or carries none) gets bucketed into a single shared `"unverified"` partition instead, never into a specific `client_id`'s own bucket. `RateLimitLayer` keeps the cheaper `client_id_fingerprint` (an *unverified* `sub` read) — its own failure mode from a forged `sub` is bounded to self-throttling evasion, never poisoning another caller's cache, so the stronger (and costlier) guarantee isn't needed there. That asymmetry is deliberate, not an oversight: `RateLimitLayer`'s per-principal budget is bypassable by anyone willing to forge a fresh `sub` per request (tracked separately, [#163](https://github.com/vymalo/vsms/issues/163) — distinct from `#156`, the unauthenticated `/token` edge).
+
+Verification only runs for requests that both qualify by HTTP method (`cratestack_axum::idempotency::is_idempotent_target_method` — POST/PATCH/PUT/DELETE, reused directly so the gate can't drift) and actually carry an `Idempotency-Key` header — `IdempotencyService::call` never reads the fingerprint closure otherwise. **Measured live, not assumed**: 30 real `POST /$procs/sendMessage` calls with a valid token and no `Idempotency-Key` averaged **9.75ms**; 30 more, identical except a fresh `Idempotency-Key` each time, averaged **13.54ms** — a **~3.8ms** delta against a warm JWKS/`AppClient` cache, consistent with one extra RS256 verify plus a cached lookup, not a network round trip. On the one `PROVIDER_WRITE_ROUTES` route that also carries Layer 2 (§5.1), an `Idempotency-Key`-bearing request now pays a *third* `authenticate` call — an already-accepted double-verification made triple, narrow and rare enough (one route, one header) to accept rather than optimise away.
+
+**Proven against a real gateway, not merely reasoned about**: a forged token claiming `sub = <victim's real client_id>` plus a predictable `Idempotency-Key` got `401`, cached under principal `unverified`; the victim's own later, correctly signed request with the identical key still ran `sendMessage` for real (a genuinely new `Message` row, not a replayed `401`); a second replay of the victim's own request, from a separate process with a freshly minted token, correctly returned `Idempotency-Replayed: true` with no third row created.
 
 **A missing `Idempotency-Key` bypasses the layer entirely** — document loudly that OTP callers must send one, because a retried OTP send without a key is a second SMS and a second charge. Cluster-wide idempotency replication is explicitly not implemented; the SQL store is shared state, which is what makes multiple replicas safe, but don't assume more.
 
@@ -1627,6 +1640,8 @@ Four limiters, easy to conflate:
 `RateLimitConfig::new(burst, refill_per_second)`. **`InMemoryRateLimitStore` is the only shipped store**, with an unbounded key map and no persistence — single-replica dev only. For production implement the `RateLimitStore` trait (which *is* `#[async_trait]`) against Redis or Postgres. The bucket is wall-clock-driven, so a process pause longer than one fill window grants a fresh burst on resume.
 
 `sms-gateway`'s current deployment (`deploy/docker-compose.yml`) runs exactly one gateway replica, so `InMemoryRateLimitStore`'s per-process nature is correct today, not a gap papered over — a second replica would need the Redis/Postgres-backed store this paragraph already says doesn't exist yet, before horizontal scaling is safe.
+
+**Per-principal ingress is keyed on an *unverified* token claim, on purpose — see §4.5's own explanation of why that's a deliberately different (and weaker) tradeoff than `IdempotencyLayer` makes.** Concretely: a caller willing to forge a fresh `sub` claim per request gets a fresh, full bucket every time, bypassing this limiter entirely. That is bounded to self-throttling evasion, not a path to harming another caller, which is why it's accepted here rather than paying real-signature-verification cost on every single request. Tracked as [#163](https://github.com/vymalo/vsms/issues/163).
 
 The per-MSISDN OTP limiter is the one that protects your money. SMS pumping — cycling OTP requests against premium-rate ranges — is the most common way a new gateway loses its balance overnight.
 
