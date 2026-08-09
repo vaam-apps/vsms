@@ -75,6 +75,23 @@ else
   echo "restore.sh: no manifest available — cannot check whether this backup's pepper matches the current SMS_HASH_PEPPER. Proceeding blind; see docs/runbooks/backup-restore.md." >&2
 fi
 
+# `pg_restore --clean --if-exists` below drops and recreates every object in
+# whatever DATABASE_URL points at. That is correct for a disaster recovery,
+# and catastrophic for a fat-fingered DATABASE_URL during a rehearsal — the
+# script cannot tell the two apart, so the operator has to. `restore-drill.sh`
+# already guards its own destroy step this way; this is the same discipline
+# applied to the primitive it calls.
+#
+# Deliberately an env var rather than a positional flag: `restore.sh` already
+# takes `--latest` / a backup name, and during a real outage the last thing
+# anyone needs is an argument-order mistake between a name and a confirmation.
+if [ "${RESTORE_CONFIRM_OVERWRITE:-}" != "yes" ]; then
+  echo "restore.sh: refusing to overwrite ${DATABASE_URL#*@} without confirmation." >&2
+  echo "restore.sh: this drops and recreates every object in the target database." >&2
+  echo "restore.sh: re-run with RESTORE_CONFIRM_OVERWRITE=yes once you have checked DATABASE_URL." >&2
+  exit 1
+fi
+
 echo "restore.sh: restoring into postgres://***@${DATABASE_URL#*@}"
 pg_restore --dbname="${DATABASE_URL}" --clean --if-exists --no-owner --no-privileges "${dump_path}"
 echo "restore.sh: done"

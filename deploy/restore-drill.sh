@@ -111,7 +111,7 @@ echo "== 5/6: restoring from the backup (restore.sh) =="
 # exported above, and restore.sh pulls ${dump_name} through rclone itself
 # — the same path a real restore takes, not a filesystem shortcut only
 # available when the remote happens to be local.
-"${script_dir}/restore.sh" "${dump_name}"
+RESTORE_CONFIRM_OVERWRITE=yes "${script_dir}/restore.sh" "${dump_name}"
 
 echo "== 6/6: verifying =="
 after=$(row_counts "${DATABASE_URL}")
