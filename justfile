@@ -133,3 +133,17 @@ demo-down:
 # What's currently running from `just demo`.
 demo-status:
 	./scripts/demo.sh status
+
+# #160: the joined integration story — brings up `just demo`'s stack (via
+# scripts/demo.sh, reused not reimplemented), provisions a SECOND client
+# against the same App ("external integrator"), sends through
+# examples/rust/sms-send authenticated as that integrator over real HTTP,
+# then polls GET /messages/{id} AS THE CONSOLE's own credential — the
+# same route packages/gateway/src/messages.ts's getMessageById calls —
+# until that exact message id reaches `delivered`. Fails loudly (non-zero
+# exit, a named step) if any link in the chain breaks. See
+# docs/runbooks/e2e-integration.md for what this proves, what it fakes
+# (Orange, via sms-fake-orange — #36's handset gate is unaffected), and
+# why both clients share one App.
+e2e-integration:
+	./scripts/e2e-integration.sh
