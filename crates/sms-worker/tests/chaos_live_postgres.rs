@@ -190,6 +190,58 @@ async fn clear_claimable_backlog(db: &Cratestack) {
             break;
         }
     }
+    clear_undelivered_backlog(db).await;
+}
+
+/// #122: `undelivered` joined the claimable set (`claim.rs`'s
+/// `Claimable for Message::candidates()` now selects it for retry), so it
+/// needs the same draining discipline as `accepted`/`queued`/`routed`
+/// above, for the same reason — a leftover row from an earlier test in this
+/// file is exactly as claimable as the row the current test is about to
+/// seed, and this suite drives the real `tick()` loop repeatedly. Separate
+/// loop, not folded into the one above: `cancelled` is unreachable from
+/// `undelivered` (§2.10 has no such edge); `failed` is the legal terminal
+/// edge this state actually has.
+async fn clear_undelivered_backlog(db: &Cratestack) {
+    const BATCH: usize = 500;
+    let sys = sys();
+    loop {
+        let backlog = db
+            .message()
+            .find_many()
+            .where_expr(cratestack::FilterExpr::from(
+                schema::message::state().eq(MessageState::undelivered),
+            ))
+            .limit(i64::try_from(BATCH).expect("BATCH fits in an i64"))
+            .run(&sys)
+            .await
+            .expect("listing the undelivered backlog");
+        let drained = backlog.len();
+
+        for message in backlog {
+            let result = db
+                .message()
+                .update(message.id.clone())
+                .set(schema::UpdateMessageInput {
+                    state: Some(MessageState::failed),
+                    ..Default::default()
+                })
+                .if_match(message.version)
+                .run(&sys)
+                .await;
+            if let Err(error) = result {
+                tracing::warn!(
+                    message_id = %message.id,
+                    %error,
+                    "clearing the undelivered test backlog: one row could not be failed"
+                );
+            }
+        }
+
+        if drained < BATCH {
+            break;
+        }
+    }
 }
 
 async fn isolated_db() -> Cratestack {
@@ -1031,6 +1083,147 @@ async fn a_token_endpoint_401_fails_the_message_as_permanent() {
     );
 }
 
+/// #122's own regression test: a message that receives exactly one
+/// retryable-failure DLR must not sit in `undelivered` forever — it has to
+/// come back around and be retried. `force_lease_past` stands in for real
+/// wall-clock time, the same way the seeded sweep does, so this doesn't
+/// need to sleep out `undelivered_retry_backoff`'s real delay.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_undelivered_message_is_retried_and_reaches_delivered_on_the_next_attempt() {
+    let _guard = TEST_MUTEX.lock().await;
+    let harness = build_harness(
+        FaultPolicy::scripted([
+            SubmitDecision::accepted_with_dlrs(vec![DlrStep::after(
+                Duration::from_millis(30),
+                DlrStatus::Failed,
+            )]),
+            SubmitDecision::accepted_with_dlrs(vec![DlrStep::after(
+                Duration::from_millis(30),
+                DlrStatus::Delivered,
+            )]),
+        ]),
+        TokenPolicy::Always,
+    )
+    .await;
+    let seeded = seed_message(
+        &harness.db,
+        &harness.app_id,
+        3,
+        Utc::now() + ChronoDuration::hours(1),
+    )
+    .await;
+
+    tick(&harness.ctx, &harness.sys, "chaos-worker")
+        .await
+        .expect("tick"); // accepted -> queued
+    tick(&harness.ctx, &harness.sys, "chaos-worker")
+        .await
+        .expect("tick"); // queued -> routed -> submitted
+    assert!(
+        harness
+            .fake
+            .ledger()
+            .wait_for_dlrs_to_settle(Duration::from_secs(2))
+            .await
+    );
+
+    let first_failure = reload(&harness.db, &seeded.id).await;
+    assert_eq!(
+        first_failure.state,
+        MessageState::undelivered,
+        "the first retryable-failure DLR must land the message in undelivered"
+    );
+
+    // Stand in for `undelivered_retry_backoff`'s real delay — same
+    // mechanism the seeded sweep below uses.
+    force_lease_past(&harness.db, &first_failure).await;
+
+    tick(&harness.ctx, &harness.sys, "chaos-worker")
+        .await
+        .expect("tick"); // undelivered -> queued (the retry, #122)
+    tick(&harness.ctx, &harness.sys, "chaos-worker")
+        .await
+        .expect("tick"); // queued -> routed -> submitted, the second attempt
+    assert!(
+        harness
+            .fake
+            .ledger()
+            .wait_for_dlrs_to_settle(Duration::from_secs(2))
+            .await
+    );
+
+    let resolved = reload(&harness.db, &seeded.id).await;
+    assert_eq!(
+        resolved.state,
+        MessageState::delivered,
+        "the bug this test guards against: before #122, nothing ever drove \
+         undelivered -> queued, so this message would still be sitting in undelivered"
+    );
+    assert_eq!(
+        harness.fake.ledger().submit_count(&seeded.id),
+        2,
+        "exactly one retry — the first submit, then the one this test proves happens"
+    );
+}
+
+/// The bounded half of the same fix: a message that keeps failing must
+/// still reach a terminal state once `maxAttempts` is exhausted, not retry
+/// forever.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_undelivered_message_at_max_attempts_fails_instead_of_retrying_forever() {
+    let _guard = TEST_MUTEX.lock().await;
+    let harness = build_harness(
+        FaultPolicy::scripted([SubmitDecision::accepted_with_dlrs(vec![DlrStep::after(
+            Duration::from_millis(30),
+            DlrStatus::Failed,
+        )])]),
+        TokenPolicy::Always,
+    )
+    .await;
+    // maxAttempts: 1 — the one submission this message is allowed to make
+    // happens on the very first `queued -> routed` hop, so by the time the
+    // retryable-failure DLR lands it has already exhausted its budget.
+    let seeded = seed_message(
+        &harness.db,
+        &harness.app_id,
+        1,
+        Utc::now() + ChronoDuration::hours(1),
+    )
+    .await;
+
+    tick(&harness.ctx, &harness.sys, "chaos-worker")
+        .await
+        .expect("tick"); // accepted -> queued
+    tick(&harness.ctx, &harness.sys, "chaos-worker")
+        .await
+        .expect("tick"); // queued -> routed -> submitted
+    assert!(
+        harness
+            .fake
+            .ledger()
+            .wait_for_dlrs_to_settle(Duration::from_secs(2))
+            .await
+    );
+
+    let undelivered = reload(&harness.db, &seeded.id).await;
+    assert_eq!(undelivered.state, MessageState::undelivered);
+    force_lease_past(&harness.db, &undelivered).await;
+
+    tick(&harness.ctx, &harness.sys, "chaos-worker")
+        .await
+        .expect("tick"); // undelivered -> failed: max attempts (§7.4)
+
+    let after = reload(&harness.db, &seeded.id).await;
+    assert_eq!(after.state, MessageState::failed);
+    assert_eq!(
+        harness.fake.ledger().submit_count(&seeded.id),
+        1,
+        "a message at max attempts must never be resubmitted"
+    );
+}
+
 // ---------------------------------------------------------------------
 // Seeded chaos sweep — a fixed, small seed set so every PR gets
 // deterministic, reproducible regression coverage. A failing seed is
@@ -1046,20 +1239,22 @@ const MAX_TICKS: usize = 40;
 /// [`FaultPolicy::Seeded`] policy until none remain claimable (or
 /// [`MAX_TICKS`] is exhausted, itself an assertion — see below), lets the
 /// fake's own DLR-delivery tasks settle, forces `expire_stale` far enough
-/// into the future to resolve every `submitted`/`uncertain` row regardless
-/// of the real 6h grace, then sweeps every seeded message and asserts:
+/// into the future to resolve every `submitted`/`uncertain`/`undelivered`
+/// row regardless of the real 6h grace or backoff, then sweeps every seeded
+/// message and asserts:
 ///
-/// - **no message is lost** — every one ends in a real terminal state, or
-///   in `undelivered` (a real, already-documented gap — `dlr.rs`'s own
-///   module doc: nothing currently drives `undelivered -> queued`, and
-///   `expire_stale` only reaps `submitted`/`uncertain`, not `undelivered` —
-///   so a message that receives exactly one retryable-failure DLR and no
-///   follow-up is *expected* to sit in `undelivered` forever under this
-///   system's current, documented scope. Treating that as a sweep failure
-///   would be re-litigating a known gap, not finding a new one);
-/// - **no message is still claimable** — `accepted`/`queued`/`routed` must
-///   be fully drained by the tick loop itself, never left over for the
-///   sweep to paper over;
+/// - **no message is lost** — every one ends in a real terminal state.
+///   Before #122 this exempted `undelivered` as a known, accepted gap
+///   (nothing drove `undelivered -> queued`, and `expire_stale` didn't reap
+///   it either, so a message that received exactly one retryable-failure
+///   DLR and no follow-up sat there forever); `claim.rs`'s `candidates()`
+///   now selects `undelivered` for retry and `expire_stale` now reaps a row
+///   whose `expiresAt` elapses before its retry budget does, so this sweep
+///   enforces the stronger invariant directly instead of carving the gap
+///   out;
+/// - **no message is still claimable** — `accepted`/`queued`/`routed`/
+///   `undelivered` must be fully drained by the tick loop itself, never
+///   left over for the sweep to paper over;
 /// - **`attempts` never exceeds `maxAttempts`**;
 /// - **a message that went `uncertain` via `Indeterminate` is never
 ///   submitted again** — checked against the fake's own ledger, not the
@@ -1092,9 +1287,17 @@ async fn run_seed(seed: u64) {
             let message = reload(&harness.db, id).await;
             if matches!(
                 message.state,
-                MessageState::accepted | MessageState::queued | MessageState::routed
+                MessageState::accepted
+                    | MessageState::queued
+                    | MessageState::routed
+                    | MessageState::undelivered
             ) {
                 still_claimable = true;
+                // `undelivered`'s own backoff lease (`sms_api::dlr`'s
+                // `undelivered_retry_backoff`, up to 30 minutes) is exactly
+                // as real a wait as `routed -> queued`'s backoff — force it
+                // past the same way, so this sweep proves the retry path
+                // itself rather than timing out waiting on real wall clock.
                 if message.leaseUntil.is_some_and(|until| until > Utc::now()) {
                     force_lease_past(&harness.db, &message).await;
                 }
@@ -1110,7 +1313,10 @@ async fn run_seed(seed: u64) {
         assert!(
             !matches!(
                 message.state,
-                MessageState::accepted | MessageState::queued | MessageState::routed
+                MessageState::accepted
+                    | MessageState::queued
+                    | MessageState::routed
+                    | MessageState::undelivered
             ),
             "seed {seed}: message {id} still claimable (state {:?}) after {ticks_used} ticks — \
              the sweep's own bounded-attempts assumption was violated",
@@ -1139,9 +1345,10 @@ async fn run_seed(seed: u64) {
     for id in &seeded_ids {
         let message = reload(&harness.db, id).await;
         assert!(
-            TERMINAL_STATES.contains(&message.state) || message.state == MessageState::undelivered,
-            "seed {seed}: message {id} ended in {:?} — neither terminal nor the documented \
-             undelivered gap; the message was effectively lost",
+            TERMINAL_STATES.contains(&message.state),
+            "seed {seed}: message {id} ended in {:?}, not a real terminal state — the message \
+             was effectively lost (#122: `undelivered` is no longer an accepted outcome here, \
+             it must now always resolve onward)",
             message.state
         );
         assert!(

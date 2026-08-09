@@ -641,3 +641,70 @@ async fn expire_stale_leaves_a_fresh_uncertain_message_alone() {
         "a fresh uncertain message must not be touched before its 6h grace elapses"
     );
 }
+
+/// #122's own reap rule: `undelivered` uses `Message.expiresAt` directly
+/// (same clock as `submitted`), not a fresh grace period like `uncertain`'s
+/// — see `ExpireStale::run_at`'s own doc for why. Without this, a message
+/// whose original validity window has already elapsed would sit in
+/// `undelivered` forever: `claim.rs`'s own `expiresAt` filter already
+/// refuses to retry it, but nothing was reaping it either.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn expire_stale_expires_an_undelivered_message_past_its_expires_at() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let app_id = seed_app(&db).await;
+    let submitted = seed_submitted_message(&db, &app_id, Utc::now() - Duration::minutes(1)).await;
+    let undelivered = db
+        .message()
+        .update(submitted.id.clone())
+        .set(schema::UpdateMessageInput {
+            state: Some(MessageState::undelivered),
+            ..Default::default()
+        })
+        .if_match(submitted.version)
+        .run(&sys())
+        .await
+        .expect("submitted -> undelivered");
+
+    ExpireStale
+        .run_at(&db, &sys(), Utc::now())
+        .await
+        .expect("expire_stale succeeds");
+
+    let after = reload_message(&db, &undelivered.id).await;
+    assert_eq!(after.state, MessageState::expired);
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn expire_stale_leaves_a_fresh_undelivered_message_alone() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let app_id = seed_app(&db).await;
+    let submitted = seed_submitted_message(&db, &app_id, Utc::now() + Duration::hours(1)).await;
+    let undelivered = db
+        .message()
+        .update(submitted.id.clone())
+        .set(schema::UpdateMessageInput {
+            state: Some(MessageState::undelivered),
+            ..Default::default()
+        })
+        .if_match(submitted.version)
+        .run(&sys())
+        .await
+        .expect("submitted -> undelivered");
+
+    ExpireStale
+        .run_at(&db, &sys(), Utc::now())
+        .await
+        .expect("expire_stale succeeds");
+
+    let after = reload_message(&db, &undelivered.id).await;
+    assert_eq!(
+        after.state,
+        MessageState::undelivered,
+        "an undelivered message still within its expiresAt window must be left alone — \
+         claim.rs's own retry path, not this job, is what should move it on"
+    );
+}

@@ -178,8 +178,9 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
 /// pattern at all: it targets `uncertain`, not `queued`, and carries no
 /// backoff, because there must be no next attempt. `uncertain` is outside
 /// [`crate::claim::Claimable::candidates`]'s state filter
-/// (`accepted`/`queued`/`routed` only), so once a message lands there this
-/// loop never picks it up again — the only ways out are a later DLR
+/// (`accepted`/`queued`/`routed`/`undelivered` only, #122), so once a
+/// message lands there this loop never picks it up again — the only ways
+/// out are a later DLR
 /// (`sms_api::dlr`, correlating on `providerMessageRefAlt` since we may
 /// never have gotten a `providerMessageRef` to store) or
 /// `expire_stale`'s 6h grace (`crates/sms-worker/src/jobs/expire_stale.rs`).
