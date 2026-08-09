@@ -84,6 +84,17 @@ services:
       SMS_IDEMPOTENCY_TTL_SECS: ${SMS_IDEMPOTENCY_TTL_SECS:-86400}
       SMS_RATE_LIMIT_BURST: ${SMS_RATE_LIMIT_BURST:-120}
       SMS_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_RATE_LIMIT_REFILL_PER_SECOND:-2.0}
+      # #163: the coarser, ConnectInfo-peer-keyed RateLimitLayer on top of
+      # the per-principal one above — see sms_api::router's own doc for
+      # why it closes the forged-sub bypass and why its budget is wider.
+      SMS_SOURCE_RATE_LIMIT_BURST: ${SMS_SOURCE_RATE_LIMIT_BURST:-1200}
+      SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND:-10.0}
+      # #168: the /token client_id-keyed defence-in-depth limiter — see
+      # app/sms-gateway/src/token_rate_limit.rs's own module doc for why
+      # this exists alongside, not instead of, deploy/Caddyfile's edge
+      # zones.
+      SMS_TOKEN_RATE_LIMIT_BURST: ${SMS_TOKEN_RATE_LIMIT_BURST:-10}
+      SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND:-0.3333333333333333}
       RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,cratestack=info}
     depends_on:
       postgres:

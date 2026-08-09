@@ -84,11 +84,17 @@
 # attacker sharing a legitimate client's *source IP* (realistic behind a
 # NAT gateway or shared egress, not for a dedicated service-account
 # caller) could still exhaust that shared IP bucket. Tracked as a real,
-# not cosmetic, gap — filed as #168, not silently accepted — with two
-# real fixes, neither of which belongs in this file: a small first-party
-# Caddy module (new Go code, its own PR), or a second, defense-in-depth
-# limiter inside `sms-auth`'s own `/token` handler, which has the parsed
-# body already. `token_global` below is a
+# not cosmetic, gap — filed as #168. **Closed, not by this file**:
+# `app/sms-gateway/src/token_rate_limit.rs` is a second, defense-in-depth
+# limiter mounted on `/token` itself (in `app/sms-gateway/src/op.rs`,
+# which already owns route assembly for this path — not `sms-auth`, and
+# not a first-party Caddy module, both weighed and rejected in #168's own
+# issue), keyed on the real `client_id` it reads from the already-buffered
+# body. This zone's own per-IP keying stays exactly as it is — the two
+# layers are complementary, not redundant: this one bounds abuse by
+# source IP before it ever reaches the application; that one bounds abuse
+# by claimed identity, the dimension this file structurally cannot reach.
+# `token_global` below is a
 # third mitigation in the meantime — a single aggregate budget across
 # *all* callers, which bounds the worst case (many IPs, one or many
 # claimed client_ids, all hammering `/token` at once) even though it

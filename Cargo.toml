@@ -114,6 +114,19 @@ async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
+# #168: parses `/token`'s form-urlencoded body for `client_id` in
+# `app/sms-gateway/src/token_rate_limit.rs`. Already present in Cargo.lock
+# transitively at this exact version (part of the `url` crate family, a
+# dependency of axum's own `Form` extractor, which `authkestra_axum`'s
+# token handler uses to parse `TokenRequest`) — this doesn't add a second
+# form-parsing implementation to the tree, just names the dependency
+# directly for the one crate that now calls it outside that extractor.
+# Chosen over a third-party Caddy module for the identical supply-chain
+# reason `deploy/Caddyfile`'s own #168 comment rejected one at the edge:
+# `form_urlencoded` is maintained by the same team as `url`/`idna` (Servo),
+# already this deeply embedded in the dependency tree, and does exactly
+# one well-scoped thing.
+form_urlencoded = "1"
 # rustls, not native-tls/openssl — matches every other reqwest already in
 # this dependency tree (cratestack-sqlx, authkestra-engine both resolve to
 # hyper-rustls), so this doesn't introduce a second TLS stack to build.
@@ -130,6 +143,12 @@ hmac = "0.12"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util = "0.7"
+# Dev-only: token_rate_limit.rs's own tests (#168) drive its middleware via
+# `tower::ServiceExt::oneshot` against an in-process router, the standard
+# axum testing pattern — no real socket needed. Already present in
+# Cargo.lock transitively (0.5.3, via axum/cratestack-axum's own routing
+# internals), so this doesn't add a second `tower` version to the tree.
+tower = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 unicode-normalization = "0.1"

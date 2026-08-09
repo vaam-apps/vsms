@@ -3,6 +3,7 @@
 mod dlr;
 mod health;
 mod op;
+mod token_rate_limit;
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -110,6 +111,55 @@ enum Command {
         /// #153: refill rate, in tokens/second, for the same bucket.
         #[arg(long, env = "SMS_RATE_LIMIT_REFILL_PER_SECOND", default_value_t = 2.0)]
         rate_limit_refill_per_second: f64,
+
+        /// #163: burst capacity for `sms_api::router`'s second, coarser
+        /// `RateLimitLayer` — keyed on the real TCP peer
+        /// (`ConnectInfo<SocketAddr>`, populated because this arm serves
+        /// through `into_make_service_with_connect_info` below), not the
+        /// unverified `sub` claim `--rate-limit-burst` above buckets by.
+        /// Closes the gap that layer's own doc names: a caller willing to
+        /// forge a fresh `sub` per request gets a fresh bucket from that
+        /// layer alone; this one bounds the aggregate regardless. See
+        /// `sms_api::default_source_rate_limit_config`'s own doc for why
+        /// its default is sized differently from `--rate-limit-burst`'s.
+        #[arg(long, env = "SMS_SOURCE_RATE_LIMIT_BURST", default_value_t = 1200)]
+        source_rate_limit_burst: u32,
+
+        /// #163: refill rate, in tokens/second, for the same bucket.
+        #[arg(
+            long,
+            env = "SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND",
+            default_value_t = 10.0
+        )]
+        source_rate_limit_refill_per_second: f64,
+
+        /// #168: burst capacity for the `/token` route's own defence-in-
+        /// depth limiter, keyed on the real `client_id` parsed from the
+        /// form-urlencoded request body — the composite dimension
+        /// `docs/architecture.md` §4.2 requires and `deploy/Caddyfile`'s
+        /// edge-level `token_per_ip`/`token_global` zones (#156) cannot
+        /// reach (see `token_rate_limit`'s module doc for why: `/token`
+        /// arrives only in the POST body, and every edge-level way to read
+        /// one field out of it was checked and rejected — #168). Default
+        /// mirrors `deploy/Caddyfile`'s own `token_per_ip` reasoning and
+        /// figure almost exactly (20 events/minute, off the same
+        /// 15-minute-token-TTL caching behaviour), expressed as a token
+        /// bucket rather than a fixed window.
+        #[arg(
+            long,
+            env = "SMS_TOKEN_RATE_LIMIT_BURST",
+            default_value_t = token_rate_limit::default_token_rate_limit_config().burst
+        )]
+        token_rate_limit_burst: u32,
+
+        /// #168: refill rate, in tokens/second, for the same bucket — 20
+        /// events/minute.
+        #[arg(
+            long,
+            env = "SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND",
+            default_value_t = token_rate_limit::default_token_rate_limit_config().refill_per_second
+        )]
+        token_rate_limit_refill_per_second: f64,
     },
     /// Print the generated route table and exit. Needs no database.
     Routes,
@@ -364,100 +414,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
 
-        Command::Serve {
-            listen,
-            database_url,
-            max_connections,
-            issuer,
-            orange_client_id,
-            orange_client_secret,
-            orange_sender_number,
-            orange_base_url,
-            hash_pepper,
-            idempotency_ttl_secs,
-            rate_limit_burst,
-            rate_limit_refill_per_second,
-        } => {
-            // #134: validated before anything else in this branch runs —
-            // failing loudly on a missing/too-short pepper at startup, not
-            // at the first `sendMessage` call. `clap`'s own `env`/required
-            // handling already refuses a *missing* value before `main`
-            // ever reaches this line; this is the length check clap can't
-            // express.
-            let pepper = sms_api::HashPepper::new(hash_pepper)
-                .context("SMS_HASH_PEPPER is invalid — see sms_api::pepper's module doc")?;
-
-            let pool = PgPoolOptions::new()
-                .max_connections(max_connections)
-                .connect(&database_url)
-                .await
-                .context("connecting to Postgres")?;
-
-            let db = Cratestack::builder(pool).build();
-            let sys = system_context();
-
-            let (signing, jwks) = sms_auth::op::load_signing_keys(&db, &sys, &issuer)
-                .await
-                .context(
-                    "loading OP signing keys — run `sms-gateway rotate-signing-key` if this is \
-                     a fresh database",
-                )?;
-            let op_store =
-                sms_auth::op::machine_only_store(std::sync::Arc::new(db.clone()), sys.clone());
-            let op_config = sms_auth::op::machine_only_config(issuer.clone());
-            let op_state = op::OpState::new(op_store, signing, op_config, jwks);
-            // Keeps a rotate-signing-key run against this already-running
-            // process from silently never taking effect — see op.rs's own
-            // module doc.
-            op::spawn_key_refresh(
-                op_state.clone(),
-                db.clone(),
-                sys.clone(),
-                issuer.clone(),
-                op::DEFAULT_KEY_REFRESH_INTERVAL,
-            );
-
-            let mut orange_config = sms_provider_orange_cm::OrangeCmConfig::production(
-                orange_client_id,
-                orange_client_secret,
-                orange_sender_number,
-            );
-            orange_config.base_url = orange_base_url;
-            let provider: Arc<dyn SmsProvider> =
-                Arc::new(sms_provider_orange_cm::OrangeCmProvider::new(orange_config));
-            let provider_row_id = resolve_provider_row_id(&db, &sys, provider.as_ref()).await?;
-            let dlr_router = dlr::router(db.clone(), sys, provider, provider_row_id);
-            // #157: /readyz needs the same pooled handle every other router
-            // shares — cloned here, before `sms_api::router` below takes
-            // `db` by value as its own last use.
-            let health_router = health::router(db.clone());
-
-            let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer);
-            let app = sms_api::router(
-                db,
-                auth,
-                pepper,
-                std::time::Duration::from_secs(idempotency_ttl_secs),
-                cratestack::ratelimit::RateLimitConfig::new(
-                    rate_limit_burst,
-                    rate_limit_refill_per_second,
-                ),
-            )
-            .merge(op::router(op_state))
-            .merge(dlr_router)
-            .merge(health_router);
-
-            let listener = tokio::net::TcpListener::bind(&listen)
-                .await
-                .with_context(|| format!("binding {listen}"))?;
-            info!(listen = %listen, "sms-gateway listening");
-
-            cratestack::axum::serve(listener, app.into_make_service())
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .context("serving HTTP")?;
-            Ok(())
-        }
+        command @ Command::Serve { .. } => serve_command(command).await,
 
         Command::RotateSigningKey { database_url } => {
             rotate_signing_key_command(database_url).await
@@ -469,12 +426,139 @@ async fn main() -> Result<()> {
     }
 }
 
+/// `Command::Serve`'s body, pulled out of `main`'s own `match` for the same
+/// `clippy::too_many_lines` reason [`rotate_signing_key_command`] below
+/// already was — #168 pushed `main` back over the limit by adding two more
+/// CLI flags and the `token_rate_limit` wiring they feed, the same shape of
+/// growth #139 caused originally. Takes the whole matched `Command` (rather
+/// than its dozen-plus fields individually) for the identical reason
+/// [`provision_client_command`] does — see that function's own doc; the
+/// `unreachable!()` below can never fire because the only caller is
+/// `main`'s own `command @ Command::Serve { .. }` guard.
+async fn serve_command(command: Command) -> Result<()> {
+    let Command::Serve {
+        listen,
+        database_url,
+        max_connections,
+        issuer,
+        orange_client_id,
+        orange_client_secret,
+        orange_sender_number,
+        orange_base_url,
+        hash_pepper,
+        idempotency_ttl_secs,
+        rate_limit_burst,
+        rate_limit_refill_per_second,
+        source_rate_limit_burst,
+        source_rate_limit_refill_per_second,
+        token_rate_limit_burst,
+        token_rate_limit_refill_per_second,
+    } = command
+    else {
+        unreachable!("only ever called with Command::Serve")
+    };
+
+    // #134: validated before anything else in this branch runs — failing
+    // loudly on a missing/too-short pepper at startup, not at the first
+    // `sendMessage` call. `clap`'s own `env`/required handling already
+    // refuses a *missing* value before this line is ever reached; this is
+    // the length check clap can't express.
+    let pepper = sms_api::HashPepper::new(hash_pepper)
+        .context("SMS_HASH_PEPPER is invalid — see sms_api::pepper's module doc")?;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(max_connections)
+        .connect(&database_url)
+        .await
+        .context("connecting to Postgres")?;
+
+    let db = Cratestack::builder(pool).build();
+    let sys = system_context();
+
+    let (signing, jwks) = sms_auth::op::load_signing_keys(&db, &sys, &issuer)
+        .await
+        .context(
+            "loading OP signing keys — run `sms-gateway rotate-signing-key` if this is a fresh \
+             database",
+        )?;
+    let op_store = sms_auth::op::machine_only_store(std::sync::Arc::new(db.clone()), sys.clone());
+    let op_config = sms_auth::op::machine_only_config(issuer.clone());
+    let op_state = op::OpState::new(op_store, signing, op_config, jwks);
+    // Keeps a rotate-signing-key run against this already-running process
+    // from silently never taking effect — see op.rs's own module doc.
+    op::spawn_key_refresh(
+        op_state.clone(),
+        db.clone(),
+        sys.clone(),
+        issuer.clone(),
+        op::DEFAULT_KEY_REFRESH_INTERVAL,
+    );
+
+    let mut orange_config = sms_provider_orange_cm::OrangeCmConfig::production(
+        orange_client_id,
+        orange_client_secret,
+        orange_sender_number,
+    );
+    orange_config.base_url = orange_base_url;
+    let provider: Arc<dyn SmsProvider> =
+        Arc::new(sms_provider_orange_cm::OrangeCmProvider::new(orange_config));
+    let provider_row_id = resolve_provider_row_id(&db, &sys, provider.as_ref()).await?;
+    let dlr_router = dlr::router(db.clone(), sys, provider, provider_row_id);
+    // #157: /readyz needs the same pooled handle every other router
+    // shares — cloned here, before `sms_api::router` below takes `db` by
+    // value as its own last use.
+    let health_router = health::router(db.clone());
+
+    let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer);
+    // #168: the /token route's own client_id-keyed defence-in-depth
+    // limiter — distinct from sms_api::router's two, which never wrap
+    // /token at all (see that function's own doc). See
+    // token_rate_limit's own module doc for why this belongs here and not
+    // in deploy/Caddyfile or authkestra-op.
+    let token_rate_limit =
+        token_rate_limit::TokenRateLimitState::new(cratestack::ratelimit::RateLimitConfig::new(
+            token_rate_limit_burst,
+            token_rate_limit_refill_per_second,
+        ));
+    let app = sms_api::router(
+        db,
+        auth,
+        pepper,
+        std::time::Duration::from_secs(idempotency_ttl_secs),
+        cratestack::ratelimit::RateLimitConfig::new(rate_limit_burst, rate_limit_refill_per_second),
+        cratestack::ratelimit::RateLimitConfig::new(
+            source_rate_limit_burst,
+            source_rate_limit_refill_per_second,
+        ),
+    )
+    .merge(op::router(op_state, token_rate_limit))
+    .merge(dlr_router)
+    .merge(health_router);
+
+    let listener = tokio::net::TcpListener::bind(&listen)
+        .await
+        .with_context(|| format!("binding {listen}"))?;
+    info!(listen = %listen, "sms-gateway listening");
+
+    // #163: `sms_api::router`'s coarser, `ConnectInfo`-keyed
+    // `RateLimitLayer` (see that module's `source_fingerprint` doc) only
+    // sees a real peer address when served through this — plain
+    // `into_make_service()` leaves it permanently absent, silently
+    // collapsing that layer to its shared-bucket fallback for every
+    // caller, not just forged ones.
+    cratestack::axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .context("serving HTTP")?;
+    Ok(())
+}
+
 /// `Command::RotateSigningKey`'s body, pulled out of `main`'s own `match`
 /// for the same reason [`provision_client_command`] below is — see that
-/// function's doc. `main` crossed `clippy::too_many_lines` the moment
-/// #139 added the health route to the `Serve` arm; extracting the two
-/// one-shot CLI arms keeps the long-running server arm readable inline,
-/// where the startup ordering actually matters.
+/// function's doc.
 async fn rotate_signing_key_command(database_url: String) -> Result<()> {
     // Found live prepping #36 (this repo's first time ever running
     // this command against a real database): `max_connections(1)`

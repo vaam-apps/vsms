@@ -3121,6 +3121,7 @@ dependencies = [
  "hmac",
  "jsonwebtoken",
  "rand 0.8.7",
+ "reqwest 0.12.28",
  "rsa",
  "serde",
  "serde_json",
@@ -3215,6 +3216,7 @@ dependencies = [
  "clap",
  "cratestack-pg",
  "dotenvy",
+ "form_urlencoded",
  "jsonwebtoken",
  "rand 0.8.7",
  "reqwest 0.12.28",
@@ -3227,6 +3229,7 @@ dependencies = [
  "sms-provider-orange-cm",
  "sms-test-support",
  "tokio",
+ "tower",
  "tracing",
  "tracing-subscriber",
 ]

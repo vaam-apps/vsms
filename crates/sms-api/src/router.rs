@@ -1,11 +1,12 @@
 //! Assembling the generated router.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use cratestack::axum::extract::{Request, State};
+use cratestack::axum::extract::{ConnectInfo, Request, State};
 use cratestack::axum::http::{header, Method};
 use cratestack::axum::middleware::{from_fn_with_state, Next};
 use cratestack::axum::response::Response;
@@ -89,6 +90,31 @@ pub fn default_rate_limit_config() -> RateLimitConfig {
     RateLimitConfig::new(120, 2.0)
 }
 
+/// #163: the budget for [`source_fingerprint`]'s coarser, source-scoped
+/// bucket — see that function's own doc for what it keys on and why.
+///
+/// This is deliberately **not** sized like [`default_rate_limit_config`]'s
+/// per-principal budget (burst 120, refill 2/s). That budget covers *one*
+/// client's own traffic; this one has to cover *every* client sharing this
+/// bucket's source at once, because in this deployment's actual topology
+/// (`deploy/docker-compose.yml`) every caller's request arrives at this
+/// router from one of exactly two internal peers — Caddy, proxying every
+/// external caller, or `admin`, which talks to `sms-gateway` directly
+/// (`SMS_API_URL: http://sms-gateway:8080` — see `source_fingerprint`'s own
+/// doc for why that matters). A budget sized for one client would throttle
+/// every *other* legitimate client sharing that same peer the moment any
+/// one of them got busy. 10x the per-principal burst and 5x its refill
+/// rate — generous enough that this deployment's own real traffic (the 14
+/// live-Postgres suites and `just demo` that exercise this router over real
+/// HTTP; see `default_rate_limit_config`'s own doc for which ones) never
+/// trips it, while still bounding the aggregate a forged-`sub` flood can
+/// reach to a fixed, finite number rather than the unbounded supply
+/// [`client_id_fingerprint`] alone allows.
+#[must_use]
+pub fn default_source_rate_limit_config() -> RateLimitConfig {
+    RateLimitConfig::new(1200, 10.0)
+}
+
 /// #153: both `IdempotencyLayer` and `RateLimitLayer` ship a default
 /// principal fingerprint that hashes the raw `Authorization` header bytes.
 /// **That default is wrong for this deployment** — found live while
@@ -113,14 +139,25 @@ pub fn default_rate_limit_config() -> RateLimitConfig {
 /// attacker pick their *own* rate-limit bucket, an act of self-throttling
 /// evasion, never someone else's. That is real and worth stating plainly
 /// rather than glossing over: **an attacker willing to forge a `sub` claim
-/// on every request bypasses this limiter entirely** (a fresh forged
-/// identity per request is a fresh, full bucket every time) — this
-/// function only makes the limiter correctly recognise *honest* retries
-/// and refreshes from the *same* real client as one principal; it does not
-/// make the limiter hostile-caller-proof. Filed as
-/// [#163](https://github.com/vymalo/vsms/issues/163) — distinct from
-/// `#156` (the unauthenticated `/token` edge, which this deployment's own
-/// issue tracker is explicit does not cover this in-process layer).
+/// on every request gets a fresh, full bucket every time from this
+/// function alone** — it only makes the limiter correctly recognise
+/// *honest* retries and refreshes from the *same* real client as one
+/// principal; it does not, by itself, make the limiter hostile-caller-proof.
+/// Filed as [#163](https://github.com/vymalo/vsms/issues/163) — distinct
+/// from `#156` (the unauthenticated `/token` edge, which this deployment's
+/// own issue tracker is explicit does not cover this in-process layer).
+///
+/// **#163's fix does not change this function** — it adds a second,
+/// coarser `RateLimitLayer` alongside it (see [`source_fingerprint`] and
+/// `router()`'s own doc for the layering) rather than replacing this one.
+/// This function stays exactly as bypassable as its own doc above already
+/// says, on purpose: it is still what gives an *honest* client fair,
+/// undiluted per-principal throughput, and nothing about closing the
+/// unbounded-bucket-forging bypass requires taking that away from honest
+/// traffic. What changes is that a forger can no longer turn "a fresh
+/// bucket per request" into "unbounded aggregate throughput" — the second
+/// layer bounds the aggregate regardless of how many buckets this one
+/// function hands out.
 fn client_id_fingerprint(req: &Request) -> String {
     let Some(auth_header) = req
         .headers()
@@ -159,6 +196,83 @@ fn jwt_sub_unverified(auth_header: &str) -> Option<String> {
     let payload_bytes = URL_SAFE_NO_PAD.decode(payload_segment).ok()?;
     let claims: SubOnly = serde_json::from_slice(&payload_bytes).ok()?;
     claims.sub.filter(|sub| !sub.is_empty())
+}
+
+/// #163's actual fix: the key function for a *second*, coarser
+/// `RateLimitLayer` mounted alongside [`client_id_fingerprint`]'s own (see
+/// `router()`'s own doc for the layering) — closes the gap that function's
+/// doc names plainly: an attacker willing to forge a fresh `sub` on every
+/// request gets a fresh, full bucket from that function alone, so nothing
+/// bounds the *aggregate* throughput a flood of forged identities can
+/// reach. This function does, by keying on something a forged `sub` cannot
+/// change: the real TCP peer this request arrived on.
+///
+/// **Chosen over trusting `X-Forwarded-For`, deliberately — this is the
+/// trap to check, not assume away.** `AGENTS.md` documents `sms-gateway
+/// serve`'s listen address as loopback by default, with TLS terminating at
+/// a Caddy edge in front of it (`app/sms-gateway/src/main.rs`'s own
+/// `--listen` doc) — a topology where trusting a *specific, known* upstream
+/// hop's `X-Forwarded-For` can be a defensible, deliberate choice. This
+/// deployment does not make that choice, for a concrete reason found while
+/// designing this fix, not a hypothetical one: `deploy/docker-compose.yml`
+/// has **two** internal callers of this router, not one — Caddy, fronting
+/// every external caller (`deploy/Caddyfile`'s `reverse_proxy
+/// sms-gateway:8080`), *and* `admin`, which talks to `sms-gateway` directly
+/// over the same compose network (`SMS_API_URL: http://sms-gateway:8080`,
+/// bypassing Caddy entirely) to serve its own server-side API calls on
+/// behalf of a browser session. A blanket "trust `X-Forwarded-For`"
+/// config can't tell those two apart — it would either trust `admin`'s own
+/// requests to forge an arbitrary claimed origin (`admin` has no reason to
+/// ever set the header today, but nothing stops a future change from
+/// adding one, and this function has no way to know that didn't happen),
+/// or need a second axis of configuration (a trusted-peer allowlist) this
+/// deployment has no static-IP infrastructure to make reliable — Docker
+/// Compose assigns container IPs dynamically, not pinned. Building that
+/// well is real, separate infrastructure work, not a fingerprint-function
+/// one-liner; until it exists, reading a client-supplied header here would
+/// be **worse than not using IP at all** — exactly the failure mode this
+/// doc was asked to check for: it would let an attacker both dodge this
+/// bucket (claim a fresh forged IP per request, same shape as the `sub`
+/// bypass this function exists to close) and attribute their traffic to a
+/// victim's real IP, throttling someone who never sent a request.
+///
+/// **What this function uses instead, and why it still closes the bypass
+/// even though it can't distinguish individual external clients from each
+/// other.** `ConnectInfo<SocketAddr>` — populated by axum from the actual
+/// accepted socket when this router is served through
+/// `into_make_service_with_connect_info::<SocketAddr>()` (`main.rs` does;
+/// see `router()`'s own doc) — is the real TCP peer and cannot be spoofed
+/// by anything in the request itself, the same property
+/// `cratestack_axum::ratelimit`'s own upstream default key function
+/// already relies on for its unauthenticated-request fallback. In this
+/// deployment's real topology that peer is Caddy's own container address
+/// for every external caller, or `admin`'s for the console's own traffic —
+/// coarse, not per-external-client, but **bounded**: however many distinct
+/// forged `sub` claims an attacker mints, every one of those requests
+/// still arrives over the same accepted connection pool from the same
+/// peer, so they all still draw from the *same* bucket here. That is
+/// exactly what closes #163's bypass — the aggregate a flood of forged
+/// identities can reach is now a fixed number
+/// ([`default_source_rate_limit_config`]'s own budget), not an unbounded
+/// supply of fresh buckets. A deployment that later adds a specific,
+/// pinned, single trusted proxy hop could extend this function to read
+/// `X-Forwarded-For` from it and regain per-external-client granularity;
+/// this one does not have that hop pinned down today, so it does not
+/// pretend to.
+///
+/// Falls back to a single shared `"unverified"` bucket when `ConnectInfo`
+/// is absent (the router served some other way — a future embedding, or a
+/// test harness not wired through connect-info) rather than skipping this
+/// layer's protection entirely; matches the shape of every other shared
+/// fallback bucket in this file (`client_id_fingerprint`'s `"anonymous"`,
+/// `verified_idempotency_fingerprint`'s `"unverified"`).
+fn source_fingerprint(req: &Request) -> String {
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map_or_else(
+            || "unverified".to_owned(),
+            |ConnectInfo(addr)| format!("ip:{}", addr.ip()),
+        )
 }
 
 /// Request-extension marker [`verify_idempotency_principal`] stamps once a
@@ -362,9 +476,11 @@ fn verified_idempotency_fingerprint(req: &Request) -> String {
 ///   for.
 ///
 /// Layering order (`.layer()` calls compose outside-in, so the *last*
-/// call is what a request meets *first*): `RateLimitLayer` is outermost,
-/// rejecting an abusive caller with a cheap `429` before any request body
-/// is buffered, any signature verified, or the idempotency store touched;
+/// call is what a request meets *first*): the two `RateLimitLayer`s are
+/// outermost — [`source_fingerprint`]'s coarser, `ConnectInfo`-keyed one
+/// first, then [`client_id_fingerprint`]'s per-principal one — rejecting
+/// an abusive caller with a cheap `429` before any request body is
+/// buffered, any signature verified, or the idempotency store touched;
 /// [`verify_idempotency_principal`] is next — a real, verified-signature
 /// re-authentication, but *only* for requests carrying an `Idempotency-Key`
 /// header (see that function's own doc for why, and for the
@@ -373,15 +489,36 @@ fn verified_idempotency_fingerprint(req: &Request) -> String {
 /// that verification established; the RBAC layer and the generated router
 /// (whose own extractors run [`GatewayAuth`] a further time) sit innermost.
 ///
+/// **#163: two `RateLimitLayer`s, not one, and that's deliberate — see
+/// [`source_fingerprint`]'s own doc for the full reasoning.** The
+/// per-principal one alone (`client_id_fingerprint`) is bypassable by a
+/// caller willing to forge a fresh, unverified `sub` claim per request —
+/// each forged identity gets its own fresh, full bucket. The second,
+/// coarser layer bounds the *aggregate* a flood of such forgeries can
+/// reach, keyed on the real TCP peer (`ConnectInfo<SocketAddr>`, populated
+/// because `app/sms-gateway/src/main.rs` serves this router through
+/// `into_make_service_with_connect_info::<SocketAddr>()` — required for
+/// this layer to do anything at all; see that function's doc for what
+/// happens without it) rather than anything request-content-derived a
+/// forger could vary. Order between the two barely matters for
+/// correctness (both are cheap token-bucket consumes); the coarser one
+/// runs first on the theory that a flood large enough to matter trips it
+/// before ever reaching the finer-grained one.
+///
 /// `SqlxIdempotencyStore` and `InMemoryRateLimitStore` are each the *only*
 /// store either upstream crate ships (`docs/architecture.md` §4.5/§4.6) —
 /// there is no second implementation to choose between, so `router()`
 /// constructs both internally from `db`'s own pool rather than taking them
-/// as parameters. `InMemoryRateLimitStore` means the rate limit is
-/// per-process: correct for this deployment's single gateway replica
-/// (`deploy/docker-compose.yml`), and explicitly not cluster-wide — a
-/// multi-replica deployment would need a Redis/Postgres-backed
-/// `RateLimitStore`, which does not exist yet (§4.6).
+/// as parameters — including a **second, independent**
+/// `InMemoryRateLimitStore` for [`source_fingerprint`]'s layer, so the two
+/// `RateLimitLayer`s' budgets can never interact even though their key
+/// namespaces (`"client:"`/`"auth:"`/`"anonymous"` vs. `"ip:"`/
+/// `"unverified"`) already can't collide. `InMemoryRateLimitStore` means
+/// the rate limit is per-process: correct for this deployment's single
+/// gateway replica (`deploy/docker-compose.yml`), and explicitly not
+/// cluster-wide — a multi-replica deployment would need a
+/// Redis/Postgres-backed `RateLimitStore`, which does not exist yet
+/// (§4.6).
 ///
 /// The `cratestack_idempotency` table itself is **not** created here —
 /// `SqlxIdempotencyStore::ensure_schema()` is deliberately never called by
@@ -408,6 +545,7 @@ pub fn router(
     pepper: HashPepper,
     idempotency_ttl: Duration,
     rate_limit: RateLimitConfig,
+    source_rate_limit: RateLimitConfig,
 ) -> Router {
     let rbac_state = RbacState {
         auth: auth.clone(),
@@ -417,6 +555,9 @@ pub fn router(
     let idempotency_store: Arc<dyn IdempotencyStore> =
         Arc::new(SqlxIdempotencyStore::new(db.pool().clone()));
     let rate_limit_store: Arc<dyn RateLimitStore> = Arc::new(InMemoryRateLimitStore::new());
+    // #163: a second, independent store — see router()'s own doc for why
+    // this must not share the per-principal layer's store.
+    let source_rate_limit_store: Arc<dyn RateLimitStore> = Arc::new(InMemoryRateLimitStore::new());
 
     schema::axum::router(db, Procedures::new(pepper), JsonCodec, auth)
         .layer(from_fn_with_state(rbac_state, enforce_route_permission))
@@ -429,6 +570,10 @@ pub fn router(
             verify_idempotency_principal,
         ))
         .layer(RateLimitLayer::new(rate_limit_store, rate_limit).with_key_fn(client_id_fingerprint))
+        .layer(
+            RateLimitLayer::new(source_rate_limit_store, source_rate_limit)
+                .with_key_fn(source_fingerprint),
+        )
 }
 
 /// Every route the schema generated, for `sms-gateway routes`.
@@ -486,6 +631,7 @@ mod tests {
             pepper,
             DEFAULT_IDEMPOTENCY_TTL,
             default_rate_limit_config(),
+            default_source_rate_limit_config(),
         );
     }
 
@@ -645,5 +791,189 @@ mod tests {
             "unverified",
             "the verified reader must not, absent a stamped extension"
         );
+    }
+
+    fn connect_info_request(addr: SocketAddr) -> Request {
+        let mut req = cratestack::axum::extract::Request::builder()
+            .body(cratestack::axum::body::Body::empty())
+            .expect("building a minimal test request");
+        req.extensions_mut().insert(ConnectInfo(addr));
+        req
+    }
+
+    #[test]
+    fn source_fingerprint_keys_on_the_real_connect_info_peer_address() {
+        let a = connect_info_request("10.0.0.1:54321".parse().unwrap());
+        let b = connect_info_request("10.0.0.1:9999".parse().unwrap());
+        let c = connect_info_request("10.0.0.2:54321".parse().unwrap());
+        // Same peer IP, different port (a second real connection from the
+        // same source) — same bucket.
+        assert_eq!(source_fingerprint(&a), source_fingerprint(&b));
+        assert_eq!(source_fingerprint(&a), "ip:10.0.0.1");
+        // Different peer IP — different bucket.
+        assert_ne!(source_fingerprint(&a), source_fingerprint(&c));
+    }
+
+    #[test]
+    fn source_fingerprint_is_unaffected_by_a_forged_sub_claim() {
+        // The whole point of #163's fix: unlike client_id_fingerprint,
+        // nothing about this function's key depends on request content a
+        // forger controls.
+        let mut a = connect_info_request("10.0.0.1:1".parse().unwrap());
+        a.headers_mut().insert(
+            header::AUTHORIZATION,
+            format!("Bearer {}", unsigned_jwt_with_sub("forged_a"))
+                .parse()
+                .unwrap(),
+        );
+        let mut b = connect_info_request("10.0.0.1:2".parse().unwrap());
+        b.headers_mut().insert(
+            header::AUTHORIZATION,
+            format!("Bearer {}", unsigned_jwt_with_sub("forged_b"))
+                .parse()
+                .unwrap(),
+        );
+        assert_ne!(client_id_fingerprint(&a), client_id_fingerprint(&b));
+        assert_eq!(source_fingerprint(&a), source_fingerprint(&b));
+    }
+
+    #[test]
+    fn source_fingerprint_falls_back_to_a_shared_bucket_without_connect_info() {
+        // The router not being served through
+        // `into_make_service_with_connect_info` (a misconfiguration this
+        // deployment's own `main.rs` avoids — see `router()`'s own doc)
+        // must not silently disable this layer's protection; every such
+        // request shares one bucket instead.
+        let req = cratestack::axum::extract::Request::builder()
+            .body(cratestack::axum::body::Body::empty())
+            .expect("building a minimal test request");
+        assert_eq!(source_fingerprint(&req), "unverified");
+    }
+
+    /// #163's own acceptance bar: prove the bypass is closed against a
+    /// real, bound HTTP server — not just that `source_fingerprint` reads
+    /// the right extension in isolation. Every request below carries a
+    /// *different* forged `sub`, so `client_id_fingerprint` alone would
+    /// hand each one a fresh 1000-request bucket (its budget here is set
+    /// wide open specifically so it can never be the thing that throttles
+    /// this test) — the source-keyed layer must throttle them collectively
+    /// instead, because every one of these requests shares the same real
+    /// `ConnectInfo` peer: this test's own client.
+    #[tokio::test]
+    async fn a_flood_of_forged_subs_is_throttled_collectively_by_the_source_layer() {
+        let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1/none")
+            .expect("a lazy pool only parses the URL");
+        let db = schema::Cratestack::builder(pool).build();
+        let auth = GatewayAuth::new(
+            db.clone(),
+            "https://auth.invalid/jwks.json".to_owned(),
+            "https://auth.invalid".to_owned(),
+        );
+        let pepper = HashPepper::new("a".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
+        let app = router(
+            db,
+            auth,
+            pepper,
+            DEFAULT_IDEMPOTENCY_TTL,
+            RateLimitConfig::new(1000, 1000.0),
+            RateLimitConfig::new(3, 0.01),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binding an ephemeral port");
+        let addr = listener.local_addr().expect("reading the bound address");
+        tokio::spawn(async move {
+            let _ = cratestack::axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await;
+        });
+
+        let client = reqwest::Client::new();
+        let mut statuses = Vec::new();
+        for i in 0..5 {
+            let token = unsigned_jwt_with_sub(&format!("forged_client_{i}"));
+            let response = client
+                .get(format!("http://{addr}/definitely-not-a-real-route"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .send()
+                .await
+                .expect("sending the request");
+            statuses.push(response.status().as_u16());
+        }
+
+        // The bogus path never matches a generated route, so a request
+        // that clears both RateLimitLayers reaches axum's own 404
+        // fallback — proof it wasn't rejected by either layer, not proof
+        // of anything about routing. The first 3 (the source bucket's
+        // burst) get through; the 4th and 5th, with brand-new forged subs
+        // no per-sub bucket has ever seen, still get 429 — the aggregate
+        // is genuinely bounded regardless of how many distinct subs are
+        // presented.
+        assert_eq!(
+            statuses,
+            vec![404, 404, 404, 429, 429],
+            "forging a fresh sub per request must not buy a fresh bucket \
+             from the source-keyed layer, got {statuses:?}"
+        );
+    }
+
+    /// The other half of #163's acceptance bar: a legitimate caller — one
+    /// real client, one real `sub`, well inside both layers' *default*
+    /// production budgets — must be completely unaffected by the new
+    /// layer. Proves the fix doesn't trade the forged-sub bypass for a
+    /// false-positive throttle on honest traffic.
+    #[tokio::test]
+    async fn a_legitimate_single_client_is_unaffected_by_the_source_layer_at_default_budgets() {
+        let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://unused:unused@127.0.0.1/none")
+            .expect("a lazy pool only parses the URL");
+        let db = schema::Cratestack::builder(pool).build();
+        let auth = GatewayAuth::new(
+            db.clone(),
+            "https://auth.invalid/jwks.json".to_owned(),
+            "https://auth.invalid".to_owned(),
+        );
+        let pepper = HashPepper::new("a".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
+        let app = router(
+            db,
+            auth,
+            pepper,
+            DEFAULT_IDEMPOTENCY_TTL,
+            default_rate_limit_config(),
+            default_source_rate_limit_config(),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("binding an ephemeral port");
+        let addr = listener.local_addr().expect("reading the bound address");
+        tokio::spawn(async move {
+            let _ = cratestack::axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await;
+        });
+
+        let client = reqwest::Client::new();
+        let token = unsigned_jwt_with_sub("honest_client");
+        for _ in 0..10 {
+            let response = client
+                .get(format!("http://{addr}/definitely-not-a-real-route"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .send()
+                .await
+                .expect("sending the request");
+            assert_eq!(
+                response.status().as_u16(),
+                404,
+                "a lone honest client well inside both default budgets must \
+                 never see a 429 from either layer"
+            );
+        }
     }
 }
