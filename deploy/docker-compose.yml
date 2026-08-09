@@ -192,6 +192,44 @@ services:
       sms-gateway:
         condition: service_healthy
 
+  # #69: the only thing standing between this deployment and unrecoverable
+  # data loss. Nightly pg_dump (custom format) + a small unencrypted
+  # manifest (postgres version, applied migration names, and a SHA-256
+  # *fingerprint* of SMS_HASH_PEPPER — never the pepper itself), pushed to
+  # an operator-supplied rclone remote. See
+  # docs/runbooks/backup-restore.md for the pg_dump-vs-WAL decision, the
+  # scripted restore drill (deploy/restore-drill.sh), and why the pepper
+  # is part of the recoverable state, not just the database.
+  #
+  # BACKUP_RCLONE_REMOTE has no default on purpose — a bare
+  # ${VAR:?...} means this service refuses to start rather than silently
+  # backing up to nowhere. deploy/secrets/rclone.conf holds the remote's
+  # own credentials (same gitignored-directory convention as
+  # secrets/console-private-key.pem — see deployment.md's "Secrets"
+  # section) and must exist before this service starts; an empty or
+  # missing rclone.conf is fine only when BACKUP_RCLONE_REMOTE is a bare
+  # local path (a drill, or a deliberately same-disk backup — see the
+  # runbook for why that's not sufficient on its own for production).
+  backup:
+    build:
+      context: ..
+      dockerfile: deploy/backup.Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
+      SMS_HASH_PEPPER: ${SMS_HASH_PEPPER:?}
+      BACKUP_RCLONE_REMOTE: ${BACKUP_RCLONE_REMOTE:?set to an rclone remote:path, e.g. s3:my-bucket/vsms-backups — see deploy/.env.example}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_CRON_SCHEDULE: ${BACKUP_CRON_SCHEDULE:-0 3 * * *}
+      BACKUP_RUN_ON_START: ${BACKUP_RUN_ON_START:-true}
+    volumes:
+      - ./secrets/rclone.conf:/root/.config/rclone/rclone.conf:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
