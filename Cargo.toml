@@ -31,10 +31,20 @@ exclude = ["examples/rust", "sdks/rust"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-# Raised from 1.85 in #139: the committed `Cargo.lock` does not actually build on
-# 1.85 (a transitive dependency needs 1.88), so the old value was a claim no CI job
-# ever checked. The Dockerfiles pin a concrete newer toolchain; this is the floor.
-rust-version = "1.88"
+# Raised to 1.95.0 for the cratestack 0.7.10 bump: cratestack/cratestack#480
+# declares that as cratestack's own MSRV workspace-wide, and this repo pins
+# the whole cratestack family exactly (see below) — so its MSRV is a floor
+# on ours by construction. Verified, not assumed: `cargo +1.95.0 check
+# --workspace --all-targets` was run by hand and is clean. Note this repo's
+# own CI (`.github/workflows/ci.yml`) uses `dtolnay/rust-toolchain@stable`
+# (always latest stable, not a pinned version), so nothing here yet asserts
+# the declared floor the way cratestack's own upstream CI now does with its
+# dedicated `msrv` job — this field is a correct, verified declaration, not
+# an enforced one. Previously raised from a stale 1.85 in #139 (the
+# committed `Cargo.lock` needed 1.88, and nothing checked that claim
+# either). The Dockerfiles already pinned `rust:1.95-bookworm` before this
+# change, so they needed no update.
+rust-version = "1.95.0"
 license = "MIT"
 repository = "https://github.com/vymalo/vsms"
 authors = ["Vymalo"]
@@ -67,8 +77,8 @@ sms-fake-orange = { path = "./crates/sms-fake-orange" }
 # exactly — CrateStack is pre-1.0 and shipped 23 releases in 11 weeks; the
 # whole family must move in lockstep or the generated code stops matching the
 # runtime it calls into.
-cratestack = { package = "cratestack-pg", version = "=0.7.8" }
-cratestack-codec-json = "=0.7.8"
+cratestack = { package = "cratestack-pg", version = "=0.7.10" }
+cratestack-codec-json = "=0.7.10"
 
 # OIDC provider. Pinned exactly, same reasoning as cratestack above — see
 # AGENTS.md. 0.3.2 fixed the `GrantType` serde bug that shaped early M1

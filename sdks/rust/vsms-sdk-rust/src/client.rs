@@ -16,8 +16,8 @@ use std::future::Future;
 use std::sync::Arc;
 
 use cratestack::client_rust::{
-    ClientConfig, ClientError, CratestackClient, HeaderPair, JsonCodec, RuntimeHeader,
-    RuntimeRequestWire, RuntimeResponseWire,
+    ClientConfig, ClientError, CratestackClient, JsonCodec, RuntimeHeader, RuntimeRequestWire,
+    RuntimeResponseWire,
 };
 use cratestack::{CoolError, CoolErrorResponse};
 use reqwest::StatusCode;
@@ -34,29 +34,6 @@ use crate::token::{PrivateKeyJwtConfig, PrivateKeyJwtTokenStore, TokenStore};
 const IDEMPOTENCY_REPLAYED_HEADER: &str = "idempotency-replayed";
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 const SEND_MESSAGE_PATH: &str = "/$procs/sendMessage";
-
-/// Forces `Accept: application/json`, overriding
-/// `JsonCodec::accept_header_value()`'s own default of `"application/json,
-/// application/cbor"`. Found live against `sms-gateway`, not guessed: that
-/// default Accept makes the *server's* content negotiation pick
-/// `application/cbor` (`cratestack-axum`'s `select_response_content_type`
-/// tries the server's own advertised codec list in order and returns
-/// whichever one the client's Accept header also names — cbor apparently
-/// sorts before json in that list), even though `crates/sms-api/src/
-/// router.rs` constructs its router with `JsonCodec` alone and has no CBOR
-/// encoder wired at all. The result is a `406 Not Acceptable` with body
-/// `"no encoder configured for response Content-Type application/cbor"` —
-/// reproduced directly with `curl -H 'Accept: application/json,
-/// application/cbor'` against a real gateway, and confirmed to disappear
-/// with `Accept: application/json` alone. `CratestackClient::build_header_
-/// map` applies extra per-call headers with `HeaderMap::insert` *after*
-/// the codec's own Accept header, which replaces rather than appends, so
-/// passing this as the `headers` argument on every call is enough to win
-/// — no change to `cratestack-client-rust` itself needed. Filed upstream as
-/// [cratestack#489](https://github.com/cratestack/cratestack/issues/489)
-/// rather than silently worked around forever; this const is the
-/// workaround until that lands.
-const JSON_ONLY_ACCEPT: &[HeaderPair<'static>] = &[("accept", "application/json")];
 
 /// Installs a `ring`-backed `rustls::crypto::CryptoProvider` if the
 /// process doesn't already have one, mirroring
@@ -170,10 +147,16 @@ impl VsmsClient {
             ))))
         })?;
 
-        let mut headers = vec![RuntimeHeader {
-            name: "accept".to_owned(),
-            value: "application/json".to_owned(),
-        }];
+        // No explicit `Accept` override needed as of cratestack 0.7.10:
+        // cratestack/cratestack#489 made server-side response negotiation
+        // codec-aware (`select_transport_response_content_type` now filters
+        // candidates through what the router's actual `HttpTransport` can
+        // encode), so a `JsonCodec`-only router like `sms-gateway`'s no
+        // longer 406s on the generated client's default `Accept:
+        // application/json, application/cbor` — it correctly falls back to
+        // JSON, the one codec it can actually produce. See `get_message`'s
+        // call below, which drops the equivalent per-call override too.
+        let mut headers = Vec::new();
         if let Some(key) = idempotency_key {
             headers.push(RuntimeHeader {
                 name: IDEMPOTENCY_KEY_HEADER.to_owned(),
@@ -209,8 +192,7 @@ impl VsmsClient {
     pub async fn get_message(&self, id: &str) -> Result<schema::Message, SdkError> {
         let messages = self.inner.messages();
         let id = id.to_owned();
-        self.refresh_once_on_401(|| messages.get(&id, JSON_ONLY_ACCEPT))
-            .await
+        self.refresh_once_on_401(|| messages.get(&id, &[])).await
     }
 
     /// Runs `make_call`; if it fails with `401 Unauthorized`, invalidates

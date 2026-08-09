@@ -390,7 +390,7 @@ mod tests {
         // Drain, not Dispatch: Dispatch has a real body now (#33) and is
         // covered by `dispatch`'s own tests instead.
         let outcome = tokio::time::timeout(
-            std::time::Duration::from_secs(60 * 60 * 24 * 365),
+            std::time::Duration::from_hours(8760),
             super::run(Role::Drain, unused_worker_context(), "test-worker"),
         )
         .await;

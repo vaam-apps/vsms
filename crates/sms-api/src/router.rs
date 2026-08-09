@@ -67,7 +67,7 @@ const PROVIDER_WRITE_ROUTES: &[RoutePermission] = &[RoutePermission {
 /// live HTTP test suites in `crates/sms-auth/tests/`) shares one source of
 /// truth instead of hand-copying the duration; `serve` still lets an
 /// operator override it via `--idempotency-ttl-secs`/`SMS_IDEMPOTENCY_TTL_SECS`.
-pub const DEFAULT_IDEMPOTENCY_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+pub const DEFAULT_IDEMPOTENCY_TTL: Duration = Duration::from_hours(24);
 
 /// #153: §4.5's own suggested per-principal ingress budget — burst 120,
 /// refilling 2 tokens/second.

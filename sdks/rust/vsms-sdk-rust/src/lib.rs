@@ -63,32 +63,39 @@
 //! comes close to the multi-GB, multi-minute figures `include_server_
 //! schema!` produced pre-0.5.0.
 //!
-//! # A real, unavoidable dependency-graph cost
+//! # Two workarounds this crate no longer needs, as of cratestack 0.7.10
 //!
-//! There is no published "client-only" cratestack facade (filed as
-//! [cratestack#490](https://github.com/cratestack/cratestack/issues/490)).
-//! `include_client_schema!` is only reachable through `cratestack-pg`
-//! (aliased `cratestack` — generated code emits absolute `::cratestack::*`
-//! paths, so the rename is mandatory), and `cratestack-pg` unconditionally
-//! depends on `cratestack-axum` — a full axum server framework —
-//! regardless of its own `postgres` feature flag (`pub use
-//! cratestack_axum::*` in its `lib.rs` is not feature-gated). This crate
-//! disables `default-features` and the `postgres` feature to drop `sqlx`
-//! at least, but `cratestack-axum` (and therefore `axum`/`tower`/`hyper`)
-//! rides along regardless — confirmed by inspecting the resolved
-//! dependency graph, not assumed. That is a real cost of depending on this
-//! SDK today, not a packaging oversight in this crate.
+//! Through cratestack 0.7.8, `include_client_schema!` was only reachable
+//! through `cratestack-pg` (aliased `cratestack` — generated code emits
+//! absolute `::cratestack::*` paths, so the rename is mandatory), which
+//! unconditionally depended on `cratestack-axum` — a full axum server
+//! framework — regardless of its own `postgres` feature flag (`pub use
+//! cratestack_axum::*` in its `lib.rs` was not feature-gated). Filed as
+//! [cratestack#490](https://github.com/cratestack/cratestack/issues/490)
+//! and fixed in
+//! [cratestack#492](https://github.com/cratestack/cratestack/pull/492):
+//! `cratestack-client`, a fourth, client-only facade that re-exports
+//! `include_client_schema!` and the generated Rust client runtime with
+//! `cratestack-axum` structurally absent from its dependency graph. This
+//! crate now depends on `cratestack-client` instead of `cratestack-pg` —
+//! confirmed via `cargo tree`: `axum`/`tower`/`hyper`/`cratestack-axum` are
+//! gone from this crate's own dependency tree entirely, not merely
+//! feature-gated off.
 //!
-//! Separately — also found live while building this crate, not by
-//! inspection — the generated client's default `Accept` header made a
-//! real, JSON-only `sms-gateway` return `406 Not Acceptable`
+//! Separately — also found live while building this crate against 0.7.8,
+//! not by inspection — the generated client's default `Accept` header made
+//! a real, JSON-only `sms-gateway` return `406 Not Acceptable`
 //! (`cratestack::client_rust::JsonCodec::accept_header_value()`
-//! unconditionally advertises `application/cbor` too, and the server picks
-//! it over `application/json` despite never having a CBOR encoder
+//! unconditionally advertises `application/cbor` too, and the server used
+//! to pick it over `application/json` despite never having a CBOR encoder
 //! registered). Filed as
-//! [cratestack#489](https://github.com/cratestack/cratestack/issues/489);
-//! [`client`]'s `JSON_ONLY_ACCEPT` is this crate's workaround until that
-//! lands upstream.
+//! [cratestack#489](https://github.com/cratestack/cratestack/issues/489)
+//! and fixed in
+//! [cratestack#491](https://github.com/cratestack/cratestack/pull/491):
+//! response content-type negotiation is now codec-aware, filtering
+//! candidates through what the router's actual transport can genuinely
+//! encode. [`client`] no longer overrides `Accept` on any call — removed
+//! along with the `JSON_ONLY_ACCEPT` const that used to force it.
 #![allow(clippy::ptr_arg)]
 #![allow(missing_docs)]
 

@@ -62,7 +62,7 @@ use crate::token_rate_limit::{enforce_token_client_rate_limit, TokenRateLimitSta
 /// short relative to `sms_auth::op::ROTATION_OVERLAP` (30 minutes), so a
 /// `rotate-signing-key` run against a live server takes effect promptly
 /// rather than needing a restart.
-pub const DEFAULT_KEY_REFRESH_INTERVAL: Duration = Duration::from_secs(60);
+pub const DEFAULT_KEY_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 
 #[derive(Clone)]
 pub struct OpState {
