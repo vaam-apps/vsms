@@ -192,11 +192,27 @@
 		# receive more than one status callback — e.g. an intermediate
 		# then a final state). 10 events/second leaves 2x headroom above
 		# that 5 TPS ceiling before throttling engages.
+		#
+		# Keyed on the bare source IP, NOT the composite
+		# `{remote.host}_{uri.path}` an earlier revision used. That
+		# composite silently disabled `ipv6_prefix`: the module's
+		# `applyNetworkPrefix` does `ip := net.ParseIP(key); if ip == nil
+		# { return key }`, and `2001:db8::1_/dlr/orange_cm` never parses
+		# as an IP, so masking was skipped and an IPv6 attacker could
+		# rotate addresses inside a /64 to mint a fresh bucket per
+		# request. Verified against the module source, not its docs.
+		#
+		# The cost is losing per-providerKey isolation, which buys
+		# nothing today: `orange_cm` is the only provider wired up
+		# (AGENTS.md), so the path dimension has exactly one value. When
+		# a second provider lands (#63), add a second zone rather than
+		# reinstating a composite key here — the IPv6 masking is the
+		# security property, the path split is only fairness.
 		zone dlr_per_source {
 			match {
 				path /dlr/*
 			}
-			key {http.request.remote.host}_{http.request.uri.path}
+			key {http.request.remote.host}
 			events {$RATE_LIMIT_DLR_PER_KEY_EVENTS:100}
 			window {$RATE_LIMIT_DLR_PER_KEY_WINDOW:10s}
 			ipv6_prefix 64

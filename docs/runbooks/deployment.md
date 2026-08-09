@@ -290,15 +290,22 @@ it — a request sent ~20s later got a fresh `401`, not a `429`.
   — the exact bypass this task named as a risk to check for, not assume
   away.
 
-**`/dlr/{providerKey}`, per-(IP, path) zone** (tested at a scaled-down
+**`/dlr/{providerKey}`, per-source-IP zone** (tested at a scaled-down
 `events=4, window=20s`; shipped default `100/10s`): the first 4 requests
 to `/dlr/orange_cm` got a real `400` from `sms-gateway` (malformed DLR
 payload, on purpose — proves the request reached the app), the 5th
-onward got `429`. A request to a *different* path,
-`/dlr/other_provider`, from the same source and in the same window, got
-through to the app (`404`, unknown provider) rather than being throttled
-— confirming the path component of the key genuinely isolates buckets
-per `providerKey`, not just per source IP.
+onward got `429`.
+
+That burst was originally run against a composite `(IP, path)` key, and
+the run also showed a different `providerKey` from the same source
+getting its own bucket. **That composite key has since been removed**, so
+the per-path isolation it demonstrated no longer applies and the sentence
+claiming it has been struck rather than left to mislead. The reason is in
+`deploy/Caddyfile`'s own comment on the zone: a composite key silently
+disables `ipv6_prefix`, because the module only masks a key that parses
+as a bare IP. Keeping IPv6 masking was judged the more valuable of the
+two, since only one provider is wired up today. The `429`-after-4 result
+above is unaffected — it was never a property of the path component.
 
 **Not verified by this burst test, and worth being explicit about:**
 the two aggregate/global zones (`token_global`, `dlr_global`) were
