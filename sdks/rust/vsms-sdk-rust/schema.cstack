@@ -1,0 +1,770 @@
+// SMS Gateway - CrateStack schema
+// Validated against cratestack 0.4.16: parses, emits Postgres DDL, and expands
+// through include_server_schema! (no scalar list fields - see architecture.md 2.0)
+
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+enum MessageClass {
+  otp
+  transactional
+  notification
+  marketing
+}
+
+enum MessageState {
+  accepted
+  queued
+  routed
+  submitted
+  delivered
+  uncertain
+  undelivered
+  failed
+  expired
+  rejected
+  cancelled
+}
+
+enum JobState {
+  pending
+  running
+  succeeded
+  failed
+  dead
+  cancelled
+}
+
+enum Encoding {
+  gsm7
+  ucs2
+}
+
+enum OperatorCode {
+  mtn
+  orange
+  camtel
+  nexttel
+  unknown
+}
+
+enum OperatorPrefixSource {
+  seed
+  manual
+  dlr_observed
+}
+
+enum OperatorPrefixConfidence {
+  verified
+  likely
+  contested
+  unverified
+}
+
+enum ProviderKind {
+  orange_cm_http
+  mtn_http
+  aggregator_http
+  smpp
+}
+
+enum ProviderState {
+  active
+  degraded
+  disabled
+  draining
+}
+
+enum DeliveryOutcome {
+  delivered
+  uncertain
+  failed
+  expired
+  rejected
+  unknown
+}
+
+enum AttemptState {
+  pending
+  delivering
+  succeeded
+  failed
+  dead
+}
+
+enum OptOutSource {
+  inbound_stop
+  admin
+  import
+  operator
+}
+
+// The client-authentication method a registration is bound to at /token
+// (OIDC Core 9). There is deliberately no client_secret_basic and no
+// client_secret_post: machine callers authenticate with private_key_jwt and
+// the admin console is a public client protected by PKCE, so no shared
+// secret exists anywhere in this system to leak, hash, or rotate.
+//
+// authkestra maps a *missing* token_endpoint_auth_method to "registration
+// predates the field", which accepts a secret from either transport and
+// refuses assertions outright. Making this column NOT NULL with no default
+// means every row names its method and that branch is unreachable.
+enum ClientAuthMethod {
+  private_key_jwt
+  none
+}
+
+mixin Timestamps {
+  createdAt DateTime @default(dbgenerated())
+  updatedAt DateTime @default(dbgenerated())
+}
+
+auth Principal {
+  sub String
+  kind String
+  role String
+  appId Cuid
+}
+
+model App {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  name String @length(min: 2, max: 64)
+  slug String @unique @regex("^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$")
+  description String?
+  defaultSenderIdId Cuid?
+  defaultSender SenderId? @relation(fields: [defaultSenderIdId], references: [id])
+  monthlyQuota Int
+  ipAllowlist String
+  transliterateToGsm7 Boolean
+  active Boolean @default(true)
+  deletedAt DateTime?
+
+  clients AppClient[] @relation(fields: [id], references: [appId])
+  messages Message[] @relation(fields: [id], references: [appId])
+
+  @@soft_delete
+  @@audit
+  @@paged
+  // hasRole('system') added here alongside the human-facing roles — found
+  // live, the same way as AppClient's missing create policy just above:
+  // §3.2's own sequence diagram has the *gateway itself* doing
+  // "client_id -> AppClient -> App (cached 60s)" as an internal step on
+  // every authenticated request, which is a system operation, not a human
+  // admin-console one. Without this, sendMessage's own App lookup — under
+  // the system context every other cross-cutting read in that procedure
+  // already uses — returns nothing, so a caller sees "unknown client" on
+  // every request from a client that unquestionably exists.
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('developer') || hasRole('system'))
+  @@allow("create", hasRole('owner') || hasRole('admin'))
+  @@allow("update", hasRole('owner') || hasRole('admin'))
+  @@allow("delete", hasRole('owner'))
+  @@emit(created, updated, deleted)
+}
+
+model AppClient {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  appId Cuid
+  app App @relation(fields: [appId], references: [id])
+  clientId String @unique @length(min: 8, max: 64)
+  label String @length(min: 1, max: 64)
+  scopes String
+  active Boolean @default(true)
+  lastUsedAt DateTime?
+  retiredAt DateTime?
+
+  @@audit
+  @@paged
+  // hasRole('system') added alongside the human roles — same root cause as
+  // App's own read policy just above: sendMessage's clientId -> AppClient
+  // lookup runs under a system context, and without this the row it just
+  // created under that same context is invisible to it a moment later.
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('developer') || hasRole('system'))
+  // No @@allow("create", ...) at all here previously — deny-by-default
+  // (§2.0) meant nobody, not even system, could ever write an AppClient
+  // row through the generated API. Found live: seeding one for #32's own
+  // test suite raised Forbidden("create policy denied this operation")
+  // under every role tried, owner included. hasRole('system') matches the
+  // convention every other model with a procedure-only write path already
+  // uses (OauthClient, ClientAssertion) — provisionAppClient (#23) is
+  // this model's intended sole writer, the same way SmsClientStore is
+  // OauthClient's.
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('owner') || hasRole('admin'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, updated, deleted)
+}
+
+model OauthClient {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  clientId String @unique @length(min: 8, max: 64)
+  appClientId Cuid?
+  appClient AppClient? @relation(fields: [appClientId], references: [id])
+  tokenEndpointAuthMethod ClientAuthMethod
+  jwks String?
+  grantTypes String
+  scopes String
+  redirectUris String
+  requirePkce Boolean
+  active Boolean @default(true)
+
+  @@audit
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+// The OP's RS256 signing keys. `id` doubles as the JWKS `kid`, which is why it
+// has to be a plain Cuid rather than anything structured.
+//
+// @sensitive redacts audit snapshots ONLY - it adds no serde attribute, so
+// this model's `hasRole('system')` read policy is the entire confidentiality
+// control over the private key. `system` is a synthetic internal role that no
+// token may ever carry; an AuthProvider that mints it for HTTP callers hands
+// them the key that signs every token. See 4.2.
+model OauthSigningKey {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  privateKeyPem String @sensitive
+  active Boolean @default(true)
+  expiresAt DateTime?
+
+  @@audit
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+// Spent private_key_jwt client-assertion `jti`s (RFC 7523 2.2), so a captured
+// assertion is single-use rather than a bearer credential good for its whole
+// lifetime.
+//
+// Insert-only, and that is the design: authkestra requires record_jti to be
+// atomic, and `create` + catching SQLSTATE 23505 on the @unique index is
+// exactly that. A read-then-write across two statements would be the TOCTOU
+// race this table exists to prevent - two concurrent replays would both
+// observe "not yet seen". Same reason upsert is unavailable here anyway
+// (2.0: no upsert when the @id has a default).
+//
+// No @@audit: one row per token request, and the audit row would carry no
+// information the row itself doesn't. Rows are reaped once expiresAt passes,
+// after which the assertion is refused on `exp` regardless.
+model ClientAssertion {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  jti String @unique @length(min: 1, max: 255)
+  expiresAt DateTime
+
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("delete", hasRole('system'))
+}
+
+model SenderId {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  value String @unique @length(min: 3, max: 11) @db_enforce
+  kind String
+  notes String?
+  active Boolean @default(false)
+
+  registrations SenderIdRegistration[] @relation(fields: [id], references: [senderIdId])
+
+  @@audit
+  @@allow("read", auth().kind == "user" || auth().kind == "app")
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@emit(created, updated)
+}
+
+model SenderIdRegistration {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  senderIdId Cuid
+  senderId SenderId @relation(fields: [senderIdId], references: [id])
+  providerId Cuid
+  provider Provider @relation(fields: [providerId], references: [id])
+  status String
+  submittedAt DateTime?
+  approvedAt DateTime?
+  reference String?
+  rejectionReason String?
+
+  // read: found live debugging #32's sendMessage — resolve_sender_id()'s
+  // approval lookup runs under Procedures::sys() (kind=App, role=system),
+  // which satisfied neither clause here, so a correctly-seeded approved
+  // registration was invisible to the procedure that needs to see it. Same
+  // root cause, same fix, as App and AppClient's own read policies above.
+  @@audit
+  @@allow("read", auth().kind == "user" || hasRole('system'))
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+}
+
+model Provider {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  key String @unique @regex("^[a-z][a-z0-9_]{2,31}$")
+  displayName String @length(min: 2, max: 64)
+  kind ProviderKind
+  state ProviderState @default('disabled')
+  config String
+  credentialRef String
+  maxTps Float
+  maxDailySubmissions Int
+  supportsDlr Boolean
+  supportsAlphaSender Boolean
+  supportsUcs2 Boolean
+  supportsConcat Boolean
+  costPerSegmentXaf Decimal
+  healthCheckedAt DateTime?
+  healthy Boolean @default(false)
+
+  routes Route[] @relation(fields: [id], references: [providerId])
+
+  // read: found live building #33's dispatch role — its routing pass
+  // (cheapest_active_provider, crates/sms-worker/src/claim.rs) runs under
+  // a system context, same root cause as App/AppClient/SenderIdRegistration/
+  // OperatorPrefixRule's own read policies (see their comments for how
+  // this pattern keeps recurring: any model an internal procedure or
+  // worker role reads needs hasRole('system') alongside the human roles).
+  @@audit
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
+  @@allow("create", hasRole('owner') || hasRole('admin'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("delete", hasRole('owner'))
+  @@emit(created, updated, deleted)
+}
+
+model Route {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  name String @length(min: 2, max: 64)
+  priority Int @range(min: 0, max: 1000)
+  weight Int @range(min: 0, max: 1000)
+  enabled Boolean
+  matchOperator OperatorCode?
+  matchClass MessageClass?
+  matchAppId Cuid?
+  matchPrefix String?
+  providerId Cuid
+  provider Provider @relation(fields: [providerId], references: [id])
+  failoverRouteId Cuid?
+
+  @@audit
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
+  @@allow("create", hasRole('owner') || hasRole('admin'))
+  @@allow("update", hasRole('owner') || hasRole('admin'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, updated, deleted)
+}
+
+// Feeds sms_msisdn::OperatorPrefixTable, which ships with zero built-in rows
+// on purpose (see §3.4) — prefix routing must never be load-bearing, so the
+// table lives here where operations can correct it without a deploy. Seeded
+// from best current evidence in 0002_bootstrap; corrected over time either by
+// an admin (source=manual) or automatically from DeliveryReceipt.networkCode
+// (source=dlr_observed, which is what lastObservedAt tracks).
+//
+// Named *Rule, not *Prefix: pluralize() is naive (ends_with('s') ? +"es" :
+// +"s") and does not know that "prefix" ends in x, so "OperatorPrefix" would
+// table as operator_prefixs. Same trap that made WebhookAttempt not
+// WebhookDelivery.
+model OperatorPrefixRule {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  // @db_enforce backs @length with a real CHECK but is a silent no-op on
+  // @regex — verified by probe, see §2.0. So the format guarantee for this
+  // column is hand-written in 0002_bootstrap instead, not the attribute
+  // below; @regex here is app-layer validation only.
+  prefix String @unique @regex("^[0-9]{1,4}$")
+  operator OperatorCode
+  source OperatorPrefixSource @default('seed')
+  confidence OperatorPrefixConfidence @default('unverified')
+  lastObservedAt DateTime?
+  notes String?
+  active Boolean @default(true)
+
+  // read: found live debugging #32's sendMessage — classify_operator()'s
+  // table-rebuild query runs under Procedures::sys() (kind=App,
+  // role=system), which satisfied none of the human-role clauses below, so
+  // every send silently classified as `unknown` instead of querying the
+  // seeded rows. Same root cause, same fix, as SenderIdRegistration's own
+  // read policy above.
+  @@audit
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
+  @@allow("create", hasRole('owner') || hasRole('admin'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('system'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, updated, deleted)
+}
+
+model Message {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  appId Cuid
+  app App @relation(fields: [appId], references: [id])
+
+  clientRef String?
+  idempotencyKey String?
+
+  msisdn String @pii @length(min: 12, max: 15)
+  msisdnHash String
+  operator OperatorCode
+
+  senderIdValue String @length(min: 3, max: 11)
+  class MessageClass
+  priority Int @range(min: 0, max: 1000)
+
+  body String? @sensitive
+  bodyHash String
+  bodyLength Int
+  encoding Encoding
+  segments Int @range(min: 1, max: 10)
+
+  state MessageState @default('accepted')
+  stateReason String?
+  routeId Cuid?
+  providerId Cuid?
+  providerMessageRef String?
+  providerMessageRefAlt String?
+
+  attempts Int @default(0)
+  maxAttempts Int
+  leaseOwner String?
+  leaseUntil DateTime?
+  scheduledAt DateTime?
+  expiresAt DateTime
+  submittedAt DateTime?
+  finalizedAt DateTime?
+
+  costXaf Decimal @default(0)
+  version Int @version
+
+  parts MessagePart[] @relation(fields: [id], references: [messageId])
+  receipts DeliveryReceipt[] @relation(fields: [id], references: [messageId])
+
+  // list/detail: found live running #29's own claim_live_postgres.rs
+  // suite for the first time (#33) — it had never been run against a real
+  // database before. Neither clause admitted a system context (kind="app",
+  // appId=""), so dispatch's own candidates() query — the one `find_many`
+  // the entire claim loop depends on — silently returned zero rows on
+  // every call. Same root cause as App/AppClient/SenderIdRegistration/
+  // OperatorPrefixRule/Provider's own read policies, just on the model
+  // the claim loop actually claims, which is why it was never caught by
+  // any test that only checked those models: nothing exercised dispatch's
+  // own query end to end against Postgres until now.
+  @@audit
+  @@paged
+  @@retain(days: 90)
+  @@allow("list", auth().kind == "user" || appId == auth().appId || hasRole('system'))
+  @@allow("detail", auth().kind == "user" || appId == auth().appId || hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+  @@emit(created, updated)
+}
+
+model MessagePart {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  messageId Cuid
+  message Message @relation(fields: [messageId], references: [id])
+  partIndex Int @range(min: 0, max: 9)
+  udhRef Int?
+  providerPartRef String?
+  state MessageState @default('queued')
+  submittedAt DateTime?
+  deliveredAt DateTime?
+
+  @@paged
+  @@allow("list", auth().kind == "user")
+  @@allow("detail", auth().kind == "user")
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+model DeliveryReceipt {
+  id Cuid @id @default(dbgenerated())
+  messageId Cuid
+  message Message @relation(fields: [messageId], references: [id])
+  providerId Cuid
+  providerMessageRef String
+  outcome DeliveryOutcome
+  rawStatus String
+  errorCode String?
+  networkCode OperatorCode
+  receivedAt DateTime @default(dbgenerated())
+  occurredAt DateTime?
+  rawPayload String
+
+  @@audit
+  @@paged
+  @@retain(days: 90)
+  // list/detail: found live via the chaos suite's own scripted
+  // `a_duplicate_delivered_dlr_is_idempotent` test — the seventh instance
+  // of the exact same policy-gap shape (App, AppClient,
+  // SenderIdRegistration, OperatorPrefixRule, Provider, Job before it):
+  // neither clause admitted a system context (kind="app", role="system"),
+  // so a system-context read of DeliveryReceipt — the shape any future
+  // reconciliation job, or a test proving `dlr::ingest` actually wrote a
+  // receipt, needs — silently returned zero rows instead of the rows that
+  // really exist.
+  @@allow("list", auth().kind == "user" || hasRole('system'))
+  @@allow("detail", auth().kind == "user" || hasRole('system'))
+  @@allow("create", hasRole('system'))
+}
+
+model Job {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  kind String @length(min: 2, max: 64)
+  dedupeKey String?
+  payload String
+  state JobState @default('pending')
+  priority Int @range(min: 0, max: 1000)
+  runAt DateTime
+  leaseOwner String?
+  leaseUntil DateTime?
+  attempts Int @default(0)
+  maxAttempts Int
+  lastError String?
+  startedAt DateTime?
+  finishedAt DateTime?
+  version Int @version
+
+  @@paged
+  @@retain(days: 14)
+  @@allow("list", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("detail", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+model OptOut {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  msisdnHash String @unique
+  msisdn String @pii
+  source OptOutSource
+  scope String
+  reason String?
+  optedOutAt DateTime
+
+  @@audit
+  @@paged
+  @@allow("read", auth().kind == "user" || auth().kind == "app")
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, deleted)
+}
+
+model WebhookEndpoint {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  appId Cuid
+  app App @relation(fields: [appId], references: [id])
+  url String @uri
+  eventTypes String
+  secret String
+  prevSecret String?
+  secretRotatedAt DateTime?
+  maskRecipient Boolean
+  active Boolean @default(true)
+  maxAttempts Int
+  circuitOpenUntil DateTime?
+  consecutiveFailures Int @default(0)
+
+  attempts WebhookAttempt[] @relation(fields: [id], references: [endpointId])
+
+  @@audit
+  @@allow("read", auth().kind == "user")
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, updated, deleted)
+}
+
+model WebhookAttempt {
+  id Cuid @id @default(dbgenerated())
+  endpointId Cuid
+  endpoint WebhookEndpoint @relation(fields: [endpointId], references: [id])
+  sourceEventId Uuid
+  aggregateId Cuid
+  eventType String
+  payload String
+  state AttemptState @default('pending')
+  attempts Int @default(0)
+  leaseOwner String?
+  leaseUntil DateTime?
+  nextAttemptAt DateTime?
+  lastStatusCode Int?
+  lastError String?
+  lastAttemptAt DateTime?
+  deliveredAt DateTime?
+  version Int @version
+
+  @@paged
+  @@retain(days: 30)
+  @@allow("list", auth().kind == "user" || endpoint.appId == auth().appId)
+  @@allow("detail", auth().kind == "user" || endpoint.appId == auth().appId)
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+model User {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  subject String @unique
+  email String @unique @email
+  displayName String @length(min: 1, max: 128)
+  roleKey String
+  role Role @relation(fields: [roleKey], references: [key])
+  active Boolean @default(true)
+  lastLoginAt DateTime?
+  mfaEnrolled Boolean @default(false)
+  deletedAt DateTime?
+
+  @@soft_delete
+  @@audit
+  @@paged
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('auditor'))
+  @@allow("create", hasRole('owner') || hasRole('admin'))
+  @@allow("update", hasRole('owner') || hasRole('admin'))
+  @@allow("delete", hasRole('owner'))
+  @@emit(created, updated, deleted)
+}
+
+model Role {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  key String @unique @regex("^[a-z][a-z0-9_]{2,31}$")
+  label String @length(min: 2, max: 64)
+  description String?
+  builtin Boolean @default(false)
+  permissions String
+
+  @@audit
+  @@allow("read", auth().kind == "user")
+  @@allow("create", hasRole('owner'))
+  @@allow("update", hasRole('owner'))
+  @@allow("delete", hasRole('owner'))
+  @@emit(created, updated, deleted)
+}
+
+type SendMessageInput {
+  to String
+  body String
+  senderId String?
+  class MessageClass?
+  clientRef String?
+  scheduledAt DateTime?
+  validityMinutes Int?
+}
+
+type SendMessageResult {
+  messageId Cuid
+  state MessageState
+  encoding Encoding
+  segments Int
+  operator OperatorCode
+  estimatedCostXaf Decimal
+}
+
+type PreviewInput {
+  body String
+  to String?
+}
+
+type PreviewResult {
+  encoding Encoding
+  segments Int
+  length Int
+  perSegment Int
+  offending String[]
+  suggestion String?
+  operator OperatorCode
+  normalizedTo String?
+}
+
+type ProvisionClientInput {
+  appId Cuid
+  label String
+  scopes String[]
+}
+
+// No clientSecret: #6 settled the auth shape as private_key_jwt-only, so
+// there is no shared secret anywhere in this system (see OauthClient's own
+// comment). provisionAppClient generates the client's RSA keypair
+// server-side, persists only the derived public JWK onto OauthClient.jwks,
+// and hands back the private key here exactly once — this is the
+// asymmetric analogue of "secret shown once." Nothing after this response
+// can ever recover it; a client that loses it needs a fresh provisioning
+// call (#23's PR description covers retirement/rotation scope).
+type ProvisionClientResult {
+  clientId String
+  privateKeyPem String
+}
+
+type CancelInput {
+  messageId Cuid
+  reason String?
+}
+
+type EndpointInput {
+  endpointId Cuid
+}
+
+type EnqueueJobInput {
+  kind String
+  payload String
+  dedupeKey String?
+  runAt DateTime?
+}
+
+mutation procedure sendMessage(args: SendMessageInput): SendMessageResult
+  @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @isolation("read_committed")
+
+procedure previewMessage(args: PreviewInput): PreviewResult
+  @allow(auth() != null)
+
+procedure listMessagesPage(appId: Cuid?, state: MessageState?, limit: Int?, offset: Int?): Page<Message>
+  @allow(auth() != null)
+
+mutation procedure cancelMessage(args: CancelInput): Message
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @authorize(Message, detail, args.messageId)
+  @isolation("serializable")
+
+mutation procedure enqueueJob(args: EnqueueJobInput): Job
+  @allow(hasRole('owner') || hasRole('admin'))
+  @isolation("read_committed")
+
+mutation procedure provisionAppClient(args: ProvisionClientInput): ProvisionClientResult
+  @allow(hasRole('owner') || hasRole('admin'))
+  @isolation("serializable")
+
+mutation procedure rotateWebhookSecret(args: EndpointInput): WebhookEndpoint
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @isolation("serializable")

@@ -3,7 +3,7 @@ name = "vsms-example-send"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Runnable example: authenticate to vsms with private_key_jwt and send a message over real HTTP."
+description = "Runnable example: authenticate to vsms with private_key_jwt and send a message over real HTTP, using vsms-sdk-rust."
 
 [[bin]]
 name = "vsms-example-send"
@@ -12,15 +12,11 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
-# `rust_crypto`, not the default `aws_lc_rs` backend — same choice vsms
-# itself makes for the identical reason (AGENTS.md's aws-lc-rs section):
-# one fewer crypto backend in the graph. `use_pem` is not in
-# jsonwebtoken's own `default` feature set once `default-features = false`
-# is set, so it has to be named explicitly — it's what makes
-# `EncodingKey::from_rsa_pem` available below.
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-uuid = { version = "1", features = ["v4"] }
+# The one dependency that used to be five (jsonwebtoken, reqwest, serde,
+# serde_json, uuid) plus ~150 lines of hand-rolled token-exchange code —
+# see #171. Path dependency, not a registry one: `sdks/rust/vsms-sdk-rust`
+# is a separate Cargo workspace in the same monorepo (same shape as this
+# one), not yet published. A real third-party integrator would instead
+# depend on the published `vsms-sdk-rust` crates.io version.
+vsms-sdk-rust = { path = "../../../sdks/rust/vsms-sdk-rust" }
