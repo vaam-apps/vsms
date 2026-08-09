@@ -231,7 +231,15 @@ services:
         condition: service_completed_successfully
 
   caddy:
-    image: caddy:2-alpine
+    # Not stock caddy:2-alpine — the Caddyfile uses `rate_limit` (#156),
+    # a third-party module absent from the official image, so Caddy would
+    # fail to parse its own config at startup and the edge would never come
+    # up. deploy/caddy.Dockerfile is an xcaddy build adding it, pinned to a
+    # specific upstream commit (no tagged release carries the `ipv6_prefix`
+    # option this config needs).
+    build:
+      context: ..
+      dockerfile: deploy/caddy.Dockerfile
     restart: unless-stopped
     environment:
       CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?}
