@@ -92,8 +92,9 @@ question §10 says needs a lawyer.
 Three scripts, all under `deploy/`, all shipped inside
 `deploy/backup.Dockerfile` (`postgres:16-alpine` + `rclone` + `openssl` —
 the exact `pg_dump`/`pg_restore` this stack's own Postgres major version
-needs, same reasoning `deploy/migrate.Dockerfile` already uses for
-`psql`):
+needs; unlike `app/sms-migrate`, this one has no substitute for a real
+`postgres` client toolchain, so it stays on that base image rather than
+distroless):
 
 - **`backup.sh`** — `pg_dump --format=custom` (pg_restore's own format:
   built-in compression, selective/parallel restore — a plain SQL dump

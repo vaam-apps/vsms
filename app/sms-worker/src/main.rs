@@ -38,6 +38,14 @@ const HEALTH_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 /// to avoid.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
+/// How old [`DEFAULT_HEALTH_FILE`]'s mtime may be before
+/// [`healthcheck_command`] reports unhealthy. Matches the shell-based check
+/// this replaced (`app/sms-worker/Dockerfile`'s old `HEALTHCHECK`,
+/// `deploy/charts/vsms/values.yaml`'s worker exec probes) — well above
+/// [`HEALTH_HEARTBEAT_INTERVAL`] so a couple of missed ticks under load
+/// don't false-positive a restart.
+const HEALTH_STALE_THRESHOLD: Duration = Duration::from_secs(90);
+
 /// `sms-worker --roles dispatch,drain,scheduler,hooks,jobs` — see §9.2's
 /// deployment diagram for why a real deployment runs two of these with
 /// different `--roles` values.
@@ -216,6 +224,27 @@ fn spawn_heartbeat(path: std::path::PathBuf, shutdown: CancellationToken) {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Must run before anything constructs an HTTP client — see
+    // `install_default_crypto_provider`'s own doc (app/sms-gateway/src/
+    // main.rs carries the identical function, and the identical reasoning)
+    // for why.
+    install_default_crypto_provider();
+
+    // Deliberately checked before `Cli::parse()`, not folded into `Cli` as
+    // a `#[command(subcommand)]`: `Cli` is a flat, no-subcommand struct
+    // today, and every existing invocation of this binary — the design
+    // doc's own worked examples, `deploy/docker-compose.yml`, the Helm
+    // chart — runs it as plain `sms-worker --roles ... `, with no
+    // subcommand at all. Restructuring `Cli` around a subcommand just to
+    // add this one exec-form health check would change that invocation
+    // shape for everyone. Checked ahead of `Cli::parse()` because `Cli`
+    // has no positional arguments, so `sms-worker healthcheck` would
+    // otherwise fail clap's own "unexpected argument" parsing before this
+    // branch ever got a chance to run.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        return healthcheck_command();
+    }
+
     // Variables already in the environment win; dotenvy never overwrites.
     let _ = dotenvy::dotenv();
 
@@ -363,6 +392,46 @@ fn parse_roles(raw: &[String]) -> Result<Vec<Role>> {
         roles.push(role);
     }
     Ok(roles)
+}
+
+/// Installs `ring` as the process-wide default `rustls` `CryptoProvider` —
+/// see `app/sms-gateway/src/main.rs`'s identical function for the full
+/// reasoning (`authkestra-*`'s `rustls-no-provider` feature, the musl
+/// build it unblocks, why `ring` and not `aws-lc-rs`). `.ok()`, not
+/// `.expect(...)`, for the same reason as that copy: the only failure mode
+/// is "already installed," never a reason to abort startup.
+fn install_default_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// The `sms-worker healthcheck` exec-form check — see `main`'s own comment
+/// for why this is intercepted ahead of `Cli::parse()` rather than a real
+/// clap subcommand, and `app/sms-worker/Dockerfile`'s header for why an
+/// exec-form check exists at all now (a distroless `static` runtime image
+/// has no `/bin/sh`, so the old `sh -c 'test -f ... && [ ... -lt 90 ]'`
+/// `HEALTHCHECK`/exec-probe command can no longer run). Reproduces that
+/// script's exact check in `std`-only Rust: [`DEFAULT_HEALTH_FILE`] (or
+/// `SMS_WORKER_HEALTH_FILE`, same override the heartbeat task itself
+/// honours) must exist and have been touched within
+/// [`HEALTH_STALE_THRESHOLD`].
+fn healthcheck_command() -> Result<()> {
+    let path =
+        std::env::var("SMS_WORKER_HEALTH_FILE").unwrap_or_else(|_| DEFAULT_HEALTH_FILE.to_owned());
+    let modified = std::fs::metadata(&path)
+        .with_context(|| format!("reading health file {path}"))?
+        .modified()
+        .with_context(|| format!("reading mtime of health file {path}"))?;
+    let age = modified
+        .elapsed()
+        .with_context(|| format!("health file {path} has a mtime in the future"))?;
+    if age < HEALTH_STALE_THRESHOLD {
+        Ok(())
+    } else {
+        bail!(
+            "unhealthy: health file {path} was last touched {age:?} ago, over the \
+             {HEALTH_STALE_THRESHOLD:?} threshold"
+        )
+    }
 }
 
 /// Resolve on SIGINT *or* SIGTERM so in-flight work finishes.

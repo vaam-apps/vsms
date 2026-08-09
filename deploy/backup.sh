@@ -48,13 +48,13 @@ pg_dump "${DATABASE_URL}" --format=custom --file="${dump_path}"
 
 pepper_fingerprint=$(printf '%s' "${SMS_HASH_PEPPER}" | sha256sum | cut -d' ' -f1)
 
-# schema_migrations is deploy/migrate.sql's own bookkeeping table (not
-# part of the committed schema/migrations tree — see that file's header).
+# schema_migrations is app/sms-migrate's own bookkeeping table (not part
+# of the committed schema/migrations tree — see that binary's module doc).
 # Recording which migrations this dump was taken under lets a restore
 # operator sanity-check they're restoring into a database that has run at
 # least the same migrations, not fewer. A database that predates
-# deploy/migrate.sql (or was migrated by hand) won't have this table;
-# that's an empty string here, not a failure.
+# app/sms-migrate (or was migrated by hand) won't have this table; that's
+# an empty string here, not a failure.
 applied_migrations=$(psql "${DATABASE_URL}" -Atc \
   "SELECT coalesce(string_agg(name, ',' ORDER BY name), '') FROM public.schema_migrations" \
   2>/dev/null || echo "")

@@ -14,6 +14,7 @@ members = [
   "app/sms-gateway",
   "app/sms-worker",
   "app/sms-fake-orange",
+  "app/sms-migrate",
 ]
 # examples/rust is its own, separate [workspace] (see its own Cargo.toml
 # and examples/README.md) — an integrator's copy-pasteable client, kept
@@ -83,22 +84,38 @@ cratestack-codec-json = "=0.7.10"
 # OIDC provider. Pinned exactly, same reasoning as cratestack above — see
 # AGENTS.md. 0.3.2 fixed the `GrantType` serde bug that shaped early M1
 # design (#6): don't drop below it.
-authkestra-op = "=0.3.3"
+#
+# `default-features = false, features = ["rustls-no-provider"]`: authkestra's
+# own reqwest 0.13 dependency otherwise defaults to `aws-lc-rs`, the only
+# path by which that crate ever entered this tree (AGENTS.md's "aws-lc-rs
+# enters this tree from authkestra alone" section — verified via
+# `cargo tree -e features -i rustls`, not assumed). `rustls-no-provider`
+# compiles neither `aws-lc-rs` nor `ring` into authkestra's own reqwest;
+# the process supplies one instead, via the explicit
+# `rustls::crypto::ring::default_provider().install_default()` call each
+# binary's `main()` makes before constructing any HTTP client — see that
+# call site's own comment for why ordering there is load-bearing, and
+# AGENTS.md for the live-TLS test that proves this path actually works
+# rather than panicking at the first outbound call.
+authkestra-op = { version = "=0.3.3", default-features = false, features = ["rustls-no-provider"] }
 # Underpins authkestra-op (TokenManager, Engine, the generic MemoryStore<T>
 # op.rs uses for the authorization-code/refresh-token/device-code slots
 # this deployment doesn't populate — see op.rs's own doc). Not used
 # directly by application code beyond that; pinned because the whole
-# authkestra family moves in lockstep.
-authkestra-engine = "=0.3.3"
+# authkestra family moves in lockstep. Same `rustls-no-provider` reasoning
+# as authkestra-op above.
+authkestra-engine = { version = "=0.3.3", default-features = false, features = ["rustls-no-provider"] }
 # JWKS-backed token validation for the real AuthProvider (#21). Same pin
-# discipline as authkestra-op — the whole family moves in lockstep.
-authkestra-resource = "=0.3.3"
+# discipline as authkestra-op — the whole family moves in lockstep. Same
+# `rustls-no-provider` reasoning as authkestra-op above.
+authkestra-resource = { version = "=0.3.3", default-features = false, features = ["rustls-no-provider"] }
 # Wraps authkestra-op's handler functions into axum routes for the OP
 # itself (#20). Only the `op` feature: this deployment never uses the
 # `session`/`resource` extractors this crate also offers, since #21's
 # AuthProvider validates tokens directly through authkestra-resource
-# instead of authkestra-axum's own session/guard machinery.
-authkestra-axum = { version = "=0.3.3", features = ["op"] }
+# instead of authkestra-axum's own session/guard machinery. Same
+# `rustls-no-provider` reasoning as authkestra-op above.
+authkestra-axum = { version = "=0.3.3", default-features = false, features = ["op", "rustls-no-provider"] }
 # RSA signing keys for the OP (#20) — same rsa/rand versions authkestra-op
 # itself resolves to (verified against Cargo.lock), so this doesn't grow a
 # second copy of either crate's dependency tree.
@@ -141,6 +158,19 @@ form_urlencoded = "1"
 # this dependency tree (cratestack-sqlx, authkestra-engine both resolve to
 # hyper-rustls), so this doesn't introduce a second TLS stack to build.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Named directly (not just pulled in transitively) so app/sms-gateway's and
+# app/sms-worker's own main.rs can call
+# `rustls::crypto::ring::default_provider().install_default()` before
+# constructing any HTTP client — see authkestra-op's own comment above for
+# why that call has to exist at all now that `rustls-no-provider` leaves
+# authkestra's reqwest with no baked-in crypto backend. `default-features =
+# false` plus `std`: only the `ring` backend is wanted, not the `aws-lc-rs`
+# feature this crate also offers (which would reintroduce the exact
+# dependency this change removes) or the `logging`/`tls12` extras this
+# workspace has no use for. Version matches what's already resolved
+# workspace-wide (0.23.x, verified against Cargo.lock) — this doesn't fork
+# the rustls tree, just names the one version already there.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

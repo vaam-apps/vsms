@@ -84,12 +84,13 @@ docker compose logs migrate
 ```
 
 Expect `migrations up to date` as the last line. `migrate` is a one-shot
-container (see `deploy/migrate.sql`'s own header) — it applies
-`schema/migrations/postgres/{0001_init,0002_bootstrap}` exactly once each,
-tracked in a `schema_migrations` table this deploy path owns, under a
-Postgres advisory lock. It never regenerates anything; the two `up.sql`
-files it runs are copied verbatim from what's committed. If it exits
-non-zero, nothing downstream is safe to start — fix this before continuing.
+container (see `app/sms-migrate/src/main.rs`'s own module doc) — it
+applies `schema/migrations/postgres/{0001_init,0002_bootstrap}` exactly
+once each, tracked in a `schema_migrations` table this deploy path owns,
+under a Postgres advisory lock. It never regenerates anything; the two
+`up.sql` files it runs are embedded verbatim into the binary at compile
+time (`include_str!`), from what's committed. If it exits non-zero,
+nothing downstream is safe to start — fix this before continuing.
 
 ## 3. Create the first OP signing key — before sms-gateway's first start
 
@@ -362,9 +363,10 @@ cannot reach.
 
 Two instances of `migrate` starting at once (a redeploy racing a still-up
 previous stack) serialise on a Postgres advisory lock
-(`deploy/migrate.sql`) rather than double-applying — see that file's own
-header for why a `schema_migrations` tracking table exists only in this
-deploy path, not in the committed `schema/migrations/` tree.
+(`app/sms-migrate/src/main.rs`) rather than double-applying — see that
+binary's own module doc for why a `schema_migrations` tracking table
+exists only in this deploy path, not in the committed
+`schema/migrations/` tree.
 
 ## Secrets — the decision, and what it doesn't protect against
 
@@ -486,7 +488,7 @@ can never become ready without these steps having already run.
 
 `migrate` (weight `-20`) and `seedProvider` (weight `-15`) are both
 `pre-install,pre-upgrade` hooks — safe on every deploy because both are
-genuinely idempotent: `migrate` via `deploy/migrate.sql`'s own
+genuinely idempotent: `migrate` via `app/sms-migrate`'s own
 advisory-lock-guarded `schema_migrations` tracking table, `seedProvider`
 via `sms-gateway seed-provider`'s own `create` + catch-`23505` dedupe (see
 step 4 above). `rotateSigningKey` (weight `-10`, last in the chain) is

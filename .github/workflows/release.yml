@@ -124,11 +124,12 @@ jobs:
           # pre-upgrade Helm hook — see that chart's own values.yaml)
           # needs a prebuilt image to pull from a registry; Kubernetes has
           # no `build:` context the way docker-compose.yml does. This
-          # image already existed (deploy/migrate.Dockerfile, from #143)
-          # but was never published anywhere before this PR — the compose
-          # path always builds it locally from source.
+          # image already existed (deploy/migrate.Dockerfile, from #143;
+          # rebuilt as the small Rust binary app/sms-migrate later — see
+          # AGENTS.md) but was never published anywhere before #145 — the
+          # compose path always builds it locally from source.
           - image: migrate
-            dockerfile: deploy/migrate.Dockerfile
+            dockerfile: app/sms-migrate/Dockerfile
 
     steps:
       - uses: actions/checkout@v4

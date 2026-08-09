@@ -7,36 +7,33 @@
 # tree has to be in the build context.
 
 # --- builder -----------------------------------------------------------
-# Debian glibc, matching the debian:bookworm-slim runtime below. A static
-# musl/scratch build is deliberately not attempted here — AGENTS.md records
-# that the rustls-no-provider path needed for it panics at
-# `reqwest::Client::new()` unless the application installs a
-# `CryptoProvider` in `main` first, and that runtime path is unverified.
-# Shipping a glibc image that works beats shipping a musl one that panics
-# on its first outbound call.
-#
-# NOT pinned to Cargo.toml's own declared `rust-version = "1.85"` — tried
-# that first, and the build fails: `jsonwebtoken@11.0.0` (via `time`)
-# actually requires rustc 1.88 through the committed Cargo.lock, a real gap
-# between the declared MSRV floor and what the lockfile needs that
-# `ci.yml`'s own `dtolnay/rust-toolchain@stable` (always latest, currently
-# 1.95) never surfaces because it never builds at exactly 1.85. Pinned
-# instead to the same stable line CI actually builds with, so this image
-# matches what's actually proven to compile rather than a stale MSRV
-# claim. Worth a follow-up to correct `rust-version` in the workspace
-# Cargo.toml — not done here, out of scope for a deploy PR.
-FROM rust:1.95-bookworm AS builder
+# Alpine, not Debian: Alpine's own libc *is* musl, so `cargo build` on this
+# image produces a musl binary natively — no cross-compilation, no
+# `rustup target add`, no cross-linker. A static musl/scratch build was
+# ruled out before (an earlier revision of this file cited AGENTS.md:
+# `rustls-no-provider` panics at `reqwest::Client::new()` unless the
+# application installs a `CryptoProvider` in `main` first, and that runtime
+# path was unverified) — both are now done: `authkestra-op`/`-engine`/
+# `-resource`/`-axum` are pinned with `rustls-no-provider` (root
+# `Cargo.toml`), `main.rs`'s `install_default_crypto_provider` installs
+# `ring` before anything constructs an HTTP client, and
+# `tests/tls_no_provider_live.rs` proves that ordering against a real TLS
+# handshake, not just a mock. Same pin as the workspace's declared MSRV
+# floor (`rust-version = "1.95.0"`, root `Cargo.toml`) and the exact
+# release-line CI's `dtolnay/rust-toolchain@stable` currently resolves to;
+# `3.22` pinned rather than the floating `-alpine` tag so this build
+# doesn't silently pick up a new Alpine base (and therefore a new musl/gcc)
+# on an unrelated day.
+FROM rust:1.95-alpine3.22 AS builder
 
-# cmake + pkg-config: aws-lc-sys — pulled in transitively by authkestra's
-# reqwest 0.13 default features (AGENTS.md: "aws-lc-rs enters this tree
-# from authkestra alone") — builds AWS-LC from source and needs both.
-# Confirmed against Cargo.lock: aws-lc-sys's own dependency list is
-# cc, cmake, dunce, fs_extra, pkg-config — no libclang/bindgen involved, so
-# no extra headers beyond a C toolchain (already in this base image).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      cmake \
-      pkg-config \
-    && rm -rf /var/lib/apt/lists/*
+# musl-dev + build-base (gcc, make, ...): `ring` (the sole crypto provider
+# left in this graph now that `aws-lc-rs` is gone — see the pin comment
+# above) needs a C compiler and libc headers to build its assembly/C
+# backend. Nothing here needs cmake or pkg-config any more: those existed
+# solely for `aws-lc-sys`, which no longer appears in the dependency graph
+# at all (`cargo tree -i aws-lc-rs` reports no match — verified, not
+# assumed).
+RUN apk add --no-cache musl-dev build-base
 
 WORKDIR /app
 COPY . .
@@ -52,29 +49,32 @@ COPY . .
 # rebuild after a source-only change recompiles what changed, not the
 # whole dependency tree. Neither is visible in the final image — the cache
 # mount's contents never become a layer — so the binary is copied out to a
-# real path before the RUN ends.
-RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry \
-    --mount=type=cache,target=/app/target,id=cargo-target-workspace \
+# real path before the RUN ends. `-musl` in both cache ids, distinct from
+# any glibc-targeted cache that might exist on the same builder host, since
+# the two produce incompatible `target/` artifacts.
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-musl \
+    --mount=type=cache,target=/app/target,id=cargo-target-workspace-musl \
     cargo build --release --locked -p sms-gateway \
     && cp target/release/sms-gateway /tmp/sms-gateway
 
 # --- runtime -------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
-
-# ca-certificates: every outbound TLS call this binary makes (Orange's API,
-# and any future provider) needs a trust root; the builder stage's own Rust
-# toolchain does not ship one into the release binary.
-# curl: backs the HEALTHCHECK below.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates \
-      curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin sms-gateway
+# distroless `static`, not `cc` or `base`: the builder stage above produces
+# a fully static musl binary (musl targets default to `crt-static`), so
+# there is no libc for the runtime image to provide at all — `static` is
+# the distroless variant built for exactly that (Go binaries, mainly, but
+# nothing about it is Go-specific). `:nonroot` runs as uid/gid 65532
+# without a `useradd`/`USER` line — there is no shell or `useradd` binary
+# in this image to run one with. Confirmed by inspecting the image's own
+# layers (`docker save` + `tar -tzv`, not assumed from documentation
+# alone): it ships `/etc/passwd`, `/etc/group`, `/etc/nsswitch.conf`, a
+# current `/etc/ssl/certs/ca-certificates.crt` (so outbound TLS to Orange's
+# API needs no separate `ca-certificates` package the way the old
+# `debian:bookworm-slim` runtime did), and `/tmp` at mode `1777` — this
+# binary doesn't write to `/tmp`, but the sibling `app/sms-worker/
+# Dockerfile` does, and the same base image is confirmed to support it.
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 COPY --from=builder /tmp/sms-gateway /usr/local/bin/sms-gateway
-
-USER sms-gateway
-WORKDIR /
 
 # main.rs's own default (127.0.0.1:8080) is correct for a bare-metal
 # deploy where this process shares a host with its Caddy edge — inside a
@@ -86,11 +86,14 @@ WORKDIR /
 ENV SMS_LISTEN_ADDR=0.0.0.0:8080
 EXPOSE 8080
 
-# #139: this repo had no health endpoint for sms-gateway at all before
-# app/sms-gateway/src/health.rs. Liveness only — see that module's own doc
-# for why it doesn't touch the database.
+# Exec-form (a JSON array, not a shell string): this image has no
+# `/bin/sh` for a `CMD-SHELL`-style check to run, and no `curl` either.
+# `sms-gateway healthcheck` (app/sms-gateway/src/main.rs) reproduces the
+# old `curl -fsS http://127.0.0.1:8080/healthz` check as a plain HTTP/1.1
+# GET over a raw socket — no shell, no third-party binary, nothing beyond
+# `std` needed.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD curl -fsS http://127.0.0.1:8080/healthz || exit 1
+  CMD ["/usr/local/bin/sms-gateway", "healthcheck"]
 
 ENTRYPOINT ["/usr/local/bin/sms-gateway"]
 CMD ["serve"]

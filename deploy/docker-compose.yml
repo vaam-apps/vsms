@@ -36,15 +36,15 @@ services:
 
   # One-shot: applies schema/migrations/postgres/{0001_init,0002_bootstrap}
   # exactly once each (tracked in a `schema_migrations` table this deploy
-  # path owns — see migrate.sql's own header), guarded by a Postgres
-  # advisory lock so a redeploy that starts this alongside a still-running
-  # previous instance can't apply the same migration twice concurrently.
-  # Exits 0 and stops; sms-gateway and sms-worker both wait on
-  # `service_completed_successfully`, not just `service_started`.
+  # path owns — see app/sms-migrate/src/main.rs's own module doc), guarded
+  # by a Postgres advisory lock so a redeploy that starts this alongside a
+  # still-running previous instance can't apply the same migration twice
+  # concurrently. Exits 0 and stops; sms-gateway and sms-worker both wait
+  # on `service_completed_successfully`, not just `service_started`.
   migrate:
     build:
       context: ..
-      dockerfile: deploy/migrate.Dockerfile
+      dockerfile: app/sms-migrate/Dockerfile
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
     depends_on:
@@ -103,8 +103,9 @@ services:
         condition: service_completed_successfully
     # #157: overrides the image's own baked-in `HEALTHCHECK`
     # (app/sms-gateway/Dockerfile), which is deliberately liveness-only
-    # (curl against /healthz — see app/sms-gateway/src/health.rs's module
-    # doc for why that route never touches the database). Compose has only
+    # (`sms-gateway healthcheck` against /healthz — see
+    # app/sms-gateway/src/health.rs's module doc for why that route never
+    # touches the database). Compose has only
     # one health-check concept, and it drives two things: the container's
     # own reported status, and every `depends_on: condition: service_healthy`
     # below (admin, caddy) that waits on this service. Both are better
@@ -127,8 +128,15 @@ services:
     # timeout. start_period=10s matches the image's own liveness
     # `--start-period`, since /readyz can't return anything meaningful
     # before the process has even bound its listener.
+    #
+    # Exec-form (a JSON array, not `CMD-SHELL`): app/sms-gateway/Dockerfile's
+    # runtime image is distroless `static`, which has no `/bin/sh` for
+    # `CMD-SHELL` to invoke and no `curl` for it to run even if it could.
+    # `sms-gateway healthcheck --path /readyz` (app/sms-gateway/src/main.rs)
+    # is the same plain HTTP/1.1-over-a-raw-socket check the old `curl`
+    # command ran, reproduced in `std`-only Rust.
     healthcheck:
-      test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:8080/readyz || exit 1']
+      test: ['CMD', '/usr/local/bin/sms-gateway', 'healthcheck', '--path', '/readyz']
       interval: 5s
       timeout: 3s
       retries: 3

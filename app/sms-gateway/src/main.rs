@@ -308,6 +308,27 @@ enum Command {
         #[arg(long, default_value = "owner")]
         role: String,
     },
+    /// Exec-form liveness/readiness check for orchestrators that can't run
+    /// a shell — a distroless `static` runtime image (see
+    /// `app/sms-gateway/Dockerfile`) has no `/bin/sh` and no `curl`, so
+    /// neither the container `HEALTHCHECK` nor a Compose/Kubernetes exec
+    /// probe can shell out the way they used to. This does the identical
+    /// check the old `curl -fsS http://<addr><path>` did — a plain HTTP/1.1
+    /// GET over a raw socket, no TLS, no dependency beyond `std` — and
+    /// exits non-zero (via `Result`'s `Err` under `#[tokio::main]`) on
+    /// anything but a `200`. Defaults match `health.rs`'s own `/healthz`;
+    /// pass `--path /readyz` for the readiness variant
+    /// `deploy/docker-compose.yml`/`deploy/charts/vsms/values.yaml` want
+    /// instead (the Helm chart's own `readinessProbe` stays a native
+    /// Kubernetes `httpGet` probe, which needs no in-container shell at
+    /// all — this subcommand exists for the two places that do).
+    Healthcheck {
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        addr: String,
+
+        #[arg(long, default_value = "/healthz")]
+        path: String,
+    },
 }
 
 /// Writes `pem` to a freshly created file at `path`, `0600` on Unix,
@@ -394,6 +415,10 @@ async fn resolve_provider_row_id(
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Must run before anything constructs an HTTP client — see
+    // `install_default_crypto_provider`'s own doc for why.
+    install_default_crypto_provider();
+
     // Variables already in the environment win; dotenvy never overwrites.
     let _ = dotenvy::dotenv();
 
@@ -423,6 +448,79 @@ async fn main() -> Result<()> {
         command @ Command::ProvisionClient { .. } => provision_client_command(command).await,
 
         command @ Command::SeedProvider { .. } => seed_provider_command(command).await,
+
+        Command::Healthcheck { addr, path } => healthcheck_command(&addr, &path),
+    }
+}
+
+/// Installs `ring` as the process-wide default `rustls` `CryptoProvider`.
+///
+/// Load-bearing, not defensive: `authkestra-op`/`-engine`/`-resource`/`-axum`
+/// are pinned with `default-features = false, features =
+/// ["rustls-no-provider"]` (Cargo.toml's own comment on those pins), which
+/// drops `aws-lc-rs` out of the dependency graph entirely — that crate's
+/// `cmake`/pkg-config build requirement is exactly what made a musl build
+/// impractical before. But it also means authkestra's own `reqwest` client
+/// carries no crypto backend baked in at all; the first TLS handshake it
+/// attempts panics unless *something* has already called
+/// `CryptoProvider::install_default()` for the whole process. `reqwest`
+/// 0.12 elsewhere in this binary's dependency tree (via `sms-api`,
+/// `sms-provider-orange-cm`) still resolves `ring` through its own
+/// `rustls-tls` feature and would install it lazily on first use — but
+/// relying on *some other* client happening to be built first is exactly
+/// the "unverified runtime path" AGENTS.md warned off; this makes the
+/// order explicit and unconditional instead. `ring`, not `aws-lc-rs`, to
+/// match every other TLS consumer already in this tree (AGENTS.md: "the
+/// whole cratestack family selects ring").
+///
+/// `.ok()`, not `.expect(...)`: the only failure mode is a provider already
+/// installed (impossible this early, since this is the first line of
+/// `main`, but not worth a panic if that ever changes) — never a reason to
+/// abort startup.
+fn install_default_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+/// `Command::Healthcheck`'s body — see that variant's own doc comment for
+/// why this exists at all (a distroless `static` image has no shell or
+/// `curl` for the container/orchestrator health check to shell out to) and
+/// why it's a hand-rolled HTTP/1.1 GET rather than pulling in `reqwest`:
+/// this only ever needs to run against `127.0.0.1`, in-process, so a raw
+/// socket is simpler than standing up a TLS-capable client for a plaintext
+/// loopback request.
+fn healthcheck_command(addr: &str, path: &str) -> Result<()> {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    use std::time::Duration;
+
+    let mut stream = TcpStream::connect(addr)
+        .with_context(|| format!("connecting to {addr} for healthcheck"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .context("setting healthcheck read timeout")?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(3)))
+        .context("setting healthcheck write timeout")?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+    )
+    .context("writing healthcheck request")?;
+
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .context("reading healthcheck response")?;
+    let status_line = response
+        .lines()
+        .next()
+        .context("empty healthcheck response")?;
+    // e.g. "HTTP/1.1 200 OK" — the status code is always the second
+    // whitespace-delimited token of the status line (RFC 9112 §4).
+    if status_line.split_whitespace().nth(1) == Some("200") {
+        Ok(())
+    } else {
+        bail!("unhealthy: GET {addr}{path} returned {status_line:?}")
     }
 }
 
