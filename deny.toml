@@ -15,4 +15,44 @@ allow = [
 ]
 
 [advisories]
-ignore = []
+# RUSTSEC-2023-0071 — Marvin Attack: potential key recovery through timing
+# sidechannels in `rsa` (no fixed version exists; upstream tracking issue:
+# https://github.com/RustCrypto/RSA/issues/626).
+#
+# Reachability analysis (#174), done by reading the two dependents that pull
+# `rsa` into this graph rather than trusting the advisory headline:
+#
+#   - `rsa` enters through `authkestra-engine 0.3.3` (direct dependency) and
+#     transitively through `jsonwebtoken 11.0.0`'s `rust_crypto` backend,
+#     both reached via `authkestra-axum`/`authkestra-op`/`authkestra-resource`
+#     -> the OP that signs every access token and verifies `private_key_jwt`
+#     client assertions (RS256).
+#   - `jsonwebtoken`'s rsa backend
+#     (jsonwebtoken-11.0.0/src/crypto/rust_crypto/rsa.rs) calls only
+#     `Pkcs1v15Sign`/`Pss` `Signer::sign_with_rng` (private key) and
+#     `Verifier::verify` (public key, no private-key operation at all). It
+#     never constructs an `rsa` `Decryptor` or calls `decrypt`/`decrypt_blinded`.
+#   - `authkestra-engine`'s own direct `rsa::` use
+#     (authkestra-engine-0.3.3/src/token/mod.rs, `TokenManager::new_asymmetric`)
+#     only parses a PEM-encoded RSA private key to read `n`/`e` and publish
+#     the public JWK. No decrypt call either.
+#
+# The Marvin Attack is specifically a *decryption*-oracle timing attack:
+# an attacker submits chosen ciphertext and observes response timing to
+# learn whether PKCS#1 v1.5 padding validated, recovering the private key
+# (CVSS vector confirms this: C:H/I:N/A:N — confidentiality-only impact).
+# RSA *signing* exponentiates with the private key over data this service
+# chooses itself (not attacker-supplied ciphertext), and verification only
+# ever touches the public key, so neither operation gives a network
+# attacker the decryption oracle the attack requires. This codebase has
+# no reachable `rsa` decryption call — grep confirms it
+# (`rg 'rsa::.*[Dd]ecrypt|Oaep.*decrypt|Pkcs1v15Encrypt'` across the
+# dependency sources returns nothing).
+#
+# Accepted, not silenced: if `authkestra` ever adds a decrypt path through
+# `rsa`, or a fixed `rsa` release ships, this entry must be revisited.
+# Time-boxed: re-run this analysis by 2026-11-10, or sooner if
+# `authkestra` bumps past `0.3.3` or `rsa` publishes a patched release.
+ignore = [
+  { id = "RUSTSEC-2023-0071", reason = "Marvin Attack (timing sidechannel) only affects RSA PKCS#1v1.5 *decryption*. This graph's only `rsa` usage (via jsonwebtoken's RS256 backend and authkestra-engine's JWK derivation) is signing/verification and PEM parsing — no decrypt call exists anywhere in the reachable code. See the comment above for the full analysis and revisit date." },
+]
