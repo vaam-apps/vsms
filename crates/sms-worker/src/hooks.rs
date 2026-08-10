@@ -195,7 +195,7 @@ pub async fn tick(
     Ok(())
 }
 
-/// The three shapes a delivery attempt resolves to, before either is
+/// The four shapes a delivery attempt resolves to, before each is
 /// translated into a `WebhookAttempt`/`WebhookEndpoint` write by
 /// [`write_outcome`]. Kept distinct from [`AttemptState`] itself because
 /// `Retryable` still branches on `maxAttempts` before it knows whether the
@@ -207,13 +207,25 @@ enum Outcome {
     /// unconditionally — distinct from an ordinary exhausted-attempts
     /// `dead`, which touches only the attempt.
     Gone,
-    /// Everything else: a non-2xx, non-410 status, a transport error, or a
-    /// response this module couldn't even build a request for (a payload
-    /// that failed to parse as JSON). `status` is `None` for the latter two.
+    /// A non-2xx, non-410 status, or a transport error — genuinely a signal
+    /// about the *endpoint*, so this is what feeds `maxAttempts`/backoff
+    /// and the circuit breaker.
     Retryable {
         status: Option<u16>,
         message: String,
     },
+    /// The stored `payload` could not even be parsed into a request body —
+    /// no HTTP call was ever attempted. Deliberately **not** folded into
+    /// `Retryable`: this is a bug in our own subscriber (#38 writes
+    /// `payload`), not any signal about the endpoint, and a completely
+    /// healthy endpoint must never have its circuit breaker tripped by a
+    /// row it never even received a request for. See [`write_outcome`]'s
+    /// own handling of this variant for why it goes straight to `dead`
+    /// rather than retrying — a stored payload does not become parseable
+    /// on a later attempt, so retrying only burns `maxAttempts` before
+    /// reaching the same `dead` outcome anyway, more slowly and with the
+    /// same endpoint-blaming bug on every attempt in between.
+    MalformedPayload { message: String },
 }
 
 /// Deliver one already-`delivering` attempt and write back whichever
@@ -263,8 +275,7 @@ async fn deliver_one(
                 sys,
                 &attempt,
                 &endpoint,
-                Outcome::Retryable {
-                    status: None,
+                Outcome::MalformedPayload {
                     message: format!("payload did not parse as JSON: {error}"),
                 },
                 now,
@@ -378,12 +389,17 @@ async fn fetch_endpoint(
 }
 
 /// Write whichever `WebhookAttempt`/`WebhookEndpoint` transition `outcome`
-/// implies. Two writes, not one, for `Gone`/`Retryable` — the attempt's own
-/// state and the endpoint's failure bookkeeping are separate rows with no
-/// shared transaction here (`WebhookEndpoint` has no `@version` to make a
-/// combined CAS meaningful, and the two writes have independent failure
-/// modes worth logging separately). Errors from either are logged, not
-/// propagated, matching every other outcome-writer in this crate.
+/// implies. Up to two writes — the attempt's own state and the endpoint's
+/// failure bookkeeping are separate rows with no shared transaction here
+/// (`WebhookEndpoint` has no `@version` to make a combined CAS meaningful,
+/// and the two writes have independent failure modes worth logging
+/// separately) — but which arms touch the endpoint at all is the load-
+/// bearing decision in this function: `Success`/`Gone`/`Retryable` all
+/// reflect something the endpoint actually did (or failed to do), so all
+/// three update its bookkeeping; `MalformedPayload` reflects nothing about
+/// the endpoint — no request was ever sent to it — and must not. Errors
+/// from either write are logged, not propagated, matching every other
+/// outcome-writer in this crate.
 async fn write_outcome(
     ctx: &WorkerContext,
     sys: &CoolContext,
@@ -429,6 +445,32 @@ async fn write_outcome(
                 write_failed_retry(ctx, sys, attempt, status, message, now).await;
             }
             record_endpoint_failure(ctx, sys, endpoint, now).await;
+        }
+        Outcome::MalformedPayload { message } => {
+            // Loud on purpose — this is our own bug (#38's subscriber wrote
+            // an unparseable payload), not routine traffic, and #42's
+            // reap_outbox precedent is exactly "make a broken row loud
+            // rather than silently retry or hide it." Straight to `dead`:
+            // the stored payload will not become parseable on a later
+            // attempt, so retrying only delays an identical outcome while
+            // burning `maxAttempts` — and, unlike `Retryable`, this
+            // deliberately never calls `record_endpoint_failure`: no HTTP
+            // request was ever sent, so the endpoint did nothing wrong and
+            // its circuit breaker must not react to this attempt at all.
+            error!(
+                attempt_id = %attempt.id, endpoint_id = %endpoint.id, message,
+                "webhook attempt payload is malformed — a bug in our own subscriber, not the \
+                 endpoint; marking dead without touching endpoint circuit-breaker state"
+            );
+            write_dead(
+                ctx,
+                sys,
+                attempt,
+                None,
+                format!("malformed payload, not retried: {message}"),
+                now,
+            )
+            .await;
         }
     }
 }

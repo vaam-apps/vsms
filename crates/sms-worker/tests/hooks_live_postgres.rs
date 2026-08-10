@@ -669,6 +669,85 @@ async fn a_masked_recipient_reaches_the_endpoint_unchanged_never_reconstructed()
     );
 }
 
+/// Lightbridge's P2 on the original PR, confirmed real: a `WebhookAttempt`
+/// whose stored `payload` doesn't even parse as JSON is *our* bug (#38's
+/// subscriber wrote it), not the endpoint's fault — no HTTP request is ever
+/// sent for it. Before the fix, `deliver_one` routed this into
+/// `Outcome::Retryable`, whose handling unconditionally calls
+/// `record_endpoint_failure`, so a single malformed row could trip the
+/// circuit breaker on an endpoint that never received a request and was
+/// never unhealthy. The assertions here are the actual point — a test that
+/// only checked the attempt reached a terminal state would have passed
+/// both before and after the fix, which is exactly the blind spot that let
+/// this through.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_malformed_payload_goes_dead_without_ever_touching_the_endpoints_circuit_state() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    // No mock registered to respond successfully — a malformed payload
+    // must never reach the point of making an HTTP call at all. `expect(0)`
+    // is a second, independent check on top of the `received_requests()`
+    // assertion below: if `hooks` ever regresses to calling out for this
+    // row, wiremock itself panics at the server's own drop.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
+    let attempt = seed_attempt(
+        &db,
+        &endpoint.id,
+        "cmsg8",
+        "message.delivered",
+        "not valid json",
+    )
+    .await;
+
+    let ctx = worker_context(db.clone());
+    let http = http_client();
+    hooks::tick(&ctx, &sys(), "test-worker", &http)
+        .await
+        .expect("tick succeeds");
+
+    let requests = server.received_requests().await.expect("recording is on");
+    assert!(
+        requests.is_empty(),
+        "a malformed payload must never produce an outbound HTTP request"
+    );
+
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(
+        reread.state,
+        AttemptState::dead,
+        "a malformed payload will never become parseable — no point retrying it"
+    );
+
+    // The actual regression this test guards: a completely healthy
+    // endpoint's circuit-breaker bookkeeping must be untouched by a row it
+    // was never even asked to receive.
+    let endpoint_after = reread_endpoint(&db, &endpoint.id).await;
+    assert_eq!(
+        endpoint_after.consecutiveFailures, 0,
+        "our own bug must never count as an endpoint failure"
+    );
+    assert!(
+        endpoint_after.circuitOpenUntil.is_none(),
+        "our own bug must never trip the endpoint's circuit breaker"
+    );
+    assert!(
+        endpoint_after.active,
+        "a malformed payload must not deactivate the endpoint either"
+    );
+}
+
 /// A `delivering` row whose lease already expired (a crashed worker,
 /// simulated directly) is reclaimed by the very next tick and delivered —
 /// without double-counting `attempts`, since the reclaim resumes the
