@@ -21,8 +21,8 @@
 //! # Resolving #38 vs #39: if subscribers already insert attempts
 //! synchronously, what does `drain` (#39) drain?
 //!
-//! `db.events().on_message_updated(...)` registers against a
-//! `Cratestack`/`SqlxRuntime` instance's own **in-process**
+//! `db.events().on_message_created(...)`/`on_message_updated(...)` each
+//! register against a `Cratestack`/`SqlxRuntime` instance's own **in-process**
 //! `CoolEventBus` (`cratestack_sqlx::descriptor::SqlxRuntime::subscribe`,
 //! read directly in the vendored source, not assumed) — registration
 //! never crosses a process boundary, and *every* `@@emit`-annotated
@@ -113,8 +113,8 @@ use tracing::error;
 use crate::auth::{Principal, PrincipalKind};
 use crate::errors::UNIQUE_VIOLATION;
 use crate::schema::{
-    events::MessageUpdatedEvent, webhook_endpoint, Cratestack, CreateWebhookAttemptInput, Message,
-    MessageState,
+    events::{MessageCreatedEvent, MessageUpdatedEvent},
+    webhook_endpoint, Cratestack, CreateWebhookAttemptInput, Message, MessageState,
 };
 
 /// The `system` context every subscriber in this module reads/writes
@@ -138,6 +138,19 @@ fn sys() -> CoolContext {
 /// likewise absent from §8.4's own list; widening the catalogue to cover
 /// them is a product decision for whoever picks that up next, not
 /// something to invent here).
+///
+/// **`accepted` is reachable only from `Message.created`, never from an
+/// `updated` event.** It's the schema's own `@default('accepted')` — the
+/// row's state the instant it's created — and `message_state_transitions`
+/// (§2.10) lists it only as a `from_state`, never a `to_state`: nothing
+/// transitions *into* `accepted`, ever. A caller that maps this function's
+/// `Some("message.accepted")` return value onto `on_message_updated` alone
+/// would advertise an event type that can structurally never fire — found
+/// by Lightbridge's review of this PR, confirmed against
+/// `message_state_transitions` before fixing: [`register_subscribers`]
+/// wires up `on_message_created` for exactly this reason, alongside
+/// `on_message_updated`, both driving the same
+/// [`enqueue_message_webhook_attempts`].
 #[must_use]
 pub fn message_event_type(state: MessageState) -> Option<&'static str> {
     match state {
@@ -161,24 +174,43 @@ pub fn message_event_type(state: MessageState) -> Option<&'static str> {
 /// `sms-worker` process runs — is the actual correctness requirement, not
 /// a style preference.
 ///
-/// Only `Message.updated` is wired up in this milestone. `OptOut.created`,
-/// `Provider.updated` (→ `provider.degraded`/`provider.recovered`) and a
-/// hypothetical `SenderIdRegistration` emit (→ `sender_id.approved`/
-/// `sender_id.rejected`, which would first need `@@emit` added to a model
-/// that doesn't have it today) are explicitly out of scope: `OptOut` has
-/// no `appId`, and `WebhookEndpoint.appId` is what every match in this
-/// module keys on — which endpoints a global, cross-app opt-out should
-/// notify is a product decision this PR doesn't make, not an oversight.
-/// `Provider`/`SenderIdRegistration` need a similar real decision (what
-/// counts as "degraded", whether `SenderIdRegistration` should emit at
-/// all). Follows the same scoping precedent as #35's single `expire_stale`
-/// job kind: build the one path this milestone's own state machine
-/// already makes unambiguous, name the rest as deliberately cut.
+/// **Both `Message.created` and `Message.updated` are wired up, deliberately
+/// together, in this one function.** `Message.created` is what makes
+/// `message.accepted` reachable at all — see [`message_event_type`]'s own
+/// doc for why `updated` alone can never produce it — and the fix for that
+/// finding is here, not split across two call sites, so nothing can ever
+/// register one without the other. Both drive the exact same
+/// [`enqueue_message_webhook_attempts`]: the function only cares that it
+/// received a `Message` row and an `event_id`, never which operation
+/// produced them, so `created`/`updated` share one implementation rather
+/// than duplicating the endpoint-lookup-and-insert logic per event kind.
+///
+/// `OptOut.created`, `Provider.updated` (→ `provider.degraded`/
+/// `provider.recovered`) and a hypothetical `SenderIdRegistration` emit (→
+/// `sender_id.approved`/`sender_id.rejected`, which would first need
+/// `@@emit` added to a model that doesn't have it today) are explicitly out
+/// of scope: `OptOut` has no `appId`, and `WebhookEndpoint.appId` is what
+/// every match in this module keys on — which endpoints a global,
+/// cross-app opt-out should notify is a product decision this PR doesn't
+/// make, not an oversight. `Provider`/`SenderIdRegistration` need a similar
+/// real decision (what counts as "degraded", whether `SenderIdRegistration`
+/// should emit at all). Follows the same scoping precedent as #35's single
+/// `expire_stale` job kind: build the one path this milestone's own state
+/// machine already makes unambiguous, name the rest as deliberately cut.
 pub fn register_subscribers(db: &Cratestack) {
-    let handler_db = db.clone();
+    let created_db = db.clone();
+    db.events()
+        .on_message_created(move |event: MessageCreatedEvent| {
+            let db = created_db.clone();
+            panic_isolated(async move {
+                enqueue_message_webhook_attempts(&db, event.event_id, &event.data).await
+            })
+        });
+
+    let updated_db = db.clone();
     db.events()
         .on_message_updated(move |event: MessageUpdatedEvent| {
-            let db = handler_db.clone();
+            let db = updated_db.clone();
             panic_isolated(async move {
                 enqueue_message_webhook_attempts(&db, event.event_id, &event.data).await
             })
@@ -208,15 +240,18 @@ where
     }
 }
 
-/// The actual `Message.updated` subscriber body, factored out of the
-/// closure in [`register_subscribers`] so it's directly callable from
-/// tests without going through the event bus at all.
+/// The actual `Message.created`/`Message.updated` subscriber body, shared
+/// by both closures in [`register_subscribers`] and factored out here so
+/// it's directly callable from tests without going through the event bus
+/// at all.
 ///
 /// No-ops (returns `Ok(())` without touching the database) when
 /// [`message_event_type`] doesn't map `message.state` to a catalogued
 /// event — most `Message.updated` events are internal routing hops
 /// (`accepted -> queued -> routed`) nobody outside this system should ever
-/// hear about.
+/// hear about. Every `Message.created` call, by contrast, always maps —
+/// `state` is unconditionally `accepted` the instant a row is created,
+/// per the schema's own `@default('accepted')`.
 pub async fn enqueue_message_webhook_attempts(
     db: &Cratestack,
     source_event_id: cratestack::uuid::Uuid,

@@ -1,10 +1,17 @@
-//! Proves #38's `Message.updated` subscriber (`crates/sms-api/src/
-//! webhooks.rs`) against a real, fully migrated Postgres: a matching
-//! `WebhookEndpoint` gets exactly one `WebhookAttempt` row per catalogued
-//! event, a non-matching endpoint gets none, an uncatalogued state
-//! transition produces no attempt at all, and the `create` + catch-23505
-//! dedupe path (§8.3) actually prevents a duplicate row rather than just
-//! being written to.
+//! Proves #38's `Message.created`/`Message.updated` subscribers
+//! (`crates/sms-api/src/webhooks.rs`) against a real, fully migrated
+//! Postgres: a matching `WebhookEndpoint` gets exactly one
+//! `WebhookAttempt` row per catalogued event, a non-matching endpoint gets
+//! none, an uncatalogued state transition produces no attempt at all, and
+//! the `create` + catch-23505 dedupe path (§8.3) actually prevents a
+//! duplicate row rather than just being written to.
+//!
+//! `a_created_message_produces_exactly_one_message_accepted_attempt`
+//! covers the fix for a real bug caught in review: `message.accepted` is
+//! documented (§8.4) and mapped by `message_event_type`, but is only ever
+//! reachable from a `Message.created` event, never from `updated`
+//! (`accepted` has no incoming edge in `message_state_transitions`) — see
+//! that test's own doc for the full story.
 //!
 //! `a_message_transition_drains_through_the_real_registered_subscriber`
 //! goes through `sms_api::webhooks::register_subscribers` and a real
@@ -241,6 +248,72 @@ async fn a_cancelled_message_drains_through_the_real_registered_subscriber() {
     );
 }
 
+/// **The eighth instance's own regression test.** `message.accepted` is
+/// documented (§8.4) and `message_event_type` maps it — but `accepted` is
+/// the schema's own `@default('accepted')` (the row's state the instant
+/// it's created) and `message_state_transitions` lists it only as a
+/// `from_state`, never a `to_state`: nothing transitions *into* `accepted`,
+/// ever. Before this fix `register_subscribers` wired up only
+/// `on_message_updated`, so `message.accepted` was advertised but
+/// structurally unreachable — an endpoint subscribed to it would never
+/// have fired, silently, forever. Found by Lightbridge's review of this
+/// PR, confirmed against `message_state_transitions` before fixing.
+///
+/// Goes through a real `db.message().create(...)` (via [`seed_message`]),
+/// not `enqueue_message_webhook_attempts` directly — the whole point is to
+/// prove `on_message_created` actually fires through the ordinary create
+/// path, the same way `a_cancelled_message_drains_through_the_real_registered_subscriber`
+/// proves `on_message_updated` does. Then calls
+/// `enqueue_message_webhook_attempts` a second time by hand, with a fresh
+/// `event_id` but the same still-`accepted` message — standing in for
+/// "drain retries this event, or a second worker races it" — and asserts
+/// the row count stays at one: the `webhook_attempts_dedupe` unique index
+/// (`endpoint_id`, `aggregate_id`, `event_type`) protects `message.accepted`
+/// exactly the same way it protects every other catalogued event,
+/// regardless of whether a `created` or an `updated` handler is what
+/// produced the colliding insert.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_created_message_produces_exactly_one_message_accepted_attempt() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    sms_api::webhooks::register_subscribers(&db);
+
+    let app_id = seed_app(&db).await;
+    let matching = seed_endpoint(&db, &app_id, " message.accepted ", false).await;
+    let _non_matching = seed_endpoint(&db, &app_id, " message.delivered ", false).await;
+
+    // The create itself — no explicit .events().drain() call, no direct
+    // call to enqueue_message_webhook_attempts — is what must produce the
+    // attempt, via on_message_created's own automatic post-commit drain.
+    let message = seed_message(&db, &app_id, "+237677123461").await;
+
+    let attempts = attempts_for(&db, &message.id).await;
+    assert_eq!(
+        attempts.len(),
+        1,
+        "Message.created should have produced exactly one message.accepted \
+         WebhookAttempt via on_message_created: {attempts:?}"
+    );
+    assert_eq!(attempts[0].endpointId, matching.id);
+    assert_eq!(attempts[0].eventType, "message.accepted");
+    assert_eq!(attempts[0].aggregateId, message.id);
+
+    // Simulates a retry/race on the same (endpoint, aggregate, event_type)
+    // — must not duplicate.
+    enqueue_message_webhook_attempts(&db, cratestack::uuid::Uuid::new_v4(), &message)
+        .await
+        .expect("a second enqueue for the same event must swallow the 23505, not error");
+
+    let attempts_after = attempts_for(&db, &message.id).await;
+    assert_eq!(
+        attempts_after.len(),
+        1,
+        "webhook_attempts_dedupe should still block a second message.accepted attempt \
+         for the same message: {attempts_after:?}"
+    );
+}
+
 /// `accepted -> queued` is a legal one-hop edge, but `queued` isn't in
 /// §8.4's event catalogue (internal routing machinery) — no
 /// `WebhookAttempt` row should be created for it at all, matching
@@ -253,7 +326,14 @@ async fn an_uncatalogued_state_transition_produces_no_webhook_attempt() {
     sms_api::webhooks::register_subscribers(&db);
 
     let app_id = seed_app(&db).await;
-    seed_endpoint(&db, &app_id, " message.accepted message.delivered ", false).await;
+    // Deliberately not subscribed to "message.accepted" — that event is
+    // real now (see a_created_message_produces_exactly_one_message_accepted_attempt)
+    // and would otherwise produce one legitimate attempt from
+    // seed_message's own create() call, muddying this test's own "queued
+    // produces nothing" assertion. This endpoint only cares about
+    // "delivered", so both the create (accepted, unmatched) and the
+    // update below (queued, uncatalogued) should leave it with zero.
+    seed_endpoint(&db, &app_id, " message.delivered ", false).await;
     let message = seed_message(&db, &app_id, "+237677123457").await;
 
     db.message()
@@ -270,7 +350,8 @@ async fn an_uncatalogued_state_transition_produces_no_webhook_attempt() {
     let attempts = attempts_for(&db, &message.id).await;
     assert!(
         attempts.is_empty(),
-        "queued isn't in §8.4's catalogue; expected no attempts, got {attempts:?}"
+        "queued isn't in §8.4's catalogue and this endpoint never subscribed to \
+         message.accepted either; expected no attempts, got {attempts:?}"
     );
 }
 
