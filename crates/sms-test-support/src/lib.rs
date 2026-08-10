@@ -156,6 +156,54 @@
 //! `pg_advisory_lock`/`pg_advisory_unlock` — itself the *second* named
 //! exception) against every other process racing to ask the same question.
 //! No application row is ever read or written here.
+//!
+//! # The `rustls` crypto provider gap the binaries' own fix didn't cover
+//!
+//! `app/sms-gateway/src/main.rs` and `app/sms-worker/src/main.rs` each call
+//! `rustls::crypto::ring::default_provider().install_default()` as the
+//! first line of `main`, documented at length on that call site: dropping
+//! `aws-lc-rs` (`AGENTS.md`'s "rustls, musl, and distroless" section) left
+//! authkestra's own `reqwest` 0.13.4 dependency — pinned
+//! `default-features = false, features = ["rustls-no-provider"]` — with no
+//! crypto backend baked in, so the *first* TLS handshake it attempts
+//! panics unless something has already installed a provider process-wide.
+//! That fix covers every production binary, because `main` always runs.
+//! **It does not cover test binaries**, whose entry point is the libtest
+//! harness, not either crate's `main` — so any live suite that exercises a
+//! code path building a `reqwest` 0.13.4 client (this workspace's own
+//! `GatewayAuth`, via `authkestra_resource::jwt`'s `JwksCache`, is the one
+//! found live: it fetches the issuer's JWKS over HTTP to validate a real
+//! token, in-process, in whichever suite constructs it) panics with "No
+//! rustls crypto provider is configured" the same way an unfixed binary
+//! would have, and did — `crates/sms-auth/tests/oidc_flow_live.rs` and
+//! `crates/sms-auth/tests/rbac_layer2_live_postgres.rs` both construct
+//! `GatewayAuth` in-process and both panicked this way before
+//! [`install_default_crypto_provider`] existed. Every other live suite in
+//! this workspace was checked (`cargo test --workspace --no-fail-fast --
+//! --ignored`, all 19 live test binaries, not just the one CI happened to
+//! stop on — `cargo test` is fail-fast across a workspace by default,
+//! which is why a single red binary hid the rest) and does not: the
+//! subprocess-spawning suites (`app/sms-gateway/tests/
+//! m1_acceptance_gate_live_postgres.rs`, `.../provision_client_cli_live_
+//! postgres.rs`, `app/sms-worker/tests/kill9_reclaim_live.rs`) exercise
+//! `GatewayAuth` only inside a real `sms-gateway`/`sms-worker` child
+//! process, whose own `main` already installs the provider;
+//! `crates/sms-auth/tests/provision_app_client_live_postgres.rs` builds an
+//! in-process OP router but never a `GatewayAuth`, so it never reaches
+//! `authkestra_resource::jwt` at all.
+//!
+//! [`install_default_crypto_provider`] is called unconditionally at the
+//! top of [`database_url`] rather than left for each live suite to
+//! remember: every live suite in this workspace already calls
+//! `database_url` (it is how each one gets a migrated Postgres — see this
+//! module's own doc), so hooking the install there is the one change that
+//! reaches all of them, present and future, with no per-test-file edit and
+//! nothing to re-discover the next time a suite starts exercising
+//! `GatewayAuth`. `app/sms-gateway/tests/tls_no_provider_live.rs` is the
+//! one live suite that needs no database and so never calls
+//! `database_url` — it already installs the provider itself, for the same
+//! reason its own module doc gives (it exists specifically to prove this
+//! exact ordering, independently of this crate).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -245,10 +293,35 @@ static DATABASE_URL: OnceCell<String> = OnceCell::const_new();
 /// test harness — better to fail loudly at the first `db().await` than to
 /// hand back a URL that silently doesn't work.
 pub async fn database_url() -> String {
+    install_default_crypto_provider();
     DATABASE_URL
         .get_or_init(|| async { ensure_postgres().await })
         .await
         .clone()
+}
+
+/// Installs `ring` as the process-wide default `rustls` `CryptoProvider`,
+/// for test binaries — see this module's own "the rustls crypto provider
+/// gap" doc section for why a *test* binary needs this call at all when
+/// every production binary's `main` already makes it.
+///
+/// `ring`, not `aws-lc-rs`: the panic message `reqwest` 0.13.4 prints
+/// suggests `rustls::crypto::aws_lc_rs::default_provider()` — following
+/// that suggestion would reintroduce the exact dependency this workspace
+/// dropped (`AGENTS.md`'s "rustls, musl, and distroless" section) rather
+/// than matching it. `ring` is what both binaries' own
+/// `install_default_crypto_provider` install, and what every other TLS
+/// consumer in this tree already resolves.
+///
+/// Idempotent by construction, not by a `Once`/`OnceLock`: `install_default`
+/// returns `Err` if a provider is already installed (by an earlier test in
+/// this binary, by this same function running again — [`database_url`]
+/// calls it on every invocation, not just the first — or, in principle, by
+/// `reqwest` 0.12's own lazy install happening first), and that is never a
+/// reason to fail a test. `let _ =`, not `.unwrap()` or `.expect(...)`,
+/// exactly like both binaries' own copies of this call.
+pub fn install_default_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 async fn ensure_postgres() -> String {
