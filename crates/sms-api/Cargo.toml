@@ -25,6 +25,11 @@ sms-msisdn.workspace = true
 # than reinvented — see sms-core's own module doc for why the sentinel form
 # matters even though `contains`/`unpack` tolerate the plain OAuth form too.
 sms-core.workspace = true
+# #41: rotate_webhook_secret's generate_secret() — the one non-pure
+# function in sms-webhook, generating a fresh whsec_<hex> value. The
+# signing/verification side of that crate has no caller here; it's
+# sms-worker's hooks role (#40) that signs outbound deliveries.
+sms-webhook.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait's DeliveryUpdate/
 # DeliveryOutcome/RawCallback/ProviderError types — never a concrete
 # adapter, the same reason sms-worker depends on this and not on

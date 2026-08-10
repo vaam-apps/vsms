@@ -6,42 +6,51 @@ half (authenticating and sending) is [#149](https://github.com/vymalo/vsms/issue
 
 ## Read this before trusting anything below
 
-**vsms cannot deliver webhooks today.** This is not a hedge, it's the reason
-this example exists in its current shape:
+**vsms cannot deliver webhooks over HTTP yet, but the signature this
+receiver verifies is real and confirmed.** Two different claims, worth
+keeping separate:
 
-- Outbound delivery is entirely unbuilt. The `drain` and `hooks` worker roles
-  (`crates/sms-worker`) are stubs that idle; [#38–#42](https://github.com/vymalo/vsms/issues/38)
-  are all open.
-- `rotateWebhookSecret` is a `not_yet("milestone 3 (webhooks)")` stub in
-  `crates/sms-api/src/procedures.rs` — there is no way to even provision a
-  live `WebhookEndpoint` secret today.
-- **The outbound signature this receiver verifies is [#41](https://github.com/vymalo/vsms/issues/41)
-  — not implemented.** It IS specified in real detail, in §4.4 — see below
-  for exactly how much of this example is a transcription of that spec
-  versus an actual guess. `docs/architecture.md` §4 is explicit that
-  request signing was dropped for *inbound* API calls in favour of
-  `private_key_jwt`; that decision says nothing about *this*, the outbound
-  signature vsms would attach to a webhook it sends you — §4.4 is the
-  relevant section instead.
+- **Outbound HTTP delivery is still unbuilt.** The `drain` and `hooks`
+  worker roles (`crates/sms-worker`) are stubs that idle;
+  [#38–#40, #42](https://github.com/vymalo/vsms/issues/38) are open. So
+  nothing here has ever received a webhook POST from a live vsms process,
+  and this example still can't be verified end to end against one.
+- **The signature scheme is [#41](https://github.com/vymalo/vsms/issues/41)
+  — implemented, not a guess any more.** `crates/sms-webhook` is the real
+  Rust implementation `rotate_webhook_secret`
+  (`crates/sms-api/src/procedures.rs`) and the future `hooks` role both
+  use. This file's own algorithm — HMAC-SHA256, transcribed from §4.4's
+  prose before #41 existed — turned out to match it exactly, and that's no
+  longer just asserted: `src/cross-language-vectors.test.ts` loads a
+  fixture of signatures computed by a *third*, independent implementation
+  (`openssl dgst -sha256 -hmac`) and asserts this file's own
+  `verifySignature` agrees with every one. `docs/architecture.md` §4 is
+  explicit that request signing was dropped for *inbound* API calls in
+  favour of `private_key_jwt`; that decision says nothing about *this*,
+  the outbound signature vsms attaches to a webhook it sends you — §4.4 is
+  the relevant section instead.
 
-So: **this example cannot be verified end to end against a live vsms, and
-nothing here should be read as implying it has been.** What you can verify,
-and what running `pnpm start` actually proves, is narrower and still useful:
-**this receiver's own logic — idempotent handling, tolerance of
-out-of-order delivery, fast-ack-then-process, and signature verification
-with rotation support — is correct**, exercised against a local emitter
-that stands in for vsms. That is a real, load-bearing distinction; see
-"What this does and doesn't prove" below.
+So: **this example still cannot be verified against a live, webhook-sending
+vsms — that part hasn't shipped.** What you can verify, and what running
+`pnpm start` / `pnpm test` actually proves, is narrower but no longer
+carries an asterisk on the crypto: **this receiver's own logic —
+idempotent handling, tolerance of out-of-order delivery, fast-ack-then-
+process, and signature verification with rotation support, using the
+*confirmed* real algorithm — is correct**, exercised against a local
+emitter that stands in for vsms until #38–#40 ship. That is a real,
+load-bearing distinction; see "What this does and doesn't prove" below.
 
-## What's settled vs. what's provisional
+## What's settled vs. what's still ahead of a real sender
 
-**Most of this is settled, not provisional.** `docs/architecture.md` §4.4
-specifies, literally: the four header names, the exact rotation semantics
-(`X-Sms-Signature` can carry two `v1=` values, accept if either verifies),
-and the exact signing string
+**All of the signature scheme is settled — confirmed, not just specified.**
+`docs/architecture.md` §4.4 specifies, literally: the four header names,
+the exact rotation semantics (`X-Sms-Signature` can carry two `v1=`
+values, accept if either verifies), and the exact signing string
 (`v1 \n {timestamp} \n {eventId} \n {sha256(body)}`, keyed by
-`WebhookEndpoint.secret`/`.prevSecret`). `src/signature.ts` is a
-transcription of that spec, not a guess, for all of the above.
+`WebhookEndpoint.secret`/`.prevSecret`, HMAC-SHA256). `src/signature.ts` is
+a transcription of that spec for all of the above, and
+`src/cross-language-vectors.test.ts` is what turns "transcription" into
+"confirmed against the real implementation."
 
 Settled, cited inline in the source:
 
@@ -63,37 +72,48 @@ Settled, cited inline in the source:
 - §8.5: delivery order is not guaranteed; receivers must tolerate
   `message.delivered` arriving before `message.submitted`.
 
-Provisional, because #41 hasn't shipped, and narrowly so:
+**Confirmed by #41, not just settled in prose any more:**
 
-- **The one genuine guess is the MAC algorithm.** §4.4 shows the
-  `v1=<hex>` wrapper and the four-line signing string but never names the
-  primitive that turns that string into the hex digest. `src/signature.ts`
-  implements HMAC-SHA256 as the obvious Stripe-style reading of that shape
-  — that one substitution, and only that one, is unverified against
-  anything upstream.
-- **Separately** (not filling a gap in §4.4 — the doc says nothing about
-  this either way, so it's a scope decision by this example, not an
-  inferred reading): no bounded freshness/replay window is enforced on
-  `X-Sms-Timestamp`. It's folded into the signed bytes, so a *tampered*
-  timestamp already fails verification — but a correctly-signed request
-  with a stale timestamp still verifies. Demonstrated live, not just
-  asserted; see "What it demonstrates, live" below.
+- **The MAC algorithm is HMAC-SHA256.** §4.4 shows the `v1=<hex>` wrapper
+  and the four-line signing string but never names the primitive that
+  turns that string into the hex digest. `src/signature.ts` implemented
+  HMAC-SHA256 as the obvious Stripe-style reading of that shape *before*
+  #41 existed — that substitution was this example's one genuine guess.
+  `crates/sms-webhook` (#41) is now the real answer, and it agrees:
+  `src/cross-language-vectors.test.ts` proves it by checking this file's
+  `verifySignature` against fixture signatures neither implementation
+  computed (a third, independent `openssl` computation instead) — see
+  that test file and `crates/sms-webhook/src/lib.rs`'s own module doc for
+  the full cross-language proof.
 
-When #41 lands for real, `src/signature.ts` — specifically
-`computeSignature` and `verifySignature` — is the entire diff this example
-should need. Nothing else touches a header or does crypto.
+**Still a deliberate scope decision by this example, not a gap in §4.4 or
+in #41** (§4.4 says nothing about this either way, so it isn't an inferred
+reading of an ambiguous spec): no bounded freshness/replay window is
+enforced on `X-Sms-Timestamp` here. It's folded into the signed bytes, so
+a *tampered* timestamp already fails verification — but a correctly-signed
+request with a stale timestamp still verifies. Demonstrated live, not just
+asserted; see "What it demonstrates, live" below.
+`sms_webhook::is_timestamp_fresh` (#41) now ships a composable freshness
+check for a caller that wants one — a receiver in this language could call
+its own equivalent before or after `verifySignature`; this example simply
+doesn't, the same choice it made before #41 existed.
+
+`src/signature.ts` — specifically `computeSignature` and
+`verifySignature` — was the entire diff #41 needed here. Nothing else in
+this example touches a header or does crypto.
 
 ## Layout
 
 ```
 src/
-  index.ts       entry point: starts the receiver, runs the local emitter, prints a summary
-  server.ts       the Express app: raw-body capture, fast ack, off-path processing
-  signature.ts    THE SEAM — a §4.4 transcription except for one guess (the MAC algorithm); replace/update when #41 lands
-  store.ts        in-memory idempotency (primary: X-Sms-Event-Id; secondary: aggregateId+eventType) + out-of-order-tolerant state tracking
-  work-queue.ts   a tiny off-request-path queue (what "work off the request path" means, made concrete)
-  emitter.ts      local stand-in for vsms; drives #150's required scenarios plus a timestamp-freshness check
-  types.ts        the §8.4 envelope shape
+  index.ts                        entry point: starts the receiver, runs the local emitter, prints a summary
+  server.ts                       the Express app: raw-body capture, fast ack, off-path processing
+  signature.ts                    THE SEAM — a §4.4 transcription, confirmed correct by #41 (see its own doc comment)
+  cross-language-vectors.test.ts  proves signature.ts against fixture signatures crates/sms-webhook (#41) didn't compute
+  store.ts                        in-memory idempotency (primary: X-Sms-Event-Id; secondary: aggregateId+eventType) + out-of-order-tolerant state tracking
+  work-queue.ts                   a tiny off-request-path queue (what "work off the request path" means, made concrete)
+  emitter.ts                      local stand-in for vsms; drives #150's required scenarios plus a timestamp-freshness check
+  types.ts                        the §8.4 envelope shape
 ```
 
 ## Running it
@@ -105,7 +125,8 @@ dependency needed).
 ```bash
 cd examples/node/webhook-receiver
 pnpm install
-pnpm start
+pnpm test    # the #41 cross-language proof — no server, no network, ~0.1s
+pnpm start   # the full local-emitter demo below
 ```
 
 This package is a member of the `examples/` pnpm workspace (`examples/pnpm-workspace.yaml`,
@@ -154,8 +175,9 @@ The emitter drives these sequences against the receiver over real HTTP
    in the past (a genuine signature over stale material, not a forged
    one). It's accepted, `HTTP 202` — proving live, rather than only
    asserting in `signature.ts`'s doc comment, that `X-Sms-Timestamp` is
-   not checked for age. See "What's settled vs. what's provisional" above
-   for why that's a deliberate scope decision, not an oversight.
+   not checked for age. See "What's settled vs. what's still ahead of a
+   real sender" above for why that's a deliberate scope decision, not an
+   oversight.
 
 Run it yourself and read the log; every line above is something the
 process actually printed on this machine, not a description of expected
@@ -166,46 +188,42 @@ behaviour.
 **Does prove:** this receiver's handling of duplicates, out-of-order
 arrival, and signature rejection/rotation is correct, against real HTTP
 requests, over a real (if local) network round trip, with a real async
-work queue decoupling the response from the "database write" it simulates.
+work queue decoupling the response from the "database write" it simulates
+— **and**, separately (`cross-language-vectors.test.ts`, no HTTP involved),
+that `verifySignature`'s algorithm itself is HMAC-SHA256 over exactly
+§4.4's canonical string, agreeing with `crates/sms-webhook` (#41) and with
+a third, independent computation neither of them produced.
 
-**Does not prove:** that this matches what a real vsms will someday send.
-Specifically unverified, and unverifiable until the corresponding work
-lands:
+**Does not prove:** that this matches what a real, webhook-*sending* vsms
+will someday do end to end. Specifically unverified, and unverifiable
+until the corresponding work lands:
 
-- Whether HMAC-SHA256 is really the algorithm #41 ships with — the one
-  genuine gap in an otherwise-specified scheme (see above).
 - Whether the `X-Sms-Event-Id` value vsms sends is actually the
   `WebhookAttempt`'s `sourceEventId` as this example assumes, or something
   else — §4.4 names the header but the doc's worked JSON example (§8.4)
   doesn't show the header alongside the body, so this is a reasonable but
   unconfirmed reading.
-- Whether #41's implementation matches §4.4's design doc exactly once it's
-  actually built and tested against a real sender — everything else in
-  "What's settled vs. what's provisional" above is specified, but
-  "specified" and "implemented-and-verified" are still two different
-  things.
+- Whether the `hooks` role (#40), once built, actually calls
+  `crates/sms-webhook` the way this README assumes it will, and attaches
+  the four headers exactly as documented — #41 ships the signing library
+  and `rotateWebhookSecret`, not the HTTP delivery code that would call it.
 - Any latency, retry timing, or backoff behaviour (§8.5 documents 1s, 5s,
   25s, 2m, 10m, 1h, 6h, 24h, eight attempts then `dead` — this example's
   emitter does not attempt to reproduce that schedule; it just proves the
   receiver survives duplicates and reordering, not the exact cadence they
   arrive under).
 
-## Revisit this when M3 (webhooks) lands
+## Revisit this when M3 (webhooks) fully lands
 
-- Replace `src/signature.ts`'s MAC algorithm with whatever #41 actually
-  ships (the rest of the file should need no change, since it already
-  transcribes §4.4's specified header names, rotation semantics, and
-  signing string), and delete the narrower "one genuine guess" framing
-  throughout this README and the source comments once it's confirmed
-  correct.
 - Point the emitter (or better, delete it) at a real, running vsms with a
-  provisioned `WebhookEndpoint`, once `rotateWebhookSecret` and outbound
-  delivery both exist, and re-verify the scenarios above against that
-  instead of the local stand-in.
+  provisioned `WebhookEndpoint`, once the `hooks` role (#40) exists and
+  actually sends HTTP requests, and re-verify the scenarios above against
+  that instead of the local stand-in.
 - Confirm the `X-Sms-Event-Id` → `sourceEventId` assumption above, and the
   `data.messageId` → aggregate id assumption in `server.ts`'s
   `extractAggregateId`, against real payloads.
 - Decide, deliberately, whether a bounded freshness/replay window on
   `X-Sms-Timestamp` is worth adding on top of the dedupe-based protection
-  this receiver already has — #41 may or may not settle vsms's own intent
-  on this.
+  this receiver already has — `sms_webhook::is_timestamp_fresh` (#41) is
+  available for it, but nothing requires a receiver to call it, and this
+  example still doesn't.

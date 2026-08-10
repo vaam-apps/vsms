@@ -4,6 +4,7 @@ members = [
   "crates/sms-core",
   "crates/sms-encoding",
   "crates/sms-msisdn",
+  "crates/sms-webhook",
   "crates/sms-api",
   "crates/sms-auth",
   "crates/sms-worker",
@@ -57,6 +58,11 @@ publish = false
 sms-core = { path = "./crates/sms-core" }
 sms-encoding = { path = "./crates/sms-encoding" }
 sms-msisdn = { path = "./crates/sms-msisdn" }
+# #41: outbound webhook HMAC signing/verification and secret generation.
+# Pure (bar generate_secret's OS randomness) and deliberately not
+# schema-coupled — both sms-api (rotateWebhookSecret) and sms-worker's
+# hooks role (#40) depend on this directly rather than on each other.
+sms-webhook = { path = "./crates/sms-webhook" }
 sms-api = { path = "./crates/sms-api" }
 sms-auth = { path = "./crates/sms-auth" }
 sms-worker = { path = "./crates/sms-worker" }
@@ -180,6 +186,12 @@ sha2 = "0.10"
 # via authkestra's `rust_crypto` stack) — this doesn't add a second digest
 # tree, just names the dependency directly for the crate that now calls it.
 hmac = "0.12"
+# #41: sms-webhook's hex encode/decode for signature bytes. Already present
+# in Cargo.lock transitively (0.4.3, pulled in by several crypto-adjacent
+# dependencies already in the tree) — named directly here rather than
+# hand-rolling a third hex codec alongside pepper.rs's manual `{byte:02x}`
+# loop and whatever else already exists transitively.
+hex = "0.4"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util = "0.7"
