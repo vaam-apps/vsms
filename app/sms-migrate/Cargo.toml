@@ -1,0 +1,29 @@
+[package]
+name = "sms-migrate"
+description = "One-shot schema migration runner — applies the committed migrations exactly once, guarded by a Postgres advisory lock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# `cratestack::sqlx` re-exports the exact `sqlx-core`/`sqlx-postgres` this
+# binary needs (`raw_sql`, `PgConnection`, `Connection`, `query`,
+# `query_scalar`) — see `main.rs`'s own module doc for why this replaced
+# `deploy/migrate.Dockerfile`'s `postgres:16-alpine` + `psql` shell script.
+# No new dependency on the umbrella `sqlx` crate (with its own `migrate!`
+# macro and `_sqlx_migrations` bookkeeping convention) was added on
+# purpose: this binary ports `deploy/migrate.sql`'s existing
+# `schema_migrations` bookkeeping logic into Rust rather than adopting a
+# second, differently-opinionated migration framework.
+cratestack.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -146,9 +146,12 @@ admin:
 # ---------------------------------------------------------------------------
 controllers:
   # Applies schema/migrations/postgres/{0001_init,0002_bootstrap} — see
-  # deploy/migrate.sql's own header for why this is safe to run
-  # concurrently or repeatedly (a session advisory lock plus a
-  # `schema_migrations` tracking table this deploy path owns). Hooked to
+  # app/sms-migrate/src/main.rs's own module doc for why this is safe to
+  # run concurrently or repeatedly (a session advisory lock plus a
+  # `schema_migrations` tracking table this deploy path owns; the runner
+  # itself is a small Rust binary — the schema SQL is embedded via
+  # `include_str!` at compile time rather than shelled out to `psql`).
+  # Hooked to
   # both pre-install and pre-upgrade, unlike rotateSigningKey below,
   # because it is genuinely idempotent — a second run against an
   # already-migrated database is a documented no-op, not a repeated
@@ -466,17 +469,20 @@ controllers:
           # poll-loop roles, never a listener) — main.rs touches
           # SMS_WORKER_HEALTH_FILE every 15s regardless of --roles; a
           # stale mtime means a hung tokio runtime, not just an idling
-          # role. Reproduces the Dockerfile HEALTHCHECK's exact shell
-          # check as a custom exec probe rather than inventing a new one.
+          # role. `app/sms-worker/Dockerfile`'s runtime image is distroless
+          # `static`, which has no `/bin/sh`/`test`/`stat` for the old
+          # shell one-liner to run at all — `sms-worker healthcheck`
+          # (app/sms-worker/src/main.rs) reproduces the identical check
+          # (same file, same 90s staleness threshold) in std-only Rust,
+          # invoked directly rather than through a shell.
           liveness:
             enabled: true
             custom: true
             spec:
               exec:
                 command:
-                  - sh
-                  - -c
-                  - 'f=/tmp/sms-worker-healthy; test -f "$f" && [ "$(( $(date +%s) - $(stat -c %Y "$f") ))" -lt 90 ]'
+                  - /usr/local/bin/sms-worker
+                  - healthcheck
               initialDelaySeconds: 20
               periodSeconds: 30
               timeoutSeconds: 5
@@ -487,9 +493,8 @@ controllers:
             spec:
               exec:
                 command:
-                  - sh
-                  - -c
-                  - 'f=/tmp/sms-worker-healthy; test -f "$f" && [ "$(( $(date +%s) - $(stat -c %Y "$f") ))" -lt 90 ]'
+                  - /usr/local/bin/sms-worker
+                  - healthcheck
               initialDelaySeconds: 20
               periodSeconds: 15
               timeoutSeconds: 5

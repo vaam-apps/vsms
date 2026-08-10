@@ -3,20 +3,20 @@
 set -euo pipefail
 : "${DATABASE_URL:?set DATABASE_URL, e.g. postgres://postgres@localhost:5432/vsms}"
 
+# #153's cratestack idempotency bookkeeping table used to be a separate
+# step here (ci/idempotency-table.sql, applied after this loop) because it
+# isn't a cratestack-generated migration. It now lives at
+# schema/migrations/postgres/0003_idempotency_table/up.sql instead — same
+# directory, same shape as 0001_init/0002_bootstrap — so this one loop
+# already applies it, in order, with nothing special-cased. Every
+# statement in every file here is IF NOT EXISTS/idempotent by construction,
+# so reapplying all of them on every run of this already-unconditional
+# loop is safe.
 for dir in schema/migrations/postgres/*/; do
   name=$(basename "$dir")
   [ -f "$dir/up.sql" ] || continue
   echo "==> $name"
   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f "$dir/up.sql"
 done
-
-# #153: cratestack's own idempotency bookkeeping table — not a
-# schema/migrations/postgres entry (see that file's own header for why),
-# but every scratch database this script sets up needs it too, since
-# IdempotencyLayer is now mounted unconditionally on every generated route.
-# Both statements in this file are IF NOT EXISTS, so reapplying it on every
-# run of this already-unconditional loop is safe.
-echo "==> idempotency-table"
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f ci/idempotency-table.sql
 
 echo "all migrations applied"

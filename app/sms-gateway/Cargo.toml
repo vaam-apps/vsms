@@ -31,6 +31,9 @@ sms-provider-orange-cm.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
+# main.rs installs the process-wide default `CryptoProvider` before
+# constructing any HTTP client — see that call site's own comment.
+rustls.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -48,6 +51,17 @@ chrono.workspace = true
 jsonwebtoken.workspace = true
 rand.workspace = true
 reqwest.workspace = true
+# tests/tls_no_provider_live.rs's own reqwest client, deliberately a
+# *second*, differently-configured instance of the same 0.13.4 already in
+# this workspace's dependency graph (via authkestra's own pin) rather than
+# the `reqwest.workspace` entry above — that one resolves 0.12 with
+# `rustls-tls` (auto-installs `ring`), which can't exercise the
+# `rustls-no-provider` code path this test exists to prove. `package =
+# "reqwest"` under an alias is how two differently-featured resolutions of
+# the same crate name coexist in one Cargo.toml.
+reqwest-no-provider = { package = "reqwest", version = "0.13.4", default-features = false, features = [
+  "rustls-no-provider",
+] }
 rsa.workspace = true
 serde.workspace = true
 serde_json.workspace = true

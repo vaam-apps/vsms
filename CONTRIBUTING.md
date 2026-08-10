@@ -29,7 +29,7 @@ A raw query against `messages` is therefore not the same query written by hand. 
 
 | Exception | Where | Why the delegates can't do it |
 |---|---|---|
-| DDL and migrations | `schema/migrations/**` | Triggers, partial indexes, foreign keys, column defaults. Not data access; the emitter produces none of it. |
+| DDL and migrations | `schema/migrations/**`, `app/sms-migrate/src/main.rs` | Triggers, partial indexes, foreign keys, column defaults. Not data access; the emitter produces none of it. `sms-migrate` (replacing the old `psql`-based `deploy/migrate.Dockerfile`) is the runner that applies this DDL via `cratestack::sqlx::raw_sql` — same exception, same reasoning, just executed from Rust instead of a shell script now. |
 | Advisory locks | `crates/sms-worker/src/lease.rs` | `pg_try_advisory_lock` / `pg_advisory_unlock`. Not a table. |
 | `LISTEN` / `NOTIFY` | `crates/sms-worker/src/notify.rs`, `crates/sms-api/src/cache.rs` | Cache-invalidation fan-out. No delegate expression exists. |
 | Readiness probe | `app/sms-gateway/src/health.rs` | `GET /readyz` (#157) round-trips a bare `SELECT 1` on the pool to prove the database is reachable. There is no model this check is *about* — it reads no application row — so there is nothing for row-level policy, audit, outbox, or `@version` to apply to. A delegate call would also fail #157's other named trap: any real table read on an unauthenticated route is a query-amplification DoS surface, which a policy-free connectivity ping is not. |
