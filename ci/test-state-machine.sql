@@ -3,8 +3,8 @@ BEGIN;
 INSERT INTO apps (name, slug, description, monthly_quota, ip_allowlist, transliterate_to_gsm7)
 VALUES ('probe','probe',NULL,0,' ',false);
 INSERT INTO messages (app_id, msisdn, msisdn_hash, operator, sender_id_value, class,
-                      priority, body_hash, body_length, encoding, segments, max_attempts, expires_at)
-SELECT id,'+237690000000','h','orange','VYMALO','otp',900,'bh',0,'gsm7',1,2, now()+interval '15 min'
+                      priority, body, body_hash, body_length, encoding, segments, max_attempts, expires_at)
+SELECT id,'+237690000000','h','orange','VYMALO','otp',900,'Votre code est 4821','bh',20,'gsm7',1,2, now()+interval '15 min'
 FROM apps WHERE slug='probe';
 
 -- id shape must satisfy the Cuid guard used by REST query filters: [a-z0-9]{2,32}
@@ -15,10 +15,16 @@ END $$;
 
 UPDATE messages SET state='queued'    WHERE state='accepted';
 UPDATE messages SET state='routed'    WHERE state='queued';
+DO $$ BEGIN
+  -- #165: body must survive every non-terminal hop — dispatch (routed)
+  -- and a later retry both need to read it back.
+  ASSERT (SELECT body IS NOT NULL FROM messages), 'otp body redacted before dispatch could read it';
+END $$;
 UPDATE messages SET state='submitted' WHERE state='routed';
 DO $$ BEGIN
   ASSERT (SELECT submitted_at IS NOT NULL FROM messages), 'submitted_at was not auto-stamped';
   ASSERT (SELECT finalized_at IS NULL     FROM messages), 'finalized_at stamped too early';
+  ASSERT (SELECT body IS NOT NULL FROM messages), 'otp body redacted before a terminal state — retry would break';
 END $$;
 
 -- illegal: submitted has no edge back to accepted
@@ -33,6 +39,27 @@ END $$;
 UPDATE messages SET state='delivered' WHERE state='submitted';
 DO $$ BEGIN
   ASSERT (SELECT finalized_at IS NOT NULL FROM messages), 'finalized_at was not auto-stamped';
+  -- #165: `class = 'otp'` reaching a terminal state must have its
+  -- plaintext body redacted; the hash/length/segments it was sent with
+  -- must survive so the row is still auditable without the plaintext.
+  ASSERT (SELECT body IS NULL FROM messages), 'otp body was not redacted on reaching a terminal state';
+  ASSERT (SELECT body_hash = 'bh' AND body_length = 20 AND segments = 1 FROM messages),
+         'bodyHash/bodyLength/segments must survive body redaction';
+END $$;
+
+-- A non-OTP message must keep its body through the exact same terminal
+-- transition — #165 redacts by class, not blanket by state.
+INSERT INTO messages (app_id, msisdn, msisdn_hash, operator, sender_id_value, class,
+                      priority, body, body_hash, body_length, encoding, segments, max_attempts, expires_at)
+SELECT id,'+237690000001','h2','orange','VYMALO','transactional',900,'Your order has shipped','bh2',23,'gsm7',1,2, now()+interval '15 min'
+FROM apps WHERE slug='probe';
+UPDATE messages SET state='queued'    WHERE id IN (SELECT id FROM messages WHERE class='transactional') AND state='accepted';
+UPDATE messages SET state='routed'    WHERE id IN (SELECT id FROM messages WHERE class='transactional') AND state='queued';
+UPDATE messages SET state='submitted' WHERE id IN (SELECT id FROM messages WHERE class='transactional') AND state='routed';
+UPDATE messages SET state='delivered' WHERE id IN (SELECT id FROM messages WHERE class='transactional') AND state='submitted';
+DO $$ BEGIN
+  ASSERT (SELECT body IS NOT NULL FROM messages WHERE class='transactional'),
+         'non-otp body must not be redacted on reaching a terminal state';
 END $$;
 
 -- illegal: delivered is terminal (no outgoing rows in the transition table)

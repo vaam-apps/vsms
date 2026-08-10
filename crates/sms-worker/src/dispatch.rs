@@ -99,11 +99,13 @@ fn decode_encoding(encoding: Encoding) -> SmsEncoding {
 /// propagated — one message's DB write failing must not stall the rest of
 /// this tick's batch.
 async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
-    // `Message.body` is nullable in the schema (a future retention pass
-    // may redact it), but every row this loop ever sees is freshly created
-    // and long before its own `expiresAt`, let alone a 90-day retention
-    // purge — a `None` here is a genuine anomaly, not a case to paper over
-    // with a default.
+    // `Message.body` is nullable in the schema — #165: for `class = otp`,
+    // Postgres's own `messages_guard_transition()` trigger (§2.10) nulls
+    // it the instant a row reaches a terminal state (`delivered`,
+    // `failed`, `expired`, `rejected`, `cancelled`). This loop only ever
+    // sees rows in `routed`, which is never terminal, so a `None` here is
+    // still a genuine anomaly — not a case to paper over with a default —
+    // not the redaction working as designed.
     let Some(body) = message.body.clone() else {
         warn!(message_id = %message.id, "routed message has no body; failing rather than guessing");
         write_transition(

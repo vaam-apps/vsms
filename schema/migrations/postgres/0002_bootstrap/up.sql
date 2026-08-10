@@ -186,6 +186,21 @@ BEGIN
         NEW.submitted_at := now();
     END IF;
 
+    -- #165: for `class = 'otp'`, the plaintext body is redacted the
+    -- instant the message reaches a terminal state — same list as the
+    -- finalized_at branch above, and for the same reason nothing can
+    -- leave those states (see the transition table's own comment). This
+    -- cannot happen any earlier: sms-worker's dispatch loop and its
+    -- undelivered->queued retry both re-read `body` from this column
+    -- (api and worker are separate processes; Postgres is the only
+    -- channel between them), so redacting at creation or at first
+    -- submit would break delivery or retry. `bodyHash`/`bodyLength`/
+    -- `segments` are untouched — they carry no plaintext.
+    IF NEW.class = 'otp' AND NEW.body IS NOT NULL
+       AND NEW.state IN ('delivered','failed','expired','rejected','cancelled') THEN
+        NEW.body := NULL;
+    END IF;
+
     RETURN NEW;
 END $$;
 

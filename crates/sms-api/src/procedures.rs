@@ -611,6 +611,21 @@ impl Procedures {
         let body_hash = self.keyed_hash_hex(&body);
         let body_len = i64::try_from(body.len()).unwrap_or(i64::MAX);
 
+        // #165: `body` is written here unconditionally, including for
+        // `class = otp` — it must be, or `sms-worker`'s `dispatch` role
+        // (a separate process, coordinating with this one through
+        // nothing but this row — see the stack table's "no broker, no
+        // Redis") would have no way to learn what to submit, and a later
+        // `undelivered -> queued` retry (§7.4, #122) would have nothing
+        // to resend. The doc's stated protection ("an OTP gateway that
+        // stores OTP plaintext for 90 days is a credential database")
+        // still holds, just not by never writing the value: Postgres's
+        // own `messages_guard_transition()` trigger (§2.10) nulls `body`
+        // for `class = 'otp'` the instant the row reaches a terminal
+        // state, which is the earliest point nothing can ever need it
+        // again. `bodyHash`/`bodyLength`/`segments` below are unaffected
+        // by that redaction — they carry no plaintext.
+        //
         // create()'s own @@emit(created, updated) writes the transactional
         // outbox row as a side effect — no separate outbox insert here.
         let message = db

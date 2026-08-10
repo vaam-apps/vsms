@@ -581,7 +581,11 @@ model Message {
 
 Eight things worth defending:
 
-**`body` is `@sensitive`, and for OTP it is `null`.** `@sensitive` redacts it in *audit snapshots only* — verified: it adds no serde attribute, so `GET /messages/{id}` still returns the body to a principal that passes the `detail` policy. So `@sensitive` is not a confidentiality control, and the real protection is not writing the value: for `class = otp` the send procedure sets `body = null` and keeps only `bodyHash`, `bodyLength`, `segments`. An OTP gateway that stores OTP plaintext for 90 days is a credential database.
+**`body` is `@sensitive`, and for OTP it does not survive the message's lifetime.** `@sensitive` redacts it in *audit snapshots only* — verified: it adds no serde attribute, so `GET /messages/{id}` still returns the body to a principal that passes the `detail` policy. So `@sensitive` is not a confidentiality control, and the real protection is not *retaining* the value.
+
+**#165 found that an earlier revision of this section claimed the send procedure nulls `body` for `class = otp` outright, and the code never did that — worse, that claim can't be made true as written.** `sms-worker`'s `dispatch` role and the api process are separate OS processes coordinating through nothing but Postgres (this section's own stack table: "no broker, no Redis"), so the worker has no channel to learn a message's body except by reading the same `messages.body` column the send procedure wrote. Nulling it at creation would make every OTP message fail dispatch with "body missing" — confirmed by tracing `crates/sms-worker/src/dispatch.rs`'s `submit_one`, which reads `message.body` off the row `crates/sms-worker/src/claim.rs`'s `candidates()` just re-selected from the database, not an in-memory value carried from the send path. A `submitted -> undelivered -> queued` retry (§7.4, #122) needs that same body again on the next attempt, so redacting it the moment it is first submitted breaks retry too.
+
+So the redaction point is **the state machine trigger**, not the send procedure: `messages_guard_transition()` (§2.10) already fires on every transition and already special-cases the terminal states to stamp `finalizedAt`; it now also nulls `body` for `class = 'otp'` in that same branch, the instant a message reaches `delivered`, `failed`, `expired`, `rejected` or `cancelled`. Terminality is data, not code (§2.10's own comment on the transition table), so once a row is in one of those states nothing ever transitions it again — nothing will ever need `body` again either. This keeps `bodyHash`, `bodyLength` and `segments` (never touched by the redaction) and bounds the plaintext's lifetime to "however long this one message takes to reach a terminal state" — for OTP that's the `default_validity` window (15 minutes) in the common case, not the full 90-day `@@retain` — rather than the zero-second window the original wording implied but the architecture cannot deliver.
 
 **`state MessageState @default('accepted')` keeps its default on purpose.** Everywhere else a `@default` on a caller-settable field is a bug (§2.0), but here being unsettable *is* the control: because any `@default` excludes the field from `CreateMessageInput`, no caller can create a message that is already `submitted` or `delivered`. `attempts` and `costXaf` keep their defaults for the same reason. `operator`, `class`, `priority` and `maxAttempts` lost theirs, because the send procedure computes all four per message and a default would have made them unwritable.
 
@@ -1065,6 +1069,21 @@ BEGIN
 
     IF NEW.state = 'submitted' AND NEW.submitted_at IS NULL THEN
         NEW.submitted_at := now();
+    END IF;
+
+    -- #165: for `class = 'otp'`, the plaintext body is redacted the
+    -- instant the message reaches a terminal state — same list as the
+    -- finalized_at branch above, and for the same reason nothing can
+    -- leave those states (see the transition table's own comment). This
+    -- cannot happen any earlier: sms-worker's dispatch loop and its
+    -- undelivered->queued retry both re-read `body` from this column
+    -- (api and worker are separate processes; Postgres is the only
+    -- channel between them), so redacting at creation or at first
+    -- submit would break delivery or retry. `bodyHash`/`bodyLength`/
+    -- `segments` are untouched — they carry no plaintext.
+    IF NEW.class = 'otp' AND NEW.body IS NOT NULL
+       AND NEW.state IN ('delivered','failed','expired','rejected','cancelled') THEN
+        NEW.body := NULL;
     END IF;
 
     RETURN NEW;
