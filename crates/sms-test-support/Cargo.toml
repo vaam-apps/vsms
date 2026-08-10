@@ -15,6 +15,9 @@ publish.workspace = true
 # lease.rs` and `sms-api/src/cache.rs`. See lib.rs's own module doc.
 cratestack.workspace = true
 tokio = { workspace = true, features = ["process", "sync", "time", "rt-multi-thread"] }
+# `install_default_crypto_provider`'s own dependency — see lib.rs's "rustls
+# crypto provider" section for why a test harness needs this at all.
+rustls.workspace = true
 
 [lints]
 workspace = true
