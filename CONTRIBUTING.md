@@ -33,8 +33,9 @@ A raw query against `messages` is therefore not the same query written by hand. 
 | Advisory locks | `crates/sms-worker/src/lease.rs` | `pg_try_advisory_lock` / `pg_advisory_unlock`. Not a table. |
 | `LISTEN` / `NOTIFY` | `crates/sms-worker/src/notify.rs`, `crates/sms-api/src/cache.rs` | Cache-invalidation fan-out. No delegate expression exists. |
 | Readiness probe | `app/sms-gateway/src/health.rs` | `GET /readyz` (#157) round-trips a bare `SELECT 1` on the pool to prove the database is reachable. There is no model this check is *about* — it reads no application row — so there is nothing for row-level policy, audit, outbox, or `@version` to apply to. A delegate call would also fail #157's other named trap: any real table read on an unauthenticated route is a query-amplification DoS surface, which a policy-free connectivity ping is not. |
+| Outbox age telemetry | `crates/sms-worker/src/drain.rs` | The `drain` role (#39) alerts on oldest-undelivered age, not just on errors — a stalled outbox with zero errors is exactly as silent as one full of retries. `cratestack_event_outbox` is the framework's own internal bookkeeping table (created lazily by `ensure_event_outbox_table`), not one of `schema.cstack`'s models, so no delegate exists to read it. Same reasoning as the readiness probe: no row-level policy to bypass (the table isn't ours), no audit trail to skip (a `SELECT` isn't a mutation), no `@version`/soft-delete concern (it isn't a model). |
 
-That is the complete list, and `ci/assert-no-raw-sqlx.sh` enforces it. Adding a fifth entry should feel like a design decision, because it is one — put the reasoning in the PR.
+That is the complete list, and `ci/assert-no-raw-sqlx.sh` enforces it. Adding a sixth entry should feel like a design decision, because it is one — put the reasoning in the PR.
 
 Two things people reach for that are **not** exceptions:
 

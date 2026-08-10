@@ -573,6 +573,17 @@ async fn serve_command(command: Command) -> Result<()> {
     let db = Cratestack::builder(pool).build();
     let sys = system_context();
 
+    // #38/#39: this process's `Message` writes (`sendMessage`, DLR
+    // ingestion) are the only ones this milestone wires a webhook
+    // subscriber for. Registering before anything else touches `db` is
+    // required, not just tidy — a write on an emitting model with no
+    // subscriber registered on this process's own `Cratestack` instance
+    // doesn't wait for `drain` to catch it later; the library's own
+    // automatic post-commit drain marks it delivered with nothing done,
+    // silently, the moment the write commits. See `sms_api::webhooks`'s
+    // own module doc for the full mechanism.
+    sms_api::webhooks::register_subscribers(&db);
+
     let (signing, jwks) = sms_auth::op::load_signing_keys(&db, &sys, &issuer)
         .await
         .context(

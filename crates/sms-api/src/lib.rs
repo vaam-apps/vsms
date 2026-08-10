@@ -42,6 +42,7 @@ pub mod pepper;
 pub mod procedures;
 pub mod rbac;
 pub mod router;
+pub mod webhooks;
 
 pub use auth::{GatewayAuth, Principal, PrincipalKind};
 pub use errors::{is_illegal_transition, map_database_error};
@@ -52,3 +53,4 @@ pub use router::{
     default_rate_limit_config, default_source_rate_limit_config, route_table, router,
     DEFAULT_IDEMPOTENCY_TTL,
 };
+pub use webhooks::register_subscribers;

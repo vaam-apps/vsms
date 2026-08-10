@@ -282,6 +282,18 @@ async fn main() -> Result<()> {
         db: sms_api::schema::Cratestack::builder(pool).build(),
         provider,
     };
+
+    // Unconditional — not gated on `drain` being one of `--roles`. Every
+    // role in this process shares this one `Cratestack` (cloned per task,
+    // sharing the same underlying `CoolEventBus` via its `Arc`-backed
+    // internals), and `dispatch`/`jobs::expire_stale` write to `Message`
+    // themselves — a write on an emitting model with no subscriber
+    // registered on this process's own runtime doesn't wait for `drain` to
+    // pick it up later, it gets marked delivered with nothing done, by the
+    // library's own automatic post-commit drain, and is lost. See
+    // `sms_api::webhooks`'s own module doc for the full mechanism.
+    sms_api::webhooks::register_subscribers(&ctx.db);
+
     let worker_id = cli.worker_id.clone().unwrap_or_else(default_worker_id);
 
     info!(
