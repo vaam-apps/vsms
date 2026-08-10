@@ -642,10 +642,27 @@ model WebhookAttempt {
   deliveredAt DateTime?
   version Int @version
 
+  // The ninth instance of the policy-gap shape AGENTS.md's "Invariants that
+  // fail the build rather than production" section already records eight
+  // times over (App, AppClient, SenderIdRegistration, OperatorPrefixRule,
+  // Provider, Job, DeliveryReceipt, WebhookEndpoint): a model whose
+  // `@@allow` omits `hasRole('system')` doesn't error — it silently filters
+  // an internal system-context read down to an empty array.
+  //
+  // Unlike the first eight, this one never shipped broken either — #38/#39's
+  // own PR flagged it explicitly, in advance, in this exact comment's
+  // predecessor: "WebhookAttempt's own list/detail policy has no
+  // hasRole('system') branch at all — only create/update do... #40's hooks
+  // claim loop will need that clause the moment it exists to claim attempts
+  // for delivery." #40 (this change) is that moment: `claim::Claimable for
+  // WebhookAttempt`'s own `candidates()` (crates/sms-worker/src/claim.rs)
+  // reads this model under `sys()` to find due attempts.
+  //
+  // Guarded by `crates/sms-api/tests/system_context_golden_list_live_postgres.rs`.
   @@paged
   @@retain(days: 30)
-  @@allow("list", auth().kind == "user" || endpoint.appId == auth().appId)
-  @@allow("detail", auth().kind == "user" || endpoint.appId == auth().appId)
+  @@allow("list", auth().kind == "user" || endpoint.appId == auth().appId || hasRole('system'))
+  @@allow("detail", auth().kind == "user" || endpoint.appId == auth().appId || hasRole('system'))
   @@allow("create", hasRole('system'))
   @@allow("update", hasRole('system'))
 }

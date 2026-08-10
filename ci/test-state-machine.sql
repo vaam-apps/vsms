@@ -78,5 +78,44 @@ DO $$ BEGIN
   END;
 END $$;
 
+-- webhook attempts: pending -> delivering -> succeeded, with delivered_at
+-- auto-stamped by the trigger (#40) — same convention as messages'
+-- finalized_at / jobs' finished_at above.
+UPDATE webhook_attempts SET state='delivering' WHERE state='pending';
+DO $$ BEGIN
+  ASSERT (SELECT delivered_at IS NULL FROM webhook_attempts), 'delivered_at stamped too early';
+END $$;
+UPDATE webhook_attempts SET state='succeeded' WHERE state='delivering';
+DO $$ BEGIN
+  ASSERT (SELECT delivered_at IS NOT NULL FROM webhook_attempts), 'delivered_at was not auto-stamped';
+END $$;
+
+-- illegal: succeeded is terminal
+DO $$ BEGIN
+  BEGIN
+    UPDATE webhook_attempts SET state='pending' WHERE state='succeeded';
+    RAISE EXCEPTION 'terminal state succeeded was allowed to transition';
+  EXCEPTION WHEN SQLSTATE 'SM001' THEN NULL;
+  END;
+END $$;
+
+-- failed -> delivering is the retry-after-backoff edge and must be legal;
+-- delivering -> dead (max attempts, or 410 Gone) must be too. A second,
+-- fresh row — the first is already terminal (succeeded) above, and
+-- webhook_attempts_dedupe (endpoint_id, aggregate_id, event_type) means a
+-- second row needs its own event_type to coexist with the first.
+INSERT INTO webhook_attempts (endpoint_id, source_event_id, aggregate_id, event_type, payload, state)
+SELECT e.id, gen_random_uuid(), m.id, 'message.submitted', '{}', 'failed'
+FROM webhook_endpoints e, messages m;
+UPDATE webhook_attempts SET state='delivering' WHERE state='failed';
+UPDATE webhook_attempts SET state='dead' WHERE state='delivering' AND event_type='message.submitted';
+DO $$ BEGIN
+  BEGIN
+    UPDATE webhook_attempts SET state='delivering' WHERE state='dead';
+    RAISE EXCEPTION 'terminal state dead was allowed to transition';
+  EXCEPTION WHEN SQLSTATE 'SM001' THEN NULL;
+  END;
+END $$;
+
 ROLLBACK;
 \echo 'ALL ASSERTIONS PASSED'

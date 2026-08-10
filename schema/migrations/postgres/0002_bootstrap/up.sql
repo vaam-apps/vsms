@@ -233,6 +233,49 @@ CREATE TRIGGER jobs_state_guard
     BEFORE UPDATE ON jobs
     FOR EACH ROW EXECUTE FUNCTION jobs_guard_transition();
 
+CREATE TABLE attempt_state_transitions (
+    from_state TEXT NOT NULL,
+    to_state   TEXT NOT NULL,
+    PRIMARY KEY (from_state, to_state),
+    CONSTRAINT attempt_state_transitions_from_check
+        CHECK (from_state IN ('pending', 'delivering', 'succeeded', 'failed', 'dead')),
+    CONSTRAINT attempt_state_transitions_to_check
+        CHECK (to_state IN ('pending', 'delivering', 'succeeded', 'failed', 'dead'))
+);
+
+INSERT INTO attempt_state_transitions (from_state, to_state) VALUES
+    ('pending','delivering'),    ('failed','delivering'),
+    ('delivering','succeeded'),  ('delivering','failed'),  ('delivering','dead');
+-- succeeded, dead are terminal. `delivering -> dead` covers both reasons
+-- §8.5 stops retrying outright: `maxAttempts` exhausted, and an immediate
+-- 410 Gone (which also deactivates the endpoint — hooks.rs, not this
+-- trigger). `failed -> dead` does not exist: the exhausted-attempts check
+-- happens once, at the delivering -> {failed | dead} decision the hooks
+-- role's own write makes, not as a second hop through failed.
+
+CREATE OR REPLACE FUNCTION attempts_guard_transition() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.state IS NOT DISTINCT FROM OLD.state THEN
+        RETURN NEW;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM attempt_state_transitions
+        WHERE from_state = OLD.state AND to_state = NEW.state
+    ) THEN
+        RAISE EXCEPTION 'illegal webhook attempt transition % -> % on %', OLD.state, NEW.state, OLD.id
+            USING ERRCODE = 'SM001';
+    END IF;
+    IF NEW.state = 'succeeded' AND NEW.delivered_at IS NULL THEN
+        NEW.delivered_at := now();
+    END IF;
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER attempts_state_guard
+    BEFORE UPDATE ON webhook_attempts
+    FOR EACH ROW EXECUTE FUNCTION attempts_guard_transition();
+
 -- The dispatch claim path.
 CREATE INDEX messages_dispatch_idx
     ON messages (priority DESC, created_at)
@@ -273,6 +316,12 @@ CREATE UNIQUE INDEX webhook_attempts_dedupe
 
 CREATE INDEX webhook_due_idx ON webhook_attempts (next_attempt_at)
     WHERE state IN ('pending','failed');
+
+-- The hooks role's crash-reclaim query (a stale `delivering` lease) — same
+-- role `messages_lease_reclaim_idx`/`jobs_lease_reclaim_idx` play for their
+-- own claim loops.
+CREATE INDEX webhook_attempts_lease_reclaim_idx ON webhook_attempts (lease_until)
+    WHERE state = 'delivering';
 
 CREATE INDEX receipts_lookup_idx  ON delivery_receipts (provider_id, provider_message_ref);
 CREATE INDEX receipts_message_idx ON delivery_receipts (message_id);

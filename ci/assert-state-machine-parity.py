@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """R2 — the state diagram and the transition table must agree.
 
-Legal edges live in `message_state_transitions` / `job_state_transitions`, and
-triggers reject everything else with SQLSTATE SM001. The diagrams in the design
-doc are what people actually read. When the two drift, the first symptom is a
-production SM001 on a transition that looks perfectly legal in the diagram — a
-failure that is confusing precisely because the documentation is wrong.
+Legal edges live in `message_state_transitions` / `job_state_transitions` /
+`attempt_state_transitions`, and triggers reject everything else with
+SQLSTATE SM001. The diagrams in the design doc are what people actually read.
+When the two drift, the first symptom is a production SM001 on a transition
+that looks perfectly legal in the diagram — a failure that is confusing
+precisely because the documentation is wrong.
 
 This compares them in both directions and fails on any asymmetry.
 
@@ -99,12 +100,13 @@ def main() -> int:
     sql = SQL.read_text()
 
     diagrams = mermaid_state_diagrams(markdown)
-    if len(diagrams) < 2:
-        sys.exit(f"expected at least two stateDiagram-v2 blocks, found {len(diagrams)}")
+    if len(diagrams) < 3:
+        sys.exit(f"expected at least three stateDiagram-v2 blocks, found {len(diagrams)}")
 
     machines = {
         "message": sql_transitions(sql, "message_state_transitions"),
         "job": sql_transitions(sql, "job_state_transitions"),
+        "attempt": sql_transitions(sql, "attempt_state_transitions"),
     }
 
     # Match each diagram to a machine by state overlap rather than by position,
