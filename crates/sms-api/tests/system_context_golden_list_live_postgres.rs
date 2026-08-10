@@ -57,30 +57,36 @@
 //! to put it in one list or the other *and say why* — it cannot silently
 //! fall through unclassified.
 //!
-//! # `WebhookEndpoint` (#41) — this file's guard doing its job, not
-//! recording an eighth casualty
+//! # The eighth instance — and the guard doing its job twice
 //!
-//! `rotateWebhookSecret` (#41, `crates/sms-api/src/procedures.rs`) is the
-//! first internal system-context reader `WebhookEndpoint` has ever had.
-//! Unlike the seven prior instances this file used to describe as "found
-//! live, never by review" — a reader already shipped, silently returning
-//! nothing, until something noticed — this one never shipped broken:
-//! [`every_model_in_the_schema_is_classified`] would have failed the
-//! moment `WebhookEndpoint` moved out of
-//! [`NOT_REQUIRED_TO_BE_SYSTEM_READABLE`] without a classification
-//! decision, and [`every_system_readable_model_actually_admits_a_system_read`]
-//! below would have failed for real had `schema.cstack`'s own
-//! `hasRole('system')` clause been forgotten — the same live check that
-//! caught the previous seven, now exercised on new code before merge
-//! instead of after. That is exactly what this file's own prior framing
-//! ("a golden test... would end it; until someone writes it, expect an
-//! eighth") predicted the test would do once written.
+//! `WebhookEndpoint`'s `@@allow("read", ...)` was `auth().kind == "user"`
+//! only, the same shape as the seven instances before it. What makes this
+//! one different from those seven is that it never shipped broken: it was
+//! caught **twice, independently, on the same day, before merge**, by two
+//! changes that each needed a system-context read of this model —
+//! `rotateWebhookSecret` (#41, `crates/sms-api/src/procedures.rs`) and
+//! #38's `Message.created`/`Message.updated` subscribers
+//! (`crates/sms-api/src/webhooks.rs`).
+//!
+//! The seven prior instances were each found live, after shipping, by a
+//! reader silently returning nothing. This one was found by
+//! [`every_model_in_the_schema_is_classified`] refusing to let
+//! `WebhookEndpoint` move out of [`NOT_REQUIRED_TO_BE_SYSTEM_READABLE`]
+//! unclassified, and by
+//! [`every_system_readable_model_actually_admits_a_system_read`] failing
+//! for real when the clause was missing. That is what this file's own
+//! earlier framing ("a golden test... would end it; until someone writes
+//! it, expect an eighth") predicted it would do once written.
+//!
+//! Two independent discoveries of one gap in a day is also the strongest
+//! argument yet for the structural fix, not just the guard — see #176.
 //!
 //! Cross-checked against every `db.<model>()...run(sys)` call in
 //! `crates/sms-api/src`, `crates/sms-worker/src`, and `crates/sms-auth/src`
 //! (the only places a `system`-role [`CoolContext`] is ever constructed):
-//! **14** models an internal system context reads today all admit one; the
-//! 5 that don't (`Route`, `MessagePart`, `WebhookAttempt`, `User`, `Role`)
+//! **no ninth instance exists as of this file.** All 14 models an internal
+//! system context actually reads today already admit one; the 5 models
+//! that don't (`Route`, `MessagePart`, `WebhookAttempt`, `User`, `Role`)
 //! have no internal reader to break. See
 //! [`NOT_REQUIRED_TO_BE_SYSTEM_READABLE`]'s own per-model reasoning.
 //!
@@ -131,9 +137,13 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 ///   job — see #121's own reasoning in `schema.cstack`).
 /// - `Job` — the claim loop's own two-hop reclaim.
 /// - `OptOut` — `Procedures::ensure_not_opted_out`.
-/// - `WebhookEndpoint` (#41) — `Procedures::rotate_secret`
-///   (`rotateWebhookSecret`) reads the endpoint being rotated, and writes
-///   its fresh `secret`/`prevSecret`/`secretRotatedAt`, under `sys`.
+/// - `WebhookEndpoint` — two internal system-context readers, found
+///   independently: `Procedures::rotate_secret` (`rotateWebhookSecret`,
+///   #41) reads the endpoint and writes its fresh
+///   `secret`/`prevSecret`/`secretRotatedAt` under `sys`; and #38's
+///   subscribers (`crates/sms-api/src/webhooks.rs`,
+///   `enqueue_message_webhook_attempts`) resolve which endpoints
+///   subscribe to a derived event type, also under `sys`.
 const SYSTEM_READABLE_MODELS: &[&str] = &[
     "App",
     "AppClient",
@@ -777,7 +787,7 @@ async fn seed_and_verify_webhook_endpoint(
         .webhook_endpoint()
         .create(schema::CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
-            url: "https://example.test/webhooks/vsms".to_owned(),
+            url: format!("https://example.test/webhooks/{suffix}"),
             eventTypes: " message.delivered ".to_owned(),
             secret: format!("sys-golden-secret-{suffix}"),
             prevSecret: None,

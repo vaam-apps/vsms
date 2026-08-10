@@ -595,18 +595,27 @@ model WebhookEndpoint {
 
   attempts WebhookAttempt[] @relation(fields: [id], references: [endpointId])
 
+  // The eighth instance of the policy-gap shape AGENTS.md's "Invariants
+  // that fail the build rather than production" section already records
+  // seven times over (App, AppClient, SenderIdRegistration,
+  // OperatorPrefixRule, Provider, Job, DeliveryReceipt): a model whose
+  // `@@allow` omits `hasRole('system')` doesn't error — it silently
+  // filters an internal system-context read down to an empty array.
+  //
+  // Found twice, independently and on the same day, from two directions,
+  // which is itself the argument for the structural guard that section
+  // asks for:
+  //   - #41: `rotateWebhookSecret` reads *and updates* this model under a
+  //     system context (`Procedures::sys`), not the caller's own ctx —
+  //     hence the clause on `update` below as well as `read`.
+  //   - #38/#39: the Message.created/updated subscribers
+  //     (`crates/sms-api/src/webhooks.rs`) resolve which endpoints
+  //     subscribe to an event type by reading this model under a system
+  //     context. Without the clause the subscriber matches zero endpoints
+  //     against every event, forever, with nothing anywhere to notice.
+  //
+  // Guarded by `crates/sms-api/tests/system_context_golden_list_live_postgres.rs`.
   @@audit
-  // #41: `rotateWebhookSecret` reads and updates this model under a
-  // `system` context, matching every other procedure's own write path in
-  // `crates/sms-api/src/procedures.rs` (see `Procedures::sys`) rather than
-  // the caller's own ctx. Before this line, no internal system-context
-  // reader existed for this model at all — the eighth instance of the
-  // exact policy-gap shape `AGENTS.md`'s "Invariants that fail the build
-  // rather than production" section already names seven times over
-  // (App, AppClient, SenderIdRegistration, OperatorPrefixRule, Provider,
-  // Job, DeliveryReceipt): a model whose `@@allow` omits `hasRole('system')`
-  // doesn't error, it silently filters an internal read to an empty array.
-  // See `crates/sms-api/tests/system_context_golden_list_live_postgres.rs`.
   @@allow("read", auth().kind == "user" || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('developer'))
   @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('developer') || hasRole('system'))

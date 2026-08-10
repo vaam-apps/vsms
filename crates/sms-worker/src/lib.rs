@@ -5,8 +5,9 @@
 //! [`lease`]'s advisory-lock leader election (#28) and [`claim`]'s CAS claim
 //! loop (#29). `Dispatch`'s real body ([`dispatch`], #33) is the first role
 //! to actually call into [`claim::claim_batch`]; `Jobs`/`Scheduler`
-//! ([`jobs`]/[`scheduler`], #35) are the second and third. `Drain`/`Hooks`
-//! are still [`run`]'s idle stub until #39/#40 land.
+//! ([`jobs`]/[`scheduler`], #35) are the second and third; `Drain`
+//! ([`drain`], #39) is the fourth. `Hooks` is still [`run`]'s idle stub
+//! until #40 lands.
 //!
 //! This crate depends on `cratestack` (for [`lease`]'s raw-`sqlx` R1
 //! exception) and, since #29, `sms-api` (for the expanded schema
@@ -26,6 +27,7 @@ use tokio_util::sync::CancellationToken;
 
 pub mod claim;
 pub mod dispatch;
+pub mod drain;
 pub mod jobs;
 pub mod lease;
 pub mod scheduler;
@@ -193,6 +195,10 @@ pub async fn run(role: Role, ctx: WorkerContext, worker: &str) {
         }
         Role::Scheduler => {
             scheduler::run(ctx, worker).await;
+            return;
+        }
+        Role::Drain => {
+            drain::run(ctx, worker).await;
             return;
         }
         _ => {}
@@ -387,11 +393,15 @@ mod tests {
         // The real assertion is "run() doesn't return" — proven by racing it
         // against a generous timeout under a paused clock, which advances
         // instantly and would still time out if run() ever completed.
-        // Drain, not Dispatch: Dispatch has a real body now (#33) and is
-        // covered by `dispatch`'s own tests instead.
+        // Hooks, not Dispatch/Drain: those two have real bodies now (#33,
+        // #39) and are covered by their own tests instead. Hooks is the
+        // only role still a pure std::future::pending stub (M3 #40) — and
+        // the only one safe to drive against `unused_worker_context()`'s
+        // never-connecting lazy pool, since (unlike Drain) it never touches
+        // the pool at all.
         let outcome = tokio::time::timeout(
             std::time::Duration::from_hours(8760),
-            super::run(Role::Drain, unused_worker_context(), "test-worker"),
+            super::run(Role::Hooks, unused_worker_context(), "test-worker"),
         )
         .await;
         assert!(outcome.is_err(), "run() resolved; a stub role must idle");
