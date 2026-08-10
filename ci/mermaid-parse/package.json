@@ -1,0 +1,10 @@
+{
+  "name": "mermaid-parse-check",
+  "private": true,
+  "type": "module",
+  "description": "Parses every mermaid block in docs/architecture.md with no browser (#179). Deliberately outside the pnpm workspace: this is a CI-only tool, not application code.",
+  "devDependencies": {
+    "jsdom": "25.0.1",
+    "mermaid": "11.16.1"
+  }
+}

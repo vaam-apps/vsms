@@ -85,6 +85,24 @@ jobs:
       - name: Cargo.lock is up to date
         run: cargo metadata --locked --format-version 1 > /dev/null
 
+  deny:
+    name: cargo deny (advisories, bans, licenses, sources)
+    runs-on: ubuntu-latest
+
+    # #174: this check existed (`just deny`, `deny.toml`) but nothing in CI
+    # ever ran it, so RUSTSEC-2023-0071 (Marvin Attack, in `rsa` via
+    # authkestra's RS256 path) had been failing silently for however long it
+    # was present. Same shape as the pre-#118 problem of live suites nobody
+    # ran. `deny.toml`'s `[advisories] ignore` entry for that one advisory
+    # carries the reachability analysis inline — this job fails on any
+    # *other* advisory, and on the accepted one only if the ignore entry is
+    # ever removed.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
   live:
     name: live-Postgres suites (sms-test-support)
     runs-on: ubuntu-latest
@@ -205,27 +223,30 @@ jobs:
   diagrams:
     name: mermaid diagrams parse
     runs-on: ubuntu-latest
+
+    # #179: this job used to install @mermaid-js/mermaid-cli, whose
+    # puppeteer postinstall downloads a Chrome headless-shell build from an
+    # upstream CDN on every run, at a version this repo doesn't pin. It
+    # failed on #178 — a PR that touched no diagrams — purely because that
+    # download failed, and had already been patched once before for a
+    # puppeteer sandbox issue (the --no-sandbox flag this job used to pass).
+    # Two fixes to the same browser-download problem is the unpinned-
+    # moving-dependency-in-a-pipeline pattern AGENTS.md's release-engineering
+    # notes warn about, so this is a durable fix rather than a third patch:
+    # this job's stated purpose is "diagrams parse", not "diagrams render to
+    # SVG", and ci/mermaid-parse/parse.mjs proves exactly that — via
+    # mermaid.parse() over jsdom — with no browser, no CDN download, and no
+    # puppeteer anywhere in the dependency tree. `mermaid`/`jsdom` are
+    # pinned to exact versions in ci/mermaid-parse/package.json +
+    # package-lock.json, so nothing here can fail for a reason unrelated to
+    # the diagrams themselves.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - run: npm install -g @mermaid-js/mermaid-cli
-      - name: Render every diagram in the design doc
-        run: |
-          mkdir -p /tmp/mmd
-          python3 - <<'PY'
-          import re, pathlib
-          src = pathlib.Path('docs/architecture.md').read_text()
-          for i, b in enumerate(re.findall(r'```mermaid\n(.*?)```', src, re.S)):
-              pathlib.Path(f'/tmp/mmd/d{i}.mmd').write_text(b)
-          print(len(list(pathlib.Path('/tmp/mmd').glob('*.mmd'))), 'diagrams')
-          PY
-          # ubuntu-latest disables unprivileged user namespaces, which breaks
-          # Chromium's default sandbox under Puppeteer. No untrusted input is
-          # rendered here (diagrams come from our own design doc), so
-          # --no-sandbox is safe in this CI context.
-          echo '{"args": ["--no-sandbox"]}' > /tmp/puppeteer-config.json
-          for f in /tmp/mmd/*.mmd; do
-            mmdc -p /tmp/puppeteer-config.json -i "$f" -o "${f%.mmd}.svg" || { echo "::error::$f failed to render"; exit 1; }
-          done
+          node-version: '24'
+      - name: Install the parse-only checker
+        working-directory: ci/mermaid-parse
+        run: npm ci
+      - name: Parse every diagram in the design doc (no browser)
+        run: node ci/mermaid-parse/parse.mjs docs/architecture.md
