@@ -13,11 +13,11 @@ const PREV_SECRET =
 console.log("============================================================");
 console.log(" vsms reference webhook receiver (examples/node/webhook-receiver)");
 console.log("============================================================");
-console.log(" vsms cannot deliver webhooks yet — outbound delivery (#38-#42)");
-console.log(" is unbuilt, and #41 (the signature this receiver verifies) is");
-console.log(" not implemented. Its scheme IS specified in docs/architecture");
-console.log(" .md §4.4 though — only the MAC algorithm is a guess. See");
-console.log(" README.md and src/signature.ts for exactly what that means.");
+console.log(" vsms cannot deliver webhooks over HTTP yet — the drain/hooks");
+console.log(" worker roles (#38-#40, #42) are unbuilt. The signature this");
+console.log(" receiver verifies (#41) IS implemented and confirmed against");
+console.log(" crates/sms-webhook (see `pnpm test`). See README.md and");
+console.log(" src/signature.ts for exactly what that does and doesn't prove.");
 console.log("------------------------------------------------------------");
 console.log(` listening on   : http://localhost:${PORT}`);
 console.log(" webhook route  : POST /webhooks/vsms");

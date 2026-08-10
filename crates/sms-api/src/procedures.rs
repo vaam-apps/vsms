@@ -1,10 +1,11 @@
 //! The seven procedures the schema declares.
 //!
-//! `previewMessage`, `sendMessage`, and `provisionAppClient` are
-//! implemented. The other four touch the job queue or webhooks, none of
-//! which exist yet; each returns a clearly-labelled error naming the
-//! milestone that will build it, rather than a plausible-looking stub that
-//! would pass a smoke test and lie.
+//! `previewMessage`, `sendMessage`, `provisionAppClient`, and (#41)
+//! `rotateWebhookSecret` are implemented. The other three touch the job
+//! queue or outbound webhook delivery, none of which exist yet; each
+//! returns a clearly-labelled error naming the milestone that will build
+//! it, rather than a plausible-looking stub that would pass a smoke test
+//! and lie.
 
 use authkestra_engine::TokenManager;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
@@ -24,7 +25,7 @@ use crate::pepper::{hmac_sha256_hex, HashPepper};
 use crate::rbac::require_permission;
 use crate::schema::{
     self, app, app_client, message, operator_prefix_rule, opt_out, provider, sender_id,
-    sender_id_registration,
+    sender_id_registration, webhook_endpoint,
 };
 
 /// RSA modulus size for a freshly generated client keypair. Matches
@@ -806,6 +807,89 @@ impl Procedures {
             privateKeyPem: private_key_pem.to_string(),
         })
     }
+
+    /// #41: rotate `WebhookEndpoint.secret` with a 24-hour overlap window
+    /// — the current `secret` moves to `prevSecret` (nothing is thrown
+    /// away; the endpoint keeps verifying signatures made with its old
+    /// secret until `prevSecret` is cleared) and a fresh
+    /// `sms_webhook::generate_secret()` value takes its place.
+    /// `secretRotatedAt` records when this happened.
+    ///
+    /// **Clearing `prevSecret` after 24 hours is out of scope for this
+    /// procedure.** §4.4's own words: "a job clears `prevSecret` after 24
+    /// hours" — that's §7.5's `cleanup_secrets` job, one of the eight job
+    /// kinds this repo's own M2 status notes (`AGENTS.md`, `#35`) already
+    /// lists as not yet built, for the same reason every other one isn't:
+    /// no `jobs` role infrastructure gap here, just no story that wires
+    /// this specific job kind up yet. Until it exists, an operator who
+    /// rotates a secret is responsible for knowing when 24 hours have
+    /// passed and, if they want the old secret to stop working sooner,
+    /// rotating a second time (which overwrites `prevSecret` again).
+    ///
+    /// `WebhookEndpoint` has no `@version` field, so the read-then-write
+    /// below is not an optimistic-concurrency CAS the way `Message`'s
+    /// `if_match(version)` is. This procedure's own `@isolation
+    /// ("serializable")` is the guard against two concurrent rotations of
+    /// the same endpoint racing: Postgres aborts the second transaction
+    /// with a serialization failure rather than silently letting one
+    /// rotation's write clobber the other's `prevSecret`.
+    ///
+    /// Reads and writes as `sys`, matching every other procedure's write
+    /// path in this file (see `Procedures::sys`'s own doc) — not the
+    /// caller's own `ctx`, even though `ctx`'s owner/admin/developer role
+    /// already satisfies `WebhookEndpoint`'s `read`/`update` policy on its
+    /// own. `WebhookEndpoint` had no `hasRole('system')` clause until this
+    /// change — the schema's own comment on that clause explains why (no
+    /// internal system-context reader existed before this procedure), and
+    /// it is the eighth instance of the exact shape `AGENTS.md`'s
+    /// "Invariants that fail the build rather than production" section
+    /// already names seven times over. See that file and
+    /// `crates/sms-api/tests/system_context_golden_list_live_postgres.rs`.
+    async fn rotate_secret(
+        &self,
+        db: &schema::Cratestack,
+        _ctx: &CoolContext,
+        args: schema::EndpointInput,
+    ) -> Result<schema::WebhookEndpoint, CoolError> {
+        let sys = Self::sys();
+        let endpoint_id = args.endpointId;
+
+        run_in_isolated_tx(db.pool(), TransactionIsolation::Serializable, |mut tx| {
+            let sys = &sys;
+            let endpoint_id = endpoint_id.clone();
+            async move {
+                let endpoint = db
+                    .webhook_endpoint()
+                    .find_many()
+                    .where_expr(FilterExpr::from(
+                        webhook_endpoint::id().eq(endpoint_id.clone()),
+                    ))
+                    .limit(1)
+                    .run_in_tx(&mut tx, sys)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        CoolError::NotFound(format!("no WebhookEndpoint with id {endpoint_id}"))
+                    })?;
+
+                let updated = db
+                    .webhook_endpoint()
+                    .update(endpoint_id)
+                    .set(schema::UpdateWebhookEndpointInput {
+                        secret: Some(sms_webhook::generate_secret()),
+                        prevSecret: Some(Some(endpoint.secret)),
+                        secretRotatedAt: Some(Some(Utc::now())),
+                        ..Default::default()
+                    })
+                    .run_in_tx(&mut tx, sys)
+                    .await?;
+
+                Ok((updated, tx))
+            }
+        })
+        .await
+    }
 }
 
 impl schema::procedures::ProcedureRegistry for Procedures {
@@ -876,16 +960,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn rotate_webhook_secret(
         &self,
-        _db: &schema::Cratestack,
-        _ctx: &CoolContext,
-        _args: schema::procedures::rotate_webhook_secret::Args,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::rotate_webhook_secret::Args,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::rotate_webhook_secret::Output, CoolError>,
     > + Send {
-        core::future::ready(Err(not_yet(
-            "rotateWebhookSecret",
-            "milestone 3 (webhooks)",
-        )))
+        self.rotate_secret(db, ctx, args.args)
     }
 }
 

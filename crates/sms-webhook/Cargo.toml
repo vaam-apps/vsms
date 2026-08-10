@@ -1,0 +1,27 @@
+[package]
+name = "sms-webhook"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[package.metadata]
+description = "Outbound webhook HMAC signing, verification, and secret generation (#41) — pure, no schema coupling"
+
+[dependencies]
+hex.workspace = true
+hmac.workspace = true
+rand.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+# tests/cross_language_fixtures.rs reads tests/fixtures/cross_language_vectors.json
+# — the same fixture examples/node/webhook-receiver's own test reads — and
+# needs nothing beyond a generic JSON value, so no serde derive is pulled in.
+serde_json.workspace = true
+
+[lints]
+workspace = true

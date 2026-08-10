@@ -3053,6 +3053,7 @@ dependencies = [
  "sms-msisdn",
  "sms-provider",
  "sms-test-support",
+ "sms-webhook",
  "thiserror",
  "tokio",
  "tracing",
@@ -3213,6 +3214,17 @@ dependencies = [
  "cratestack-pg",
  "rustls",
  "tokio",
+]
+
+[[package]]
+name = "sms-webhook"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "hmac",
+ "rand 0.8.7",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
