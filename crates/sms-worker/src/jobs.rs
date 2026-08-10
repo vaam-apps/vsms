@@ -7,15 +7,17 @@
 //! `pending` result means "just reclaimed, not actually claimed yet" and
 //! must not be executed this tick.
 //!
-//! Only one [`JobHandler`] is registered for this milestone —
-//! [`expire_stale`] — proving the pipeline end to end without depending on
-//! infrastructure this milestone doesn't build (Orange balance/health
-//! endpoints, audit anchoring, backup verification, and the still-open
-//! retention-law question in the doc's own §"Open questions"). The other
-//! eight `kind`s §7.5's own table names are real, tracked gaps, not a
-//! silently dropped scope — see the module's own issue for the follow-up.
+//! Two [`JobHandler`]s are registered as of #42 — [`expire_stale`] (M2)
+//! and [`reap_outbox`] (#42) — proving the pipeline end to end without
+//! depending on infrastructure this milestone doesn't build (Orange
+//! balance/health endpoints, audit anchoring, backup verification, and the
+//! still-open retention-law question in the doc's own §"Open questions").
+//! The other seven `kind`s §7.5's own table names are real, tracked gaps,
+//! not a silently dropped scope — see the module's own issue for the
+//! follow-up.
 
 pub mod expire_stale;
+pub mod reap_outbox;
 
 use std::collections::HashMap;
 use std::time::Duration as StdDuration;
@@ -120,10 +122,12 @@ impl Default for Registry {
 }
 
 /// This milestone's registry — see the module doc for why only
-/// `expire_stale` is wired up.
+/// `expire_stale`/`reap_outbox` are wired up.
 #[must_use]
 pub fn default_registry() -> Registry {
-    Registry::new().register(expire_stale::ExpireStale)
+    Registry::new()
+        .register(expire_stale::ExpireStale)
+        .register(reap_outbox::ReapOutbox)
 }
 
 fn sys(worker: &str) -> CoolContext {

@@ -4,8 +4,8 @@
 //! better" — the advisory lock is that clean avoidance, `dedupeKey` is
 //! belt-and-braces underneath it, not the primary mechanism.
 //!
-//! Only `expire_stale` is registered for this milestone — see
-//! [`crate::jobs`]'s own module doc for why the other eight §7.5 kinds are
+//! `expire_stale` and, as of #42, `reap_outbox` are registered — see
+//! [`crate::jobs`]'s own module doc for why the other seven §7.5 kinds are
 //! scoped out rather than silently dropped.
 //!
 //! # Cadence tracking has no dedicated schema support
@@ -77,12 +77,21 @@ pub struct RecurringJobSpec {
 /// the same reason [`RecurringJobSpec`] is.
 #[must_use]
 pub fn schedule() -> Vec<RecurringJobSpec> {
-    vec![RecurringJobSpec {
-        kind: "expire_stale",
-        cadence: Duration::minutes(1),
-        priority: 500,
-        max_attempts: 3,
-    }]
+    vec![
+        RecurringJobSpec {
+            kind: "expire_stale",
+            cadence: Duration::minutes(1),
+            priority: 500,
+            max_attempts: 3,
+        },
+        RecurringJobSpec {
+            // §7.5's own cadence for this kind.
+            kind: "reap_outbox",
+            cadence: Duration::hours(1),
+            priority: 500,
+            max_attempts: 3,
+        },
+    ]
 }
 
 fn sys(worker: &str) -> CoolContext {
