@@ -2,12 +2,12 @@
 #
 # Build context is the repository root — build with
 # `docker build -f app/sms-migrate/Dockerfile .` from the repo root.
-# `app/sms-migrate/src/main.rs` embeds `schema/migrations/postgres/**` and
-# `ci/idempotency-table.sql` via `include_str!` at compile time, so both
-# have to be in the build context; there is nothing to `COPY` into the
-# runtime image the way the old `deploy/migrate.Dockerfile` copied `.sql`
-# files onto a `postgres:16-alpine` base — the SQL is already inside the
-# binary.
+# `app/sms-migrate/build.rs` walks `schema/migrations/postgres/*/up.sql`
+# at compile time and generates the `include_str!` calls `src/main.rs`
+# embeds — so the whole `schema/migrations/postgres/` tree has to be in
+# the build context, but there is nothing to `COPY` into the *runtime*
+# image the way the old `deploy/migrate.Dockerfile` copied `.sql` files
+# onto a `postgres:16-alpine` base — the SQL is already inside the binary.
 
 # --- builder -----------------------------------------------------------
 # Same base, same reasoning as app/sms-gateway/Dockerfile: Alpine's own
