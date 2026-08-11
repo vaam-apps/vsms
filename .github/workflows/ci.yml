@@ -125,6 +125,33 @@ jobs:
       - name: Install psql
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
+      # #44's gate suite (app/sms-worker/tests/hooks_node_receiver_live.rs)
+      # spawns `node src/gate-receiver.ts` as a real subprocess, so this Rust
+      # job needs a Node toolchain and that package's dependencies — express
+      # is a real runtime dependency, not a dev one.
+      #
+      # This step did not exist when #192 landed the gate, so the suite has
+      # never once passed in CI: it fails at spawn with the test's own
+      # "check that `pnpm install` has been run" panic, and `main` was red
+      # on exactly that from #192 until this commit. It passed locally
+      # because a human had run `pnpm install` in that directory by hand.
+      #
+      # `--ignore-workspace` is required: pnpm-workspace.yaml covers `admin`
+      # and `packages/*` only, so without it pnpm resolves this package
+      # against the root workspace and installs no lockfile at all. The
+      # example is deliberately outside the workspace — it is meant to be
+      # copied out and run standalone by an integrator — so it carries its
+      # own committed pnpm-lock.yaml instead, and `--frozen-lockfile` keeps
+      # a floating `express@^5.1.0` from silently changing under CI.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Enable corepack (pins pnpm from packageManager)
+        run: corepack enable
+      - name: Install the sample Node receiver's dependencies
+        run: pnpm install --ignore-workspace --frozen-lockfile
+        working-directory: examples/node/webhook-receiver
+
       # ubuntu-latest ships a running Docker daemon — sms-test-support
       # starts (or reuses) one Postgres 16 container itself, keyed by a
       # fixed name and a distinctive label
@@ -204,6 +231,20 @@ jobs:
         run: pnpm turbo run typecheck build
       - name: Tests
         run: pnpm turbo run test
+
+      # `pnpm turbo run test` above covers workspace packages only — `admin`
+      # and `packages/*` — so it has never reached this one. That mattered:
+      # AGENTS.md claims the webhook signature scheme is proven across two
+      # languages by asserting both implementations against fixtures a third
+      # tool (`openssl dgst -sha256 -hmac`) computed, and names `pnpm test`
+      # as the gate for the TypeScript half. The Rust half really was gated
+      # (`crates/sms-webhook/tests/cross_language_fixtures.rs`, plain `cargo
+      # test`); the TypeScript half had only ever been run by hand. A
+      # cross-language agreement proof that only one side actually checks in
+      # CI is the half that silently drifts.
+      - name: Sample Node receiver — cross-language signature vectors
+        run: pnpm install --ignore-workspace --frozen-lockfile && node --test
+        working-directory: examples/node/webhook-receiver
 
   rules:
     name: R1 and R2 — engineering rules
