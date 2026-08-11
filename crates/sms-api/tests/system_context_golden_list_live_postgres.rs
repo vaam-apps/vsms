@@ -254,14 +254,12 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
 /// [`SYSTEM_READABLE_MODELS`] — and, before it does, `schema.cstack` needs
 /// its own `hasRole('system')` clause, the same way every prior instance
 /// did.
-const NOT_REQUIRED_TO_BE_SYSTEM_READABLE: &[(&str, &str)] = &[
-    (
-        "MessagePart",
-        "nothing in this codebase creates or reads a MessagePart row yet; \
+const NOT_REQUIRED_TO_BE_SYSTEM_READABLE: &[(&str, &str)] = &[(
+    "MessagePart",
+    "nothing in this codebase creates or reads a MessagePart row yet; \
          concatenated-SMS part tracking has no writer or reader, system or \
          otherwise",
-    ),
-];
+)];
 
 /// Parses `schema/schema.cstack` for every top-level `model Foo {` line —
 /// the schema itself, not a hand-copied list, is the source of truth for
