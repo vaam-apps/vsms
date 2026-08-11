@@ -432,6 +432,7 @@ async fn seed_message(db: &Cratestack, app_id: &str, max_attempts: i64) -> Messa
             expiresAt: Utc::now() + Duration::hours(1),
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await

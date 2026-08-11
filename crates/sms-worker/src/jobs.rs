@@ -7,16 +7,19 @@
 //! `pending` result means "just reclaimed, not actually claimed yet" and
 //! must not be executed this tick.
 //!
-//! Two [`JobHandler`]s are registered as of #42 — [`expire_stale`] (M2)
-//! and [`reap_outbox`] (#42) — proving the pipeline end to end without
-//! depending on infrastructure this milestone doesn't build (Orange
-//! balance/health endpoints, audit anchoring, backup verification, and the
-//! still-open retention-law question in the doc's own §"Open questions").
-//! The other seven `kind`s §7.5's own table names are real, tracked gaps,
-//! not a silently dropped scope — see the module's own issue for the
-//! follow-up.
+//! Three [`JobHandler`]s are registered as of #67 — [`expire_stale`] (M2),
+//! [`reap_outbox`] (#42), and [`purge_retention`] (#67) — proving the
+//! pipeline end to end without depending on infrastructure this milestone
+//! doesn't build (Orange balance/health endpoints, audit anchoring, backup
+//! verification). The retention-law question that used to block
+//! `purge_retention` (§7.5's own table, issue #5) was resolved 2026-08-11:
+//! 90-day minimisation, no split ledger — see `purge_retention`'s own
+//! module doc. The remaining six `kind`s §7.5's own table names are real,
+//! tracked gaps, not a silently dropped scope — see the module's own issue
+//! for the follow-up.
 
 pub mod expire_stale;
+pub mod purge_retention;
 pub mod reap_outbox;
 
 use std::collections::HashMap;
@@ -123,12 +126,13 @@ impl Default for Registry {
 }
 
 /// This milestone's registry — see the module doc for why only
-/// `expire_stale`/`reap_outbox` are wired up.
+/// `expire_stale`/`reap_outbox`/`purge_retention` are wired up.
 #[must_use]
 pub fn default_registry() -> Registry {
     Registry::new()
         .register(expire_stale::ExpireStale)
         .register(reap_outbox::ReapOutbox)
+        .register(purge_retention::PurgeRetention)
 }
 
 fn sys(worker: &str) -> CoolContext {

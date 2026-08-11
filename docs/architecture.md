@@ -562,6 +562,11 @@ model Message {
   submittedAt DateTime?
   finalizedAt DateTime?
 
+  // #67: stamped once, by purge_retention, past the 90-day retention
+  // window below — see that job's own module doc for why an explicit
+  // marker beats inferring "purged" from "body happens to be null".
+  purgedAt DateTime?
+
   costXaf Decimal @default(0)
   version Int @version
 
@@ -571,8 +576,8 @@ model Message {
   @@audit
   @@paged
   @@retain(days: 90)
-  @@allow("list", auth().kind == "user" || appId == auth().appId)
-  @@allow("detail", auth().kind == "user" || appId == auth().appId)
+  @@allow("list", auth().kind == "user" || appId == auth().appId || hasRole('system'))
+  @@allow("detail", auth().kind == "user" || appId == auth().appId || hasRole('system'))
   @@allow("create", hasRole('system'))
   @@allow("update", hasRole('system'))
   @@emit(created, updated)
@@ -645,13 +650,17 @@ model DeliveryReceipt {
   @@audit
   @@paged
   @@retain(days: 90)
-  @@allow("list", auth().kind == "user")
-  @@allow("detail", auth().kind == "user")
+  @@allow("list", auth().kind == "user" || hasRole('system'))
+  @@allow("detail", auth().kind == "user" || hasRole('system'))
   @@allow("create", hasRole('system'))
+  // #67: purge_retention deletes a receipt past its own 90-day @@retain
+  // window — the first thing that ever removes one. Independent of
+  // Message's own retention: eligibility is the receipt's own receivedAt.
+  @@allow("delete", hasRole('system'))
 }
 ```
 
-Receipts are append-only. `rawPayload` is a plain column rather than `@server_only` — the DLR handler has to write it (R3) — and it's confined by the model policy, which admits only `kind == "user"` principals, never apps. When a provider changes its DLR format without telling you, and they do, the raw payloads are the only way to reconstruct what happened.
+Receipts were append-only until #67: `rawPayload` is a plain column rather than `@server_only` — the DLR handler has to write it (R3) — and read access is confined by the model policy, which admits only `kind == "user"` principals and, as of #67, a system context for the purge job. When a provider changes its DLR format without telling you, and they do, the raw payloads are the only way to reconstruct what happened — for 90 days; `purge_retention` is what ends that window rather than leaving the table to grow forever.
 
 ### 2.6 The job queue
 
@@ -1219,6 +1228,16 @@ CREATE INDEX messages_lease_reclaim_idx
 CREATE INDEX messages_app_created_idx   ON messages (app_id, created_at DESC);
 CREATE INDEX messages_state_created_idx ON messages (state, created_at DESC);
 CREATE INDEX messages_msisdn_hash_idx   ON messages (msisdn_hash, created_at DESC);
+
+-- #67's purge_retention candidate query — a terminal message, not yet
+-- purged, past its own createdAt cutoff. Partial and narrow, same style as
+-- messages_dispatch_idx/messages_lease_reclaim_idx above, rather than
+-- leaning on messages_state_created_idx alone: that index still has to
+-- scan every non-purged row of five different states before this job's
+-- own extra purged_at filter narrows it.
+CREATE INDEX messages_purge_idx ON messages (created_at)
+    WHERE purged_at IS NULL
+      AND state IN ('delivered','failed','expired','rejected','cancelled');
 CREATE INDEX messages_provider_ref_idx  ON messages (provider_id, provider_message_ref)
     WHERE provider_message_ref IS NOT NULL;
 CREATE INDEX messages_provider_ref_alt_idx ON messages (provider_id, provider_message_ref_alt)
@@ -1256,6 +1275,9 @@ CREATE INDEX webhook_attempts_lease_reclaim_idx ON webhook_attempts (lease_until
 
 CREATE INDEX receipts_lookup_idx  ON delivery_receipts (provider_id, provider_message_ref);
 CREATE INDEX receipts_message_idx ON delivery_receipts (message_id);
+-- #67's purge_retention delete query — receipts age off their own
+-- received_at, independent of their parent message's age (see §2.5).
+CREATE INDEX receipts_received_at_idx ON delivery_receipts (received_at);
 CREATE INDEX app_clients_app_idx  ON app_clients (app_id);
 CREATE INDEX routes_match_idx     ON routes (enabled, priority DESC);
 
@@ -2203,7 +2225,7 @@ Job kinds, all enqueued by the `scheduler` role with a `dedupeKey`:
 | `probe_providers` | 1 min | Per-provider health → `Provider.healthy` |
 | `reap_outbox` | 1 h | Delete delivered `cratestack_event_outbox` rows >24h; alarm on high-`attempts` rows |
 | `reconcile_clients` | 1 h | OP client rows with no matching `AppClient` → orphan alert |
-| `purge_retention` | daily | Enforce `@@retain`: null `body`/`msisdn` past 90 days, delete receipts past 90 |
+| `purge_retention` | daily | **#67, done.** Terminal `Message` rows past 90 days: null `body`/`clientRef`/`idempotencyKey`/`stateReason`, overwrite `msisdn` with a placeholder (kept `NOT NULL`), stamp `purgedAt`. `msisdnHash` survives — see §10. Delete `DeliveryReceipt` rows past their own `receivedAt` + 90 days |
 | `cleanup_secrets` | 1 h | Clear `prevSecret` past 24h; deactivate `AppClient` past `retiredAt` |
 | `anchor_audit` | daily | Merkle root of the day's audit rows → append-only store |
 | `verify_backup` | daily | Restore last night's dump into a scratch database and count rows |
@@ -2516,7 +2538,9 @@ fi
 
 Sanctions run to 100,000,000 FCFA, suspension, withdrawal of authorisation, and criminal penalties up to ten years. Whether the supervisory Authority is operational and accepting registrations as of today is unverified — confirm with local counsel.
 
-**Law No. 2010/012 of 21 December 2010 (cybersecurity).** Article 48(1) prohibits marketing messages that conceal the sender's identity or omit a valid address for opt-out — your legal basis for a registered sender ID and a working STOP path. Article 48(2) prohibits sending by usurping another's identity (sender-ID spoofing). Article 25(1) requires operators and electronic communications service providers to retain connection and traffic data for **ten years**, in direct tension with the 90-day minimisation in §2.5. Resolve it deliberately: keep a minimal traffic-metadata ledger (timestamp, hashed MSISDN, operator, segments, state) for the statutory period, and purge *content* and *plaintext MSISDN* at 90 days. That shape is most likely to satisfy both, but it is exactly the question to put to a lawyer.
+**Law No. 2010/012 of 21 December 2010 (cybersecurity).** Article 48(1) prohibits marketing messages that conceal the sender's identity or omit a valid address for opt-out — your legal basis for a registered sender ID and a working STOP path. Article 48(2) prohibits sending by usurping another's identity (sender-ID spoofing). Article 25(1) requires operators and electronic communications service providers to retain connection and traffic data for **ten years**, in direct tension with the 90-day minimisation in §2.5.
+
+**Resolved by the maintainer, 2026-08-11 (issue #5): 90-day minimisation, no split ledger.** A parallel ten-year traffic-metadata table (timestamp, hashed MSISDN, operator, segments, state) — kept alongside a 90-day purge of content and plaintext MSISDN — was the recommendation this section used to carry, and it was a real, considered option, not a strawman: it is the shape most likely to satisfy Article 25(1) and Law No. 2024/017's minimisation at once. It was not taken. vsms purges *content and plaintext MSISDN both* at 90 days (`purge_retention`, #67, `crates/sms-worker/src/jobs/purge_retention.rs`) and does not carry a second, longer-horizon ledger anywhere in `schema.cstack`. If Article 25(1) compliance requires holding traffic data past 90 days, that is now an infrastructure concern for whoever operates the deployment — database backup/archival retention configured outside this application — not something vsms's own schema does on their behalf. Nothing in this repository fails if nobody configures that; see issue #5's own resolution comment for the tradeoff stated in those terms. `msisdnHash` is the one thing that survives every purge specifically so that opt-out matching and dedupe keep working against a purged row — see §2.5 and `sms_api::pepper`'s module doc for the pepper-rotation caveat that decision makes sharper: a row whose plaintext `msisdn` has already been purged can never be rehashed.
 
 **ART licensing.** Orange's VAS interconnection catalogue requires an ART title — a licence or a *récépissé de déclaration préalable* — plus an ART short-code allocation document, before it will interconnect you. ART has enforced this: in 2018 it announced it would dismantle unlicensed VAS providers' networks, with penalties of 100–500 million FCFA. Whether a pure API consumer buying capacity from a licensed aggregator needs its own title is **unverified**. Safe reading: direct MNO interconnection or a short code unambiguously requires one. Settle this before committing to SMPP.
 
@@ -2615,7 +2639,7 @@ Milestone 0 still comes first. The encoding crate has the highest ratio of busin
 
 1. **Where does this host?** Law 2024/017's cross-border authorisation requirement makes this a legal question with an architectural answer. Cameroon-hosted is the safe default.
 2. **Do you need your own ART title?** Determines whether direct SMPP is on the table, and therefore whether milestone 7 exists.
-3. **10-year traffic retention vs 90-day minimisation.** The split-ledger approach in §10 is my recommendation; it needs a lawyer's sign-off.
+3. ~~**10-year traffic retention vs 90-day minimisation.**~~ **Resolved 2026-08-11 (issue #5).** 90-day minimisation, no split ledger — see §10. Kept here, struck through, so this list stays the record of what was asked rather than silently shrinking.
 4. **Does `authkestra-op` stay?** Sharper now that dropping API keys puts your entire machine-auth path through it. You'll write a custom `ClientStore` to work around a grant-type authorisation bug, add `/token` rate limiting the crate lacks, live with a useless `aud`, one secret per client, no revocation endpoint, and no proof-of-possession option. All surmountable, and the design isolates the OP behind JWKS so swapping it stays a config change — but compare against Keycloak or ZITADEL before milestone 1, not after.
 
 **Technical risks:**
