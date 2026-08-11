@@ -15,8 +15,9 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::FilterExpr;
 use sms_api::schema::procedures::{provision_app_client, ProcedureRegistry};
 use sms_api::schema::{
-    provider as provider_filter, Cratestack, CreateProviderInput, ProviderKind, ProviderState,
-    ProvisionClientInput, UpdateProviderInput,
+    provider as provider_filter, route as route_filter, Cratestack, CreateProviderInput,
+    CreateRouteInput, ProviderKind, ProviderState, ProvisionClientInput, UpdateProviderInput,
+    UpdateRouteInput,
 };
 use sms_api::{GatewayAuth, Principal, PrincipalKind, Procedures};
 use sms_provider::SmsProvider;
@@ -238,28 +239,60 @@ enum Command {
         hash_pepper: String,
     },
     /// Seed (or reactivate) the `Provider` row `resolve_provider_row_id`
-    /// (this file) and `sms-worker`'s dispatch role both resolve at
-    /// startup/routing time — an operator action, not a generated-CRUD
-    /// route, for the same reason `RotateSigningKey`/`ProvisionClient`
-    /// above are one: `Provider`'s own `@allow` in `schema.cstack` admits
-    /// only `hasRole('owner') || hasRole('admin')` on create, and
-    /// `GatewayAuth::authenticate` never mints either for a real token (no
-    /// human-login flow exists yet — see `AGENTS.md`'s M1 section).
+    /// (this file) resolves at startup, **and** a catch-all `Route`
+    /// pointing at it — an operator action, not a generated-CRUD route,
+    /// for the same reason `RotateSigningKey`/`ProvisionClient` above are
+    /// one: `Provider`'s own `@allow` in `schema.cstack` admits only
+    /// `hasRole('owner') || hasRole('admin')` on create (`Route`'s is
+    /// identical), and `GatewayAuth::authenticate` never mints either for
+    /// a real token (no human-login flow exists yet — see `AGENTS.md`'s
+    /// M1 section).
     ///
-    /// See #148: nothing in this repo seeded this row before this command
-    /// existed, and `resolve_provider_row_id` fails at process start — not
-    /// lazily — the moment `serve` runs against a fresh database, so a
-    /// Helm install with no window for manual intervention between the
-    /// pre-install hooks completing and the gateway `Deployment` being
-    /// created crash-looped forever.
+    /// See #148: nothing in this repo seeded the `Provider` row before
+    /// this command existed, and `resolve_provider_row_id` fails at
+    /// process start — not lazily — the moment `serve` runs against a
+    /// fresh database, so a Helm install with no window for manual
+    /// intervention between the pre-install hooks completing and the
+    /// gateway `Deployment` being created crash-looped forever.
     ///
-    /// Idempotent by construction: `create` is attempted first, and a
+    /// **Renamed from `SeedProvider` (`seed-provider`) to `SeedDispatch`
+    /// (`seed-dispatch`) and extended to also seed a `Route`, found live
+    /// while closing out #62's own PR review — a real "documentation
+    /// asserts something the code does not do" gap, the fifth instance
+    /// `AGENTS.md` records: #62's routing engine made `dispatch` refuse
+    /// every message with no matching `Route` (a deliberate cutover from
+    /// the old "any active provider" placeholder), but this command —
+    /// which both deployment runbooks tell an operator to run instead of
+    /// `send_test_message` — only ever created the `Provider` row. A
+    /// deployment that followed either runbook via this command reached
+    /// `sms-gateway` healthy and `sms-worker` running, with every message
+    /// silently landing in `rejected` forever. The old name no longer
+    /// described what running it actually leaves you able to do — a
+    /// deployment with only a `Provider` row cannot route anything to
+    /// it — so this is a hard rename, not an alias, matching this repo's
+    /// own standing "hard cutover, not a parallel/back-compat path"
+    /// preference; every reference (`deploy/docker-compose.yml`,
+    /// `deploy/charts/vsms/values.yaml`, both runbooks) is updated in the
+    /// same change.
+    ///
+    /// The `Route` half is a hardcoded catch-all — no flags to configure
+    /// `priority`/`weight`/`match*`, matching `send_test_message.rs`'s own
+    /// `ensure_route` (same fixture-quality scope: "make this deployment
+    /// able to send something," not a real routing policy authoring tool,
+    /// which is #54's job). Idempotent by construction, the same
+    /// "existing state is success, not failure" discipline the `Provider`
+    /// half already used: the `Provider` half is `create` + catch the
     /// `23505` on `Provider.key`'s `@unique` index (this repo's documented
     /// dedupe pattern — `upsert` doesn't exist when the `@id` carries a
-    /// default) is treated as "already seeded", not a failure, so a Helm
-    /// `pre-install`/`pre-upgrade` hook can run this on every install and
-    /// upgrade without erroring on the second run.
-    SeedProvider {
+    /// default); `Route` has no unique column to catch a conflict on, so
+    /// its half is find-by-`providerId`-then-create instead (re-enabling a
+    /// disabled leftover route rather than adding a second one) — see
+    /// [`ensure_catch_all_route`]'s own doc for the small TOCTOU window
+    /// that shape accepts and why it's fine for an idempotent ops command.
+    /// Either way, a Helm `pre-install`/`pre-upgrade` hook can run this on
+    /// every install and upgrade without erroring or duplicating on the
+    /// second run.
+    SeedDispatch {
         #[arg(long, env = "DATABASE_URL")]
         database_url: String,
 
@@ -447,7 +480,7 @@ async fn main() -> Result<()> {
 
         command @ Command::ProvisionClient { .. } => provision_client_command(command).await,
 
-        command @ Command::SeedProvider { .. } => seed_provider_command(command).await,
+        command @ Command::SeedDispatch { .. } => seed_dispatch_command(command).await,
 
         Command::Healthcheck { addr, path } => healthcheck_command(&addr, &path),
     }
@@ -809,7 +842,7 @@ async fn provision_client_command(command: Command) -> Result<()> {
 /// `ProviderKind`'s variants aren't `clap::ValueEnum` (it's a type generated
 /// by `include_server_schema!` in a downstream crate, not one this binary
 /// can derive a foreign trait on), so `--kind` stays a plain `String` and is
-/// matched by hand here — pulled out of [`seed_provider_command`] purely to
+/// matched by hand here — pulled out of [`seed_dispatch_command`] purely to
 /// keep that function under `clippy::too_many_lines`, the same reason
 /// [`rotate_signing_key_command`]/[`provision_client_command`] were already
 /// split out of `main`'s own `match`.
@@ -827,7 +860,7 @@ fn parse_provider_kind(kind: &str) -> Result<ProviderKind> {
 }
 
 /// `create` the `Provider` row, or resolve the id of the one that already
-/// exists — pulled out of [`seed_provider_command`] purely to keep that
+/// exists — pulled out of [`seed_dispatch_command`] purely to keep that
 /// function under `clippy::too_many_lines`.
 ///
 /// A `23505` on `Provider.key`'s `@unique` index means some earlier run
@@ -873,7 +906,92 @@ async fn create_or_find_provider(
     }
 }
 
-/// `Command::SeedProvider`'s body, pulled out of `main`'s own `match` for
+/// Ensure a `Route` row points at `provider_id`, creating a hardcoded
+/// catch-all (`priority: 0, weight: 1`, every `match*` a wildcard) if none
+/// exists yet — pulled out of [`seed_dispatch_command`] for the same
+/// `clippy::too_many_lines` reason [`create_or_find_provider`] was.
+///
+/// `Route` carries no unique column the way `Provider.key` does, so this
+/// can't use `create` + catch-`23505` — it looks up an existing route for
+/// this provider first and only creates one if none is found. That is a
+/// real, accepted TOCTOU window (two concurrent runs of this command
+/// against a never-before-seeded database could both find nothing and
+/// both create a route), narrower in practice than it sounds: this
+/// command is invoked from a Helm `pre-install`/`pre-upgrade` hook, whose
+/// own `Job` semantics don't run two instances of the same hook
+/// concurrently, and a `docker compose run --rm` invocation is a manual,
+/// one-at-a-time operator action. A duplicate catch-all route would be
+/// harmless in any case — #62's routing engine already treats a tie
+/// between two equal-priority, equal-weight wildcard routes as an
+/// ordinary weighted draw, not a correctness bug — but it's worth
+/// contrasting with `create_or_find_provider`'s stronger, constraint-backed
+/// guarantee rather than silently assuming the same guarantee applies
+/// here.
+async fn ensure_catch_all_route(
+    db: &Cratestack,
+    ctx: &cratestack::CoolContext,
+    provider_id: &str,
+) -> Result<()> {
+    let existing = db
+        .route()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            route_filter::providerId().eq(provider_id.to_owned()),
+        ))
+        .limit(1)
+        .run(ctx)
+        .await
+        .context("looking up an existing Route for this provider")?;
+
+    if let Some(row) = existing.into_iter().next() {
+        if row.enabled {
+            println!(
+                "Route {} already exists and is enabled (provider={provider_id})",
+                row.id
+            );
+        } else {
+            db.route()
+                .update(row.id.clone())
+                .set(UpdateRouteInput {
+                    enabled: Some(true),
+                    ..Default::default()
+                })
+                .run(ctx)
+                .await
+                .context("re-enabling the existing Route")?;
+            println!(
+                "Route {} (provider={provider_id}) was disabled — re-enabled it",
+                row.id
+            );
+        }
+        return Ok(());
+    }
+
+    let created = db
+        .route()
+        .create(CreateRouteInput {
+            name: "catch-all (seed-dispatch)".to_owned(),
+            priority: 0,
+            weight: 1,
+            enabled: true,
+            matchOperator: None,
+            matchClass: None,
+            matchAppId: None,
+            matchPrefix: None,
+            providerId: provider_id.to_owned(),
+            failoverRouteId: None,
+        })
+        .run(ctx)
+        .await
+        .context("creating a catch-all Route")?;
+    println!(
+        "created catch-all Route {} (provider={provider_id})",
+        created.id
+    );
+    Ok(())
+}
+
+/// `Command::SeedDispatch`'s body, pulled out of `main`'s own `match` for
 /// the same reason `rotate_signing_key_command`/`provision_client_command`
 /// above are.
 ///
@@ -883,11 +1001,18 @@ async fn create_or_find_provider(
 /// (`Provider.state`'s own `@default`) so it is unconditionally activated,
 /// but an *existing* row is only re-activated if it isn't already, so the
 /// steady-state case this command exists for (a `pre-upgrade` hook
-/// re-running against an already-seeded database) writes nothing at all,
-/// rather than bumping `updatedAt` and appending an `@@audit` row on every
-/// single upgrade for no behavioural change.
-async fn seed_provider_command(command: Command) -> Result<()> {
-    let Command::SeedProvider {
+/// re-running against an already-seeded database) writes nothing on the
+/// `Provider` half at all, rather than bumping `updatedAt` and appending
+/// an `@@audit` row on every single upgrade for no behavioural change.
+/// [`ensure_catch_all_route`] always runs, regardless of whether the
+/// `Provider` half was already active — found live while fixing #62's own
+/// gap: an earlier draft of this function returned early on
+/// `already_active` *before* the `Route` half ran at all, which would
+/// have left every re-run against an already-active `Provider` (the
+/// actual steady-state case a `pre-upgrade` hook hits on every single
+/// upgrade) never checking whether a `Route` exists.
+async fn seed_dispatch_command(command: Command) -> Result<()> {
+    let Command::SeedDispatch {
         database_url,
         key,
         display_name,
@@ -900,7 +1025,7 @@ async fn seed_provider_command(command: Command) -> Result<()> {
         role,
     } = command
     else {
-        unreachable!("only ever called with Command::SeedProvider")
+        unreachable!("only ever called with Command::SeedDispatch")
     };
 
     if role != "owner" && role != "admin" {
@@ -916,10 +1041,10 @@ async fn seed_provider_command(command: Command) -> Result<()> {
         .context("--cost-per-segment-xaf must parse as a decimal")?;
 
     // Same conservative pool size as RotateSigningKey/ProvisionClient, and
-    // for the same reason: this is a one-shot CLI command writing one
-    // @@audit-backed row (Provider), the same shape of write that
-    // rotate_signing_key_command's own comment found deadlocks at
-    // max_connections(1).
+    // for the same reason: this is a one-shot CLI command writing a
+    // handful of @@audit-backed rows (Provider, Route), the same shape of
+    // write that rotate_signing_key_command's own comment found deadlocks
+    // at max_connections(1).
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&database_url)
@@ -928,7 +1053,7 @@ async fn seed_provider_command(command: Command) -> Result<()> {
     let db = Cratestack::builder(pool).build();
 
     let ctx = Principal {
-        sub: format!("sms-gateway:seed-provider:{role}"),
+        sub: format!("sms-gateway:seed-dispatch:{role}"),
         kind: PrincipalKind::User,
         role: role.clone(),
         app_id: String::new(),
@@ -963,21 +1088,21 @@ async fn seed_provider_command(command: Command) -> Result<()> {
     .await?;
 
     if already_active {
-        println!("already active — nothing to do");
-        return Ok(());
+        println!("Provider already active — nothing to do there");
+    } else {
+        db.provider()
+            .update(provider_id.clone())
+            .set(UpdateProviderInput {
+                state: Some(ProviderState::active),
+                ..Default::default()
+            })
+            .run(&ctx)
+            .await
+            .context("activating the Provider row")?;
+        println!("activated Provider {provider_id} (key={key:?})");
     }
 
-    db.provider()
-        .update(provider_id.clone())
-        .set(UpdateProviderInput {
-            state: Some(ProviderState::active),
-            ..Default::default()
-        })
-        .run(&ctx)
-        .await
-        .context("activating the Provider row")?;
-    println!("activated Provider {provider_id} (key={key:?})");
-    Ok(())
+    ensure_catch_all_route(&db, &ctx, &provider_id).await
 }
 
 /// Resolve on SIGINT *or* SIGTERM so in-flight requests finish.

@@ -155,10 +155,12 @@ services:
     # Same trap, same fix, for the `orange_cm` Provider row (#148):
     # `resolve_provider_row_id` also runs before the listener binds, so a
     # database with no Provider row crash-loops this container exactly
-    # like a missing signing key does. `seed-provider` is idempotent
-    # (create + catch the Provider.key unique-constraint conflict), so
-    # it's safe to run again later too, not just on a fresh database:
-    #   docker compose run --rm sms-gateway seed-provider
+    # like a missing signing key does. `seed-dispatch` (renamed from
+    # `seed-provider` in #62, which also made it seed a catch-all Route —
+    # a Provider row alone routes nothing since #62's routing engine
+    # landed) is idempotent on both halves, so it's safe to run again
+    # later too, not just on a fresh database:
+    #   docker compose run --rm sms-gateway seed-dispatch
     # See docs/runbooks/deployment.md's step 4.
 
   sms-worker:
