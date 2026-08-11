@@ -9,17 +9,18 @@
 //! one full miss between a message becoming claimable and this loop
 //! noticing.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use cratestack::{CoolContext, CoolError};
+use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
-use sms_api::schema::{Encoding, Message, MessageState, UpdateMessageInput};
+use sms_api::schema::{provider, Encoding, Message, MessageState, UpdateMessageInput};
 use sms_encoding::SmsEncoding;
-use sms_provider::{ProviderError, SubmitRequest};
+use sms_provider::{ProviderError, SmsProvider, SubmitRequest};
 use tracing::{error, warn};
 
 use crate::claim::claim_batch;
-use crate::WorkerContext;
+use crate::{ProviderRegistry, WorkerContext};
 
 /// How often this loop polls for claimable messages.
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -61,7 +62,7 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 /// of racing [`run`]'s own timer — the same reason [`crate::claim::claim_batch`]
 /// itself is `pub` rather than only reachable through a role's loop.
 pub async fn tick(ctx: &WorkerContext, sys: &CoolContext, worker: &str) -> Result<(), CoolError> {
-    let budget = budget_for(ctx.provider.capabilities().tps_ceiling);
+    let budget = budget_for(total_tps_ceiling(&ctx.providers));
     let claimed = claim_batch::<Message>(&ctx.db, sys, worker, budget).await?;
 
     for message in claimed {
@@ -87,11 +88,78 @@ fn budget_for(tps_ceiling: f64) -> i64 {
     budget.max(1)
 }
 
+/// Sum of every registered provider's `tps_ceiling` — since #62, a
+/// `routed` message may submit through any of them, not just one, so the
+/// per-tick claim budget has to reflect the whole registry's combined
+/// throughput allowance, not a single provider's. With exactly one
+/// provider configured (every deployment today), this is identical to
+/// that provider's own `tps_ceiling` — no behaviour change until a second
+/// real adapter exists. Deliberately coarse: this does not give each
+/// provider its own isolated share of the budget, so a burst of messages
+/// routed to a slow/starved provider can still consume claim slots a
+/// healthy provider could have used this tick. Real per-provider
+/// throughput isolation is §6.3's own "remaining TPS/daily budget"
+/// filtering, out of scope for #62 (see `crates/sms-routing`'s own module
+/// doc) and a natural fit for #63.
+fn total_tps_ceiling(providers: &ProviderRegistry) -> f64 {
+    providers
+        .values()
+        .map(|provider| provider.capabilities().tps_ceiling)
+        .sum()
+}
+
 fn decode_encoding(encoding: Encoding) -> SmsEncoding {
     match encoding {
         Encoding::gsm7 => SmsEncoding::Gsm7,
         Encoding::ucs2 => SmsEncoding::Ucs2,
     }
+}
+
+/// Resolve the adapter a `routed` message must submit through.
+/// `Message.providerId` (stamped by `claim.rs`'s `accepted` branch — since
+/// #62, `routing::decide`'s winning route, not `cheapest_active_provider`)
+/// names a `Provider` *row*; this looks that row's `key` up and resolves it
+/// against `ctx.providers`, the adapters this process actually holds
+/// credentials for. `Err` carries a human reason rather than a typed error
+/// — the caller folds it into [`ProviderError::Unavailable`]'s own
+/// backoff-and-retry handling, since both failure modes here are the same
+/// shape as "the provider is broadly unreachable right now": a `Provider`
+/// row deleted since routing, or — a real operational case, not just
+/// defensive coding — a `Route` naming a provider this particular
+/// `dispatch` process has no credentials configured for (a multi-node
+/// deployment could split providers across processes; today `dispatch` is
+/// a singleton per §7.1, so this specific case keeps retrying until an
+/// operator fixes the mismatch, which is the correct, safe behaviour, not
+/// a crash).
+async fn resolve_provider(
+    ctx: &WorkerContext,
+    sys: &CoolContext,
+    message: &Message,
+) -> Result<Arc<dyn SmsProvider>, String> {
+    let Some(provider_id) = message.providerId.clone() else {
+        return Err("message reached routed with no providerId stamped".to_owned());
+    };
+
+    let rows = ctx
+        .db
+        .provider()
+        .find_many()
+        .where_expr(FilterExpr::from(provider::id().eq(provider_id.clone())))
+        .limit(1)
+        .run(sys)
+        .await
+        .map_err(|error| format!("looking up provider {provider_id}: {error}"))?;
+
+    let Some(row) = rows.into_iter().next() else {
+        return Err(format!("provider {provider_id} no longer exists"));
+    };
+
+    ctx.providers.get(row.key.as_str()).cloned().ok_or_else(|| {
+        format!(
+            "no adapter configured in this process for provider key {:?} (provider {provider_id})",
+            row.key
+        )
+    })
 }
 
 /// Submit one already-`routed` message and write back whichever transition
@@ -119,6 +187,17 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
         return;
     };
 
+    let provider = match resolve_provider(ctx, sys, &message).await {
+        Ok(provider) => provider,
+        Err(reason) => {
+            warn!(message_id = %message.id, %reason, "could not resolve a provider adapter for a routed message");
+            let (next_state, reason, backoff) =
+                classify(&ProviderError::Unavailable { message: reason });
+            write_transition(ctx, sys, &message, next_state, Some(reason), backoff, None).await;
+            return;
+        }
+    };
+
     let req = SubmitRequest {
         to: message.msisdn.clone(),
         sender_id: message.senderIdValue.clone(),
@@ -127,7 +206,7 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
         reference: message.id.clone(),
     };
 
-    match ctx.provider.submit(&req).await {
+    match provider.submit(&req).await {
         Ok(ack) => {
             write_submitted(
                 ctx,

@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use clap::Parser;
 use sms_provider::SmsProvider;
 use sms_worker::{Cardinality, Role, WorkerContext};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
@@ -143,42 +143,22 @@ fn orange_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
     }
 }
 
-/// A provider that panics if ever actually called — used only when
-/// `dispatch` isn't among `--roles`, so `WorkerContext` can hold a plain
-/// `Arc<dyn SmsProvider>` (no `Option`) uniformly across every role rather
-/// than threading an `Option` through `run`'s signature for the one role
-/// that needs it. The startup check above (`--roles` containing `dispatch`
-/// requires real Orange credentials) is what makes "never called" an
-/// actual guarantee here, not just a hope.
-struct NoProviderConfigured;
-
-#[async_trait::async_trait]
-impl SmsProvider for NoProviderConfigured {
-    fn key(&self) -> &str {
-        unreachable!("dispatch is the only caller, and it requires real credentials at startup")
+/// Build the [`sms_worker::ProviderRegistry`] this process holds
+/// credentials for, keyed by each adapter's own [`SmsProvider::key`] — #62:
+/// `dispatch::resolve_provider` looks a routed message's provider up by
+/// exactly this string, matching `Provider.key` in the database. Empty
+/// when `dispatch` isn't among `--roles` (nothing in any other role ever
+/// reads this registry) — the startup check right after this call is what
+/// makes "dispatch requires real credentials" an actual guarantee, not
+/// just a hope. Only one entry exists today (`"orange_cm"`); a second real
+/// adapter (#61) is a second `.insert(...)` here, not a redesign of this
+/// function's shape.
+fn build_provider_registry(cli: &Cli) -> Result<HashMap<String, Arc<dyn SmsProvider>>> {
+    let mut providers: HashMap<String, Arc<dyn SmsProvider>> = HashMap::new();
+    if let Some(orange) = orange_provider(cli)? {
+        providers.insert(orange.key().to_owned(), orange);
     }
-    fn capabilities(&self) -> sms_provider::Capabilities {
-        unreachable!("dispatch is the only caller, and it requires real credentials at startup")
-    }
-    async fn submit(
-        &self,
-        _req: &sms_provider::SubmitRequest,
-    ) -> Result<sms_provider::SubmitAck, sms_provider::ProviderError> {
-        unreachable!("dispatch is the only caller, and it requires real credentials at startup")
-    }
-    fn parse_dlr(
-        &self,
-        _raw: &sms_provider::RawCallback,
-    ) -> Result<Vec<sms_provider::DeliveryUpdate>, sms_provider::ProviderError> {
-        unreachable!("dispatch is the only caller, and it requires real credentials at startup")
-    }
-    async fn health(&self) -> sms_provider::Health {
-        unreachable!("dispatch is the only caller, and it requires real credentials at startup")
-    }
-}
-
-fn never_dispatched_provider() -> Arc<dyn SmsProvider> {
-    Arc::new(NoProviderConfigured)
+    Ok(providers)
 }
 
 /// `hostname:pid` — stable enough to recognise a given process across a
@@ -258,20 +238,14 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let roles = parse_roles(&cli.roles)?;
 
-    let provider = orange_provider(&cli)?;
-    if roles.contains(&Role::Dispatch) && provider.is_none() {
+    let providers = build_provider_registry(&cli)?;
+    if roles.contains(&Role::Dispatch) && providers.is_empty() {
         bail!(
             "--roles includes dispatch, which needs --orange-client-id, \
              --orange-client-secret and --orange-sender-number (or their env vars) to submit \
              anything"
         );
     }
-    // A lazy pool for roles that never end up needing a provider (every
-    // role but `dispatch`, today) — constructing `WorkerContext`
-    // unconditionally, the same way `Cli` requires `database_url`
-    // unconditionally, keeps `run`'s signature uniform across roles rather
-    // than threading an `Option` through every stub.
-    let provider: Arc<dyn SmsProvider> = provider.unwrap_or_else(never_dispatched_provider);
 
     let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
         .max_connections(cli.db_max_connections)
@@ -280,7 +254,7 @@ async fn main() -> Result<()> {
         .context("connecting to Postgres")?;
     let ctx = WorkerContext {
         db: sms_api::schema::Cratestack::builder(pool).build(),
-        provider,
+        providers: Arc::new(providers),
     };
 
     // Unconditional — not gated on `drain` being one of `--roles`. Every
