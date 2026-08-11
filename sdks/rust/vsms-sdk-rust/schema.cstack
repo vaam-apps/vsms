@@ -772,6 +772,10 @@ type EndpointInput {
   endpointId Cuid
 }
 
+type ReplayWebhookAttemptInput {
+  attemptId Cuid
+}
+
 type EnqueueJobInput {
   kind String
   payload String
@@ -804,4 +808,17 @@ mutation procedure provisionAppClient(args: ProvisionClientInput): ProvisionClie
 
 mutation procedure rotateWebhookSecret(args: EndpointInput): WebhookEndpoint
   @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @isolation("serializable")
+
+// #43: re-fire a stuck WebhookAttempt from the admin surface. Same @allow
+// set as rotateWebhookSecret — the same three human roles the endpoint
+// itself is managed by — plus a Layer 2 `webhook:manage` check
+// (`require_permission`, §5.1) inside the procedure body, which
+// rotateWebhookSecret does not have; see procedures.rs's own doc for why
+// this one gets it and that one, so far, doesn't. `@authorize` requires the
+// caller to already be able to see the row (WebhookAttempt's own `detail`
+// policy) before the mutation runs, the same guard `cancelMessage` uses.
+mutation procedure replayWebhookAttempt(args: ReplayWebhookAttemptInput): WebhookAttempt
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @authorize(WebhookAttempt, detail, args.attemptId)
   @isolation("serializable")

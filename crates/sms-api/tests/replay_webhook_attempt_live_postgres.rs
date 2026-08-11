@@ -1,0 +1,502 @@
+//! `replayWebhookAttempt` (#43) against a real, fully migrated Postgres —
+//! the actual `ProcedureRegistry` trait method, not a crate-private helper
+//! called directly, the same discipline `rotate_webhook_secret_live_postgres.rs`
+//! and `send_message_live_postgres.rs` both document in their own module
+//! docs.
+//!
+//! Calling the trait method directly (rather than over real HTTP) bypasses
+//! Layer 1 (`@allow`/`@authorize`) entirely — those are enforced by the
+//! generated router wrapping this method, not by the method itself — the
+//! same scoping `send_message_live_postgres.rs`'s own `app_caller` doc
+//! already spells out. What *is* exercised here, because it's hand-written
+//! inside `Procedures::replay_attempt`'s own body rather than generated:
+//! the Layer 2 `require_permission(ctx, "webhook:manage")` gate, and every
+//! bit of this procedure's actual state-machine and circuit-breaker logic.
+//!
+//! ```bash
+//! cargo test -p sms-api --test replay_webhook_attempt_live_postgres -- --ignored
+//! ```
+
+use chrono::Utc;
+use cratestack::sqlx::postgres::PgPoolOptions;
+use cratestack::{CoolContext, CoolError, FilterExpr, Value};
+use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::schema::{
+    self, procedures::replay_webhook_attempt, procedures::ProcedureRegistry, webhook_endpoint,
+    AttemptState, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput,
+    UpdateWebhookAttemptInput, UpdateWebhookEndpointInput,
+};
+use sms_api::{HashPepper, Procedures};
+
+/// #102, found live: on a genuinely fresh database, this binary's own
+/// tests — run concurrently by Rust's default multi-threaded test
+/// harness — can race on Postgres's own `pg_type` catalog the first time
+/// two of them prepare the exact same not-yet-cached query shape at the
+/// same instant. See `crates/sms-worker/tests/claim_live_postgres.rs`'s
+/// own `TEST_MUTEX` doc for the full reasoning — same mechanism, same fix.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+fn owner() -> CoolContext {
+    Principal {
+        sub: "replay-webhook-attempt-test-owner".to_owned(),
+        kind: PrincipalKind::User,
+        role: "owner".to_owned(),
+        app_id: String::new(),
+    }
+    .into_context()
+}
+
+fn sys() -> CoolContext {
+    Principal {
+        sub: "replay-webhook-attempt-test-system".to_owned(),
+        kind: PrincipalKind::App,
+        role: "system".to_owned(),
+        app_id: String::new(),
+    }
+    .into_context()
+}
+
+/// A human caller carrying exactly the permission `replayWebhookAttempt`'s
+/// own Layer 2 gate (`require_permission(ctx, "webhook:manage")`) checks
+/// for — §5.2's own vocabulary, `developer`'s permission. This function
+/// never goes through a real token issuance path (no human-login flow
+/// exists in this deployment — see AGENTS.md's M1/#24 notes), so it has to
+/// carry the claim by hand, the same way `send_message_live_postgres.rs`'s
+/// own `app_caller` does for `scope`.
+fn developer_with_webhook_manage() -> CoolContext {
+    let mut ctx = Principal {
+        sub: "replay-webhook-attempt-test-developer".to_owned(),
+        kind: PrincipalKind::User,
+        role: "developer".to_owned(),
+        app_id: String::new(),
+    }
+    .into_context();
+    ctx.extensions.insert(
+        "perms".to_owned(),
+        Value::List(vec![Value::String("webhook:manage".to_owned())]),
+    );
+    ctx
+}
+
+/// The same role, but with no `perms` claim at all — the exact "an omitted
+/// scope yields denial" shape §5.2 documents, extended to `perms` by
+/// `require_permission`'s own doc comment.
+fn developer_without_permission() -> CoolContext {
+    Principal {
+        sub: "replay-webhook-attempt-test-developer-no-perms".to_owned(),
+        kind: PrincipalKind::User,
+        role: "developer".to_owned(),
+        app_id: String::new(),
+    }
+    .into_context()
+}
+
+fn test_pepper() -> HashPepper {
+    HashPepper::new("replay-webhook-attempt-live-postgres-test-pepper-well-over-minimum")
+        .expect("test pepper meets HashPepper::new's minimum length")
+}
+
+fn unique_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is after the Unix epoch")
+        .subsec_nanos();
+    format!("{:06x}", (u64::from(nanos).wrapping_add(n)) % 0x0100_0000)
+}
+
+async fn db() -> Cratestack {
+    let url = sms_test_support::database_url().await;
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&url)
+        .await
+        .expect("connecting to Postgres");
+    Cratestack::builder(pool).build()
+}
+
+async fn seed_app(db: &Cratestack, suffix: &str) -> String {
+    db.app()
+        .create(schema::CreateAppInput {
+            name: "replay webhook attempt live test app".to_owned(),
+            slug: format!("replay-webhook-attempt-test-{suffix}"),
+            description: None,
+            defaultSenderIdId: None,
+            monthlyQuota: 1000,
+            ipAllowlist: " ".to_owned(),
+            transliterateToGsm7: false,
+            deletedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the app")
+        .id
+}
+
+async fn seed_endpoint(db: &Cratestack, suffix: &str, app_id: &str) -> schema::WebhookEndpoint {
+    db.webhook_endpoint()
+        .create(CreateWebhookEndpointInput {
+            appId: app_id.to_owned(),
+            url: "https://example.test/webhooks/vsms".to_owned(),
+            eventTypes: " message.delivered ".to_owned(),
+            secret: format!("whsec_test_{suffix}"),
+            prevSecret: None,
+            secretRotatedAt: None,
+            maskRecipient: true,
+            maxAttempts: 8,
+            circuitOpenUntil: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the webhook endpoint")
+}
+
+/// Seeds a `pending` attempt (the shape #38's subscribers produce) and
+/// walks it through legal edges only (`attempt_state_transitions`, §2.10)
+/// to whatever `target` state a test needs — mirroring
+/// `hooks_live_postgres.rs`'s own `clear_claimable_backlog` walk, since
+/// `pending`/`failed` have no direct edge to `dead`.
+async fn seed_attempt_in_state(
+    db: &Cratestack,
+    endpoint_id: &str,
+    aggregate_id: &str,
+    target: AttemptState,
+) -> schema::WebhookAttempt {
+    let attempt = db
+        .webhook_attempt()
+        .create(CreateWebhookAttemptInput {
+            endpointId: endpoint_id.to_owned(),
+            sourceEventId: cratestack::uuid::Uuid::new_v4(),
+            aggregateId: aggregate_id.to_owned(),
+            eventType: "message.delivered".to_owned(),
+            payload: r#"{"messageId":"placeholder"}"#.to_owned(),
+            leaseOwner: None,
+            leaseUntil: None,
+            nextAttemptAt: Some(Utc::now()),
+            lastStatusCode: None,
+            lastError: None,
+            lastAttemptAt: None,
+            deliveredAt: None,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a pending webhook attempt");
+
+    if target == AttemptState::pending {
+        return attempt;
+    }
+
+    let delivering = db
+        .webhook_attempt()
+        .update(attempt.id.clone())
+        .set(UpdateWebhookAttemptInput {
+            state: Some(AttemptState::delivering),
+            attempts: Some(3),
+            lastStatusCode: Some(Some(503)),
+            lastError: Some(Some("simulated failure".to_owned())),
+            leaseOwner: Some(Some("simulated-worker".to_owned())),
+            ..Default::default()
+        })
+        .if_match(attempt.version)
+        .run(&sys())
+        .await
+        .expect("moving the seeded attempt to delivering");
+
+    if target == AttemptState::delivering {
+        return delivering;
+    }
+
+    db.webhook_attempt()
+        .update(delivering.id.clone())
+        .set(UpdateWebhookAttemptInput {
+            state: Some(target),
+            ..Default::default()
+        })
+        .if_match(delivering.version)
+        .run(&sys())
+        .await
+        .unwrap_or_else(|error| panic!("moving the seeded attempt to {target:?}: {error}"))
+}
+
+/// The headline case: replaying a `dead` attempt resets it to `pending`
+/// with a fresh counter and clears the bookkeeping from the failed run
+/// that killed it — while leaving `id`/`sourceEventId`/`endpointId`
+/// untouched, which is what makes "same event id, same signature
+/// semantics" true by construction rather than something this procedure
+/// has to engineer (§8.5's own "Implementation, #43" note).
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres — see module docs"]
+async fn replaying_a_dead_attempt_resets_it_to_pending_with_a_fresh_counter() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
+    let seeded = seed_attempt_in_state(
+        &db,
+        &endpoint.id,
+        "cmsgreplayxdead0000000",
+        AttemptState::dead,
+    )
+    .await;
+    assert_eq!(seeded.state, AttemptState::dead);
+    assert_eq!(seeded.attempts, 3);
+
+    let before = Utc::now();
+    let replayed = Procedures::new(test_pepper())
+        .replay_webhook_attempt(
+            &db,
+            &developer_with_webhook_manage(),
+            replay_webhook_attempt::Args {
+                args: schema::ReplayWebhookAttemptInput {
+                    attemptId: seeded.id.clone(),
+                },
+            },
+        )
+        .await
+        .expect("replaying a dead attempt must succeed");
+
+    assert_eq!(replayed.id, seeded.id, "replay must reset the same row");
+    assert_eq!(
+        replayed.sourceEventId, seeded.sourceEventId,
+        "the envelope's dedupe key (sourceEventId) must survive a replay unchanged"
+    );
+    assert_eq!(replayed.endpointId, endpoint.id);
+    assert_eq!(replayed.state, AttemptState::pending);
+    assert_eq!(
+        replayed.attempts, 0,
+        "replay must reset the attempts counter"
+    );
+    assert!(replayed.lastStatusCode.is_none());
+    assert!(replayed.lastError.is_none());
+    assert!(replayed.leaseOwner.is_none());
+    assert!(replayed.leaseUntil.is_none());
+    let next_attempt_at = replayed
+        .nextAttemptAt
+        .expect("a replayed attempt must be immediately due");
+    assert!(
+        next_attempt_at >= before,
+        "nextAttemptAt should be stamped at replay time, not left stale"
+    );
+}
+
+/// `failed` is replayable too — forcing an immediate retry rather than
+/// waiting out the row's own backoff.
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres — see module docs"]
+async fn replaying_a_failed_attempt_resets_it_to_pending() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
+    let seeded = seed_attempt_in_state(
+        &db,
+        &endpoint.id,
+        "cmsgreplayxfaild0000000",
+        AttemptState::failed,
+    )
+    .await;
+    assert_eq!(seeded.state, AttemptState::failed);
+
+    let replayed = Procedures::new(test_pepper())
+        .replay_webhook_attempt(
+            &db,
+            &developer_with_webhook_manage(),
+            replay_webhook_attempt::Args {
+                args: schema::ReplayWebhookAttemptInput {
+                    attemptId: seeded.id.clone(),
+                },
+            },
+        )
+        .await
+        .expect("replaying a failed attempt must succeed");
+
+    assert_eq!(replayed.state, AttemptState::pending);
+    assert_eq!(replayed.attempts, 0);
+}
+
+/// The circuit-breaker decision this story had to make explicit: an
+/// operator replaying is treated as "I fixed the receiving end," so the
+/// *endpoint's* breaker resets too, not just the one attempt — otherwise
+/// `claim.rs`'s own health filter would silently keep excluding this row
+/// (and every other stuck row against the same endpoint) even after the
+/// replay "succeeded".
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres — see module docs"]
+async fn replay_also_clears_the_endpoints_open_circuit_breaker() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
+
+    db.webhook_endpoint()
+        .update(endpoint.id.clone())
+        .set(UpdateWebhookEndpointInput {
+            consecutiveFailures: Some(25),
+            circuitOpenUntil: Some(Some(Utc::now() + chrono::Duration::minutes(15))),
+            ..Default::default()
+        })
+        .run(&sys())
+        .await
+        .expect("tripping the endpoint's circuit breaker for the test");
+
+    let seeded = seed_attempt_in_state(
+        &db,
+        &endpoint.id,
+        "cmsgreplayxbreaker00000",
+        AttemptState::dead,
+    )
+    .await;
+
+    Procedures::new(test_pepper())
+        .replay_webhook_attempt(
+            &db,
+            &developer_with_webhook_manage(),
+            replay_webhook_attempt::Args {
+                args: schema::ReplayWebhookAttemptInput {
+                    attemptId: seeded.id.clone(),
+                },
+            },
+        )
+        .await
+        .expect("replaying against a circuit-open endpoint must still succeed");
+
+    let reread = db
+        .webhook_endpoint()
+        .find_many()
+        .where_expr(FilterExpr::from(webhook_endpoint::id().eq(endpoint.id)))
+        .limit(1)
+        .run(&sys())
+        .await
+        .expect("re-reading the endpoint")
+        .into_iter()
+        .next()
+        .expect("the endpoint still exists");
+
+    assert_eq!(
+        reread.consecutiveFailures, 0,
+        "replay must reset the endpoint's failure counter"
+    );
+    assert!(
+        reread.circuitOpenUntil.is_none(),
+        "replay must clear the endpoint's open circuit"
+    );
+}
+
+/// `pending`, `delivering`, and `succeeded` are all rejected as a `409
+/// Conflict` — never a `500`, per this repo's own R2 discipline (`crates/
+/// sms-api/src/errors.rs::map_database_error`), and never a silent no-op.
+/// `succeeded` is the load-bearing case: this story deliberately does not
+/// add a `succeeded -> pending` edge (§8.5's own "Implementation, #43"
+/// note explains why), so replaying an already-delivered webhook must stay
+/// impossible, not just undocumented.
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres — see module docs"]
+async fn replaying_a_non_replayable_attempt_is_a_conflict_not_a_crash() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
+    let procedures = Procedures::new(test_pepper());
+
+    for (label, state) in [
+        ("pending", AttemptState::pending),
+        ("delivering", AttemptState::delivering),
+        ("succeeded", AttemptState::succeeded),
+    ] {
+        // `aggregateId` is a plain `TEXT` column with no format constraint
+        // (unlike a `Cuid` primary key) — see `webhook_attempts_dedupe`'s
+        // own definition, §2.10 — so any distinguishing string works here.
+        let aggregate_id = format!("replay-conflict-{label}-{}", unique_suffix());
+        let seeded = seed_attempt_in_state(&db, &endpoint.id, &aggregate_id, state).await;
+        assert_eq!(seeded.state, state, "precondition for {label}");
+
+        let error = procedures
+            .replay_webhook_attempt(
+                &db,
+                &developer_with_webhook_manage(),
+                replay_webhook_attempt::Args {
+                    args: schema::ReplayWebhookAttemptInput {
+                        attemptId: seeded.id.clone(),
+                    },
+                },
+            )
+            .await
+            .expect_err(&format!("replaying a {label} attempt must not succeed"));
+
+        assert!(
+            matches!(error, CoolError::Conflict(_)),
+            "expected a 409 Conflict replaying a {label} attempt, got {error:?}"
+        );
+    }
+}
+
+/// A bogus attempt id is a clear `NotFound`, not a silent no-op or a
+/// generic database error.
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres — see module docs"]
+async fn replaying_an_unknown_attempt_id_is_not_found() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+
+    let error = Procedures::new(test_pepper())
+        .replay_webhook_attempt(
+            &db,
+            &developer_with_webhook_manage(),
+            replay_webhook_attempt::Args {
+                args: schema::ReplayWebhookAttemptInput {
+                    attemptId: format!("nosuchattempt{}", unique_suffix()),
+                },
+            },
+        )
+        .await
+        .expect_err("a nonexistent attempt id must not silently succeed");
+
+    assert!(
+        matches!(error, CoolError::NotFound(_)),
+        "expected NotFound, got {error:?}"
+    );
+}
+
+/// Layer 2 (§5.1): a caller with no `webhook:manage` permission is denied
+/// before the procedure touches the database at all — proven by pointing
+/// it at an attempt id that doesn't even exist and confirming the error is
+/// still `Forbidden`, not `NotFound` (which would mean the permission
+/// check was skipped and the lookup ran anyway).
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres — see module docs"]
+async fn replay_denies_a_caller_with_no_webhook_manage_permission() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+
+    let error = Procedures::new(test_pepper())
+        .replay_webhook_attempt(
+            &db,
+            &developer_without_permission(),
+            replay_webhook_attempt::Args {
+                args: schema::ReplayWebhookAttemptInput {
+                    attemptId: "irrelevant-the-gate-must-fire-first".to_owned(),
+                },
+            },
+        )
+        .await
+        .expect_err("a caller with no webhook:manage permission must be denied");
+
+    assert!(
+        matches!(error, CoolError::Forbidden(_)),
+        "expected Forbidden, got {error:?}"
+    );
+    if let CoolError::Forbidden(message) = error {
+        assert!(
+            message.contains("webhook:manage"),
+            "expected the denial to name the missing permission: {message}"
+        );
+    }
+}
