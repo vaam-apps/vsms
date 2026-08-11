@@ -30,7 +30,7 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, procedures::send_message, procedures::ProcedureRegistry, provider, sender_id,
+    self, procedures::send_message, procedures::ProcedureRegistry, provider, route, sender_id,
     sender_id_registration, Cratestack,
 };
 use sms_api::Procedures;
@@ -175,6 +175,71 @@ async fn ensure_provider(db: &Cratestack) -> anyhow::Result<String> {
         created.id
     );
     Ok(created.id)
+}
+
+/// #62: since the routing rules engine replaced `cheapest_active_provider`,
+/// an `accepted` message needs at least one enabled `Route` to go
+/// anywhere — a deployment with zero `Route` rows now refuses to dispatch
+/// loudly rather than silently falling back to "any active provider" (see
+/// `crates/sms-worker/src/routing.rs`'s own module doc for that decision).
+/// This tool is what `just demo` seeds fixtures from, so without this, the
+/// M5 cutover would leave the demo unable to send anything. Idempotent and
+/// self-healing, the same discipline [`ensure_provider`] already uses:
+/// reuses an existing catch-all route for this provider if one exists
+/// (re-enabling it if a prior run or an operator disabled it), otherwise
+/// creates one.
+async fn ensure_route(db: &Cratestack, provider_id: &str) -> anyhow::Result<()> {
+    let existing = db
+        .route()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            route::providerId().eq(provider_id.to_owned()),
+        ))
+        .limit(1)
+        .run(&owner())
+        .await?;
+
+    if let Some(row) = existing.into_iter().next() {
+        if row.enabled {
+            println!("reusing existing Route {} (provider={provider_id})", row.id);
+        } else {
+            db.route()
+                .update(row.id.clone())
+                .set(schema::UpdateRouteInput {
+                    enabled: Some(true),
+                    ..Default::default()
+                })
+                .run(&owner())
+                .await?;
+            println!(
+                "reusing existing Route {} (provider={provider_id}) — was disabled, re-enabled it",
+                row.id
+            );
+        }
+        return Ok(());
+    }
+
+    let created = db
+        .route()
+        .create(schema::CreateRouteInput {
+            name: "demo catch-all".to_owned(),
+            priority: 0,
+            weight: 1,
+            enabled: true,
+            matchOperator: None,
+            matchClass: None,
+            matchAppId: None,
+            matchPrefix: None,
+            providerId: provider_id.to_owned(),
+            failoverRouteId: None,
+        })
+        .run(&owner())
+        .await?;
+    println!(
+        "created catch-all Route {} (provider={provider_id})",
+        created.id
+    );
+    Ok(())
 }
 
 /// `sendMessage`'s own `resolve_sender_id` (`procedures.rs`) requires both
@@ -344,6 +409,7 @@ async fn main() -> anyhow::Result<()> {
     let db = Cratestack::builder(pool).build();
 
     let provider_id = ensure_provider(&db).await?;
+    ensure_route(&db, &provider_id).await?;
     let sender_value = ensure_approved_sender(&db, &cli.sender_id, &provider_id).await?;
     ensure_app_and_client(&db).await?;
 

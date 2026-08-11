@@ -66,7 +66,7 @@ flowchart TB
 | **1 — Foundation** | M0, M1 | Can we represent a message, and prove who is asking? | **Done** — 14/14 and 9/9 closed |
 | **2 — Deliver a message** | M2, M3 | Can one SMS reach a real handset, and can the caller find out what happened? | **Done** — M2 12/12, M3 8/8, both gates passing |
 | **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M4 **7/19**, M6 **2/8** — the largest remaining block |
-| **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | **Started** (1/6) — `sms-provider-mtn` (#61) landed; routing rules (#62), failover/circuit breakers (#63), grey-route detection (#64), and the kill-Orange-in-staging gate (#65) remain |
+| **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | **Started** (2/6) — `sms-provider-mtn` (#61) and the routing rules engine (#62) landed; failover/circuit breakers (#63), grey-route detection (#64), and the kill-Orange-in-staging gate (#65) remain |
 | **5 — Conditional** | M7 | Direct MNO interconnect over SMPP | Not started, and **may never exist** — see decision #4 |
 
 ---

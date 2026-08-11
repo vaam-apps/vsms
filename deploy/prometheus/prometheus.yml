@@ -1,0 +1,20 @@
+# #70/#71: scrape config for the `prometheus` service in
+# deploy/docker-compose.yml. Two targets, both reached over the compose
+# network's own internal DNS — neither is published to the host or fronted
+# by Caddy (see crates/sms-api/src/metrics.rs's own module doc for why
+# `/metrics` deliberately lives on a second port Caddy's blanket
+# `reverse_proxy sms-gateway:8080` never reaches).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: sms-gateway
+    static_configs:
+      - targets: ['sms-gateway:9090']
+  - job_name: sms-worker
+    static_configs:
+      - targets: ['sms-worker:9091']

@@ -122,10 +122,13 @@ async fn reload_job(db: &Cratestack, id: &str) -> Job {
 fn worker_context(db: &Cratestack) -> WorkerContext {
     WorkerContext {
         db: db.clone(),
-        // jobs/scheduler never touch the provider — see jobs.rs's own
-        // module doc for why this crate holds `Arc<dyn SmsProvider>` at
-        // all (dispatch's need, not this role's).
-        provider: Arc::new(NeverCalledProvider),
+        // jobs/scheduler never touch the provider registry — see jobs.rs's
+        // own module doc for why this crate holds one at all (dispatch's
+        // need, not this role's).
+        providers: Arc::new(std::collections::HashMap::from([(
+            "unused".to_owned(),
+            Arc::new(NeverCalledProvider) as Arc<dyn sms_provider::SmsProvider>,
+        )])),
     }
 }
 

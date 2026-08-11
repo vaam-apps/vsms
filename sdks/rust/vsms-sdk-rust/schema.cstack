@@ -364,8 +364,17 @@ model Route {
   provider Provider @relation(fields: [providerId], references: [id])
   failoverRouteId Cuid?
 
+  // read: the tenth instance of AGENTS.md's own nine-times-repeated
+  // hasRole('system') gap (#62) — real Route-rule routing (§6.3) now
+  // exists (crates/sms-worker/src/routing.rs, driven from
+  // crates/sms-worker/src/claim.rs's `accepted` branch), and its query
+  // runs under a system context the same way `cheapest_active_provider`'s
+  // did before it. Caught in advance here, before merge, by #155's own
+  // golden test (crates/sms-api/tests/system_context_golden_list_live_postgres.rs)
+  // rather than found live afterward — see that file for the guard and
+  // AGENTS.md for this instance's own record.
   @@audit
-  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
   @@allow("update", hasRole('owner') || hasRole('admin'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))

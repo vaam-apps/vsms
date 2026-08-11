@@ -1940,6 +1940,20 @@ Ordered rule evaluation: filter `Route` rows where every non-null `match*` field
 
 Circuit breaker per provider: five consecutive `Unavailable` opens it for 60s, then half-open with a single probe. Failover capped at two hops — beyond that you're not routing, you're spraying.
 
+**Implementation, #62 (`crates/sms-routing`, `crates/sms-worker/src/routing.rs`), landed against the above — the matching/ranking half only, not the circuit breaker or the two-hop failover cap, both #63:**
+
+`sms_routing::select_route` is a pure function: `(&[RouteRow], &HashMap<String, ProviderRow>, &RoutingCandidate, &ExcludedRouteIds, draw: f64) -> Decision`. No I/O, no RNG, no clock — `crates/sms-worker/src/routing.rs::decide` is the one place that fetches `Route`/`Provider` rows and draws `draw` (`rand::random()`), immediately before calling into the pure crate. This is the resolution to "weighted implies random" vs. "deterministic and explainable" (#62's own framing, driven by #54's admin simulator needing to replay a decision without sending anything): production draws once per decision; a replay supplies the same `draw` and gets the identical `Decision` back, because the function is a pure fold over its inputs.
+
+`NULL` on any `match*` column means "matches anything," not "matches only a NULL value" — a route with no `matchOperator` routes every operator. Priority is the *only* cross-band ordering; there is no independent "more specific route wins" tiebreak — an operator wanting that has to set a higher `priority` explicitly. `matchPrefix` compares against `sms_msisdn::Msisdn::national()`, the same national-digit convention `OperatorPrefixRule.prefix` already uses, not a hand-rolled E.164 comparison.
+
+`Decision` carries one `RouteEvaluation` per input route (matched, excluded, disabled, predicate-failed with which predicate and why, or provider-unavailable with why) plus, when the winning priority band had more than one eligible member, a `TieBreak` showing the exact cumulative-weight ranges `draw` was compared against and which one it landed in — the full "which routes were considered, which predicates each failed on, how ties were broken, and what the final weighted choice was" #62's own acceptance criteria asked for.
+
+**Provider health, sender-ID approval, capability fit, and remaining TPS/daily budget are not yet part of this filtering — one exception.** "Provider health" narrows to exactly `Provider.state == active` (`crates/sms-worker/src/routing.rs::convert_provider`) — the same check the M2 placeholder this replaced used, since `Provider.healthy` has no writer yet (§7.5's `probe_providers` job is still out of scope). Sender-ID approval, capability fit (UCS-2 support, alphanumeric sender), and TPS/daily budget are deliberately not modelled at all: no second provider with materially different capabilities existed to make any of them concrete when this landed (`#61` added `sms-provider-mtn`'s crate in parallel, not its wiring into a provider registry). `WorkerContext` gained a provider registry (`ProviderRegistry`, keyed by `Provider.key`/`SmsProvider::key()`) so a routed message resolves to whichever adapter its winning route's provider actually names, rather than one hardcoded field — the natural place this filtering will eventually plug in.
+
+**No `Route` rows configured at all refuses to dispatch, loudly** — every `accepted` message goes to `rejected` with a `stateReason` naming why (`routing::explain_no_route`), rather than a silent fallback to "any active provider." A deliberate cutover from the M2 placeholder's implicit behaviour, not an oversight: see `AGENTS.md`'s own #62 section for the reasoning and the demo-seeding consequence.
+
+`Route.failoverRouteId` and `select_route`'s own `exclude: &ExcludedRouteIds` parameter exist for #63 to build the two-hop-capped failover chain and the circuit breaker described above — calling `select_route` again with a failed route's id added to `exclude` finds the next-best route with no changes needed to this crate.
+
 ### 6.4 Grey routes
 
 Orange's published wholesale interconnect floor is 3.5–8 XAF/SMS depending on volume; its retail all-operator API is 16–22 XAF. Some local aggregators advertise 7–12 XAF all-network at low volume — at or below the wholesale floor. Sustained pricing below roughly 8 XAF all-network is hard to reconcile with a legitimate direct interconnect, and the usual explanation is SIM-farm or international grey routing.
@@ -2425,11 +2439,15 @@ The design question this story has to resolve before writing any code: given `we
 
 ### 9.1 Observability
 
-- **Tracing**: `tracing` + OpenTelemetry, `X-Request-Id` propagated from ingress through the worker into the provider call and back through the DLR. One trace per message lifecycle is what makes "why did this OTP not arrive" a 30-second question.
-- **Metrics**: submit rate and latency by provider; delivery rate by provider × operator; time-to-delivery p50/p95/p99 by class; queue depth and oldest-queued age; DLR lag; `cratestack_event_outbox` undelivered depth and oldest age; `jobs` pending depth and oldest `run_at`; webhook success rate and dead-letter count; **`SM001` rejection count by from/to pair**; balance in XAF per provider; segments per message; UCS-2 ratio; `/token` failure rate by client_id; **advisory lock holder per singleton role**.
-- **Alerts that matter**: OTP p95 time-to-delivery above 30s; delivery rate on any provider×operator pair below 85% over 15 minutes; queue oldest-age above 2 minutes; outbox oldest undelivered above 60s, or any row with `attempts > 5`; **any singleton role unheld for more than 30s**; **a non-zero `SM001` rate**, which means code is proposing transitions the machine forbids; provider balance below 3 days of projected spend; DLR silence from a provider for 10 minutes; webhook dead-letter rate above 1%.
+**Landed in #70/#71, corrected against what actually shipped rather than left as the original aspirational prose** — the five bolded items below are real (`crates/sms-metrics`, a Prometheus text endpoint on both binaries, `deploy/prometheus/alerts.yml`); everything else in this section is still the M6 target, not yet built, and the two paragraphs after the lists are the specific corrections.
+
+- **Tracing**: `tracing`, no OpenTelemetry (no collector infrastructure exists anywhere in `deploy/`, and one was not needed for what shipped — see below). `cratestack_request_id` (an inbound `X-Request-Id` header, honoured verbatim, or freshly minted — `crates/sms-api/src/auth.rs::request_id_from`) ties every `cratestack_*`-logged line together for one HTTP request, within `sms-gateway`. It does **not** propagate into `sms-worker` or back through the DLR — those are separate processes with no shared span context, and the request that created a message is long finished by the time a worker submits it or a DLR arrives. `Message.id` is the join key across that boundary instead: `crates/sms-api/src/procedures.rs::send`, `crates/sms-worker/src/dispatch.rs::submit_one`, and `crates/sms-api/src/dlr.rs::ingest_one` each log a `message_id`-carrying event. See `docs/runbooks/alerting.md`'s "Correlating a message end to end" section for the worked example — this is real, grep-able correlation, not a claim of distributed tracing in the OpenTelemetry sense.
+- **Metrics**: five landed — **`SM001` rejection count by from/to pair** (`sms_sm001_total`, entity/from_state/to_state labels), **advisory lock holder per singleton role** (`sms_worker_singleton_lease_held{role}`), concurrent in-flight dispatch submits per provider (`sms_dispatch_in_flight_submits{provider}`), webhook outbox oldest-undelivered age (`sms_webhook_outbox_oldest_undelivered_age_seconds`), and poison event-outbox row count (`sms_event_outbox_poison_rows`). Everything else in this original list — submit rate/latency by provider, delivery rate by provider × operator, time-to-delivery percentiles, queue depth, DLR lag, `jobs` pending depth, webhook success rate, provider balance, segments per message, UCS-2 ratio, `/token` failure rate — is still aspirational; #70's own five named alert conditions are what #71 scoped metrics work to, deliberately, not this full list.
+- **Alerts that matter**: the five landed metrics each back a real, loadable Prometheus rule in `deploy/prometheus/alerts.yml` — **any singleton role unheld for more than 30s**; **a non-zero `SM001` rate**, which means code is proposing transitions the machine forbids; unexpected concurrent dispatch submits (a fleet-wide sum above 1, sustained); outbox oldest undelivered above **2 minutes**, not the 60s this line originally said (`crates/sms-worker/src/drain.rs::STALLED_THRESHOLD` is the implemented, real threshold — see `docs/runbooks/alerting.md` for why the alert matches the code, not this stale prose figure); any row with `attempts > 5` (`reap_outbox`'s own threshold, #42). Everything else in this original line — OTP p95, delivery-rate-by-pair, queue oldest-age, provider balance, DLR silence, webhook dead-letter rate — has no metric behind it yet and therefore no rule either.
 
 The `SM001` metric is the highest-signal one in the list. In a correct system it is flat zero — the trigger is a backstop, not a control path. Any non-zero rate means application logic and the transition table disagree, and it will tell you that before a customer does.
+
+**"Alerting" does not mean this repository can page anyone.** No Alertmanager, no receiver, no Slack/PagerDuty integration exists anywhere in this tree — a real Prometheus (the `prometheus` service in `deploy/docker-compose.yml`) genuinely evaluates the five rules and shows firing state on its own `/alerts` page, and an operator wires a receiver on top of that themselves. Building a bespoke in-process alerting engine was considered and rejected as the wrong shape of deliverable for #70.
 
 The UCS-2 ratio deserves its own tile. A sudden jump means someone shipped a template with a `ç` or a smart apostrophe, and it will show up in your bill before anyone notices in the UI.
 
@@ -2449,6 +2467,7 @@ flowchart LR
         end
         ADMINN["admin (Next.js)"]
         PGN[("postgres 16")]
+        PROM["prometheus<br/>#70/#71"]
     end
     S3[("object storage<br/>WAL archive + dumps")]
 
@@ -2460,6 +2479,8 @@ flowchart LR
     W1 --> PGN
     HOOKS --> PGN
     PGN -.->|"WAL + nightly dump"| S3
+    PROM -.->|"scrapes /metrics,<br/>never fronted by caddy"| API1
+    PROM -.->|"scrapes /metrics,<br/>never fronted by caddy"| W1
 ```
 
 Docker Compose on one well-specified VM. Postgres with WAL archiving to object storage plus nightly `pg_dump`. Kubernetes only when you have a reason that isn't résumé-driven.

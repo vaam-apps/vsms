@@ -6,6 +6,25 @@
 //! returns a clearly-labelled error naming the milestone that will build
 //! it, rather than a plausible-looking stub that would pass a smoke test
 //! and lie.
+//!
+//! # #71: `send`'s own span in the correlation chain
+//!
+//! The framework's own generated `invoke_with_db` wrapper
+//! (`cratestack-macros`'s `instrument.rs`) already logs
+//! `cratestack_procedure = "sendMessage"` / `cratestack_request_id` /
+//! `cratestack_duration_ms` around this whole call — that is the
+//! HTTP-request-scoped half of #71's tracing requirement, and needs no
+//! code here to exist. What that wrapper cannot log, because it runs
+//! before and after `send` without seeing inside it, is the one value that
+//! actually survives past this process: `Message.id`. [`Procedures::send`]
+//! emits its own `info!` immediately after `create()` returns, carrying
+//! `message_id` alongside `cratestack_request_id` (read directly off `ctx`)
+//! — the join key `crates/sms-worker/src/dispatch.rs`'s own submit-success
+//! event and `crates/sms-api/src/dlr.rs`'s own ingestion event reuse later,
+//! in different processes, with no span context to inherit it through. See
+//! `docs/runbooks/alerting.md`'s "Correlating a message end to end" section
+//! for why `Message.id` is the join key and not a `traceparent`, and for a
+//! worked example query across all three log lines.
 
 use authkestra_engine::TokenManager;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
@@ -18,6 +37,7 @@ use rsa::RsaPrivateKey;
 use sms_core::pack;
 use sms_encoding::{analyse, normalise, transliterate_to_gsm7, SmsEncoding};
 use sms_msisdn::{Msisdn, OperatorPrefixTable};
+use tracing::info;
 
 use crate::auth::{Principal, PrincipalKind};
 use crate::cache::TtlCache;
@@ -650,6 +670,20 @@ impl Procedures {
             })
             .run(&sys)
             .await?;
+
+        // #71: the correlation event — see this module's own doc. Logged
+        // at `info`, not `debug`: this is the one line that lets an
+        // operator go from "a customer says this OTP never arrived" to
+        // "grep this message_id across both processes' logs" without
+        // already knowing which worker or which tick handled it.
+        info!(
+            message_id = %message.id,
+            app_id = %message.appId,
+            client_ref = message.clientRef.as_deref().unwrap_or(""),
+            cratestack_request_id = ctx.request_id().unwrap_or(""),
+            state = ?message.state,
+            "message accepted"
+        );
 
         Ok(schema::SendMessageResult {
             messageId: message.id,

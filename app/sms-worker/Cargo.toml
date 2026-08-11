@@ -23,6 +23,12 @@ sms-api.workspace = true
 
 anyhow.workspace = true
 async-trait.workspace = true
+# #70/#71: this binary's own `GET /metrics` listener — see
+# `sms_api::metrics`'s own module doc for why this reuses that crate's
+# router directly rather than duplicating one `/metrics` route a second
+# time, and this file's own module doc for why this process needs an HTTP
+# surface at all now, having deliberately had none before.
+axum.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
 cratestack.workspace = true
 dotenvy.workspace = true

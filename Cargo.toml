@@ -5,12 +5,17 @@ members = [
   "crates/sms-encoding",
   "crates/sms-msisdn",
   "crates/sms-webhook",
+  # #70/#71: Prometheus metric definitions shared by sms-api and
+  # sms-worker — pure, no schema/framework dependency, same reasoning as
+  # sms-webhook above for living below both.
+  "crates/sms-metrics",
   "crates/sms-api",
   "crates/sms-auth",
   "crates/sms-worker",
   "crates/sms-provider",
   "crates/sms-provider-orange-cm",
   "crates/sms-provider-mtn",
+  "crates/sms-routing",
   "crates/sms-fake-orange",
   "crates/sms-test-support",
   "app/sms-gateway",
@@ -64,6 +69,10 @@ sms-msisdn = { path = "./crates/sms-msisdn" }
 # schema-coupled — both sms-api (rotateWebhookSecret) and sms-worker's
 # hooks role (#40) depend on this directly rather than on each other.
 sms-webhook = { path = "./crates/sms-webhook" }
+# #70/#71: metric name/help/label definitions, so sms-api and sms-worker
+# (two separate processes — see the crate's own module doc) can't drift
+# apart on what a given metric is called.
+sms-metrics = { path = "./crates/sms-metrics" }
 sms-api = { path = "./crates/sms-api" }
 sms-auth = { path = "./crates/sms-auth" }
 sms-worker = { path = "./crates/sms-worker" }
@@ -74,6 +83,11 @@ sms-provider-orange-cm = { path = "./crates/sms-provider-orange-cm" }
 # parts of the request/response shape are a verified pattern vs. an
 # invented placeholder pending a real aggregator contract.
 sms-provider-mtn = { path = "./crates/sms-provider-mtn" }
+# #62's pure route-selection engine — no cratestack, no I/O. sms-worker
+# (crates/sms-worker/src/routing.rs) is the I/O glue; a future #54
+# simulator procedure in sms-api is expected to depend on this directly
+# too.
+sms-routing = { path = "./crates/sms-routing" }
 # Dev-only: the shared live-Postgres test harness (see its own module doc).
 # Depended on via [dev-dependencies] everywhere it's used, never
 # [dependencies] — no production binary links against it.
@@ -183,6 +197,14 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # workspace-wide (0.23.x, verified against Cargo.lock) — this doesn't fork
 # the rustls tree, just names the one version already there.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# #70/#71: crates/sms-metrics's registry/counters/gauges and text
+# exposition encoder. `default-features = false` drops the `protobuf`
+# feature (Prometheus's older binary scrape format, via the `protobuf`
+# crate) — nothing in this deployment's tooling speaks it, every consumer
+# here (a human, or a real Prometheus server) scrapes the text format, and
+# turning it off keeps this dependency to the metric types themselves.
+# Apache-2.0, already on `deny.toml`'s allowed-license list.
+prometheus = { version = "0.14", default-features = false }
 rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
