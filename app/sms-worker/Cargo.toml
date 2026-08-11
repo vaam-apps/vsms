@@ -40,6 +40,18 @@ tracing-subscriber.workspace = true
 chrono.workspace = true
 serde_json.workspace = true
 wiremock.workspace = true
+# hooks_node_receiver_live.rs (#44) polls a real, spawned Node receiver
+# process's own diagnostic HTTP endpoint, and hooks_two_workers_live.rs
+# (#44) polls a wiremock-backed mock customer endpoint's own request log —
+# same real-HTTP-client need every other live suite here already has.
+reqwest.workspace = true
+# hooks_two_workers_live.rs (#44) reads the real X-Sms-Event-Id header
+# name constant off the same crate `hooks.rs` itself signs with, rather
+# than retyping the literal a second time — `crates/sms-worker`'s own
+# `hooks_live_postgres.rs` does the identical thing (that crate already
+# depends on sms-webhook directly; this binary crate does not, so it's
+# named here as a dev-only dependency).
+sms-webhook.workspace = true
 # Gets DATABASE_URL from this instead of the environment.
 sms-test-support.workspace = true
 
