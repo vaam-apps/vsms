@@ -391,6 +391,9 @@ ALTER TABLE webhook_attempts ADD CONSTRAINT wha_endpoint_fk
 ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_format_check
     CHECK (prefix ~ '^[0-9]{1,4}$');
 
+ALTER TABLE roles ADD CONSTRAINT roles_key_not_reserved_check
+    CHECK (key NOT IN ('system', 'app'));
+
 -- private_key_jwt without a key is a client that can never authenticate;
 -- `none` *with* a key is a public client someone believed was confidential.
 --

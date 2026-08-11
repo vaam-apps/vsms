@@ -30,6 +30,19 @@
 //!    (the *verification* half is `admin`'s own TypeScript callback route;
 //!    see `admin/lib/oidc.test.ts` for that half's guard-failure proof).
 //!
+//! A fifth test, [`a_role_keyed_system_never_authenticates_even_past_the_database_check`],
+//! was added in review: a `Role` keyed `"system"` must never let a human
+//! reach `hasRole('system')`, even if `roles_key_not_reserved_check`
+//! (§2.10, the database-level half of that guard — see
+//! `crates/sms-auth/tests/login_live_postgres.rs` for its own live proof)
+//! is somehow bypassed. That test deliberately drops the constraint to
+//! construct the row the second, independent guard
+//! (`sms_api::auth::load_human_principal`'s reserved-key check) needs to
+//! prove itself against — see that test's own doc for why, and why this
+//! is a legitimate, scoped use of raw SQL rather than an R1 violation
+//! (schema DDL, not a data-access bypass; every actual data write in the
+//! test still goes through the real `CrateStack` delegates).
+//!
 //! Ignored by default, same convention as this workspace's other live
 //! suites. Run explicitly:
 //!
@@ -48,6 +61,17 @@ use cratestack::{CoolContext, FilterExpr};
 use sha2::{Digest, Sha256};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, provider as provider_filter, ClientAuthMethod, Cratestack};
+
+/// Same reasoning as every other live suite's own copy of this mutex —
+/// #102. Load-bearing here specifically because
+/// [`a_role_keyed_system_never_authenticates_even_past_the_database_check`]
+/// temporarily drops a table-wide `CHECK` constraint — a schema-shape
+/// change every other test in this binary implicitly depends on staying
+/// in place, not just a row-shaped fixture. Holding this mutex for that
+/// test's entire drop/seed/restore window is what makes it safe for the
+/// other tests here to run before or after it in any order.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
 const ORANGE_PROVIDER_KEY: &str = "orange_cm";
 const TEST_HASH_PEPPER: &str = "login-flow-live-postgres-test-pepper-over-the-minimum-length";
@@ -384,6 +408,7 @@ fn parse_code_and_state(redirect: &str) -> (String, String) {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_correct_login_completes_the_full_authorization_code_pkce_round_trip() {
+    let _guard = TEST_MUTEX.lock().await;
     let db_url = sms_test_support::database_url().await;
     let db = db().await;
     let suffix = unique_suffix();
@@ -493,6 +518,7 @@ async fn a_correct_login_completes_the_full_authorization_code_pkce_round_trip()
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_wrong_pkce_code_verifier_is_refused_at_the_token_exchange() {
+    let _guard = TEST_MUTEX.lock().await;
     let db_url = sms_test_support::database_url().await;
     let db = db().await;
     let suffix = unique_suffix();
@@ -566,6 +592,7 @@ async fn a_wrong_pkce_code_verifier_is_refused_at_the_token_exchange() {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_wrong_password_is_refused_at_login_before_any_code_is_issued() {
+    let _guard = TEST_MUTEX.lock().await;
     let db_url = sms_test_support::database_url().await;
     let db = db().await;
     let suffix = unique_suffix();
@@ -604,4 +631,292 @@ async fn a_wrong_password_is_refused_at_login_before_any_code_is_issued() {
     assert_eq!(body["error"].as_str(), Some("invalid_credentials"));
 
     process.kill_and_wait().await;
+}
+
+/// The rows [`seed_reserved_role_login_account`] created, plus the raw
+/// pool needed to restore the constraint it dropped — kept alive for the
+/// whole test (the `Role`/`User` rows have to stay in place, `roleKey`
+/// still pointing at `"system"`, for the login attempt itself to resolve
+/// against), then torn down explicitly by [`Self::cleanup`] once the
+/// test's own assertions are done.
+///
+/// `landing_role_key` is a second, harmless `Role` created alongside the
+/// reserved one, for [`Self::cleanup`]'s own use — see that method's doc
+/// for why deleting the reserved `Role` outright needs somewhere else for
+/// `User.roleKey` to point first.
+struct ReservedRoleFixture {
+    raw_pool: cratestack::sqlx::PgPool,
+    role_id: String,
+    landing_role_key: String,
+    user_id: String,
+    credential_id: String,
+    email: String,
+}
+
+impl ReservedRoleFixture {
+    /// Restores `roles_key_not_reserved_check` by first making the
+    /// reserved-key `Role` row genuinely unreferenced, then deleting it.
+    ///
+    /// **Why this can't simply delete `User` first, the naive order:**
+    /// `User` carries `@@soft_delete` — `db.user().delete()` sets
+    /// `deletedAt`, it does not remove the row, so `roleKey` keeps
+    /// pointing at the reserved `Role` and `users_role_key_fkey` (this
+    /// schema's FK columns are auto-emitted as of `cratestack-migrate`
+    /// 0.7.8+, per `AGENTS.md`) blocks deleting that `Role` regardless —
+    /// confirmed live, not assumed: the first version of this method tried
+    /// exactly that order and failed with `update or delete on table
+    /// "roles" violates foreign key constraint "users_role_key_fkey"`.
+    /// Reassigning `roleKey` to [`Self::landing_role_key`] first — a real,
+    /// non-reserved `Role` this fixture also created — clears the
+    /// reference without needing a hard delete `User`'s own policy
+    /// structurally can't do. `UserCredential` deletes cleanly regardless
+    /// (`sys()`, matching its own `@@allow("delete", hasRole('system'))`),
+    /// since nothing else references it.
+    ///
+    /// The reserved `Role` delete has to happen *before* the constraint
+    /// restore: `ADD CONSTRAINT` validates every existing row, and that
+    /// row is exactly the one that would fail it.
+    async fn cleanup(self, db: &Cratestack) {
+        db.user_credential()
+            .delete(self.credential_id)
+            .run(&sys())
+            .await
+            .expect("deleting the reserved-role test UserCredential");
+        db.user()
+            .update(self.user_id)
+            .set(schema::UpdateUserInput {
+                roleKey: Some(self.landing_role_key.clone()),
+                ..Default::default()
+            })
+            .run(&owner())
+            .await
+            .expect("reassigning the test User off the reserved-key Role before deleting it");
+        db.role()
+            .delete(self.role_id)
+            .run(&owner())
+            .await
+            .expect("deleting the reserved-role test Role");
+
+        cratestack::sqlx::query(
+            "ALTER TABLE roles ADD CONSTRAINT roles_key_not_reserved_check \
+             CHECK (key NOT IN ('system', 'app'))",
+        )
+        .execute(&self.raw_pool)
+        .await
+        .expect("restoring roles_key_not_reserved_check");
+    }
+}
+
+/// Seeds a `User` + `UserCredential` pointed at a `Role` keyed `"system"` —
+/// a row `roles_key_not_reserved_check` (§2.10) makes unreachable through
+/// any normal path, so this function briefly drops that constraint and
+/// creates the row through the real `db.role().create()` delegate (R1:
+/// only the constraint removal/restoration is raw SQL — every actual data
+/// write goes through a real `CrateStack` delegate, audited and
+/// policy-checked exactly as any other). This is the R1 exception named in
+/// `ci/assert-no-raw-sqlx.sh` and `CONTRIBUTING.md` for this file: schema
+/// DDL to construct an otherwise-unreachable test fixture, not a
+/// production data-access bypass.
+///
+/// **The constraint stays dropped until [`ReservedRoleFixture::cleanup`]
+/// runs** — deliberately, not a bug: the whole point of this fixture is a
+/// `User.roleKey` that still resolves to `"system"` for the login attempt
+/// the test drives against it, and `ADD CONSTRAINT` would refuse to come
+/// back while that row exists. Callers must hold [`TEST_MUTEX`] from
+/// before this call until after `cleanup` returns — see that static's own
+/// doc for why a dropped table-wide constraint is a bigger blast radius
+/// than an ordinary row fixture.
+async fn seed_reserved_role_login_account(
+    db_url: &str,
+    db: &Cratestack,
+    suffix: &str,
+) -> ReservedRoleFixture {
+    let raw_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(db_url)
+        .await
+        .expect("connecting a raw pool for the constraint drop/restore");
+
+    cratestack::sqlx::query("ALTER TABLE roles DROP CONSTRAINT roles_key_not_reserved_check")
+        .execute(&raw_pool)
+        .await
+        .expect("dropping roles_key_not_reserved_check to construct the fixture");
+
+    let role = db
+        .role()
+        .create(schema::CreateRoleInput {
+            key: "system".to_owned(),
+            label: "reserved role bypass test — see seed_reserved_role_login_account".to_owned(),
+            description: None,
+            permissions: " ".to_owned(),
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the reserved-key Role while the constraint is down");
+
+    // Not reserved, created with the constraint already back — this is
+    // ReservedRoleFixture::cleanup's own landing spot for User.roleKey,
+    // never used by the login flow itself.
+    let landing_role_key = format!("rrlanding{}", suffix.to_lowercase());
+    db.role()
+        .create(schema::CreateRoleInput {
+            key: landing_role_key.clone(),
+            label: "reserved role test cleanup landing spot".to_owned(),
+            description: None,
+            permissions: " ".to_owned(),
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the cleanup landing Role");
+
+    let email = format!("login-flow-reserved-{suffix}@example.test");
+    let user = db
+        .user()
+        .create(schema::CreateUserInput {
+            subject: format!("login-flow-reserved-subject-{suffix}"),
+            email: email.clone(),
+            displayName: "Reserved Role Test User".to_owned(),
+            roleKey: role.key,
+            lastLoginAt: None,
+            deletedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a User pointed at the reserved-key Role");
+
+    let credential = db
+        .user_credential()
+        .create(schema::CreateUserCredentialInput {
+            userId: user.id.clone(),
+            passwordHash: sms_auth::login::hash_password(TEST_PASSWORD)
+                .expect("hashing the test password"),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a UserCredential");
+
+    ReservedRoleFixture {
+        raw_pool,
+        role_id: role.id,
+        landing_role_key,
+        user_id: user.id,
+        credential_id: credential.id,
+        email,
+    }
+}
+
+/// **The required guard-failure proof for the reserved-role escalation
+/// found in review (#194's own house standard).** A `Role` keyed
+/// `"system"`, assigned to a human `User`, must never let that human reach
+/// `hasRole('system')` — proven here past the point where the database
+/// constraint alone would normally stop it (see
+/// [`seed_reserved_role_login_account`]'s own doc), so this test actually
+/// exercises `sms_api::auth::load_human_principal`'s independent,
+/// point-of-use reserved-key check, not just the database's.
+///
+/// Both password authentication and the OAuth token exchange succeed —
+/// neither `sms_auth::login::authenticate_user` nor `authkestra-op`'s own
+/// `/token` handler has any concept of "role" to refuse. The refusal has
+/// to happen where this PR's second guard lives: the moment the resulting
+/// access token is presented to any real route and `GatewayAuth` resolves
+/// its role.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_role_keyed_system_never_authenticates_even_past_the_database_check() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db_url = sms_test_support::database_url().await;
+    let db = db().await;
+    let suffix = unique_suffix();
+
+    sms_auth::op::rotate_signing_key(&db, &sys(), sms_auth::op::ROTATION_OVERLAP)
+        .await
+        .expect("rotating in a signing key");
+    ensure_orange_cm_provider(&db).await;
+    ensure_console_client(&db).await;
+    let fixture = seed_reserved_role_login_account(&db_url, &db, &suffix).await;
+    let email = fixture.email.clone();
+
+    let port = free_port();
+    let process = GatewayProcess::spawn(&db_url, port).await;
+    let client = reqwest::Client::new();
+
+    let (verifier, challenge) = pkce_pair();
+    let state = format!("state-{suffix}");
+    let nonce = format!("nonce-{suffix}");
+
+    // --- /login: password auth itself never checks role — it succeeds. ---
+    let login_response = client
+        .post(format!("{}/login", process.issuer))
+        .json(&login_body(
+            &email,
+            TEST_PASSWORD,
+            &state,
+            &challenge,
+            &nonce,
+        ))
+        .send()
+        .await
+        .expect("POSTing to /login");
+    assert_eq!(
+        login_response.status(),
+        reqwest::StatusCode::OK,
+        "password auth has no concept of role — only the token's later use does"
+    );
+    let login_body: serde_json::Value = login_response.json().await.expect("parsing /login's body");
+    let redirect = login_body["redirect"].as_str().expect("a redirect string");
+    let (code, _returned_state) = parse_code_and_state(redirect);
+
+    // --- /token: the OP itself has no concept of role either — a real,
+    // correctly signed access token is issued. ---
+    let token_response = client
+        .post(format!("{}/token", process.issuer))
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", REDIRECT_URI),
+            ("client_id", CONSOLE_CLIENT_ID),
+            ("code_verifier", verifier.as_str()),
+        ])
+        .send()
+        .await
+        .expect("POSTing to /token");
+    let token_status = token_response.status();
+    let token_body: serde_json::Value = token_response.json().await.expect("parsing /token's body");
+    assert!(
+        token_status.is_success(),
+        "the OP itself has no concept of role — a real token must still be issued here \
+         ({token_status}): {token_body}"
+    );
+    let access_token = token_body["access_token"]
+        .as_str()
+        .expect("a successful exchange returns access_token");
+
+    // --- The point of use: GatewayAuth's own human path must refuse this
+    // token on every real route, because sms_api::auth::load_human_principal
+    // rejects a role_key of "system" — the guard this test exists to prove. ---
+    let roles_response = client
+        .get(format!("{}/roles", process.issuer))
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .expect(
+            "calling GET /roles with a token whose role resolves to the reserved \"system\" key",
+        );
+    assert_eq!(
+        roles_response.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "a human token whose role is the reserved key \"system\" must never authenticate \
+         against any real route, even though both password auth and token issuance succeeded"
+    );
+
+    process.kill_and_wait().await;
+    // Deletes the fixture's rows and restores roles_key_not_reserved_check
+    // — see ReservedRoleFixture::cleanup's own doc for why the delete has
+    // to happen before the restore, and why this is safe to run even
+    // after the assertion above (a panic on that assertion would skip
+    // this and leave the constraint down for the rest of this binary's
+    // run, but TEST_MUTEX is held for the whole test, so no other test
+    // observes the gap — only a genuine failure here would need a
+    // follow-up `just test-live-clean`).
+    fixture.cleanup(&db).await;
 }

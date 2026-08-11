@@ -472,6 +472,30 @@ async fn load_human_principal(
         .next()
         .ok_or_else(|| CoolError::Unauthorized("user's role no longer exists".to_owned()))?;
 
+    // Fail closed at the point of use — the second of two independent
+    // guards, deliberately not the only one (see RESERVED_ROLE_KEYS' own
+    // doc for the first, a database-level CHECK). `Role.key`'s @regex
+    // (`^[a-z][a-z0-9_]{2,31}$`) happily accepts the literal "system": a
+    // Role row keyed "system", assigned to a human User via ordinary
+    // owner/admin-level generated CRUD (Role.create is hasRole('owner'),
+    // User.update is owner/admin), would otherwise project straight into
+    // Principal.role, and hasRole('system') would then match for that
+    // human exactly the way it matches for the real, synthetic system
+    // context — reading OauthSigningKey.privateKeyPem (the key that signs
+    // every token this system issues) and every UserCredential.passwordHash
+    // through generated CRUD. AGENTS.md's own §5.2 states the invariant
+    // this exists to protect: "system is not a row in roles... constructible
+    // only inside a process." This check is what makes that true even if
+    // the CHECK constraint below is ever bypassed (a raw migration, a
+    // future admin tool that writes past R1) — redundant with the CHECK
+    // on the common path, not redundant with the invariant itself, so
+    // don't remove either half without re-reading this comment.
+    if RESERVED_ROLE_KEYS.contains(&role_row.key.as_str()) {
+        return Err(CoolError::Unauthorized(
+            "unknown or inactive user".to_owned(),
+        ));
+    }
+
     Ok(HumanPrincipal {
         role_key: role_row.key,
         perms: sms_core::unpack(&role_row.permissions)
@@ -480,6 +504,24 @@ async fn load_human_principal(
             .collect(),
     })
 }
+
+/// `Role.key` values no human account may ever carry, checked in
+/// [`load_human_principal`] and enforced a second, independent way by a
+/// `CHECK` constraint on `roles.key` (`schema/migrations/postgres/0002_bootstrap`,
+/// generated from `docs/architecture.md` §2.10 — never hand-edited).
+///
+/// - `"system"` is the one that matters: it's the literal `hasRole(...)`
+///   compares against for the synthetic internal context every procedure's
+///   own `sys()`/`system_context()` constructs — see this file's own
+///   [`PrincipalKind`] doc and §5.2 of the design doc. A `Role` row keyed
+///   `"system"` would let `hasRole('system')` match for a real human.
+/// - `"app"` is reserved too, defensively, even though it is not
+///   currently a privilege escalation: [`authenticate_app`]'s own
+///   `role: "app"` sentinel matches no `hasRole(...)` clause in the schema
+///   (`OauthSigningKey`'s own comment is explicit about this), so a human
+///   `Role` keyed `"app"` would be confusing, not exploitable — reserved
+///   to keep it that way rather than relying on that fact never changing.
+const RESERVED_ROLE_KEYS: &[&str] = &["system", "app"];
 
 #[cfg(test)]
 mod tests {

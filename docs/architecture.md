@@ -1316,6 +1316,13 @@ ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_fo
     CHECK (prefix ~ '^[0-9]{1,4}$');
 ```
 
+**Reserved `Role.key` values (#194).** `Role.key`'s own `@regex` (`^[a-z][a-z0-9_]{2,31}$`) has no way to exclude specific literals, and `@db_enforce` is a silent no-op on `@regex` fields regardless (the same gap the `operator_prefix_rules` format check above exists to close) — so nothing in the schema stops an `owner` from creating a `Role` keyed exactly `"system"` through ordinary generated CRUD (`Role.create`'s own `@@allow` is `hasRole('owner')`) and assigning a human `User` to it. `hasRole('system')` matches on `Role.key` verbatim, with no other check in Layer 1 — `system` is supposed to be synthetic, constructible only inside a process (§5.2), never a real database row a human account can reach. A `Role` named `"system"` would let a human read `OauthSigningKey.privateKeyPem` (the key that signs every token this system issues) and every `UserCredential.passwordHash` through generated CRUD, both `hasRole('system')`-gated. `"app"` is reserved alongside it, defensively — `GatewayAuth`'s own machine-caller sentinel `role: "app"` matches no `hasRole(...)` clause today (see `OauthSigningKey`'s own schema comment), so a human `Role` keyed `"app"` is confusing rather than exploitable, but reserving it costs nothing and keeps that true rather than assumed. This is one of two independent guards — `crates/sms-api/src/auth.rs`'s `load_human_principal` refuses a `"system"`/`"app"` role_key at the point of use regardless of what the database allows; see that function's own doc for why both exist rather than just one:
+
+```sql
+ALTER TABLE roles ADD CONSTRAINT roles_key_not_reserved_check
+    CHECK (key NOT IN ('system', 'app'));
+```
+
 **Client-registration invariants.** The schema can say a client names one auth method; it cannot say that the method and the rest of the row agree. Both of these are the difference between a misconfigured client failing at `INSERT` and failing at `/token`, where the symptom is an authentication error nobody can explain:
 
 ```sql

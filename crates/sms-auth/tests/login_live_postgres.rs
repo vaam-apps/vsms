@@ -258,3 +258,70 @@ async fn removing_the_active_filter_would_let_a_deactivated_account_log_in() {
          and a successful login, not a row that silently doesn't exist for some other reason"
     );
 }
+
+/// **The first of two independent guards against a `Role` keyed `"system"`
+/// (found in review, closed in the same PR) — the database itself.**
+/// `roles_key_not_reserved_check` (`schema/migrations/postgres/0002_bootstrap`,
+/// generated from `docs/architecture.md` §2.10) rejects `key IN ('system',
+/// 'app')` at `INSERT`, through the *real* `db.role().create()` delegate —
+/// no policy bypass, no raw `sqlx` (R1). Without this, an `owner` could
+/// create a `Role` named `"system"` through ordinary generated CRUD
+/// (`Role.create`'s own `@@allow` is `hasRole('owner')`), assign a human
+/// `User` to it, and that human's next login would satisfy
+/// `hasRole('system')` everywhere — including `OauthSigningKey.privateKeyPem`
+/// (the key that signs every token this system issues) and every
+/// `UserCredential.passwordHash`, both `hasRole('system')`-gated.
+///
+/// The second, independent guard — `sms_api::auth::load_human_principal`
+/// refusing a `"system"`/`"app"` `role_key` at the point of use, in case
+/// this constraint is ever bypassed — is proven live in
+/// `app/sms-gateway/tests/login_flow_live_postgres.rs`, which has to spawn
+/// a real server to drive a token through `GatewayAuth`; that test
+/// temporarily drops this exact constraint to construct the otherwise-
+/// unreachable row the second guard needs to prove itself against.
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres — see module docs"]
+async fn a_role_keyed_system_is_rejected_by_the_database_check() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+
+    let result = db
+        .role()
+        .create(schema::CreateRoleInput {
+            key: "system".to_owned(),
+            label: "should never be creatable".to_owned(),
+            description: None,
+            permissions: " ".to_owned(),
+        })
+        .run(&owner())
+        .await;
+
+    let error = result.expect_err("a Role keyed \"system\" must be rejected, not created");
+    assert_eq!(
+        error.db_sqlstate(),
+        Some("23514"),
+        "expected a Postgres check_violation (23514) from roles_key_not_reserved_check, got: \
+         {error:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres — see module docs"]
+async fn a_role_keyed_app_is_also_rejected_by_the_database_check() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+
+    let result = db
+        .role()
+        .create(schema::CreateRoleInput {
+            key: "app".to_owned(),
+            label: "should never be creatable either".to_owned(),
+            description: None,
+            permissions: " ".to_owned(),
+        })
+        .run(&owner())
+        .await;
+
+    let error = result.expect_err("a Role keyed \"app\" must be rejected, not created");
+    assert_eq!(error.db_sqlstate(), Some("23514"));
+}
