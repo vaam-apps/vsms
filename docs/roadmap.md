@@ -66,9 +66,9 @@ flowchart TB
 | Phase | Milestones | Question it answers | Status *(2026-08-11)* |
 |---|---|---|---|
 | **1 — Foundation** | M0, M1 | Can we represent a message, and prove who is asking? | **Done** — 14/14 and 9/9 closed |
-| **2 — Deliver a message** | M2, M3 | Can one SMS reach a real handset, and can the caller find out what happened? | M2 **done** (12/12). M3 **5/7** — replay (#43) and the gate (#44) remain |
-| **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M4 **4/17**, M6 **1/8** — the largest remaining block |
-| **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | Not started (0/6) |
+| **2 — Deliver a message** | M2, M3 | Can one SMS reach a real handset, and can the caller find out what happened? | **Done** — M2 12/12, M3 8/8, both gates passing |
+| **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M4 **7/19**, M6 **2/8** — the largest remaining block |
+| **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | **Started** (1/6) — `sms-provider-mtn` (#61) landed; routing rules (#62), failover/circuit breakers (#63), grey-route detection (#64), and the kill-Orange-in-staging gate (#65) remain |
 | **5 — Conditional** | M7 | Direct MNO interconnect over SMPP | Not started, and **may never exist** — see decision #4 |
 
 ---
@@ -79,12 +79,14 @@ This is the part milestone numbering hides. **Phase 4 is not a prerequisite.** A
 
 What does block it:
 
-1. **M3 finishing** (#43, #44). Until the gate passes, "no event is lost" is a belief rather than a demonstrated property — and webhooks are how customers learn a message failed.
+1. ~~**M3 finishing** (#43, #44).~~ **Resolved 2026-08-11.** Both landed; all three clauses of §12's M3 gate are automated against a real Postgres — signature verified by a real Node receiver subprocess (`hooks_node_receiver_live.rs`), no loss on a mid-drain `SIGKILL` (`kill9_reclaim_live.rs`), exactly one attempt per event across two workers (`hooks_two_workers_live.rs`). One caveat worth stating rather than burying: the Node-receiver clause only began *executing in CI* with the fix in #198 — the `live` job had no Node toolchain, so that test had failed at spawn on every run since it landed, and passed locally only because a human had run `pnpm install` by hand. "No event is lost" is now a demonstrated property; it was a belief for slightly longer than the story list suggested.
 2. **Enough of M4 to diagnose a failure.** §12's own gate for M4 is *"an operator can diagnose a failed message without touching SQL."* Not all 17 stories — the messages detail view (#50) and the jobs/workers screens (#56, #57) are the diagnostic core.
 3. **M6's compliance items** — and these are legal, not technical: retention purge (#67), consent records (#72), audit anchoring (#68). Law No. 2024/017 sanctions run to 100,000,000 FCFA and criminal penalties; this is the phase where "we'll do it after launch" is the expensive answer.
 4. **The two open decisions below.**
 
 Deliberately *not* on that list: **#187** (webhook secrets readable by every human role) is latent, because no human-login flow exists yet to hold such a token. It becomes live exactly when M4 ships real logins, which is why it sits on M4 rather than M3.
+
+**#46 is resolved, and it doesn't shrink this list: `cratestack studio` (evaluated live at `0.7.10`, matching the pin) covers none of M4's ten open stories.** It's model-CRUD only — no procedure surface, so #52/#54/#55's actual workflows (`provisionAppClient`, `previewMessage`, `replayWebhookAttempt`, `rotateWebhookSecret`) stay unreachable through it — and, checked live rather than assumed, it bypasses `@@allow`, `@version`/CAS, and `@@emit` outbox writes entirely (an unauthenticated read returned `OauthSigningKey.privateKeyPem` in the clear; a write left `version` unbumped and wrote zero outbox rows despite `Message.@@emit`). That's disqualifying for any deployed surface, not a gap to patch. It also can't ever cover #57 — lock ownership lives in Postgres session advisory locks with no schema model, so there's nothing for a schema-driven tool to show. #56/#57 (the diagnostic core this section already named) stay exactly as much hand-written work as before; see the issue comment on #46 for the full per-story split.
 
 ---
 

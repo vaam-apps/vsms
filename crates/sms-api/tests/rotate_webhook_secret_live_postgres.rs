@@ -11,18 +11,42 @@
 //! build rather than production" section and
 //! `system_context_golden_list_live_postgres.rs` both describe.
 //!
+//! #193 added a Layer 2 `require_permission(ctx, "webhook:manage")` gate
+//! to `rotate_secret`, matching `replayWebhookAttempt`'s (#43, #191) —
+//! `rotate_denies_a_caller_with_no_webhook_manage_permission` below is its
+//! denial-path proof, the same shape
+//! `replay_webhook_attempt_live_postgres.rs`'s own denial test already
+//! established.
+//!
 //! ```bash
 //! cargo test -p sms-api --test rotate_webhook_secret_live_postgres -- --ignored
 //! ```
 
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::CoolContext;
+use cratestack::{CoolContext, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, procedures::rotate_webhook_secret, procedures::ProcedureRegistry, Cratestack,
 };
 use sms_api::{HashPepper, Procedures};
+
+/// A human caller of the one role that could plausibly rotate a secret
+/// (`developer` — §5.2), but carrying no `perms` claim at all — the exact
+/// "an omitted scope yields denial" shape §5.2 documents, extended to
+/// `perms` by `require_permission`'s own doc comment. Mirrors
+/// `replay_webhook_attempt_live_postgres.rs`'s own
+/// `developer_without_permission`, since #193 gave `rotateWebhookSecret`
+/// the same Layer 2 gate `replayWebhookAttempt` already had.
+fn developer_without_permission() -> CoolContext {
+    Principal {
+        sub: "rotate-webhook-secret-test-developer-no-perms".to_owned(),
+        kind: PrincipalKind::User,
+        role: "developer".to_owned(),
+        app_id: String::new(),
+    }
+    .into_context()
+}
 
 /// #102, found live: on a genuinely fresh database, this binary's own
 /// tests — run concurrently by Rust's default multi-threaded test
@@ -41,6 +65,25 @@ fn owner() -> CoolContext {
         app_id: String::new(),
     }
     .into_context()
+}
+
+/// #193: `owner()` above has no `perms` claim — fine for seeding through
+/// generated CRUD (Layer 1 only), but `rotate_secret` now calls
+/// `require_permission(ctx, "webhook:manage")` first, and a
+/// test-constructed context (unlike a real issued token — no human-login
+/// flow exists yet, #97/#98) carries no claim `into_context()` doesn't put
+/// there. `owner`/`admin` hold `webhook:manage` implicitly as part of
+/// "everything"/"all" per §5.2's own table; this is that same role, with
+/// the claim spelled out by hand for a direct procedure call, the same way
+/// `replay_webhook_attempt_live_postgres.rs`'s own
+/// `developer_with_webhook_manage` does for its sibling procedure.
+fn owner_with_webhook_manage() -> CoolContext {
+    let mut ctx = owner();
+    ctx.extensions.insert(
+        "perms".to_owned(),
+        Value::List(vec![Value::String("webhook:manage".to_owned())]),
+    );
+    ctx
 }
 
 fn test_pepper() -> HashPepper {
@@ -124,7 +167,7 @@ async fn rotating_moves_the_current_secret_to_prev_and_mints_a_fresh_one() {
     let rotated = Procedures::new(test_pepper())
         .rotate_webhook_secret(
             &db,
-            &owner(),
+            &owner_with_webhook_manage(),
             rotate_webhook_secret::Args {
                 args: schema::EndpointInput {
                     endpointId: endpoint.id.clone(),
@@ -177,13 +220,13 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
     };
 
     let first = procedures
-        .rotate_webhook_secret(&db, &owner(), args())
+        .rotate_webhook_secret(&db, &owner_with_webhook_manage(), args())
         .await
         .expect("first rotation");
     assert_eq!(first.prevSecret.as_deref(), Some("generation-zero-secret"));
 
     let second = procedures
-        .rotate_webhook_secret(&db, &owner(), args())
+        .rotate_webhook_secret(&db, &owner_with_webhook_manage(), args())
         .await
         .expect("second rotation");
     assert_eq!(
@@ -217,7 +260,7 @@ async fn rotating_an_unknown_endpoint_id_is_not_found() {
     let error = Procedures::new(test_pepper())
         .rotate_webhook_secret(
             &db,
-            &owner(),
+            &owner_with_webhook_manage(),
             rotate_webhook_secret::Args {
                 args: schema::EndpointInput {
                     endpointId: format!("nosuchendpoint{}", unique_suffix()),
@@ -231,4 +274,49 @@ async fn rotating_an_unknown_endpoint_id_is_not_found() {
         matches!(error, cratestack::CoolError::NotFound(_)),
         "expected NotFound, got {error:?}"
     );
+}
+
+/// #193: Layer 2 (§5.1) — a caller with no `webhook:manage` permission is
+/// denied before the procedure touches the database at all. Proven the
+/// same way `replay_webhook_attempt_live_postgres.rs`'s own
+/// `replay_denies_a_caller_with_no_webhook_manage_permission` proves it for
+/// the sibling procedure: point the call at an endpoint id that doesn't
+/// even exist, and confirm the error is `Forbidden`, not `NotFound` — a
+/// `NotFound` here would mean the permission check was skipped and the
+/// lookup ran anyway.
+///
+/// This is the denial half AGENTS.md and the issue both call for. The
+/// *allow* half has no live token to prove it with in this deployment —
+/// `GatewayAuth` never mints a human-role token today (#97/#98's scope
+/// cut) — so, same as `replayWebhookAttempt`'s own coverage, only denial
+/// is exercised live here.
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres — see module docs"]
+async fn rotate_denies_a_caller_with_no_webhook_manage_permission() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+
+    let error = Procedures::new(test_pepper())
+        .rotate_webhook_secret(
+            &db,
+            &developer_without_permission(),
+            rotate_webhook_secret::Args {
+                args: schema::EndpointInput {
+                    endpointId: format!("irrelevant-the-gate-must-fire-first{}", unique_suffix()),
+                },
+            },
+        )
+        .await
+        .expect_err("a caller with no webhook:manage permission must be denied");
+
+    assert!(
+        matches!(error, cratestack::CoolError::Forbidden(_)),
+        "expected Forbidden, got {error:?}"
+    );
+    if let cratestack::CoolError::Forbidden(message) = error {
+        assert!(
+            message.contains("webhook:manage"),
+            "expected the denial to name the missing permission: {message}"
+        );
+    }
 }
