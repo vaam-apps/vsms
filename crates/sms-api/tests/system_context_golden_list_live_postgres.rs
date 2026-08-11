@@ -96,11 +96,27 @@
 //! Cross-checked against every `db.<model>()...run(sys)` call in
 //! `crates/sms-api/src`, `crates/sms-worker/src`, and `crates/sms-auth/src`
 //! (the only places a `system`-role [`CoolContext`] is ever constructed):
-//! **no tenth instance exists as of this file.** All 15 models an internal
-//! system context actually reads today already admit one; the 4 models
-//! that don't (`Route`, `MessagePart`, `User`, `Role`) have no internal
-//! reader to break. See [`NOT_REQUIRED_TO_BE_SYSTEM_READABLE`]'s own
-//! per-model reasoning.
+//! all 15 models an internal system context read as of the ninth instance
+//! already admitted one; of the 4 that didn't (`Route`, `MessagePart`,
+//! `User`, `Role`), 3 still have no internal reader. See
+//! [`NOT_REQUIRED_TO_BE_SYSTEM_READABLE`]'s own per-model reasoning.
+//!
+//! # The tenth instance — `Route`, #62
+//!
+//! `Route` moved here the moment the routing rules engine (#62, §6.3) gave
+//! it a real reader: `crates/sms-worker/src/routing.rs`'s `decide`, called
+//! from `claim.rs`'s `accepted` branch, reads every `Route` row (and the
+//! `Provider` rows they reference) under `sys` to hand to
+//! `sms_routing::select_route`. Flagged in advance by `NOT_REQUIRED_TO_BE_SYSTEM_READABLE`'s
+//! own prior entry for this model ("real Route-rule routing isn't built
+//! yet"), the same way `WebhookEndpoint` (#41) and `WebhookAttempt` (#40)
+//! were each flagged before their own readers landed — not found broken
+//! live. Caught by this file's own guard before merge: `every_model_in_the_schema_is_classified`
+//! would have failed the moment `Route` moved lists without a
+//! classification decision, and `every_system_readable_model_actually_admits_a_system_read`
+//! failed for real, on purpose, when `hasRole('system')` was pulled from
+//! `Route`'s `read` clause to prove the guard actually guards something —
+//! see the PR description for that run's exact failure output.
 //!
 //! Ignored by default, same convention as this workspace's other live
 //! suites. Run explicitly:
@@ -117,9 +133,9 @@ use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, app, app_client, client_assertion, delivery_receipt, job, message, oauth_client,
-    oauth_signing_key, operator_prefix_rule, opt_out, provider, sender_id, sender_id_registration,
-    webhook_attempt, webhook_endpoint, ClientAuthMethod, Cratestack, DeliveryOutcome, Encoding,
-    MessageClass, OperatorCode, OptOutSource, ProviderKind,
+    oauth_signing_key, operator_prefix_rule, opt_out, provider, route, sender_id,
+    sender_id_registration, webhook_attempt, webhook_endpoint, ClientAuthMethod, Cratestack,
+    DeliveryOutcome, Encoding, MessageClass, OperatorCode, OptOutSource, ProviderKind,
 };
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
@@ -138,8 +154,12 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// - `OauthSigningKey` — `sms_auth::op` load/rotate (`crates/sms-auth/src/op.rs`).
 /// - `ClientAssertion` — `SmsClientAssertionStore` (`crates/sms-auth/src/lib.rs`).
 /// - `SenderId`, `SenderIdRegistration` — `Procedures::resolve_sender_id`.
-/// - `Provider` — `cheapest_active_provider` (`crates/sms-worker/src/claim.rs`)
-///   and `Procedures::estimate_cost`.
+/// - `Provider` — `crates/sms-worker/src/routing.rs`'s `decide` (since #62;
+///   formerly `cheapest_active_provider`, which this replaced) and
+///   `Procedures::estimate_cost`.
+/// - `Route` — `crates/sms-worker/src/routing.rs`'s `decide` (#62), the
+///   routing rules engine's own I/O boundary — see this file's own "the
+///   tenth instance" section above.
 /// - `OperatorPrefixRule` — `Procedures::operator_table`.
 /// - `Message` — the claim loop's own `candidates()` (`crates/sms-worker/src/claim.rs`)
 ///   and `dlr::ingest_one`.
@@ -169,6 +189,7 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     "SenderId",
     "SenderIdRegistration",
     "Provider",
+    "Route",
     "OperatorPrefixRule",
     "Message",
     "DeliveryReceipt",
@@ -188,12 +209,6 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
 /// its own `hasRole('system')` clause, the same way every prior instance
 /// did.
 const NOT_REQUIRED_TO_BE_SYSTEM_READABLE: &[(&str, &str)] = &[
-    (
-        "Route",
-        "real Route-rule routing (§6.3) isn't built yet — dispatch's \
-         cheapest_active_provider (crates/sms-worker/src/claim.rs) only reads \
-         Provider, never Route",
-    ),
     (
         "MessagePart",
         "nothing in this codebase creates or reads a MessagePart row yet; \
@@ -575,6 +590,40 @@ async fn seed_and_verify_provider(db: &Cratestack, suffix: &str) -> schema::Prov
     seeded
 }
 
+/// #62: `crates/sms-worker/src/routing.rs`'s `decide` reads `Route` under
+/// `sys` — the first internal system-context reader this model has ever
+/// had, and the reason its `read` `@@allow` clause gained `hasRole('system')`
+/// in the same change that added the reader.
+async fn seed_and_verify_route(db: &Cratestack, suffix: &str, provider_id: &str) -> schema::Route {
+    let seeded = db
+        .route()
+        .create(schema::CreateRouteInput {
+            name: format!("system golden list route {suffix}"),
+            priority: 0,
+            weight: 1,
+            enabled: true,
+            matchOperator: None,
+            matchClass: None,
+            matchAppId: None,
+            matchPrefix: None,
+            providerId: provider_id.to_owned(),
+            failoverRouteId: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a Route");
+    assert_system_can_read_back!(
+        db,
+        route,
+        route,
+        seeded.id,
+        "Route",
+        "@@allow(\"read\", hasRole('owner') || hasRole('admin') || hasRole('operator') \
+         || hasRole('auditor') || hasRole('system'))"
+    );
+    seeded
+}
+
 async fn seed_and_verify_sender_id_registration(
     db: &Cratestack,
     sender_id_id: &str,
@@ -898,6 +947,7 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     seed_and_verify_client_assertion(&db, &suffix, now).await;
     let sender_id = seed_and_verify_sender_id(&db, &suffix).await;
     let provider = seed_and_verify_provider(&db, &suffix).await;
+    seed_and_verify_route(&db, &suffix, &provider.id).await;
     seed_and_verify_sender_id_registration(&db, &sender_id.id, &provider.id, now).await;
     seed_and_verify_operator_prefix_rule(&db).await;
     let message = seed_and_verify_message(&db, &suffix, &app.id, now).await;

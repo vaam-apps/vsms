@@ -243,6 +243,15 @@
 		log_key
 	}
 
+	# #70/#71: `/metrics` deliberately does not need a zone here. It never
+	# reaches this `reverse_proxy` at all — sms-gateway's own `/metrics`
+	# listener is a second, separate port (9090, default
+	# SMS_METRICS_LISTEN_ADDR) this block never names, not a route on
+	# 8080 — so there is nothing below for an attacker to even request
+	# through this domain. See crates/sms-api/src/metrics.rs's own module
+	# doc for the full reasoning (the same "must not become a DoS
+	# amplifier"/reconnaissance-value question `/readyz`'s R1 exception
+	# already answers for a different route).
 	reverse_proxy sms-gateway:8080
 }
 

@@ -155,10 +155,12 @@ services:
     # Same trap, same fix, for the `orange_cm` Provider row (#148):
     # `resolve_provider_row_id` also runs before the listener binds, so a
     # database with no Provider row crash-loops this container exactly
-    # like a missing signing key does. `seed-provider` is idempotent
-    # (create + catch the Provider.key unique-constraint conflict), so
-    # it's safe to run again later too, not just on a fresh database:
-    #   docker compose run --rm sms-gateway seed-provider
+    # like a missing signing key does. `seed-dispatch` (renamed from
+    # `seed-provider` in #62, which also made it seed a catch-all Route —
+    # a Provider row alone routes nothing since #62's routing engine
+    # landed) is idempotent on both halves, so it's safe to run again
+    # later too, not just on a fresh database:
+    #   docker compose run --rm sms-gateway seed-dispatch
     # See docs/runbooks/deployment.md's step 4.
 
   sms-worker:
@@ -289,7 +291,42 @@ services:
       admin:
         condition: service_healthy
 
+  # #70/#71: scrapes sms-gateway:9090 and sms-worker:9091 (deploy/prometheus/
+  # prometheus.yml) and evaluates deploy/prometheus/alerts.yml — the five
+  # conditions #70's own issue names. Optional in the sense that nothing
+  # else in this stack depends on it (sms-gateway/sms-worker already expose
+  # their own /metrics regardless of whether anything scrapes them — see
+  # crates/sms-api/src/metrics.rs's own doc), but stood up unconditionally
+  # here rather than behind a compose profile: this repository's own
+  # delivery convention is to build a thing and make it live, not ship it
+  # dormant behind a flag. No Alertmanager alongside it — this repo cannot
+  # page anyone (see deploy/prometheus/alerts.yml's own header), so the
+  # honest deliverable stops at "the rules evaluate and Prometheus's own
+  # /alerts page shows firing state," which needs no receiver configured.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      # Loopback only — this is an operator convenience for reaching the
+      # Prometheus UI/API directly (`curl localhost:9099/api/v1/alerts`),
+      # never fronted by Caddy and never meant to be internet-reachable.
+      # A different host port from either scrape target's own in-container
+      # port (9090/9091) purely to avoid a confusing coincidence — there is
+      # no actual collision risk either way, since these are three
+      # separate containers.
+      - '127.0.0.1:9099:9090'
+    depends_on:
+      sms-gateway:
+        condition: service_healthy
+      sms-worker:
+        condition: service_started
+
 volumes:
   postgres_data:
   caddy_data:
   caddy_config:
+  prometheus_data:

@@ -30,6 +30,9 @@ sms-core.workspace = true
 # signing/verification side of that crate has no caller here; it's
 # sms-worker's hooks role (#40) that signs outbound deliveries.
 sms-webhook.workspace = true
+# #70/#71: errors.rs's map_database_error is the one place every SM001 this
+# workspace ever sees is classified — this crate's own count of it.
+sms-metrics.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait's DeliveryUpdate/
 # DeliveryOutcome/RawCallback/ProviderError types — never a concrete
 # adapter, the same reason sms-worker depends on this and not on
@@ -90,6 +93,12 @@ tokio.workspace = true
 # same trick `router_builds_without_a_live_database` already uses).
 tokio = { workspace = true, features = ["time", "net"] }
 reqwest.workspace = true
+# metrics.rs's own tests drive its standalone router via `oneshot`, the
+# standard axum in-process testing pattern — no real socket needed. Same
+# version already resolved transitively through axum/cratestack-axum's own
+# routing internals (see token_rate_limit.rs's own identical comment for
+# the equivalent case in app/sms-gateway).
+tower.workspace = true
 # dlr_ingestion_live_postgres.rs's FixedProvider — a test-only SmsProvider
 # fake, needing the same #[async_trait] the real trait is declared with.
 async-trait.workspace = true

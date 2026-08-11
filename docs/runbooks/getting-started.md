@@ -62,14 +62,14 @@ DATABASE_URL=postgres://localhost/vsms_check \
     cargo run -p sms-gateway -- rotate-signing-key
 ```
 
-Second, `sms-gateway serve` also refuses to start until an `active` `Provider` row keyed `orange_cm` exists — no admin console exists yet to create one by hand, so run something that seeds it *before* starting either binary, not after. Two options: `send_test_message` below also creates it as a side effect (along with the `App`/`AppClient`/`SenderId` fixtures this walkthrough's message needs anyway), or, if you only want the `Provider` row and nothing else, `sms-gateway seed-provider` (#148) does exactly that — same idempotent `create` + catch-`23505` dedupe, no message/fixtures attached:
+Second, `sms-gateway serve` also refuses to start until an `active` `Provider` row keyed `orange_cm` exists, **and**, since [#62](https://github.com/vymalo/vsms/issues/62)'s routing rules engine, `sms-worker`'s `dispatch` role needs at least one enabled `Route` pointing at it or it refuses every message with no matching route (a deliberate cutover from routing's old "any active provider" placeholder — `sms-gateway serve` itself still only checks for the `Provider` row at startup, so a deployment missing only the `Route` half starts and reports healthy, then rejects everything it's asked to send). No admin console exists yet to create either by hand, so run something that seeds both *before* starting either binary, not after. Two options: `send_test_message` below also creates both as a side effect (along with the `App`/`AppClient`/`SenderId` fixtures this walkthrough's message needs anyway), or, if you only want the `Provider`/`Route` pair and nothing else, `sms-gateway seed-dispatch` (#148, renamed from `seed-provider` and extended to also seed the `Route` in #62) does exactly that — idempotent on both halves, no message/fixtures attached:
 
 ```bash
 DATABASE_URL=postgres://localhost/vsms_check \
-    cargo run -p sms-gateway -- seed-provider
+    cargo run -p sms-gateway -- seed-dispatch
 ```
 
-This walkthrough uses `send_test_message` below instead, since it needs the message/App/AppClient fixtures regardless and `send_test_message` already creates the `Provider` row along with them — no need to run both.
+This walkthrough uses `send_test_message` below instead, since it needs the message/App/AppClient fixtures regardless and `send_test_message` already creates the `Provider`/`Route` pair along with them — no need to run both.
 
 It also needs `SMS_HASH_PEPPER` — the server-held key behind `msisdnHash`/`bodyHash`
 (#134, `sms_api::pepper`). Required, minimum 32 bytes, and it **must be the same value
@@ -110,7 +110,7 @@ ORANGE_CM_SENDER_NUMBER=+2370000 \
 
 `cargo run --bin sms-worker`, not `-p sms-worker` — the package is named `sms-worker-bin` (the *library* crate `crates/sms-worker` already owns the plain name), but the `[[bin]]` it produces is still called `sms-worker`, and `--bin` resolves by binary name across the whole workspace regardless of which package declares it.
 
-Placeholder Orange credentials are enough to prove the whole pipeline moves the message you already sent through `accepted → queued → routed`: routing only needs an `active` `Provider` row to exist, not a real Orange account. `routed` is where dispatch actually attempts a submission — with placeholder credentials that attempt fails outright (a real `401` from Orange's own OAuth endpoint, since `ORANGE_CM_BASE_URL` defaults to the real `https://api.orange.com`), landing the message in `failed` with the rejection reason attached, never reaching `submitted`. That's expected, and exactly the boundary [docs/runbooks/36-handset-gate.md](36-handset-gate.md) exists to cross with real credentials. Watch it with the `psql` command `send_test_message` printed:
+Placeholder Orange credentials are enough to prove the whole pipeline moves the message you already sent through `accepted → queued → routed`: routing only needs an `active` `Provider` row and a matching, enabled `Route` (since [#62](https://github.com/vymalo/vsms/issues/62); `send_test_message` seeds both), not a real Orange account. `routed` is where dispatch actually attempts a submission — with placeholder credentials that attempt fails outright (a real `401` from Orange's own OAuth endpoint, since `ORANGE_CM_BASE_URL` defaults to the real `https://api.orange.com`), landing the message in `failed` with the rejection reason attached, never reaching `submitted`. That's expected, and exactly the boundary [docs/runbooks/36-handset-gate.md](36-handset-gate.md) exists to cross with real credentials. Watch it with the `psql` command `send_test_message` printed:
 
 ```text
  id  | state  | provider_message_ref |                     state_reason
