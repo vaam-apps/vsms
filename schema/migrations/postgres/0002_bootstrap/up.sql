@@ -245,13 +245,28 @@ CREATE TABLE attempt_state_transitions (
 
 INSERT INTO attempt_state_transitions (from_state, to_state) VALUES
     ('pending','delivering'),    ('failed','delivering'),
-    ('delivering','succeeded'),  ('delivering','failed'),  ('delivering','dead');
--- succeeded, dead are terminal. `delivering -> dead` covers both reasons
--- §8.5 stops retrying outright: `maxAttempts` exhausted, and an immediate
--- 410 Gone (which also deactivates the endpoint — hooks.rs, not this
--- trigger). `failed -> dead` does not exist: the exhausted-attempts check
--- happens once, at the delivering -> {failed | dead} decision the hooks
--- role's own write makes, not as a second hop through failed.
+    ('delivering','succeeded'),  ('delivering','failed'),  ('delivering','dead'),
+    ('failed','pending'),        ('dead','pending');
+-- succeeded is the only true terminal state. `delivering -> dead` covers
+-- both reasons §8.5 stops retrying outright: `maxAttempts` exhausted, and
+-- an immediate 410 Gone (which also deactivates the endpoint — hooks.rs,
+-- not this trigger). `failed -> dead` does not exist: the exhausted-
+-- attempts check happens once, at the delivering -> {failed | dead}
+-- decision the hooks role's own write makes, not as a second hop through
+-- failed.
+--
+-- `failed -> pending` and `dead -> pending` (#43): the replay edges.
+-- `replayWebhookAttempt` (crates/sms-api/src/procedures.rs) is the only
+-- caller of either — an operator's explicit "re-fire this after fixing the
+-- receiving end" action, never proposed by the automatic pipeline. No
+-- `succeeded -> pending` edge exists, on purpose: re-firing a webhook the
+-- receiver already processed successfully is a materially more dangerous
+-- operation than re-firing one that never got through, and this story
+-- (#43) is about the latter. `delivering -> pending` also does not exist,
+-- so a replay can never race a lease a worker currently holds — the
+-- procedure's own read happens outside any lease the claim loop takes, and
+-- `if_match(version)` on its write turns a race against a concurrent claim
+-- into a `PreconditionFailed`, not a corrupted attempt.
 
 CREATE OR REPLACE FUNCTION attempts_guard_transition() RETURNS trigger
 LANGUAGE plpgsql AS $$

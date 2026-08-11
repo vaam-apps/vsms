@@ -112,7 +112,36 @@ UPDATE webhook_attempts SET state='dead' WHERE state='delivering' AND event_type
 DO $$ BEGIN
   BEGIN
     UPDATE webhook_attempts SET state='delivering' WHERE state='dead';
-    RAISE EXCEPTION 'terminal state dead was allowed to transition';
+    RAISE EXCEPTION 'dead was allowed to transition straight back into delivering';
+  EXCEPTION WHEN SQLSTATE 'SM001' THEN NULL;
+  END;
+END $$;
+
+-- #43: replay re-fires a stuck attempt. dead -> pending and failed ->
+-- pending are the two edges replayWebhookAttempt proposes; nothing else in
+-- this codebase ever proposes either. delivering -> pending stays illegal
+-- (a replay must never be able to race an attempt a worker is actively
+-- delivering), and succeeded -> pending still doesn't exist either — see
+-- "illegal: succeeded is terminal" above, unaffected by this section.
+UPDATE webhook_attempts SET state='pending' WHERE state='dead' AND event_type='message.submitted';
+DO $$ BEGIN
+  ASSERT (SELECT state='pending' FROM webhook_attempts WHERE event_type='message.submitted'),
+         'dead -> pending (replay) was not accepted';
+END $$;
+
+UPDATE webhook_attempts SET state='delivering' WHERE state='pending' AND event_type='message.submitted';
+UPDATE webhook_attempts SET state='failed' WHERE state='delivering' AND event_type='message.submitted';
+UPDATE webhook_attempts SET state='pending' WHERE state='failed' AND event_type='message.submitted';
+DO $$ BEGIN
+  ASSERT (SELECT state='pending' FROM webhook_attempts WHERE event_type='message.submitted'),
+         'failed -> pending (replay) was not accepted';
+END $$;
+
+UPDATE webhook_attempts SET state='delivering' WHERE state='pending' AND event_type='message.submitted';
+DO $$ BEGIN
+  BEGIN
+    UPDATE webhook_attempts SET state='pending' WHERE state='delivering' AND event_type='message.submitted';
+    RAISE EXCEPTION 'delivering -> pending must not be legal (would race an active delivery)';
   EXCEPTION WHEN SQLSTATE 'SM001' THEN NULL;
   END;
 END $$;

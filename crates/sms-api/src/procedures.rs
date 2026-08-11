@@ -21,11 +21,12 @@ use sms_msisdn::{Msisdn, OperatorPrefixTable};
 
 use crate::auth::{Principal, PrincipalKind};
 use crate::cache::TtlCache;
+use crate::errors::map_database_error;
 use crate::pepper::{hmac_sha256_hex, HashPepper};
 use crate::rbac::require_permission;
 use crate::schema::{
     self, app, app_client, message, operator_prefix_rule, opt_out, provider, sender_id,
-    sender_id_registration, webhook_endpoint,
+    sender_id_registration, webhook_attempt, webhook_endpoint,
 };
 
 /// RSA modulus size for a freshly generated client keypair. Matches
@@ -890,6 +891,138 @@ impl Procedures {
         })
         .await
     }
+
+    /// #43: re-fire a stuck `WebhookAttempt` from the admin surface — an
+    /// operator's explicit "I fixed the receiving end, try again" action.
+    /// See §8.5's own "Implementation, #43" note in the design doc for the
+    /// full design reasoning (the state-machine edges, why `succeeded`
+    /// stays out of reach, and the circuit-breaker call); this doc comment
+    /// only covers what isn't already there.
+    ///
+    /// `webhook_attempts_dedupe` (`endpoint_id`, `aggregate_id`,
+    /// `event_type`) means a second row for this event can never exist, so
+    /// replay resets the existing row rather than creating a new one —
+    /// which is also why the envelope's `id` (`WebhookAttempt.id`) and
+    /// `sourceEventId` are both preserved automatically, with nothing here
+    /// needing to say so explicitly.
+    ///
+    /// Only `failed`/`dead` are replayable. The match below is Rust
+    /// proposing only the two edges `attempt_state_transitions` (§2.10)
+    /// actually admits (`failed -> pending`, `dead -> pending`) rather than
+    /// leaning on the trigger to reject a `pending`/`delivering`/`succeeded`
+    /// attempt after the fact — a clearer, named error for the expected-
+    /// usage case. The trigger stays the backstop against a state change
+    /// racing this read (e.g. `hooks` claiming the same `failed` row
+    /// between this function's read and write): `if_match(attempt.version)`
+    /// turns that race into `PreconditionFailed`, not a corrupted attempt.
+    ///
+    /// Also resets the endpoint's circuit-breaker bookkeeping
+    /// (`consecutiveFailures`/`circuitOpenUntil`) when either is set — an
+    /// operator explicitly replaying is the exact signal the breaker exists
+    /// to wait for. Scoped to the *endpoint*, not just this attempt, on
+    /// purpose: every other `pending`/`failed` row against the same
+    /// endpoint was equally stuck behind the same stale breaker, and a
+    /// per-attempt bypass would need `claim.rs`'s shared candidate filter
+    /// to grow a special case for one procedure's benefit. Deliberately
+    /// never touches `WebhookEndpoint.active` — reactivating a deactivated
+    /// endpoint (e.g. after a 410 Gone) is a separate, more consequential
+    /// decision than retrying one delivery, left to the existing
+    /// `PATCH /webhook_endpoints/{id}` route.
+    async fn replay_attempt(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::ReplayWebhookAttemptInput,
+    ) -> Result<schema::WebhookAttempt, CoolError> {
+        require_permission(ctx, "webhook:manage")?;
+
+        let sys = Self::sys();
+        let attempt_id = args.attemptId;
+        let now = Utc::now();
+
+        run_in_isolated_tx(db.pool(), TransactionIsolation::Serializable, |mut tx| {
+            let sys = &sys;
+            let attempt_id = attempt_id.clone();
+            async move {
+                let attempt = db
+                    .webhook_attempt()
+                    .find_many()
+                    .where_expr(FilterExpr::from(
+                        webhook_attempt::id().eq(attempt_id.clone()),
+                    ))
+                    .limit(1)
+                    .run_in_tx(&mut tx, sys)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        CoolError::NotFound(format!("no WebhookAttempt with id {attempt_id}"))
+                    })?;
+
+                match attempt.state {
+                    schema::AttemptState::failed | schema::AttemptState::dead => {}
+                    other => {
+                        return Err(CoolError::Conflict(format!(
+                            "webhook attempt {attempt_id} is {other:?}; replay only applies to \
+                             a failed or dead delivery"
+                        )));
+                    }
+                }
+
+                let endpoint_id = attempt.endpointId.clone();
+
+                let updated = db
+                    .webhook_attempt()
+                    .update(attempt_id.clone())
+                    .set(schema::UpdateWebhookAttemptInput {
+                        state: Some(schema::AttemptState::pending),
+                        attempts: Some(0),
+                        lastStatusCode: Some(None),
+                        lastError: Some(None),
+                        leaseOwner: Some(None),
+                        leaseUntil: Some(None),
+                        nextAttemptAt: Some(Some(now)),
+                        ..Default::default()
+                    })
+                    .if_match(attempt.version)
+                    .run_in_tx(&mut tx, sys)
+                    .await?;
+
+                let endpoint = db
+                    .webhook_endpoint()
+                    .find_many()
+                    .where_expr(FilterExpr::from(webhook_endpoint::id().eq(endpoint_id)))
+                    .limit(1)
+                    .run_in_tx(&mut tx, sys)
+                    .await?
+                    .into_iter()
+                    .next();
+
+                if let Some(endpoint) = endpoint {
+                    if endpoint.consecutiveFailures != 0 || endpoint.circuitOpenUntil.is_some() {
+                        db.webhook_endpoint()
+                            .update(endpoint.id)
+                            .set(schema::UpdateWebhookEndpointInput {
+                                consecutiveFailures: Some(0),
+                                circuitOpenUntil: Some(None),
+                                ..Default::default()
+                            })
+                            .run_in_tx(&mut tx, sys)
+                            .await?;
+                    }
+                }
+
+                Ok((updated, tx))
+            }
+        })
+        .await
+        // The one write above that can hit an illegal edge (`webhook_attempt`'s
+        // own `update`) is inside this same `Result`, so mapping once here
+        // catches it — an application-level state-check `Conflict` from the
+        // match above carries no `db_sqlstate`, so this is a no-op pass-
+        // through for that case, per `map_database_error`'s own contract.
+        .map_err(map_database_error)
+    }
 }
 
 impl schema::procedures::ProcedureRegistry for Procedures {
@@ -967,6 +1100,17 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         Output = Result<schema::procedures::rotate_webhook_secret::Output, CoolError>,
     > + Send {
         self.rotate_secret(db, ctx, args.args)
+    }
+
+    fn replay_webhook_attempt(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::replay_webhook_attempt::Args,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::replay_webhook_attempt::Output, CoolError>,
+    > + Send {
+        self.replay_attempt(db, ctx, args.args)
     }
 }
 

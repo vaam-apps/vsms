@@ -886,6 +886,10 @@ type EndpointInput {
   endpointId Cuid
 }
 
+type ReplayWebhookAttemptInput {
+  attemptId Cuid
+}
+
 type EnqueueJobInput {
   kind String
   payload String
@@ -918,6 +922,15 @@ mutation procedure provisionAppClient(args: ProvisionClientInput): ProvisionClie
 
 mutation procedure rotateWebhookSecret(args: EndpointInput): WebhookEndpoint
   @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @isolation("serializable")
+
+// #43: re-fire a stuck WebhookAttempt from the admin surface. See §8.5's
+// own "Implementation, #43" note for the full design — the state-machine
+// edges it needs, why `succeeded` stays out of reach, and the circuit-
+// breaker decision.
+mutation procedure replayWebhookAttempt(args: ReplayWebhookAttemptInput): WebhookAttempt
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @authorize(WebhookAttempt, detail, args.attemptId)
   @isolation("serializable")
 ```
 
@@ -1127,7 +1140,7 @@ CREATE TRIGGER jobs_state_guard
 
 **The webhook attempt state machine.** `AttemptState` shipped with #38/#39 (subscribers, `drain`) but no transition table or trigger — nothing yet drove it, so R2's "proposed by Rust, decided by Postgres" had nothing to decide against. #40 (the `hooks` role, `crates/sms-worker/src/hooks.rs`) is the first code to actually write `WebhookAttempt.state`, so it inherits the open question #38/#39's own PR left explicit. Resolved here in favour of the same discipline `messages`/`jobs` already get, not an exception: a table plus a `BEFORE UPDATE` trigger, same shape as the two above.
 
-Two states are "waiting" (`pending` — never yet attempted; `failed` — attempted at least once, waiting out its backoff) and both are covered by `webhook_due_idx` below. One is "in flight" (`delivering`). Two are terminal (`succeeded`, `dead`). A crash-abandoned `delivering` lease is reclaimed the same way `Message`'s own `routed` state is (§7.3's `claim.rs`): a same-state write that renews the lease without incrementing `attempts` — resuming the same in-flight attempt rather than asserting the customer endpoint never received it. Same-state writes bypass the transition-table check entirely (the trigger's own early return), so that reclaim needs no row in the table below, exactly like `routed`'s reclaim needs none in `message_state_transitions`.
+Two states are "waiting" (`pending` — never yet attempted; `failed` — attempted at least once, waiting out its backoff) and both are covered by `webhook_due_idx` below. One is "in flight" (`delivering`). `succeeded` is genuinely terminal — no row below ever has it as a `from_state`. `dead` is not, as of #43: an operator's explicit replay (`replayWebhookAttempt`) is the one caller allowed to move a `dead` (or `failed`) row back to `pending` with a fresh counter; nothing in the automatic pipeline (`hooks.rs`) ever proposes either edge, only this procedure does. A crash-abandoned `delivering` lease is reclaimed the same way `Message`'s own `routed` state is (§7.3's `claim.rs`): a same-state write that renews the lease without incrementing `attempts` — resuming the same in-flight attempt rather than asserting the customer endpoint never received it. Same-state writes bypass the transition-table check entirely (the trigger's own early return), so that reclaim needs no row in the table below, exactly like `routed`'s reclaim needs none in `message_state_transitions`.
 
 ```sql
 CREATE TABLE attempt_state_transitions (
@@ -1142,13 +1155,28 @@ CREATE TABLE attempt_state_transitions (
 
 INSERT INTO attempt_state_transitions (from_state, to_state) VALUES
     ('pending','delivering'),    ('failed','delivering'),
-    ('delivering','succeeded'),  ('delivering','failed'),  ('delivering','dead');
--- succeeded, dead are terminal. `delivering -> dead` covers both reasons
--- §8.5 stops retrying outright: `maxAttempts` exhausted, and an immediate
--- 410 Gone (which also deactivates the endpoint — hooks.rs, not this
--- trigger). `failed -> dead` does not exist: the exhausted-attempts check
--- happens once, at the delivering -> {failed | dead} decision the hooks
--- role's own write makes, not as a second hop through failed.
+    ('delivering','succeeded'),  ('delivering','failed'),  ('delivering','dead'),
+    ('failed','pending'),        ('dead','pending');
+-- succeeded is the only true terminal state. `delivering -> dead` covers
+-- both reasons §8.5 stops retrying outright: `maxAttempts` exhausted, and
+-- an immediate 410 Gone (which also deactivates the endpoint — hooks.rs,
+-- not this trigger). `failed -> dead` does not exist: the exhausted-
+-- attempts check happens once, at the delivering -> {failed | dead}
+-- decision the hooks role's own write makes, not as a second hop through
+-- failed.
+--
+-- `failed -> pending` and `dead -> pending` (#43): the replay edges.
+-- `replayWebhookAttempt` (crates/sms-api/src/procedures.rs) is the only
+-- caller of either — an operator's explicit "re-fire this after fixing the
+-- receiving end" action, never proposed by the automatic pipeline. No
+-- `succeeded -> pending` edge exists, on purpose: re-firing a webhook the
+-- receiver already processed successfully is a materially more dangerous
+-- operation than re-firing one that never got through, and this story
+-- (#43) is about the latter. `delivering -> pending` also does not exist,
+-- so a replay can never race a lease a worker currently holds — the
+-- procedure's own read happens outside any lease the claim loop takes, and
+-- `if_match(version)` on its write turns a race against a concurrent claim
+-- into a `PreconditionFailed`, not a corrupted attempt.
 
 CREATE OR REPLACE FUNCTION attempts_guard_transition() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -2320,7 +2348,7 @@ Backoff: 1s, 5s, 25s, 2m, 10m, 1h, 6h, 24h — eight attempts, then `dead`. Time
 
 Per-endpoint circuit breaker: 20 consecutive failures sets `circuitOpenUntil = now + 15min` and stops attempting that endpoint. Rows are still created as `pending`, so nothing is lost — they're just not attempted. Alert the app owner.
 
-Replay from the admin console re-queues any attempt with a fresh counter and the same `sourceEventId`, so a correctly-implemented receiver dedupes it.
+Replay from the admin console re-queues any attempt with a fresh counter, so a correctly-implemented receiver dedupes it. In practice (#43) this is a same-row reset, not a new row: `WebhookAttempt`'s own dedupe index (`endpoint_id, aggregate_id, event_type`) means a second row for the same event can never exist, so replay finds the existing row and resets it in place — `WebhookAttempt.id` (the envelope's own `id`, §8.4) and `sourceEventId` are therefore both unchanged by a replay, not just `sourceEventId`.
 
 Deliver in order per endpoint where practical, but **document that ordering is not guaranteed**. Receivers must tolerate `message.delivered` arriving before `message.submitted`. Saying so in the docs is much cheaper than the support thread you'll otherwise have.
 
@@ -2334,8 +2362,9 @@ stateDiagram-v2
     delivering --> succeeded: 2xx
     delivering --> failed: retryable — backoff scheduled
     delivering --> dead: max attempts exhausted, or 410 Gone
+    failed --> pending: replayed by an operator (#43)
+    dead --> pending: replayed by an operator (#43)
     succeeded --> [*]
-    dead --> [*]
 ```
 
 `attempt_state_transitions` + `attempts_guard_transition` (§2.10) enforce this the same way `messages`/`jobs` are enforced — the table shipped with #38/#39's `AttemptState` enum, but nothing drove the column until this PR, so no transition table existed to decide against. A crash-abandoned `delivering` lease is reclaimed the same way `Message`'s `routed` state is: a same-state write that renews the lease without incrementing `attempts`, needing no row in the table (same-state writes bypass the guard).
@@ -2349,6 +2378,20 @@ stateDiagram-v2
 **The signed request body is the full `{id, type, occurredAt, data}` envelope §8.4 shows, built at delivery time from the stored `WebhookAttempt` row — `data` is `payload` (already masked per `maskRecipient` at insert time by #38, §2.7), `id` is `WebhookAttempt.id` (the only value that has existed since the row was created — see §2.7's own note on why the outer `id` can't be anything else), `type` is `eventType`.** `occurredAt` is a documented approximation, not the original event's timestamp: `WebhookAttempt` carries no creation timestamp (no `@use(Timestamps)`), and the framework's own `ModelEvent::occurred_at` is read and discarded by #38's subscriber before the row exists to store it on. `hooks` therefore stamps `occurredAt` with the time of *this delivery attempt* — accurate for a first attempt seconds after the event, increasingly approximate under retries, and wrong by up to the full backoff schedule's span (up to 24h) for an attempt that only succeeds on its last try. Closing this properly needs `WebhookAttempt` to gain a stored event timestamp (a real schema decision touching a model #38 owns, not a mechanical follow-on) or #38's subscriber to start threading `ModelEvent::occurred_at` through to a new column — flagged here as a real, tracked gap, not silently accepted.
 
 Signing (`sms_webhook::sign_header`) always covers the exact bytes sent as the request body — the envelope is serialized once and that same `String`'s bytes are both what's HMAC'd and what `reqwest` sends, never two independent serializations of the same logical value (which is exactly the "signing something other than what you send" bug class #41's own module doc warns about).
+
+**Implementation, #43 (`replayWebhookAttempt`, `crates/sms-api/src/procedures.rs`), landed against the above:**
+
+The design question this story has to resolve before writing any code: given `webhook_attempts_dedupe` forbids a second row for the same `(endpoint_id, aggregate_id, event_type)`, replay cannot insert a fresh attempt — it can only reset the existing row in place. That is exactly what makes the "same event id, same signature semantics" requirement free rather than something to engineer: nothing about `WebhookAttempt.id` (the envelope's own `id`, §8.4) or `sourceEventId` ever changes, because no new row is ever created.
+
+**Two new edges, `failed -> pending` and `dead -> pending` (§2.10) — and, deliberately, no `succeeded -> pending`.** A `failed` attempt would eventually retry on its own once its backoff elapses; replay's value there is forcing that retry *now*, on an operator's schedule rather than the backoff schedule's. A `dead` attempt never retries on its own at all — replay is the only way back for it. Both land the row in the same place: `pending`, with `attempts` reset to `0` (a fresh counter, per this section's own prose above) and `lastStatusCode`/`lastError`/`leaseOwner`/`leaseUntil` cleared. `succeeded -> pending` is not added: a receiver that already got this event and (most likely) already acted on it is a materially different, riskier thing to re-fire than one that never got through, and this story is scoped to the latter — "re-fire a failed delivery," not "re-send a delivered one." Both the procedure and the transition table enforce this the same way twice over: `replayWebhookAttempt` only ever proposes `failed -> pending` or `dead -> pending`, and even if it proposed anything else, no other edge exists for Postgres to accept — attempting to replay a `pending`, `delivering`, or `succeeded` row is a `409 Conflict` (SQLSTATE `SM001`, mapped by `crates/sms-api/src/errors.rs::map_database_error` — the first procedure in this codebase to actually call it; every earlier write path either cannot reach an illegal edge or, like `cancelMessage`, isn't implemented yet).
+
+**What a receiver sees on a replayed request: the same envelope `id`, a new `timestamp`, and therefore a new signature.** §4.4's canonical string is `HMAC-SHA256("v1\n{timestamp}\n{eventId}\n{sha256_hex(body)}")` — `timestamp` is always "now" at send time (`hooks.rs`'s own `send`), so it necessarily differs between the original delivery attempt(s) and the replay; the signature differs too, as a direct consequence, not a bug. The dedupe burden this puts on the receiver is exactly what §8.5's opening line already asks of it — deduplicate on the envelope's `id`, not on the signature or the timestamp. A receiver that dedupes correctly (by `id`) treats a replay as the redelivery it is; a receiver that dedupes on `(timestamp, signature)` instead would wrongly treat every retry *and* every replay as a distinct event, which is a pre-existing receiver-side bug this story does not introduce or need to accommodate.
+
+**Circuit breaker: replay clears it, not just the one attempt.** An operator invoking replay is, by definition, asserting "I fixed the receiving end" — exactly the condition the breaker exists to wait for, and the case named explicitly in this story's own brief as the one where a stale breaker must not silently swallow the operator's action. Rather than teach `claim.rs`'s candidate filter a one-off "except this specific attempt" bypass (touching the shared claim path #40 and #44 both depend on, for one procedure's benefit), `replayWebhookAttempt` resets the *endpoint's* `consecutiveFailures` to `0` and clears `circuitOpenUntil` in the same transaction, whenever either is currently set — the same reset `hooks.rs::reset_endpoint_failures` already performs on an ordinary successful delivery, just performed eagerly on the operator's word rather than waiting for proof. This unblocks every other `pending`/`failed` attempt against that endpoint too, not only the one replayed — deliberate: if the endpoint is fixed, every message stuck behind its breaker should get another chance, not just the one an operator happened to click on. It does **not** touch `WebhookEndpoint.active` — an endpoint deactivated by a 410 Gone stays deactivated, and replaying an attempt against it lands the row in `pending` where it sits, uninspected by `claim.rs`'s health filter, until an operator separately reactivates the endpoint (the existing `PATCH /webhook_endpoints/{id}` route). Reactivation is a distinct, more consequential decision than "retry this one delivery," and conflating the two would mean a replay click silently reviving an endpoint nobody asked to revive.
+
+**Who may replay.** Same three human roles that manage the endpoint itself (`owner`/`admin`/`developer`, §5.2), matching `rotateWebhookSecret`'s own `@allow`. On top of that, `replayWebhookAttempt` calls `require_permission(ctx, "webhook:manage")` (Layer 2, §5.1) before doing anything else — `rotateWebhookSecret` does not have an equivalent call today, which this PR flags rather than silently fixes (out of scope for a replay story to change a sibling procedure's gating). `webhook:manage` is `developer`'s own permission per §5.2's table; `owner`/`admin` hold it implicitly as part of "everything"/"all". As with `PATCH /providers/{id}` (#24), this deployment's `GatewayAuth` never issues a real token carrying anything but `role: "app"`/`"system"` — no human-login path exists yet — so Layer 1 alone already closes this procedure to every token this deployment can currently issue; Layer 2 is real and tested, but defense in depth rather than the thing actually stopping a live request, until a role-bearing token exists.
+
+**Scope boundary.** This is the API-side capability only — a permission-gated procedure and the state-machine edges it needs. The admin console's own webhooks screen (#55, milestone 4) is not built here; a minimal API surface is all this story owns.
 
 ---
 
