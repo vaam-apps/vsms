@@ -3190,6 +3190,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "sms-provider-mtn"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "reqwest 0.12.28",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sms-encoding",
+ "sms-provider",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
 name = "sms-provider-orange-cm"
 version = "0.1.0"
 dependencies = [

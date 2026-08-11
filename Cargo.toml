@@ -10,6 +10,7 @@ members = [
   "crates/sms-worker",
   "crates/sms-provider",
   "crates/sms-provider-orange-cm",
+  "crates/sms-provider-mtn",
   "crates/sms-fake-orange",
   "crates/sms-test-support",
   "app/sms-gateway",
@@ -68,6 +69,11 @@ sms-auth = { path = "./crates/sms-auth" }
 sms-worker = { path = "./crates/sms-worker" }
 sms-provider = { path = "./crates/sms-provider" }
 sms-provider-orange-cm = { path = "./crates/sms-provider-orange-cm" }
+# #61: MTN Cameroon capacity bought through a licensed aggregator, not a
+# direct interconnect — see the crate's own module doc for exactly which
+# parts of the request/response shape are a verified pattern vs. an
+# invented placeholder pending a real aggregator contract.
+sms-provider-mtn = { path = "./crates/sms-provider-mtn" }
 # Dev-only: the shared live-Postgres test harness (see its own module doc).
 # Depended on via [dev-dependencies] everywhere it's used, never
 # [dependencies] — no production binary links against it.
