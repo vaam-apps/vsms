@@ -40,6 +40,13 @@ sms-routing.workspace = true
 # constants (header names), and the canonical-string contract #41 already
 # proved cross-language. This crate never reimplements signing.
 sms-webhook.workspace = true
+# #70/#71: the four worker-side gauges (singleton lease held, dispatch
+# in-flight submits, drain's oldest-undelivered age, reap_outbox's poison
+# rows) — see that crate's own module doc for why these live there rather
+# than here, and why routing this crate's own write-error sites through
+# sms-api's map_database_error (already a dependency below) is what makes
+# the fifth metric, sms_sm001_total, comprehensive rather than gateway-only.
+sms-metrics.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 # routing.rs's own production draw for sms_routing::select_route's weighted

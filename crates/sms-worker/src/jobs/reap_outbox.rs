@@ -136,6 +136,13 @@ impl ReapOutbox {
         let poisoned = alert_poison_rows(db)
             .await
             .map_err(|error| format!("scanning the event outbox for poison rows: {error}"))?;
+        // #70: the one writer of `sms_event_outbox_poison_rows` — see
+        // `sms_metrics`'s own module doc for why this gauge doesn't need
+        // the absent-vs-zero treatment the two per-role gauges do (this
+        // job is claimed via CAS, not held via an advisory lock, so "0"
+        // from a process that has simply never won a claim is already
+        // correct, not a false all-clear).
+        sms_metrics::EVENT_OUTBOX_POISON_ROWS.set(i64::try_from(poisoned).unwrap_or(i64::MAX));
         if poisoned > 0 {
             warn!(
                 poisoned,

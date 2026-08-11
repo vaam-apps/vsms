@@ -92,6 +92,11 @@ pub async fn run(ctx: WorkerContext, _worker: &str) {
 /// One poll iteration — `pub` for the same reason `dispatch::tick` and
 /// `jobs::tick`/`scheduler::tick` are: live tests drive exactly one
 /// iteration deterministically rather than racing [`run`]'s own timer.
+// `age.num_seconds() as f64` below only loses precision past 2^53 seconds
+// (~285 million years) — irrelevant for an outbox staleness gauge, and the
+// same reasoning `oldest_undelivered_age`'s own `cast_possible_truncation`
+// allow already documents for the same value's other cast.
+#[allow(clippy::cast_precision_loss)]
 pub async fn tick(db: &Cratestack) {
     match db.events().drain().await {
         Ok(delivered) => debug!(delivered, "drained the event outbox"),
@@ -105,11 +110,23 @@ pub async fn tick(db: &Cratestack) {
                 threshold_secs = STALLED_THRESHOLD.num_seconds(),
                 "oldest undelivered webhook outbox event exceeds the stalled threshold"
             );
+            // #70: set on every branch that actually knows the age — see
+            // `sms_metrics`'s own doc for why only the process holding
+            // `drain`'s lease ever reaches this line, and why that's what
+            // makes the metric's absence, cluster-wide, mean "drain is
+            // unheld" rather than "nothing is stalled."
+            sms_metrics::WEBHOOK_OUTBOX_OLDEST_UNDELIVERED_AGE_SECONDS
+                .set(age.num_seconds() as f64);
         }
         Ok(Some(age)) => {
             debug!(age_secs = age.num_seconds(), "oldest undelivered event age");
+            sms_metrics::WEBHOOK_OUTBOX_OLDEST_UNDELIVERED_AGE_SECONDS
+                .set(age.num_seconds() as f64);
         }
-        Ok(None) => debug!("event outbox has no undelivered rows"),
+        Ok(None) => {
+            debug!("event outbox has no undelivered rows");
+            sms_metrics::WEBHOOK_OUTBOX_OLDEST_UNDELIVERED_AGE_SECONDS.set(0.0);
+        }
         Err(error) => {
             error!(%error, "reading oldest-undelivered event age failed");
         }

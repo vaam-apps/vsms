@@ -38,6 +38,7 @@ pub mod auth;
 mod cache;
 pub mod dlr;
 pub mod errors;
+pub mod metrics;
 pub mod pepper;
 pub mod procedures;
 pub mod rbac;

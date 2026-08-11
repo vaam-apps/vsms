@@ -1,0 +1,164 @@
+# #70/#71: the five alert conditions #70's own issue text names, each
+# backed by a real metric — see crates/sms-metrics/src/lib.rs's own module
+# doc for what each metric measures and why it's shaped the way it is, and
+# docs/runbooks/alerting.md for what an operator does when one of these
+# fires. This is the honest deliverable #70 asked for: the metrics and the
+# rules that would fire, not a bespoke in-process alerting engine — nothing
+# in this repository can page anyone, and this file's only job is to be
+# loaded by a real Prometheus/Alertmanager an operator points at
+# deploy/docker-compose.yml's sms-gateway:9090 and sms-worker:9091 targets
+# (see deploy/prometheus/prometheus.yml's own scrape config).
+groups:
+  - name: vsms-sm001
+    rules:
+      # §9.1 of the design doc, verbatim: "any non-zero SM001 rate, which
+      # means code is proposing transitions the machine forbids." Flat zero
+      # in a correct system — no `for:` debounce, a single illegal
+      # transition is worth knowing about immediately, not only once it
+      # persists.
+      - alert: SMS001IllegalTransitionRateNonZero
+        expr: increase(sms_sm001_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: 'Application code proposed an illegal state transition (SQLSTATE SM001)'
+          description: >-
+            {{ $value }} SM001 rejection(s) in the last 15 minutes
+            (entity={{ $labels.entity }}, from={{ $labels.from_state }},
+            to={{ $labels.to_state }}). The database's own transition-table
+            guard trigger is a backstop, not a control path — this means
+            application logic and the state machine have drifted. See
+            docs/runbooks/alerting.md#sm001.
+
+  - name: vsms-singleton-roles
+    rules:
+      # §9.1: "any singleton role unheld for more than 30s." One rule per
+      # singleton role this milestone actually runs — `smpp` is M7 scaffold
+      # only (crates/sms-worker/src/lib.rs's own `Cardinality::Singleton`
+      # list also includes it, but no deployment configures `--roles smpp`
+      # today, so a rule for it would be permanently and correctly firing
+      # on every environment that exists, which is not useful signal).
+      #
+      # Both clauses matter, and neither alone is enough — see
+      # sms_metrics::SINGLETON_LEASE_HELD's own doc: `== 0` catches every
+      # process that's configured for the role and reporting "not
+      # currently held" (the routine standby case would never sustain this
+      # for 30s, since another node picks the lock up within one
+      # RETRY_INTERVAL — 5s); `absent(...)` catches the case where no
+      # process anywhere is even configured to attempt the role at all (a
+      # typo'd --roles, or the whole fleet down), which would otherwise
+      # read as "the query returned nothing" rather than "the role is
+      # unheld."
+      - alert: SMSDispatchSingletonUnheld
+        expr: >-
+          (sum(sms_worker_singleton_lease_held{role="dispatch"}) == 0)
+          or absent(sms_worker_singleton_lease_held{role="dispatch"})
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: 'No sms-worker process holds the dispatch role'
+          description: >-
+            Nothing has claimed the dispatch advisory lock for at least
+            30s. Messages are not being submitted to any provider. See
+            docs/runbooks/alerting.md#singleton-unheld.
+      - alert: SMSDrainSingletonUnheld
+        expr: >-
+          (sum(sms_worker_singleton_lease_held{role="drain"}) == 0)
+          or absent(sms_worker_singleton_lease_held{role="drain"})
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: 'No sms-worker process holds the drain role'
+          description: >-
+            Nothing has claimed the drain advisory lock for at least 30s.
+            Webhook outbox events are only being delivered by writers' own
+            automatic post-commit drain, not retried on a timer. See
+            docs/runbooks/alerting.md#singleton-unheld.
+      - alert: SMSSchedulerSingletonUnheld
+        expr: >-
+          (sum(sms_worker_singleton_lease_held{role="scheduler"}) == 0)
+          or absent(sms_worker_singleton_lease_held{role="scheduler"})
+        for: 30s
+        labels:
+          severity: warning
+        annotations:
+          summary: 'No sms-worker process holds the scheduler role'
+          description: >-
+            Nothing has claimed the scheduler advisory lock for at least
+            30s. Recurring jobs (expire_stale, reap_outbox) are not being
+            enqueued. Lower severity than dispatch/drain: nothing already
+            enqueued is lost, only delayed until the lock is next held.
+            See docs/runbooks/alerting.md#singleton-unheld.
+
+  - name: vsms-dispatch-concurrency
+    rules:
+      # #70: "unexpected concurrent submits per provider — two dispatch
+      # workers, heading for a blocked account." See
+      # sms_metrics::DISPATCH_IN_FLIGHT_SUBMITS's own doc for why a
+      # healthy single dispatch holder can never sustain a fleet-wide sum
+      # above 1 — submits are sequential within one process by
+      # construction, so this can only mean the advisory-lock exclusion
+      # itself has been defeated.
+      - alert: SMSConcurrentDispatchSubmits
+        expr: sum(sms_dispatch_in_flight_submits) > 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: 'More than one dispatch submit in flight across the fleet'
+          description: >-
+            {{ $value }} concurrent provider submits observed, sustained
+            for at least a minute. dispatch is a singleton role — this
+            means two processes both believe they hold its lease, which
+            risks doubled sends and a provider account block. See
+            docs/runbooks/alerting.md#concurrent-dispatch.
+
+  - name: vsms-webhook-outbox
+    rules:
+      # §9.1: "outbox oldest undelivered above 60s" — this deployment's own
+      # implemented threshold (crates/sms-worker/src/drain.rs's
+      # STALLED_THRESHOLD) is 2 minutes, not 60s; the alert below matches
+      # the code that actually runs, not the design doc's original prose
+      # figure. See sms_metrics::WEBHOOK_OUTBOX_OLDEST_UNDELIVERED_AGE_SECONDS's
+      # own doc for why `absent(...)` here means "drain is unheld," not
+      # "nothing is stalled" — the metric literally cannot exist unless the
+      # process holding drain's lease has ticked at least once.
+      - alert: SMSWebhookOutboxStalled
+        expr: >-
+          (sms_webhook_outbox_oldest_undelivered_age_seconds > 120)
+          or absent(sms_webhook_outbox_oldest_undelivered_age_seconds)
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Webhook outbox has a stalled undelivered event, or drain is unheld'
+          description: >-
+            The oldest still-undelivered webhook outbox row has been
+            waiting past drain's own 2-minute stalled threshold (or no
+            process is reporting this metric at all, meaning drain is
+            unheld — see the SMSDrainSingletonUnheld alert). See
+            docs/runbooks/alerting.md#outbox-stalled.
+
+  - name: vsms-event-outbox
+    rules:
+      # #70/#42: "attempts > 5 — a poison row retrying forever." Reuses
+      # crates/sms-worker/src/jobs/reap_outbox.rs's own
+      # POISON_ATTEMPTS_THRESHOLD (5) verbatim — the metric only ever holds
+      # a count of rows already past that threshold, so any non-zero value
+      # here already means the condition #70 names.
+      - alert: SMSEventOutboxPoisonRows
+        expr: sum(sms_event_outbox_poison_rows) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Poison event-outbox rows found (attempts exceeds threshold, never delivered)'
+          description: >-
+            {{ $value }} event-outbox row(s) have retried past
+            reap_outbox's own threshold with no successful delivery. Left
+            in place for diagnosis, not deleted — see the per-row warn!
+            logs on whichever sms-worker instance last ran reap_outbox for
+            model/operation/last_error. See
+            docs/runbooks/alerting.md#poison-rows.
