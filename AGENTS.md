@@ -438,6 +438,13 @@ python3 ci/gen-bootstrap-sql.py schema/migrations/postgres/0002_bootstrap/up.sql
 - Commits: imperative subject, body explaining *why*. Record framework surprises in the commit body and in §2.0 — that table is the most valuable thing here for whoever comes next.
 - Schema changes ship with their migration and a design-doc note if a decision changed.
 - New R1 exceptions need reasoning in the PR, not just an allowlist edit.
+- **Every PR checks [`docs/roadmap.md`](docs/roadmap.md) and updates it when the PR changes the sequencing picture.** The check is mandatory; the edit usually is not — most PRs change nothing there, and saying so in the PR is a complete answer. Update it when the PR:
+  - **completes a milestone or passes its §12 gate** — the phase table's status column, and the snapshot date above it;
+  - **resolves, adds or reframes a blocker or decision** — the decisions table, and the "what actually blocks first production traffic" list if the answer moved;
+  - **changes a dependency** — something that was blocked no longer is, or a new constraint appears. The mermaid graph's arrows are claims about what genuinely blocks what, not decoration;
+  - **lands infrastructure ahead of its milestone** — add it to "Already built, ahead of its milestone", which exists so the next person doesn't rebuild it after reading the milestone counts as complete.
+
+  **Do not update it merely because a story closed.** GitHub owns live status and is always more current; the roadmap deliberately carries only a dated snapshot, and turning it into a changelog would recreate the drift problem it was written to avoid — this file has already recorded four separate incidents of documentation asserting something the code did not do. When you *do* touch the status column for one of the reasons above, move its date to the day you verified it, and verify against `gh`, not memory.
 
 ## Open questions blocking later milestones
 
