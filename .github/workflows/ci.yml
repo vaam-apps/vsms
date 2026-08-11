@@ -248,5 +248,10 @@ jobs:
       - name: Install the parse-only checker
         working-directory: ci/mermaid-parse
         run: npm ci
+      # Every doc with a mermaid block gets checked, not just the design doc:
+      # a diagram nothing parses is a diagram that silently rots, which is
+      # the whole reason this job exists.
       - name: Parse every diagram in the design doc (no browser)
         run: node ci/mermaid-parse/parse.mjs docs/architecture.md
+      - name: Parse every diagram in the roadmap (no browser)
+        run: node ci/mermaid-parse/parse.mjs docs/roadmap.md
