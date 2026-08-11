@@ -50,17 +50,28 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 COPY --from=builder /tmp/sms-worker /usr/local/bin/sms-worker
 
-# This binary has no HTTP surface — six poll-loop roles, never a listener
-# (see main.rs's own module doc) — so there is nothing for an HTTP-based
-# HEALTHCHECK to hit, and bolting one on just to answer a probe would be
-# adding a listening port this deployment's threat model doesn't want.
-# Instead, main.rs spawns a heartbeat task (independent of which --roles
-# are selected) that touches this file every 15s; the check below treats a
-# stale mtime as unhealthy. That is a real liveness signal a bare `pgrep
-# sms-worker` would not be: a hung tokio runtime (a role genuinely
-# deadlocked, not just idling on `run`'s own `std::future::pending` stub)
-# stops updating the file while the process itself stays alive.
+# This binary has a `/metrics` listener now (#70/#71, main.rs's own module
+# doc) but still no HTTP route an orchestrator's own liveness probe could
+# usefully hit — `/metrics` answers a different question (what the counters
+# currently read), and bolting a liveness endpoint onto it would still be
+# adding surface this deployment's threat model doesn't want just to answer
+# a probe. Instead, main.rs spawns a heartbeat task (independent of which
+# --roles are selected) that touches this file every 15s; the check below
+# treats a stale mtime as unhealthy. That is a real liveness signal a bare
+# `pgrep sms-worker` (or a still-answering `/metrics`, for that matter —
+# two independent tokio tasks) would not be: a hung tokio runtime (a role
+# genuinely deadlocked, not just idling on `run`'s own
+# `std::future::pending` stub) stops updating the file while the process
+# itself stays alive.
 ENV SMS_WORKER_HEALTH_FILE=/tmp/sms-worker-healthy
+
+# #70/#71: same reasoning as app/sms-gateway/Dockerfile's own
+# SMS_METRICS_LISTEN_ADDR override — main.rs's own `--metrics-listen`
+# default (127.0.0.1:9091) is correct bare-metal but unreachable from a
+# sibling `prometheus` container without this. Never published to the host
+# (see deploy/docker-compose.yml's own `sms-worker` service).
+ENV SMS_WORKER_METRICS_LISTEN_ADDR=0.0.0.0:9091
+EXPOSE 9091
 
 # Exec-form: this image has no `/bin/sh`, so the old
 # `sh -c 'test -f ... && [ ... -lt 90 ]'` check can no longer run at all.

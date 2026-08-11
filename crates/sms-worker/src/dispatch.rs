@@ -8,15 +8,32 @@
 //! comfortably under the M2 gate's <15s delivery target even allowing for
 //! one full miss between a message becoming claimable and this loop
 //! noticing.
+//!
+//! # #70/#71
+//!
+//! [`submit_one`] is [`sms_metrics::DISPATCH_IN_FLIGHT_SUBMITS`]'s one
+//! writer (incremented immediately before, decremented immediately after,
+//! `SmsProvider::submit`) and the second correlation event in the
+//! send-path chain — see `crates/sms-api/src/procedures.rs`'s own module
+//! doc for the first, and `sms_metrics`'s own doc for why a fleet-wide sum
+//! sustained above `1` on that gauge is the split-brain signal #70 names.
+//! Every write in this module also now routes its resulting `CoolError`
+//! through `sms_api::map_database_error` before logging — the same reason
+//! `crate::claim`, `crate::jobs`, `crate::hooks`, and `crate::jobs::
+//! expire_stale` all do the same: that function is `sms_sm001_total`'s one
+//! recording site (`crates/sms-api/src/errors.rs`), and a write whose
+//! error was never mapped could still hit an illegal edge without ever
+//! being counted.
 
 use std::time::Duration;
 
 use cratestack::{CoolContext, CoolError};
 use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::map_database_error;
 use sms_api::schema::{Encoding, Message, MessageState, UpdateMessageInput};
 use sms_encoding::SmsEncoding;
 use sms_provider::{ProviderError, SubmitRequest};
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::claim::claim_batch;
 use crate::WorkerContext;
@@ -127,8 +144,41 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
         reference: message.id.clone(),
     };
 
-    match ctx.provider.submit(&req).await {
+    // #70: in-flight for exactly the span of the provider call — not the
+    // whole of `submit_one`, which also does DB work before and after that
+    // this gauge has no business counting. A plain inc-before/dec-after
+    // pair, not a `Drop` guard: the only way to skip the `dec()` below is
+    // this future being dropped mid-await (a shutdown racing an in-flight
+    // submit, in `run_singleton`'s own `tokio::select!`), and a dropped
+    // task means this process is exiting imminently anyway — the gauge
+    // dies with the process's own `/metrics` the moment it does, so a
+    // guard's only advantage here is covering a window that doesn't
+    // outlive the process either way.
+    let provider_key = ctx.provider.key();
+    sms_metrics::DISPATCH_IN_FLIGHT_SUBMITS
+        .with_label_values(&[provider_key])
+        .inc();
+    let submit_result = ctx.provider.submit(&req).await;
+    sms_metrics::DISPATCH_IN_FLIGHT_SUBMITS
+        .with_label_values(&[provider_key])
+        .dec();
+
+    match submit_result {
         Ok(ack) => {
+            // #71: the second correlation event in the chain — see this
+            // module's own doc, and `procedures.rs`'s for the first. No
+            // `cratestack_request_id` here: this loop runs under `sys(...)`
+            // (an internal `system` context this crate mints itself, never
+            // derived from the HTTP request that originally created the
+            // message), so there is no request-scoped id to carry forward
+            // — `message_id` is the join key across this process boundary,
+            // same as the DLR side.
+            info!(
+                message_id = %message.id,
+                provider = provider_key,
+                provider_ref = %ack.provider_ref,
+                "message submitted"
+            );
             write_submitted(
                 ctx,
                 sys,
@@ -249,7 +299,11 @@ async fn write_submitted(
         .run(sys)
         .await
     {
-        log_write_failure(&message.id, MessageState::submitted, &error);
+        log_write_failure(
+            &message.id,
+            MessageState::submitted,
+            &map_database_error(error),
+        );
     }
 }
 
@@ -303,7 +357,7 @@ async fn write_transition(
         .run(sys)
         .await
     {
-        log_write_failure(&message.id, next_state, &error);
+        log_write_failure(&message.id, next_state, &map_database_error(error));
     }
 }
 

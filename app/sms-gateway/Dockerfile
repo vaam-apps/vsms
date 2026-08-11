@@ -84,7 +84,16 @@ COPY --from=builder /tmp/sms-gateway /usr/local/bin/sms-gateway
 # container's port from outside the compose network, and TLS still
 # terminates at Caddy, never here.
 ENV SMS_LISTEN_ADDR=0.0.0.0:8080
-EXPOSE 8080
+# #70/#71: same reasoning as SMS_LISTEN_ADDR immediately above — this
+# process's own `--metrics-listen` default (127.0.0.1:9090) is correct
+# bare-metal but unreachable from a sibling `prometheus` container
+# (deploy/docker-compose.yml) without this override. Still never faces the
+# internet: `deploy/Caddyfile`'s blanket `reverse_proxy sms-gateway:8080`
+# names a different port entirely, and this one is never published to the
+# host either (see deploy/docker-compose.yml's own comment on the
+# `sms-gateway` service).
+ENV SMS_METRICS_LISTEN_ADDR=0.0.0.0:9090
+EXPOSE 8080 9090
 
 # Exec-form (a JSON array, not a shell string): this image has no
 # `/bin/sh` for a `CMD-SHELL`-style check to run, and no `curl` either.

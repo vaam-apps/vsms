@@ -39,6 +39,21 @@ enum Command {
         #[arg(long, env = "SMS_LISTEN_ADDR", default_value = "127.0.0.1:8080")]
         listen: String,
 
+        /// #70/#71: `GET /metrics`, Prometheus text exposition — bound to a
+        /// **second, separate** listener, never merged into `--listen`'s own
+        /// router. Loopback by default for the same reason `--listen`
+        /// itself is: `deploy/Caddyfile`'s blanket `reverse_proxy
+        /// sms-gateway:8080` never reaches this port at all, since it's a
+        /// different port entirely — see `sms_api::metrics`'s own module
+        /// doc for the full reasoning and `docs/runbooks/alerting.md` for
+        /// how an operator points a real Prometheus at it.
+        #[arg(
+            long,
+            env = "SMS_METRICS_LISTEN_ADDR",
+            default_value = "127.0.0.1:9090"
+        )]
+        metrics_listen: String,
+
         #[arg(long, env = "DATABASE_URL")]
         database_url: String,
 
@@ -536,6 +551,7 @@ fn healthcheck_command(addr: &str, path: &str) -> Result<()> {
 async fn serve_command(command: Command) -> Result<()> {
     let Command::Serve {
         listen,
+        metrics_listen,
         database_url,
         max_connections,
         issuer,
@@ -649,6 +665,14 @@ async fn serve_command(command: Command) -> Result<()> {
         .with_context(|| format!("binding {listen}"))?;
     info!(listen = %listen, "sms-gateway listening");
 
+    // #70/#71: a genuinely second listener, never merged into `app` above
+    // — see `metrics_listen`'s own doc and `sms_api::metrics`'s module doc
+    // for why. Spawned before the main `serve` call below so a bind
+    // failure here (a port already in use, an invalid address) is caught
+    // and surfaces the same way any other startup failure does, rather
+    // than silently never having bound at all.
+    let metrics_server = spawn_metrics_server(&metrics_listen).await?;
+
     // #163: `sms_api::router`'s coarser, `ConnectInfo`-keyed
     // `RateLimitLayer` (see that module's `source_fingerprint` doc) only
     // sees a real peer address when served through this — plain
@@ -662,7 +686,39 @@ async fn serve_command(command: Command) -> Result<()> {
     .with_graceful_shutdown(shutdown_signal())
     .await
     .context("serving HTTP")?;
+
+    // The main listener above already returned (graceful shutdown
+    // completed) by the time execution reaches here — wait for the metrics
+    // listener's own identical shutdown to finish too, so this process
+    // doesn't exit out from under a task still mid-`accept`.
+    metrics_server
+        .await
+        .context("metrics server task panicked")?
+        .context("serving metrics HTTP")?;
     Ok(())
+}
+
+/// Binds `metrics_listen` and spawns `sms_api::metrics::router()` on it,
+/// tied to the same [`shutdown_signal`] every other listener in this binary
+/// uses. Pulled out of [`serve_command`] purely to stay under clippy's
+/// `too_many_lines` limit — see `main.rs`'s own git history for the
+/// established convention of extracting an arm rather than raising the
+/// limit (`16db8db`, for `rotate-signing-key`'s own arm).
+async fn spawn_metrics_server(
+    metrics_listen: &str,
+) -> Result<tokio::task::JoinHandle<std::io::Result<()>>> {
+    let metrics_listener = tokio::net::TcpListener::bind(metrics_listen)
+        .await
+        .with_context(|| format!("binding metrics listener {metrics_listen}"))?;
+    info!(listen = %metrics_listen, "sms-gateway metrics listening");
+    Ok(tokio::spawn(async move {
+        cratestack::axum::serve(
+            metrics_listener,
+            sms_api::metrics::router().into_make_service(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+    }))
 }
 
 /// `Command::RotateSigningKey`'s body, pulled out of `main`'s own `match`

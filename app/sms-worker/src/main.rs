@@ -6,6 +6,22 @@
 //! in `Cargo.toml` is what makes the produced executable `sms-worker`
 //! regardless, matching every `sms-worker --roles ...` example in the design
 //! doc.
+//!
+//! # #70/#71: this process now has an HTTP surface, deliberately
+//!
+//! [`spawn_heartbeat`]'s own doc used to say this binary has none at all —
+//! "six poll-loop roles, never a listener" — true until now. `main` below
+//! binds a **second, separate** listener (`--metrics-listen`, default
+//! `127.0.0.1:9091`) serving exactly one route, `GET /metrics`
+//! (`sms_api::metrics::router()`, reused rather than duplicated — see that
+//! function's own module doc), independent of `--roles` and of the
+//! heartbeat file mechanism below, which stays exactly as it was: the
+//! container `HEALTHCHECK` still has no shell to run a `curl`-shaped check
+//! with (see `spawn_heartbeat`'s own doc for why), and `/metrics` answers a
+//! different question — process observability, not container liveness —
+//! so it does not replace the heartbeat file, it sits alongside it.
+//! `sms_metrics`'s own module doc covers what each of the four gauges this
+//! process's `/metrics` reports actually measures, and why.
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
@@ -63,6 +79,19 @@ struct Cli {
     /// requires it.
     #[arg(long, env = "DATABASE_URL")]
     database_url: String,
+
+    /// #70/#71: `GET /metrics`, this process's own Prometheus text
+    /// exposition — see this module's own doc for why this binary has one
+    /// now, and `sms_api::metrics`'s module doc for why it's a second,
+    /// separate listener rather than a route on anything else. Loopback by
+    /// default for the same "never faces the internet" reasoning
+    /// `sms-gateway`'s own `--metrics-listen` documents.
+    #[arg(
+        long,
+        env = "SMS_WORKER_METRICS_LISTEN_ADDR",
+        default_value = "127.0.0.1:9091"
+    )]
+    metrics_listen: String,
 
     /// Maximum pooled connections — mirrors `sms-gateway`'s own default.
     #[arg(long, env = "SMS_WORKER_DB_MAX_CONNECTIONS", default_value_t = 10)]
@@ -189,16 +218,20 @@ fn default_worker_id() -> String {
     format!("{host}:{}", std::process::id())
 }
 
-/// This binary has no HTTP surface (six poll-loop roles, never a
-/// listener — see this module's own doc), so there is nothing for a
-/// `curl`-style container `HEALTHCHECK` to hit (#139). A heartbeat file is
-/// the substitute: spawned unconditionally, independent of which `--roles`
-/// this process runs, so it says something a bare `pgrep sms-worker` in the
-/// `HEALTHCHECK` command could not — a hung tokio runtime (a role
-/// deadlocked rather than merely idling on `run`'s own
-/// `std::future::pending` stub, or a claim loop wedged on a connection)
-/// stops touching this file even though the process is still very much
-/// alive as far as `pgrep` is concerned.
+/// This binary had no HTTP surface at all until #70/#71 gave it a
+/// `/metrics` listener (this module's own doc) — and that listener still
+/// answers a different question than a container `HEALTHCHECK` needs (#139:
+/// is this process alive and unstuck, not what its counters currently
+/// read), so there remains nothing a `curl`-style liveness check could
+/// productively hit. A heartbeat file is that substitute: spawned
+/// unconditionally, independent of which `--roles` this process runs, so it
+/// says something a bare `pgrep sms-worker` in the `HEALTHCHECK` command
+/// could not — a hung tokio runtime (a role deadlocked rather than merely
+/// idling on `run`'s own `std::future::pending` stub, or a claim loop
+/// wedged on a connection) stops touching this file even though the
+/// process is still very much alive as far as `pgrep` (or a still-answering
+/// `/metrics`, for that matter — this task loop and the metrics listener
+/// are two independent tokio tasks) is concerned.
 fn spawn_heartbeat(path: std::path::PathBuf, shutdown: CancellationToken) {
     tokio::spawn(async move {
         // `tokio::time::interval`'s first `tick()` resolves immediately, so
@@ -310,6 +343,13 @@ async fn main() -> Result<()> {
     spawn_heartbeat(health_file, shutdown.clone());
 
     let mut tasks = tokio::task::JoinSet::new();
+    // #70/#71: bound before any role task starts, so a bind failure (an
+    // already-used port, an invalid address) aborts startup the same way
+    // every other startup precondition in this binary does, rather than
+    // surfacing only once the first metrics scrape fails. Spawned into
+    // `tasks` itself — see `spawn_metrics_task`'s own doc for why.
+    spawn_metrics_task(&cli.metrics_listen, shutdown.clone(), &mut tasks).await?;
+
     for role in roles {
         match role.cardinality() {
             Cardinality::Singleton => {
@@ -367,6 +407,34 @@ async fn main() -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+/// Binds `listen` and spawns `sms_api::metrics::router()` on it, into
+/// `tasks` — not a bare `tokio::spawn` — since this listener is expected to
+/// run for the whole process lifetime exactly like every role task, so it
+/// exiting early (a panic, the listener itself erroring) is just as much a
+/// bug worth `main`'s own `Some(finished) = tasks.join_next()` arm noticing,
+/// not a silently-abandoned background task. Pulled out of `main` purely to
+/// stay under clippy's `too_many_lines` limit, same convention
+/// `app/sms-gateway/src/main.rs::spawn_metrics_server` documents.
+async fn spawn_metrics_task(
+    listen: &str,
+    shutdown: CancellationToken,
+    tasks: &mut tokio::task::JoinSet<()>,
+) -> Result<()> {
+    let listener = tokio::net::TcpListener::bind(listen)
+        .await
+        .with_context(|| format!("binding metrics listener {listen}"))?;
+    info!(listen, "sms-worker metrics listening");
+    tasks.spawn(async move {
+        if let Err(error) = axum::serve(listener, sms_api::metrics::router().into_make_service())
+            .with_graceful_shutdown(shutdown.cancelled_owned())
+            .await
+        {
+            warn!(%error, "metrics listener exited with an error");
+        }
+    });
     Ok(())
 }
 

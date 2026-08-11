@@ -241,6 +241,18 @@ pub async fn run_singleton(
     worker: String,
     shutdown: CancellationToken,
 ) {
+    // #70: the one writer of `sms_worker_singleton_lease_held{role}` — see
+    // `sms_metrics`'s own module doc for why setting this to `0` here,
+    // rather than only ever touching it once acquired, is the whole point.
+    // A process that never calls `run_singleton` for `role` at all (it
+    // isn't in that process's own `--roles`) never touches this gauge
+    // either, which is the other half of the same design: the metric is
+    // *absent* from that process's `/metrics`, not present-and-zero — an
+    // operator who only started this process with `--roles hooks,jobs`
+    // should never see it claim anything about `dispatch`.
+    let lease_gauge = sms_metrics::SINGLETON_LEASE_HELD.with_label_values(&[role.as_str()]);
+    lease_gauge.set(0);
+
     loop {
         let acquired = tokio::select! {
             () = shutdown.cancelled() => {
@@ -253,10 +265,12 @@ pub async fn run_singleton(
         match acquired {
             Ok(Some(held)) => {
                 tracing::info!(role = %role, "singleton lock acquired");
+                lease_gauge.set(1);
                 tokio::select! {
                     () = run(role, ctx.clone(), &worker) => unreachable!("run() idles forever and never returns"),
                     () = shutdown.cancelled() => {
                         tracing::info!(role = %role, "shutdown requested; releasing lock");
+                        lease_gauge.set(0);
                         if let Err(error) = held.release().await {
                             tracing::error!(
                                 role = %role, %error,
@@ -270,6 +284,7 @@ pub async fn run_singleton(
             }
             Ok(None) => {
                 tracing::debug!(role = %role, "lock held elsewhere; standing by");
+                lease_gauge.set(0);
             }
             Err(error) => {
                 // The dangerous case: not "someone else has it" but "this
@@ -278,6 +293,7 @@ pub async fn run_singleton(
                 // exactly what §28 says to alert on rather than let blend
                 // into routine standby logging.
                 tracing::error!(role = %role, %error, "failed attempting the lock; retrying");
+                lease_gauge.set(0);
             }
         }
 
