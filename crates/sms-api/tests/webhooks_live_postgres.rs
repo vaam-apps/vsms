@@ -414,6 +414,93 @@ async fn a_message_with_no_matching_endpoints_produces_no_attempts_and_no_error(
     assert!(attempts.is_empty());
 }
 
+/// **The one honest caveat under `#44`'s "no event lost" gate.** Read
+/// `webhooks.rs`'s own module doc before this test: on the Postgres
+/// backend, `CoolEventBus::emit` returns `Ok(())` for a topic with zero
+/// registered handlers, and the framework's own automatic post-commit
+/// drain treats `Ok` the same whether a handler actually ran or there
+/// never was one to run — it marks the outbox row `delivered_at = NOW()`
+/// either way. So a `Cratestack` instance that never calls
+/// `register_subscribers` doesn't leave its own writes for a later,
+/// correctly-registered drain to "catch up" on later: the row is already
+/// marked delivered, having done nothing, the moment the write commits.
+/// This test makes that a permanent, reproducible assertion rather than
+/// prose. It is not a bug this PR fixes (there is nothing in this crate to
+/// fix — the behaviour lives in `cratestack-sqlx`'s own `drain_event_outbox`,
+/// read directly in `crates/sms-worker/src/jobs/reap_outbox.rs`'s own module
+/// doc) and it is why `AGENTS.md`'s M3 section calls registration
+/// "mandatory plumbing in every process," not optional wiring: every real
+/// writer in this codebase (`app/sms-gateway`'s `serve`, `app/sms-worker`'s
+/// `main`) calls `register_subscribers` unconditionally before touching
+/// `db`, which is what keeps this exact scenario from ever happening in
+/// production. `#44`'s own "kill sms-api mid-drain, no event is lost" gate
+/// is proven separately, against a real spawned `sms-gateway serve` process
+/// that (like every real deployment) does call `register_subscribers` —
+/// see `app/sms-gateway/tests/webhook_outbox_kill_mid_drain_live.rs`. This
+/// test exists to draw the boundary of that guarantee explicitly: it holds
+/// because registration is unconditional in every real writer, not because
+/// the outbox is magically loss-proof regardless of whether anything is
+/// listening.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_writer_that_never_registered_subscribers_silently_loses_the_event() {
+    let _guard = TEST_MUTEX.lock().await;
+    let unregistered_db = db().await;
+
+    let app_id = seed_app(&unregistered_db).await;
+    seed_endpoint(&unregistered_db, &app_id, " message.cancelled ", true).await;
+    let message = seed_message(&unregistered_db, &app_id, "+237677123463").await;
+
+    // No `register_subscribers` call on `unregistered_db` at all. The
+    // transition below still commits successfully — R2/the trigger don't
+    // care whether anyone is listening — and its own automatic post-commit
+    // drain still runs (`create.rs`/`update.rs`'s unconditional call), but
+    // `CoolEventBus::emit` has zero handlers for this topic on *this*
+    // instance, so it's `Ok(())` immediately and the row is marked
+    // delivered having done nothing.
+    unregistered_db
+        .message()
+        .update(message.id.clone())
+        .set(schema::UpdateMessageInput {
+            state: Some(MessageState::cancelled),
+            ..Default::default()
+        })
+        .if_match(message.version)
+        .run(&sys())
+        .await
+        .expect("cancelling the message");
+
+    let attempts = attempts_for(&unregistered_db, &message.id).await;
+    assert!(
+        attempts.is_empty(),
+        "an unregistered writer's own automatic drain marks the outbox row delivered having \
+         done nothing — this is the documented gap this test exists to pin down, not something \
+         it expects to be fixed: {attempts:?}"
+    );
+
+    // The sharper half: a *second*, properly registered instance draining
+    // the same table afterwards does not recover this event either,
+    // because the row already reads delivered_at IS NOT NULL — there is no
+    // "eventually consistent" backstop for this specific failure mode,
+    // unlike a genuinely-still-undelivered row (which `drain_live_postgres.rs`
+    // and `#44`'s own kill-mid-drain gate both prove recovers correctly).
+    let registered_db = db().await;
+    sms_api::webhooks::register_subscribers(&registered_db);
+    registered_db
+        .events()
+        .drain()
+        .await
+        .expect("draining the registered instance's own runtime");
+
+    let attempts_after_drain = attempts_for(&registered_db, &message.id).await;
+    assert!(
+        attempts_after_drain.is_empty(),
+        "confirms the event is permanently lost, not merely delayed: a later, correctly \
+         registered drain has nothing left to redeliver, since delivered_at was already set \
+         true by the unregistered writer: {attempts_after_drain:?}"
+    );
+}
+
 /// A fixture sanity check, not a subscriber assertion: every test above
 /// relies on `seed_message` producing a row in `accepted` so that
 /// `accepted -> cancelled` and `accepted -> queued` are the direct,

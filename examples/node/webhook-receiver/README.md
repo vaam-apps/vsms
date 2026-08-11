@@ -194,34 +194,50 @@ that `verifySignature`'s algorithm itself is HMAC-SHA256 over exactly
 §4.4's canonical string, agreeing with `crates/sms-webhook` (#41) and with
 a third, independent computation neither of them produced.
 
-**Does not prove:** that this matches what a real, webhook-*sending* vsms
-will someday do end to end. Specifically unverified, and unverifiable
-until the corresponding work lands:
+**Does not prove, from `pnpm start` alone:** that this matches what a real,
+webhook-*sending* vsms does end to end — see the next section,
+`src/gate-receiver.ts`, for what closes that gap and what it confirms.
+Still unverified even with that gate, and unverifiable until the
+corresponding work lands:
 
-- Whether the `X-Sms-Event-Id` value vsms sends is actually the
-  `WebhookAttempt`'s `sourceEventId` as this example assumes, or something
-  else — §4.4 names the header but the doc's worked JSON example (§8.4)
-  doesn't show the header alongside the body, so this is a reasonable but
-  unconfirmed reading.
-- Whether the `hooks` role (#40), once built, actually calls
-  `crates/sms-webhook` the way this README assumes it will, and attaches
-  the four headers exactly as documented — #41 ships the signing library
-  and `rotateWebhookSecret`, not the HTTP delivery code that would call it.
 - Any latency, retry timing, or backoff behaviour (§8.5 documents 1s, 5s,
-  25s, 2m, 10m, 1h, 6h, 24h, eight attempts then `dead` — this example's
-  emitter does not attempt to reproduce that schedule; it just proves the
-  receiver survives duplicates and reordering, not the exact cadence they
-  arrive under).
+  25s, 2m, 10m, 1h, 6h, 24h, eight attempts then `dead` — neither this
+  example's local emitter nor `#44`'s live gate attempt to reproduce that
+  schedule; they prove the receiver survives duplicates, reordering, and a
+  real delivery, not the exact cadence retries arrive under).
+- Real-world network conditions (`#44`'s gate is loopback-only, same as
+  this example's own local emitter).
+
+## `src/gate-receiver.ts` — the `#44` live gate, not the local-emitter demo
+
+`#40` landed real outbound HTTP delivery, and `#44` (the M3 gate) needed
+"a sample Node receiver verifies the signature" proven against that live
+path, not just against `emitter.ts`'s local stand-in. `src/gate-receiver.ts`
+is that: the exact same `createReceiver`/`verifySignature` code this
+package already ships, started with **no** local emitter attached, plus one
+test-only diagnostic route (`GET /__test__/results`) so a driving test can
+observe what it verified over HTTP rather than scraping stdout. Point a real
+`sms-worker --roles hooks` process at it (a real `WebhookEndpoint.url`
+pointed at `http://<host>:<port>/webhooks/vsms`, matching secret) and it
+verifies a real, live delivery — see
+`app/sms-worker/tests/hooks_node_receiver_live.rs` for the automated version
+of exactly this, and the two assumptions this section used to flag as
+unconfirmed:
+
+- **`X-Sms-Event-Id` really is `WebhookAttempt.sourceEventId`** — confirmed:
+  `hooks.rs`'s `send` sets it from `attempt.sourceEventId` verbatim.
+- **`data.messageId` really is what a receiver should key on** — confirmed
+  for `message.*` events specifically, the only ones this milestone's
+  subscriber (`#38`) builds.
+
+`src/index.ts`'s own local-emitter demo (`pnpm start`) is still here,
+deliberately not deleted: it's still the fastest way to see this receiver's
+own duplicate/out-of-order/rotation/bad-signature handling without standing
+up a database, a provider adapter, and a live vsms — a property `#44`'s own
+one-shot gate doesn't need or want to reproduce.
 
 ## Revisit this when M3 (webhooks) fully lands
 
-- Point the emitter (or better, delete it) at a real, running vsms with a
-  provisioned `WebhookEndpoint`, once the `hooks` role (#40) exists and
-  actually sends HTTP requests, and re-verify the scenarios above against
-  that instead of the local stand-in.
-- Confirm the `X-Sms-Event-Id` → `sourceEventId` assumption above, and the
-  `data.messageId` → aggregate id assumption in `server.ts`'s
-  `extractAggregateId`, against real payloads.
 - Decide, deliberately, whether a bounded freshness/replay window on
   `X-Sms-Timestamp` is worth adding on top of the dedupe-based protection
   this receiver already has — `sms_webhook::is_timestamp_fresh` (#41) is

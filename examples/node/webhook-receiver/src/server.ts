@@ -20,6 +20,15 @@ export interface ReceiverOptions {
 
 export interface Receiver {
   store: WebhookStore;
+  /**
+   * The underlying Express app, exposed so a caller can mount additional
+   * routes on the same port before calling `listen()` — e.g.
+   * `gate-receiver.ts`'s `/__test__/results` diagnostic endpoint for
+   * `#44`'s live gate. Nothing in `index.ts`'s own demo uses this; it
+   * exists for callers that need to observe what this receiver did without
+   * scraping stdout.
+   */
+  app: express.Express;
   listen(): Promise<Server>;
 }
 
@@ -160,6 +169,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
 
   return {
     store,
+    app,
     listen(): Promise<Server> {
       return new Promise((resolve) => {
         const server = app.listen(options.port, () => resolve(server));
