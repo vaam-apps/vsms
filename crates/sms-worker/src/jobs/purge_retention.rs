@@ -16,6 +16,33 @@
 //! comment. This job is therefore the *entire* #67 scope, not half of a
 //! two-table design.
 //!
+//! # This job's own `.update()` is a real emitting write — it must never
+//! # re-notify a customer about a message they were already told about
+//!
+//! `Message` carries `@@emit(created, updated)` (§2.5), and this job's
+//! `purge_messages` writes through the same `.update()` delegate every
+//! other writer of `Message` uses — no exception, R1 gives none. That
+//! means every purge is, structurally, an event: found by the
+//! coordinator's review, not by this file's own first draft, which
+//! reasoned about `msisdn`'s placeholder-vs-nullable tradeoff without
+//! ever checking that `Message.updated` reaches
+//! `crates/sms-api/src/webhooks.rs`'s subscriber, and it does, in every
+//! process that runs this job (`register_subscribers` is called
+//! unconditionally in `app/sms-worker`'s `main`, regardless of `--roles`
+//! — see that module's own doc for why). Four of this job's five terminal
+//! candidate states map to a catalogued webhook event
+//! (`webhooks.rs::message_event_type`; only `rejected` doesn't), so
+//! without a guard, purging a message would enqueue — and `hooks` would
+//! then sign and POST — a live webhook to the customer's own endpoint,
+//! three months after the fact, carrying whatever the purge just wrote
+//! into `msisdn`. The fix lives at the subscriber, not here: R1 gives no
+//! seam to suppress an emit from the write site, and
+//! `enqueue_message_webhook_attempts` is where every other "should this
+//! state produce an event" decision already lives — see that function's
+//! own doc in `webhooks.rs` for the `purgedAt.is_some()` guard and why
+//! `webhook_attempts_dedupe`'s unique index is a coincidence, not a
+//! substitute for it.
+//!
 //! # What gets purged, and why each column
 //!
 //! Only `Message` rows in a **terminal** state
@@ -43,19 +70,42 @@
 //!   application code on every write, `Some`-wrapped values included, since
 //!   update-input validators treat every field as present-or-absent, not
 //!   nullable-or-not). Making the column itself nullable was considered and
-//!   rejected: the only two production readers of `Message.msisdn`
-//!   (`crates/sms-worker/src/dispatch.rs`'s submit path and
+//!   rejected in favour of overwriting it with a fixed, obviously-not-a-number
+//!   placeholder — but the original reasoning here was wrong about *why*,
+//!   caught by the coordinator's review rather than by this file's own first
+//!   draft, and is worth recording precisely because it was wrong.
+//!
+//!   The first draft claimed the two production readers of `Message.msisdn`
+//!   — `crates/sms-worker/src/dispatch.rs`'s submit path and
 //!   `crates/sms-api/src/webhooks.rs`'s `Message.created`/`updated`
-//!   subscriber) only ever see a message *before* it can possibly be 90
-//!   days old — dispatch only touches `accepted`/`queued`/`routed`/
-//!   `undelivered` rows, and the subscriber fires synchronously inside the
-//!   mutation that created the row — so `Option<String>` would force
-//!   `.expect()`-shaped defensive handling into two heavily-tested,
-//!   already-correct hot paths for a branch that can never actually be hit,
-//!   in exchange for no privacy benefit `PURGED_MSISDN_PLACEHOLDER`
-//!   doesn't already give. Overwriting with a fixed, obviously-not-a-number
-//!   placeholder achieves the same "the plaintext number is destroyed"
-//!   outcome without that risk.
+//!   subscriber — could structurally never see a purged row, so
+//!   `Option<String>` would only add risk to two already-correct hot paths
+//!   for no benefit. That is true of `dispatch.rs` (its candidate set is
+//!   `accepted`/`queued`/`routed`/`undelivered`, never a terminal state this
+//!   job touches) and **was false of `webhooks.rs`**: this job's own
+//!   `.update()` call is a real delegate write against a model with
+//!   `@@emit(created, updated)`, so it fires the exact same subscriber every
+//!   other `Message` update does, and four of this job's five terminal
+//!   candidate states map to a catalogued event
+//!   (`crates/sms-api/src/webhooks.rs`'s own `message_event_type`).
+//!   Un-caught, that meant every purge attempted to enqueue — and `hooks`
+//!   would then sign and POST — a live webhook to the customer's endpoint
+//!   reporting on a message three months stale, carrying whatever
+//!   `message.msisdn` held at that moment. Fixed at the source in
+//!   `webhooks.rs`: `enqueue_message_webhook_attempts` now returns `Ok(())`
+//!   immediately when `message.purgedAt.is_some()`, before it ever reads
+//!   `msisdn` — see that function's own doc for the full reasoning and why
+//!   `webhook_attempts_dedupe`'s unique index is not a substitute for this
+//!   guard.
+//!
+//!   With that fixed, the placeholder decision's actual justification
+//!   holds: nothing in this codebase reads a purged message's `msisdn` for
+//!   any production purpose any more — `dispatch.rs` structurally, and
+//!   `webhooks.rs` because of the guard above — so `Option<String>` would
+//!   force `.expect()`-shaped defensive handling into two heavily-tested,
+//!   already-correct hot paths for a branch that can never be hit, in
+//!   exchange for no privacy benefit `PURGED_MSISDN_PLACEHOLDER` doesn't
+//!   already give.
 //! - **`body`** — the message content. Purged: the decision's own explicit
 //!   text ("content"). Nullable already (`String?`), so a plain `None`.
 //! - **`clientRef`** / **`idempotencyKey`** — caller-supplied correlation

@@ -36,6 +36,23 @@
 //!   is deliberately structured so its two halves can be driven
 //!   independently for this reason — see `run_at`'s own two calls.
 //!
+//! # The webhook-suppression guard
+//!
+//! `a_purge_never_re_fires_a_webhook_to_a_registered_endpoint` proves the
+//! fix for a real bug the coordinator found reviewing this PR:
+//! `purge_messages`'s own `.update()` is a real write against a model with
+//! `@@emit(created, updated)`, and `crates/sms-api/src/webhooks.rs`'s
+//! subscriber (`enqueue_message_webhook_attempts`) has, since that fix, an
+//! explicit `message.purgedAt.is_some()` guard — before it, four of this
+//! job's five terminal candidate states mapped to a catalogued event, so a
+//! purge would have enqueued (and `hooks` would then have signed and
+//! `POSTed`) a live webhook about a message three months stale. The test
+//! deliberately builds the one case `webhook_attempts_dedupe`'s unique
+//! index cannot save: a `WebhookEndpoint` created *after* the message
+//! already reached `delivered`, so there is no prior attempt for a
+//! purge-triggered one to collide with — if the guard in `webhooks.rs`
+//! were ever removed, this is the test that would catch it, not dedupe.
+//!
 //! Ignored by default, same convention as this crate's other live suites.
 //! Run explicitly:
 //!
@@ -47,8 +64,8 @@ use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::schema::{
-    self, delivery_receipt, message, Cratestack, DeliveryOutcome, Encoding, Message, MessageClass,
-    MessageState, OperatorCode, UpdateMessageInput,
+    self, delivery_receipt, message, webhook_attempt, Cratestack, DeliveryOutcome, Encoding,
+    Message, MessageClass, MessageState, OperatorCode, UpdateMessageInput,
 };
 use sms_worker::jobs::purge_retention::PurgeRetention;
 use sms_worker::jobs::JobHandler;
@@ -473,4 +490,153 @@ async fn the_job_handler_entry_point_runs_without_error_against_a_live_database(
         "purge_retention's JobHandler::run must succeed: {outcome:?}"
     );
     assert_eq!(PurgeRetention.kind(), "purge_retention");
+}
+
+async fn seed_webhook_endpoint(db: &Cratestack, app_id: &str, event_types: &str) {
+    db.webhook_endpoint()
+        .create(schema::CreateWebhookEndpointInput {
+            appId: app_id.to_owned(),
+            url: format!("https://example.test/webhooks/{}", unique_suffix()),
+            eventTypes: event_types.to_owned(),
+            secret: format!("test-secret-{}", unique_suffix()),
+            prevSecret: None,
+            secretRotatedAt: None,
+            maskRecipient: false,
+            maxAttempts: 8,
+            circuitOpenUntil: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a WebhookEndpoint");
+}
+
+async fn count_attempts_for(db: &Cratestack, message_id: &str) -> usize {
+    db.webhook_attempt()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            webhook_attempt::aggregateId().eq(message_id.to_owned()),
+        ))
+        .run(&sys())
+        .await
+        .expect("counting webhook attempts")
+        .len()
+}
+
+/// Drives a fresh message all the way to `delivered` — `accepted -> queued
+/// -> routed -> submitted -> delivered`, each a real, separate, legal hop
+/// (`accepted -> delivered` directly is not in `message_state_transitions`
+/// — same fact `errors_live_postgres.rs`'s own
+/// `an_illegal_transition_surfaces_as_409_not_500` test asserts). The final
+/// hop also backdates `createdAt`, in the same write, so the row is both
+/// terminal and old by the time this returns — see the module doc's own
+/// backdating reasoning.
+async fn drive_to_delivered(
+    db: &Cratestack,
+    app_id: &str,
+    created_at: chrono::DateTime<Utc>,
+) -> Message {
+    let message = seed_message(db, app_id).await;
+
+    let queued = db
+        .message()
+        .update(message.id.clone())
+        .set(UpdateMessageInput {
+            state: Some(MessageState::queued),
+            providerId: Some(Some("orange-cm".to_owned())),
+            ..Default::default()
+        })
+        .if_match(message.version)
+        .run(&sys())
+        .await
+        .expect("accepted -> queued");
+
+    let routed = db
+        .message()
+        .update(queued.id.clone())
+        .set(UpdateMessageInput {
+            state: Some(MessageState::routed),
+            ..Default::default()
+        })
+        .if_match(queued.version)
+        .run(&sys())
+        .await
+        .expect("queued -> routed");
+
+    let submitted = db
+        .message()
+        .update(routed.id.clone())
+        .set(UpdateMessageInput {
+            state: Some(MessageState::submitted),
+            providerMessageRef: Some(Some(format!("orange-ref-{}", unique_suffix()))),
+            ..Default::default()
+        })
+        .if_match(routed.version)
+        .run(&sys())
+        .await
+        .expect("routed -> submitted");
+
+    db.message()
+        .update(submitted.id.clone())
+        .set(UpdateMessageInput {
+            state: Some(MessageState::delivered),
+            createdAt: Some(created_at),
+            ..Default::default()
+        })
+        .if_match(submitted.version)
+        .run(&sys())
+        .await
+        .expect("submitted -> delivered, backdating createdAt")
+}
+
+/// The regression this issue's coordinator review actually found: a purge
+/// must never re-notify a customer's webhook endpoint about a message they
+/// were already told about — see the module doc's own "webhook-suppression
+/// guard" section.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_purge_never_re_fires_a_webhook_to_a_registered_endpoint() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = fresh_db().await;
+    let app_id = seed_app(&db).await;
+
+    let old = Utc::now() - ChronoDuration::days(120);
+    let delivered = drive_to_delivered(&db, &app_id, old).await;
+
+    // Registered *after* the message already reached `delivered` — no
+    // WebhookEndpoint existed at delivery time, so no WebhookAttempt row
+    // exists yet for `webhook_attempts_dedupe` to have caught. This is
+    // deliberately the one case dedupe cannot save: if the purge-site
+    // guard is broken, this is where it shows.
+    seed_webhook_endpoint(&db, &app_id, " message.delivered ").await;
+    assert_eq!(
+        count_attempts_for(&db, &delivered.id).await,
+        0,
+        "sanity: no WebhookAttempt should exist before the purge runs at all"
+    );
+
+    // A fresh Cratestack instance with subscribers registered — matching
+    // production exactly: `app/sms-worker`'s `main` calls
+    // `sms_api::webhooks::register_subscribers` unconditionally, regardless
+    // of `--roles`, so the process actually running `purge_retention` in
+    // production always has this wired up.
+    let job_runner = fresh_db().await;
+    sms_api::webhooks::register_subscribers(&job_runner);
+
+    PurgeRetention
+        .run_at(&job_runner, &sys(), Utc::now())
+        .await
+        .expect("purge_retention run_at succeeds");
+
+    let purged = reload_message(&db, &delivered.id).await;
+    assert!(
+        purged.purgedAt.is_some(),
+        "sanity: the message must actually have been purged for this test to mean anything"
+    );
+
+    assert_eq!(
+        count_attempts_for(&db, &delivered.id).await,
+        0,
+        "a purge must never enqueue a WebhookAttempt for the message it just purged — \
+         see webhooks.rs's own purgedAt guard"
+    );
 }
