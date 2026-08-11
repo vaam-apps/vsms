@@ -3240,6 +3240,7 @@ dependencies = [
  "sms-api",
  "sms-encoding",
  "sms-fake-orange",
+ "sms-msisdn",
  "sms-provider",
  "sms-provider-orange-cm",
  "sms-test-support",

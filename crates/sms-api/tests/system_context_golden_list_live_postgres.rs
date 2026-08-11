@@ -670,6 +670,7 @@ async fn seed_and_verify_message(
             expiresAt: now + Duration::hours(1),
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await

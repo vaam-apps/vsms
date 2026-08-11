@@ -159,6 +159,7 @@ async fn seed_message(db: &Cratestack, app_id: &str, msisdn: &str) -> Message {
             expiresAt: Utc::now() + Duration::hours(1),
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await

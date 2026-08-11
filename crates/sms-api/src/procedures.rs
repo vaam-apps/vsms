@@ -644,6 +644,9 @@ impl Procedures {
                 expiresAt: expires_at,
                 submittedAt: None,
                 finalizedAt: None,
+                // #67: absent until `purge_retention` reaches this row past
+                // its 90-day retention window.
+                purgedAt: None,
             })
             .run(&sys)
             .await?;

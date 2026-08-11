@@ -453,6 +453,17 @@ model Message {
   submittedAt DateTime?
   finalizedAt DateTime?
 
+  // #67/#5: 90-day minimisation, decided — no split ledger. `purge_retention`
+  // (crates/sms-worker/src/jobs/purge_retention.rs) stamps this the one time
+  // it nulls `body`/`clientRef`/`idempotencyKey`/`stateReason` and overwrites
+  // `msisdn`, so "purged" is data, not an inference from "body happens to be
+  // null" — nothing else in this codebase ever nulls `body` (the #183
+  // redact-at-terminal-state idea was built and rejected; see docs/architecture.md
+  // §2.5), but a dedicated marker is unambiguous where an inferred one would
+  // silently break the day something else does. No `@default`: absent on
+  // every row until the job actually reaches it.
+  purgedAt DateTime?
+
   costXaf Decimal @default(0)
   version Int @version
 
@@ -528,6 +539,15 @@ model DeliveryReceipt {
   @@allow("list", auth().kind == "user" || hasRole('system'))
   @@allow("detail", auth().kind == "user" || hasRole('system'))
   @@allow("create", hasRole('system'))
+  // #67: `purge_retention` deletes a receipt past its own 90-day
+  // `@@retain` window (crates/sms-worker/src/jobs/purge_retention.rs) — the
+  // tenth instance of this file's own repeated policy-gap shape, just on
+  // `delete` instead of `list`/`detail`: the action was simply never
+  // declared (deny-by-default, not an error) because nothing needed it
+  // before this job existed. Policy-only, no DDL — `cratestack migrate
+  // diff` confirmed byte-identical before/after, same as every prior
+  // instance.
+  @@allow("delete", hasRole('system'))
 }
 
 model Job {

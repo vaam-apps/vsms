@@ -335,6 +335,7 @@ async fn seed_message(
             expiresAt: expires_at,
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await

@@ -48,10 +48,8 @@ flowchart TB
     M5 -.-> M7
 
     D4["Decision #4 · Own ART title?"]
-    D5["Decision #5 · Retention vs minimisation"]
 
     D4 -.gates.-> M7
-    D5 -.gates.-> M6
 
     PROD{{"First production traffic"}}
     M3 --> PROD
@@ -67,7 +65,7 @@ flowchart TB
 |---|---|---|---|
 | **1 — Foundation** | M0, M1 | Can we represent a message, and prove who is asking? | **Done** — 14/14 and 9/9 closed |
 | **2 — Deliver a message** | M2, M3 | Can one SMS reach a real handset, and can the caller find out what happened? | M2 **done** (12/12). M3 **5/7** — replay (#43) and the gate (#44) remain |
-| **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M4 **4/17**, M6 **1/8** — the largest remaining block |
+| **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M4 **4/17**, M6 **2/8** — the largest remaining block |
 | **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | Not started (0/6) |
 | **5 — Conditional** | M7 | Direct MNO interconnect over SMPP | Not started, and **may never exist** — see decision #4 |
 
@@ -81,8 +79,8 @@ What does block it:
 
 1. **M3 finishing** (#43, #44). Until the gate passes, "no event is lost" is a belief rather than a demonstrated property — and webhooks are how customers learn a message failed.
 2. **Enough of M4 to diagnose a failure.** §12's own gate for M4 is *"an operator can diagnose a failed message without touching SQL."* Not all 17 stories — the messages detail view (#50) and the jobs/workers screens (#56, #57) are the diagnostic core.
-3. **M6's compliance items** — and these are legal, not technical: retention purge (#67), consent records (#72), audit anchoring (#68). Law No. 2024/017 sanctions run to 100,000,000 FCFA and criminal penalties; this is the phase where "we'll do it after launch" is the expensive answer.
-4. **The two open decisions below.**
+3. **M6's remaining compliance items** — and these are legal, not technical: consent records (#72), audit anchoring (#68). Retention purge (#67) is done — decision #5 resolved 2026-08-11 (90-day minimisation, no split ledger) and `purge_retention` shipped in the same PR that recorded the resolution. Law No. 2024/017 sanctions run to 100,000,000 FCFA and criminal penalties; this is the phase where "we'll do it after launch" is the expensive answer.
+4. **The one open decision below.**
 
 Deliberately *not* on that list: **#187** (webhook secrets readable by every human role) is latent, because no human-login flow exists yet to hold such a token. It becomes live exactly when M4 ships real logins, which is why it sits on M4 rather than M3.
 
@@ -90,14 +88,13 @@ Deliberately *not* on that list: **#187** (webhook secrets readable by every hum
 
 ## Decisions that gate phases
 
-Both belong to the maintainer, not to engineering. Neither is answerable by reading more code.
+Belongs to the maintainer, not to engineering. Not answerable by reading more code.
 
 | Decision | Blocks | State |
 |---|---|---|
 | [#4 — own ART title?](https://github.com/vymalo/vsms/issues/4) | **Whether M7 exists at all.** Direct MNO interconnect or a short code unambiguously requires an ART title; whether a pure API consumer buying capacity from a licensed aggregator needs one is unverified. Settle before committing to SMPP, not during. | Open |
-| [#5 — 10-year retention vs 90-day minimisation](https://github.com/vymalo/vsms/issues/5) | **M6's purge (#67).** Law 2010/012 art. 25 requires ten years of traffic data; Law 2024/017 requires minimisation. §10's split-ledger proposal is the recommendation, and `docs/legal/retention-briefing.md` is already with counsel. | Open — awaiting counsel |
 
-Two earlier decisions are settled and recorded: [#3](https://github.com/vymalo/vsms/issues/3) (hosting) and [#6](https://github.com/vymalo/vsms/issues/6) (`authkestra-op` stays, pinned exactly).
+Three earlier decisions are settled and recorded: [#3](https://github.com/vymalo/vsms/issues/3) (hosting), [#6](https://github.com/vymalo/vsms/issues/6) (`authkestra-op` stays, pinned exactly), and [#5](https://github.com/vymalo/vsms/issues/5) (**2026-08-11**: 90-day minimisation, no split ledger — Law 2010/012 art. 25's ten-year traffic-data requirement is left to infrastructure-level retention outside vsms's own schema, not a parallel table inside it; see `architecture.md` §10 and #67's own PR). `docs/legal/retention-briefing.md` reflected the still-open question and is now stale on this point — the maintainer decided ahead of counsel's answer, not after it.
 
 ---
 

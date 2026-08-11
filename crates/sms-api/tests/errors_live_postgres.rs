@@ -147,6 +147,7 @@ async fn seed_accepted_message(
             expiresAt: Utc::now() + Duration::hours(1),
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await
@@ -244,6 +245,7 @@ async fn a_duplicate_idempotency_key_surfaces_as_a_named_409() {
             expiresAt: Utc::now() + Duration::hours(1),
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await

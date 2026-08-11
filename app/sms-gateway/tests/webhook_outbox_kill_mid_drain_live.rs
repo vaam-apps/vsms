@@ -349,6 +349,7 @@ async fn seed_submitted_message(db: &Cratestack, app_id: &str, provider_id: &str
             expiresAt: Utc::now() + ChronoDuration::hours(1),
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await

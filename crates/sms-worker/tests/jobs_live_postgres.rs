@@ -503,6 +503,7 @@ async fn seed_submitted_message(
             expiresAt: expires_at,
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await
