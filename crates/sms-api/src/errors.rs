@@ -11,8 +11,9 @@
 
 use cratestack::CoolError;
 
-/// SQLSTATE raised by `messages_guard_transition` and `jobs_guard_transition`
-/// when the proposed edge is absent from the transition table.
+/// SQLSTATE raised by `messages_guard_transition`, `jobs_guard_transition`,
+/// and `attempts_guard_transition` when the proposed edge is absent from the
+/// transition table.
 pub const SM001: &str = "SM001";
 
 /// SQLSTATE for `unique_violation`. Dedupe is `create` plus catching this,

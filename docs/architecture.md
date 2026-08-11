@@ -762,8 +762,8 @@ model WebhookAttempt {
 
   @@paged
   @@retain(days: 30)
-  @@allow("list", auth().kind == "user" || endpoint.appId == auth().appId)
-  @@allow("detail", auth().kind == "user" || endpoint.appId == auth().appId)
+  @@allow("list", auth().kind == "user" || endpoint.appId == auth().appId || hasRole('system'))
+  @@allow("detail", auth().kind == "user" || endpoint.appId == auth().appId || hasRole('system'))
   @@allow("create", hasRole('system'))
   @@allow("update", hasRole('system'))
 }
@@ -1125,6 +1125,55 @@ CREATE TRIGGER jobs_state_guard
     FOR EACH ROW EXECUTE FUNCTION jobs_guard_transition();
 ```
 
+**The webhook attempt state machine.** `AttemptState` shipped with #38/#39 (subscribers, `drain`) but no transition table or trigger — nothing yet drove it, so R2's "proposed by Rust, decided by Postgres" had nothing to decide against. #40 (the `hooks` role, `crates/sms-worker/src/hooks.rs`) is the first code to actually write `WebhookAttempt.state`, so it inherits the open question #38/#39's own PR left explicit. Resolved here in favour of the same discipline `messages`/`jobs` already get, not an exception: a table plus a `BEFORE UPDATE` trigger, same shape as the two above.
+
+Two states are "waiting" (`pending` — never yet attempted; `failed` — attempted at least once, waiting out its backoff) and both are covered by `webhook_due_idx` below. One is "in flight" (`delivering`). Two are terminal (`succeeded`, `dead`). A crash-abandoned `delivering` lease is reclaimed the same way `Message`'s own `routed` state is (§7.3's `claim.rs`): a same-state write that renews the lease without incrementing `attempts` — resuming the same in-flight attempt rather than asserting the customer endpoint never received it. Same-state writes bypass the transition-table check entirely (the trigger's own early return), so that reclaim needs no row in the table below, exactly like `routed`'s reclaim needs none in `message_state_transitions`.
+
+```sql
+CREATE TABLE attempt_state_transitions (
+    from_state TEXT NOT NULL,
+    to_state   TEXT NOT NULL,
+    PRIMARY KEY (from_state, to_state),
+    CONSTRAINT attempt_state_transitions_from_check
+        CHECK (from_state IN ('pending', 'delivering', 'succeeded', 'failed', 'dead')),
+    CONSTRAINT attempt_state_transitions_to_check
+        CHECK (to_state IN ('pending', 'delivering', 'succeeded', 'failed', 'dead'))
+);
+
+INSERT INTO attempt_state_transitions (from_state, to_state) VALUES
+    ('pending','delivering'),    ('failed','delivering'),
+    ('delivering','succeeded'),  ('delivering','failed'),  ('delivering','dead');
+-- succeeded, dead are terminal. `delivering -> dead` covers both reasons
+-- §8.5 stops retrying outright: `maxAttempts` exhausted, and an immediate
+-- 410 Gone (which also deactivates the endpoint — hooks.rs, not this
+-- trigger). `failed -> dead` does not exist: the exhausted-attempts check
+-- happens once, at the delivering -> {failed | dead} decision the hooks
+-- role's own write makes, not as a second hop through failed.
+
+CREATE OR REPLACE FUNCTION attempts_guard_transition() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.state IS NOT DISTINCT FROM OLD.state THEN
+        RETURN NEW;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM attempt_state_transitions
+        WHERE from_state = OLD.state AND to_state = NEW.state
+    ) THEN
+        RAISE EXCEPTION 'illegal webhook attempt transition % -> % on %', OLD.state, NEW.state, OLD.id
+            USING ERRCODE = 'SM001';
+    END IF;
+    IF NEW.state = 'succeeded' AND NEW.delivered_at IS NULL THEN
+        NEW.delivered_at := now();
+    END IF;
+    RETURN NEW;
+END $$;
+
+CREATE TRIGGER attempts_state_guard
+    BEFORE UPDATE ON webhook_attempts
+    FOR EACH ROW EXECUTE FUNCTION attempts_guard_transition();
+```
+
 **Indexes.**
 
 ```sql
@@ -1168,6 +1217,12 @@ CREATE UNIQUE INDEX webhook_attempts_dedupe
 
 CREATE INDEX webhook_due_idx ON webhook_attempts (next_attempt_at)
     WHERE state IN ('pending','failed');
+
+-- The hooks role's crash-reclaim query (a stale `delivering` lease) — same
+-- role `messages_lease_reclaim_idx`/`jobs_lease_reclaim_idx` play for their
+-- own claim loops.
+CREATE INDEX webhook_attempts_lease_reclaim_idx ON webhook_attempts (lease_until)
+    WHERE state = 'delivering';
 
 CREATE INDEX receipts_lookup_idx  ON delivery_receipts (provider_id, provider_message_ref);
 CREATE INDEX receipts_message_idx ON delivery_receipts (message_id);
@@ -2268,6 +2323,32 @@ Per-endpoint circuit breaker: 20 consecutive failures sets `circuitOpenUntil = n
 Replay from the admin console re-queues any attempt with a fresh counter and the same `sourceEventId`, so a correctly-implemented receiver dedupes it.
 
 Deliver in order per endpoint where practical, but **document that ordering is not guaranteed**. Receivers must tolerate `message.delivered` arriving before `message.submitted`. Saying so in the docs is much cheaper than the support thread you'll otherwise have.
+
+**Implementation, #40 (`crates/sms-worker/src/hooks.rs`), landed against the above:**
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: enqueued by a subscriber (#38)
+    pending --> delivering: claimed
+    failed --> delivering: claimed, backoff elapsed
+    delivering --> succeeded: 2xx
+    delivering --> failed: retryable — backoff scheduled
+    delivering --> dead: max attempts exhausted, or 410 Gone
+    succeeded --> [*]
+    dead --> [*]
+```
+
+`attempt_state_transitions` + `attempts_guard_transition` (§2.10) enforce this the same way `messages`/`jobs` are enforced — the table shipped with #38/#39's `AttemptState` enum, but nothing drove the column until this PR, so no transition table existed to decide against. A crash-abandoned `delivering` lease is reclaimed the same way `Message`'s `routed` state is: a same-state write that renews the lease without incrementing `attempts`, needing no row in the table (same-state writes bypass the guard).
+
+**`maxAttempts` is read from `WebhookEndpoint`, per candidate, not a constant** — the backoff *schedule* above is fixed and shared, but how many entries into it a given endpoint gets before `dead` is that endpoint's own column. An endpoint's `attempts` counter is incremented once, at claim time (`pending`/`failed` → `delivering`); the crash-reclaim same-state write does not increment it again, since it resumes an attempt already counted rather than starting a new one.
+
+**What resets `WebhookEndpoint.consecutiveFailures`.** Two things, both explicit: a successful delivery resets it to zero (and clears `circuitOpenUntil`, defensively); crossing the 20-failure threshold that *opens* the circuit also resets it to zero, so the cool-down period is followed by a fresh 20-failure allowance rather than the very next post-cooldown failure reopening the circuit immediately. `circuitOpenUntil` is otherwise left untouched by an ordinary failure below the threshold — by construction, `hooks` never attempts a candidate whose circuit is already open (see below), so a failure is never recorded against an endpoint the breaker had already tripped.
+
+**Candidate selection excludes both an inactive endpoint and an endpoint whose circuit is currently open**, application-side (`crates/sms-worker/src/claim.rs`'s `Claimable for WebhookAttempt::candidates`) rather than as a join in the claim query itself — `WebhookEndpoint` has no `@version`, so `WebhookAttempt.leaseUntil`/`attempts` are what the CAS claim actually contends on; endpoint health is a coarser, best-effort filter applied to the candidate list before leases are taken. This is exactly "rows are still created as `pending`, so nothing is lost — they're just not attempted": a filtered-out row is simply not selected this tick, and is reconsidered the next time a healthy endpoint's candidates are queried.
+
+**The signed request body is the full `{id, type, occurredAt, data}` envelope §8.4 shows, built at delivery time from the stored `WebhookAttempt` row — `data` is `payload` (already masked per `maskRecipient` at insert time by #38, §2.7), `id` is `WebhookAttempt.id` (the only value that has existed since the row was created — see §2.7's own note on why the outer `id` can't be anything else), `type` is `eventType`.** `occurredAt` is a documented approximation, not the original event's timestamp: `WebhookAttempt` carries no creation timestamp (no `@use(Timestamps)`), and the framework's own `ModelEvent::occurred_at` is read and discarded by #38's subscriber before the row exists to store it on. `hooks` therefore stamps `occurredAt` with the time of *this delivery attempt* — accurate for a first attempt seconds after the event, increasingly approximate under retries, and wrong by up to the full backoff schedule's span (up to 24h) for an attempt that only succeeds on its last try. Closing this properly needs `WebhookAttempt` to gain a stored event timestamp (a real schema decision touching a model #38 owns, not a mechanical follow-on) or #38's subscriber to start threading `ModelEvent::occurred_at` through to a new column — flagged here as a real, tracked gap, not silently accepted.
+
+Signing (`sms_webhook::sign_header`) always covers the exact bytes sent as the request body — the envelope is serialized once and that same `String`'s bytes are both what's HMAC'd and what `reqwest` sends, never two independent serializations of the same logical value (which is exactly the "signing something other than what you send" bug class #41's own module doc warns about).
 
 ---
 

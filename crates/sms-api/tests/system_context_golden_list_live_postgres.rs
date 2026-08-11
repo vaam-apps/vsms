@@ -81,14 +81,26 @@
 //! Two independent discoveries of one gap in a day is also the strongest
 //! argument yet for the structural fix, not just the guard — see #176.
 //!
+//! # The ninth instance — `WebhookAttempt`, #40
+//!
+//! `WebhookAttempt`'s own `list`/`detail` policy had `create`/`update`
+//! admitting `hasRole('system')` from the start (#38/#39) but no such clause
+//! on `list`/`detail` — flagged explicitly, in advance, by #38/#39's own PR
+//! description as a gap #40's `hooks` claim loop would need closed the
+//! moment it existed (`crates/sms-worker/src/claim.rs`'s `Claimable for
+//! WebhookAttempt::candidates` reads this model under `sys()` to find due
+//! attempts). Same non-broken-on-arrival shape as `WebhookEndpoint` above:
+//! fixed in the same PR that added the reader, caught by this file's guard
+//! before merge, not found live afterward.
+//!
 //! Cross-checked against every `db.<model>()...run(sys)` call in
 //! `crates/sms-api/src`, `crates/sms-worker/src`, and `crates/sms-auth/src`
 //! (the only places a `system`-role [`CoolContext`] is ever constructed):
-//! **no ninth instance exists as of this file.** All 14 models an internal
-//! system context actually reads today already admit one; the 5 models
-//! that don't (`Route`, `MessagePart`, `WebhookAttempt`, `User`, `Role`)
-//! have no internal reader to break. See
-//! [`NOT_REQUIRED_TO_BE_SYSTEM_READABLE`]'s own per-model reasoning.
+//! **no tenth instance exists as of this file.** All 15 models an internal
+//! system context actually reads today already admit one; the 4 models
+//! that don't (`Route`, `MessagePart`, `User`, `Role`) have no internal
+//! reader to break. See [`NOT_REQUIRED_TO_BE_SYSTEM_READABLE`]'s own
+//! per-model reasoning.
 //!
 //! Ignored by default, same convention as this workspace's other live
 //! suites. Run explicitly:
@@ -106,8 +118,8 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, app, app_client, client_assertion, delivery_receipt, job, message, oauth_client,
     oauth_signing_key, operator_prefix_rule, opt_out, provider, sender_id, sender_id_registration,
-    webhook_endpoint, ClientAuthMethod, Cratestack, DeliveryOutcome, Encoding, MessageClass,
-    OperatorCode, OptOutSource, ProviderKind,
+    webhook_attempt, webhook_endpoint, ClientAuthMethod, Cratestack, DeliveryOutcome, Encoding,
+    MessageClass, OperatorCode, OptOutSource, ProviderKind,
 };
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
@@ -144,6 +156,10 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 ///   subscribers (`crates/sms-api/src/webhooks.rs`,
 ///   `enqueue_message_webhook_attempts`) resolve which endpoints
 ///   subscribe to a derived event type, also under `sys`.
+/// - `WebhookAttempt` — the `hooks` role's own claim loop (`Claimable for
+///   WebhookAttempt::candidates`, `crates/sms-worker/src/claim.rs`, #40)
+///   reads due attempts under `sys`; `hooks.rs` also re-reads a claimed
+///   row's own endpoint but never the attempt a second time.
 const SYSTEM_READABLE_MODELS: &[&str] = &[
     "App",
     "AppClient",
@@ -159,6 +175,7 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     "Job",
     "OptOut",
     "WebhookEndpoint",
+    "WebhookAttempt",
 ];
 
 /// Models with no internal `system`-role reader anywhere in this codebase
@@ -182,13 +199,6 @@ const NOT_REQUIRED_TO_BE_SYSTEM_READABLE: &[(&str, &str)] = &[
         "nothing in this codebase creates or reads a MessagePart row yet; \
          concatenated-SMS part tracking has no writer or reader, system or \
          otherwise",
-    ),
-    (
-        "WebhookAttempt",
-        "the hooks role (M3 #40) that would claim/read these under a system \
-         context hasn't landed yet — WebhookEndpoint moved to \
-         SYSTEM_READABLE_MODELS in #41, WebhookAttempt hasn't because #40 \
-         hasn't",
     ),
     (
         "User",
@@ -810,6 +820,47 @@ async fn seed_and_verify_webhook_endpoint(
     seeded
 }
 
+/// #40: `Claimable for WebhookAttempt::candidates`
+/// (`crates/sms-worker/src/claim.rs`) reads due `WebhookAttempt` rows under
+/// `sys` — the first internal system-context reader this model has ever
+/// had, and the reason its `list`/`detail` `@@allow` clauses gained
+/// `hasRole('system')` in the same change that added the claim loop.
+async fn seed_and_verify_webhook_attempt(
+    db: &Cratestack,
+    suffix: &str,
+    endpoint_id: &str,
+) -> schema::WebhookAttempt {
+    let seeded = db
+        .webhook_attempt()
+        .create(schema::CreateWebhookAttemptInput {
+            endpointId: endpoint_id.to_owned(),
+            sourceEventId: cratestack::uuid::Uuid::new_v4(),
+            aggregateId: format!("sys-golden-aggregate-{suffix}"),
+            eventType: "message.delivered".to_owned(),
+            payload: "{}".to_owned(),
+            leaseOwner: None,
+            leaseUntil: None,
+            nextAttemptAt: Some(Utc::now()),
+            lastStatusCode: None,
+            lastError: None,
+            lastAttemptAt: None,
+            deliveredAt: None,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a WebhookAttempt");
+    assert_system_can_read_back!(
+        db,
+        webhook_attempt,
+        webhook_attempt,
+        seeded.id,
+        "WebhookAttempt",
+        "@@allow(\"list\"/\"detail\", auth().kind == \"user\" || endpoint.appId == \
+         auth().appId || hasRole('system'))"
+    );
+    seeded
+}
+
 /// Seeds one row per model in [`SYSTEM_READABLE_MODELS`] and proves a
 /// system context can read each one back. This is the live half of #155's
 /// guard — [`every_model_in_the_schema_is_classified`] above only checks
@@ -826,11 +877,12 @@ async fn seed_and_verify_webhook_endpoint(
 /// (now-broken) clause. Restoring the clause restored a pass. See the PR
 /// description for the exact diff and failure output.
 ///
-/// #41 repeated the exercise for `WebhookEndpoint`, the model this PR
+/// #41 repeated the exercise for `WebhookEndpoint`, the model that PR
 /// adds: with `hasRole('system')` removed from its `read` clause, this
 /// test failed the same way, naming `WebhookEndpoint` and its
 /// then-current (broken) clause; restoring it restored a pass. See #41's
-/// PR description for that run's exact output.
+/// PR description for that run's exact output. #40 repeated it a third
+/// time for `WebhookAttempt`, this PR's own addition.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn every_system_readable_model_actually_admits_a_system_read() {
@@ -852,5 +904,6 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     seed_and_verify_delivery_receipt(&db, &suffix, &message.id, &provider.id, now).await;
     seed_and_verify_job(&db, now).await;
     seed_and_verify_opt_out(&db, &suffix, now).await;
-    seed_and_verify_webhook_endpoint(&db, &suffix, &app.id).await;
+    let endpoint = seed_and_verify_webhook_endpoint(&db, &suffix, &app.id).await;
+    seed_and_verify_webhook_attempt(&db, &suffix, &endpoint.id).await;
 }

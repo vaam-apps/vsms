@@ -28,8 +28,22 @@ sms-provider.workspace = true
 # dispatch.rs converts the schema's Encoding onto SmsProvider::submit's
 # SubmitRequest.encoding — the reverse of sms-api's own encoding_of.
 sms-encoding.workspace = true
+# hooks.rs's real dependency: sign_header, generate_secret's sibling
+# constants (header names), and the canonical-string contract #41 already
+# proved cross-language. This crate never reimplements signing.
+sms-webhook.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+# hooks.rs's own outbound HTTP client — same 0.12/rustls-tls resolution
+# sms-provider-orange-cm already uses (see AGENTS.md's "aws-lc-rs enters
+# this tree from authkestra alone" section: this is the `ring` path, not
+# the reqwest-0.13/authkestra one that needed an explicit CryptoProvider
+# install).
+reqwest.workspace = true
+# hooks.rs builds and parses the §8.4 envelope (WebhookAttempt.payload is
+# already a JSON string; the envelope wraps it, never re-encodes it as a
+# nested string).
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
 tokio-util.workspace = true
@@ -43,7 +57,6 @@ tokio = { workspace = true, features = ["test-util"] }
 # pointed at a wiremock server — the only adapter that exists yet.
 sms-provider-orange-cm.workspace = true
 wiremock.workspace = true
-serde_json.workspace = true
 # The four live suites in tests/ (claim/dispatch/jobs/live_postgres.rs) get
 # their DATABASE_URL from this instead of the environment.
 sms-test-support.workspace = true

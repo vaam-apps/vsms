@@ -14,17 +14,20 @@
 //! per model — "the job and webhook claims are the same function with
 //! different types" (§7.3). This module implements it for [`Message`]
 //! (`dispatch`'s claim, based on §7.3's own worked example, with two
-//! corrections — see the doc comment on its `candidates` impl) and for
-//! [`Job`] (`jobs`'s claim, #35). `WebhookAttempt` (M3 #40) adds its own
-//! `impl Claimable` when that story lands, reusing this loop rather than
-//! re-deriving it.
+//! corrections — see the doc comment on its `candidates` impl), for [`Job`]
+//! (`jobs`'s claim, #35), and for [`WebhookAttempt`] (`hooks`'s claim, M3
+//! #40 — see that `impl`'s own doc for how it differs from the other two:
+//! endpoint health, not just row state, decides what's claimable).
+
+use std::collections::HashSet;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::schema::{
-    job, message, provider, Cratestack, Job, JobState, Message, MessageState, Provider,
-    ProviderState, UpdateJobInput, UpdateMessageInput,
+    job, message, provider, webhook_attempt, webhook_endpoint, AttemptState, Cratestack, Job,
+    JobState, Message, MessageState, Provider, ProviderState, UpdateJobInput, UpdateMessageInput,
+    UpdateWebhookAttemptInput, WebhookAttempt,
 };
 use tracing::warn;
 
@@ -493,6 +496,193 @@ impl Claimable for Job {
             }
             other => {
                 unreachable!("candidates() only returns pending/running, got {other:?}")
+            }
+        }
+    }
+}
+
+/// How long a claimed webhook attempt holds its lease before it's eligible
+/// for crash-reclaim — comfortably above `hooks::REQUEST_TIMEOUT`'s own 10s
+/// (§8.5) so an in-flight HTTP call is never reclaimed out from under
+/// itself, with headroom for scheduling jitter. `hooks.rs` doesn't
+/// re-export its own constant here to avoid a dependency edge from this
+/// crate's claim mechanics back onto one role's poll loop — see that
+/// module's own `REQUEST_TIMEOUT` doc for the value this must stay above.
+const HOOKS_LEASE: Duration = Duration::seconds(30);
+
+/// How many extra candidates [`Claimable::candidates`] fetches beyond
+/// `budget`, so that filtering out attempts whose endpoint is inactive or
+/// circuit-open (below) still tends to fill the batch rather than
+/// under-running it every tick an unhealthy endpoint happens to dominate the
+/// due queue. Not a correctness requirement — an under-filled batch just
+/// means this tick claims fewer rows, which the next tick's due-list still
+/// contains — only a throughput smoothing knob, same spirit as `dispatch`'s
+/// own "not a fixed throughput guarantee" budget caveat (§7.3).
+const CANDIDATE_OVERFETCH_FACTOR: i64 = 3;
+
+/// Fetch the [`WebhookEndpoint`] rows named by `candidates`' `endpointId`s
+/// and drop any candidate whose endpoint is inactive or has an open circuit
+/// — §8.5: "stops attempting that endpoint... rows are still created as
+/// `pending`, so nothing is lost — they're just not attempted." Applied
+/// application-side rather than as a join in the candidate query itself:
+/// `WebhookEndpoint` has no `@version`, so it plays no part in this claim's
+/// own CAS — it is a coarser, best-effort filter over the candidate list,
+/// not a second thing being claimed. Truncates to `budget` only after
+/// filtering, so the caller never sees more than it asked for.
+async fn filter_by_endpoint_health(
+    db: &Cratestack,
+    sys: &CoolContext,
+    candidates: Vec<WebhookAttempt>,
+    now: DateTime<Utc>,
+    budget: i64,
+) -> Result<Vec<WebhookAttempt>, CoolError> {
+    if candidates.is_empty() {
+        return Ok(candidates);
+    }
+
+    let mut endpoint_ids: Vec<String> = candidates.iter().map(|a| a.endpointId.clone()).collect();
+    endpoint_ids.sort_unstable();
+    endpoint_ids.dedup();
+
+    let endpoints = db
+        .webhook_endpoint()
+        .find_many()
+        .where_expr(FilterExpr::from(webhook_endpoint::id().in_(endpoint_ids)))
+        .run(sys)
+        .await?;
+
+    let healthy: HashSet<String> = endpoints
+        .into_iter()
+        .filter(|endpoint| {
+            endpoint.active
+                && endpoint
+                    .circuitOpenUntil
+                    .is_none_or(|open_until| open_until <= now)
+        })
+        .map(|endpoint| endpoint.id)
+        .collect();
+
+    let budget = usize::try_from(budget).unwrap_or(usize::MAX);
+    Ok(candidates
+        .into_iter()
+        .filter(|attempt| healthy.contains(&attempt.endpointId))
+        .take(budget)
+        .collect())
+}
+
+#[async_trait]
+impl Claimable for WebhookAttempt {
+    fn id(&self) -> String {
+        self.id.clone()
+    }
+
+    /// Two "waiting" states feed the same due-list `webhook_due_idx` (§2.10)
+    /// already indexes — `pending` (never yet attempted) and `failed`
+    /// (attempted at least once, resting out its backoff, `nextAttemptAt`
+    /// set by `hooks::write_outcome`) — plus a crash-reclaim group: a
+    /// `delivering` row whose lease has expired, `webhook_attempts_lease_
+    /// reclaim_idx`'s own reason to exist. Both groups are over-fetched
+    /// (see [`CANDIDATE_OVERFETCH_FACTOR`]) and then narrowed by
+    /// [`filter_by_endpoint_health`] before `budget` is actually applied —
+    /// the query itself can't express "and the endpoint is healthy" without
+    /// a join this schema's delegates don't offer, and `WebhookEndpoint`
+    /// carries no `@version` for that join to claim against even if it
+    /// could.
+    async fn candidates(
+        db: &Cratestack,
+        sys: &CoolContext,
+        now: DateTime<Utc>,
+        budget: i64,
+    ) -> Result<Vec<Self>, CoolError> {
+        let fetch_budget = budget
+            .saturating_mul(CANDIDATE_OVERFETCH_FACTOR)
+            .max(budget);
+
+        let mut ready = db
+            .webhook_attempt()
+            .find_many()
+            .where_expr(
+                FilterExpr::from(
+                    webhook_attempt::state().in_([AttemptState::pending, AttemptState::failed]),
+                )
+                .and(
+                    FilterExpr::from(webhook_attempt::nextAttemptAt().is_null())
+                        .or(webhook_attempt::nextAttemptAt().lte(now)),
+                ),
+            )
+            .order_by(webhook_attempt::nextAttemptAt().asc())
+            .limit(fetch_budget)
+            .run(sys)
+            .await?;
+
+        let remaining = fetch_budget - i64::try_from(ready.len()).unwrap_or(fetch_budget);
+        if remaining > 0 {
+            let reclaimable = db
+                .webhook_attempt()
+                .find_many()
+                .where_expr(
+                    FilterExpr::from(webhook_attempt::state().eq(AttemptState::delivering))
+                        .and(webhook_attempt::leaseUntil().lt(now)),
+                )
+                .order_by(webhook_attempt::leaseUntil().asc())
+                .limit(remaining)
+                .run(sys)
+                .await?;
+            ready.extend(reclaimable);
+        }
+
+        filter_by_endpoint_health(db, sys, ready, now, budget).await
+    }
+
+    /// `pending`/`failed` both target `delivering` the same way — the only
+    /// difference between them is whether this is the first attempt or a
+    /// retry, and `attempts` (incremented here, exactly once per real
+    /// attempt) already carries that distinction for `hooks::write_outcome`
+    /// to read later. A `delivering` candidate is always the crash-reclaim
+    /// case (`candidates` only ever selects one whose lease already
+    /// expired): a same-state write that renews the lease without touching
+    /// `attempts`, resuming the attempt already counted rather than
+    /// asserting the customer endpoint never received the first one — the
+    /// same reasoning `Message`'s own `routed` reclaim documents. Same-state
+    /// writes bypass `attempts_guard_transition`'s table check entirely (its
+    /// own early return), so this needs no row in `attempt_state_transitions`.
+    async fn take_lease(
+        &self,
+        db: &Cratestack,
+        sys: &CoolContext,
+        worker: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Self, CoolError> {
+        match self.state {
+            AttemptState::pending | AttemptState::failed => {
+                db.webhook_attempt()
+                    .update(self.id.clone())
+                    .set(UpdateWebhookAttemptInput {
+                        state: Some(AttemptState::delivering),
+                        attempts: Some(self.attempts + 1),
+                        leaseOwner: Some(Some(worker.to_owned())),
+                        leaseUntil: Some(Some(now + HOOKS_LEASE)),
+                        ..Default::default()
+                    })
+                    .if_match(self.version)
+                    .run(sys)
+                    .await
+            }
+            AttemptState::delivering => {
+                db.webhook_attempt()
+                    .update(self.id.clone())
+                    .set(UpdateWebhookAttemptInput {
+                        state: Some(AttemptState::delivering),
+                        leaseOwner: Some(Some(worker.to_owned())),
+                        leaseUntil: Some(Some(now + HOOKS_LEASE)),
+                        ..Default::default()
+                    })
+                    .if_match(self.version)
+                    .run(sys)
+                    .await
+            }
+            other => {
+                unreachable!("candidates() only returns pending/failed/delivering, got {other:?}")
             }
         }
     }

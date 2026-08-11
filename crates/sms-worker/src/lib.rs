@@ -6,8 +6,9 @@
 //! loop (#29). `Dispatch`'s real body ([`dispatch`], #33) is the first role
 //! to actually call into [`claim::claim_batch`]; `Jobs`/`Scheduler`
 //! ([`jobs`]/[`scheduler`], #35) are the second and third; `Drain`
-//! ([`drain`], #39) is the fourth. `Hooks` is still [`run`]'s idle stub
-//! until #40 lands.
+//! ([`drain`], #39) is the fourth; `Hooks` ([`hooks`], #40) is the fifth.
+//! `Smpp` is the only role still [`run`]'s idle stub, and stays that way
+//! until M7.
 //!
 //! This crate depends on `cratestack` (for [`lease`]'s raw-`sqlx` R1
 //! exception) and, since #29, `sms-api` (for the expanded schema
@@ -28,6 +29,7 @@ use tokio_util::sync::CancellationToken;
 pub mod claim;
 pub mod dispatch;
 pub mod drain;
+pub mod hooks;
 pub mod jobs;
 pub mod lease;
 pub mod scheduler;
@@ -201,7 +203,12 @@ pub async fn run(role: Role, ctx: WorkerContext, worker: &str) {
             drain::run(ctx, worker).await;
             return;
         }
-        _ => {}
+        Role::Hooks => {
+            hooks::run(ctx, worker).await;
+            return;
+        }
+        // The only role left with no real body — M7, see `story_for`.
+        Role::Smpp => {}
     }
     tracing::warn!(
         role = %role,
@@ -283,7 +290,14 @@ pub async fn run_singleton(
 
 /// Which open story gives a role its real loop body. Not `pub`: this is
 /// operational commentary for the startup log, not part of the crate's
-/// contract — nothing should match on it.
+/// contract — nothing should match on it. Every arm but `Smpp` is
+/// unreachable from [`run`] now (`Dispatch`/`Drain`/`Scheduler`/`Jobs`/
+/// `Hooks` all `return` before falling through to this call) — kept as a
+/// full match rather than narrowed to `Smpp` alone so a *sixth* role added
+/// later fails to compile here too, the same "must classify every variant"
+/// discipline `Role::cardinality`'s own match already relies on, rather than
+/// silently warning "no work implemented yet" against a role that in fact
+/// has some.
 const fn story_for(role: Role) -> &'static str {
     match role {
         Role::Dispatch => "#32 (sendMessage) / #33 (state machine in the worker)",
@@ -343,11 +357,11 @@ mod tests {
         assert_eq!(seen.len(), 6, "a variant was added without updating ALL");
     }
 
-    /// A provider that must never actually be called — the roles this test
-    /// exercises are still stubs (#39/#40 haven't landed), so `run()` never
-    /// reaches the branch that would touch it. `Dispatch`/`Jobs`/`Scheduler`
-    /// each have their own live tests now that they're real bodies, not
-    /// stubs — this test is about the ones that still are.
+    /// A provider that must never actually be called — the one role this
+    /// test exercises (`Smpp`) is still a stub, so `run()` never reaches the
+    /// branch that would touch it. Every other role has its own live tests
+    /// now that it's a real body, not a stub — this test is about the one
+    /// that still is.
     struct NeverCalledProvider;
 
     #[async_trait::async_trait]
@@ -393,15 +407,15 @@ mod tests {
         // The real assertion is "run() doesn't return" — proven by racing it
         // against a generous timeout under a paused clock, which advances
         // instantly and would still time out if run() ever completed.
-        // Hooks, not Dispatch/Drain: those two have real bodies now (#33,
-        // #39) and are covered by their own tests instead. Hooks is the
-        // only role still a pure std::future::pending stub (M3 #40) — and
-        // the only one safe to drive against `unused_worker_context()`'s
-        // never-connecting lazy pool, since (unlike Drain) it never touches
-        // the pool at all.
+        // Smpp, not any of the other five: every other role has a real body
+        // now (#33, #35, #39, #40) and is covered by its own tests instead.
+        // Smpp is the only role still a pure std::future::pending stub (M7)
+        // — and the only one safe to drive against
+        // `unused_worker_context()`'s never-connecting lazy pool, since
+        // (unlike Drain/Hooks) it never touches the pool at all.
         let outcome = tokio::time::timeout(
             std::time::Duration::from_hours(8760),
-            super::run(Role::Hooks, unused_worker_context(), "test-worker"),
+            super::run(Role::Smpp, unused_worker_context(), "test-worker"),
         )
         .await;
         assert!(outcome.is_err(), "run() resolved; a stub role must idle");
