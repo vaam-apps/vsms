@@ -43,6 +43,8 @@ pub mod procedures;
 pub mod rbac;
 pub mod router;
 pub mod webhooks;
+pub mod worker_locks;
+pub mod worker_roles;
 
 pub use auth::{GatewayAuth, Principal, PrincipalKind};
 pub use errors::{is_illegal_transition, map_database_error};

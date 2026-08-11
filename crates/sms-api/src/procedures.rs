@@ -25,9 +25,10 @@ use crate::errors::map_database_error;
 use crate::pepper::{hmac_sha256_hex, HashPepper};
 use crate::rbac::require_permission;
 use crate::schema::{
-    self, app, app_client, message, operator_prefix_rule, opt_out, provider, sender_id,
+    self, app, app_client, job, message, operator_prefix_rule, opt_out, provider, sender_id,
     sender_id_registration, webhook_attempt, webhook_endpoint,
 };
+use crate::worker_locks;
 
 /// RSA modulus size for a freshly generated client keypair. Matches
 /// `sms_auth::op::RSA_KEY_BITS` — same reasoning: the smallest size still
@@ -1023,6 +1024,113 @@ impl Procedures {
         // through for that case, per `map_database_error`'s own contract.
         .map_err(map_database_error)
     }
+
+    /// #56: re-enqueue a `dead` `Job` from the admin surface — the same
+    /// "reset the existing row rather than creating a new one" shape
+    /// [`Self::replay_attempt`] (#43) established for `WebhookAttempt`,
+    /// adapted to `Job`'s own state machine.
+    ///
+    /// Only `dead` is accepted. `failed -> pending` already exists in
+    /// `job_state_transitions` — `crates/sms-worker/src/jobs.rs`'s own
+    /// `apply_failure` uses it for automatic backoff — but `failed` is a
+    /// same-tick transient state: `apply_failure` writes `running -> failed`
+    /// and then, within the same function call, immediately writes
+    /// `failed -> {pending, dead}`. No operator poll can realistically catch
+    /// a job sitting in `failed` between those two writes, so building a
+    /// button against that state would be dead code exercising a window
+    /// that closes in milliseconds. `dead -> pending` is the edge this
+    /// procedure actually needs and is new (§2.10's table, `0002_bootstrap`
+    /// regenerated) — `dead` had no outgoing edges before this PR, on
+    /// purpose (`0002_bootstrap`'s own comment: "succeeded, dead, cancelled
+    /// are terminal"), and this procedure is the only place that changes.
+    ///
+    /// Resets `attempts` to 0 and clears `lastError`/`leaseOwner`/
+    /// `leaseUntil`, giving the job a fresh run at its full `maxAttempts`
+    /// budget rather than resuming a counter that was already exhausted —
+    /// otherwise `jobs::apply_failure` would send it straight back to `dead`
+    /// on its very next failure. `runAt` is set to now so the next `jobs`
+    /// poll picks it up immediately rather than waiting on whatever
+    /// `runAt` the original enqueue left behind.
+    async fn requeue(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::RequeueJobInput,
+    ) -> Result<schema::Job, CoolError> {
+        require_permission(ctx, "job:enqueue")?;
+
+        let sys = Self::sys();
+        let job_id = args.jobId;
+        let now = Utc::now();
+
+        run_in_isolated_tx(db.pool(), TransactionIsolation::Serializable, |mut tx| {
+            let sys = &sys;
+            let job_id = job_id.clone();
+            async move {
+                let existing = db
+                    .job()
+                    .find_many()
+                    .where_expr(FilterExpr::from(job::id().eq(job_id.clone())))
+                    .limit(1)
+                    .run_in_tx(&mut tx, sys)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| CoolError::NotFound(format!("no Job with id {job_id}")))?;
+
+                if existing.state != schema::JobState::dead {
+                    return Err(CoolError::Conflict(format!(
+                        "job {job_id} is {:?}; requeue only applies to a dead job",
+                        existing.state
+                    )));
+                }
+
+                let updated = db
+                    .job()
+                    .update(job_id.clone())
+                    .set(schema::UpdateJobInput {
+                        state: Some(schema::JobState::pending),
+                        attempts: Some(0),
+                        lastError: Some(None),
+                        leaseOwner: Some(None),
+                        leaseUntil: Some(None),
+                        runAt: Some(now),
+                        ..Default::default()
+                    })
+                    .if_match(existing.version)
+                    .run_in_tx(&mut tx, sys)
+                    .await?;
+
+                Ok((updated, tx))
+            }
+        })
+        .await
+        // Same reasoning as `replay_attempt`'s own trailing `map_err`: the
+        // one write above that can hit an illegal edge is inside this same
+        // `Result`, so mapping once here catches a genuine `SM001` race
+        // (another caller flipping this row's state between the read above
+        // and this write) without disturbing the application-level
+        // `Conflict` the match above already returns for the expected
+        // "not dead" case, which carries no `db_sqlstate` and passes
+        // through unchanged.
+        .map_err(map_database_error)
+    }
+
+    /// #57: which node holds which singleton-role advisory lock — see
+    /// `worker_locks.rs`'s own module doc for the query, what was verified
+    /// live against a real Postgres about what `pg_locks` actually reports
+    /// for a session advisory lock, and why "two dispatch workers" can
+    /// never show up as two granted rows for one role.
+    async fn worker_lock_snapshot(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+    ) -> Result<schema::WorkerLocksResult, CoolError> {
+        require_permission(ctx, "worker:read")?;
+
+        let locks = worker_locks::current_locks(db).await?;
+        Ok(schema::WorkerLocksResult { locks })
+    }
 }
 
 impl schema::procedures::ProcedureRegistry for Procedures {
@@ -1111,6 +1219,27 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         Output = Result<schema::procedures::replay_webhook_attempt::Output, CoolError>,
     > + Send {
         self.replay_attempt(db, ctx, args.args)
+    }
+
+    fn requeue_job(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::requeue_job::Args,
+    ) -> impl core::future::Future<Output = Result<schema::procedures::requeue_job::Output, CoolError>>
+           + Send {
+        self.requeue(db, ctx, args.args)
+    }
+
+    fn worker_locks(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        _args: schema::procedures::worker_locks::Args,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::worker_locks::Output, CoolError>,
+    > + Send {
+        self.worker_lock_snapshot(db, ctx)
     }
 }
 

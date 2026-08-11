@@ -210,7 +210,7 @@ services:
       # read-only rather than passing it as a plain env var.
       SMS_CONSOLE_CLIENT_ID: ${SMS_CONSOLE_CLIENT_ID:?}
       SMS_CONSOLE_PRIVATE_KEY_PATH: /secrets/console-private-key.pem
-      SMS_CONSOLE_SCOPE: ${SMS_CONSOLE_SCOPE:-sms:send sms:read}
+      SMS_CONSOLE_SCOPE: ${SMS_CONSOLE_SCOPE:-sms:send sms:read job:read job:enqueue worker:read}
       MESSAGE_STREAM_POLL_MS: ${MESSAGE_STREAM_POLL_MS:-2000}
       NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-vsms Admin Console}
       NODE_ENV: production

@@ -549,10 +549,23 @@ model Job {
   finishedAt DateTime?
   version Int @version
 
+  // #56: `auth().kind == "app"` added alongside the human roles, the same
+  // unscoped-but-Layer-2-gated shape `SenderId`/`OptOut` already use (both
+  // read by `auth().kind == "user" || auth().kind == "app"` with no owning
+  // relation to scope by) — `Job` has no `appId` either, so there is no
+  // per-row predicate to add beyond "any app-kind caller may pass Layer 1".
+  // That makes Layer 2 (`require_permission(ctx, "job:read")`, wired via
+  // `rbac::enforce_route_permission` onto `GET /jobs`/`GET /jobs/{id}` —
+  // see `router.rs`) the *real* perimeter here, not defense-in-depth: unlike
+  // `PROVIDER_WRITE_ROUTES`, an app-kind token genuinely can pass this
+  // Layer 1 check today, so only a granted `job:read` scope (see
+  // `AppClient.scopes`, §5.2) stands between any provisioned app client and
+  // the whole system's job backlog. Documented in the #56/#57 PR's own
+  // Reviewer Focus, not silently relied on.
   @@paged
   @@retain(days: 14)
-  @@allow("list", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
-  @@allow("detail", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("list", auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("detail", auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('system'))
   @@allow("update", hasRole('system'))
 }
@@ -822,3 +835,45 @@ mutation procedure replayWebhookAttempt(args: ReplayWebhookAttemptInput): Webhoo
   @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
   @authorize(WebhookAttempt, detail, args.attemptId)
   @isolation("serializable")
+
+// #56: re-enqueue a `dead` Job from the admin surface — the same "reset the
+// existing row rather than creating a new one" shape `replayWebhookAttempt`
+// (#43) already established for `WebhookAttempt`, adapted to `Job`'s own
+// state machine. Only `dead -> pending` is new (§2.10's table, `0002_bootstrap`
+// regenerated); `failed -> pending` already exists (`jobs.rs`'s own automatic
+// backoff-retry uses it) but `failed` is a transient, same-tick state no
+// operator can realistically observe and click a button against — by the
+// time a poll renders it, `apply_failure` has already moved it on to
+// `pending` or `dead` — so this procedure is scoped to `dead` alone; see
+// `procedures.rs`'s own doc on `requeue_job` for the full reasoning and the
+// `409 Conflict` this returns for anything else.
+type RequeueJobInput {
+  jobId Cuid
+}
+
+mutation procedure requeueJob(args: RequeueJobInput): Job
+  @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @authorize(Job, detail, args.jobId)
+  @isolation("serializable")
+
+// #57: which node holds which singleton-role advisory lock — `pg_locks`
+// joined against `pg_stat_activity`, read via `crates/sms-api/src/
+// worker_locks.rs` (a new, named R1 exception: `pg_locks` is Postgres's own
+// lock catalog, not one of this schema's models, so no delegate can read
+// it — see CONTRIBUTING.md's exceptions table). No model backs this type
+// either, so nothing here touches DDL.
+type WorkerLockInfo {
+  role String
+  singleton Boolean
+  held Boolean
+  workerId String?
+  pid Int?
+  heldSince DateTime?
+}
+
+type WorkerLocksResult {
+  locks WorkerLockInfo[]
+}
+
+procedure workerLocks(): WorkerLocksResult
+  @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))

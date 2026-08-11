@@ -372,6 +372,18 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
             Composer
           </a>
           <a
+            href="/jobs"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Jobs
+          </a>
+          <a
+            href="/workers"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Workers
+          </a>
+          <a
             href="/gallery"
             className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
           >
