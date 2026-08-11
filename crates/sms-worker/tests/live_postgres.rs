@@ -20,7 +20,7 @@
 //! container regardless of what any individual suite happens to need.
 
 use sms_worker::lease::RoleLease;
-use sms_worker::Role;
+use sms_worker::{Role, WorkerContext};
 use std::time::Duration;
 
 /// #102, found live: on a genuinely fresh database, this binary's own
@@ -129,4 +129,107 @@ async fn different_roles_do_not_contend_with_each_other() {
 
     assert!(a.is_some(), "one role's lock is independent of the other's");
     assert!(b.is_some(), "one role's lock is independent of the other's");
+}
+
+/// A provider `Role::Smpp` (this test's own role — see its own comment for
+/// why it, specifically, is unused by the other four tests here) never
+/// calls, since it stays `sms_worker::run`'s pure stub for the whole of this
+/// crate's current milestone.
+struct NeverCalledProvider;
+
+#[async_trait::async_trait]
+impl sms_provider::SmsProvider for NeverCalledProvider {
+    fn key(&self) -> &str {
+        unimplemented!("Role::Smpp's stub body never calls the provider")
+    }
+    fn capabilities(&self) -> sms_provider::Capabilities {
+        unimplemented!("Role::Smpp's stub body never calls the provider")
+    }
+    async fn submit(
+        &self,
+        _req: &sms_provider::SubmitRequest,
+    ) -> Result<sms_provider::SubmitAck, sms_provider::ProviderError> {
+        unimplemented!("Role::Smpp's stub body never calls the provider")
+    }
+    fn parse_dlr(
+        &self,
+        _raw: &sms_provider::RawCallback,
+    ) -> Result<Vec<sms_provider::DeliveryUpdate>, sms_provider::ProviderError> {
+        unimplemented!("Role::Smpp's stub body never calls the provider")
+    }
+    async fn health(&self) -> sms_provider::Health {
+        unimplemented!("Role::Smpp's stub body never calls the provider")
+    }
+}
+
+/// #70's own "prove your guards can fail" standard, applied to the second
+/// metric (`sms_sm001_total`, the first, is proven in `crates/sms-api/src/
+/// errors.rs`'s own test). Drives the real `run_singleton` — not `RoleLease`
+/// directly, the way every other test in this file does — because the
+/// gauge is `run_singleton`'s own responsibility, not `RoleLease`'s: a bug
+/// that regressed one of the `.set(0)`/`.set(1)` call sites in
+/// `crates/sms-worker/src/lib.rs` would leave `RoleLease` itself completely
+/// correct and this test is what would catch it.
+///
+/// `Role::Smpp`: the one role no other test in this file touches, so this
+/// can run concurrently with the rest of the suite without contending on
+/// the advisory lock itself — same reasoning
+/// `different_roles_do_not_contend_with_each_other` gives for its own
+/// choice of `Hooks`/`Jobs`.
+#[tokio::test]
+#[ignore = "needs a live Postgres — see module docs"]
+async fn run_singleton_reports_held_then_released_on_the_lease_gauge() {
+    let _guard = TEST_MUTEX.lock().await;
+    let url = sms_test_support::database_url().await;
+
+    let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
+        .connect(&url)
+        .await
+        .expect("connecting the pool this test's own WorkerContext needs");
+    let ctx = WorkerContext {
+        db: sms_api::schema::Cratestack::builder(pool).build(),
+        // #62 turned this into a registry keyed by `Provider.key`. Kept
+        // populated rather than emptied: `NeverCalledProvider` panics if
+        // anything submits through it, and this test drives `Role::Smpp`,
+        // which must never dispatch. An empty registry would still pass —
+        // by making a submit impossible rather than by proving none is
+        // attempted — which is a weaker assertion than the one this
+        // fixture was written to make.
+        providers: std::sync::Arc::new(std::collections::HashMap::from([(
+            "never_called".to_string(),
+            std::sync::Arc::new(NeverCalledProvider)
+                as std::sync::Arc<dyn sms_provider::SmsProvider>,
+        )])),
+    };
+
+    let gauge = sms_metrics::SINGLETON_LEASE_HELD.with_label_values(&["smpp"]);
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn(sms_worker::run_singleton(
+        Role::Smpp,
+        url,
+        ctx,
+        "gauge-test-worker".to_owned(),
+        shutdown.clone(),
+    ));
+
+    // Generous, not tuned: proving the gauge eventually reflects "held," not
+    // measuring how fast `try_acquire` completes.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(
+        gauge.get(),
+        1,
+        "run_singleton must report 1 once it holds the lease"
+    );
+
+    shutdown.cancel();
+    handle
+        .await
+        .expect("run_singleton must return once cancelled, not panic");
+
+    assert_eq!(
+        gauge.get(),
+        0,
+        "run_singleton must report 0 again after releasing on shutdown"
+    );
 }

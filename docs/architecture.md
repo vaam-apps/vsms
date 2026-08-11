@@ -2417,11 +2417,15 @@ The design question this story has to resolve before writing any code: given `we
 
 ### 9.1 Observability
 
-- **Tracing**: `tracing` + OpenTelemetry, `X-Request-Id` propagated from ingress through the worker into the provider call and back through the DLR. One trace per message lifecycle is what makes "why did this OTP not arrive" a 30-second question.
-- **Metrics**: submit rate and latency by provider; delivery rate by provider × operator; time-to-delivery p50/p95/p99 by class; queue depth and oldest-queued age; DLR lag; `cratestack_event_outbox` undelivered depth and oldest age; `jobs` pending depth and oldest `run_at`; webhook success rate and dead-letter count; **`SM001` rejection count by from/to pair**; balance in XAF per provider; segments per message; UCS-2 ratio; `/token` failure rate by client_id; **advisory lock holder per singleton role**.
-- **Alerts that matter**: OTP p95 time-to-delivery above 30s; delivery rate on any provider×operator pair below 85% over 15 minutes; queue oldest-age above 2 minutes; outbox oldest undelivered above 60s, or any row with `attempts > 5`; **any singleton role unheld for more than 30s**; **a non-zero `SM001` rate**, which means code is proposing transitions the machine forbids; provider balance below 3 days of projected spend; DLR silence from a provider for 10 minutes; webhook dead-letter rate above 1%.
+**Landed in #70/#71, corrected against what actually shipped rather than left as the original aspirational prose** — the five bolded items below are real (`crates/sms-metrics`, a Prometheus text endpoint on both binaries, `deploy/prometheus/alerts.yml`); everything else in this section is still the M6 target, not yet built, and the two paragraphs after the lists are the specific corrections.
+
+- **Tracing**: `tracing`, no OpenTelemetry (no collector infrastructure exists anywhere in `deploy/`, and one was not needed for what shipped — see below). `cratestack_request_id` (an inbound `X-Request-Id` header, honoured verbatim, or freshly minted — `crates/sms-api/src/auth.rs::request_id_from`) ties every `cratestack_*`-logged line together for one HTTP request, within `sms-gateway`. It does **not** propagate into `sms-worker` or back through the DLR — those are separate processes with no shared span context, and the request that created a message is long finished by the time a worker submits it or a DLR arrives. `Message.id` is the join key across that boundary instead: `crates/sms-api/src/procedures.rs::send`, `crates/sms-worker/src/dispatch.rs::submit_one`, and `crates/sms-api/src/dlr.rs::ingest_one` each log a `message_id`-carrying event. See `docs/runbooks/alerting.md`'s "Correlating a message end to end" section for the worked example — this is real, grep-able correlation, not a claim of distributed tracing in the OpenTelemetry sense.
+- **Metrics**: five landed — **`SM001` rejection count by from/to pair** (`sms_sm001_total`, entity/from_state/to_state labels), **advisory lock holder per singleton role** (`sms_worker_singleton_lease_held{role}`), concurrent in-flight dispatch submits per provider (`sms_dispatch_in_flight_submits{provider}`), webhook outbox oldest-undelivered age (`sms_webhook_outbox_oldest_undelivered_age_seconds`), and poison event-outbox row count (`sms_event_outbox_poison_rows`). Everything else in this original list — submit rate/latency by provider, delivery rate by provider × operator, time-to-delivery percentiles, queue depth, DLR lag, `jobs` pending depth, webhook success rate, provider balance, segments per message, UCS-2 ratio, `/token` failure rate — is still aspirational; #70's own five named alert conditions are what #71 scoped metrics work to, deliberately, not this full list.
+- **Alerts that matter**: the five landed metrics each back a real, loadable Prometheus rule in `deploy/prometheus/alerts.yml` — **any singleton role unheld for more than 30s**; **a non-zero `SM001` rate**, which means code is proposing transitions the machine forbids; unexpected concurrent dispatch submits (a fleet-wide sum above 1, sustained); outbox oldest undelivered above **2 minutes**, not the 60s this line originally said (`crates/sms-worker/src/drain.rs::STALLED_THRESHOLD` is the implemented, real threshold — see `docs/runbooks/alerting.md` for why the alert matches the code, not this stale prose figure); any row with `attempts > 5` (`reap_outbox`'s own threshold, #42). Everything else in this original line — OTP p95, delivery-rate-by-pair, queue oldest-age, provider balance, DLR silence, webhook dead-letter rate — has no metric behind it yet and therefore no rule either.
 
 The `SM001` metric is the highest-signal one in the list. In a correct system it is flat zero — the trigger is a backstop, not a control path. Any non-zero rate means application logic and the transition table disagree, and it will tell you that before a customer does.
+
+**"Alerting" does not mean this repository can page anyone.** No Alertmanager, no receiver, no Slack/PagerDuty integration exists anywhere in this tree — a real Prometheus (the `prometheus` service in `deploy/docker-compose.yml`) genuinely evaluates the five rules and shows firing state on its own `/alerts` page, and an operator wires a receiver on top of that themselves. Building a bespoke in-process alerting engine was considered and rejected as the wrong shape of deliverable for #70.
 
 The UCS-2 ratio deserves its own tile. A sudden jump means someone shipped a template with a `ç` or a smart apostrophe, and it will show up in your bill before anyone notices in the UI.
 
@@ -2441,6 +2445,7 @@ flowchart LR
         end
         ADMINN["admin (Next.js)"]
         PGN[("postgres 16")]
+        PROM["prometheus<br/>#70/#71"]
     end
     S3[("object storage<br/>WAL archive + dumps")]
 
@@ -2452,6 +2457,8 @@ flowchart LR
     W1 --> PGN
     HOOKS --> PGN
     PGN -.->|"WAL + nightly dump"| S3
+    PROM -.->|"scrapes /metrics,<br/>never fronted by caddy"| API1
+    PROM -.->|"scrapes /metrics,<br/>never fronted by caddy"| W1
 ```
 
 Docker Compose on one well-specified VM. Postgres with WAL archiving to object storage plus nightly `pg_dump`. Kubernetes only when you have a reason that isn't résumé-driven.

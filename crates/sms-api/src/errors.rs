@@ -8,6 +8,20 @@
 //! truth is "you asked for a transition that does not exist". Callers retry
 //! 500s and do not retry 409s, so the distinction changes their behaviour, not
 //! just their logs.
+//!
+//! # #71: this is also the one metrics choke point
+//!
+//! [`map_database_error`] is the single place this workspace already
+//! translates a raw `SM001` into something a caller can act on, so it is
+//! also where [`sms_metrics::record_sm001`] is called — every SM001 either
+//! process ever sees, from a generated CRUD write, a procedure (this
+//! crate's own `replayWebhookAttempt`), or `sms-worker`'s claim loop and
+//! per-role write sites (which route their own write errors through this
+//! same function before logging or branching — see `crates/sms-worker/src/
+//! claim.rs`, `dispatch.rs`, `jobs.rs`, `hooks.rs`, and `jobs/
+//! expire_stale.rs`, plus this crate's own `dlr.rs`), passes through here
+//! exactly once. §9.1 of the design doc calls the resulting metric "the
+//! highest-signal one in the list... in a correct system it is flat zero."
 
 use cratestack::CoolError;
 
@@ -33,7 +47,14 @@ pub const UNIQUE_VIOLATION: &str = "23505";
 #[must_use]
 pub fn map_database_error(error: CoolError) -> CoolError {
     match error.db_sqlstate() {
-        Some(SM001) => CoolError::Conflict(illegal_transition_message(&error)),
+        Some(SM001) => {
+            // #71: the one metrics choke point — see this module's own
+            // doc. `error.to_string()` before the mapped, shortened
+            // message is constructed below, so the label parser sees the
+            // trigger's full original text.
+            sms_metrics::record_sm001(&error.to_string());
+            CoolError::Conflict(illegal_transition_message(&error))
+        }
         Some(UNIQUE_VIOLATION) => CoolError::Conflict(error.db_constraint().map_or_else(
             || "resource already exists".to_owned(),
             |c| format!("resource already exists ({c})"),
@@ -90,6 +111,61 @@ mod tests {
         let mapped = map_database_error(error);
         assert!(matches!(mapped, CoolError::Conflict(_)), "got {mapped:?}");
         assert_eq!(mapped.status_code(), 409);
+    }
+
+    /// #71/#70's "prove your guards can fail" standard: this is the guard
+    /// that a bug reproducing #33's own "accepted -> routed reachable"
+    /// class of mistake would need to trip an alert. Verified by
+    /// deliberately breaking it (commenting out the `record_sm001` call in
+    /// `map_database_error`) and confirming this test fails with exactly
+    /// the assertion below naming the expected count, before restoring it
+    /// — see this PR's own description for the exact failure output.
+    #[test]
+    fn sm001_increments_the_labelled_prometheus_counter() {
+        let before = sms_metrics::SM001_TOTAL
+            .with_label_values(&["message", "routed", "delivered"])
+            .get();
+
+        let error = db_error(
+            SM001,
+            "illegal message transition routed -> delivered on msg_counter_test",
+            None,
+        );
+        let _ = map_database_error(error);
+
+        let after = sms_metrics::SM001_TOTAL
+            .with_label_values(&["message", "routed", "delivered"])
+            .get();
+        assert_eq!(
+            after,
+            before + 1,
+            "map_database_error must record exactly one SM001 observation"
+        );
+    }
+
+    /// A non-SM001 conflict (23505) must never touch the SM001 counter —
+    /// otherwise a burst of ordinary idempotency-key collisions would look
+    /// like a state-machine drift alert.
+    ///
+    /// Asserted against a label combination no other test in this crate
+    /// ever produces, checked only for staying at `0` — `cargo test` runs
+    /// this crate's tests concurrently in one process, sharing the same
+    /// `sms_metrics::SM001_TOTAL` static, so a shared "popular" label combo
+    /// (`unknown`/`unknown`/`unknown`, which `a_detail_free_sm001_still_
+    /// conflicts` below also produces) would make this test's own
+    /// before/after diff flaky under parallel execution — not a bug in the
+    /// counter, a property of asserting on process-global state from more
+    /// than one test.
+    #[test]
+    fn a_unique_violation_does_not_touch_the_sm001_counter() {
+        let error = db_error(UNIQUE_VIOLATION, "duplicate key", Some("some_constraint"));
+        let _ = map_database_error(error);
+        assert_eq!(
+            sms_metrics::SM001_TOTAL
+                .with_label_values(&["sentinel_23505_never_produced_by_sm001", "x", "y"])
+                .get(),
+            0
+        );
     }
 
     #[test]

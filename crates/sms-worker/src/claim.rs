@@ -103,7 +103,22 @@ pub async fn claim_batch<C: Claimable>(
 
     let mut claimed = Vec::with_capacity(candidates.len());
     for candidate in candidates {
-        match candidate.take_lease(db, sys, worker, now).await {
+        // #71: mapped before this match ever inspects it — `take_lease`'s
+        // own transitions are exactly the shape that produced #33's own
+        // `accepted -> routed` bug, and `sms_api::map_database_error` is
+        // `sms_sm001_total`'s one recording site (`crates/sms-api/src/
+        // errors.rs`), so an illegal edge here needs to pass through it to
+        // be counted. Mapping first also means an actual SM001 now arrives
+        // here as `CoolError::Conflict`, not `CoolError::DatabaseTyped` —
+        // still falls to the `Err(e) => return Err(e)` arm below either
+        // way (this loop has no "swallow a Conflict" branch of its own,
+        // unlike `crate::jobs`/`crate::jobs::expire_stale`), but now
+        // correctly counted on the way out.
+        match candidate
+            .take_lease(db, sys, worker, now)
+            .await
+            .map_err(sms_api::map_database_error)
+        {
             Ok(row) => claimed.push(row),
             Err(CoolError::PreconditionFailed(_)) => {}
             Err(CoolError::Forbidden(_)) => {

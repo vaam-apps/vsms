@@ -33,8 +33,9 @@
 use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_provider::{DeliveryOutcome, DeliveryUpdate, ProviderError, RawCallback, SmsProvider};
-use tracing::warn;
+use tracing::{info, warn};
 
+use crate::errors::{is_illegal_transition, map_database_error};
 use crate::procedures::parse_operator_code;
 use crate::schema::{self, message, Cratestack, MessageState};
 
@@ -198,7 +199,7 @@ async fn ingest_one(
     let lease_until = (target == MessageState::undelivered)
         .then(|| Some(Utc::now() + undelivered_retry_backoff(found.attempts)));
 
-    match db
+    let result = db
         .message()
         .update(found.id.clone())
         .set(schema::UpdateMessageInput {
@@ -208,23 +209,66 @@ async fn ingest_one(
         })
         .if_match(found.version)
         .run(sys)
-        .await
-    {
-        Ok(_) => Ok(()),
-        // The transition table (§2.10) rejected this — the message moved
-        // on (another DLR, an operator cancel) between the read above and
-        // this write, or a late/out-of-order DLR is proposing a transition
-        // that's no longer legal from the message's *current* state. Both
-        // are expected outcomes of at-least-once, possibly-reordered DLR
-        // delivery, not a fault: the receipt is already written either
-        // way, so nothing about this update is lost, just not applied to
-        // the message's own state.
-        Err(CoolError::Conflict(reason)) => {
+        .await;
+
+    match result {
+        Ok(_) => {
+            // #71: the second correlation event on this path — see
+            // `procedures.rs`'s own module doc for the first. No
+            // `cratestack_request_id` here: a DLR arrives on its own
+            // unauthenticated HTTP connection (this module's own doc — no
+            // bearer token, no `GatewayAuth`, so no `CoolContext` was ever
+            // constructed per-request the way `sendMessage`'s was), so
+            // there is no HTTP-request-scoped id to carry forward. The
+            // join across processes is `message_id` alone.
+            info!(
+                message_id = %found.id,
+                from_state = ?found.state,
+                to_state = ?target,
+                provider_ref = %update.provider_ref,
+                "DLR applied"
+            );
+            Ok(())
+        }
+        // #71: checked against the *raw* error, before any mapping — same
+        // reasoning as `crates/sms-worker/src/jobs.rs::swallow_stale_write`
+        // and `crates/sms-worker/src/jobs/expire_stale.rs`'s own doc
+        // comments give for the identical shape of fix, restated here
+        // because this call site found the bug first, live, rather than by
+        // reasoning about it in advance. `is_illegal_transition` reads
+        // `error.db_sqlstate()` directly off the framework's own unmapped
+        // error, so it doesn't need `map_database_error` to have already
+        // run — and checking it *first* is what stops a genuine SM001 from
+        // being caught by the `Err(CoolError::Conflict(reason))` arm below
+        // and misreported as a merely stale DLR. That arm's own comment
+        // used to claim `Conflict` here always meant "the message moved on
+        // between the read and this write" — true for the version-mismatch
+        // case (`PreconditionFailed`, matched below), but not for a
+        // `next_state`/`message_state_transitions` drift bug: `if_match`
+        // matching means the row's *actual* current state equals `found.
+        // state`, exactly what `next_state` already computed `target` from
+        // — so a real SM001 here can only mean the Rust-side transition
+        // logic and the database's own transition table disagree about
+        // what's legal, never a race. Confirmed live, not assumed: nothing
+        // in `cratestack-sqlx` ever constructs a raw `CoolError::Conflict`
+        // from this write path (see `update_run.rs`/`error.rs`) — before
+        // this fix, the `Conflict` arm below was unreachable dead code,
+        // and a real SM001 here silently fell through to `Err(error) =>
+        // Err(error)` with the *wrong* message, not the swallowed-as-stale
+        // outcome its own comment claimed.
+        Err(error) if is_illegal_transition(&error) => Err(map_database_error(error)),
+        // The message moved on (another DLR, an operator cancel) between
+        // the read above and this write — an expected outcome of
+        // at-least-once, possibly-reordered DLR delivery, not a fault: the
+        // receipt is already written either way, so nothing about this
+        // update is lost, just not applied to the message's own state.
+        Err(CoolError::PreconditionFailed(reason)) => {
             warn!(
                 message_id = %found.id,
                 target = ?target,
                 reason,
-                "DLR-driven transition was no longer legal; likely a stale or reordered DLR"
+                "DLR-driven transition lost a race on its own version; likely a concurrent DLR \
+                 or operator action"
             );
             Ok(())
         }

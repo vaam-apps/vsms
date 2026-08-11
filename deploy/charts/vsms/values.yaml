@@ -479,11 +479,21 @@ controllers:
           RUST_LOG:
             value: 'sms_worker=info,sms_worker_bin=info'
         probes:
-          # No HTTP surface (app/sms-worker/Dockerfile's own comment: six
-          # poll-loop roles, never a listener) — main.rs touches
-          # SMS_WORKER_HEALTH_FILE every 15s regardless of --roles; a
-          # stale mtime means a hung tokio runtime, not just an idling
-          # role. `app/sms-worker/Dockerfile`'s runtime image is distroless
+          # #70/#71 gave this binary a `/metrics` listener (9091,
+          # SMS_WORKER_METRICS_LISTEN_ADDR) — but liveness/readiness still
+          # use the heartbeat file, not that route: `/metrics` answers "what
+          # do the counters read," not "is this process alive and unstuck."
+          # main.rs touches SMS_WORKER_HEALTH_FILE every 15s regardless of
+          # --roles; a stale mtime means a hung tokio runtime, not just an
+          # idling role. This chart does not yet wire the metrics port into
+          # a Service/ServiceMonitor — deliberately out of scope for #70/#71,
+          # which targets `deploy/docker-compose.yml` as the deployment path
+          # AGENTS.md documents as real ("Docker Compose on one VM... Kubernetes
+          # only when you have a reason that isn't résumé-driven"). Follow-up,
+          # not done here: expose containerPort 9091 and a Service/
+          # ServiceMonitor once a Prometheus Operator install is actually
+          # part of this chart's own scope.
+          # `app/sms-worker/Dockerfile`'s runtime image is distroless
           # `static`, which has no `/bin/sh`/`test`/`stat` for the old
           # shell one-liner to run at all — `sms-worker healthcheck`
           # (app/sms-worker/src/main.rs) reproduces the identical check
@@ -588,8 +598,10 @@ controllers:
         resources: {}
 
 # ---------------------------------------------------------------------------
-# Services — one per long-running HTTP surface. sms-worker has none (no
-# HTTP listener — see its probes above).
+# Services — one per long-running HTTP surface reachable via a k8s Service.
+# sms-worker's own /metrics listener (#70/#71) has neither a Service nor a
+# containerPort entry here yet — see its `probes:` block above for why
+# that's a deliberate, named scope cut for this chart, not an oversight.
 # ---------------------------------------------------------------------------
 service:
   gateway:
