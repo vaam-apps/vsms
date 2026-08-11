@@ -41,6 +41,9 @@ importers:
       '@vsms/ui':
         specifier: workspace:*
         version: link:../packages/ui
+      jose:
+        specifier: 6.2.8
+        version: 6.2.8
       next:
         specifier: 15.5.23
         version: 15.5.23(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -81,6 +84,9 @@ importers:
       typescript:
         specifier: 5.9.3
         version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)
 
   packages/api:
     dependencies:

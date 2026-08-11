@@ -396,7 +396,12 @@ async fn spawn_test_server(db: &Cratestack) -> String {
         jwks: Arc::new(jwks),
     };
 
-    let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer.clone());
+    let auth = GatewayAuth::new(
+        db.clone(),
+        format!("{issuer}/jwks.json"),
+        issuer.clone(),
+        sms_api::DEFAULT_CONSOLE_CLIENT_ID.to_owned(),
+    );
     // #134: this suite exercises Layer 2 (`require_permission`), never
     // `sendMessage` — like `oidc_flow_live.rs`, any pepper over the
     // minimum length works.

@@ -44,7 +44,7 @@ pub mod rbac;
 pub mod router;
 pub mod webhooks;
 
-pub use auth::{GatewayAuth, Principal, PrincipalKind};
+pub use auth::{GatewayAuth, Principal, PrincipalKind, DEFAULT_CONSOLE_CLIENT_ID};
 pub use errors::{is_illegal_transition, map_database_error};
 pub use pepper::{hmac_sha256_hex, HashPepper, PepperError};
 pub use procedures::Procedures;

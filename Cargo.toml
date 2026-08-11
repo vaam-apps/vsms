@@ -139,6 +139,15 @@ authkestra-axum = { version = "=0.3.3", default-features = false, features = ["o
 # second copy of either crate's dependency tree.
 rsa = "0.9"
 rand = "0.8"
+# #194: sms-auth::login's password hashing for human console logins — the
+# one place this system now stores a secret derived from user input rather
+# than generating its own key material. Argon2id (the `password-hash`
+# crate's own recommended default, and OWASP's) with the crate's built-in
+# defaults (19 MiB memory, matching the figure #22/§4.2 already cites as
+# "memory-hard work an unauthenticated caller could trigger" — deliberately
+# unchanged here since these attempts *are* authenticated-caller-triggered
+# by design, not the unauthenticated /token path that reasoning was about).
+argon2 = "0.5"
 # GatewayAuth (#21) builds its own JwksCache/Validation directly rather than
 # through authkestra-resource's JwtStrategy, whose cache/validation fields
 # are private — same jsonwebtoken version authkestra-op itself requires

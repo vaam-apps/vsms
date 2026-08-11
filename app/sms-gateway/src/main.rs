@@ -2,6 +2,7 @@
 
 mod dlr;
 mod health;
+mod login;
 mod op;
 mod token_rate_limit;
 
@@ -13,10 +14,12 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::FilterExpr;
+use rand::Rng;
 use sms_api::schema::procedures::{provision_app_client, ProcedureRegistry};
 use sms_api::schema::{
-    provider as provider_filter, route as route_filter, Cratestack, CreateProviderInput,
-    CreateRouteInput, ProviderKind, ProviderState, ProvisionClientInput, UpdateProviderInput,
+    provider as provider_filter, route as route_filter, ClientAuthMethod, Cratestack,
+    CreateOauthClientInput, CreateProviderInput, CreateRouteInput, CreateUserCredentialInput,
+    CreateUserInput, ProviderKind, ProviderState, ProvisionClientInput, UpdateProviderInput,
     UpdateRouteInput,
 };
 use sms_api::{GatewayAuth, Principal, PrincipalKind, Procedures};
@@ -161,6 +164,19 @@ enum Command {
             default_value_t = token_rate_limit::default_token_rate_limit_config().refill_per_second
         )]
         token_rate_limit_refill_per_second: f64,
+
+        /// #194: the `OauthClient.clientId` the human `authorization_code`
+        /// login flow registers under — `GatewayAuth`'s only fixed
+        /// audience to validate a human token's `aud` against (see
+        /// `sms_api::auth::GatewayAuth`'s own doc for why that check can't
+        /// live in the shared `Validation` both realms decode through).
+        /// Must match whatever `seed-console-client` (below) provisioned.
+        #[arg(
+            long,
+            env = "SMS_CONSOLE_OIDC_CLIENT_ID",
+            default_value = sms_api::DEFAULT_CONSOLE_CLIENT_ID
+        )]
+        console_client_id: String,
     },
     /// Print the generated route table and exit. Needs no database.
     Routes,
@@ -341,6 +357,79 @@ enum Command {
         #[arg(long, default_value = "owner")]
         role: String,
     },
+    /// Registers the `sms-console` `OauthClient` row #194's human login
+    /// flow needs — an operator action, not a generated-CRUD route, for
+    /// the identical reason `SeedProvider` above is one: `OauthClient`'s
+    /// own `@allow` in `schema.cstack` is `hasRole('system')` only, and
+    /// `GatewayAuth::authenticate` never mints that role for any real
+    /// token. Public client (`token_endpoint_auth_method = none`): the
+    /// console is a first-party BFF whose `redirect_uri` and mandatory
+    /// PKCE are the protection, and no column in this schema could hold a
+    /// shared secret it would need one for (§2.2, the same reasoning
+    /// `private_key_jwt` service accounts already rely on).
+    ///
+    /// Idempotent: a `23505` on `clientId`'s `@unique` index (this
+    /// row already existing from an earlier run) is treated as success,
+    /// matching `SeedProvider`'s own convention — safe to run on every
+    /// deploy.
+    SeedConsoleClient {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+
+        /// Must match `sms-gateway serve --console-client-id` and
+        /// `admin`'s own `SMS_CONSOLE_OIDC_CLIENT_ID` exactly —
+        /// `GatewayAuth`'s human-token audience check
+        /// (`sms_api::auth::GatewayAuth`'s own doc) refuses any other
+        /// value outright.
+        #[arg(long, env = "SMS_CONSOLE_OIDC_CLIENT_ID", default_value = sms_api::DEFAULT_CONSOLE_CLIENT_ID)]
+        client_id: String,
+
+        /// The exact, single `redirect_uri` this client is registered
+        /// with — `authkestra_op::handlers::authorize::handle_authorize`
+        /// requires an exact string match (RFC 6749 §3.1.2), not a prefix
+        /// or origin match. Must equal `{ADMIN_BASE_URL}/api/auth/callback`
+        /// from `admin`'s own `@vsms/env` schema.
+        #[arg(long)]
+        redirect_uri: String,
+    },
+    /// Creates a `User` + `UserCredential` for #194's human login flow —
+    /// an operator action, not a generated-CRUD route, for the identical
+    /// reason `ProvisionClient` above is one: `User`'s own `@allow` in
+    /// `schema.cstack` admits `hasRole('owner') || hasRole('admin')` on
+    /// create, and no real token this deployment issues can ever carry
+    /// either (the same gap this whole ticket exists to close — a human
+    /// has to be able to log in before one can provision another human,
+    /// so the very first account is necessarily bootstrapped this way).
+    ///
+    /// Generates a random password, hashes it with the real
+    /// `sms_auth::login::hash_password` (Argon2id — never a weaker
+    /// scheme just because this is a CLI tool), and prints the plaintext
+    /// exactly once — the same "returned once, never stored, never
+    /// logged" discipline `ProvisionClient`'s own `privateKeyPem` already
+    /// follows, applied here because there is no operator-supplied
+    /// `--password` flag: a CLI argument would land in shell history and
+    /// the process list, exactly the exposure `write_private_key_pem`'s
+    /// own `--key-out` file exists to avoid for the client-provisioning
+    /// case.
+    ProvisionUser {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+
+        #[arg(long)]
+        email: String,
+
+        #[arg(long)]
+        display_name: String,
+
+        /// Must already exist — `User.roleKey` is a foreign key to
+        /// `Role.key`, and this command does not create roles (§5.2's
+        /// built-in roles are not seeded by any migration; an `owner`
+        /// account has to exist to create the first `Role` row through
+        /// the generated API, or one is inserted by hand against a fresh
+        /// database — see the deploy runbook).
+        #[arg(long)]
+        role_key: String,
+    },
     /// Exec-form liveness/readiness check for orchestrators that can't run
     /// a shell — a distroless `static` runtime image (see
     /// `app/sms-gateway/Dockerfile`) has no `/bin/sh` and no `curl`, so
@@ -482,6 +571,10 @@ async fn main() -> Result<()> {
 
         command @ Command::SeedDispatch { .. } => seed_dispatch_command(command).await,
 
+        command @ Command::SeedConsoleClient { .. } => seed_console_client_command(command).await,
+
+        command @ Command::ProvisionUser { .. } => provision_user_command(command).await,
+
         Command::Healthcheck { addr, path } => healthcheck_command(&addr, &path),
     }
 }
@@ -584,6 +677,7 @@ async fn serve_command(command: Command) -> Result<()> {
         source_rate_limit_refill_per_second,
         token_rate_limit_burst,
         token_rate_limit_refill_per_second,
+        console_client_id,
     } = command
     else {
         unreachable!("only ever called with Command::Serve")
@@ -645,13 +739,18 @@ async fn serve_command(command: Command) -> Result<()> {
     let provider: Arc<dyn SmsProvider> =
         Arc::new(sms_provider_orange_cm::OrangeCmProvider::new(orange_config));
     let provider_row_id = resolve_provider_row_id(&db, &sys, provider.as_ref()).await?;
-    let dlr_router = dlr::router(db.clone(), sys, provider, provider_row_id);
+    let dlr_router = dlr::router(db.clone(), sys.clone(), provider, provider_row_id);
     // #157: /readyz needs the same pooled handle every other router
     // shares — cloned here, before `sms_api::router` below takes `db` by
     // value as its own last use.
     let health_router = health::router(db.clone());
 
-    let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer);
+    let auth = GatewayAuth::new(
+        db.clone(),
+        format!("{issuer}/jwks.json"),
+        issuer,
+        console_client_id.clone(),
+    );
     // #168: the /token route's own client_id-keyed defence-in-depth
     // limiter — distinct from sms_api::router's two, which never wrap
     // /token at all (see that function's own doc). See
@@ -662,6 +761,10 @@ async fn serve_command(command: Command) -> Result<()> {
             token_rate_limit_burst,
             token_rate_limit_refill_per_second,
         ));
+    // #194: built before `sms_api::router` below takes `db`/`sys` by value —
+    // same ordering constraint `dlr::router` above is already subject to.
+    let login_router = login::router(db.clone(), sys, op_state.clone());
+
     let app = sms_api::router(
         db,
         auth,
@@ -675,7 +778,8 @@ async fn serve_command(command: Command) -> Result<()> {
     )
     .merge(op::router(op_state, token_rate_limit))
     .merge(dlr_router)
-    .merge(health_router);
+    .merge(health_router)
+    .merge(login_router);
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
@@ -1103,6 +1207,155 @@ async fn seed_dispatch_command(command: Command) -> Result<()> {
     }
 
     ensure_catch_all_route(&db, &ctx, &provider_id).await
+}
+
+/// `Command::SeedConsoleClient`'s body (#194) — see that variant's own doc
+/// comment for what this does and why. Idempotent, same
+/// create-then-catch-23505 shape as [`create_or_find_provider`].
+async fn seed_console_client_command(command: Command) -> Result<()> {
+    let Command::SeedConsoleClient {
+        database_url,
+        client_id,
+        redirect_uri,
+    } = command
+    else {
+        unreachable!("only ever called with Command::SeedConsoleClient")
+    };
+
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .context("connecting to Postgres")?;
+    let db = Cratestack::builder(pool).build();
+    let sys = system_context();
+
+    let input = CreateOauthClientInput {
+        clientId: client_id.clone(),
+        appClientId: None,
+        tokenEndpointAuthMethod: ClientAuthMethod::none,
+        jwks: None,
+        grantTypes: " authorization_code refresh_token ".to_owned(),
+        scopes: " openid profile ".to_owned(),
+        redirectUris: format!(" {redirect_uri} "),
+        requirePkce: true,
+    };
+
+    match db.oauth_client().create(input).run(&sys).await {
+        Ok(created) => {
+            println!(
+                "registered sms-console OauthClient {} (clientId={client_id:?})",
+                created.id
+            );
+        }
+        Err(e) if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION) => {
+            println!(
+                "sms-console OauthClient with clientId={client_id:?} already exists — nothing \
+                 to do (redirect_uri is not updated on an existing row by this command; re-run \
+                 by hand against the database if it needs to change)"
+            );
+        }
+        Err(e) => return Err(e).context("seeding the sms-console OauthClient row"),
+    }
+    Ok(())
+}
+
+/// `Command::ProvisionUser`'s body (#194) — see that variant's own doc
+/// comment for what this does, why it exists, and why the password is
+/// generated rather than accepted as a flag.
+async fn provision_user_command(command: Command) -> Result<()> {
+    let Command::ProvisionUser {
+        database_url,
+        email,
+        display_name,
+        role_key,
+    } = command
+    else {
+        unreachable!("only ever called with Command::ProvisionUser")
+    };
+
+    // 24 alphanumeric characters is ~142 bits of entropy — comfortably
+    // more than Argon2id's own hashing cost is meant to protect against a
+    // brute-force guess of, and short enough an operator can read it over
+    // a phone call for a break-glass first account. rand::thread_rng(),
+    // not a hand-rolled PRNG — the same source rsa::RsaPrivateKey::new
+    // already trusts elsewhere in this workspace for key material.
+    let password: String = rand::thread_rng()
+        .sample_iter(&rand::distributions::Alphanumeric)
+        .take(24)
+        .map(char::from)
+        .collect();
+    let password_hash = sms_auth::login::hash_password(&password)
+        .map_err(|error| anyhow::anyhow!("hashing the generated password: {error}"))?;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .context("connecting to Postgres")?;
+    let db = Cratestack::builder(pool).build();
+    let ctx = Principal {
+        sub: "sms-gateway:provision-user:owner".to_owned(),
+        kind: PrincipalKind::User,
+        role: "owner".to_owned(),
+        app_id: String::new(),
+    }
+    .into_context();
+    let sys = system_context();
+
+    let user = db
+        .user()
+        .create(CreateUserInput {
+            // The OP is itself the identity source for a locally
+            // authenticated user (#194's own login.rs module doc — no
+            // external IdP is wired up), so `subject` is simply this row's
+            // own id, the same way `authenticate_user`'s Identity
+            // construction (app/sms-gateway/src/login.rs) uses `User.id`
+            // as `external_id`. `db.user().create` doesn't know its own
+            // generated id ahead of the call, so this writes a unique
+            // placeholder (subject is @unique — a fixed literal here would
+            // make a second concurrent run collide on it before either
+            // gets to the corrective update below) and immediately
+            // corrects it in a second update — an accepted two-write cost
+            // for a one-shot bootstrap command, not a hot path.
+            subject: format!("pending-{}", cratestack::uuid::Uuid::new_v4()),
+            email: email.clone(),
+            displayName: display_name,
+            roleKey: role_key,
+            lastLoginAt: None,
+            deletedAt: None,
+        })
+        .run(&ctx)
+        .await
+        .context("creating the User row — check that --role-key names an existing Role")?;
+
+    db.user()
+        .update(user.id.clone())
+        .set(sms_api::schema::UpdateUserInput {
+            subject: Some(user.id.clone()),
+            ..Default::default()
+        })
+        .run(&ctx)
+        .await
+        .context("stamping the User row's own id as its subject")?;
+
+    db.user_credential()
+        .create(CreateUserCredentialInput {
+            userId: user.id.clone(),
+            passwordHash: password_hash,
+        })
+        .run(&sys)
+        .await
+        .context("creating the UserCredential row")?;
+
+    println!("provisioned user: {email} (id={})", user.id);
+    println!("one-time password (never stored, never shown again): {password}");
+    println!();
+    println!("no password-rotation flow exists yet (#58 tracks the users-and-roles screens) —");
+    println!(
+        "share this over a channel the recipient controls, not this command's own stdout log."
+    );
+    Ok(())
 }
 
 /// Resolve on SIGINT *or* SIGTERM so in-flight requests finish.

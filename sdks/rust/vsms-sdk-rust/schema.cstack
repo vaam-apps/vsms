@@ -711,9 +711,21 @@ model User {
   @@soft_delete
   @@audit
   @@paged
-  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('auditor'))
+  // read: the tenth instance of this file's own nine-times-repeated
+  // hasRole('system') gap (see AGENTS.md's "Invariants" section) — closed
+  // here rather than found live, because #194's own login flow has to look
+  // up a User by subject *before* any human principal exists, which
+  // necessarily runs under a system context. Without this clause that
+  // lookup would silently match zero rows (CrateStack's list-route policy
+  // denial is row-level filtering, not a 403) and every login would fail
+  // as though the account didn't exist.
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('auditor') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
-  @@allow("update", hasRole('owner') || hasRole('admin'))
+  // update: hasRole('system') added alongside — a successful login stamps
+  // lastLoginAt (crates/sms-auth/src/login.rs), and that write runs under
+  // the same system context the read above does, for the same reason: it
+  // happens before any human principal exists to hold owner/admin.
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('system'))
   @@allow("delete", hasRole('owner'))
   @@emit(created, updated, deleted)
 }
@@ -729,11 +741,58 @@ model Role {
   permissions String
 
   @@audit
-  @@allow("read", auth().kind == "user")
+  // read: same reasoning as User's own read policy just above — the login
+  // flow's Role -> permissions lookup runs under a system context too, and
+  // `auth().kind == "user"` alone never admits one (system's kind is
+  // "app", per Principal::into_context's system_context() convention).
+  @@allow("read", auth().kind == "user" || hasRole('system'))
   @@allow("create", hasRole('owner'))
   @@allow("update", hasRole('owner'))
   @@allow("delete", hasRole('owner'))
   @@emit(created, updated, deleted)
+}
+
+// A human User's password credential, deliberately NOT a field on User
+// itself (#194). Two reasons, both hard constraints rather than style:
+//
+// 1. §2.0's own grammar table: "No field-level read masking. Model-level
+//    access only." @sensitive redacts audit snapshots ONLY — a @sensitive
+//    field is still returned verbatim by GET /users/{id} to every role
+//    User.read already admits (owner/admin/auditor). A password hash is
+//    exactly the field that must never appear in an HTTP response body,
+//    and the only mechanism this framework offers for that is model-level
+//    @@allow — hence a separate model, restricted to hasRole('system')
+//    on every action, the same isolation OauthSigningKey.privateKeyPem
+//    already uses for the OP's own signing key.
+// 2. Keeping User itself unchanged means the nine-times-documented
+//    hasRole('system') fix above is the only change to a model this PR
+//    doesn't own the shape of — every other field on User predates #194.
+//
+// This is a deliberate, flagged deviation from the issue's own "needs no
+// new models" framing — see the PR body's Risk Assessment for why local
+// password storage was chosen over a federated external-IdP flow, and why
+// that choice makes this model unavoidable rather than optional.
+model UserCredential {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  userId Cuid @unique
+  user User @relation(fields: [userId], references: [id])
+  // Argon2id PHC string (crates/sms-auth/src/login.rs) — never a raw
+  // digest, never reversible, never logged. @sensitive is redundant with
+  // the model-level isolation above but costs nothing and matches
+  // OauthSigningKey.privateKeyPem's own belt-and-braces convention.
+  passwordHash String @sensitive
+
+  // Every action hasRole('system') only — never auth().kind == "user",
+  // never any human role, not even 'owner'. No console screen, present or
+  // future, may read or write this model directly; the login procedure is
+  // its one caller. Mirrors OauthSigningKey's own @@allow shape exactly,
+  // for the same reason (see that model's own schema comment).
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+  @@allow("delete", hasRole('system'))
 }
 
 type SendMessageInput {

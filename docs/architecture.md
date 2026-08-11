@@ -994,6 +994,7 @@ ALTER TABLE webhook_endpoints       ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_attempts        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE users                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE roles                   ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE user_credentials        ALTER COLUMN id SET DEFAULT cs_cuid();
 
 -- Timestamps mixin, and other dbgenerated() columns.
 ALTER TABLE apps ALTER COLUMN created_at SET DEFAULT now(),
@@ -1653,6 +1654,13 @@ impl AuthProvider for GatewayAuth {
 
 The discriminator is worth noting: a client_credentials token has `identity: None` and no `kind` claim at all, because the OP can't add one. A human token gets `kind: "user"` from `issue_user_token_with_extra`, reachable on the authorization-code path. So "no `kind` claim" reliably means "service account".
 
+**#194 built this, and two things above turned out not to match the real, vendored `authkestra-op` 0.3.3 library** — recorded here rather than silently editing the prose above into agreement, per this file's own standing practice of naming a divergence rather than erasing it:
+
+- **`handle_authorization_code` never calls `issue_user_token_with_extra`.** It calls plain `issue_user_token`, which stamps no `extra` claims at all — so a human access token carries no `kind`, `role`, or `perms` claim, only the standard OIDC set plus `identity`. The discriminator above still holds (`claims.identity.is_some()` reliably means "human"), but role/perms cannot be read off the token. `sms_api::auth::GatewayAuth`'s real human path resolves them with a per-request, TTL-cached `User`/`Role` lookup instead (`crates/sms-api/src/auth.rs`'s `authenticate_human`) — a deliberate, documented departure from "baked in at issuance," not an oversight, and arguably better: a role change or deactivation now takes effect within one cache TTL (60s) rather than the access token's full 15-minute lifetime.
+- **A human token's `aud` is real** (`Some(client_id)`, i.e. `sms-console`) **and must be validated** — unlike a service-account token's self-referential `aud == sub == client_id`, which is why §4.2's own "disable audience validation" guidance exists. `GatewayAuth`'s single shared `jsonwebtoken::Validation` still carries `validate_aud = false` (it decodes both realms), so the human-only audience check is a manual, post-decode comparison in `authenticate_human` against a fixed `human_client_id` — not the library's own validation path.
+
+`sms_auth::login` (`crates/sms-auth/src/login.rs`) is the piece this section never specified: what actually authenticates a human before `handle_authorize` can run. §4.3's own prose was silent on the mechanism; #194 settled it as local Argon2id password authentication against a new `UserCredential` model (deliberately *not* a field on `User` — see that model's own `schema.cstack` comment for why: §2.0's "no field-level read masking" means a password hash living on `User` would come back verbatim from `GET /users/{id}`), not a federated external IdP. See `sms_auth::login`'s own module doc for the full weighing of that decision, and the PR that landed #194 for the Risk Assessment this new password-storage surface deserves.
+
 ### 4.4 Outbound webhook signing
 
 The one place symmetric secrets remain, because here you're the sender and your customers verify:
@@ -1807,7 +1815,7 @@ Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`.
 
 ### 5.3 Token shapes
 
-Human, via authorization code:
+Human, via authorization code — **the wire shape this section originally described, kept as the design intent**, but see the callout immediately below it for what the token vendored `authkestra-op` 0.3.3 actually issues, which is not this:
 
 ```json
 {
@@ -1819,6 +1827,8 @@ Human, via authorization code:
   "email": "ops@example.cm", "name": "Ops User"
 }
 ```
+
+**#194, found live, not by reading this section's own prose:** `authkestra_op::handlers::token::handle_authorization_code` calls plain `TokenManager::issue_user_token`, never `issue_user_token_with_extra` — so the *real* human access token carries none of `kind`/`role`/`perms`/`email`/`name`. Only `identity` (the OIDC `Identity` struct, not flattened into top-level claims) and the standard `iss`/`sub`/`aud`/`exp`/`iat`/`scope` fields exist. `sms_api::auth::GatewayAuth`'s human path (`authenticate_human`, #194) reads `claims.identity.is_some()` as the realm discriminator (still valid — nothing on the human path unsets it) and resolves `role`/`perms` with its own `User`/`Role` database lookup instead of trusting any token claim for them. Forking the library's own token-issuance handler to add `_with_extra` was considered and rejected — it would mean re-implementing PKCE/redirect-uri/client-binding validation alongside it, the exact security-critical duplication this codebase avoids elsewhere. The `id_token` (`issue_id_token`, also plain, not `_with_extra`) is unaffected by this — it still carries `sub`/`aud`/`exp`/`nonce` correctly, which is all `admin`'s own callback route needs from it.
 
 Service account, via client_credentials — note what is *absent*:
 
@@ -1835,7 +1845,7 @@ Service account, via client_credentials — note what is *absent*:
 
 No `kind`, no `appId`, no `role`, no `client_id` claim, no `azp`. `aud` echoes `sub`. That's the complete emitted claim set — `issue_client_token_with_extra` is never called there, and no hook exists to add anything.
 
-Access token 15 minutes, refresh 8 hours for humans (rotation on); no refresh token for service accounts, which the OP correctly never issues on this path. Roles resolve at issuance, so a role change takes up to 15 minutes to bite. For break-glass revocation you need a denylist keyed on `sub`, checked in `authenticate` — because **`authkestra-op` has no `/revoke` and no `/introspect`**. Not optional for a system that can spend money. The same denylist retires a compromised service account instantly, which matters because the alternative — rotating a secret — requires provisioning a whole new client.
+Access token 15 minutes; `admin`'s own session cookie caps a human session at 8 hours (`SESSION_COOKIE_MAX_AGE_SECONDS`) by simply not persisting the refresh token past that — `authkestra-op`'s own `handle_refresh_token` hardcodes a 30-day refresh-token lifetime server-side, with no config field to override it, so the 8-hour figure is enforced client-side, not by the OP. No refresh token for service accounts, which the OP correctly never issues on this path. **Roles resolve per request, not at issuance** (#194, see §4.3/§5.3's own callout above on why) — a role change or deactivation takes effect within `GatewayAuth`'s 60-second cache TTL, not up to 15 minutes. For break-glass revocation of a *token itself* (as opposed to the account behind it) you still need a denylist keyed on `sub`, checked in `authenticate` — because **`authkestra-op` has no `/revoke` and no `/introspect`**; deactivating the `User` row (which #194's per-request lookup already checks) is the practical equivalent for the human side, and a still-valid but now-role-mismatched access token simply fails the lookup on its next use. The same denylist gap for service accounts retires a compromised one instantly, which matters because the alternative — rotating a secret — requires provisioning a whole new client.
 
 ### 5.4 JWKS validation
 
