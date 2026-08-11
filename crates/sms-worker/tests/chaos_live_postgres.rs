@@ -299,6 +299,8 @@ async fn seed_active_provider(db: &Cratestack) -> String {
             state: Some(schema::ProviderState::active),
             ..Default::default()
         })
+        // #59: Provider is now @version'd.
+        .if_match(provider.version)
         .run(&owner())
         .await
         .expect("activating the provider");
@@ -328,12 +330,15 @@ async fn deactivate_every_active_provider(db: &Cratestack) {
         .await
         .expect("listing active providers");
     for provider in active {
+        let provider_version = provider.version;
         db.provider()
             .update(provider.id)
             .set(schema::UpdateProviderInput {
                 state: Some(schema::ProviderState::disabled),
                 ..Default::default()
             })
+            // #59: Provider is now @version'd.
+            .if_match(provider_version)
             .run(&owner())
             .await
             .expect("deactivating a leftover active provider");

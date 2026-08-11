@@ -151,6 +151,8 @@ async fn seed_active_provider(db: &Cratestack) -> String {
             state: Some(schema::ProviderState::active),
             ..Default::default()
         })
+        // #59: Provider is now @version'd.
+        .if_match(provider.version)
         .run(&owner())
         .await
         .expect("activating the provider");

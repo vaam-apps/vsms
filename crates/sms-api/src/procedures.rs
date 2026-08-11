@@ -827,13 +827,18 @@ impl Procedures {
     /// passed and, if they want the old secret to stop working sooner,
     /// rotating a second time (which overwrites `prevSecret` again).
     ///
-    /// `WebhookEndpoint` has no `@version` field, so the read-then-write
-    /// below is not an optimistic-concurrency CAS the way `Message`'s
-    /// `if_match(version)` is. This procedure's own `@isolation
-    /// ("serializable")` is the guard against two concurrent rotations of
-    /// the same endpoint racing: Postgres aborts the second transaction
-    /// with a serialization failure rather than silently letting one
-    /// rotation's write clobber the other's `prevSecret`.
+    /// **Update, #59:** `WebhookEndpoint` gained `@version`, and the write
+    /// below now carries `if_match(endpoint.version)` too. This procedure's
+    /// own `@isolation("serializable")` transaction is still the primary
+    /// guard against two concurrent rotations of the same endpoint racing
+    /// — Postgres aborts the second transaction with a serialization
+    /// failure rather than silently letting one rotation's write clobber
+    /// the other's `prevSecret` — `if_match` is additional, not a
+    /// replacement: it turns the same race into a named
+    /// `PreconditionFailed` for a caller that reaches this procedure with
+    /// a stale `ETag` from a prior read, rather than relying solely on a
+    /// database-level serialization-failure retry the caller has no
+    /// visibility into.
     ///
     /// Reads and writes as `sys`, matching every other procedure's write
     /// path in this file (see `Procedures::sys`'s own doc) — not the
@@ -883,6 +888,16 @@ impl Procedures {
                         secretRotatedAt: Some(Some(Utc::now())),
                         ..Default::default()
                     })
+                    // #59: WebhookEndpoint gained `@version`. `@isolation
+                    // ("serializable")` above already stops two concurrent
+                    // rotations of the same row from clobbering each
+                    // other's `prevSecret` — this doc comment's own
+                    // reasoning predates the field existing — so
+                    // `if_match` here is defense in depth, not the primary
+                    // guard: it makes a losing race a named
+                    // `PreconditionFailed` instead of relying solely on a
+                    // serialization-failure retry.
+                    .if_match(endpoint.version)
                     .run_in_tx(&mut tx, sys)
                     .await?;
 
@@ -1000,6 +1015,14 @@ impl Procedures {
 
                 if let Some(endpoint) = endpoint {
                     if endpoint.consecutiveFailures != 0 || endpoint.circuitOpenUntil.is_some() {
+                        // #59: if_match(endpoint.version) — the row was
+                        // just read above, inside this same transaction, so
+                        // the version is fresh. A losing race here (another
+                        // writer touched this endpoint between the read and
+                        // this write) surfaces as PreconditionFailed and
+                        // aborts the whole replay rather than silently
+                        // clobbering whatever the other writer just set.
+                        let endpoint_version = endpoint.version;
                         db.webhook_endpoint()
                             .update(endpoint.id)
                             .set(schema::UpdateWebhookEndpointInput {
@@ -1007,6 +1030,7 @@ impl Procedures {
                                 circuitOpenUntil: Some(None),
                                 ..Default::default()
                             })
+                            .if_match(endpoint_version)
                             .run_in_tx(&mut tx, sys)
                             .await?;
                     }

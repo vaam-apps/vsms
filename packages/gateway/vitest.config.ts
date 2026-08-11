@@ -31,6 +31,16 @@ export default defineConfig({
     // `fetchWindow` directly and never exercise the real HTTP path, so
     // the underlying values being unset is fine; only import-time
     // validation needs silencing.
-    env: { SKIP_ENV_VALIDATION: "true" },
+    //
+    // `SMS_API_URL` is set to a real (if fake) value, not left unset: #59's
+    // `rest.test.ts` injects a fake low-level fetcher, but `restUrl()`
+    // (`rest.ts`) still resolves every request path against
+    // `env.SMS_API_URL` with `new URL(path, env.SMS_API_URL)` before that
+    // fetcher ever runs — an unset base throws immediately, since a bare
+    // path like `/providers/id` isn't a valid absolute URL on its own.
+    // `http:`, not `https:`, so `dispatcher.ts`'s `buildAgent()` (still
+    // called for its `dispatcher` option, even though the fake fetcher
+    // ignores it) takes its no-certs-required branch.
+    env: { SKIP_ENV_VALIDATION: "true", SMS_API_URL: "http://sms-api.test" },
   },
 });

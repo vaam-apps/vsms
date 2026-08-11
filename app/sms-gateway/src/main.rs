@@ -835,18 +835,20 @@ fn parse_provider_kind(kind: &str) -> Result<ProviderKind> {
 /// later `pre-upgrade` hook both invoke this exact command, and Helm itself
 /// may retry a hook Job that failed for an unrelated reason — so that case
 /// falls back to looking the row up by key rather than treating the
-/// conflict as a failure. Returns the row id and whether it is already
-/// `state = 'active'`, so the caller can skip a needless activation write.
+/// conflict as a failure. Returns the row id, its current `@version` (#59 —
+/// `Provider` is now versioned, and the caller's own follow-up activation
+/// write needs `if_match`), and whether it is already `state = 'active'`,
+/// so the caller can skip a needless activation write.
 async fn create_or_find_provider(
     db: &Cratestack,
     ctx: &cratestack::CoolContext,
     key: &str,
     input: CreateProviderInput,
-) -> Result<(String, bool)> {
+) -> Result<(String, i64, bool)> {
     match db.provider().create(input).run(ctx).await {
         Ok(created) => {
             println!("created Provider {} (key={key:?})", created.id);
-            Ok((created.id, false))
+            Ok((created.id, created.version, false))
         }
         Err(e) if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION) => {
             let existing = db
@@ -867,7 +869,7 @@ async fn create_or_find_provider(
                 "Provider {} (key={key:?}) already exists — state={:?}",
                 row.id, row.state
             );
-            Ok((row.id, row.state == ProviderState::active))
+            Ok((row.id, row.version, row.state == ProviderState::active))
         }
         Err(e) => Err(e).context("creating the Provider row"),
     }
@@ -935,7 +937,7 @@ async fn seed_provider_command(command: Command) -> Result<()> {
     }
     .into_context();
 
-    let (provider_id, already_active) = create_or_find_provider(
+    let (provider_id, provider_version, already_active) = create_or_find_provider(
         &db,
         &ctx,
         &key,
@@ -973,6 +975,10 @@ async fn seed_provider_command(command: Command) -> Result<()> {
             state: Some(ProviderState::active),
             ..Default::default()
         })
+        // #59: Provider is now @version'd. Nothing else in this one-shot
+        // seeding command can race this write, but the framework requires
+        // if_match on every versioned-model update regardless.
+        .if_match(provider_version)
         .run(&ctx)
         .await
         .context("activating the Provider row")?;
