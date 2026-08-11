@@ -25,9 +25,9 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::schema::{
-    job, message, provider, webhook_attempt, webhook_endpoint, AttemptState, Cratestack, Job,
-    JobState, Message, MessageState, Provider, ProviderState, UpdateJobInput, UpdateMessageInput,
-    UpdateWebhookAttemptInput, WebhookAttempt,
+    job, message, webhook_attempt, webhook_endpoint, AttemptState, Cratestack, Job, JobState,
+    Message, MessageState, UpdateJobInput, UpdateMessageInput, UpdateWebhookAttemptInput,
+    WebhookAttempt,
 };
 use tracing::warn;
 
@@ -143,26 +143,74 @@ pub async fn claim_batch<C: Claimable>(
 /// that write is illegal for an `accepted` row.
 const DISPATCH_LEASE: Duration = Duration::minutes(2);
 
-/// No routing rules engine exists yet (M5, #62) — for M2, "routing" an
-/// `accepted` message is choosing the one active `Provider`, same
-/// cheapest-active-provider placeholder `sendMessage`'s own
-/// `estimate_cost()` already uses (`crates/sms-api/src/procedures.rs`).
-async fn cheapest_active_provider(
+/// `accepted` message routing, since #62 — real `Route`-rule matching
+/// (priority, weight, operator/class/app/prefix predicates) through
+/// [`crate::routing::decide`], replacing the old `cheapest_active_provider`
+/// M2 placeholder (still visible in git history / #33's own commit for
+/// anyone comparing). No I/O happens inside the selection algorithm
+/// itself — see `crate::routing`'s and `sms_routing`'s own module docs.
+async fn route(
     db: &Cratestack,
     sys: &CoolContext,
-) -> Result<Option<Provider>, CoolError> {
-    Ok(db
-        .provider()
-        .find_many()
-        .where_expr(FilterExpr::from(
-            provider::state().eq(ProviderState::active),
-        ))
-        .order_by(provider::costPerSegmentXaf().asc())
-        .limit(1)
-        .run(sys)
-        .await?
-        .into_iter()
-        .next())
+    message: &Message,
+) -> Result<sms_routing::Decision, CoolError> {
+    let candidate = crate::routing::Candidate {
+        operator: message.operator,
+        class: message.class,
+        app_id: &message.appId,
+        msisdn: &message.msisdn,
+        message_id: &message.id,
+    };
+    crate::routing::decide(db, sys, &candidate, &sms_routing::ExcludedRouteIds::new()).await
+}
+
+/// The `accepted` branch of `take_lease` — pulled out mainly to keep
+/// `take_lease` itself under clippy's line-count limit (same reasoning as
+/// [`fail_max_attempts`] above), not because it stands alone conceptually.
+/// A winning [`route`] decision stamps both `providerId` and `routeId` and
+/// moves to `queued`; no winner at all writes `rejected` with
+/// [`crate::routing::explain_no_route`]'s own summary as `stateReason`.
+/// Either way this is an instant decision, not in-flight work — see
+/// [`Claimable::take_lease`]'s own doc on why no real lease is taken here.
+async fn apply_routing_decision(
+    db: &Cratestack,
+    sys: &CoolContext,
+    message: &Message,
+    worker: &str,
+    now: DateTime<Utc>,
+) -> Result<Message, CoolError> {
+    let decision = route(db, sys, message).await?;
+    match decision.winner {
+        Some(winner) => {
+            db.message()
+                .update(message.id.clone())
+                .set(UpdateMessageInput {
+                    state: Some(MessageState::queued),
+                    providerId: Some(Some(winner.provider_id)),
+                    routeId: Some(Some(winner.route_id)),
+                    leaseOwner: Some(Some(worker.to_owned())),
+                    leaseUntil: Some(Some(now)),
+                    ..Default::default()
+                })
+                .if_match(message.version)
+                .run(sys)
+                .await
+        }
+        None => {
+            db.message()
+                .update(message.id.clone())
+                .set(UpdateMessageInput {
+                    state: Some(MessageState::rejected),
+                    stateReason: Some(Some(crate::routing::explain_no_route(&decision))),
+                    leaseOwner: Some(Some(worker.to_owned())),
+                    leaseUntil: Some(Some(now)),
+                    ..Default::default()
+                })
+                .if_match(message.version)
+                .run(sys)
+                .await
+        }
+    }
 }
 
 /// Shared "-> failed: max attempts" write for both the `queued` and
@@ -268,10 +316,15 @@ impl Claimable for Message {
     /// in — the single `-> routed` write §7.3 illustrates only actually
     /// applies to two of this candidate list's four states:
     ///
-    /// - `accepted`: the routing pass (§7.4: "passes routing"). Picks the
-    ///   one active provider and stamps `providerId`, or — no active
-    ///   provider at all is a real, operator-visible outcome, not a
-    ///   silent stall — transitions straight to `rejected`. Either way
+    /// - `accepted`: the routing pass (§7.4: "passes routing"), since #62
+    ///   real `Route`-rule matching through [`route`] — priority, weight,
+    ///   operator/class/app/prefix predicates, provider availability, all
+    ///   fully explained by the [`sms_routing::Decision`] it returns. A
+    ///   winning route stamps both `providerId` and `routeId`; no eligible
+    ///   route at all (no `Route` rows configured, or none matched) is a
+    ///   real, operator-visible outcome, not a silent stall — transitions
+    ///   straight to `rejected` with the decision's own explanation as
+    ///   `stateReason` (`crate::routing::explain_no_route`). Either way
     ///   this is an instant decision, not in-flight work, so it takes no
     ///   real lease: `leaseUntil` is left at `now`, already expired, so
     ///   the row is immediately eligible for the *next* claim rather than
@@ -304,36 +357,7 @@ impl Claimable for Message {
         now: DateTime<Utc>,
     ) -> Result<Self, CoolError> {
         match self.state {
-            MessageState::accepted => match cheapest_active_provider(db, sys).await? {
-                Some(provider) => {
-                    db.message()
-                        .update(self.id.clone())
-                        .set(UpdateMessageInput {
-                            state: Some(MessageState::queued),
-                            providerId: Some(Some(provider.id)),
-                            leaseOwner: Some(Some(worker.to_owned())),
-                            leaseUntil: Some(Some(now)),
-                            ..Default::default()
-                        })
-                        .if_match(self.version)
-                        .run(sys)
-                        .await
-                }
-                None => {
-                    db.message()
-                        .update(self.id.clone())
-                        .set(UpdateMessageInput {
-                            state: Some(MessageState::rejected),
-                            stateReason: Some(Some("no active provider".to_owned())),
-                            leaseOwner: Some(Some(worker.to_owned())),
-                            leaseUntil: Some(Some(now)),
-                            ..Default::default()
-                        })
-                        .if_match(self.version)
-                        .run(sys)
-                        .await
-                }
-            },
+            MessageState::accepted => apply_routing_decision(db, sys, self, worker, now).await,
             MessageState::queued if self.attempts >= self.maxAttempts => {
                 fail_max_attempts(
                     db,

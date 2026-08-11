@@ -155,7 +155,7 @@ controllers:
   # both pre-install and pre-upgrade, unlike rotateSigningKey below,
   # because it is genuinely idempotent — a second run against an
   # already-migrated database is a documented no-op, not a repeated
-  # mutation. hook-weight -20 so it always runs before seedProvider's -15
+  # mutation. hook-weight -20 so it always runs before seedDispatch's -15
   # and rotateSigningKey's -10 within the same Helm phase.
   migrate:
     type: job
@@ -182,35 +182,48 @@ controllers:
                 key: '{{ .Values.existingSecrets.database.key }}'
         resources: {}
 
-  # `sms-gateway seed-provider` — creates (or reactivates) the `active`
-  # `Provider` row keyed `orange_cm` that `resolve_provider_row_id`
-  # (app/sms-gateway/src/main.rs) resolves at startup and `sms-worker`'s
-  # dispatch role resolves at routing time. #148: nothing seeded this row
-  # before this hook existed, and — the same startup-ordering trap
-  # rotateSigningKey below already documents for the OP's signing key —
-  # `resolve_provider_row_id` is called before `serve` ever binds its
-  # listener, so a fresh install crash-looped the gateway forever with no
-  # window for an operator to seed anything by hand between the
-  # pre-install hooks completing and the gateway Deployment being created.
+  # `sms-gateway seed-dispatch` (renamed from `seed-provider` in #62) —
+  # creates (or reactivates) the `active` `Provider` row keyed `orange_cm`
+  # that `resolve_provider_row_id` (app/sms-gateway/src/main.rs) resolves
+  # at startup, **and** a catch-all `Route` pointing at it. #148: nothing
+  # seeded the `Provider` row before this hook existed, and — the same
+  # startup-ordering trap rotateSigningKey below already documents for the
+  # OP's signing key — `resolve_provider_row_id` is called before `serve`
+  # ever binds its listener, so a fresh install crash-looped the gateway
+  # forever with no window for an operator to seed anything by hand
+  # between the pre-install hooks completing and the gateway Deployment
+  # being created. #62 added the `Route` half to this same hook, found
+  # live while closing out that PR's own review: #62's routing engine
+  # made `dispatch` refuse every message with no matching `Route` (a
+  # deliberate cutover from routing's old "any active provider"
+  # placeholder), and this hook — the only seeding path a Helm-based
+  # deployment ever runs — only ever created the `Provider` half, which
+  # would have left every chart install after #62 merged running healthy
+  # with every message silently landing in `rejected` forever.
   #
-  # hook-weight -15: after migrate (-20, the providers table has to exist
-  # first) and before rotateSigningKey (-10). The two are otherwise
-  # independent — a Provider row and an OP signing key are unrelated
-  # domains, and this could just as well run after rotateSigningKey or at
-  # the same weight — but picking a distinct weight between them keeps the
-  # three hooks a single, strictly-ordered chain (migrate -> seedProvider
-  # -> rotateSigningKey -> Deployments) rather than leaving two hooks free
-  # to race at a shared weight, and this one is cheap: a single-row
-  # create-or-reactivate with no dependency on the OP's signing key at all.
+  # hook-weight -15: after migrate (-20, the providers/routes tables have
+  # to exist first) and before rotateSigningKey (-10). The two are
+  # otherwise independent — a Provider/Route pair and an OP signing key
+  # are unrelated domains, and this could just as well run after
+  # rotateSigningKey or at the same weight — but picking a distinct weight
+  # between them keeps the three hooks a single, strictly-ordered chain
+  # (migrate -> seedDispatch -> rotateSigningKey -> Deployments) rather
+  # than leaving two hooks free to race at a shared weight, and this one
+  # is cheap: a handful of single-row create-or-reactivate writes with no
+  # dependency on the OP's signing key at all.
   #
   # Hooked to both pre-install and pre-upgrade, like migrate and unlike
-  # rotateSigningKey: `sms-gateway seed-provider` is genuinely idempotent
-  # (create + catch the `23505` on `Provider.key`'s `@unique` index, this
-  # repo's documented dedupe pattern — see the subcommand's own doc
-  # comment), so a second run against an already-seeded, already-active
-  # row is a documented no-op, not a repeated mutation the way rotating a
-  # signing key on every upgrade would be.
-  seedProvider:
+  # rotateSigningKey: `sms-gateway seed-dispatch` is idempotent on both
+  # halves — the `Provider` half is create + catch the `23505` on
+  # `Provider.key`'s `@unique` index (this repo's documented dedupe
+  # pattern); `Route` has no unique column to catch a conflict on, so
+  # that half looks up an existing route for the provider first instead
+  # (see the subcommand's own doc comment for the small accepted TOCTOU
+  # window that shape carries) — so a second run against an
+  # already-seeded, already-active deployment is a documented no-op, not
+  # a repeated mutation the way rotating a signing key on every upgrade
+  # would be.
+  seedDispatch:
     type: job
     annotations:
       helm.sh/hook: pre-install,pre-upgrade
@@ -233,8 +246,9 @@ controllers:
         # (key=orange_cm, kind=orange_cm_http) already match the only
         # adapter Serve/dispatch actually wire up (see .Values.orange
         # above), the same "nothing speculative" convention this file's
-        # own header documents.
-        args: ['seed-provider']
+        # own header documents. The Route half has no flags at all — a
+        # hardcoded catch-all, per the subcommand's own doc.
+        args: ['seed-dispatch']
         env:
           DATABASE_URL:
             valueFrom:

@@ -188,7 +188,18 @@ async fn run_singleton_reports_held_then_released_on_the_lease_gauge() {
         .expect("connecting the pool this test's own WorkerContext needs");
     let ctx = WorkerContext {
         db: sms_api::schema::Cratestack::builder(pool).build(),
-        provider: std::sync::Arc::new(NeverCalledProvider),
+        // #62 turned this into a registry keyed by `Provider.key`. Kept
+        // populated rather than emptied: `NeverCalledProvider` panics if
+        // anything submits through it, and this test drives `Role::Smpp`,
+        // which must never dispatch. An empty registry would still pass —
+        // by making a submit impossible rather than by proving none is
+        // attempted — which is a weaker assertion than the one this
+        // fixture was written to make.
+        providers: std::sync::Arc::new(std::collections::HashMap::from([(
+            "never_called".to_string(),
+            std::sync::Arc::new(NeverCalledProvider)
+                as std::sync::Arc<dyn sms_provider::SmsProvider>,
+        )])),
     };
 
     let gauge = sms_metrics::SINGLETON_LEASE_HELD.with_label_values(&["smpp"]);
