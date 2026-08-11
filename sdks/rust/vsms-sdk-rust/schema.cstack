@@ -615,8 +615,26 @@ model WebhookEndpoint {
   //     against every event, forever, with nothing anywhere to notice.
   //
   // Guarded by `crates/sms-api/tests/system_context_golden_list_live_postgres.rs`.
+  //
+  // #187: `read` used to be `auth().kind == "user" || hasRole('system')` —
+  // any authenticated human role, including `auditor`/`operator`/`support`,
+  // none of which hold any webhook permission (§5.2), could read a live
+  // signing secret (`secret`/`prevSecret`) that only owner/admin/developer
+  // could ever write. `@sensitive` does not help here — AGENTS.md and
+  // docs/architecture.md both record that it redacts audit snapshots only
+  // and adds no serde attribute, so the field is still returned by the API.
+  // Narrowed to match who can already write, on the reasoning that an
+  // auditor's oversight need is served by seeing *that* a secret exists,
+  // was rotated, and when (all still visible — only `secret`/`prevSecret`
+  // are), not by seeing its value: a signing secret is a credential, not a
+  // record. This is a reversible product call, not a forced one — the
+  // named alternative was leaving `read` at "any human" and instead
+  // deciding secrets don't belong on a model humans read at all (the
+  // issue's own second option). Latent either way as of this writing:
+  // `GatewayAuth` never mints a human-role token today (#97/#98's scope
+  // cut), so nothing can currently reach this clause from either side.
   @@audit
-  @@allow("read", auth().kind == "user" || hasRole('system'))
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('developer') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('developer'))
   @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('developer') || hasRole('system'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))

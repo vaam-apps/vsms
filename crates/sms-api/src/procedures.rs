@@ -846,12 +846,36 @@ impl Procedures {
     /// "Invariants that fail the build rather than production" section
     /// already names seven times over. See that file and
     /// `crates/sms-api/tests/system_context_golden_list_live_postgres.rs`.
+    ///
+    /// #193: calls `require_permission(ctx, "webhook:manage")` (Layer 2,
+    /// §5.1) before touching anything — `replayWebhookAttempt` (#43, #191)
+    /// already did, and rotation is the *more* sensitive of the two
+    /// operations (it changes the credential every future delivery is
+    /// signed with and starts the `prevSecret` overlap clock), so it made
+    /// no sense to be the one left ungated. The issue's own alternative —
+    /// decide Layer 2 is redundant given `WebhookEndpoint.update`'s
+    /// already-role-scoped Layer 1, and strike `webhook:manage` from
+    /// §5.2's vocabulary instead — was rejected: a permission that appears
+    /// in the role table and is never checked anywhere is worse than no
+    /// permission, since it implies a control that doesn't exist, and
+    /// `replayWebhookAttempt` already relies on it being real. Uses `ctx`
+    /// (the caller's own context, for the permission check only) rather
+    /// than the `_ctx` this function used to ignore; every read/write
+    /// below still goes through `sys`, unaffected by this change. Same
+    /// latency as #187: `GatewayAuth` never mints a human-role token today
+    /// (#97/#98's scope cut), so Layer 1 alone already closes this
+    /// procedure to every token this deployment can currently issue, and
+    /// this check has no live *allow* path to prove yet — only *deny*,
+    /// covered by `rotate_webhook_secret_live_postgres.rs`'s
+    /// `rotate_denies_a_caller_with_no_webhook_manage_permission`.
     async fn rotate_secret(
         &self,
         db: &schema::Cratestack,
-        _ctx: &CoolContext,
+        ctx: &CoolContext,
         args: schema::EndpointInput,
     ) -> Result<schema::WebhookEndpoint, CoolError> {
+        require_permission(ctx, "webhook:manage")?;
+
         let sys = Self::sys();
         let endpoint_id = args.endpointId;
 
