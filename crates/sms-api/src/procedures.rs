@@ -6,6 +6,25 @@
 //! returns a clearly-labelled error naming the milestone that will build
 //! it, rather than a plausible-looking stub that would pass a smoke test
 //! and lie.
+//!
+//! # #71: `send`'s own span in the correlation chain
+//!
+//! The framework's own generated `invoke_with_db` wrapper
+//! (`cratestack-macros`'s `instrument.rs`) already logs
+//! `cratestack_procedure = "sendMessage"` / `cratestack_request_id` /
+//! `cratestack_duration_ms` around this whole call — that is the
+//! HTTP-request-scoped half of #71's tracing requirement, and needs no
+//! code here to exist. What that wrapper cannot log, because it runs
+//! before and after `send` without seeing inside it, is the one value that
+//! actually survives past this process: `Message.id`. [`Procedures::send`]
+//! emits its own `info!` immediately after `create()` returns, carrying
+//! `message_id` alongside `cratestack_request_id` (read directly off `ctx`)
+//! — the join key `crates/sms-worker/src/dispatch.rs`'s own submit-success
+//! event and `crates/sms-api/src/dlr.rs`'s own ingestion event reuse later,
+//! in different processes, with no span context to inherit it through. See
+//! `docs/runbooks/alerting.md`'s "Correlating a message end to end" section
+//! for why `Message.id` is the join key and not a `traceparent`, and for a
+//! worked example query across all three log lines.
 
 use authkestra_engine::TokenManager;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
@@ -18,6 +37,7 @@ use rsa::RsaPrivateKey;
 use sms_core::pack;
 use sms_encoding::{analyse, normalise, transliterate_to_gsm7, SmsEncoding};
 use sms_msisdn::{Msisdn, OperatorPrefixTable};
+use tracing::info;
 
 use crate::auth::{Principal, PrincipalKind};
 use crate::cache::TtlCache;
@@ -648,6 +668,20 @@ impl Procedures {
             .run(&sys)
             .await?;
 
+        // #71: the correlation event — see this module's own doc. Logged
+        // at `info`, not `debug`: this is the one line that lets an
+        // operator go from "a customer says this OTP never arrived" to
+        // "grep this message_id across both processes' logs" without
+        // already knowing which worker or which tick handled it.
+        info!(
+            message_id = %message.id,
+            app_id = %message.appId,
+            client_ref = message.clientRef.as_deref().unwrap_or(""),
+            cratestack_request_id = ctx.request_id().unwrap_or(""),
+            state = ?message.state,
+            "message accepted"
+        );
+
         Ok(schema::SendMessageResult {
             messageId: message.id,
             state: message.state,
@@ -851,12 +885,36 @@ impl Procedures {
     /// "Invariants that fail the build rather than production" section
     /// already names seven times over. See that file and
     /// `crates/sms-api/tests/system_context_golden_list_live_postgres.rs`.
+    ///
+    /// #193: calls `require_permission(ctx, "webhook:manage")` (Layer 2,
+    /// §5.1) before touching anything — `replayWebhookAttempt` (#43, #191)
+    /// already did, and rotation is the *more* sensitive of the two
+    /// operations (it changes the credential every future delivery is
+    /// signed with and starts the `prevSecret` overlap clock), so it made
+    /// no sense to be the one left ungated. The issue's own alternative —
+    /// decide Layer 2 is redundant given `WebhookEndpoint.update`'s
+    /// already-role-scoped Layer 1, and strike `webhook:manage` from
+    /// §5.2's vocabulary instead — was rejected: a permission that appears
+    /// in the role table and is never checked anywhere is worse than no
+    /// permission, since it implies a control that doesn't exist, and
+    /// `replayWebhookAttempt` already relies on it being real. Uses `ctx`
+    /// (the caller's own context, for the permission check only) rather
+    /// than the `_ctx` this function used to ignore; every read/write
+    /// below still goes through `sys`, unaffected by this change. Same
+    /// latency as #187: `GatewayAuth` never mints a human-role token today
+    /// (#97/#98's scope cut), so Layer 1 alone already closes this
+    /// procedure to every token this deployment can currently issue, and
+    /// this check has no live *allow* path to prove yet — only *deny*,
+    /// covered by `rotate_webhook_secret_live_postgres.rs`'s
+    /// `rotate_denies_a_caller_with_no_webhook_manage_permission`.
     async fn rotate_secret(
         &self,
         db: &schema::Cratestack,
-        _ctx: &CoolContext,
+        ctx: &CoolContext,
         args: schema::EndpointInput,
     ) -> Result<schema::WebhookEndpoint, CoolError> {
+        require_permission(ctx, "webhook:manage")?;
+
         let sys = Self::sys();
         let endpoint_id = args.endpointId;
 

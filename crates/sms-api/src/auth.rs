@@ -5,6 +5,31 @@
 //! reads `role`; `auth().kind == "app"` reads `kind`; `appId == auth().appId`
 //! reads `appId`. [`Principal::into_context`] is the single place those names
 //! are produced, so a rename in the schema breaks exactly one function.
+//!
+//! # #71: this is also where the correlation id enters `CoolContext`
+//!
+//! `cratestack_core::CoolContext::request_id`/`with_request_id` has existed
+//! since before this milestone (`cratestack-core`'s own doc: "Surfaces in
+//! tracing spans and is recorded on audit events"), and every generated
+//! CRUD/procedure route already logs `cratestack_request_id =
+//! ctx.request_id().unwrap_or("")` (`cratestack-macros`'s
+//! `list_result_log_tokens`/`dispatch_tail.rs`) — but nothing in this
+//! deployment ever called `with_request_id`, so that field had been empty
+//! on every single one of those log lines since the router first existed.
+//! [`GatewayAuth::authenticate`] is the one place a [`CoolContext`] is
+//! constructed per inbound HTTP request, so it is the natural, and only,
+//! place to close that gap: honour an inbound `X-Request-Id` if the caller
+//! sent one (so a client's own trace id survives into this system's logs
+//! unchanged), otherwise mint a fresh one. Either way, every
+//! `cratestack_*`-logged event for one HTTP request now shares one
+//! `cratestack_request_id` — the correlation this crate's own custom
+//! `message_id`-keyed events (`procedures.rs::send`) sit alongside, not a
+//! replacement for them: a request id ties together everything logged
+//! *within* this one process for *this* request; `message_id` is what
+//! survives into `sms-worker`'s dispatch and the DLR ingestion path,
+//! neither of which shares this process or this request. See
+//! `docs/runbooks/alerting.md`'s own "Correlating a message end to end"
+//! section for the worked example joining both.
 
 use std::time::Duration;
 
@@ -191,6 +216,29 @@ fn extract_perms(extra: &std::collections::HashMap<String, serde_json::Value>) -
         .unwrap_or_default()
 }
 
+/// A caller-supplied `X-Request-Id` is bounded and reused verbatim — the
+/// same trace id a caller already emits into its own logs should be the
+/// one that shows up in this system's, not a second, unrelated one, and
+/// honouring it is what makes end-to-end tracing actually end to end
+/// rather than starting at this system's own edge. Absent, empty, or
+/// implausibly long (a client bug, or a header this deployment should not
+/// trust verbatim into every `cratestack_*` log line) falls back to a
+/// freshly minted one instead of guessing or truncating.
+const MAX_INBOUND_REQUEST_ID_LEN: usize = 200;
+
+/// See [`MAX_INBOUND_REQUEST_ID_LEN`]'s own doc.
+fn request_id_from(headers: &cratestack::axum::http::HeaderMap) -> String {
+    headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && value.len() <= MAX_INBOUND_REQUEST_ID_LEN)
+        .map_or_else(
+            || cratestack::uuid::Uuid::new_v4().to_string(),
+            str::to_owned,
+        )
+}
+
 impl AuthProvider for GatewayAuth {
     type Error = CoolError;
 
@@ -199,6 +247,10 @@ impl AuthProvider for GatewayAuth {
         request: &RequestContext<'_>,
     ) -> impl core::future::Future<Output = Result<CoolContext, Self::Error>> + Send {
         let token = extract_bearer_token(request.headers).map(str::to_owned);
+        // #71: extracted synchronously, alongside `token` above, for the
+        // same reason — `request` itself is a borrow tied to this call's
+        // stack frame and cannot cross into the `async move` block below.
+        let request_id = request_id_from(request.headers);
         let jwks = self.jwks.clone();
         let validation = self.validation.clone();
         let app_cache = self.app_cache.clone();
@@ -283,6 +335,12 @@ impl AuthProvider for GatewayAuth {
             );
             ctx.extensions
                 .insert("scope".to_owned(), scope.map_or(Value::Null, Value::String));
+
+            // #71: see this module's own doc. `with_request_id` returns
+            // `Self`, so this has to be the last thing done to `ctx` —
+            // consistent with `into_context()` already being called first
+            // above.
+            let ctx = ctx.with_request_id(request_id);
 
             Ok(ctx)
         }

@@ -292,7 +292,10 @@ fn worker_context(db: Cratestack) -> WorkerContext {
     }
     WorkerContext {
         db,
-        provider: std::sync::Arc::new(NeverCalled),
+        providers: std::sync::Arc::new(std::collections::HashMap::from([(
+            "unused".to_owned(),
+            std::sync::Arc::new(NeverCalled) as std::sync::Arc<dyn sms_provider::SmsProvider>,
+        )])),
     }
 }
 

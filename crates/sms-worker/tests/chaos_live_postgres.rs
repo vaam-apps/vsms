@@ -268,14 +268,29 @@ async fn seed_app(db: &Cratestack) -> String {
         .id
 }
 
-async fn seed_active_provider(db: &Cratestack) -> String {
+/// Seeds an active `Provider` plus a catch-all `Route` pointing at it, and
+/// returns `(provider id, provider key)` — the id for the DLR route's own
+/// `provider_row_id` correlation, the key for the caller's
+/// `WorkerContext.providers` registry (#62: `dispatch::resolve_provider`
+/// looks a routed message's provider back up by this exact string).
+///
+/// Only needs to disable *providers*, not routes — `build_harness` always
+/// calls [`deactivate_every_active_provider`] immediately before this, so
+/// every leftover route from an earlier test already points at a provider
+/// this call just deactivated, and the routing engine excludes it as
+/// `ProviderUnavailable` regardless of whether it's still `enabled`. See
+/// `dispatch_live_postgres.rs`'s own `seed_routed_provider`/
+/// `disable_every_route` for the shape of this same problem where that
+/// guarantee doesn't hold.
+async fn seed_active_provider(db: &Cratestack) -> (String, String) {
+    let key: String = format!("chaos_test_{}", unique_suffix())
+        .chars()
+        .take(32)
+        .collect();
     let provider = db
         .provider()
         .create(schema::CreateProviderInput {
-            key: format!("chaos_test_{}", unique_suffix())
-                .chars()
-                .take(32)
-                .collect(),
+            key: key.clone(),
             displayName: "Chaos test provider".to_owned(),
             kind: schema::ProviderKind::orange_cm_http,
             config: "{}".to_owned(),
@@ -305,7 +320,24 @@ async fn seed_active_provider(db: &Cratestack) -> String {
         .await
         .expect("activating the provider");
 
-    provider.id
+    db.route()
+        .create(schema::CreateRouteInput {
+            name: format!("chaos-test-route-{}", unique_suffix()),
+            priority: 1000,
+            weight: 1,
+            enabled: true,
+            matchOperator: None,
+            matchClass: None,
+            matchAppId: None,
+            matchPrefix: None,
+            providerId: provider.id.clone(),
+            failoverRouteId: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a catch-all route");
+
+    (provider.id, key)
 }
 
 /// `claim.rs::cheapest_active_provider` picks the cheapest **active**
@@ -534,7 +566,7 @@ async fn build_harness(policy: FaultPolicy, token_policy: TokenPolicy) -> Harnes
     let db = isolated_db().await;
     let sys = sys();
     deactivate_every_active_provider(&db).await;
-    let provider_row_id = seed_active_provider(&db).await;
+    let (provider_row_id, provider_key) = seed_active_provider(&db).await;
     let app_id = seed_app(&db).await;
 
     let dlr_route_provider: Arc<dyn SmsProvider> = Arc::new(OrangeCmProvider::new(orange_config(
@@ -548,7 +580,10 @@ async fn build_harness(policy: FaultPolicy, token_policy: TokenPolicy) -> Harnes
         Arc::new(OrangeCmProvider::new(orange_config(fake.base_url())));
     let ctx = WorkerContext {
         db: db.clone(),
-        provider: submit_provider,
+        providers: Arc::new(std::collections::HashMap::from([(
+            provider_key,
+            submit_provider,
+        )])),
     };
 
     Harness {

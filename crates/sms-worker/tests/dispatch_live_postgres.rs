@@ -256,14 +256,61 @@ async fn seed_app(db: &Cratestack) -> String {
         .id
 }
 
-async fn seed_active_provider(db: &Cratestack) -> String {
+/// Since #62, `claim.rs`'s routing pass evaluates every *enabled* `Route`
+/// row against the whole database, not just whichever `Provider` this test
+/// happened to create — and this database is never reset between runs, so
+/// an earlier test's own catch-all route can still be sitting there,
+/// enabled, pointing at a `Provider` this test's own [`WorkerContext`]
+/// registry was never told about. If that stale route won the
+/// priority/weight draw, `dispatch::resolve_provider` would fail to find
+/// an adapter for it and back the message off instead of ever reaching
+/// this test's wiremock server — a real flake, not a hypothetical one,
+/// given `no_active_provider_rejects_before_any_submission_is_attempted`
+/// and every ticket test run before it in the same binary all leave a
+/// route behind. Disabling every existing route before seeding a fresh one
+/// (mirroring [`deactivate_every_active_provider`]'s identical reasoning
+/// for `Provider`) guarantees exactly one enabled route exists at claim
+/// time: this test's own.
+async fn disable_every_route(db: &Cratestack) {
+    let enabled = db
+        .route()
+        .find_many()
+        .where_expr(cratestack::FilterExpr::from(
+            schema::route::enabled().is_true(),
+        ))
+        .run(&owner())
+        .await
+        .expect("listing enabled routes");
+    for route in enabled {
+        db.route()
+            .update(route.id)
+            .set(schema::UpdateRouteInput {
+                enabled: Some(false),
+                ..Default::default()
+            })
+            .run(&owner())
+            .await
+            .expect("disabling a leftover enabled route");
+    }
+}
+
+/// Seeds an active `Provider` plus a catch-all `Route` pointing at it
+/// (after disabling every other enabled route — see
+/// [`disable_every_route`]'s own doc), and returns the provider's `key` —
+/// the exact string a caller must key its own `WorkerContext.providers`
+/// registry with for `dispatch::resolve_provider` to find the adapter it
+/// constructs against this test's wiremock server.
+async fn seed_routed_provider(db: &Cratestack) -> String {
+    disable_every_route(db).await;
+
+    let key: String = format!("dispatch_test_{}", unique_suffix())
+        .chars()
+        .take(32)
+        .collect();
     let provider = db
         .provider()
         .create(schema::CreateProviderInput {
-            key: format!("dispatch_test_{}", unique_suffix())
-                .chars()
-                .take(32)
-                .collect(),
+            key: key.clone(),
             displayName: "Dispatch test provider".to_owned(),
             kind: schema::ProviderKind::orange_cm_http,
             config: "{}".to_owned(),
@@ -293,7 +340,34 @@ async fn seed_active_provider(db: &Cratestack) -> String {
         .await
         .expect("activating the provider");
 
-    provider.id
+    db.route()
+        .create(schema::CreateRouteInput {
+            name: format!("dispatch-test-route-{}", unique_suffix()),
+            priority: 1000,
+            weight: 1,
+            enabled: true,
+            matchOperator: None,
+            matchClass: None,
+            matchAppId: None,
+            matchPrefix: None,
+            providerId: provider.id,
+            failoverRouteId: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a catch-all route");
+
+    key
+}
+
+/// Builds the single-entry provider registry every test in this file needs
+/// — see [`seed_routed_provider`]'s own doc for why the key must match
+/// exactly.
+fn registry(
+    key: String,
+    provider: Arc<dyn SmsProvider>,
+) -> Arc<std::collections::HashMap<String, Arc<dyn SmsProvider>>> {
+    Arc::new(std::collections::HashMap::from([(key, provider)]))
 }
 
 /// This database is never reset between runs, and both this file and
@@ -442,13 +516,13 @@ async fn a_well_formed_message_reaches_submitted() {
         .mount(&server)
         .await;
 
-    seed_active_provider(&db).await;
+    let provider_key = seed_routed_provider(&db).await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, 3).await;
 
     let ctx = WorkerContext {
         db: db.clone(),
-        provider: provider(server.uri()),
+        providers: registry(provider_key.clone(), provider(server.uri())),
     };
     let sys = sys();
 
@@ -484,13 +558,13 @@ async fn a_rate_limited_submit_backs_off_to_queued() {
         .mount(&server)
         .await;
 
-    seed_active_provider(&db).await;
+    let provider_key = seed_routed_provider(&db).await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, 3).await;
 
     let ctx = WorkerContext {
         db: db.clone(),
-        provider: provider(server.uri()),
+        providers: registry(provider_key.clone(), provider(server.uri())),
     };
     let sys = sys();
 
@@ -523,13 +597,13 @@ async fn a_rejected_submit_fails_the_message_outright() {
         .mount(&server)
         .await;
 
-    seed_active_provider(&db).await;
+    let provider_key = seed_routed_provider(&db).await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, 3).await;
 
     let ctx = WorkerContext {
         db: db.clone(),
-        provider: provider(server.uri()),
+        providers: registry(provider_key.clone(), provider(server.uri())),
     };
     let sys = sys();
 
@@ -557,13 +631,13 @@ async fn exhausting_max_attempts_fails_the_message_without_a_further_submit_atte
         .mount(&server)
         .await;
 
-    seed_active_provider(&db).await;
+    let provider_key = seed_routed_provider(&db).await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, 1).await;
 
     let ctx = WorkerContext {
         db: db.clone(),
-        provider: provider(server.uri()),
+        providers: registry(provider_key.clone(), provider(server.uri())),
     };
     let sys = sys();
 
@@ -602,6 +676,14 @@ async fn exhausting_max_attempts_fails_the_message_without_a_further_submit_atte
 async fn no_active_provider_rejects_before_any_submission_is_attempted() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
+    // Seeds this test's own route (disabling every stale one — see
+    // `seed_routed_provider`'s own doc), then immediately deactivates
+    // every active provider, this test's own included — guaranteeing at
+    // least one enabled `Route` exists (so the routing engine actually has
+    // something to evaluate and explain) while guaranteeing none of its
+    // referenced providers are usable, deterministically, regardless of
+    // what any earlier test in this binary left behind.
+    let provider_key = seed_routed_provider(&db).await;
     deactivate_every_active_provider(&db).await;
     let server = MockServer::start().await;
     // No mocks registered at all — if dispatch ever tried to submit, the
@@ -611,7 +693,7 @@ async fn no_active_provider_rejects_before_any_submission_is_attempted() {
 
     let ctx = WorkerContext {
         db: db.clone(),
-        provider: provider(server.uri()),
+        providers: registry(provider_key, provider(server.uri())),
     };
     let sys = sys();
 
@@ -619,9 +701,13 @@ async fn no_active_provider_rejects_before_any_submission_is_attempted() {
 
     let after = reload(&db, &seeded.id).await;
     assert_eq!(after.state, MessageState::rejected);
-    assert!(after
-        .stateReason
-        .is_some_and(|reason| reason.contains("no active provider")));
+    assert!(
+        after.stateReason.as_deref().is_some_and(
+            |reason| reason.contains("no eligible route") && reason.contains("not active")
+        ),
+        "stateReason should explain why routing failed, got {:?}",
+        after.stateReason
+    );
 }
 
 /// A provider whose `parse_dlr` always returns exactly the updates it was
@@ -705,16 +791,19 @@ async fn an_indeterminate_submit_lands_in_uncertain_and_is_never_resubmitted() {
         .mount(&server)
         .await;
 
-    seed_active_provider(&db).await;
+    let provider_key = seed_routed_provider(&db).await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, 3).await;
 
     let ctx = WorkerContext {
         db: db.clone(),
-        provider: provider_with_timeouts(
-            server.uri(),
-            std::time::Duration::from_secs(2),
-            std::time::Duration::from_millis(200),
+        providers: registry(
+            provider_key.clone(),
+            provider_with_timeouts(
+                server.uri(),
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_millis(200),
+            ),
         ),
     };
     let sys = sys();
@@ -772,16 +861,19 @@ async fn a_connect_level_failure_still_backs_off_to_queued_not_uncertain() {
     let dead_addr = listener.local_addr().expect("reading the bound address");
     drop(listener);
 
-    seed_active_provider(&db).await;
+    let provider_key = seed_routed_provider(&db).await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, 3).await;
 
     let ctx = WorkerContext {
         db: db.clone(),
-        provider: provider_with_timeouts(
-            format!("http://{dead_addr}"),
-            std::time::Duration::from_millis(500),
-            std::time::Duration::from_secs(2),
+        providers: registry(
+            provider_key.clone(),
+            provider_with_timeouts(
+                format!("http://{dead_addr}"),
+                std::time::Duration::from_millis(500),
+                std::time::Duration::from_secs(2),
+            ),
         ),
     };
     let sys = sys();
@@ -822,16 +914,19 @@ async fn a_dlr_after_an_indeterminate_submit_still_correlates_and_resolves() {
         .mount(&server)
         .await;
 
-    seed_active_provider(&db).await;
+    let provider_key = seed_routed_provider(&db).await;
     let app_id = seed_app(&db).await;
     let seeded = seed_message(&db, &app_id, 3).await;
 
     let ctx = WorkerContext {
         db: db.clone(),
-        provider: provider_with_timeouts(
-            server.uri(),
-            std::time::Duration::from_secs(2),
-            std::time::Duration::from_millis(200),
+        providers: registry(
+            provider_key.clone(),
+            provider_with_timeouts(
+                server.uri(),
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_millis(200),
+            ),
         ),
     };
     let sys = sys();
@@ -841,16 +936,13 @@ async fn a_dlr_after_an_indeterminate_submit_still_correlates_and_resolves() {
 
     let uncertain = reload(&db, &seeded.id).await;
     assert_eq!(uncertain.state, MessageState::uncertain);
-    // Not `seed_active_provider`'s own return value: this database is never
-    // reset between runs, and `cheapest_active_provider` (`crates/sms-worker/src/claim.rs`)
-    // picks *the* cheapest active `Provider` row across the whole table —
-    // every test in this file seeds one at the same fixed cost, so a
-    // leftover row from an earlier run can tie and win instead of the one
-    // this test just created. `ctx.provider` (this test's own wiremock
-    // server) is what actually receives the HTTP call regardless of which
-    // row wins that tie, but DLR correlation matches on the *row id* the
-    // message was actually stamped with — so that has to come from the
-    // message itself, not from an assumption about which row got picked.
+    // Read off the message rather than assumed from `seed_routed_provider`'s
+    // own return value: `seed_routed_provider` disables every other route
+    // first (see its own doc), so this test's own route/provider pair is
+    // deterministically the one that wins — but DLR correlation matches on
+    // the *row id* the message was actually stamped with regardless, so
+    // this reads it back from the message itself rather than leaning on
+    // that determinism guarantee.
     let provider_row_id = uncertain
         .providerId
         .clone()

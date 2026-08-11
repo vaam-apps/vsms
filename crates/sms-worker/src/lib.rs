@@ -15,9 +15,12 @@
 //! [`claim`] claims against) — `include_server_schema!` is still invoked
 //! exactly once, in `sms-api`'s own `lib.rs`; linking its already-compiled
 //! output here doesn't re-run that expansion. Since #33, also `sms-provider`
-//! (for [`WorkerContext`]'s `Arc<dyn SmsProvider>` — this crate holds the
+//! (for [`WorkerContext`]'s provider registry — this crate holds the
 //! trait, never a concrete adapter, the same way `sms-api` never does).
+//! Since #62, also `sms-msisdn` and `sms-routing` ([`routing`]'s own I/O
+//! glue over the pure route-selection engine).
 
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -32,24 +35,37 @@ pub mod drain;
 pub mod hooks;
 pub mod jobs;
 pub mod lease;
+pub mod routing;
 pub mod scheduler;
 
+/// A provider adapter registry, keyed by [`SmsProvider::key`] — matching
+/// `Provider.key`, the column [`routing::decide`] resolves a chosen
+/// `Route`'s provider back onto before `dispatch` can submit through it.
+/// `Arc`-wrapped as a whole (not per-entry only) so cloning a
+/// [`WorkerContext`] into a fresh `tokio::spawn` task is one pointer copy,
+/// not a fresh `HashMap` allocation per clone.
+pub type ProviderRegistry = Arc<HashMap<String, Arc<dyn SmsProvider>>>;
+
 /// What a role's real body needs beyond its own lease/claim mechanics.
-/// Cheap to clone — `Cratestack` wraps a pooled connection, `Arc<dyn
-/// SmsProvider>` is a pointer — so every role task gets its own owned
-/// copy rather than sharing borrows across `tokio::spawn` boundaries.
+/// Cheap to clone — `Cratestack` wraps a pooled connection, [`ProviderRegistry`]
+/// is a pointer — so every role task gets its own owned copy rather than
+/// sharing borrows across `tokio::spawn` boundaries.
 ///
-/// One provider, not a registry keyed by `Provider.key`: M2 has exactly
-/// one (`OrangeCmProvider`), and a real multi-provider registry is M5's
-/// routing rules engine (#62), not something to build ahead of the second
-/// provider that would actually need it.
+/// A registry, not a single provider: #62's routing engine can pick any
+/// configured `Route`'s provider, so `dispatch` needs to resolve whichever
+/// one a given message was actually routed to, not submit everything
+/// through one hardcoded adapter. `app/sms-worker/src/main.rs` builds this
+/// with exactly one entry today (`"orange_cm"`) — the same set of real
+/// adapters this deployment has credentials for, unrelated to how many
+/// `Provider` *rows* or `Route` rows exist in the database.
 #[derive(Clone)]
 pub struct WorkerContext {
     /// The pooled connection every role's queries run against.
     pub db: Cratestack,
-    /// The one provider `dispatch` submits through — see the struct doc for
-    /// why this is a single instance, not a registry.
-    pub provider: Arc<dyn SmsProvider>,
+    /// Every provider adapter this process holds credentials for. `dispatch`
+    /// resolves the one a routed message needs by `Provider.key`; see
+    /// [`ProviderRegistry`]'s own doc.
+    pub providers: ProviderRegistry,
 }
 
 /// A role `sms-worker` can run. §7.1's table, verbatim.
@@ -241,6 +257,18 @@ pub async fn run_singleton(
     worker: String,
     shutdown: CancellationToken,
 ) {
+    // #70: the one writer of `sms_worker_singleton_lease_held{role}` — see
+    // `sms_metrics`'s own module doc for why setting this to `0` here,
+    // rather than only ever touching it once acquired, is the whole point.
+    // A process that never calls `run_singleton` for `role` at all (it
+    // isn't in that process's own `--roles`) never touches this gauge
+    // either, which is the other half of the same design: the metric is
+    // *absent* from that process's `/metrics`, not present-and-zero — an
+    // operator who only started this process with `--roles hooks,jobs`
+    // should never see it claim anything about `dispatch`.
+    let lease_gauge = sms_metrics::SINGLETON_LEASE_HELD.with_label_values(&[role.as_str()]);
+    lease_gauge.set(0);
+
     loop {
         let acquired = tokio::select! {
             () = shutdown.cancelled() => {
@@ -253,10 +281,12 @@ pub async fn run_singleton(
         match acquired {
             Ok(Some(held)) => {
                 tracing::info!(role = %role, "singleton lock acquired");
+                lease_gauge.set(1);
                 tokio::select! {
                     () = run(role, ctx.clone(), &worker) => unreachable!("run() idles forever and never returns"),
                     () = shutdown.cancelled() => {
                         tracing::info!(role = %role, "shutdown requested; releasing lock");
+                        lease_gauge.set(0);
                         if let Err(error) = held.release().await {
                             tracing::error!(
                                 role = %role, %error,
@@ -270,6 +300,7 @@ pub async fn run_singleton(
             }
             Ok(None) => {
                 tracing::debug!(role = %role, "lock held elsewhere; standing by");
+                lease_gauge.set(0);
             }
             Err(error) => {
                 // The dangerous case: not "someone else has it" but "this
@@ -278,6 +309,7 @@ pub async fn run_singleton(
                 // exactly what §28 says to alert on rather than let blend
                 // into routine standby logging.
                 tracing::error!(role = %role, %error, "failed attempting the lock; retrying");
+                lease_gauge.set(0);
             }
         }
 
@@ -314,6 +346,7 @@ const fn story_for(role: Role) -> &'static str {
 mod tests {
     use super::{Cardinality, Role, WorkerContext, ALL};
     use std::str::FromStr;
+    use std::sync::Arc;
 
     #[test]
     fn every_role_round_trips_through_its_string_form() {
@@ -396,9 +429,14 @@ mod tests {
         let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1/none")
             .expect("a lazy pool only parses the URL");
+        let providers: std::collections::HashMap<String, Arc<dyn sms_provider::SmsProvider>> =
+            std::collections::HashMap::from([(
+                "unused".to_owned(),
+                Arc::new(NeverCalledProvider) as Arc<dyn sms_provider::SmsProvider>,
+            )]);
         WorkerContext {
             db: sms_api::schema::Cratestack::builder(pool).build(),
-            provider: std::sync::Arc::new(NeverCalledProvider),
+            providers: Arc::new(providers),
         }
     }
 

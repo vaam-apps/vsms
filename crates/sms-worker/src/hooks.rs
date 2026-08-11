@@ -68,6 +68,7 @@ use chrono::{DateTime, Duration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use reqwest::StatusCode;
 use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::map_database_error;
 use sms_api::schema::{
     webhook_endpoint, AttemptState, UpdateWebhookAttemptInput, UpdateWebhookEndpointInput,
     WebhookAttempt, WebhookEndpoint,
@@ -505,7 +506,11 @@ async fn write_succeeded(
         .run(sys)
         .await
     {
-        log_write_failure(&attempt.id, AttemptState::succeeded, &error);
+        log_write_failure(
+            &attempt.id,
+            AttemptState::succeeded,
+            &map_database_error(error),
+        );
     }
 }
 
@@ -539,7 +544,11 @@ async fn write_failed_retry(
         .run(sys)
         .await
     {
-        log_write_failure(&attempt.id, AttemptState::failed, &error);
+        log_write_failure(
+            &attempt.id,
+            AttemptState::failed,
+            &map_database_error(error),
+        );
     }
 }
 
@@ -568,7 +577,7 @@ async fn write_dead(
         .run(sys)
         .await
     {
-        log_write_failure(&attempt.id, AttemptState::dead, &error);
+        log_write_failure(&attempt.id, AttemptState::dead, &map_database_error(error));
     }
 }
 

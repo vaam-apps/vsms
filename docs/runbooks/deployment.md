@@ -122,7 +122,7 @@ to do as routine key hygiene, not just a bootstrap step, but only once
 `sms-gateway` is already up (`docker compose exec` works fine against an
 already-running container).
 
-## 4. Seed the `orange_cm` Provider row — before sms-gateway's first start
+## 4. Seed the `orange_cm` Provider row and a catch-all Route — before sms-gateway's first start
 
 `sms-gateway serve` resolves an `active` `Provider` row keyed `orange_cm`
 at startup — `resolve_provider_row_id` in `app/sms-gateway/src/main.rs` —
@@ -133,17 +133,32 @@ the container exit immediately and crash-loop under
 `restart: unless-stopped`, exactly like a missing signing key does, and
 this runbook used to work around it with a raw `psql` `INSERT` run
 *after* bringing the containers up — which meant watching `sms-gateway`
-crash-loop, then fixing it by hand. `sms-gateway seed-provider` closes
+crash-loop, then fixing it by hand. `sms-gateway seed-dispatch` closes
 that gap: a real CLI subcommand, going through the CrateStack delegate
 under a hand-built `owner` context (never raw SQL — R1), idempotent by
-construction (`create` + catching the `23505` on `Provider.key`'s
-`@unique` index, so re-running it is a clean no-op). Same `run --rm`
-reasoning as step 3 — this needs a fresh one-off container, not the
-not-yet-running `sms-gateway` service:
+construction. Same `run --rm` reasoning as step 3 — this needs a fresh
+one-off container, not the not-yet-running `sms-gateway` service:
 
 ```bash
-docker compose --env-file .env run --rm sms-gateway seed-provider
+docker compose --env-file .env run --rm sms-gateway seed-dispatch
 ```
+
+**Renamed from `seed-provider` (#62).** The `Provider` row alone used to
+be enough to make this deployment functional; it no longer is.
+[#62](https://github.com/vymalo/vsms/issues/62)'s routing rules engine
+made `sms-worker`'s `dispatch` role refuse every message with no matching
+`Route` row — a deliberate cutover from routing's old "any active
+provider" placeholder — so a deployment with an active `Provider` and no
+`Route` starts and reports healthy, but every message it accepts lands in
+`rejected` forever, silently. `seed-dispatch` now seeds both in one call:
+the `Provider` row exactly as `seed-provider` always did, plus a
+hardcoded catch-all `Route` (no flags to configure it — a real routing
+policy is the admin console's job, not this bootstrap command's) pointing
+at it. Both halves are idempotent — the `Provider` half by `create` +
+catching the `23505` on `Provider.key`'s `@unique` index; the `Route`
+half, which has no unique column to catch a conflict on, by looking up an
+existing route for the provider first — so re-running the whole command
+against an already-seeded deployment is a clean no-op on both.
 
 Its own defaults already match the row this runbook used to hand-write —
 `--key orange_cm`, `--kind orange_cm_http`, `--credential-ref
@@ -357,7 +372,7 @@ cannot reach.
 |------------------|---------------------------------------------|------------------------------|
 | `migrate`        | `postgres` healthy                          | exits non-zero; nothing downstream should start (compose enforces this via `service_completed_successfully`) |
 | `sms-gateway`     | `postgres` healthy, `migrate` completed      | **will not even start** without step 3's signing key or step 4's `orange_cm` `Provider` row — both are resolved before the listener ever binds, so either one missing crash-loops the container the same way (#148) |
-| `sms-worker`      | `postgres` healthy, `migrate` completed      | starts fine with no signing key (only `sms-gateway` loads one); `dispatch` role specifically needs step 4's `Provider` row to route anything, other roles don't, and none of them crash-loop on its absence the way `sms-gateway` does |
+| `sms-worker`      | `postgres` healthy, `migrate` completed      | starts fine with no signing key (only `sms-gateway` loads one) and fine with no `Provider`/`Route` either — `dispatch` role specifically needs step 4's `Provider` row *and* its catch-all `Route` (#62) to route anything, other roles don't, and none of them crash-loop on the absence of either the way `sms-gateway` does on a missing `Provider`: a `dispatch` role with nothing to route to just rejects every message it claims, silently, forever |
 | `admin`           | `sms-gateway` healthy                        | starts; token exchange fails until step 6's client is provisioned |
 | `caddy`           | `sms-gateway` and `admin` healthy            | won't route until both are up |
 
@@ -479,32 +494,38 @@ all — no window exists between the pre-install hooks completing and the
 gateway `Deployment` being created for an operator to seed anything by
 hand, unlike compose, where a human can at least `docker compose exec`
 into Postgres while the container crash-loops). The chart's
-`rotateSigningKey` and `seedProvider` controllers are both `pre-install`
+`rotateSigningKey` and `seedDispatch` controllers are both `pre-install`
 Helm hook Jobs for exactly this reason: Helm does not create *any* other
 release resource — including the `sms-gateway` Deployment — until every
 pre-install hook Job has succeeded. A post-install step or a readiness
 check on the gateway would both deadlock permanently, since the gateway
 can never become ready without these steps having already run.
 
-`migrate` (weight `-20`) and `seedProvider` (weight `-15`) are both
+`migrate` (weight `-20`) and `seedDispatch` (weight `-15`, renamed from
+`seedProvider` in [#62](https://github.com/vymalo/vsms/issues/62) —
+see that renamed job's own comment in `values.yaml` for why: it seeds a
+catch-all `Route` alongside the `Provider` row now, since a `Provider`
+with no `Route` routes nothing since #62's engine landed) are both
 `pre-install,pre-upgrade` hooks — safe on every deploy because both are
 genuinely idempotent: `migrate` via `app/sms-migrate`'s own
-advisory-lock-guarded `schema_migrations` tracking table, `seedProvider`
-via `sms-gateway seed-provider`'s own `create` + catch-`23505` dedupe (see
-step 4 above). `rotateSigningKey` (weight `-10`, last in the chain) is
-deliberately **not** hooked to `pre-upgrade`: unlike the other two, it is
-not idempotent — every run mints a brand-new signing key with an overlap
-window, so hooking it to every upgrade would rotate the key on every
-`helm upgrade`, silently. Deliberate routine rotation later is a real
-operator action: `kubectl create job --from=job/<release>-rotate-signing-key
-<name> -n <namespace>` re-runs the same Job spec on demand (the
-`before-hook-creation` delete policy leaves the most recent run's Job
-object around after success for exactly this). `seedProvider` and
-`migrate` sitting at distinct weights either side of it (`-15` vs. `-20`
-and `-10`) is not a hard dependency — a `Provider` row and an OP signing
-key are unrelated domains — but it keeps all three hooks a single,
-strictly-ordered chain rather than two of them racing at a shared weight;
-see `values.yaml`'s own comment on `seedProvider` for the full reasoning.
+advisory-lock-guarded `schema_migrations` tracking table, `seedDispatch`
+via `sms-gateway seed-dispatch`'s own dedupe on both halves (`Provider`:
+`create` + catch-`23505`; `Route`: look up an existing one for the
+provider first — see step 4 above). `rotateSigningKey` (weight `-10`,
+last in the chain) is deliberately **not** hooked to `pre-upgrade`:
+unlike the other two, it is not idempotent — every run mints a
+brand-new signing key with an overlap window, so hooking it to every
+upgrade would rotate the key on every `helm upgrade`, silently.
+Deliberate routine rotation later is a real operator action: `kubectl
+create job --from=job/<release>-rotate-signing-key <name> -n <namespace>`
+re-runs the same Job spec on demand (the `before-hook-creation` delete
+policy leaves the most recent run's Job object around after success for
+exactly this). `seedDispatch` and `migrate` sitting at distinct weights
+either side of it (`-15` vs. `-20` and `-10`) is not a hard dependency —
+a `Provider`/`Route` pair and an OP signing key are unrelated domains —
+but it keeps all three hooks a single, strictly-ordered chain rather
+than two of them racing at a shared weight; see `values.yaml`'s own
+comment on `seedDispatch` for the full reasoning.
 
 ### Installing
 

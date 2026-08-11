@@ -120,44 +120,133 @@ async fn seed_app(db: &Cratestack) -> String {
         .id
 }
 
+/// The real `OrangeCmProvider::key()` constant — see this function's own
+/// doc for why the seeded `Provider` row must use exactly this key, not a
+/// random per-run one.
+const PROVIDER_KEY: &str = "orange_cm";
+
+/// Since #62, the real spawned `sms-worker` process resolves a routed
+/// message's provider by looking `Message.providerId` up as a `Provider`
+/// row and matching its `key` against the registry `app/sms-worker/src/main.rs`
+/// builds from `--orange-*` flags — always exactly `"orange_cm"`
+/// (`OrangeCmProvider::key()`), regardless of this test's own database
+/// row. A `Provider` seeded under any other key would still route
+/// (`accepted -> queued`) but then fail to resolve an adapter at submit
+/// time, backing off instead of ever reaching the wiremock server this
+/// whole test depends on.
+///
+/// Idempotent: this binary's own database is never reset between runs and
+/// `Provider.key` is `@unique`, so a second run must reuse the existing
+/// row (reactivating it if left inactive) rather than fail on a
+/// duplicate-key conflict — the same pattern
+/// `crates/sms-api/examples/send_test_message.rs`'s own `ensure_provider`
+/// already uses for the identical reason.
 async fn seed_active_provider(db: &Cratestack) -> String {
-    let provider = db
+    let existing = db
         .provider()
-        .create(schema::CreateProviderInput {
-            key: format!("kill9_test_{}", unique_suffix())
-                .chars()
-                .take(32)
-                .collect(),
-            displayName: "kill9 test provider".to_owned(),
-            kind: schema::ProviderKind::orange_cm_http,
-            config: "{}".to_owned(),
-            credentialRef: "vault://test".to_owned(),
-            maxTps: 5.0,
-            maxDailySubmissions: 1000,
-            supportsDlr: true,
-            supportsAlphaSender: true,
-            supportsUcs2: true,
-            supportsConcat: true,
-            costPerSegmentXaf: "15".parse().unwrap(),
-            healthCheckedAt: None,
+        .find_many()
+        .where_expr(cratestack::FilterExpr::from(
+            schema::provider::key().eq(PROVIDER_KEY.to_owned()),
+        ))
+        .limit(1)
+        .run(&owner())
+        .await
+        .expect("looking up the provider");
+
+    let provider_id = if let Some(row) = existing.into_iter().next() {
+        if row.state != schema::ProviderState::active {
+            db.provider()
+                .update(row.id.clone())
+                .set(schema::UpdateProviderInput {
+                    state: Some(schema::ProviderState::active),
+                    ..Default::default()
+                })
+                // #59: Provider is @version'd now, and cratestack refuses a
+                // versioned-model update with no If-Match at *runtime* — not
+                // at compile time, so `cargo check` stays green either way.
+                .if_match(row.version)
+                .run(&owner())
+                .await
+                .expect("reactivating the provider");
+        }
+        row.id
+    } else {
+        let provider = db
+            .provider()
+            .create(schema::CreateProviderInput {
+                key: PROVIDER_KEY.to_owned(),
+                displayName: "kill9 test provider".to_owned(),
+                kind: schema::ProviderKind::orange_cm_http,
+                config: "{}".to_owned(),
+                credentialRef: "vault://test".to_owned(),
+                maxTps: 5.0,
+                maxDailySubmissions: 1000,
+                supportsDlr: true,
+                supportsAlphaSender: true,
+                supportsUcs2: true,
+                supportsConcat: true,
+                costPerSegmentXaf: "15".parse().unwrap(),
+                healthCheckedAt: None,
+            })
+            .run(&owner())
+            .await
+            .expect("seeding a provider");
+
+        db.provider()
+            .update(provider.id.clone())
+            .set(schema::UpdateProviderInput {
+                state: Some(schema::ProviderState::active),
+                ..Default::default()
+            })
+            // #59, same as above: runtime-enforced, not compile-enforced.
+            .if_match(provider.version)
+            .run(&owner())
+            .await
+            .expect("activating the provider");
+
+        provider.id
+    };
+
+    ensure_route(db, &provider_id).await;
+
+    provider_id
+}
+
+/// Ensures at least one enabled catch-all `Route` points at `provider_id`
+/// — #62's routing engine needs one to ever route an `accepted` message.
+/// Idempotent for the same reason [`seed_active_provider`] is: only
+/// creates one if this provider doesn't already have an enabled route.
+async fn ensure_route(db: &Cratestack, provider_id: &str) {
+    let existing = db
+        .route()
+        .find_many()
+        .where_expr(
+            cratestack::FilterExpr::from(schema::route::providerId().eq(provider_id.to_owned()))
+                .and(schema::route::enabled().is_true()),
+        )
+        .limit(1)
+        .run(&owner())
+        .await
+        .expect("looking up routes");
+    if !existing.is_empty() {
+        return;
+    }
+    db.route()
+        .create(schema::CreateRouteInput {
+            name: "kill9-test-route".to_owned(),
+            priority: 1000,
+            weight: 1,
+            enabled: true,
+            matchOperator: None,
+            matchClass: None,
+            matchAppId: None,
+            matchPrefix: None,
+            providerId: provider_id.to_owned(),
+            failoverRouteId: None,
         })
         .run(&owner())
         .await
-        .expect("seeding a provider");
-
-    db.provider()
-        .update(provider.id.clone())
-        .set(schema::UpdateProviderInput {
-            state: Some(schema::ProviderState::active),
-            ..Default::default()
-        })
-        // #59: Provider is now @version'd.
-        .if_match(provider.version)
-        .run(&owner())
-        .await
-        .expect("activating the provider");
-
-    provider.id
+        .expect("seeding a catch-all route");
 }
 
 async fn seed_message(db: &Cratestack, app_id: &str) -> Message {

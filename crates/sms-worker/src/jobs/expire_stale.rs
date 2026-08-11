@@ -40,6 +40,7 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::schema::{message, Cratestack, Job, MessageState, UpdateMessageInput};
+use sms_api::{is_illegal_transition, map_database_error};
 use tracing::warn;
 
 use crate::jobs::JobHandler;
@@ -144,6 +145,17 @@ async fn expire_matching(
             .await;
 
         if let Err(error) = result {
+            // #71: checked against the raw error before any mapping — see
+            // `crate::jobs::swallow_stale_write`'s own doc for why this
+            // order matters and is not merely stylistic: mapping first
+            // would turn a genuine SM001 into `CoolError::Conflict`, which
+            // this function's own `Conflict`/`PreconditionFailed` arm
+            // below would otherwise swallow as if it were the harmless
+            // "message moved on" race it exists to catch — exactly the
+            // silent-SM001 failure mode #70 exists to close.
+            if is_illegal_transition(&error) {
+                return Err(map_database_error(error));
+            }
             match error {
                 CoolError::Conflict(reason) | CoolError::PreconditionFailed(reason) => {
                     warn!(

@@ -222,11 +222,23 @@ async fn isolated_db() -> Cratestack {
     db
 }
 
-/// An active `Provider`, so a candidate in `accepted` state has somewhere
-/// to route to — without one, `take_lease`'s routing pass sends every
-/// `accepted` row straight to `rejected` instead of `queued` (a real,
-/// correct outcome per §7.4, just not the one most of these tests are
-/// about).
+/// An active `Provider` plus a catch-all `Route` pointing at it, so a
+/// candidate in `accepted` state has somewhere to route to — without
+/// either, `take_lease`'s routing pass (since #62, real `Route`-rule
+/// matching through `crate::routing::decide`, not the old
+/// `cheapest_active_provider` placeholder) sends every `accepted` row
+/// straight to `rejected` instead of `queued` (a real, correct outcome
+/// per §7.4, just not the one most of these tests are about). Not
+/// necessarily *the* route or provider a given test's own message ends up
+/// routed through — this database is never reset between runs, and every
+/// test here seeds a wildcard route at the same priority/weight, so an
+/// earlier run's own leftover route can tie and win the draw instead.
+/// None of these tests assert *which* provider was picked, only that
+/// routing succeeded at all (`providerId.is_some()`), so that's fine here
+/// in a way it isn't for `dispatch_live_postgres.rs`'s own fixture, which
+/// has to submit through a specific wiremock server and needs the
+/// stronger `disable_every_route` guarantee instead — see that file's own
+/// `seed_routed_provider` doc.
 async fn seed_provider(db: &Cratestack) -> String {
     // `state` has `@default('disabled')`, so it's excluded from
     // CreateProviderInput (§2.0: any `@default` excludes a field from
@@ -267,6 +279,23 @@ async fn seed_provider(db: &Cratestack) -> String {
         .run(&owner())
         .await
         .expect("activating the provider");
+
+    db.route()
+        .create(schema::CreateRouteInput {
+            name: format!("claim-test-route-{}", unique_suffix()),
+            priority: 1000,
+            weight: 1,
+            enabled: true,
+            matchOperator: None,
+            matchClass: None,
+            matchAppId: None,
+            matchPrefix: None,
+            providerId: provider.id.clone(),
+            failoverRouteId: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a catch-all route");
 
     provider.id
 }
