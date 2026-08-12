@@ -15,6 +15,12 @@ export type {
   SendMessageResult,
 } from "./client";
 export { previewMessage, sendMessage } from "./client";
+export type {
+  DashboardSummary,
+  HourlyBucket,
+  OperatorDeliveryStats,
+} from "./dashboard";
+export { dashboardSummary } from "./dashboard";
 export { gatewayAgent } from "./dispatcher";
 export type { GatewayFieldErrors, GatewayTrpcCode } from "./errors";
 export { GatewayError, isStaleWriteError, mapGatewayError } from "./errors";
