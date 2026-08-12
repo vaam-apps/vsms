@@ -181,8 +181,8 @@ async fn ensure_orange_cm_provider(db: &Cratestack) {
             healthCheckedAt: None,
             // #63 added the circuit breaker's own columns.
             // `consecutiveFailures` carries a @default so it stays out of the
-            // create input; `circuitOpenUntil` does not, so every fixture
-            // building a Provider has to name it.
+            // create input; `circuitOpenUntil` does not, so every fixture that
+            // builds a Provider has to name it.
             circuitOpenUntil: None,
         })
         .run(&owner())

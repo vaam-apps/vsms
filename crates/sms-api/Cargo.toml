@@ -14,6 +14,16 @@ cratestack.workspace = true
 cratestack-codec-json.workspace = true
 sms-encoding.workspace = true
 sms-msisdn.workspace = true
+# route_simulator.rs (#54): `select_route` itself, the pure engine — this is
+# the "future #54 simulator procedure" the workspace root `Cargo.toml`'s own
+# comment on this dependency already anticipated. `sms-api` cannot depend on
+# `sms-worker` (the dependency runs the other way — `sms-worker.workspace =
+# true` below, dev-only, proves the direction), so `crates/sms-worker/src/
+# routing.rs`'s own I/O glue (fetch rows, convert the schema's enums onto
+# `sms_routing`'s mirrored ones) is necessarily re-implemented here rather
+# than reused — see `route_simulator.rs`'s own module doc for the exact
+# duplication and why it's accepted rather than factored out.
+sms-routing.workspace = true
 # provision_client (#23)'s pack() for the sentinel-delimited scopes/
 # grantTypes columns — sms-core has no internal dependencies of its own,
 # so pulling it in here doesn't risk a cycle with sms-auth (which depends
