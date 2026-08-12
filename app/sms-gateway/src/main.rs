@@ -674,6 +674,104 @@ fn healthcheck_command(addr: &str, path: &str) -> Result<()> {
 /// [`provision_client_command`] does — see that function's own doc; the
 /// `unreachable!()` below can never fire because the only caller is
 /// `main`'s own `command @ Command::Serve { .. }` guard.
+/// The four `--orange-*` values `serve` needs to construct the adapter.
+/// Grouped into one struct purely so [`build_dlr_router`] takes a single
+/// argument rather than four positional `String`s of the same type, which
+/// is the shape most likely to be silently mis-ordered at a call site.
+struct OrangeCredentials {
+    client_id: String,
+    client_secret: String,
+    sender_number: String,
+    base_url: String,
+}
+
+impl OrangeCredentials {
+    fn new(
+        client_id: String,
+        client_secret: String,
+        sender_number: String,
+        base_url: String,
+    ) -> Self {
+        Self {
+            client_id,
+            client_secret,
+            sender_number,
+            base_url,
+        }
+    }
+}
+
+/// Builds the Orange adapter and the DLR router that dispatches onto it.
+///
+/// Extracted from [`serve_command`] rather than inlined: that function
+/// crossed clippy's `too_many_lines` threshold (106/100) once #194's
+/// console-client wiring landed on top of the existing setup, and this is
+/// the one self-contained block in it — every value it touches is
+/// provider-shaped, and nothing after it reads `orange_config` or the
+/// bare `provider` handle again. Suppressing the lint instead would have
+/// hidden the next fifty lines of growth too.
+async fn build_dlr_router(
+    db: &Cratestack,
+    sys: &cratestack::CoolContext,
+    orange: OrangeCredentials,
+) -> Result<axum::Router> {
+    let mut orange_config = sms_provider_orange_cm::OrangeCmConfig::production(
+        orange.client_id,
+        orange.client_secret,
+        orange.sender_number,
+    );
+    orange_config.base_url = orange.base_url;
+    let provider: Arc<dyn SmsProvider> =
+        Arc::new(sms_provider_orange_cm::OrangeCmProvider::new(orange_config));
+    let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
+    Ok(dlr::router(
+        db.clone(),
+        sys.clone(),
+        provider,
+        provider_row_id,
+    ))
+}
+
+/// Loads the OP's signing keys, assembles its state, and starts the
+/// background key refresh.
+///
+/// Extracted from [`serve_command`] for the same reason
+/// [`build_dlr_router`] was — that function sits against clippy's
+/// `too_many_lines` ceiling, and this is a self-contained block whose
+/// values nothing downstream reads individually (only `op_state`).
+///
+/// Note this **fails at process start**, before the listener binds, if no
+/// active signing key exists — not lazily on the first `/token` request.
+/// That ordering is load-bearing for deployment: anything waiting for the
+/// gateway to be healthy before rotating a key would deadlock, which is
+/// why the deploy runbook uses `docker compose run --rm` rather than
+/// `exec`.
+async fn build_op_state(
+    db: &Cratestack,
+    sys: &cratestack::CoolContext,
+    issuer: &str,
+) -> Result<op::OpState> {
+    let (signing, jwks) = sms_auth::op::load_signing_keys(db, sys, issuer)
+        .await
+        .context(
+            "loading OP signing keys — run `sms-gateway rotate-signing-key` if this is a fresh \
+             database",
+        )?;
+    let op_store = sms_auth::op::machine_only_store(std::sync::Arc::new(db.clone()), sys.clone());
+    let op_config = sms_auth::op::machine_only_config(issuer.to_owned());
+    let op_state = op::OpState::new(op_store, signing, op_config, jwks);
+    // Keeps a rotate-signing-key run against this already-running process
+    // from silently never taking effect — see op.rs's own module doc.
+    op::spawn_key_refresh(
+        op_state.clone(),
+        db.clone(),
+        sys.clone(),
+        issuer.to_owned(),
+        op::DEFAULT_KEY_REFRESH_INTERVAL,
+    );
+    Ok(op_state)
+}
+
 async fn serve_command(command: Command) -> Result<()> {
     let Command::Serve {
         listen,
@@ -727,35 +825,15 @@ async fn serve_command(command: Command) -> Result<()> {
     // own module doc for the full mechanism.
     sms_api::webhooks::register_subscribers(&db);
 
-    let (signing, jwks) = sms_auth::op::load_signing_keys(&db, &sys, &issuer)
-        .await
-        .context(
-            "loading OP signing keys — run `sms-gateway rotate-signing-key` if this is a fresh \
-             database",
-        )?;
-    let op_store = sms_auth::op::machine_only_store(std::sync::Arc::new(db.clone()), sys.clone());
-    let op_config = sms_auth::op::machine_only_config(issuer.clone());
-    let op_state = op::OpState::new(op_store, signing, op_config, jwks);
-    // Keeps a rotate-signing-key run against this already-running process
-    // from silently never taking effect — see op.rs's own module doc.
-    op::spawn_key_refresh(
-        op_state.clone(),
-        db.clone(),
-        sys.clone(),
-        issuer.clone(),
-        op::DEFAULT_KEY_REFRESH_INTERVAL,
-    );
+    let op_state = build_op_state(&db, &sys, &issuer).await?;
 
-    let mut orange_config = sms_provider_orange_cm::OrangeCmConfig::production(
+    let orange = OrangeCredentials::new(
         orange_client_id,
         orange_client_secret,
         orange_sender_number,
+        orange_base_url,
     );
-    orange_config.base_url = orange_base_url;
-    let provider: Arc<dyn SmsProvider> =
-        Arc::new(sms_provider_orange_cm::OrangeCmProvider::new(orange_config));
-    let provider_row_id = resolve_provider_row_id(&db, &sys, provider.as_ref()).await?;
-    let dlr_router = dlr::router(db.clone(), sys.clone(), provider, provider_row_id);
+    let dlr_router = build_dlr_router(&db, &sys, orange).await?;
     // #157: /readyz needs the same pooled handle every other router
     // shares — cloned here, before `sms_api::router` below takes `db` by
     // value as its own last use.
