@@ -42,6 +42,7 @@ pub mod metrics;
 pub mod pepper;
 pub mod procedures;
 pub mod rbac;
+pub mod route_simulator;
 pub mod router;
 pub mod webhooks;
 pub mod worker_locks;

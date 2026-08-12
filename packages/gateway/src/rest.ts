@@ -8,6 +8,14 @@ import "server-only";
 // `listMessages`/`getMessageById` both go through — never by remembering to
 // ask for it per screen.
 //
+// #54 (the first real consumer of that promise) adds `postJson`/
+// `deleteResource` alongside — `Route`'s own create/delete, neither of
+// which touches an `ETag` at all (a new row has nothing to send `If-Match`
+// against; `DELETE` needs none per the generated handler itself, see
+// `deleteResource`'s own doc). Kept in this file rather than a new one:
+// they're the same `undiciFetch`-with-a-Bearer-token-and-401-retry shape as
+// `fetchWithEtag`/`updateWithIfMatch`, just without the header dance.
+//
 // # What "the smallest real one" proved, and what it didn't
 //
 // `crates/sms-api/tests/if_match_live_postgres.rs` (Rust side of #59) is
@@ -171,4 +179,89 @@ export async function updateWithIfMatch<T>(
   }
 
   return { data: parsed as T, etag: response.headers.get("etag") ?? undefined };
+}
+
+/**
+ * `POST <path>` with a JSON body — #54's `Route` create, the one write this
+ * ticket's screens need that isn't an `If-Match`-guarded edit (a brand-new
+ * row has no prior `ETag` to send). Same retry-once-on-401 shape as every
+ * other function in this file; `routeLabel` only for `mapGatewayError`'s own
+ * log line, same as everywhere else.
+ */
+export async function postJson<T>(
+  path: string,
+  body: unknown,
+  routeLabel: string,
+  fetcher: Fetcher = undiciFetch,
+): Promise<T> {
+  const url = restUrl(path);
+  const payload = JSON.stringify(body);
+
+  const attempt = async (): Promise<UndiciResponse> => {
+    const token = await getAccessToken();
+    return fetcher(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: payload,
+      dispatcher: gatewayAgent(),
+    });
+  };
+
+  let response = await attempt();
+  if (response.status === 401) {
+    invalidateAccessToken();
+    response = await attempt();
+  }
+
+  const parsed = await parseJsonBody(response);
+  if (!response.ok) {
+    throw mapGatewayError(response.status, parsed, routeLabel);
+  }
+
+  return parsed as T;
+}
+
+/**
+ * `DELETE <path>`, no body and no `If-Match` — #54's `Route` delete. Unlike
+ * `PATCH`, the generated delete handler needs no `If-Match` at all
+ * (`cratestack-macros-0.7.10/src/axum/model/prep/etag.rs`'s `EtagTokens`
+ * only ever wires `update_if_match_*`/`get_etag_*`, nothing for delete —
+ * read directly, not assumed, while adding this function). A `DELETE` that
+ * races a concurrent edit isn't a lost-update the way an unguarded `PATCH`
+ * would be: the row is simply gone either way, which is what the caller
+ * asked for.
+ */
+export async function deleteResource(
+  path: string,
+  routeLabel: string,
+  fetcher: Fetcher = undiciFetch,
+): Promise<void> {
+  const url = restUrl(path);
+
+  const attempt = async (): Promise<UndiciResponse> => {
+    const token = await getAccessToken();
+    return fetcher(url, {
+      method: "DELETE",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      dispatcher: gatewayAgent(),
+    });
+  };
+
+  let response = await attempt();
+  if (response.status === 401) {
+    invalidateAccessToken();
+    response = await attempt();
+  }
+
+  if (!response.ok) {
+    const parsed = await parseJsonBody(response);
+    throw mapGatewayError(response.status, parsed, routeLabel);
+  }
 }

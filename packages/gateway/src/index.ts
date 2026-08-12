@@ -47,8 +47,38 @@ export type {
   StreamCandidate,
 } from "./messages";
 export { getMessageById, listMessages, listMessagesForStream } from "./messages";
+export type {
+  ProviderKind,
+  ProviderListItem,
+  ProviderRecord,
+  ProviderState,
+  UpdateProviderFields,
+} from "./providers";
+export { getProviderById, listProviders, updateProvider } from "./providers";
 export type { WithEtag } from "./rest";
-export { fetchWithEtag, updateWithIfMatch } from "./rest";
+export { deleteResource, fetchWithEtag, postJson, updateWithIfMatch } from "./rest";
+export type {
+  PredicateKind,
+  RouteEvaluationInfo,
+  RouteOutcomeKind,
+  RouteWinnerInfo,
+  SimulateMessageClass,
+  SimulateOperatorCode,
+  SimulateRouteInput,
+  SimulateRouteResult,
+  TieBreakInfo,
+  TieBreakRangeInfo,
+} from "./route-simulator";
+export { simulateRoute } from "./route-simulator";
+export type {
+  CreateRouteFields,
+  RouteListItem,
+  RouteMessageClass,
+  RouteOperatorCode,
+  RouteRecord,
+  UpdateRouteFields,
+} from "./routes";
+export { createRoute, deleteRoute, getRouteById, listRoutes, updateRoute } from "./routes";
 export { getAccessToken, invalidateAccessToken } from "./token";
 export type { WorkerLockInfo, WorkerLocksResult, WorkerRole } from "./workers";
 export { workerLocks } from "./workers";

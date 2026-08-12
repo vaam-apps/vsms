@@ -162,6 +162,12 @@ export function JobsScreen() {
           >
             Workers
           </a>
+          <a
+            href="/simulator"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Simulator
+          </a>
           <ThemeToggle />
         </div>
       </header>

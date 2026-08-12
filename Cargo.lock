@@ -3067,6 +3067,7 @@ dependencies = [
  "sms-metrics",
  "sms-msisdn",
  "sms-provider",
+ "sms-routing",
  "sms-test-support",
  "sms-webhook",
  "sms-worker",
