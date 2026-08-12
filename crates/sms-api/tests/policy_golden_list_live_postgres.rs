@@ -151,6 +151,7 @@ fn fresh_provider_input() -> schema::CreateProviderInput {
         supportsConcat: true,
         costPerSegmentXaf: "15".parse().unwrap(),
         healthCheckedAt: None,
+        circuitOpenUntil: None,
     }
 }
 
@@ -220,7 +221,7 @@ async fn provider_update_policy_matches_the_schema_exactly() {
     let db = db().await;
 
     // schema.cstack: @@allow("update", hasRole('owner') || hasRole('admin')
-    // || hasRole('operator'))
+    // || hasRole('operator') || hasRole('system'))
     let allowed = ["owner", "admin", "operator"];
     for role in allowed {
         let seeded = db
@@ -272,6 +273,23 @@ async fn provider_update_policy_matches_the_schema_exactly() {
         );
     }
 
+    // #63: `hasRole('system')` was absent here until this PR, and the
+    // absence was silently wrong — not the "closes the REST route to every
+    // real token" story this test used to tell (that reasoning was about
+    // human/app-role tokens never carrying `system`, which is still true
+    // and still why this is safe to grant: `system` is synthetic, minted
+    // only by this codebase's own internal `sys()` contexts, never by any
+    // real `GatewayAuth::authenticate` token). The gap was found live by
+    // `crates/sms-worker/tests/dispatch_live_postgres.rs`'s own
+    // `an_open_circuit_routes_new_messages_to_the_alternative_instead_of_rejecting`:
+    // `dispatch.rs`'s new circuit-breaker writes
+    // (`record_provider_failure`/`reset_provider_failures`) run under
+    // `sys()` and got `Forbidden("update policy denied this operation")`
+    // on every attempt, silently absorbed by that function's own
+    // best-effort "log and drop" handling — so the breaker never opened,
+    // caught only because the live test asserted the *effect*
+    // (`circuitOpenUntil` actually set), not just that the call didn't
+    // panic.
     let seeded = db
         .provider()
         .create(fresh_provider_input())
@@ -290,10 +308,9 @@ async fn provider_update_policy_matches_the_schema_exactly() {
         .run(&system_ctx())
         .await;
     assert!(
-        is_forbidden(&result),
-        "hasRole('system') is absent from Provider's update policy — this is exactly \
-         router::PROVIDER_WRITE_ROUTES's own point: Layer 1 alone already closes this route \
-         to every real token this deployment can issue: {result:?}"
+        result.is_ok(),
+        "hasRole('system') must admit Provider's update policy — dispatch.rs's circuit breaker \
+         writes this model under a system context: {result:?}"
     );
 }
 

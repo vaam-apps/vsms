@@ -161,6 +161,7 @@ DATABASE_URL=postgres://localhost/vsms_check \
     --label "admin console" \
     --scope sms:send --scope sms:read \
     --scope job:read --scope job:enqueue --scope worker:read \
+    --scope provider:read --scope route:read \
     --key-out ./console-client-key.pem
 ```
 
@@ -203,7 +204,7 @@ SMS_API_URL=http://127.0.0.1:8080
 SMS_AUTH_ISSUER=http://127.0.0.1:8080
 SMS_CONSOLE_CLIENT_ID=appc_...                        # from provision-client's output
 SMS_CONSOLE_PRIVATE_KEY_PATH=/absolute/path/to/console-client-key.pem
-SMS_CONSOLE_SCOPE=sms:send sms:read
+SMS_CONSOLE_SCOPE=sms:send sms:read job:read job:enqueue worker:read provider:read route:read
 
 MESSAGE_STREAM_POLL_MS=2000
 

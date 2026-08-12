@@ -341,6 +341,19 @@ model Provider {
   costPerSegmentXaf Decimal
   healthCheckedAt DateTime?
   healthy Boolean @default(false)
+  // #63: the provider-side circuit breaker §6.3 specifies ("five
+  // consecutive Unavailable opens it for 60s") — same two-column shape as
+  // WebhookEndpoint's own breaker (#41/#59), deliberately: a second breaker
+  // with different field names or semantics in the same codebase is worse
+  // than a slightly imperfect consistent one. `crates/sms-worker/src/
+  // dispatch.rs` is the one writer (`record_provider_failure`/
+  // `reset_provider_failures`, mirroring `hooks.rs`'s own); `crates/
+  // sms-worker/src/routing.rs::convert_provider` is the one reader —
+  // `available` is `false` while `circuitOpenUntil` is in the future,
+  // exactly like `claim.rs::filter_by_endpoint_health` already treats
+  // WebhookEndpoint's own open circuit as unclaimable.
+  consecutiveFailures Int @default(0)
+  circuitOpenUntil DateTime?
   // #59: the ticket's own motivating case — two operators editing the
   // same provider config must not silently last-write-wins.
   version Int @version
@@ -353,10 +366,41 @@ model Provider {
   // OperatorPrefixRule's own read policies (see their comments for how
   // this pattern keeps recurring: any model an internal procedure or
   // worker role reads needs hasRole('system') alongside the human roles).
+  //
+  // update: #63, the eleventh instance of this exact gap shape but the
+  // first on an `update` action rather than `list`/`detail` — found live,
+  // not by review, the same way every prior instance was. `dispatch.rs`'s
+  // `record_provider_failure`/`reset_provider_failures` (the circuit
+  // breaker this PR adds) write this model under `sys()`, and without
+  // `hasRole('system')` here every one of those writes returned
+  // `Forbidden("update policy denied this operation")` — not a compile
+  // error, not even a loud runtime one from this crate's own perspective
+  // (`hooks::record_endpoint_failure`'s "log and drop" best-effort
+  // handling absorbed it exactly like it absorbs a lost CAS race), so the
+  // circuit breaker silently never opened. `an_open_circuit_routes_new_
+  // messages_to_the_alternative_instead_of_rejecting`
+  // (`crates/sms-worker/tests/dispatch_live_postgres.rs`) is what caught
+  // it: `provider.version` never advanced past the one bump
+  // `seed_two_routed_providers`'s own `owner()`-context activation made,
+  // proving every `sys()`-context write after it was rejected.
+  // #54: `auth().kind == "app"` added alongside the human roles — the same
+  // shape #56/#57 gave `Job`'s own `@@allow("list"/"detail", ...)`, for the
+  // identical reason: the admin console's Providers screen authenticates
+  // with the console's own machine credential (`role: "app"`, no human
+  // role — #97/#98's scope cut, still unclosed at time of writing), and
+  // `Provider` has no `appId` to scope a row-level predicate by, the same
+  // "unscoped but Layer 2-gated" shape `SenderId`/`OptOut` already use.
+  // `router::PROVIDER_ROUTE_READ_ROUTES` gates `GET /providers`/
+  // `GET /providers/{id}` on `provider:read` (§5.2) at Layer 2, matching
+  // `JOB_READ_ROUTES`'s own precedent — that is the *real* perimeter for
+  // this screen today, not defense in depth, same reasoning as `Job`'s own
+  // comment. `PATCH /providers/{id}` is untouched: no `auth().kind ==
+  // "app"` on the `update` policy below, so writing still needs a human
+  // role no token this deployment can currently mint carries.
   @@audit
-  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
+  @@allow("read", auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
-  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("delete", hasRole('owner'))
   @@emit(created, updated, deleted)
 }
@@ -389,8 +433,23 @@ model Route {
   // golden test (crates/sms-api/tests/system_context_golden_list_live_postgres.rs)
   // rather than found live afterward — see that file for the guard and
   // AGENTS.md for this instance's own record.
+  //
+  // #54: `auth().kind == "app"` added alongside the human roles, same
+  // reasoning and same precedent as `Provider.read`'s own comment just
+  // above — the admin console's Routes screen (list) and the
+  // `simulateRoute` procedure both need a real machine credential to read
+  // this model, and `Route` has no `appId` either. `router::
+  // PROVIDER_ROUTE_READ_ROUTES` gates `GET /routes`/`GET /routes/{id}` on
+  // `route:read`; `simulateRoute` itself gates on the same permission via
+  // `require_permission` inside the procedure body (it reads under a
+  // `sys()` context internally, so this `@@allow` change isn't what makes
+  // the procedure work — `hasRole('system')` already covered that — but it
+  // is what makes the plain `GET /routes` list screen work). Write actions
+  // below are untouched: still owner/admin-only, so `POST`/`PATCH`/`DELETE
+  // /routes` remain unreachable by this console's own credential, same gap
+  // #59's `rest.ts` module doc already documents for `Provider`.
   @@audit
-  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
+  @@allow("read", auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
   @@allow("update", hasRole('owner') || hasRole('admin'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))
@@ -470,6 +529,17 @@ model Message {
   providerId Cuid?
   providerMessageRef String?
   providerMessageRefAlt String?
+  // #63: the failed `Route.id`s this message has already been rerouted
+  // away from, sentinel-packed (`sms_core::pack`/`unpack` — see that
+  // crate's own module doc; `Route.id` is a `Cuid`, format-guarded
+  // `[a-z0-9]{2,32}`, so it can never contain the separator or be empty,
+  // the two cases `pack` rejects). Both the exclude set `crates/sms-worker/
+  // src/dispatch.rs::attempt_failover` re-runs `sms_routing::select_route`
+  // with, and the two-hop cap §6.3 specifies — `unpack(...).len()` past 2
+  // means the next failure is terminal-for-this-message, not another
+  // reroute. `None`/absent until the first failover hop; never touched by
+  // `sendMessage` or by any state transition that isn't a failover reroute.
+  excludedRouteIds String?
 
   attempts Int @default(0)
   maxAttempts Int
@@ -1018,6 +1088,121 @@ type WorkerLocksResult {
 procedure workerLocks(): WorkerLocksResult
   @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
 
+// #54: the route simulator — "given this recipient, class and app, which
+// route wins and why" without sending anything (the epic's own words).
+// Every type below is a rendering of `sms_routing::Decision`
+// (crates/sms-routing, #62's pure engine) for the wire — never a
+// re-decision. `crates/sms-api/src/route_simulator.rs`'s own module doc
+// covers the mapping and the test that proves it can't silently drift from
+// the engine. No model backs any of this, so nothing here touches DDL.
+
+enum RouteOutcomeKind {
+  excluded
+  disabled
+  predicate_failed
+  provider_unavailable
+  eligible
+}
+
+// Mirrors `sms_routing::PredicateFailure`'s four variants — which
+// `match*` predicate a route failed on. `app_id`, not `appId`: enum
+// variants are lowercase-verbatim, and every existing multi-word variant
+// in this schema (`ProviderKind.orange_cm_http`,
+// `OperatorPrefixSource.manual`) uses snake_case, never camelCase.
+enum PredicateKind {
+  operator
+  class
+  app_id
+  prefix
+}
+
+// One `sms_routing::RouteEvaluation` per input route, in input order —
+// `sms_routing::Decision.evaluations` covers every route unconditionally
+// (excluded/disabled/ineligible included), so a caller never has to
+// re-derive "why wasn't route X picked" from anything but this list. The
+// `predicate*`/`unavailableReason` fields are pre-rendered display strings
+// (e.g. "mtn", "677"), not a second copy of `sms_routing`'s own typed
+// `PredicateFailure` — a lossless, purely presentational flattening of a
+// Rust enum onto nullable wire fields, the same shape `WorkerLockInfo`
+// above already uses for a different Rust struct.
+type RouteEvaluationInfo {
+  routeId Cuid
+  routeName String
+  priority Int
+  weight Int
+  providerId Cuid
+  outcome RouteOutcomeKind
+  // Only meaningful when `outcome == eligible` — `true` for the route(s)
+  // that actually entered the weighted draw (the highest-priority band
+  // with at least one eligible member). See `sms_routing::RouteOutcome::
+  // Eligible`'s own doc.
+  winningBand Boolean
+  predicateKind PredicateKind?
+  predicateExpected String?
+  predicateActual String?
+  unavailableReason String?
+}
+
+// One member of the winning priority band, as it entered the weighted
+// draw — mirrors `sms_routing::TieBreakRange`.
+type TieBreakRangeInfo {
+  routeId Cuid
+  weight Int
+  low Float
+  high Float
+}
+
+// Present iff the winning priority band had more than one eligible member
+// — mirrors `sms_routing::TieBreak`.
+type TieBreakInfo {
+  priority Int
+  draw Float
+  ranges TieBreakRangeInfo[]
+  winnerRouteId Cuid
+}
+
+// Mirrors `sms_routing::Winner`.
+type RouteWinnerInfo {
+  routeId Cuid
+  providerId Cuid
+  failoverRouteId Cuid?
+}
+
+// `draw` is optional and defaults to a fresh `rand::random()` per call —
+// the same "production draws once, a replay supplies the exact same
+// value" property `sms_routing::select_route`'s own doc describes,
+// exposed here so a caller can either take a realistic, freshly-drawn
+// sample (the common case: "what would happen right now") or pin an exact
+// value to see how a specific draw resolves a tie, without needing this
+// procedure to know anything about why.
+type SimulateRouteInput {
+  msisdn String
+  class MessageClass
+  appId Cuid
+  draw Float?
+}
+
+type SimulateRouteResult {
+  // Classified the same way `sendMessage` classifies it (`Procedures::
+  // classify_operator`, `OperatorPrefixRule`) — a routing *hint*, never
+  // load-bearing, per `sms-msisdn::operator`'s own doc.
+  operator OperatorCode
+  msisdnNational String
+  // `true` only when zero `Route` rows exist in the system at all — the
+  // #62-documented "dispatch refuses, loudly" state. Distinguished from
+  // "routes exist, none matched" (`evaluations` non-empty, `winner` null)
+  // so the simulator can render a dedicated banner rather than a table
+  // that merely looks empty. See `crates/sms-worker/src/routing.rs`'s own
+  // `explain_no_route` for the `stateReason` an operator sees on a
+  // rejected message when this happens for real.
+  noRoutesConfigured Boolean
+  evaluations RouteEvaluationInfo[]
+  tieBreak TieBreakInfo?
+  winner RouteWinnerInfo?
+}
+
+procedure simulateRoute(args: SimulateRouteInput): SimulateRouteResult
+  @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
 type MessageReceiptsInput {
   messageId Cuid
 }

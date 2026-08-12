@@ -236,6 +236,24 @@ export default function ComposerPage() {
             Workers
           </a>
           <a
+            href="/providers"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Providers
+          </a>
+          <a
+            href="/routes"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Routes
+          </a>
+          <a
+            href="/simulator"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Simulator
+          </a>
+          <a
             href="/gallery"
             className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
           >

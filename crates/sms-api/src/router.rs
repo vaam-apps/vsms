@@ -43,18 +43,24 @@ use crate::schema;
 /// `Provider.update`'s own generated route (`PATCH /providers/{id}`,
 /// confirmed via `route_table()`) is the natural CRUD write action the
 /// design doc's role table is describing. Its own `@@allow` (`schema.cstack`):
-/// `hasRole('owner') || hasRole('admin') || hasRole('operator')` — no
-/// `hasRole('app')`, unlike `sendMessage`'s procedure-level `@allow`. Combined
-/// with `GatewayAuth` only ever minting `role: "app"` or `role: "system"`
-/// (see its own doc — this deployment has no human-login path yet, #23/#24/
-/// #25's own tracked scope cut), Layer 1 alone already refuses every token
-/// this deployment can currently issue on this route, developer-shaped or
-/// not. This gate is real and tested (see `rbac.rs`'s own tests plus
-/// `tests/rbac_layer2_live_postgres.rs`) but is defense in depth today, not
-/// yet the thing a live caller actually bounces off — it becomes load-
-/// bearing the moment a role-bearing token exists to test the *positive*
-/// case against, which is why this constant, not a bespoke one-off, is what
-/// #25 should extend.
+/// `hasRole('owner') || hasRole('admin') || hasRole('operator') ||
+/// hasRole('system')` — the last disjunct added by #63 for
+/// `dispatch.rs`'s own circuit-breaker writes
+/// (`record_provider_failure`/`reset_provider_failures`, run under this
+/// crate's internal `sys()` context) — and still no `hasRole('app')`,
+/// unlike `sendMessage`'s procedure-level `@allow`. `system` changes
+/// nothing about this route's own perimeter: `GatewayAuth::authenticate`
+/// (`crates/sms-api/src/auth.rs`) constructs it exactly once, inside
+/// `Procedures::sys()`, and never from a real bearer token — see that
+/// module's own "Never `system`" comment. So Layer 1 alone still already
+/// refuses every token this deployment can currently issue on this route,
+/// developer-shaped or not (#23/#24/#25's own tracked scope cut: no
+/// human-login path exists yet). This gate is real and tested (see
+/// `rbac.rs`'s own tests plus `tests/rbac_layer2_live_postgres.rs`) but is
+/// defense in depth today, not yet the thing a live caller actually
+/// bounces off — it becomes load-bearing the moment a role-bearing token
+/// exists to test the *positive* case against, which is why this
+/// constant, not a bespoke one-off, is what #25 should extend.
 const PROVIDER_WRITE_ROUTES: &[RoutePermission] = &[RoutePermission {
     method: Method::PATCH,
     path: "/providers/{id}",
@@ -84,6 +90,45 @@ const JOB_READ_ROUTES: &[RoutePermission] = &[
         method: Method::GET,
         path: "/jobs/{id}",
         permission: "job:read",
+    },
+];
+
+/// #54: the same "unscoped but Layer 2-gated" shape [`JOB_READ_ROUTES`]
+/// established for `Job`, applied to `Provider`/`Route` — see
+/// `schema.cstack`'s own comment on each model's `read` `@@allow` for the
+/// full reasoning. Both models gained `auth().kind == "app"` alongside
+/// their existing human roles, and neither carries an `appId` to scope a
+/// row-level predicate by, so a granted `provider:read`/`route:read` scope
+/// (§5.2 — already the literal `operator`'s own `perms` carry) is the real
+/// perimeter standing between a provisioned app client and every
+/// `Provider`/`Route` row in the system, not defense in depth.
+///
+/// `POST /$procs/simulateRoute` is *not* listed here — that procedure
+/// reads `Route`/`Provider` under a `sys()` context internally (see
+/// `Procedures::simulate`'s own doc) and gates itself with
+/// `require_permission(ctx, "route:read")` inside its own body, the same
+/// pattern `requeueJob`/`workerLocks` already use for a procedure rather
+/// than a generated CRUD route.
+const PROVIDER_ROUTE_READ_ROUTES: &[RoutePermission] = &[
+    RoutePermission {
+        method: Method::GET,
+        path: "/providers",
+        permission: "provider:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/providers/{id}",
+        permission: "provider:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/routes",
+        permission: "route:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/routes/{id}",
+        permission: "route:read",
     },
 ];
 
@@ -461,7 +506,11 @@ fn verified_idempotency_fingerprint(req: &Request) -> String {
         .map_or_else(|| "unverified".to_owned(), |principal| principal.0.clone())
 }
 
-/// Build the HTTP surface: generated model CRUD plus the seven procedures.
+/// Build the HTTP surface: generated model CRUD plus every declared
+/// procedure. (Not "the seven procedures" any more — this comment's own
+/// stale count predates `requeueJob`/`workerLocks`/#54's `simulateRoute`;
+/// left as a plain, uncounted reference rather than a number that will only
+/// drift again the next time one is added.)
 ///
 /// `auth` validates every request against the OP's own published JWKS —
 /// see [`GatewayAuth`]'s own documentation for what it accepts and why.
@@ -589,6 +638,14 @@ pub fn router(
         auth: auth.clone(),
         requirements: JOB_READ_ROUTES,
     };
+    // #54: a third, independent `enforce_route_permission` instance, same
+    // reasoning `job_rbac_state`'s own comment above gives for being a
+    // second one rather than merged into `rbac_state` — disjoint route
+    // sets compose the same either way.
+    let provider_route_rbac_state = RbacState {
+        auth: auth.clone(),
+        requirements: PROVIDER_ROUTE_READ_ROUTES,
+    };
     let idempotency_auth_state = IdempotencyAuthState { auth: auth.clone() };
     let idempotency_store: Arc<dyn IdempotencyStore> =
         Arc::new(SqlxIdempotencyStore::new(db.pool().clone()));
@@ -600,6 +657,10 @@ pub fn router(
     schema::axum::router(db, Procedures::new(pepper), JsonCodec, auth)
         .layer(from_fn_with_state(rbac_state, enforce_route_permission))
         .layer(from_fn_with_state(job_rbac_state, enforce_route_permission))
+        .layer(from_fn_with_state(
+            provider_route_rbac_state,
+            enforce_route_permission,
+        ))
         .layer(
             IdempotencyLayer::new(idempotency_store, idempotency_ttl)
                 .with_principal_fingerprint(verified_idempotency_fingerprint),

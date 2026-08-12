@@ -247,6 +247,7 @@ async fn ensure_orange_cm_provider(db: &Cratestack) -> String {
             supportsConcat: true,
             costPerSegmentXaf: "19".parse().expect("static decimal literal parses"),
             healthCheckedAt: None,
+            circuitOpenUntil: None,
         })
         .run(&owner())
         .await
@@ -346,6 +347,7 @@ async fn seed_submitted_message(db: &Cratestack, app_id: &str, provider_id: &str
             providerId: None,
             providerMessageRef: None,
             providerMessageRefAlt: None,
+            excludedRouteIds: None,
             maxAttempts: 3,
             leaseOwner: None,
             leaseUntil: None,

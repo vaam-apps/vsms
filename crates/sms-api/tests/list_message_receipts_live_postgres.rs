@@ -158,6 +158,8 @@ async fn seed_provider(db: &Cratestack) -> String {
             supportsConcat: true,
             costPerSegmentXaf: "15".parse().unwrap(),
             healthCheckedAt: None,
+            // #63's circuit breaker column — no @default, so required here.
+            circuitOpenUntil: None,
         })
         .run(&owner())
         .await
@@ -199,6 +201,9 @@ async fn seed_message(db: &Cratestack, app_id: &str) -> schema::Message {
             submittedAt: None,
             finalizedAt: None,
             purgedAt: None,
+            // #63: the failover exclusion list. Nullable, no @default, so
+            // every fixture naming a Message has to set it.
+            excludedRouteIds: None,
         })
         .run(&sys())
         .await
