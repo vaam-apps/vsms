@@ -464,3 +464,17 @@ INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes, version)
     ('657', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
     ('658', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
     ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0);
+
+INSERT INTO roles (key, label, description, builtin, permissions, version) VALUES
+    ('owner',     'Owner',     'Break-glass. 1-2 humans.',            true,
+     ' message:read message:send message:cancel message:create message:update app:read app:write client:provision provider:read provider:update provider:delete route:read route:write sender:manage optout:manage webhook:manage job:read job:enqueue worker:read audit:read user:manage user:delete role:manage ', 0),
+    ('admin',     'Admin',     'Day-to-day administration.',          true,
+     ' message:read message:send message:cancel app:read app:write client:provision provider:read provider:update route:read route:write sender:manage optout:manage webhook:manage job:read job:enqueue worker:read audit:read user:manage ', 0),
+    ('operator',  'Operator',  'Runs traffic.',                       true,
+     ' message:read message:send message:cancel provider:read provider:update route:read sender:manage optout:manage job:read job:enqueue worker:read ', 0),
+    ('developer', 'Developer', 'Integrates apps.',                    true,
+     ' app:read webhook:manage message:read message:send ', 0),
+    ('auditor',   'Auditor',   'Read-only oversight. No mutations.',  true,
+     ' message:read app:read provider:read route:read job:read worker:read delivery:read audit:read ', 0),
+    ('support',   'Support',   'First-line support.',                 true,
+     ' message:read optout:manage delivery:read ', 0);

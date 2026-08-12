@@ -194,9 +194,18 @@ services:
       dockerfile: admin/Dockerfile
     restart: unless-stopped
     environment:
-      DASHBOARD_AUTH: ${DASHBOARD_AUTH:-basic}
-      DASHBOARD_BASIC_REALM: ${DASHBOARD_BASIC_REALM:-vsms Admin Console}
-      DASHBOARD_BASIC_USERS: ${DASHBOARD_BASIC_USERS:?set to username:sha256hex — see docs/runbooks/deployment.md}
+      # #194 replaced the DASHBOARD_AUTH Basic gate with a real
+      # authorization_code + PKCE login. It was a hard cutover, not a
+      # parallel path, so those three vars are gone entirely rather than
+      # optional — and these three are required in their place, with no
+      # defaults in @vsms/env. ADMIN_BASE_URL must be the public origin a
+      # browser actually reaches this console at: the redirect_uri
+      # registered by `sms-gateway seed-console-client` is compared as a
+      # whole string (RFC 6749 3.1.2), not by prefix, so an internal or
+      # loopback address here silently breaks every login.
+      ADMIN_BASE_URL: ${ADMIN_BASE_URL:?set to the public console origin, e.g. https://console.example.com}
+      SMS_CONSOLE_OIDC_CLIENT_ID: ${SMS_CONSOLE_OIDC_CLIENT_ID:-sms-console}
+      SMS_CONSOLE_SESSION_SECRET: ${SMS_CONSOLE_SESSION_SECRET:?32+ chars of real entropy — openssl rand -hex 32}
       # Plain http: the gateway is reached over this compose network's own
       # internal DNS, never the public internet — Caddy is the only thing
       # that terminates TLS (§9.2). @vsms/env's own cross-field rule
