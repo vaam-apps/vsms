@@ -61,11 +61,11 @@ flowchart TB
 
 ## Phases
 
-| Phase | Milestones | Question it answers | Status *(2026-08-11)* |
+| Phase | Milestones | Question it answers | Status *(2026-08-12)* |
 |---|---|---|---|
 | **1 — Foundation** | M0, M1 | Can we represent a message, and prove who is asking? | **Done** — 14/14 and 9/9 closed |
 | **2 — Deliver a message** | M2, M3 | Can one SMS reach a real handset, and can the caller find out what happened? | **Done** — M2 12/12, M3 8/8, both gates passing |
-| **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M4 **7/19**, M6 **2/8** — the largest remaining block |
+| **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M4 **11/19** (#50 closes the diagnostic-core gate below), M6 **2/8** — the largest remaining block |
 | **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | **Started** (2/6) — `sms-provider-mtn` (#61) and the routing rules engine (#62) landed; failover/circuit breakers (#63), grey-route detection (#64), and the kill-Orange-in-staging gate (#65) remain |
 | **5 — Conditional** | M7 | Direct MNO interconnect over SMPP | Not started, and **may never exist** — see decision #4 |
 
@@ -78,7 +78,7 @@ This is the part milestone numbering hides. **Phase 4 is not a prerequisite.** A
 What does block it:
 
 1. ~~**M3 finishing** (#43, #44).~~ **Resolved 2026-08-11.** Both landed; all three clauses of §12's M3 gate are automated against a real Postgres — signature verified by a real Node receiver subprocess (`hooks_node_receiver_live.rs`), no loss on a mid-drain `SIGKILL` (`kill9_reclaim_live.rs`), exactly one attempt per event across two workers (`hooks_two_workers_live.rs`). One caveat worth stating rather than burying: the Node-receiver clause only began *executing in CI* with the fix in #198 — the `live` job had no Node toolchain, so that test had failed at spawn on every run since it landed, and passed locally only because a human had run `pnpm install` by hand. "No event is lost" is now a demonstrated property; it was a belief for slightly longer than the story list suggested.
-2. **Enough of M4 to diagnose a failure.** §12's own gate for M4 is *"an operator can diagnose a failed message without touching SQL."* Not all 17 stories — the messages detail view (#50) and the jobs/workers screens (#56, #57) are the diagnostic core.
+2. ~~**Enough of M4 to diagnose a failure.**~~ **Resolved 2026-08-12.** §12's own gate for M4 is *"an operator can diagnose a failed message without touching SQL."* Not all 19 stories — the jobs/workers screens (#56, #57) and the messages detail view + state timeline (#50) were the diagnostic core, and all three are now closed. #50's own timeline chose to reconstruct from `DeliveryReceipt` rows rather than the audit log or a new transition-row model (schema/schema.cstack's own comment on `listMessageReceipts`), and is explicit about what it can't prove — verified live against a real `Indeterminate`-submit message (`routed -> uncertain`, zero receipts) driven through `just demo`, not just a clean `accepted -> delivered`.
 3. **M6's remaining compliance items** — and these are legal, not technical: consent records (#72), audit anchoring (#68). Retention purge (#67) is done — decision #5 resolved 2026-08-11 (90-day minimisation, no split ledger) and `purge_retention` shipped in the same PR that recorded the resolution. Law No. 2024/017 sanctions run to 100,000,000 FCFA and criminal penalties; this is the phase where "we'll do it after launch" is the expensive answer.
 4. **The one open decision below.**
 

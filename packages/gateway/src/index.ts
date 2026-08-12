@@ -40,13 +40,21 @@ export {
   MessageStreamHub,
 } from "./message-stream";
 export type {
+  DeliveryOutcome,
+  DeliveryReceiptSummary,
   ListMessagesInput,
   ListMessagesResult,
   MessageListItem,
+  MessageReceiptsResult,
   MessageRecord,
   StreamCandidate,
 } from "./messages";
-export { getMessageById, listMessages, listMessagesForStream } from "./messages";
+export {
+  getMessageById,
+  listMessageReceipts,
+  listMessages,
+  listMessagesForStream,
+} from "./messages";
 export type { WithEtag } from "./rest";
 export { fetchWithEtag, updateWithIfMatch } from "./rest";
 export { getAccessToken, invalidateAccessToken } from "./token";

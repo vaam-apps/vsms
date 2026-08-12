@@ -1,11 +1,16 @@
-//! The seven procedures the schema declares.
+//! The procedures the schema declares — eleven as of #50, not the seven
+//! this doc comment used to claim (stale since #56/#57 added `requeueJob`/
+//! `workerLocks` without correcting it; found while adding an eleventh,
+//! `listMessageReceipts`, and fixed in the same edit rather than left to
+//! drift further).
 //!
-//! `previewMessage`, `sendMessage`, `provisionAppClient`, and (#41)
-//! `rotateWebhookSecret` are implemented. The other three touch the job
-//! queue or outbound webhook delivery, none of which exist yet; each
-//! returns a clearly-labelled error naming the milestone that will build
-//! it, rather than a plausible-looking stub that would pass a smoke test
-//! and lie.
+//! `previewMessage`, `sendMessage`, `provisionAppClient`, (#41)
+//! `rotateWebhookSecret`, (#43) `replayWebhookAttempt`, (#56) `requeueJob`,
+//! (#57) `workerLocks`, and (#50) `listMessageReceipts` are implemented.
+//! `cancelMessage` and `enqueueJob` touch the job queue or a mutation this
+//! milestone doesn't build yet; each returns a clearly-labelled error
+//! naming the milestone that will build it, rather than a plausible-
+//! looking stub that would pass a smoke test and lie.
 //!
 //! # #71: `send`'s own span in the correlation chain
 //!
@@ -45,8 +50,8 @@ use crate::errors::map_database_error;
 use crate::pepper::{hmac_sha256_hex, HashPepper};
 use crate::rbac::require_permission;
 use crate::schema::{
-    self, app, app_client, job, message, operator_prefix_rule, opt_out, provider, sender_id,
-    sender_id_registration, webhook_attempt, webhook_endpoint,
+    self, app, app_client, delivery_receipt, job, message, operator_prefix_rule, opt_out, provider,
+    sender_id, sender_id_registration, webhook_attempt, webhook_endpoint,
 };
 use crate::worker_locks;
 
@@ -1216,6 +1221,75 @@ impl Procedures {
         let locks = worker_locks::current_locks(db).await?;
         Ok(schema::WorkerLocksResult { locks })
     }
+
+    /// #50: the message detail timeline's own data source.
+    ///
+    /// `DeliveryReceipt`'s own `list`/`detail` policy is
+    /// `auth().kind == "user" || hasRole('system')` — it has never admitted
+    /// `kind == "app"`, the only real caller kind this deployment mints
+    /// (`GatewayAuth::authenticate` hardcodes `role: "app"` for every
+    /// machine token; see `auth.rs`'s own doc). So the console's own
+    /// credential cannot read `GET /delivery_receipts` directly, the same
+    /// structural wall #59's own finding already named for `Provider`/
+    /// `WebhookEndpoint`. `@authorize(Message, detail, args.messageId)` on
+    /// the schema declaration is what closes that gap *safely*: it runs
+    /// before this function body ever executes, using the caller's own
+    /// real `ctx` — not `sys()` — against `Message`'s own `detail` policy
+    /// (`appId == auth().appId || hasRole('system')`), so a caller whose
+    /// token doesn't already own the referenced message never reaches this
+    /// line at all. Only once that's confirmed does this function read
+    /// under `sys()`, the same "declaratively gate entry, then read
+    /// broadly inside" shape `cancelMessage`/`replayWebhookAttempt` already
+    /// establish elsewhere in this file.
+    ///
+    /// `require_permission(ctx, "sms:read")` is Layer 2, on top of Layer
+    /// 1's broad `@allow(auth().kind == "app" || ...)` — the same
+    /// two-layer shape `worker_lock_snapshot` above uses for `worker:read`.
+    /// `sms:read` has been in `docs/architecture.md` §5.2's own scope
+    /// vocabulary and in `deploy/.env.example`'s `SMS_CONSOLE_SCOPE` since
+    /// #22/#24, provisioned but never actually checked anywhere — this is
+    /// its first real consumer.
+    ///
+    /// Ordered oldest-first (`receivedAt` ascending): the console's own
+    /// timeline reads top-to-bottom as "what happened, in order," and
+    /// `DeliveryReceipt.receivedAt` (when this system persisted the row,
+    /// not `occurredAt`, the provider's own optional, less trustworthy
+    /// timestamp) is the one ordering key every row is guaranteed to have.
+    async fn message_receipts(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::MessageReceiptsInput,
+    ) -> Result<schema::MessageReceiptsResult, CoolError> {
+        require_permission(ctx, "sms:read")?;
+
+        let sys = Self::sys();
+        let rows = db
+            .delivery_receipt()
+            .find_many()
+            .where_expr(FilterExpr::from(
+                delivery_receipt::messageId().eq(args.messageId),
+            ))
+            .order_by(delivery_receipt::receivedAt().asc())
+            .run(&sys)
+            .await?;
+
+        let receipts = rows
+            .into_iter()
+            .map(|row| schema::DeliveryReceiptSummary {
+                id: row.id,
+                providerId: row.providerId,
+                outcome: row.outcome,
+                rawStatus: row.rawStatus,
+                errorCode: row.errorCode,
+                networkCode: row.networkCode,
+                receivedAt: row.receivedAt,
+                occurredAt: row.occurredAt,
+            })
+            .collect();
+
+        Ok(schema::MessageReceiptsResult { receipts })
+    }
 }
 
 impl schema::procedures::ProcedureRegistry for Procedures {
@@ -1325,6 +1399,17 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         Output = Result<schema::procedures::worker_locks::Output, CoolError>,
     > + Send {
         self.worker_lock_snapshot(db, ctx)
+    }
+
+    fn list_message_receipts(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::list_message_receipts::Args,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::list_message_receipts::Output, CoolError>,
+    > + Send {
+        self.message_receipts(db, ctx, args.args)
     }
 }
 
