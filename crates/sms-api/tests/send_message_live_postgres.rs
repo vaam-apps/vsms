@@ -221,6 +221,7 @@ async fn seed_approved_sender(db: &Cratestack) -> String {
             supportsConcat: true,
             costPerSegmentXaf: "15".parse().unwrap(),
             healthCheckedAt: None,
+            circuitOpenUntil: None,
         })
         .run(&owner())
         .await

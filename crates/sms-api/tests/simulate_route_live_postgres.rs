@@ -135,6 +135,11 @@ async fn create_active_provider(db: &Cratestack, suffix: &str) -> String {
             supportsConcat: true,
             costPerSegmentXaf: "15".parse().expect("15 parses as a Decimal"),
             healthCheckedAt: None,
+            // #63 added the circuit breaker's own columns.
+            // `consecutiveFailures` carries a @default so it stays out of the
+            // create input; `circuitOpenUntil` does not, so every fixture that
+            // builds a Provider has to name it.
+            circuitOpenUntil: None,
         })
         .run(&owner())
         .await

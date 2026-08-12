@@ -102,12 +102,30 @@ fn convert_route(row: &schema::Route) -> RouteRow {
 /// it would make every provider permanently unavailable and every message
 /// reject, which is strictly worse than the M2 placeholder this replaces.
 /// So availability stays exactly `cheapest_active_provider`'s own check —
-/// `state == active` — not a stricter one this milestone can't satisfy;
-/// `healthy` becomes load-bearing here the moment a real health-check job
-/// exists to set it (#63/M5 follow-up, not this PR).
-fn convert_provider(row: &schema::Provider) -> ProviderRow {
-    let available = row.state == schema::ProviderState::active;
-    let reason = (!available).then(|| format!("provider state is {:?}, not active", row.state));
+/// `state == active` — plus one addition, #63: `state == active` alone is
+/// no longer sufficient once a provider's circuit breaker can be open.
+///
+/// This is the "must not fail a message a healthy alternative could carry"
+/// half of #63's own acceptance criterion, and it is what makes that
+/// property hold for free, for *every* future `accepted` message — not
+/// just the one whose failed submit tripped the breaker — because every
+/// fresh routing decision re-reads `Provider` and re-runs this check.
+/// `crates/sms-worker/src/dispatch.rs`'s `record_provider_failure`/
+/// `reset_provider_failures` are the only writers of `consecutiveFailures`/
+/// `circuitOpenUntil`; this is their one reader. Same shape
+/// `claim.rs::filter_by_endpoint_health` already uses for
+/// `WebhookEndpoint.circuitOpenUntil` — a breaker with different semantics
+/// here would be a second thing to remember, not a better one.
+fn convert_provider(row: &schema::Provider, now: chrono::DateTime<chrono::Utc>) -> ProviderRow {
+    let circuit_open = row.circuitOpenUntil.is_some_and(|until| until > now);
+    let available = row.state == schema::ProviderState::active && !circuit_open;
+    let reason = if circuit_open {
+        Some("circuit breaker open after consecutive Unavailable failures".to_owned())
+    } else if !available {
+        Some(format!("provider state is {:?}, not active", row.state))
+    } else {
+        None
+    };
     ProviderRow {
         id: row.id.clone(),
         available,
@@ -124,9 +142,10 @@ fn convert_provider(row: &schema::Provider) -> ProviderRow {
 ///
 /// This function is the entire I/O boundary — `sms_routing` itself never
 /// touches a database, a clock, or an RNG. `exclude` is threaded straight
-/// through to the pure engine for #63's own future use ("give me the next
-/// route after this one failed"); nothing in this milestone populates it
-/// with more than an empty set.
+/// through to the pure engine — #63's own mechanism
+/// (`crates/sms-worker/src/dispatch.rs::attempt_failover`) is the one
+/// caller that ever populates it with more than an empty set, by adding
+/// the route(s) a message has already been rerouted away from.
 pub async fn decide(
     db: &Cratestack,
     sys: &CoolContext,
@@ -145,6 +164,7 @@ pub async fn decide(
     provider_ids.sort_unstable();
     provider_ids.dedup();
 
+    let now = chrono::Utc::now();
     let providers: HashMap<String, ProviderRow> = if provider_ids.is_empty() {
         HashMap::new()
     } else {
@@ -154,7 +174,7 @@ pub async fn decide(
             .run(sys)
             .await?
             .iter()
-            .map(|row| (row.id.clone(), convert_provider(row)))
+            .map(|row| (row.id.clone(), convert_provider(row, now)))
             .collect()
     };
 

@@ -232,6 +232,7 @@ async fn ensure_orange_cm_provider(db: &Cratestack) -> String {
             supportsConcat: true,
             costPerSegmentXaf: "19".parse().expect("static decimal literal parses"),
             healthCheckedAt: None,
+            circuitOpenUntil: None,
         })
         .run(&owner())
         .await

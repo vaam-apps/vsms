@@ -43,18 +43,24 @@ use crate::schema;
 /// `Provider.update`'s own generated route (`PATCH /providers/{id}`,
 /// confirmed via `route_table()`) is the natural CRUD write action the
 /// design doc's role table is describing. Its own `@@allow` (`schema.cstack`):
-/// `hasRole('owner') || hasRole('admin') || hasRole('operator')` — no
-/// `hasRole('app')`, unlike `sendMessage`'s procedure-level `@allow`. Combined
-/// with `GatewayAuth` only ever minting `role: "app"` or `role: "system"`
-/// (see its own doc — this deployment has no human-login path yet, #23/#24/
-/// #25's own tracked scope cut), Layer 1 alone already refuses every token
-/// this deployment can currently issue on this route, developer-shaped or
-/// not. This gate is real and tested (see `rbac.rs`'s own tests plus
-/// `tests/rbac_layer2_live_postgres.rs`) but is defense in depth today, not
-/// yet the thing a live caller actually bounces off — it becomes load-
-/// bearing the moment a role-bearing token exists to test the *positive*
-/// case against, which is why this constant, not a bespoke one-off, is what
-/// #25 should extend.
+/// `hasRole('owner') || hasRole('admin') || hasRole('operator') ||
+/// hasRole('system')` — the last disjunct added by #63 for
+/// `dispatch.rs`'s own circuit-breaker writes
+/// (`record_provider_failure`/`reset_provider_failures`, run under this
+/// crate's internal `sys()` context) — and still no `hasRole('app')`,
+/// unlike `sendMessage`'s procedure-level `@allow`. `system` changes
+/// nothing about this route's own perimeter: `GatewayAuth::authenticate`
+/// (`crates/sms-api/src/auth.rs`) constructs it exactly once, inside
+/// `Procedures::sys()`, and never from a real bearer token — see that
+/// module's own "Never `system`" comment. So Layer 1 alone still already
+/// refuses every token this deployment can currently issue on this route,
+/// developer-shaped or not (#23/#24/#25's own tracked scope cut: no
+/// human-login path exists yet). This gate is real and tested (see
+/// `rbac.rs`'s own tests plus `tests/rbac_layer2_live_postgres.rs`) but is
+/// defense in depth today, not yet the thing a live caller actually
+/// bounces off — it becomes load-bearing the moment a role-bearing token
+/// exists to test the *positive* case against, which is why this
+/// constant, not a bespoke one-off, is what #25 should extend.
 const PROVIDER_WRITE_ROUTES: &[RoutePermission] = &[RoutePermission {
     method: Method::PATCH,
     path: "/providers/{id}",
