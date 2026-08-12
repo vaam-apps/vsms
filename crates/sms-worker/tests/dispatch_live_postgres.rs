@@ -288,6 +288,11 @@ async fn disable_every_route(db: &Cratestack) {
                 enabled: Some(false),
                 ..Default::default()
             })
+            // #59: Route is @version'd now. This is a runtime requirement,
+            // not a compile-time one — without it cratestack rejects the
+            // write with `PreconditionFailed("If-Match header required for
+            // versioned model")`, which `cargo check` cannot see.
+            .if_match(route.version)
             .run(&owner())
             .await
             .expect("disabling a leftover enabled route");

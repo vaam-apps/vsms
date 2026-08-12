@@ -213,6 +213,10 @@ async fn ensure_route(db: &Cratestack, provider_id: &str) -> anyhow::Result<()> 
                     enabled: Some(true),
                     ..Default::default()
                 })
+                // #59: Route is @version'd. Runtime-enforced, not
+                // compile-enforced — see this file's sibling in
+                // app/sms-gateway/src/main.rs.
+                .if_match(row.version)
                 .run(&owner())
                 .await?;
             println!(

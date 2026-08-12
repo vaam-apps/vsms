@@ -1014,6 +1014,11 @@ async fn ensure_catch_all_route(
                     enabled: Some(true),
                     ..Default::default()
                 })
+                // #59: Route is @version'd. Runtime-enforced, not
+                // compile-enforced — without this, `seed-dispatch` (the
+                // command both runbooks tell an operator to run) fails at
+                // exactly the point it is meant to repair a disabled route.
+                .if_match(row.version)
                 .run(ctx)
                 .await
                 .context("re-enabling the existing Route")?;
