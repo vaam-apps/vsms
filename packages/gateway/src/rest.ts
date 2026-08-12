@@ -42,6 +42,23 @@ import "server-only";
 // `If-Match` attachment, real error-shape mapping — everything this layer
 // owns — with a fake upstream standing in for sms-api, not a live one,
 // because no real one is callable yet for any model this ticket touches.
+//
+// **Correction, #54: the "`GatewayAuth::authenticate` hardcodes `role:
+// "app"` for every real token" line above is no longer true — #194 (human
+// login) landed after this paragraph was written, and `GatewayAuth` now
+// genuinely resolves a real `hasRole(...)`-meaningful context for a human
+// `authorization_code` token.** What the paragraph's own conclusion still
+// gets right, for a narrower reason: `token.ts`'s `SMS_CONSOLE_CLIENT_ID`
+// credential is a *separate* `client_credentials` `AppClient`, untouched by
+// #194, and every function in this file (and every screen that calls one)
+// still authenticates exclusively through it — never the browser session's
+// own now-real human token (`admin/lib/oidc.ts::Session.accessToken`,
+// minted under a different `OauthClient`, `GatewayAuth::human_client_id`,
+// default `"sms-console"`). So `PATCH /providers/{id}` etc. are still not
+// reachable by this console's own credential, still for a structural
+// reason, just not the one originally written here — see
+// `packages/gateway/src/providers.ts`'s own module doc for the full,
+// corrected mechanism.
 
 import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";

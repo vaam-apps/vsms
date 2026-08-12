@@ -11,9 +11,12 @@ import "server-only";
 // PROVIDER_ROUTE_READ_ROUTES` on `route:read`. Writes
 // (`create`/`update`/`delete`) stay `hasRole('owner') || hasRole('admin')`
 // only — untouched by this PR — so every write function below is real,
-// tested code that cannot succeed against a real gateway until #194 lands,
-// the identical situation `providers.ts`'s `updateProvider` documents.
-// `routes-screen.tsx` states this on screen.
+// tested code that 403s against a real gateway regardless of who is
+// logged into the browser, the identical situation `providers.ts`'s
+// `updateProvider` documents at length (#194 landed a real human login,
+// but nothing forwards that session's own token through this package —
+// every call here still authenticates as the one static machine
+// credential). `routes-screen.tsx` states this on screen.
 //
 // `GET /routes` returns a bare JSON array (non-`@@paged`, same as
 // `GET /providers` — see `providers.ts`'s own doc for how that was
@@ -184,8 +187,8 @@ export interface CreateRouteFields {
   failoverRouteId?: string | undefined;
 }
 
-/** `POST /routes`. See module doc for why this cannot succeed against a
- * real gateway until #194 lands. */
+/** `POST /routes`. See module doc for why this 403s against a real
+ * gateway regardless of who is logged into the browser. */
 export async function createRoute(fields: CreateRouteFields): Promise<RouteRecord> {
   return postJson<RouteRecord>("/routes", fields, "createRoute");
 }

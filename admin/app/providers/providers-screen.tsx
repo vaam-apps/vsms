@@ -13,11 +13,16 @@
 // and view every row for real, over real HTTP, through `just demo`.
 // `Provider.update` stays `hasRole('owner') || hasRole('admin') ||
 // hasRole('operator')` only, untouched: no `auth().kind == "app"` clause at
-// all. `GatewayAuth` (`crates/sms-api/src/auth.rs`) hardcodes `role: "app"`
-// for every real token this deployment mints — not read from any claim —
-// so no token this deployment can currently issue can ever satisfy that
-// policy, regardless of scope. That closes the moment #194 (human login)
-// lands; until then, Save is real, wired code that will 403.
+// all. #194 (human login) has landed, and `GatewayAuth` genuinely resolves
+// a real `hasRole(...)`-meaningful context for a human token now — this is
+// no longer "no principal can ever satisfy that policy." What still blocks
+// Save: this screen calls `packages/gateway/src/providers.ts`, and every
+// function there authenticates as this console's own separate machine
+// credential (`SMS_CONSOLE_CLIENT_ID`, `role: "app"` always), never the
+// logged-in human's own session token — see that module's own doc for the
+// full mechanism. Save is real, wired code that 403s regardless of who is
+// logged into the browser, until that package is rewired to forward a
+// human session token instead.
 //
 // # Why no live poll
 //
@@ -178,9 +183,10 @@ export function ProvidersScreen() {
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
         This list is real — the console's own credential can read every row. Saving an edit is real,
-        wired code too, but cannot succeed yet: it needs a human role (owner/admin/operator) this
-        deployment has no login flow to issue (#194). Every Save below will fail with{" "}
-        <span className="font-mono text-foreground">Forbidden</span> until that lands.
+        wired code too, but cannot succeed yet: this console still talks to the gateway with its own
+        machine credential, not your logged-in session, so it can never satisfy Provider.update's
+        owner/admin/operator requirement. Every Save below will fail with{" "}
+        <span className="font-mono text-foreground">Forbidden</span> until that's rewired.
       </div>
 
       {listQuery.isError && (

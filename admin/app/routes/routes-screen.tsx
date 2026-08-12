@@ -213,9 +213,10 @@ export function RoutesScreen() {
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
         This list is real. Create/Save/Delete below are real, wired code too, but cannot succeed
-        yet: they need a human role (owner/admin) this deployment has no login flow to issue (#194).
-        Every write below will fail with{" "}
-        <span className="font-mono text-foreground">Forbidden</span> until that lands.
+        yet: this console still talks to the gateway with its own machine credential, not your
+        logged-in session, so it can never satisfy Route's owner/admin requirement. Every write
+        below will fail with <span className="font-mono text-foreground">Forbidden</span> until
+        that's rewired.
       </div>
 
       {!listQuery.isLoading && (listQuery.data?.length ?? 0) === 0 && (
