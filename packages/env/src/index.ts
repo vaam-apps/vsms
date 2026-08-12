@@ -10,7 +10,19 @@ export const env = createEnv({
     SMS_AUTH_ISSUER: z.string().url(),
     SMS_CONSOLE_CLIENT_ID: z.string(),
     SMS_CONSOLE_PRIVATE_KEY_PATH: z.string(),
-    SMS_CONSOLE_SCOPE: z.string().min(1).default("sms:send sms:read"),
+    // #56/#57: job:read/job:enqueue (Jobs screen) and worker:read (Workers
+    // screen) — the console's own AppClient must be *provisioned* with
+    // these scopes too (`scripts/demo.sh`'s `provision-client` call, or the
+    // getting-started runbook's own `--scope` flags); requesting a scope
+    // the client isn't registered for at `/token` fails the exchange, and
+    // omitting it here even when the client *is* registered still denies
+    // every call at Layer 2 (`sms_api::rbac::require_permission` — an
+    // absent scope claim is denial, never a fallback to "whatever the
+    // client is allowed to ask for").
+    SMS_CONSOLE_SCOPE: z
+      .string()
+      .min(1)
+      .default("sms:send sms:read job:read job:enqueue worker:read"),
     // #194: the human authorization-code + PKCE flow. DASHBOARD_AUTH
     // (none|basic) is gone — a hard cutover, not a parallel path: see
     // admin/middleware.ts's own module doc for why leaving Basic auth

@@ -108,6 +108,15 @@ anyhow.workspace = true
 # The four *_live_postgres.rs suites in tests/ get their DATABASE_URL from
 # this instead of the environment — see its own module doc.
 sms-test-support.workspace = true
+# worker_locks_live_postgres.rs (#57) needs a real RoleLease held over a
+# real connection to prove `Procedures::worker_locks` reports it correctly
+# — not a hand-built pg_locks row. Dev-only, and safe despite `sms-worker`'s
+# own normal dependency on `sms-api`: Cargo builds `sms-api`'s *library*
+# (which `sms-worker` depends on) independently of `sms-api`'s *test*
+# binaries (which is the only place this dev-dependency is used), so the
+# two edges never form a cycle in the actual build graph, only in a naive
+# "which crate mentions which" reading of it.
+sms-worker.workspace = true
 
 [lints]
 workspace = true

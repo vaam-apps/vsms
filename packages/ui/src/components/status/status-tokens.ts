@@ -214,3 +214,118 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
 export function isTerminalMessageState(state: MessageState): boolean {
   return MESSAGE_STATUS_META[state].family === "terminal";
 }
+
+/**
+ * #56: the follow-up this file's own module doc named — `job_state_
+ * transitions` (`schema/migrations/postgres/0002_bootstrap/up.sql`),
+ * verbatim: `pending`, `running`, `succeeded`, `failed`, `dead`,
+ * `cancelled`. `dead` replaces what would otherwise be a second
+ * `failed`-shaped terminal state — see [`JOB_STATUS_META`]'s own comment
+ * on `failed` for why the two are deliberately not styled the same way a
+ * naive copy from [`MESSAGE_STATUS_META`] would.
+ */
+export const JOB_STATES = [
+  "pending",
+  "running",
+  "succeeded",
+  "failed",
+  "dead",
+  "cancelled",
+] as const;
+
+export type JobState = (typeof JOB_STATES)[number];
+
+/**
+ * Job states are not equivalent to message states, even where the names
+ * match — reusing [`MESSAGE_STATUS_META`]'s glyph choices verbatim would
+ * be the same "silent copy-paste" this file's own module doc already
+ * warns against for `dead`/`failed`:
+ *
+ * - **`failed` is retryable, not terminal.** `failed -> pending` is a
+ *   legal edge (`jobs::apply_failure`'s own automatic backoff) — a job
+ *   only reaches `dead` once `maxAttempts` is exhausted. Styled
+ *   `unresolved`/`uncertain`, the same family `undelivered` (a message
+ *   state that *is* retryable, just with no driver yet) already uses,
+ *   never `danger`/terminal the way a message's own `failed` is. In
+ *   practice this state is close to unobservable — `apply_failure` writes
+ *   `running -> failed` and then, within the same function call, `failed
+ *   -> {pending, dead}` — but the table has to classify every state
+ *   `JobState` admits, not just the ones a poll is likely to catch mid-
+ *   flight.
+ * - **`dead` is the real terminal failure** — attempts exhausted, and
+ *   (#56) the one state `requeueJob` accepts. Styled `danger`/loud, the
+ *   analogue of a message's own `failed`.
+ */
+export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
+  pending: {
+    family: "in-flight",
+    silhouette: "circle",
+    mark: "pie-1",
+    hue: "neutral",
+    filled: false,
+    attention: "quiet",
+    labelEn: "Pending",
+    labelFr: "En attente",
+    tooltipEn: "Waiting to be claimed, or waiting out a retry backoff.",
+  },
+  running: {
+    family: "in-flight",
+    silhouette: "circle",
+    mark: "pie-3",
+    hue: "neutral",
+    filled: false,
+    attention: "quiet",
+    labelEn: "Running",
+    labelFr: "En cours",
+    tooltipEn: "Claimed by a worker and currently executing.",
+  },
+  succeeded: {
+    family: "terminal",
+    silhouette: "circle",
+    mark: "check",
+    hue: "success",
+    filled: true,
+    attention: "quiet",
+    labelEn: "Succeeded",
+    labelFr: "Réussi",
+    tooltipEn: "Completed without error.",
+  },
+  failed: {
+    family: "unresolved",
+    silhouette: "diamond",
+    mark: "clock",
+    hue: "uncertain",
+    filled: false,
+    attention: "loud",
+    labelEn: "Failed (retrying)",
+    labelFr: "Échec (nouvel essai)",
+    tooltipEn:
+      "The last attempt errored. Not terminal — it will retry automatically after a backoff, unless attempts are exhausted (then it moves to Dead).",
+  },
+  dead: {
+    family: "terminal",
+    silhouette: "circle",
+    mark: "cross",
+    hue: "danger",
+    filled: true,
+    attention: "loud",
+    labelEn: "Dead",
+    labelFr: "Abandonné",
+    tooltipEn: "Every attempt failed and the retry budget is exhausted. Requeue to try again.",
+  },
+  cancelled: {
+    family: "terminal",
+    silhouette: "circle",
+    mark: "bar",
+    hue: "neutral",
+    filled: true,
+    attention: "quiet",
+    labelEn: "Cancelled",
+    labelFr: "Annulé",
+    tooltipEn: "Cancelled before it ran.",
+  },
+};
+
+export function isTerminalJobState(state: JobState): boolean {
+  return JOB_STATUS_META[state].family === "terminal";
+}

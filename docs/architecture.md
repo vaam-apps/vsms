@@ -1122,8 +1122,17 @@ CREATE TABLE job_state_transitions (
 INSERT INTO job_state_transitions (from_state, to_state) VALUES
     ('pending','running'),  ('pending','cancelled'),
     ('running','succeeded'),('running','failed'),   ('running','pending'),
-    ('failed','pending'),   ('failed','dead'),      ('failed','cancelled');
--- succeeded, dead, cancelled are terminal.
+    ('failed','pending'),   ('failed','dead'),      ('failed','cancelled'),
+    ('dead','pending');
+-- succeeded, cancelled are terminal. `dead -> pending` (#56): the one
+-- caller is `requeueJob` (crates/sms-api/src/procedures.rs) — an operator's
+-- explicit "try this again" action from the admin Jobs screen, never
+-- proposed by the automatic pipeline (`crates/sms-worker/src/jobs.rs`'s own
+-- `apply_failure` only ever writes `failed -> {pending, dead}`, never reads
+-- a `dead` row again). Same shape as `attempt_state_transitions`'
+-- `dead -> pending` (#43) two sections below, added for the identical
+-- reason: a `dead` job is otherwise a true dead end, and this is the one
+-- sanctioned way back from it.
 
 CREATE OR REPLACE FUNCTION jobs_guard_transition() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -1832,13 +1841,15 @@ Humans get roles. Service accounts get OAuth scopes. Different vocabularies on p
 |---|---|---|
 | `owner` | Break-glass. 1–2 humans. | everything, incl. `role:manage`, `user:delete`, `provider:delete`, `client:provision` |
 | `admin` | Day-to-day administration | all except role editing and owner-level deletes |
-| `operator` | Runs traffic | `message:read/send/cancel`, `provider:read/update`, `route:read`, `sender:manage`, `optout:manage`, `job:read/enqueue` |
+| `operator` | Runs traffic | `message:read/send/cancel`, `provider:read/update`, `route:read`, `sender:manage`, `optout:manage`, `job:read/enqueue`, `worker:read` |
 | `developer` | Integrates apps | `app:read`, `webhook:manage`, `message:read`, `message:send` |
 | `auditor` | Read-only oversight | `*:read`, `audit:read`. No mutations anywhere. |
 | `support` | First-line | `message:read`, `optout:manage`, `delivery:read` |
 | `system` | Internal only | `message:create/update`, `receipt:create`, `job:update`. **Never issued to a human, never reachable from any HTTP route.** |
 
-Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`. Registered per `AppClient` and enforced verbatim — scopes are rejected rather than filtered, and an omitted `scope` yields `scope: None`, which your check must treat as denial.
+Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`, and (#56/#57) `job:read`, `job:enqueue`, `worker:read` — the same literals `operator`'s own `perms` carry, reused verbatim rather than invented separately, since `require_permission` (§5.1) checks either claim for the identical string. Registered per `AppClient` and enforced verbatim — scopes are rejected rather than filtered, and an omitted `scope` yields `scope: None`, which your check must treat as denial.
+
+**Implementation, #56/#57.** `Job`'s own `@@allow("list"/"detail", ...)` admits `auth().kind == "app"` unscoped (no `appId` on `Job` to filter by, unlike `Message`) — the same shape `SenderId`/`OptOut` already use. That makes the Layer 2 scope check the *real* perimeter for the admin console's Jobs screen, not defense in depth: `router::JOB_READ_ROUTES` gates `GET /jobs`/`GET /jobs/{id}` on `job:read`, and `requeueJob`'s own `require_permission(ctx, "job:enqueue")` gates the re-enqueue write. `workerLocks` is gated the same way, on `worker:read`. Any provisioned app client that never requested these scopes gets a `403`, exactly like an app client without `sms:send` cannot call `sendMessage` — the admin console's own client is provisioned with all three (`scripts/demo.sh`, `docs/runbooks/getting-started.md`).
 
 `system` deserves emphasis. It's the context the send procedure and the worker bind internally — `bind_auth(json!({"sub":"system","kind":"system","role":"system","appId":""}))` — to write past the `hasRole('system')` gates. `role` must be `"system"`; `hasRole` never looks at `kind`. It must be constructible only inside a process: `system` is not a row in `roles`, and the token issuer denylists it.
 
@@ -2226,12 +2237,14 @@ stateDiagram-v2
     failed --> pending: backoff elapsed, attempts < max
     failed --> dead: attempts exhausted
     failed --> cancelled: operator
+    dead --> pending: operator requeues (#56)
     succeeded --> [*]
-    dead --> [*]
     cancelled --> [*]
 ```
 
 `running → pending` is the crash path: a worker dies holding a lease, the lease expires, the next claim cycle moves it back to `pending` and increments `attempts`. Because that edge exists in the transition table, reclaiming is a legal move rather than a special case someone has to remember to allow.
+
+**Implementation, #56.** `dead → pending` is the one edge `requeueJob` (`crates/sms-api/src/procedures.rs`, admin Jobs screen) is allowed to propose — an operator's explicit "try this again," resetting `attempts` to 0 and clearing `lastError`/`leaseOwner`/`leaseUntil` so the job gets a fresh run at its full `maxAttempts` budget rather than resuming an already-exhausted counter. Nothing in the automatic pipeline ever writes this edge; `jobs::apply_failure` only ever reaches `dead` from `failed`, never leaves it. `dead` is therefore no longer a true terminal state, the same way #43 made `WebhookAttempt`'s `dead` non-terminal — only `succeeded`/`cancelled` are, for `Job`.
 
 Job kinds, all enqueued by the `scheduler` role with a `dedupeKey`:
 

@@ -39,6 +39,16 @@
 //!   `router::PROVIDER_WRITE_ROUTES`'s own doc for the same point made
 //!   from the production-code side.
 //!
+//! - **`GET /jobs`** (`job:read`), #56/#57's own anchor —
+//!   `router::JOB_READ_ROUTES`. Unlike `PROVIDER_WRITE_ROUTES`, this one
+//!   *can* prove a live success case: `Job`'s own `@@allow("list", ...)`
+//!   admits `auth().kind == "app"` (`schema.cstack`'s own comment explains
+//!   why — Layer 2 is the real perimeter here, not defense in depth), so a
+//!   real `client_credentials` token scoped for `job:read` reaches all the
+//!   way through both layers to a real `200` with real rows. Proves the
+//!   same three shapes `sendMessage` does (no scope, wrong scope, correct
+//!   scope) plus the actual success case `PROVIDER_WRITE_ROUTES` can't.
+//!
 //! Ignored by default, same convention as this workspace's other live
 //! suites. Run explicitly:
 //!
@@ -270,7 +280,7 @@ async fn seed_app_and_client(db: &Cratestack, jwks_json: &str) -> String {
             appId: app.id.clone(),
             clientId: client_id.clone(),
             label: "rbac layer2 test client".to_owned(),
-            scopes: " sms:send sms:read ".to_owned(),
+            scopes: " sms:send sms:read job:read ".to_owned(),
             lastUsedAt: None,
             retiredAt: None,
         })
@@ -285,7 +295,7 @@ async fn seed_app_and_client(db: &Cratestack, jwks_json: &str) -> String {
             tokenEndpointAuthMethod: schema::ClientAuthMethod::private_key_jwt,
             jwks: Some(jwks_json.to_owned()),
             grantTypes: " client_credentials ".to_owned(),
-            scopes: " sms:send sms:read ".to_owned(),
+            scopes: " sms:send sms:read job:read ".to_owned(),
             redirectUris: " ".to_owned(),
             requirePkce: false,
         })
@@ -701,5 +711,89 @@ async fn a_route_this_middleware_does_not_gate_is_unaffected() {
         response.status().is_success(),
         "previewMessage carries no permission requirement and must be unaffected by #24: {}",
         response.status()
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn job_read_route_denies_a_token_with_no_scope_at_all() {
+    let _guard = TEST_MUTEX.lock().await;
+    let server = setup().await;
+    let token_response = request_token(&server, None).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/jobs", server.issuer))
+        .bearer_auth(access_token(&token_response))
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .expect("calling GET /jobs");
+
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    let body: serde_json::Value = response.json().await.expect("parsing the error body");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("job:read"),
+        "expected the denial to name the missing permission: {body}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn job_read_route_denies_a_token_scoped_for_something_else() {
+    let _guard = TEST_MUTEX.lock().await;
+    let server = setup().await;
+    let token_response = request_token(&server, Some("sms:send")).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/jobs", server.issuer))
+        .bearer_auth(access_token(&token_response))
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .expect("calling GET /jobs");
+
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "a token scoped only for sms:send must not be able to read the job backlog"
+    );
+}
+
+/// The success case `PROVIDER_WRITE_ROUTES`'s own tests above cannot prove
+/// (see this file's module doc): `Job`'s Layer 1 `@@allow` genuinely admits
+/// `auth().kind == "app"`, so a correctly-scoped real token reaches all the
+/// way through to a real `200`, not just past Layer 2's own gate.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn job_read_route_succeeds_for_a_token_carrying_job_read() {
+    let _guard = TEST_MUTEX.lock().await;
+    let server = setup().await;
+    let token_response = request_token(&server, Some("job:read")).await;
+    assert_eq!(
+        token_response["scope"].as_str(),
+        Some("job:read"),
+        "the OP must echo back exactly the scope it granted: {token_response}"
+    );
+
+    let response = reqwest::Client::new()
+        .get(format!("{}/jobs", server.issuer))
+        .bearer_auth(access_token(&token_response))
+        .header(reqwest::header::ACCEPT, "application/json")
+        .send()
+        .await
+        .expect("calling GET /jobs");
+
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.expect("parsing the response body");
+    assert!(
+        status.is_success(),
+        "a correctly-scoped token must be able to read the job backlog: {status}: {body}"
+    );
+    assert!(
+        body["items"].is_array(),
+        "GET /jobs must return the standard paged envelope: {body}"
     );
 }

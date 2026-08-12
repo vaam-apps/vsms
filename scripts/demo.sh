@@ -114,10 +114,20 @@ up() {
   log "provisioning a console client for App $app_id"
   rm -f "$KEY_FILE"
   local prov_out client_id
+  # job:read/job:enqueue/worker:read (#56/#57): the admin console's Jobs and
+  # Workers screens are gated behind these scopes at Layer 2
+  # (`require_permission`) precisely because `Job`'s own Layer 1 `@@allow`
+  # admits any `auth().kind == "app"` caller unscoped (no `appId` to filter
+  # by — see `schema.cstack`'s own comment on `Job`) — a client provisioned
+  # without them can authenticate fine but gets a 403 reading the job
+  # backlog or the workers screen, same as it already would calling
+  # sendMessage without `sms:send`.
   prov_out="$(DATABASE_URL="$DATABASE_URL" SMS_HASH_PEPPER="$pepper" \
     ./target/debug/sms-gateway provision-client \
     --app-id "$app_id" --label "demo console" \
-    --scope sms:send --scope sms:read --key-out "$KEY_FILE")"
+    --scope sms:send --scope sms:read \
+    --scope job:read --scope job:enqueue --scope worker:read \
+    --key-out "$KEY_FILE")"
   echo "$prov_out"
   client_id="$(echo "$prov_out" | sed -n 's/^provisioned client: \(.*\)$/\1/p')"
   # Same reuse contract as app-id above.
@@ -161,7 +171,7 @@ SMS_API_URL=http://127.0.0.1:${GATEWAY_PORT}
 SMS_AUTH_ISSUER=http://127.0.0.1:${GATEWAY_PORT}
 SMS_CONSOLE_CLIENT_ID=${client_id}
 SMS_CONSOLE_PRIVATE_KEY_PATH=${KEY_FILE}
-SMS_CONSOLE_SCOPE=sms:send sms:read
+SMS_CONSOLE_SCOPE=sms:send sms:read job:read job:enqueue worker:read
 
 MESSAGE_STREAM_POLL_MS=2000
 

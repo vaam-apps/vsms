@@ -54,6 +54,14 @@ export function DialogHeader({ className, ...props }: React.HTMLAttributes<HTMLD
   return <div className={cn("mb-4 flex flex-col gap-1", className)} {...props} />;
 }
 
+/** #56: the confirm/requeue dialog's own action row — the first `Dialog`
+ * consumer that needs one. Mirrors `DialogHeader`'s shape (a thin,
+ * class-composing div, not a Radix-wrapped primitive — a footer has no
+ * accessibility semantics `DialogPrimitive` needs to own). */
+export function DialogFooter({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("mt-6 flex items-center justify-end gap-2", className)} {...props} />;
+}
+
 export const DialogTitle = forwardRef<
   React.ElementRef<typeof DialogPrimitive.Title>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Title>

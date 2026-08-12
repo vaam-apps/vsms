@@ -61,6 +61,32 @@ const PROVIDER_WRITE_ROUTES: &[RoutePermission] = &[RoutePermission {
     permission: "provider:update",
 }];
 
+/// #56/#57: unlike [`PROVIDER_WRITE_ROUTES`], this gate is the *real*
+/// perimeter, not defense in depth — see `schema.cstack`'s own comment on
+/// `Job`'s `@@allow("list"/"detail", ...)` for the full reasoning. `Job`
+/// carries no `appId`, so Layer 1 has no per-row predicate to scope
+/// `auth().kind == "app"` by the way `Message`'s own policy scopes by
+/// `appId == auth().appId`; any provisioned app client passes Layer 1
+/// exactly the same as the admin console's own credential does. Only a
+/// granted `job:read` scope (`AppClient.scopes`, §5.2 — the admin console's
+/// own client is provisioned with it, `scripts/demo.sh`) stands between a
+/// customer's app client and the whole system's job backlog. Two routes,
+/// not one: `GET /jobs` (the backlog list, #56) and `GET /jobs/{id}` (the
+/// generated router's own detail lookup, reachable independently of the
+/// list route).
+const JOB_READ_ROUTES: &[RoutePermission] = &[
+    RoutePermission {
+        method: Method::GET,
+        path: "/jobs",
+        permission: "job:read",
+    },
+    RoutePermission {
+        method: Method::GET,
+        path: "/jobs/{id}",
+        permission: "job:read",
+    },
+];
+
 /// #153: the TTL a cached `Idempotency-Key` response stays replayable —
 /// matches `docs/architecture.md` §4.5's own figure, 24 hours. Exposed so
 /// every construction site (the real `sms-gateway serve` command and the
@@ -551,6 +577,18 @@ pub fn router(
         auth: auth.clone(),
         requirements: PROVIDER_WRITE_ROUTES,
     };
+    // #56/#57: a second, independent `enforce_route_permission` instance
+    // rather than merging into `rbac_state` above — `RbacState.requirements`
+    // is one `&'static [RoutePermission]`, and stacking a second Tower layer
+    // is simpler than hand-concatenating two const slices at compile time
+    // for no behavioural difference (`enforce_route_permission` is a no-op
+    // for any request that doesn't match its own `requirements`, so two
+    // layers with disjoint route sets compose exactly like one layer with
+    // the union would).
+    let job_rbac_state = RbacState {
+        auth: auth.clone(),
+        requirements: JOB_READ_ROUTES,
+    };
     let idempotency_auth_state = IdempotencyAuthState { auth: auth.clone() };
     let idempotency_store: Arc<dyn IdempotencyStore> =
         Arc::new(SqlxIdempotencyStore::new(db.pool().clone()));
@@ -561,6 +599,7 @@ pub fn router(
 
     schema::axum::router(db, Procedures::new(pepper), JsonCodec, auth)
         .layer(from_fn_with_state(rbac_state, enforce_route_permission))
+        .layer(from_fn_with_state(job_rbac_state, enforce_route_permission))
         .layer(
             IdempotencyLayer::new(idempotency_store, idempotency_ttl)
                 .with_principal_fingerprint(verified_idempotency_fingerprint),

@@ -46,12 +46,12 @@ async fn a_second_attempt_for_the_same_role_is_none_while_the_first_holds_it() {
     let _guard = TEST_MUTEX.lock().await;
     let url = sms_test_support::database_url().await;
 
-    let first = RoleLease::try_acquire(&url, Role::Dispatch)
+    let first = RoleLease::try_acquire(&url, Role::Dispatch, "worker-a")
         .await
         .expect("first attempt succeeds")
         .expect("first attempt is the winner");
 
-    let second = RoleLease::try_acquire(&url, Role::Dispatch)
+    let second = RoleLease::try_acquire(&url, Role::Dispatch, "worker-b")
         .await
         .expect("second attempt doesn't error just because it lost");
     assert!(
@@ -68,13 +68,15 @@ async fn releasing_frees_the_lock_for_the_next_attempt() {
     let _guard = TEST_MUTEX.lock().await;
     let url = sms_test_support::database_url().await;
 
-    let first = RoleLease::try_acquire(&url, Role::Drain)
+    let first = RoleLease::try_acquire(&url, Role::Drain, "worker-a")
         .await
         .unwrap()
         .expect("first attempt is the winner");
     first.release().await.expect("releasing");
 
-    let second = RoleLease::try_acquire(&url, Role::Drain).await.unwrap();
+    let second = RoleLease::try_acquire(&url, Role::Drain, "worker-b")
+        .await
+        .unwrap();
     assert!(
         second.is_some(),
         "release() must free the lock for the very next attempt, not eventually"
@@ -91,7 +93,7 @@ async fn dropping_an_unreleased_lease_still_frees_the_lock() {
     let _guard = TEST_MUTEX.lock().await;
     let url = sms_test_support::database_url().await;
 
-    let first = RoleLease::try_acquire(&url, Role::Scheduler)
+    let first = RoleLease::try_acquire(&url, Role::Scheduler, "worker-a")
         .await
         .unwrap()
         .expect("first attempt is the winner");
@@ -104,7 +106,9 @@ async fn dropping_an_unreleased_lease_still_frees_the_lock() {
     // purpose: this is proving a property, not measuring latency.
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let second = RoleLease::try_acquire(&url, Role::Scheduler).await.unwrap();
+    let second = RoleLease::try_acquire(&url, Role::Scheduler, "worker-b")
+        .await
+        .unwrap();
     assert!(
         second.is_some(),
         "a lease dropped without release() must not leak the lock forever"
@@ -124,8 +128,12 @@ async fn different_roles_do_not_contend_with_each_other() {
     let _guard = TEST_MUTEX.lock().await;
     let url = sms_test_support::database_url().await;
 
-    let a = RoleLease::try_acquire(&url, Role::Hooks).await.unwrap();
-    let b = RoleLease::try_acquire(&url, Role::Jobs).await.unwrap();
+    let a = RoleLease::try_acquire(&url, Role::Hooks, "worker-a")
+        .await
+        .unwrap();
+    let b = RoleLease::try_acquire(&url, Role::Jobs, "worker-a")
+        .await
+        .unwrap();
 
     assert!(a.is_some(), "one role's lock is independent of the other's");
     assert!(b.is_some(), "one role's lock is independent of the other's");

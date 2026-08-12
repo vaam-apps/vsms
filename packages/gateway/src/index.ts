@@ -19,6 +19,15 @@ export { gatewayAgent } from "./dispatcher";
 export type { GatewayFieldErrors, GatewayTrpcCode } from "./errors";
 export { GatewayError, isStaleWriteError, mapGatewayError } from "./errors";
 export type {
+  JobListItem,
+  JobRecord,
+  JobState,
+  ListJobsInput,
+  ListJobsResult,
+  RequeueJobResult,
+} from "./jobs";
+export { listJobs, requeueJob } from "./jobs";
+export type {
   MessageStateEvent,
   MessageStreamDegradedEvent,
   MessageStreamFilter,
@@ -41,3 +50,5 @@ export { getMessageById, listMessages, listMessagesForStream } from "./messages"
 export type { WithEtag } from "./rest";
 export { fetchWithEtag, updateWithIfMatch } from "./rest";
 export { getAccessToken, invalidateAccessToken } from "./token";
+export type { WorkerLockInfo, WorkerLocksResult, WorkerRole } from "./workers";
+export { workerLocks } from "./workers";

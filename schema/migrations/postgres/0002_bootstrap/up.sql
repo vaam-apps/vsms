@@ -211,8 +211,17 @@ CREATE TABLE job_state_transitions (
 INSERT INTO job_state_transitions (from_state, to_state) VALUES
     ('pending','running'),  ('pending','cancelled'),
     ('running','succeeded'),('running','failed'),   ('running','pending'),
-    ('failed','pending'),   ('failed','dead'),      ('failed','cancelled');
--- succeeded, dead, cancelled are terminal.
+    ('failed','pending'),   ('failed','dead'),      ('failed','cancelled'),
+    ('dead','pending');
+-- succeeded, cancelled are terminal. `dead -> pending` (#56): the one
+-- caller is `requeueJob` (crates/sms-api/src/procedures.rs) — an operator's
+-- explicit "try this again" action from the admin Jobs screen, never
+-- proposed by the automatic pipeline (`crates/sms-worker/src/jobs.rs`'s own
+-- `apply_failure` only ever writes `failed -> {pending, dead}`, never reads
+-- a `dead` row again). Same shape as `attempt_state_transitions`'
+-- `dead -> pending` (#43) two sections below, added for the identical
+-- reason: a `dead` job is otherwise a true dead end, and this is the one
+-- sanctioned way back from it.
 
 CREATE OR REPLACE FUNCTION jobs_guard_transition() RETURNS trigger
 LANGUAGE plpgsql AS $$

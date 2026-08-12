@@ -59,6 +59,25 @@ DO $$ BEGIN
   END;
 END $$;
 
+-- #56: requeueJob's own edge. Walk the job to dead (running -> failed ->
+-- dead, the exhausted-attempts path apply_failure takes), confirm dead is
+-- otherwise a dead end, then confirm dead -> pending — and only that edge —
+-- is what gets it out.
+UPDATE jobs SET state='running' WHERE state='pending';
+UPDATE jobs SET state='failed'  WHERE state='running';
+UPDATE jobs SET state='dead'    WHERE state='failed';
+DO $$ BEGIN
+  BEGIN
+    UPDATE jobs SET state='running' WHERE state='dead';
+    RAISE EXCEPTION 'dead was allowed to transition straight back into running';
+  EXCEPTION WHEN SQLSTATE 'SM001' THEN NULL;
+  END;
+END $$;
+UPDATE jobs SET state='pending' WHERE state='dead';
+DO $$ BEGIN
+  ASSERT (SELECT state='pending' FROM jobs), 'dead -> pending (requeue, #56) was not accepted';
+END $$;
+
 -- updated_at trigger
 UPDATE apps SET name='probe2' WHERE slug='probe';
 DO $$ BEGIN
