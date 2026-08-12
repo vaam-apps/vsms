@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@hookform/resolvers": "5.7.1",
@@ -16,6 +17,7 @@
     "@vsms/gateway": "workspace:*",
     "@vsms/hooks": "workspace:*",
     "@vsms/ui": "workspace:*",
+    "jose": "6.2.8",
     "next": "15.5.23",
     "nuqs": "^2.7.1",
     "react": "19.2.8",
@@ -30,6 +32,7 @@
     "@types/react-dom": "^19",
     "daisyui": "^5",
     "tailwindcss": "^4.3.3",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4"
   }
 }

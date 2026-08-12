@@ -43,6 +43,7 @@
 //! `CoolError::DatabaseTyped` never exercises the conversion, and
 //! `cargo build` / `cratestack check` stay green through it either way.
 
+pub mod login;
 pub mod op;
 
 use std::sync::Arc;

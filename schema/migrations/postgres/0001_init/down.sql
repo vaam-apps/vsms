@@ -4,6 +4,8 @@ ALTER TABLE webhook_attempts DROP CONSTRAINT webhook_attempts_endpoint_id_fkey;
 
 ALTER TABLE users DROP CONSTRAINT users_role_key_fkey;
 
+ALTER TABLE user_credentials DROP CONSTRAINT user_credentials_user_id_fkey;
+
 ALTER TABLE sender_id_registrations DROP CONSTRAINT sender_id_registrations_provider_id_fkey;
 
 ALTER TABLE sender_id_registrations DROP CONSTRAINT sender_id_registrations_sender_id_id_fkey;
@@ -64,6 +66,8 @@ DROP INDEX users_email_key;
 
 DROP INDEX users_subject_key;
 
+DROP INDEX user_credentials_user_id_key;
+
 DROP INDEX sender_ids_value_key;
 
 DROP INDEX roles_key_key;
@@ -87,6 +91,8 @@ DROP TABLE webhook_endpoints;
 DROP TABLE webhook_attempts;
 
 DROP TABLE users;
+
+DROP TABLE user_credentials;
 
 DROP TABLE sender_ids;
 

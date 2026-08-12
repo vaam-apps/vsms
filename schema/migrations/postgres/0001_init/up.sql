@@ -56,6 +56,9 @@
 --   - sender_ids.created_at
 --   - sender_ids.updated_at
 --   - sender_ids.id
+--   - user_credentials.created_at
+--   - user_credentials.updated_at
+--   - user_credentials.id
 --   - users.created_at
 --   - users.updated_at
 --   - users.id
@@ -328,6 +331,15 @@ CREATE TABLE sender_ids (
     PRIMARY KEY (id)
 );
 
+CREATE TABLE user_credentials (
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    PRIMARY KEY (id)
+);
+
 CREATE TABLE users (
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
@@ -401,6 +413,8 @@ CREATE UNIQUE INDEX roles_key_key ON roles (key);
 
 CREATE UNIQUE INDEX sender_ids_value_key ON sender_ids (value);
 
+CREATE UNIQUE INDEX user_credentials_user_id_key ON user_credentials (user_id);
+
 CREATE UNIQUE INDEX users_subject_key ON users (subject);
 
 CREATE UNIQUE INDEX users_email_key ON users (email);
@@ -460,6 +474,8 @@ ALTER TABLE routes ADD CONSTRAINT routes_provider_id_fkey FOREIGN KEY (provider_
 ALTER TABLE sender_id_registrations ADD CONSTRAINT sender_id_registrations_sender_id_id_fkey FOREIGN KEY (sender_id_id) REFERENCES sender_ids (id);
 
 ALTER TABLE sender_id_registrations ADD CONSTRAINT sender_id_registrations_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES providers (id);
+
+ALTER TABLE user_credentials ADD CONSTRAINT user_credentials_user_id_fkey FOREIGN KEY (user_id) REFERENCES users (id);
 
 ALTER TABLE users ADD CONSTRAINT users_role_key_fkey FOREIGN KEY (role_key) REFERENCES roles (key);
 

@@ -28,6 +28,11 @@ form_urlencoded.workspace = true
 sms-provider.workspace = true
 sms-provider-orange-cm.workspace = true
 
+# Command::ProvisionUser (#194)'s one-time random password generation —
+# same crate and version every other keygen/secret-generation site in this
+# workspace already resolves to.
+rand.workspace = true
+
 anyhow.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
@@ -37,6 +42,11 @@ rustls.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+# login.rs's LoginRequest/LoginResponse/LoginError (#194) — real
+# dependencies now, not just the dev-only test-fixture use they had
+# before this route existed.
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 # #25's acceptance gate spawns the real `sms-gateway` binary as two
@@ -65,6 +75,12 @@ reqwest-no-provider = { package = "reqwest", version = "0.13.4", default-feature
 rsa.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# login_flow_live_postgres.rs's own PKCE S256 challenge computation (#194) —
+# the identical hash this suite's own /token exchange must match against,
+# computed independently rather than imported from anywhere production
+# code builds it (there is no such helper — authkestra-op computes it
+# internally, unexported).
+sha2.workspace = true
 # tests/m1_acceptance_gate_live_postgres.rs gets its DATABASE_URL from this
 # instead of the environment.
 sms-test-support.workspace = true
