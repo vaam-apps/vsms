@@ -1,11 +1,16 @@
-//! The seven procedures the schema declares.
+//! The procedures the schema declares — eleven as of #50, not the seven
+//! this doc comment used to claim (stale since #56/#57 added `requeueJob`/
+//! `workerLocks` without correcting it; found while adding an eleventh,
+//! `listMessageReceipts`, and fixed in the same edit rather than left to
+//! drift further).
 //!
-//! `previewMessage`, `sendMessage`, `provisionAppClient`, and (#41)
-//! `rotateWebhookSecret` are implemented. The other three touch the job
-//! queue or outbound webhook delivery, none of which exist yet; each
-//! returns a clearly-labelled error naming the milestone that will build
-//! it, rather than a plausible-looking stub that would pass a smoke test
-//! and lie.
+//! `previewMessage`, `sendMessage`, `provisionAppClient`, (#41)
+//! `rotateWebhookSecret`, (#43) `replayWebhookAttempt`, (#56) `requeueJob`,
+//! (#57) `workerLocks`, and (#50) `listMessageReceipts` are implemented.
+//! `cancelMessage` and `enqueueJob` touch the job queue or a mutation this
+//! milestone doesn't build yet; each returns a clearly-labelled error
+//! naming the milestone that will build it, rather than a plausible-
+//! looking stub that would pass a smoke test and lie.
 //!
 //! # #71: `send`'s own span in the correlation chain
 //!
@@ -46,8 +51,8 @@ use crate::pepper::{hmac_sha256_hex, HashPepper};
 use crate::rbac::require_permission;
 use crate::route_simulator;
 use crate::schema::{
-    self, app, app_client, consent_record, job, message, operator_prefix_rule, opt_out, provider,
-    sender_id, sender_id_registration, webhook_attempt, webhook_endpoint,
+    self, app, app_client, consent_record, delivery_receipt, job, message, operator_prefix_rule,
+    opt_out, provider, sender_id, sender_id_registration, webhook_attempt, webhook_endpoint,
 };
 use crate::worker_locks;
 
@@ -172,6 +177,14 @@ pub struct Procedures {
     /// consequence of ever changing it. `Clone` on `HashPepper` is a cheap
     /// `Arc` bump, matching the two caches above.
     pepper: HashPepper,
+    /// #49: `dashboardSummary`'s own snapshot, keyed by the caller's
+    /// `kind:role:appId` (see `dashboard_cache_key`) — a human/system
+    /// caller and an app-scoped caller must never share an entry, since
+    /// they see different rows. 15s: short enough that the dashboard still
+    /// reads as live against the console's own poll interval, long enough
+    /// that two browser tabs open on the same dashboard don't double the
+    /// ~26-query cost `dashboard_snapshot`'s own doc explains.
+    dashboard_cache: std::sync::Arc<TtlCache<String, schema::DashboardSummary>>,
 }
 
 // No `Default` impl on purpose (#134): a default would have to invent a
@@ -189,6 +202,7 @@ impl Procedures {
             app_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_mins(1))),
             operator_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_mins(5))),
             pepper,
+            dashboard_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_secs(15))),
         }
     }
 
@@ -1398,6 +1412,338 @@ impl Procedures {
             no_routes_configured,
         ))
     }
+
+    /// #50: the message detail timeline's own data source.
+    ///
+    /// `DeliveryReceipt`'s own `list`/`detail` policy is
+    /// `auth().kind == "user" || hasRole('system')` — it has never admitted
+    /// `kind == "app"`, the only real caller kind this deployment mints
+    /// (`GatewayAuth::authenticate` hardcodes `role: "app"` for every
+    /// machine token; see `auth.rs`'s own doc). So the console's own
+    /// credential cannot read `GET /delivery_receipts` directly, the same
+    /// structural wall #59's own finding already named for `Provider`/
+    /// `WebhookEndpoint`. `@authorize(Message, detail, args.messageId)` on
+    /// the schema declaration is what closes that gap *safely*: it runs
+    /// before this function body ever executes, using the caller's own
+    /// real `ctx` — not `sys()` — against `Message`'s own `detail` policy
+    /// (`appId == auth().appId || hasRole('system')`), so a caller whose
+    /// token doesn't already own the referenced message never reaches this
+    /// line at all. Only once that's confirmed does this function read
+    /// under `sys()`, the same "declaratively gate entry, then read
+    /// broadly inside" shape `cancelMessage`/`replayWebhookAttempt` already
+    /// establish elsewhere in this file.
+    ///
+    /// `require_permission(ctx, "sms:read")` is Layer 2, on top of Layer
+    /// 1's broad `@allow(auth().kind == "app" || ...)` — the same
+    /// two-layer shape `worker_lock_snapshot` above uses for `worker:read`.
+    /// `sms:read` has been in `docs/architecture.md` §5.2's own scope
+    /// vocabulary and in `deploy/.env.example`'s `SMS_CONSOLE_SCOPE` since
+    /// #22/#24, provisioned but never actually checked anywhere — this is
+    /// its first real consumer.
+    ///
+    /// Ordered oldest-first (`receivedAt` ascending): the console's own
+    /// timeline reads top-to-bottom as "what happened, in order," and
+    /// `DeliveryReceipt.receivedAt` (when this system persisted the row,
+    /// not `occurredAt`, the provider's own optional, less trustworthy
+    /// timestamp) is the one ordering key every row is guaranteed to have.
+    async fn message_receipts(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::MessageReceiptsInput,
+    ) -> Result<schema::MessageReceiptsResult, CoolError> {
+        require_permission(ctx, "sms:read")?;
+
+        let sys = Self::sys();
+        let rows = db
+            .delivery_receipt()
+            .find_many()
+            .where_expr(FilterExpr::from(
+                delivery_receipt::messageId().eq(args.messageId),
+            ))
+            .order_by(delivery_receipt::receivedAt().asc())
+            .run(&sys)
+            .await?;
+
+        let receipts = rows
+            .into_iter()
+            .map(|row| schema::DeliveryReceiptSummary {
+                id: row.id,
+                providerId: row.providerId,
+                outcome: row.outcome,
+                rawStatus: row.rawStatus,
+                errorCode: row.errorCode,
+                networkCode: row.networkCode,
+                receivedAt: row.receivedAt,
+                occurredAt: row.occurredAt,
+            })
+            .collect();
+
+        Ok(schema::MessageReceiptsResult { receipts })
+    }
+
+    /// `kind:role:appId`, read straight off the same `Principal` fields
+    /// `into_context` writes (`auth.rs`). Two different callers must never
+    /// share a cache entry when they'd see different rows: a `kind ==
+    /// "app"` caller's `Message` reads are scoped to its own `appId`
+    /// (Message's own `@@allow`), while a `kind == "user"` caller's are
+    /// not (see `dashboard_snapshot`'s own doc). Role is included even
+    /// though it doesn't currently change which rows are visible, because
+    /// `require_permission` denies before this key is ever built — a role
+    /// change that flips a caller from denied to allowed must not read a
+    /// stale allowed-shaped cache entry belonging to a different role that
+    /// happened to share `kind`/`appId`.
+    fn dashboard_cache_key(ctx: &CoolContext) -> String {
+        // `kind`/`role`/`appId` are `auth()`-queryable fields
+        // (`Principal::into_context`, `auth.rs`) — a different bag from
+        // `perms`/`scope`, which `require_permission` reads out of
+        // `ctx.extensions` instead. Read via `auth_field`, not
+        // `ctx.extensions.get`: the latter is always empty for these three
+        // (confirmed live — see `dashboard_snapshot`'s own `appId` doc).
+        let field = |name: &str| match ctx.auth_field(name) {
+            Some(Value::String(s)) => s.clone(),
+            _ => String::new(),
+        };
+        format!("{}:{}:{}", field("kind"), field("role"), field("appId"))
+    }
+
+    /// #49: the operator dashboard's one data call. Gated on
+    /// `require_permission(ctx, "dashboard:read")` before anything else
+    /// runs — the same shape `worker_lock_snapshot`/`simulate` already
+    /// use, and for the identical reason: `DashboardSummary`'s own
+    /// `@allow` admits any `auth().kind == "app"` caller unconditionally
+    /// (no row to scope a predicate by — it isn't a model), so a granted
+    /// `dashboard:read` scope is the real perimeter for a provisioned app
+    /// client today, not defense in depth.
+    ///
+    /// Every field below is read under the caller's own `ctx`, never
+    /// `Self::sys()` — deliberately, so the numbers this returns are
+    /// exactly what that caller's own token can see, honouring each
+    /// model's row policy rather than bypassing it:
+    /// - `Message` (`queueDepth`, `stuckMessages`, `operatorStats`,
+    ///   `hourlyBuckets`): `appId == auth().appId` for an app-kind caller
+    ///   (this console's own machine credential, today — see #211) or
+    ///   unscoped for a human (`auth().kind == "user"`). The console's own
+    ///   scope banner precedent (`messages-screen.tsx`) is why the wire
+    ///   result carries `appId` back — so the UI can say what it's
+    ///   scoped to rather than leave an operator to guess from an
+    ///   unfamiliar row count.
+    /// - `Job` (`jobBacklog`): unscoped for any `auth().kind == "app"`
+    ///   caller (`Job` carries no `appId` at all) — system-wide, matching
+    ///   the Jobs screen's own banner.
+    /// - `WebhookAttempt` (`outboxDepth`): scoped to `endpoint.appId ==
+    ///   auth().appId` — `WebhookAttempt`'s `@@allow` has no unscoped
+    ///   `auth().kind == "app"` clause, unlike `Job`.
+    ///
+    /// No `GROUP BY` exists in `cratestack-sqlx =0.7.10`'s `aggregate()`
+    /// (`count`/`sum`/`avg`/`min`/`max` only, each a single filtered scalar
+    /// — see `schema.cstack`'s own comment on `DashboardSummary`), so every
+    /// bucket/operator/state combination below is its own `aggregate()
+    /// .count()` call rather than one grouped query: 6 hourly buckets × 2
+    /// (total, UCS-2) + 5 operators × 2 (delivered, terminal) +
+    /// queueDepth + jobBacklog + outboxDepth + stuckMessages = 26 small,
+    /// indexed `COUNT` queries per snapshot. Accepted rather than reached
+    /// for a raw-SQL R1 exception: unlike every existing exception (see
+    /// `CONTRIBUTING.md`'s table), this *is* a real schema-backed model
+    /// read — a raw query would have to hand-reimplement row policy,
+    /// `@@retain` purge semantics, and soft-delete scoping itself, rather
+    /// than getting all three for free the way `aggregate()` does (its own
+    /// doc comment: "filtered through the model's read policy AND the
+    /// soft-delete column"). `dashboard_cache`'s 15s TTL is what keeps 26
+    /// queries per *load* from becoming 26 queries per *poll interval*.
+    /// Six rolling hours, oldest first. `[5]` is the current, in-progress
+    /// hour. Throughput and the UCS-2-ratio trend both read off this one
+    /// array — see `HourlyBucket`'s own schema comment for why that's
+    /// deliberate, not an accident of reuse. Split out of
+    /// `dashboard_snapshot` purely to stay under clippy's line-count lint;
+    /// no reuse beyond that one caller.
+    async fn dashboard_hourly_buckets(
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<schema::HourlyBucket>, CoolError> {
+        let mut hourly_buckets = Vec::with_capacity(6);
+        for hours_ago in (0..6i64).rev() {
+            let bucket_end = now - ChronoDuration::hours(hours_ago);
+            let bucket_start = bucket_end - ChronoDuration::hours(1);
+            let window = FilterExpr::from(message::createdAt().gte(bucket_start))
+                .and(message::createdAt().lt(bucket_end));
+
+            let total_count = db
+                .message()
+                .aggregate()
+                .count()
+                .where_expr(window.clone())
+                .run(ctx)
+                .await?;
+            let ucs2_count = db
+                .message()
+                .aggregate()
+                .count()
+                .where_expr(window.and(message::encoding().eq(schema::Encoding::ucs2)))
+                .run(ctx)
+                .await?;
+
+            hourly_buckets.push(schema::HourlyBucket {
+                bucketStart: bucket_start,
+                totalCount: total_count,
+                ucs2Count: ucs2_count,
+            });
+        }
+        Ok(hourly_buckets)
+    }
+
+    /// Trailing 24h, one row per `OperatorCode` variant. `terminalTotal`
+    /// excludes `uncertain`/`undelivered` on purpose — see
+    /// `OperatorDeliveryStats`'s own schema comment, and
+    /// `dashboard_summary_live_postgres.rs`'s own headline test for the
+    /// live proof that getting this wrong is caught, not just asserted.
+    async fn dashboard_operator_stats(
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<schema::OperatorDeliveryStats>, CoolError> {
+        let window_start = now - ChronoDuration::hours(24);
+        let mut operator_stats = Vec::with_capacity(5);
+        for operator in [
+            schema::OperatorCode::mtn,
+            schema::OperatorCode::orange,
+            schema::OperatorCode::camtel,
+            schema::OperatorCode::nexttel,
+            schema::OperatorCode::unknown,
+        ] {
+            let in_window = FilterExpr::from(message::operator().eq(operator))
+                .and(message::createdAt().gte(window_start));
+
+            let delivered = db
+                .message()
+                .aggregate()
+                .count()
+                .where_expr(
+                    in_window
+                        .clone()
+                        .and(message::state().eq(schema::MessageState::delivered)),
+                )
+                .run(ctx)
+                .await?;
+            let terminal_total = db
+                .message()
+                .aggregate()
+                .count()
+                .where_expr(in_window.and(message::state().in_([
+                    schema::MessageState::delivered,
+                    schema::MessageState::failed,
+                    schema::MessageState::expired,
+                    schema::MessageState::rejected,
+                    schema::MessageState::cancelled,
+                ])))
+                .run(ctx)
+                .await?;
+
+            operator_stats.push(schema::OperatorDeliveryStats {
+                operator,
+                delivered,
+                terminalTotal: terminal_total,
+            });
+        }
+        Ok(operator_stats)
+    }
+
+    /// The four live, not-time-windowed gauges — `queueDepth`,
+    /// `stuckMessages`, `jobBacklog`, `outboxDepth` — in that order.
+    async fn dashboard_live_gauges(
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+    ) -> Result<(i64, i64, i64, i64), CoolError> {
+        let queue_depth = db
+            .message()
+            .aggregate()
+            .count()
+            .where_expr(FilterExpr::from(message::state().in_([
+                schema::MessageState::accepted,
+                schema::MessageState::queued,
+                schema::MessageState::routed,
+            ])))
+            .run(ctx)
+            .await?;
+
+        let stuck_messages = db
+            .message()
+            .aggregate()
+            .count()
+            .where_expr(FilterExpr::from(message::state().in_([
+                schema::MessageState::uncertain,
+                schema::MessageState::undelivered,
+            ])))
+            .run(ctx)
+            .await?;
+
+        let job_backlog = db
+            .job()
+            .aggregate()
+            .count()
+            .where_expr(FilterExpr::from(
+                job::state().in_([schema::JobState::pending, schema::JobState::running]),
+            ))
+            .run(ctx)
+            .await?;
+
+        let outbox_depth = db
+            .webhook_attempt()
+            .aggregate()
+            .count()
+            .where_expr(FilterExpr::from(webhook_attempt::state().in_([
+                schema::AttemptState::pending,
+                schema::AttemptState::delivering,
+            ])))
+            .run(ctx)
+            .await?;
+
+        Ok((queue_depth, stuck_messages, job_backlog, outbox_depth))
+    }
+
+    async fn dashboard_snapshot(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+    ) -> Result<schema::DashboardSummary, CoolError> {
+        require_permission(ctx, "dashboard:read")?;
+
+        let key = Self::dashboard_cache_key(ctx);
+        self.dashboard_cache
+            .get_or_fetch(key, |_key| async move {
+                let now = Utc::now();
+
+                let hourly_buckets = Self::dashboard_hourly_buckets(db, ctx, now).await?;
+                let operator_stats = Self::dashboard_operator_stats(db, ctx, now).await?;
+                let (queue_depth, stuck_messages, job_backlog, outbox_depth) =
+                    Self::dashboard_live_gauges(db, ctx).await?;
+
+                // Found live, writing this file's own test: `appId` is an
+                // `auth()`-queryable field (`Principal::into_context`),
+                // not an extension — `ctx.extensions.get("appId")` is
+                // always `None` here, silently. `auth_field` is the real
+                // accessor; `require_permission`'s own `perms`/`scope`
+                // genuinely do live in `ctx.extensions`, which is what
+                // made this easy to get wrong by analogy.
+                let app_id = match ctx.auth_field("appId") {
+                    Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+                    _ => None,
+                };
+
+                Ok::<_, CoolError>(schema::DashboardSummary {
+                    generatedAt: now,
+                    appId: app_id,
+                    queueDepth: queue_depth,
+                    jobBacklog: job_backlog,
+                    outboxDepth: outbox_depth,
+                    stuckMessages: stuck_messages,
+                    operatorStats: operator_stats,
+                    hourlyBuckets: hourly_buckets,
+                })
+            })
+            .await
+    }
 }
 
 impl schema::procedures::ProcedureRegistry for Procedures {
@@ -1518,6 +1864,28 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         Output = Result<schema::procedures::simulate_route::Output, CoolError>,
     > + Send {
         self.simulate(db, ctx, args.args)
+    }
+
+    fn list_message_receipts(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::list_message_receipts::Args,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::list_message_receipts::Output, CoolError>,
+    > + Send {
+        self.message_receipts(db, ctx, args.args)
+    }
+
+    fn dashboard_summary(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        _args: schema::procedures::dashboard_summary::Args,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::dashboard_summary::Output, CoolError>,
+    > + Send {
+        self.dashboard_snapshot(db, ctx)
     }
 }
 

@@ -1060,12 +1060,17 @@ ALTER TABLE webhook_attempts        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE users                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE roles                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE user_credentials        ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE audit_anchors           ALTER COLUMN id SET DEFAULT cs_cuid();
 
 -- Timestamps mixin, and other dbgenerated() columns.
 ALTER TABLE apps ALTER COLUMN created_at SET DEFAULT now(),
                  ALTER COLUMN updated_at SET DEFAULT now();
 -- ... repeat for every table using @use(Timestamps)
 ALTER TABLE delivery_receipts ALTER COLUMN received_at SET DEFAULT now();
+-- #68: AuditAnchor doesn't @use(Timestamps) — it has no updated_at (nothing
+-- ever updates an anchor row; see its own schema.cstack doc) — so it needs
+-- its own one-off default the same way delivery_receipts.received_at does.
+ALTER TABLE audit_anchors ALTER COLUMN created_at SET DEFAULT now();
 
 -- Nothing in the framework touches updated_at on write, and remembering to set
 -- it in every call site is the kind of thing that works until it doesn't.
@@ -1364,6 +1369,13 @@ CREATE INDEX oauth_signing_keys_active_idx ON oauth_signing_keys (created_at DES
 -- keeping the row would only grow the table.
 CREATE INDEX client_assertions_expiry_idx ON client_assertions (expires_at);
 
+-- #68's anchor_audit job reads exactly one row every run: the most recent
+-- anchor, to chain the next one off its chainHash. Never a large table (at
+-- most one row per scheduled run, per day per §7.5), but the same
+-- "index the one lookup a singleton job always makes" reasoning
+-- oauth_signing_keys_active_idx above already applies.
+CREATE INDEX audit_anchors_period_end_idx ON audit_anchors (period_end DESC);
+
 -- The framework's own outbox. `ensure_event_outbox_table` creates this lazily
 -- on the first emitting write, which is too late to index it here: applying
 -- the migration to a fresh database fails with
@@ -1473,6 +1485,28 @@ INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes, version)
     ('657', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
     ('658', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
     ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0);
+```
+
+**The built-in roles (#194).** `User.roleKey` is a foreign key to `Role.key`, so *no human account can exist until a `Role` row does* — and nothing seeded one. `sms-gateway provision-user`, the command that bootstraps the very first operator, therefore failed on every fresh database with `violates foreign key constraint "users_role_key_fkey"`, which made #194's login flow unbootstrappable in a real deployment as well as in `just demo`. `Role.builtin` existed from the start and implies exactly this seed; it was simply never written.
+
+The six rows below are §5.2's own table, verbatim. **`system` is deliberately absent** and cannot be added here: `roles_key_not_reserved_check` (above) rejects it, and §5.2 is explicit that `system` is synthetic — constructible only inside a process, never a database row a human account could be assigned to.
+
+`permissions` is sentinel-packed in `sms_core::pack`'s format — a leading space, then each value followed by a space — so a `LIKE '% perm %'` or `.contains(" perm ")` test cannot false-match a longer permission that merely starts with the same characters. `version` is `0` for the same reason every other hand-written seed sets it: these `INSERT`s bypass the framework's own server-side `@version` seeding, and the column is `NOT NULL`.
+
+```sql
+INSERT INTO roles (key, label, description, builtin, permissions, version) VALUES
+    ('owner',     'Owner',     'Break-glass. 1-2 humans.',            true,
+     ' message:read message:send message:cancel message:create message:update app:read app:write client:provision provider:read provider:update provider:delete route:read route:write sender:manage optout:manage webhook:manage job:read job:enqueue worker:read audit:read user:manage user:delete role:manage ', 0),
+    ('admin',     'Admin',     'Day-to-day administration.',          true,
+     ' message:read message:send message:cancel app:read app:write client:provision provider:read provider:update route:read route:write sender:manage optout:manage webhook:manage job:read job:enqueue worker:read audit:read user:manage ', 0),
+    ('operator',  'Operator',  'Runs traffic.',                       true,
+     ' message:read message:send message:cancel provider:read provider:update route:read sender:manage optout:manage job:read job:enqueue worker:read ', 0),
+    ('developer', 'Developer', 'Integrates apps.',                    true,
+     ' app:read webhook:manage message:read message:send ', 0),
+    ('auditor',   'Auditor',   'Read-only oversight. No mutations.',  true,
+     ' message:read app:read provider:read route:read job:read worker:read delivery:read audit:read ', 0),
+    ('support',   'Support',   'First-line support.',                 true,
+     ' message:read optout:manage delivery:read ', 0);
 ```
 
 **Three notes on the triggers.**
@@ -1905,15 +1939,17 @@ Humans get roles. Service accounts get OAuth scopes. Different vocabularies on p
 |---|---|---|
 | `owner` | Break-glass. 1–2 humans. | everything, incl. `role:manage`, `user:delete`, `provider:delete`, `client:provision` |
 | `admin` | Day-to-day administration | all except role editing and owner-level deletes |
-| `operator` | Runs traffic | `message:read/send/cancel`, `provider:read/update`, `route:read`, `sender:manage`, `optout:manage`, `job:read/enqueue`, `worker:read` |
+| `operator` | Runs traffic | `message:read/send/cancel`, `provider:read/update`, `route:read`, `sender:manage`, `optout:manage`, `job:read/enqueue`, `worker:read`, `dashboard:read` |
 | `developer` | Integrates apps | `app:read`, `webhook:manage`, `message:read`, `message:send` |
 | `auditor` | Read-only oversight | `*:read`, `audit:read`. No mutations anywhere. |
 | `support` | First-line | `message:read`, `optout:manage`, `delivery:read` |
 | `system` | Internal only | `message:create/update`, `receipt:create`, `job:update`. **Never issued to a human, never reachable from any HTTP route.** |
 
-Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`, and (#56/#57) `job:read`, `job:enqueue`, `worker:read` — the same literals `operator`'s own `perms` carry, reused verbatim rather than invented separately, since `require_permission` (§5.1) checks either claim for the identical string. Registered per `AppClient` and enforced verbatim — scopes are rejected rather than filtered, and an omitted `scope` yields `scope: None`, which your check must treat as denial.
+Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`, and (#56/#57) `job:read`, `job:enqueue`, `worker:read`, and (#49) `dashboard:read` — the same literals `operator`'s own `perms` carry, reused verbatim rather than invented separately, since `require_permission` (§5.1) checks either claim for the identical string. Registered per `AppClient` and enforced verbatim — scopes are rejected rather than filtered, and an omitted `scope` yields `scope: None`, which your check must treat as denial.
 
 **Implementation, #56/#57.** `Job`'s own `@@allow("list"/"detail", ...)` admits `auth().kind == "app"` unscoped (no `appId` on `Job` to filter by, unlike `Message`) — the same shape `SenderId`/`OptOut` already use. That makes the Layer 2 scope check the *real* perimeter for the admin console's Jobs screen, not defense in depth: `router::JOB_READ_ROUTES` gates `GET /jobs`/`GET /jobs/{id}` on `job:read`, and `requeueJob`'s own `require_permission(ctx, "job:enqueue")` gates the re-enqueue write. `workerLocks` is gated the same way, on `worker:read`. Any provisioned app client that never requested these scopes gets a `403`, exactly like an app client without `sms:send` cannot call `sendMessage` — the admin console's own client is provisioned with all three (`scripts/demo.sh`, `docs/runbooks/getting-started.md`).
+
+**Implementation, #49.** `dashboardSummary` is a `type`-only procedure (no model, no DDL) whose own `@allow` admits any `auth().kind == "app"` caller unconditionally, the identical shape `workerLocks`/`simulateRoute` already have — so `require_permission(ctx, "dashboard:read")` inside `Procedures::dashboard_snapshot` is the real perimeter, not defense in depth. The console is provisioned with this scope alongside the others above.
 
 `system` deserves emphasis. It's the context the send procedure and the worker bind internally — `bind_auth(json!({"sub":"system","kind":"system","role":"system","appId":""}))` — to write past the `hasRole('system')` gates. `role` must be `"system"`; `hasRole` never looks at `kind`. It must be constructible only inside a process: `system` is not a row in `roles`, and the token issuer denylists it.
 
@@ -2567,6 +2603,8 @@ The `SM001` metric is the highest-signal one in the list. In a correct system it
 **"Alerting" does not mean this repository can page anyone.** No Alertmanager, no receiver, no Slack/PagerDuty integration exists anywhere in this tree — a real Prometheus (the `prometheus` service in `deploy/docker-compose.yml`) genuinely evaluates the five rules and shows firing state on its own `/alerts` page, and an operator wires a receiver on top of that themselves. Building a bespoke in-process alerting engine was considered and rejected as the wrong shape of deliverable for #70.
 
 The UCS-2 ratio deserves its own tile. A sudden jump means someone shipped a template with a `ç` or a smart apostrophe, and it will show up in your bill before anyone notices in the UI.
+
+**That tile — and the rest of #49's Dashboard screen — landed separately from #70/#71's Prometheus work, deliberately.** Throughput, queue depth, job backlog, outbox depth, delivery rate by operator, and the UCS-2-ratio trend (as a real six-hour bucketed trend, not a bare percentage — see `crates/sms-api/src/procedures.rs`'s own doc on `dashboard_snapshot`) are a new `dashboardSummary` procedure reading `Message`/`Job`/`WebhookAttempt` through `cratestack`'s own `aggregate().count()` (no `GROUP BY` exists in `cratestack-sqlx =0.7.10`, so this is ~26 small, policy-scoped `COUNT` queries per snapshot, cached 15s server-side), not new Prometheus metrics — the two systems answer different questions: Prometheus's five metrics are pager-facing invariants ("is anything on fire"), the dashboard is an operator's situational-awareness screen ("how's traffic looking"), and the two never recompute the same number a second, possibly-disagreeing way (the dashboard's own outbox-depth tile is explicitly a different table from `sms_webhook_outbox_oldest_undelivered_age_seconds`/`sms_event_outbox_poison_rows` — see that tile's own caption). **Provider balance remains genuinely unavailable** — `poll_balance` (§7.5) was never built — and the dashboard says so rather than showing a fabricated number.
 
 ### 9.2 Deployment
 

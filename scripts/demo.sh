@@ -131,17 +131,51 @@ up() {
   # own `require_permission(ctx, "route:read")`). Editing either model still
   # needs a human role no token this deployment can issue carries (#194) —
   # scope alone doesn't change that, see `providers-screen.tsx`'s own doc.
+  #
+  # dashboard:read (#49): the Dashboard screen's own `dashboardSummary`
+  # procedure — same shape again, `DashboardSummary` isn't a model, so its
+  # `@allow` admits any `auth().kind == "app"` caller unconditionally and
+  # this scope is the real perimeter (`require_permission(ctx,
+  # "dashboard:read")`, `crates/sms-api/src/procedures.rs`'s own
+  # `dashboard_snapshot`).
   prov_out="$(DATABASE_URL="$DATABASE_URL" SMS_HASH_PEPPER="$pepper" \
     ./target/debug/sms-gateway provision-client \
     --app-id "$app_id" --label "demo console" \
     --scope sms:send --scope sms:read \
     --scope job:read --scope job:enqueue --scope worker:read \
-    --scope provider:read --scope route:read \
+    --scope provider:read --scope route:read --scope dashboard:read \
     --key-out "$KEY_FILE")"
   echo "$prov_out"
   client_id="$(echo "$prov_out" | sed -n 's/^provisioned client: \(.*\)$/\1/p')"
   # Same reuse contract as app-id above.
   echo -n "$client_id" >"$RUN_DIR/console-client-id"
+
+  # #194: the console's *human* login is a separate credential path from
+  # the machine client above. Two distinct things are needed and neither
+  # has a generated-CRUD route that any real token could reach:
+  #
+  #   1. the `sms-console` OauthClient row, registered with the one exact
+  #      redirect_uri authkestra matches literally (RFC 6749 3.1.2), and
+  #   2. a real User + Argon2id UserCredential to actually sign in as.
+  #
+  # Without both, `just demo` comes up with a console nobody can log into
+  # — which is exactly what it did between #206 landing and this change.
+  log "registering the sms-console OIDC client"
+  DATABASE_URL="$DATABASE_URL" ./target/debug/sms-gateway seed-console-client \
+    --client-id sms-console \
+    --redirect-uri "http://127.0.0.1:${CONSOLE_PORT}/api/auth/callback"
+
+  log "provisioning the demo console operator"
+  local user_out
+  user_out="$(DATABASE_URL="$DATABASE_URL" ./target/debug/sms-gateway provision-user \
+    --email demo@vsms.local --display-name "Demo Operator" --role-key owner)"
+  echo "$user_out"
+  # Surfaced again in the final summary — a generated password printed a
+  # hundred lines up is a password nobody finds. Pull out just the two
+  # values a person needs; the command's own prose (rotation caveat,
+  # handling advice) already printed in full above.
+  DEMO_LOGIN_EMAIL="$(echo "$user_out" | sed -n 's/^provisioned user: \([^ ]*\).*/\1/p')"
+  DEMO_LOGIN_PASSWORD="$(echo "$user_out" | sed -n 's/^.*never shown again): \(.*\)$/\1/p')"
 
   log "starting sms-fake-orange on :$ORANGE_PORT (impersonation only — no real SMS)"
   start_bg fake-orange "$RUN_DIR/fake-orange.log" \
@@ -174,14 +208,22 @@ up() {
   log "writing admin/.env.local"
   cat >"$ENV_LOCAL" <<EOF
 # Written by scripts/demo.sh — regenerated on every 'up', safe to discard.
-DASHBOARD_AUTH=none
-
 SMS_API_URL=http://127.0.0.1:${GATEWAY_PORT}
+
+# #194: the human authorization-code + PKCE login flow. DASHBOARD_AUTH is
+# gone — a hard cutover, not a parallel path — so these three are required
+# rather than optional, and @vsms/env refuses to boot without them.
+# ADMIN_BASE_URL must be the literal origin a browser reaches this console
+# at, because the redirect_uri is matched exactly (RFC 6749 3.1.2), not by
+# prefix. The session secret is demo-only and deliberately obvious.
+ADMIN_BASE_URL=http://127.0.0.1:${CONSOLE_PORT}
+SMS_CONSOLE_OIDC_CLIENT_ID=sms-console
+SMS_CONSOLE_SESSION_SECRET=demo-only-session-secret-not-for-any-real-deployment
 
 SMS_AUTH_ISSUER=http://127.0.0.1:${GATEWAY_PORT}
 SMS_CONSOLE_CLIENT_ID=${client_id}
 SMS_CONSOLE_PRIVATE_KEY_PATH=${KEY_FILE}
-SMS_CONSOLE_SCOPE=sms:send sms:read job:read job:enqueue worker:read provider:read route:read
+SMS_CONSOLE_SCOPE=sms:send sms:read job:read job:enqueue worker:read provider:read route:read dashboard:read
 
 MESSAGE_STREAM_POLL_MS=2000
 
@@ -198,6 +240,7 @@ EOF
   echo
   log "demo is up"
   echo "    admin console:  http://127.0.0.1:${CONSOLE_PORT}/"
+  echo "    sign in with:   ${DEMO_LOGIN_EMAIL:-demo@vsms.local} / ${DEMO_LOGIN_PASSWORD:-see provision-user output above}"
   echo "    sms-gateway:    http://127.0.0.1:${GATEWAY_PORT}/"
   echo "    sms-fake-orange (NOT a real provider): http://127.0.0.1:${ORANGE_PORT}/"
   echo "    postgres:       $DATABASE_URL"

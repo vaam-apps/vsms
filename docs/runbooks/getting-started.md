@@ -161,7 +161,7 @@ DATABASE_URL=postgres://localhost/vsms_check \
     --label "admin console" \
     --scope sms:send --scope sms:read \
     --scope job:read --scope job:enqueue --scope worker:read \
-    --scope provider:read --scope route:read \
+    --scope provider:read --scope route:read --scope dashboard:read \
     --key-out ./console-client-key.pem
 ```
 
@@ -197,14 +197,20 @@ template, but the console's own required keys are the ones listed in
 `packages/env/src/index.ts`) with the values `provision-client` printed above:
 
 ```text
-DASHBOARD_AUTH=none
-
 SMS_API_URL=http://127.0.0.1:8080
 
 SMS_AUTH_ISSUER=http://127.0.0.1:8080
 SMS_CONSOLE_CLIENT_ID=appc_...                        # from provision-client's output
 SMS_CONSOLE_PRIVATE_KEY_PATH=/absolute/path/to/console-client-key.pem
-SMS_CONSOLE_SCOPE=sms:send sms:read job:read job:enqueue worker:read provider:read route:read
+SMS_CONSOLE_SCOPE=sms:send sms:read job:read job:enqueue worker:read provider:read route:read dashboard:read
+
+# The human login flow (#194). DASHBOARD_AUTH is gone — it was replaced by
+# real sessions, not supplemented, so there is no bypass mode any more and
+# these three are required. ADMIN_BASE_URL must be the literal origin you
+# open in a browser: the redirect_uri is matched exactly, not by prefix.
+ADMIN_BASE_URL=http://127.0.0.1:3100
+SMS_CONSOLE_OIDC_CLIENT_ID=sms-console
+SMS_CONSOLE_SESSION_SECRET=at-least-32-characters-of-real-entropy-here
 
 MESSAGE_STREAM_POLL_MS=2000
 
@@ -217,6 +223,24 @@ NODE_ENV=development
 relative path, but the console reads the file at request time from its own working
 directory, not the shell's.
 
+Then register the console's OIDC client and create an account to sign in with —
+without both, the console starts and immediately redirects every page back to
+`/login` with nothing able to satisfy it:
+
+```bash
+DATABASE_URL=postgres://localhost/vsms_dev ./target/debug/sms-gateway seed-console-client \
+  --client-id sms-console \
+  --redirect-uri http://127.0.0.1:3100/api/auth/callback
+
+DATABASE_URL=postgres://localhost/vsms_dev ./target/debug/sms-gateway provision-user \
+  --email you@example.com --display-name "Your Name" --role-key owner
+```
+
+The `--redirect-uri` must equal `${ADMIN_BASE_URL}/api/auth/callback` character for
+character — RFC 6749 §3.1.2 exact matching, so a trailing slash breaks it. `--role-key`
+accepts any of §5.2's six built-in roles, all seeded by `0002_bootstrap`.
+`provision-user` prints a generated password once and never stores it.
+
 ```bash
 pnpm --filter admin exec next dev -p 3100
 ```
@@ -225,7 +249,7 @@ pnpm --filter admin exec next dev -p 3100
 bind — that file is only loaded once the server process is already up. Pass `-p` explicitly
 (or export `PORT` in the shell that launches it) rather than relying on the env file.
 
-Open `http://localhost:3100/`, send a message from the composer, and watch it move to
+Open `http://localhost:3100/`, sign in with the account you just provisioned, send a message from the composer, and watch it move to
 `delivered` on `http://localhost:3100/messages` (polling, ~2s per `MESSAGE_STREAM_POLL_MS`
 above) — confirmed working end to end, composer through `sms-fake-orange`'s DLR, in the
 session that added this section.

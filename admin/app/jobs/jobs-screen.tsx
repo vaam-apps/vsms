@@ -145,6 +145,12 @@ export function JobsScreen() {
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <a
+            href="/dashboard"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Dashboard
+          </a>
+          <a
             href="/"
             className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
           >

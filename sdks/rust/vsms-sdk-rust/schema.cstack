@@ -1024,6 +1024,72 @@ model UserCredential {
   @@allow("delete", hasRole('system'))
 }
 
+// #68: periodic hash anchoring over `cratestack_audit` — see
+// crates/sms-worker/src/jobs/anchor_audit.rs's own module doc for the full
+// design (hash-chain vs Merkle-snapshot vs external anchoring, and exactly
+// what this proves and does not). One row per `anchor_audit` run: the
+// SHA-256 fold of every `cratestack_audit` row in (periodStart, periodEnd],
+// chained to the previous anchor's own chainHash so editing or deleting any
+// covered audit row — or any earlier anchor row itself — breaks every link
+// after it.
+//
+// Write-once by construction, not by convention: no @@allow("update", ...)
+// and no @@allow("delete", ...) clause exists at all, and this schema's own
+// deny-by-default (§2.0) makes both actions unreachable through any role,
+// including `system` — nothing in this codebase, ever, updates or deletes
+// an anchor row. No @@audit on this model itself: the table already IS an
+// immutable, append-only record, and an audit trail of an audit trail is
+// circular, not useful. No @@retain: unlike Message/DeliveryReceipt, an
+// anchor is the compliance artifact, not the thing being minimised — it
+// must outlive every retention window it stands witness to.
+model AuditAnchor {
+  id Cuid @id @default(dbgenerated())
+  // Exclusive lower bound. Null only on the very first anchor this
+  // deployment ever writes, meaning "everything up to periodEnd" — there is
+  // no earlier anchor to inherit a boundary from.
+  periodStart DateTime?
+  // Inclusive upper bound — see the module doc for why this is `now` minus
+  // a small safety lag, not `now` itself.
+  periodEnd DateTime
+  rowCount Int
+  // Hex SHA-256, sequential fold over every covered row in
+  // (occurred_at, event_id) order. Recomputable from `cratestack_audit`
+  // alone; stored for diagnostics without requiring a recompute to see
+  // which period a mismatch falls in.
+  rangeHash String @length(min: 64, max: 64) @db_enforce
+  // The previous anchor's chainHash, verbatim, or 64 '0' characters (the
+  // hex encoding of the fixed 32-byte genesis value — see the module doc's
+  // GENESIS constant) on the very first anchor, which has no predecessor.
+  // A sentinel, not `String?`: `@length` on a nullable field was tried
+  // first and found to break the *generated* `UpdateAuditAnchorInput`'s
+  // `validate()` — cratestack-macros' `validate_impl_tokens(&fields, true)`
+  // (unconditionally generated for every model regardless of whether
+  // `@@allow("update", ...)` exists to route to it) wraps every update
+  // field in one `Option<...>` for "present or absent" regardless of the
+  // field's own nullability, so a `String?` field becomes
+  // `Option<Option<String>>` there; `emit_field_validators`'s own
+  // optionality check only unwraps one layer, so `validate_length` is
+  // called with `&Option<String>` where it needs `&str` — `cargo check -p
+  // sms-api` fails with `E0308` naming exactly that mismatch. Filed
+  // upstream; a non-nullable sentinel sidesteps it entirely rather than
+  // waiting on a fix, and reads as a cleaner design in its own right — this
+  // field is never actually absent in the cryptographic sense, "no
+  // predecessor" is itself a fixed, known value. A plain `String`, not a
+  // self-relation: the link that matters here is cryptographic (does this
+  // value equal what the previous row actually stored), not referential.
+  prevChainHash String @length(min: 64, max: 64) @db_enforce
+  // Hex SHA-256 over prevChainHash + periodStart + periodEnd + rowCount +
+  // rangeHash — i.e. it commits to this row's own metadata, not just to
+  // rangeHash, so tampering with periodStart/periodEnd/rowCount on an
+  // existing anchor row is exactly as detectable as tampering with the
+  // audit rows it covers.
+  chainHash String @unique @length(min: 64, max: 64) @db_enforce
+  createdAt DateTime @default(dbgenerated())
+
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('auditor') || hasRole('system'))
+  @@allow("create", hasRole('system'))
+}
+
 type SendMessageInput {
   to String
   body String
@@ -1294,4 +1360,128 @@ type SimulateRouteResult {
 }
 
 procedure simulateRoute(args: SimulateRouteInput): SimulateRouteResult
+  @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
+type MessageReceiptsInput {
+  messageId Cuid
+}
+
+// #50: the message detail timeline's own receipt evidence — deliberately
+// narrower than the DeliveryReceipt model itself. No rawPayload (the
+// provider's raw wire body) reaches the console; every other field is the
+// evidence a human needs to see "what did the provider actually say, and
+// when." See `procedures.rs::list_message_receipts`'s own doc for why this
+// is a bespoke type rather than the model: DeliveryReceipt's own
+// list/detail policy (`auth().kind == "user" || hasRole('system')`) never
+// admits this deployment's only real caller kind, `"app"`.
+type DeliveryReceiptSummary {
+  id Cuid
+  providerId Cuid
+  outcome DeliveryOutcome
+  rawStatus String
+  errorCode String?
+  networkCode OperatorCode
+  receivedAt DateTime
+  occurredAt DateTime?
+}
+
+type MessageReceiptsResult {
+  receipts DeliveryReceiptSummary[]
+}
+
+// #50: the timeline's own data source, chosen over the other two options
+// #50 itself names (the audit log — accurate, but needs a policy and a
+// route that don't exist; explicit transition rows — the most honest, but
+// a real schema change) precisely because DeliveryReceipt rows already
+// exist and are already the closest thing this schema has to a transition
+// history. `@authorize` enforces the same ownership boundary
+// `cancelMessage`/`requeueJob` already rely on: a caller can only ever
+// request receipts for a Message their own row policy already lets them
+// read, so cross-app access fails exactly the way `getMessageById` already
+// does (a 404, not a 403 — `@vsms/gateway/messages.ts`'s own doc, point 9).
+procedure listMessageReceipts(args: MessageReceiptsInput): MessageReceiptsResult
+  @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
+  @authorize(Message, detail, args.messageId)
+
+// #49: the operator dashboard — throughput, delivery rate by operator,
+// queue/job/outbox depth, and a UCS-2-ratio trend. The epic's own worked
+// example is the acceptance bar: "a sudden jump means someone shipped a
+// template with a ç or a smart apostrophe, and it will show up in the
+// bill before anyone notices in the UI" — a bare percentage can't show a
+// jump, so this returns a short trend, not just a current value. No model
+// backs any of this (same as WorkerLocksResult/SimulateRouteResult
+// above), so nothing here touches DDL. See `crates/sms-api/src/
+// procedures.rs`'s own doc on `dashboard_snapshot` for exactly which
+// model each field reads, under which context (app-scoped vs
+// system-wide), and why: cratestack's own `aggregate()` has no GROUP
+// BY — `db.<model>().aggregate().count()`/`.sum()`/`.avg()`/`.min()`/
+// `.max()` only (`cratestack-sqlx-0.7.10/src/query/read/aggregate.rs`'s
+// own doc comment) — so every bucket here is its own explicit,
+// policy-scoped delegate call rather than one grouped query.
+
+// One rolling hour of `Message.createdAt`, oldest first. `totalCount` is
+// that hour's throughput; `ucs2Count` is how many of those encoded UCS-2.
+// Both come from the same underlying scan (see procedures.rs), so the
+// throughput and UCS-2 tiles share one source of truth rather than
+// disagreeing after two independent computations.
+type HourlyBucket {
+  bucketStart DateTime
+  totalCount Int
+  ucs2Count Int
+}
+
+// Delivery rate by operator, over a trailing 24h window. `terminalTotal`
+// deliberately excludes `uncertain`/`undelivered` — see DashboardSummary's
+// own comment on `stuckMessages` for why folding either into this ratio
+// would misstate it in one direction or the other.
+type OperatorDeliveryStats {
+  operator OperatorCode
+  delivered Int
+  terminalTotal Int
+}
+
+type DashboardSummary {
+  generatedAt DateTime
+  // Empty when the caller isn't scoped to a single app (a real human or
+  // system context, per Message's own `@@allow`) — see the console's own
+  // scope banner precedent (`messages-screen.tsx`) for why this is stated
+  // on screen rather than left for an operator to infer.
+  appId Cuid?
+
+  // Current count of Message rows in {accepted, queued, routed} — not
+  // time-windowed; a live gauge, not a rate.
+  queueDepth Int
+
+  // Current count of Job rows in {pending, running}, system-wide — Job
+  // has no appId to scope a row-level predicate by (the same shape the
+  // Jobs screen's own banner already states, #56/#57).
+  jobBacklog Int
+
+  // Current count of WebhookAttempt rows in {pending, delivering}, scoped
+  // to this app's own WebhookEndpoints (`WebhookAttempt`'s `@@allow` has
+  // no unscoped `auth().kind == "app"` clause — only `endpoint.appId ==
+  // auth().appId`). A genuine *depth* count — distinct from, and does not
+  // recompute, `sms_webhook_outbox_oldest_undelivered_age_seconds` /
+  // `sms_event_outbox_poison_rows` (Prometheus, `crates/sms-metrics`):
+  // those describe the framework's own internal `cratestack_event_outbox`
+  // table (drained by the `drain` role), not this schema's `WebhookAttempt`
+  // rows (delivered by the `hooks` role) — two different tables, two
+  // different numbers. See procedures.rs for the full reasoning.
+  outboxDepth Int
+
+  // Current count of Message rows in {uncertain, undelivered} — messages
+  // never confirmed either delivered or failed. Reported on its own,
+  // never folded into `operatorStats`: counting one as a failure
+  // overstates failure, counting it as delivered is a lie.
+  stuckMessages Int
+
+  // Trailing 24h, one row per OperatorCode variant, including zero-count
+  // ones — the caller decides whether to render an empty row.
+  operatorStats OperatorDeliveryStats[]
+
+  // Six rolling hours, oldest first — the throughput and UCS-2-ratio
+  // trend. `hourlyBuckets[5]` is the current, in-progress hour.
+  hourlyBuckets HourlyBucket[]
+}
+
+procedure dashboardSummary(): DashboardSummary
   @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))

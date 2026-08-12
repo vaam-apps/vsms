@@ -173,6 +173,47 @@ end up `state = 'active'`, which the subcommand also guarantees (a fresh
 row is created `disabled` — `Provider.state`'s own `@default` — and
 activated in a second write).
 
+## 4b. Register the console's OIDC client and create the first operator
+
+Without this, the console starts, reports healthy, and nobody can log
+into it — the human-login half of the same failure mode `seed-dispatch`
+above exists to prevent on the traffic half.
+
+```bash
+docker compose --env-file .env run --rm sms-gateway seed-console-client \
+  --client-id sms-console \
+  --redirect-uri "https://console.example.com/api/auth/callback"
+
+docker compose --env-file .env run --rm sms-gateway provision-user \
+  --email you@example.com --display-name "Your Name" --role-key owner
+```
+
+**The `--redirect-uri` must match `${ADMIN_BASE_URL}/api/auth/callback`
+exactly** — `authkestra_op`'s authorize handler compares the whole string
+per RFC 6749 §3.1.2, not by prefix or origin, so a trailing slash or an
+`http`/`https` mismatch fails the exchange with no useful diagnostic.
+`--client-id` must equal the console's own `SMS_CONSOLE_OIDC_CLIENT_ID`
+and `sms-gateway serve --console-client-id`; `GatewayAuth`'s audience
+check refuses any other value.
+
+`provision-user` prints a generated password **once** and never stores
+it. There is no password-rotation flow yet ([#58](https://github.com/vymalo/vsms/issues/58)
+tracks the users-and-roles screens), so treat it as a bootstrap
+credential: use it to sign in, and provision real accounts from the
+console once one exists.
+
+`--role-key` takes any of §5.2's six built-in roles — `owner`, `admin`,
+`operator`, `developer`, `auditor`, `support` — all seeded by
+`0002_bootstrap`. `system` is not among them and cannot be created;
+`roles_key_not_reserved_check` rejects it, because a human account
+holding it could read the OP's signing key through generated CRUD.
+
+**Known limitation, worth setting expectations before you sign in:** the
+console authenticates *upstream* with its own machine credential, not
+your session, so a logged-in `owner` still cannot perform writes that
+require a human role — see
+[#211](https://github.com/vymalo/vsms/issues/211).
+
 ## 5. Bring up sms-gateway and sms-worker
 
 ```bash
@@ -229,9 +270,12 @@ docker compose ps
 unauthenticated, on purpose: found live wiring this up (#139), the same
 route was previously gated by `middleware.ts`'s Basic Auth check like
 every other route, which meant an unauthenticated liveness probe got a
-permanent `401` under `DASHBOARD_AUTH=basic` (the only mode
-`NODE_ENV=production` accepts). `admin/middleware.ts`'s matcher now
-excludes `api/health` explicitly — see that file's own comment. `caddy`
+permanent `401` under the Basic gate that then existed.
+[#194](https://github.com/vymalo/vsms/issues/194) has since replaced that
+gate entirely with a real session, but the exemption matters exactly as
+much — an unauthenticated probe would now be redirected to `/login`
+instead of 401'd, which a `HEALTHCHECK` reads as failure just the same.
+`admin/middleware.ts`'s matcher excludes `api/health` explicitly — see that file's own comment. `caddy`
 depends on both `sms-gateway` and `admin` being healthy before it starts
 routing — see `deploy/Caddyfile`'s own comment for why the gateway and
 admin domains have to stay two separate origins rather than one
@@ -475,7 +519,7 @@ written.
   "bring your own database" split the compose path already documents for
   why it doesn't use `sops`.
 - **Does not create any Secret.** Every credential (`DATABASE_URL`,
-  `SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `DASHBOARD_BASIC_USERS`,
+  `SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `SMS_CONSOLE_SESSION_SECRET`,
   the admin console's private key PEM) is referenced by name from an
   `existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
   ever writes one into a ConfigMap or a rendered manifest. See

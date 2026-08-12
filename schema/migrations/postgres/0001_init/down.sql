@@ -68,6 +68,12 @@ ALTER TABLE consent_records DROP CONSTRAINT consent_records_channel_enum_check;
 
 ALTER TABLE consent_records DROP CONSTRAINT consent_records_scope_enum_check;
 
+ALTER TABLE audit_anchors DROP CONSTRAINT audit_anchors_chain_hash_length_check;
+
+ALTER TABLE audit_anchors DROP CONSTRAINT audit_anchors_prev_chain_hash_length_check;
+
+ALTER TABLE audit_anchors DROP CONSTRAINT audit_anchors_range_hash_length_check;
+
 DROP INDEX users_email_key;
 
 DROP INDEX users_subject_key;
@@ -87,6 +93,8 @@ DROP INDEX operator_prefix_rules_prefix_key;
 DROP INDEX oauth_clients_client_id_key;
 
 DROP INDEX client_assertions_jti_key;
+
+DROP INDEX audit_anchors_chain_hash_key;
 
 DROP INDEX apps_slug_key;
 
@@ -129,6 +137,8 @@ DROP TABLE delivery_receipts;
 DROP TABLE consent_records;
 
 DROP TABLE client_assertions;
+
+DROP TABLE audit_anchors;
 
 DROP TABLE apps;
 

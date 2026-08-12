@@ -15,6 +15,12 @@ export type {
   SendMessageResult,
 } from "./client";
 export { previewMessage, sendMessage } from "./client";
+export type {
+  DashboardSummary,
+  HourlyBucket,
+  OperatorDeliveryStats,
+} from "./dashboard";
+export { dashboardSummary } from "./dashboard";
 export { gatewayAgent } from "./dispatcher";
 export type { GatewayFieldErrors, GatewayTrpcCode } from "./errors";
 export { GatewayError, isStaleWriteError, mapGatewayError } from "./errors";
@@ -40,13 +46,21 @@ export {
   MessageStreamHub,
 } from "./message-stream";
 export type {
+  DeliveryOutcome,
+  DeliveryReceiptSummary,
   ListMessagesInput,
   ListMessagesResult,
   MessageListItem,
+  MessageReceiptsResult,
   MessageRecord,
   StreamCandidate,
 } from "./messages";
-export { getMessageById, listMessages, listMessagesForStream } from "./messages";
+export {
+  getMessageById,
+  listMessageReceipts,
+  listMessages,
+  listMessagesForStream,
+} from "./messages";
 export type {
   ProviderKind,
   ProviderListItem,

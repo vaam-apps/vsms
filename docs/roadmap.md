@@ -65,8 +65,8 @@ flowchart TB
 |---|---|---|---|
 | **1 — Foundation** | M0, M1 | Can we represent a message, and prove who is asking? | **Done** — 14/14 and 9/9 closed |
 | **2 — Deliver a message** | M2, M3 | Can one SMS reach a real handset, and can the caller find out what happened? | **Done** — M2 12/12, M3 8/8, both gates passing |
-| **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M4 **7/19**, M6 **3/8** — the largest remaining block |
-| **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | **Started** (3/6) — `sms-provider-mtn` (#61), the routing rules engine (#62), and failover/circuit breakers (#63) landed; grey-route detection (#64) and the kill-Orange-in-staging gate (#65) remain |
+| **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M4 **11/20**, M6 **7/9** — M6 is nearly closed; M4 is the largest remaining block |
+| **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | **Started** (3/6) — `sms-provider-mtn` (#61), the routing rules engine (#62) and failover/circuit breakers (#63) landed; grey-route detection (#64) and the kill-Orange-in-staging gate (#65) remain, both needing the real-handset evidence `OPEN_QUESTIONS.md` §2.2 records as still missing |
 | **5 — Conditional** | M7 | Direct MNO interconnect over SMPP | Not started, and **may never exist** — see decision #4 |
 
 ---
@@ -89,6 +89,14 @@ Deliberately *not* on that list: **#187** (webhook secrets readable by every hum
 **#46 is resolved, and it doesn't shrink this list: `cratestack studio` (evaluated live at `0.7.10`, matching the pin) covers none of M4's ten open stories.** It's model-CRUD only — no procedure surface, so #52/#54/#55's actual workflows (`provisionAppClient`, `previewMessage`, `replayWebhookAttempt`, `rotateWebhookSecret`) stay unreachable through it — and, checked live rather than assumed, it bypasses `@@allow`, `@version`/CAS, and `@@emit` outbox writes entirely (an unauthenticated read returned `OauthSigningKey.privateKeyPem` in the clear; a write left `version` unbumped and wrote zero outbox rows despite `Message.@@emit`). That's disqualifying for any deployed surface, not a gap to patch. It also can't ever cover #57 — lock ownership lives in Postgres session advisory locks with no schema model, so there's nothing for a schema-driven tool to show. #56/#57 (the diagnostic core this section already named) stay exactly as much hand-written work as before; see the issue comment on #46 for the full per-story split.
 
 ---
+
+## Where the unknowns live
+
+`OPEN_QUESTIONS.md` at the repo root collects what this system does not know
+the answer to — human decisions, unverified claims, accepted limitations, and
+filed upstream questions. This file owns *sequencing*; that one owns
+*unknowns*. A question whose only obstacle is someone doing the work belongs
+in neither: it is a GitHub issue.
 
 ## Decisions that gate phases
 

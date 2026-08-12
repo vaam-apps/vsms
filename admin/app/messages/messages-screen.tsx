@@ -366,6 +366,12 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <a
+            href="/dashboard"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Dashboard
+          </a>
+          <a
             href="/"
             className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
           >
@@ -584,7 +590,23 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
                   {row.encoding.toUpperCase()} · {row.segments}
                 </TableCell>
                 <TableCell>
-                  <IdDisplay value={row.id} />
+                  <div className="flex items-center gap-2">
+                    <IdDisplay value={row.id} />
+                    {/* #50: the detail route. A plain `<a>`, matching every
+                     * other internal nav link on this screen (Composer/
+                     * Jobs/Workers/Gallery, in the header) — not `next/
+                     * link`'s `Link`. Separate from `IdDisplay` itself
+                     * rather than wrapping it: `IdDisplay`'s own copy
+                     * button doesn't stop propagation, so wrapping it in
+                     * an `<a>` would fire a navigation on every copy
+                     * click. */}
+                    <a
+                      href={`/messages/${row.id}`}
+                      className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+                    >
+                      View
+                    </a>
+                  </div>
                 </TableCell>
                 <TableCell align="end">
                   <TimestampDisplay value={row.createdAt} />

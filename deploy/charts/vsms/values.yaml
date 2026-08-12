@@ -77,13 +77,13 @@ existingSecrets:
   orange:
     name: ""
     key: ORANGE_CM_CLIENT_SECRET
-  # "username:sha256hex,..." — see docs/runbooks/deployment.md for how to
-  # generate one. Not plaintext-reversible, but still an authentication
-  # credential; treated as a secret for the same reason
-  # docker-compose.yml's own DASHBOARD_BASIC_USERS never has a default.
-  dashboardBasicUsers:
+  # 32+ characters of real entropy — it encrypts the console's session
+  # cookie (AES-256-GCM, admin/lib/oidc.ts). Generate with
+  # `openssl rand -hex 32`. A secret rather than a value for the obvious
+  # reason: anything holding it can mint a session for any account.
+  consoleSessionSecret:
     name: ""
-    key: DASHBOARD_BASIC_USERS
+    key: SMS_CONSOLE_SESSION_SECRET
   # Must contain a key literally named `console-private-key.pem` — the
   # admin console's private_key_jwt keypair (#111/#134), minted once by
   # `sms-gateway provision-client` and never stored anywhere else in this
@@ -129,8 +129,14 @@ worker:
   roles: dispatch,drain,scheduler,hooks,jobs
 
 admin:
-  dashboardAuth: basic
-  dashboardBasicRealm: vsms Admin Console
+  # The public origin a browser reaches the console at. Required — see the
+  # ADMIN_BASE_URL comment on the container's env block for why an
+  # in-cluster address does not work here.
+  baseUrl: ""
+  # Must equal what `sms-gateway seed-console-client --client-id` and
+  # `sms-gateway serve --console-client-id` were given; GatewayAuth's
+  # audience check refuses any other value.
+  oidcClientId: sms-console
   # No provisioning CLI path exists yet from inside this chart (same gap
   # docs/runbooks/deployment.md's compose path documents by hand) — set
   # this after provisioning a client the same way that runbook describes.
@@ -540,15 +546,22 @@ controllers:
           tag: '{{ required "image.tag is required" .Values.image.tag }}'
           pullPolicy: IfNotPresent
         env:
-          DASHBOARD_AUTH:
-            value: '{{ .Values.admin.dashboardAuth }}'
-          DASHBOARD_BASIC_REALM:
-            value: '{{ .Values.admin.dashboardBasicRealm }}'
-          DASHBOARD_BASIC_USERS:
+          # #194 replaced the DASHBOARD_AUTH Basic gate with a real
+          # authorization_code + PKCE login — a hard cutover, so those
+          # three vars are gone rather than optional. ADMIN_BASE_URL must
+          # be the public origin a browser reaches the console at: the
+          # redirect_uri registered by `sms-gateway seed-console-client`
+          # is compared as a whole string (RFC 6749 3.1.2), never by
+          # prefix, so an in-cluster Service address here breaks login.
+          ADMIN_BASE_URL:
+            value: '{{ required "admin.baseUrl is required — the public console origin" .Values.admin.baseUrl }}'
+          SMS_CONSOLE_OIDC_CLIENT_ID:
+            value: '{{ .Values.admin.oidcClientId }}'
+          SMS_CONSOLE_SESSION_SECRET:
             valueFrom:
               secretKeyRef:
-                name: '{{ required "existingSecrets.dashboardBasicUsers.name is required" .Values.existingSecrets.dashboardBasicUsers.name }}'
-                key: '{{ .Values.existingSecrets.dashboardBasicUsers.key }}'
+                name: '{{ required "existingSecrets.consoleSessionSecret.name is required" .Values.existingSecrets.consoleSessionSecret.name }}'
+                key: '{{ .Values.existingSecrets.consoleSessionSecret.key }}'
           # Cluster-internal DNS to the gateway Service, never the
           # public origin — mirrors deploy/docker-compose.yml's own
           # `http://sms-gateway:8080` (plain http: Caddy/an ingress is
