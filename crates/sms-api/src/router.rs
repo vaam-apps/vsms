@@ -132,6 +132,72 @@ const PROVIDER_ROUTE_READ_ROUTES: &[RoutePermission] = &[
     },
 ];
 
+/// #53/#55: `SenderId`/`SenderIdRegistration`/`WebhookEndpoint` writes are
+/// already Layer-1-restricted to human roles that must carry
+/// `sender:manage`/`webhook:manage` (§5.2) — none of their
+/// `@@allow("create"/"update"/"delete", ...)` clauses admit
+/// `auth().kind == "app"`, unlike `Job`/`Provider`/`Route`'s own *read*
+/// policies above. This is [`PROVIDER_WRITE_ROUTES`]'s own defense-in-depth
+/// shape, applied to two more resources — same reasoning, same "Layer 2
+/// narrows; it never widens" invariant (`rbac.rs`'s own module doc).
+///
+/// Unlike `PROVIDER_WRITE_ROUTES`'s own doc comment, which had to describe a
+/// hypothetical future because no human-role token existed yet when it was
+/// written, this gate is real and provable *today*: #194 (human login) and
+/// #211 (forwarding the signed-in human's own token) both landed before this
+/// gate did, so a signed-in `owner`/`admin`/`operator` (for the sender
+/// routes) or `owner`/`admin`/`developer` (for the webhook routes) really
+/// does reach these routes end to end through the admin console — see
+/// `packages/gateway/src/senders.ts`/`webhooks.ts`'s own module docs for the
+/// live proof, the same shape `providers.ts`'s own doc records for #211.
+///
+/// `GET /sender_ids`, `GET /sender_id_registrations`, `GET
+/// /webhook_endpoints`, `GET /webhook_attempts` are deliberately absent —
+/// none of the four models' `read` `@@allow` admits `auth().kind == "app"`
+/// unscoped the way `Job`/`Provider`/`Route` do (`WebhookEndpoint.read` is
+/// narrower still, `owner`/`admin`/`developer`/`system` only, since #187), so
+/// unlike [`PROVIDER_ROUTE_READ_ROUTES`]/[`JOB_READ_ROUTES`] there is no
+/// machine-credential read path here for Layer 2 to be the real perimeter
+/// for — a signed-in human's own `kind == "user"` already clears Layer 1 on
+/// its own.
+const SENDER_AND_WEBHOOK_WRITE_ROUTES: &[RoutePermission] = &[
+    RoutePermission {
+        method: Method::POST,
+        path: "/sender_ids",
+        permission: "sender:manage",
+    },
+    RoutePermission {
+        method: Method::PATCH,
+        path: "/sender_ids/{id}",
+        permission: "sender:manage",
+    },
+    RoutePermission {
+        method: Method::POST,
+        path: "/sender_id_registrations",
+        permission: "sender:manage",
+    },
+    RoutePermission {
+        method: Method::PATCH,
+        path: "/sender_id_registrations/{id}",
+        permission: "sender:manage",
+    },
+    RoutePermission {
+        method: Method::POST,
+        path: "/webhook_endpoints",
+        permission: "webhook:manage",
+    },
+    RoutePermission {
+        method: Method::PATCH,
+        path: "/webhook_endpoints/{id}",
+        permission: "webhook:manage",
+    },
+    RoutePermission {
+        method: Method::DELETE,
+        path: "/webhook_endpoints/{id}",
+        permission: "webhook:manage",
+    },
+];
+
 /// #153: the TTL a cached `Idempotency-Key` response stays replayable —
 /// matches `docs/architecture.md` §4.5's own figure, 24 hours. Exposed so
 /// every construction site (the real `sms-gateway serve` command and the
@@ -646,6 +712,13 @@ pub fn router(
         auth: auth.clone(),
         requirements: PROVIDER_ROUTE_READ_ROUTES,
     };
+    // #53/#55: a fourth, independent `enforce_route_permission` instance —
+    // same "disjoint route sets compose the same either way" reasoning as
+    // every prior instance's own comment above.
+    let sender_and_webhook_rbac_state = RbacState {
+        auth: auth.clone(),
+        requirements: SENDER_AND_WEBHOOK_WRITE_ROUTES,
+    };
     let idempotency_auth_state = IdempotencyAuthState { auth: auth.clone() };
     let idempotency_store: Arc<dyn IdempotencyStore> =
         Arc::new(SqlxIdempotencyStore::new(db.pool().clone()));
@@ -659,6 +732,10 @@ pub fn router(
         .layer(from_fn_with_state(job_rbac_state, enforce_route_permission))
         .layer(from_fn_with_state(
             provider_route_rbac_state,
+            enforce_route_permission,
+        ))
+        .layer(from_fn_with_state(
+            sender_and_webhook_rbac_state,
             enforce_route_permission,
         ))
         .layer(
