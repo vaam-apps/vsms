@@ -479,13 +479,19 @@ model Provider {
   costPerSegmentXaf Decimal
   healthCheckedAt DateTime?
   healthy Boolean @default(false)
+  // #63: the provider-side circuit breaker — same two-column shape as
+  // WebhookEndpoint's own.
+  consecutiveFailures Int @default(0)
+  circuitOpenUntil DateTime?
+  // #59.
+  version Int @version
 
   routes Route[] @relation(fields: [id], references: [providerId])
 
   @@audit
-  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
-  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("delete", hasRole('owner'))
   @@emit(created, updated, deleted)
 }
@@ -1964,6 +1970,20 @@ Circuit breaker per provider: five consecutive `Unavailable` opens it for 60s, t
 **No `Route` rows configured at all refuses to dispatch, loudly** — every `accepted` message goes to `rejected` with a `stateReason` naming why (`routing::explain_no_route`), rather than a silent fallback to "any active provider." A deliberate cutover from the M2 placeholder's implicit behaviour, not an oversight: see `AGENTS.md`'s own #62 section for the reasoning and the demo-seeding consequence.
 
 `Route.failoverRouteId` and `select_route`'s own `exclude: &ExcludedRouteIds` parameter exist for #63 to build the two-hop-capped failover chain and the circuit breaker described above — calling `select_route` again with a failed route's id added to `exclude` finds the next-best route with no changes needed to this crate.
+
+**Implementation, #63 (`crates/sms-worker/src/dispatch.rs`): failover and the provider circuit breaker, landed against `sms_provider::ProviderError::routing()`'s own compiler-checked mapping, not a second hand-derived one.**
+
+`Permanent` (`TryNextRoute`) and `Unavailable` (`OpenCircuitAndTryNextRoute`) are the two variants that trigger a failover attempt; `Transient` (`RetryThisProvider`), `Rejected`/`Unsupported` (`FailMessage`), and `Indeterminate` (`HoldIndeterminate`) never do — see `crates/sms-provider/src/error.rs`'s own `routing()` table and `dispatch.rs::handle_submit_error`'s doc for the full mapping, and this section's own header paragraph for why `Indeterminate` failing over would risk a duplicate SMS. `Route.failoverRouteId` itself is **not** read by the failover mechanism — per this section's own `#62`-era paragraph above, the actual mechanism is `select_route` called again with the failed route's id added to `exclude`; the field is carried through `Winner` purely for an operator's own explanation trail.
+
+**"Failover must not double-send: the claim loop's lease is what prevents it"** (the issue's own words) — a failover reroute never calls `SmsProvider::submit` a second time inline. `dispatch.rs::attempt_failover` writes `routed -> queued` with a new `providerId`/`routeId` stamped on the same `if_match(version)`-CAS'd row and returns; the actual resubmit happens on a later claim, under the ordinary `queued -> routed -> submit` path every other reclaim in this crate already relies on. This is only safe because `TryNextRoute`/`OpenCircuitAndTryNextRoute` both mean nothing was ever accepted by the provider — `Indeterminate`, the one variant that can't make that claim, never reaches this function.
+
+**`Message.excludedRouteIds`** (a new nullable column, sentinel-packed via `sms_core::pack`/`unpack`) is each message's own accumulated exclude set, capped at two entries (§6.3's own "two hops"). Necessary, not just convenient: a `Permanent` failure never opens a provider's circuit breaker (`crates/sms-provider/src/error.rs`'s own `permanent_never_opens_the_circuit_breaker` test) — it is specific to this message (an unapproved sender ID, say), not a provider-wide outage — so nothing else marks that route ineligible for a second attempt. Without remembering it per-message, a second failover hop could pick the exact same already-failing route right back.
+
+**The provider-side circuit breaker (`Provider.consecutiveFailures`/`circuitOpenUntil`, two new columns) deliberately mirrors `WebhookEndpoint`'s own shape (#40/#41/#59)** — same two fields, same reset-on-success-and-on-trip discipline, same `if_match`-CAS'd best-effort writes — rather than inventing different semantics for a second breaker in the same codebase. The constants differ because the spec differs: five consecutive failures, 60s, not webhook delivery's 20/15min. `crates/sms-worker/src/routing.rs::convert_provider` is the one reader: an open circuit is treated exactly like `state != active` (unavailable, with a reason), so *every* future routing decision — not just the message whose failure tripped the breaker — naturally skips that provider. This is the literal mechanism behind the ticket's own second acceptance clause, "must not fail a message a healthy alternative could carry": a fresh `accepted` message never even attempts a provider whose circuit is open, proven live by `crates/sms-worker/tests/dispatch_live_postgres.rs`'s own `an_open_circuit_routes_new_messages_to_the_alternative_instead_of_rejecting`, which asserts the broken provider's own call count stays flat across a sixth, brand-new message reaching `submitted` entirely through the healthy alternative.
+
+**Deliberately not the literal "half-open with a single probe" this section's own header paragraph describes** — `Provider`'s breaker, like `WebhookEndpoint`'s, fully reopens the moment `circuitOpenUntil` passes, with no rate-limited single-probe admission. A true single-probe half-open state needs coordination this codebase has no mechanism for yet (something has to guarantee exactly one in-flight probe at a time across however many `dispatch` processes exist), and a second, differently-shaped breaker for that one property would cost more in consistency than it buys in fidelity to this paragraph's own prose. Revisit if a real incident shows the simpler reopen is too aggressive.
+
+**Found live, not by review: `Provider`'s own `update` `@@allow` didn't admit `hasRole('system')`.** `dispatch.rs`'s new circuit-breaker writes run under this crate's internal `sys()` context, and without that clause every one of them returned `Forbidden("update policy denied this operation")` — silently absorbed by the same best-effort "log and drop" handling `hooks::record_endpoint_failure` already established, so the breaker never actually opened despite every surrounding assertion (submit call counts, message states) passing. Caught by `an_open_circuit_routes_new_messages_to_the_alternative_instead_of_rejecting` itself asserting the effect (`circuitOpenUntil` genuinely set), not just that the write didn't panic. Fixed the same way every prior instance of this gap shape was: `schema.cstack` only, confirmed byte-identical DDL via `cratestack migrate diff` before and after. Safe to grant: `GatewayAuth::authenticate` (`crates/sms-api/src/auth.rs`) constructs `role: "system"` nowhere — it is minted exactly once, inside `Procedures::sys()`, never from a real bearer token — so this change adds no new HTTP-reachable capability to `PATCH /providers/{id}` (`router::PROVIDER_WRITE_ROUTES`).
 
 ### 6.4 Grey routes
 

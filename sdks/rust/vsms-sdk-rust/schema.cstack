@@ -341,6 +341,19 @@ model Provider {
   costPerSegmentXaf Decimal
   healthCheckedAt DateTime?
   healthy Boolean @default(false)
+  // #63: the provider-side circuit breaker §6.3 specifies ("five
+  // consecutive Unavailable opens it for 60s") — same two-column shape as
+  // WebhookEndpoint's own breaker (#41/#59), deliberately: a second breaker
+  // with different field names or semantics in the same codebase is worse
+  // than a slightly imperfect consistent one. `crates/sms-worker/src/
+  // dispatch.rs` is the one writer (`record_provider_failure`/
+  // `reset_provider_failures`, mirroring `hooks.rs`'s own); `crates/
+  // sms-worker/src/routing.rs::convert_provider` is the one reader —
+  // `available` is `false` while `circuitOpenUntil` is in the future,
+  // exactly like `claim.rs::filter_by_endpoint_health` already treats
+  // WebhookEndpoint's own open circuit as unclaimable.
+  consecutiveFailures Int @default(0)
+  circuitOpenUntil DateTime?
   // #59: the ticket's own motivating case — two operators editing the
   // same provider config must not silently last-write-wins.
   version Int @version
@@ -353,10 +366,27 @@ model Provider {
   // OperatorPrefixRule's own read policies (see their comments for how
   // this pattern keeps recurring: any model an internal procedure or
   // worker role reads needs hasRole('system') alongside the human roles).
+  //
+  // update: #63, the eleventh instance of this exact gap shape but the
+  // first on an `update` action rather than `list`/`detail` — found live,
+  // not by review, the same way every prior instance was. `dispatch.rs`'s
+  // `record_provider_failure`/`reset_provider_failures` (the circuit
+  // breaker this PR adds) write this model under `sys()`, and without
+  // `hasRole('system')` here every one of those writes returned
+  // `Forbidden("update policy denied this operation")` — not a compile
+  // error, not even a loud runtime one from this crate's own perspective
+  // (`hooks::record_endpoint_failure`'s "log and drop" best-effort
+  // handling absorbed it exactly like it absorbs a lost CAS race), so the
+  // circuit breaker silently never opened. `an_open_circuit_routes_new_
+  // messages_to_the_alternative_instead_of_rejecting`
+  // (`crates/sms-worker/tests/dispatch_live_postgres.rs`) is what caught
+  // it: `provider.version` never advanced past the one bump
+  // `seed_two_routed_providers`'s own `owner()`-context activation made,
+  // proving every `sys()`-context write after it was rejected.
   @@audit
   @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
-  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("delete", hasRole('owner'))
   @@emit(created, updated, deleted)
 }
@@ -470,6 +500,17 @@ model Message {
   providerId Cuid?
   providerMessageRef String?
   providerMessageRefAlt String?
+  // #63: the failed `Route.id`s this message has already been rerouted
+  // away from, sentinel-packed (`sms_core::pack`/`unpack` — see that
+  // crate's own module doc; `Route.id` is a `Cuid`, format-guarded
+  // `[a-z0-9]{2,32}`, so it can never contain the separator or be empty,
+  // the two cases `pack` rejects). Both the exclude set `crates/sms-worker/
+  // src/dispatch.rs::attempt_failover` re-runs `sms_routing::select_route`
+  // with, and the two-hop cap §6.3 specifies — `unpack(...).len()` past 2
+  // means the next failure is terminal-for-this-message, not another
+  // reroute. `None`/absent until the first failover hop; never touched by
+  // `sendMessage` or by any state transition that isn't a failover reroute.
+  excludedRouteIds String?
 
   attempts Int @default(0)
   maxAttempts Int

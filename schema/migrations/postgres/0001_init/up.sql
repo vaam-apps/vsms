@@ -179,6 +179,7 @@ CREATE TABLE messages (
     provider_id TEXT,
     provider_message_ref TEXT,
     provider_message_ref_alt TEXT,
+    excluded_route_ids TEXT,
     attempts BIGINT NOT NULL DEFAULT 0,
     max_attempts BIGINT NOT NULL,
     lease_owner TEXT,
@@ -266,6 +267,8 @@ CREATE TABLE providers (
     cost_per_segment_xaf NUMERIC NOT NULL,
     health_checked_at TIMESTAMPTZ,
     healthy BOOLEAN NOT NULL DEFAULT false,
+    consecutive_failures BIGINT NOT NULL DEFAULT 0,
+    circuit_open_until TIMESTAMPTZ,
     version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );

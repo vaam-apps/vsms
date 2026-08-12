@@ -574,6 +574,7 @@ async fn seed_and_verify_provider(db: &Cratestack, suffix: &str) -> schema::Prov
             supportsConcat: true,
             costPerSegmentXaf: "15".parse().unwrap(),
             healthCheckedAt: None,
+            circuitOpenUntil: None,
         })
         .run(&owner())
         .await
@@ -713,6 +714,7 @@ async fn seed_and_verify_message(
             providerId: None,
             providerMessageRef: None,
             providerMessageRefAlt: None,
+            excludedRouteIds: None,
             leaseOwner: None,
             leaseUntil: None,
             scheduledAt: None,
