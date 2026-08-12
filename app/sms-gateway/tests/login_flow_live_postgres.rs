@@ -179,6 +179,11 @@ async fn ensure_orange_cm_provider(db: &Cratestack) {
             supportsConcat: true,
             costPerSegmentXaf: "19".parse().expect("static decimal literal parses"),
             healthCheckedAt: None,
+            // #63 added the circuit breaker's own columns.
+            // `consecutiveFailures` carries a @default so it stays out of the
+            // create input; `circuitOpenUntil` does not, so every fixture
+            // building a Provider has to name it.
+            circuitOpenUntil: None,
         })
         .run(&owner())
         .await
