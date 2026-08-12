@@ -88,6 +88,22 @@ impl OpState {
         }
     }
 
+    /// The OP's store, for [`crate::login`]'s own call into
+    /// `authkestra_op::handlers::authorize::handle_authorize` — that
+    /// function takes `&dyn OpStore` directly rather than going through
+    /// axum's `FromRef`/`State` machinery the way the generated
+    /// `/token` handler does, so this is a plain accessor rather than a
+    /// second `FromRef` impl.
+    pub(crate) fn store(&self) -> Arc<dyn OpStore> {
+        self.store.clone()
+    }
+
+    /// The OP's config, for the same caller and the same reason as
+    /// [`Self::store`].
+    pub(crate) fn config(&self) -> OpConfig {
+        self.config.clone()
+    }
+
     /// Atomically swaps in a freshly loaded signing key and key set — see
     /// [`spawn_key_refresh`], the only caller.
     fn refresh(&self, tokens: Arc<TokenManager>, jwks: Vec<Jwk>) {

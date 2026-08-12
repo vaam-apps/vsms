@@ -662,6 +662,7 @@ mod tests {
             db.clone(),
             "https://auth.invalid/jwks.json".to_owned(),
             "https://auth.invalid".to_owned(),
+            crate::auth::DEFAULT_CONSOLE_CLIENT_ID.to_owned(),
         );
         let pepper = HashPepper::new("a".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
         let _router = router(
@@ -908,6 +909,7 @@ mod tests {
             db.clone(),
             "https://auth.invalid/jwks.json".to_owned(),
             "https://auth.invalid".to_owned(),
+            crate::auth::DEFAULT_CONSOLE_CLIENT_ID.to_owned(),
         );
         let pepper = HashPepper::new("a".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
         let app = router(
@@ -975,6 +977,7 @@ mod tests {
             db.clone(),
             "https://auth.invalid/jwks.json".to_owned(),
             "https://auth.invalid".to_owned(),
+            crate::auth::DEFAULT_CONSOLE_CLIENT_ID.to_owned(),
         );
         let pepper = HashPepper::new("a".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
         let app = router(

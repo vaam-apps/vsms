@@ -20,6 +20,7 @@ authkestra-op.workspace = true
 authkestra-engine.workspace = true
 rsa.workspace = true
 rand.workspace = true
+argon2.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true

@@ -17,6 +17,7 @@
     "@vsms/gateway": "workspace:*",
     "@vsms/hooks": "workspace:*",
     "@vsms/ui": "workspace:*",
+    "jose": "6.2.8",
     "next": "15.5.23",
     "nuqs": "^2.7.1",
     "react": "19.2.8",

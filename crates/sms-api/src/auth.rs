@@ -40,7 +40,15 @@ use cratestack::{AuthProvider, CoolContext, CoolError, FilterExpr, RequestContex
 use jsonwebtoken::{Algorithm, Validation};
 
 use crate::cache::TtlCache;
-use crate::schema::{self, app_client, Cratestack};
+use crate::schema::{self, app_client, role, user, Cratestack};
+
+/// The `OauthClient.clientId` #194's own `sms-console` provisioning
+/// (`sms-gateway seed-console-client`) registers under, and the default
+/// every construction site passes as `GatewayAuth::new`'s `human_client_id`
+/// unless a deployment genuinely runs a different console client id. Named
+/// once here rather than duplicated as a string literal at each of the
+/// (as of this PR) seven call sites across three crates.
+pub const DEFAULT_CONSOLE_CLIENT_ID: &str = "sms-console";
 
 /// Who a request is. Mirrors the `auth Principal` block in `schema.cstack`
 /// field for field — the names below are load-bearing, not cosmetic.
@@ -103,14 +111,15 @@ impl Principal {
 
 /// JWKS-backed token validation, replacing the milestone-0 `DenyAll`. #21.
 ///
-/// Scoped to `client_credentials` + `private_key_jwt` — the only caller
-/// type that exists in this system (no admin console yet, so no human ever
-/// authenticates via the authorization-code flow; see `sms-auth::op`'s own
-/// module doc for the full reasoning). A service-account token, per
-/// `authkestra-op`'s real `handle_client_credentials` path, never carries
-/// `identity` — that's the discriminator this uses, not a `kind` claim
-/// (nothing mints one on this path; see the design doc §5.3's own token
-/// shape and `authkestra_engine::token::Claims`'s real fields).
+/// **Both realms as of #194.** A service-account (`client_credentials`)
+/// token, per `authkestra-op`'s real `handle_client_credentials` path,
+/// never carries `identity` — that remains the discriminator this uses, not
+/// a `kind` claim (nothing mints one on that path; see the design doc
+/// §5.3's own token shape and `authkestra_engine::token::Claims`'s real
+/// fields). A human (`authorization_code`) token always has one — see
+/// `sms-auth::login`'s own module doc for how the identity behind it was
+/// established, and `sms-auth::op::machine_only_config` for why the OP now
+/// advertises that grant at all.
 ///
 /// Builds its own [`JwksCache`]/[`Validation`] directly rather than going
 /// through `authkestra_resource::jwt::JwtStrategy` — verified against
@@ -126,16 +135,45 @@ pub struct GatewayAuth {
     jwks: std::sync::Arc<JwksCache>,
     validation: Validation,
     app_cache: std::sync::Arc<TtlCache<String, schema::AppClient>>,
+    // #194: a human token's role/perms are looked up here rather than
+    // baked into the token at issuance — see this field's own doc on
+    // `human_client_id` below for why `authkestra-op`'s real
+    // `handle_authorization_code` made that decision for this crate, not
+    // the other way around. Keyed by `User.id` (== `Identity.external_id`
+    // == the token's `sub`), same TTL and same reasoning as `app_cache`.
+    user_cache: std::sync::Arc<TtlCache<String, HumanPrincipal>>,
+    /// The one `OauthClient.clientId` a human (`authorization_code`) token
+    /// may legitimately carry as `aud` — `sms-console`, in practice. Real
+    /// audience validation for that realm, closing the gap this type's own
+    /// previous revision flagged: `validation.validate_aud` stays `false`
+    /// globally (service-account tokens have no fixed audience to check —
+    /// `aud == sub == client_id`, §4.2), so this is a manual, post-decode
+    /// check that runs *only* on the `claims.identity.is_some()` branch,
+    /// where a fixed audience genuinely exists to check against.
+    human_client_id: String,
     db: Cratestack,
     sys: CoolContext,
+}
+
+/// What `GatewayAuth` needs about a human token's subject, cached under
+/// [`GatewayAuth::user_cache`] — deliberately not a raw [`schema::User`],
+/// mirroring `sms-auth::login::AuthenticatedUser`'s own reasoning (a
+/// cache should hold exactly what its one caller needs, not an entire row
+/// a future field addition would silently start caching).
+#[derive(Debug, Clone)]
+struct HumanPrincipal {
+    role_key: String,
+    perms: Vec<String>,
 }
 
 impl GatewayAuth {
     /// `jwks_url` is the OP's own `/jwks.json` (`sms-auth::op` stands it
     /// up); `issuer` must match `OpConfig.issuer` exactly, or every token
-    /// this OP mints fails `iss` validation against itself.
+    /// this OP mints fails `iss` validation against itself. `human_client_id`
+    /// is the `OauthClient.clientId` the console's `authorization_code`
+    /// flow registers under (see [`GatewayAuth`]'s own field doc).
     #[must_use]
-    pub fn new(db: Cratestack, jwks_url: String, issuer: String) -> Self {
+    pub fn new(db: Cratestack, jwks_url: String, issuer: String, human_client_id: String) -> Self {
         // `require_kid(true)`: §5.4's own reasoning, re-verified against
         // 0.3.2 — the default `false` falls back to `jwks.keys[0]` on a
         // missing `kid`, which the moment two keys are published during
@@ -146,24 +184,23 @@ impl GatewayAuth {
         let mut validation = Validation::new(Algorithm::RS256);
         validation.set_issuer(&[issuer]);
         // A service-account token's `aud` echoes `sub` (the client_id,
-        // §4.2) — there is no fixed value to check it against. Leaving
-        // `set_audience` uncalled is *not* enough to skip the check:
-        // verified live that `jsonwebtoken::Validation`'s default
-        // `validate_aud: true` still rejects a token carrying an `aud`
-        // claim with `InvalidAudience` when `self.aud` is empty, rather
-        // than treating "nothing configured" as "nothing to check" — the
-        // explicit `false` below is the actual off switch.
-        //
-        // This disables audience checking for every token this
-        // `Validation` ever sees, not just service-account ones — a
-        // correctness gap only if a human-login flow starts issuing
-        // tokens with a real `aud` (that flow doesn't exist yet, see this
-        // type's own doc). It's not a live hole today: `authenticate`
-        // rejects any token carrying `identity` before audience would
-        // ever matter, on a completely separate check. Revisit this line
-        // — restore a real per-audience check, most likely via a second
-        // `Validation` for the human-login path — before wiring
-        // `identity`-bearing tokens up to anything.
+        // §4.2) — there is no fixed value to check it against, so this
+        // stays `false` globally rather than set via `set_audience`. A
+        // human token's `aud` **is** fixed (`human_client_id`, always
+        // "sms-console" in practice) and **is** checked — just not here:
+        // `jsonwebtoken::Validation` applies one audience list to every
+        // token it decodes, and this type decodes both realms with one
+        // `Validation`, so a per-realm check has to run after decode, in
+        // `authenticate` itself, once `claims.identity` says which realm
+        // this token is. Verified live (not merely inferred from the
+        // library's docs) that leaving `validate_aud` at its `true`
+        // default while never calling `set_audience` does NOT skip the
+        // check the way "nothing configured" might suggest —
+        // `jsonwebtoken::Validation`'s default still rejects any token
+        // carrying an `aud` claim with `InvalidAudience` when `self.aud`
+        // is empty. The explicit `false` below is the only real off
+        // switch, and `authenticate`'s own manual check is what restores
+        // the guarantee for the one realm that has a fixed audience.
         validation.validate_aud = false;
         Self {
             jwks,
@@ -174,6 +211,18 @@ impl GatewayAuth {
             // `Procedures::resolve_app` already makes for the same lookup
             // shape.
             app_cache: std::sync::Arc::new(TtlCache::new(Duration::from_mins(1))),
+            // Same 60s TTL and reasoning as app_cache — a deactivated or
+            // role-changed User takes effect within one TTL window rather
+            // than waiting out the access token's own 15-minute lifetime,
+            // which is *more* responsive than §5.3's own "roles resolve at
+            // issuance... up to 15 minutes to bite" framing describes.
+            // That framing assumed role/perms baked into the token at
+            // issuance (`issue_user_token_with_extra`); see
+            // `authenticate`'s own doc on why the real library shape ruled
+            // that out and made this per-request lookup the mechanism
+            // instead, not a choice made lightly.
+            user_cache: std::sync::Arc::new(TtlCache::new(Duration::from_mins(1))),
+            human_client_id,
             db,
             sys: system_context(),
         }
@@ -254,6 +303,8 @@ impl AuthProvider for GatewayAuth {
         let jwks = self.jwks.clone();
         let validation = self.validation.clone();
         let app_cache = self.app_cache.clone();
+        let user_cache = self.user_cache.clone();
+        let human_client_id = self.human_client_id.clone();
         let db = self.db.clone();
         let sys = self.sys.clone();
 
@@ -264,16 +315,6 @@ impl AuthProvider for GatewayAuth {
                 .await
                 .map_err(|error| CoolError::Unauthorized(format!("invalid token: {error}")))?;
 
-            if claims.identity.is_some() {
-                // Nothing on the client_credentials path this OP serves
-                // ever sets `identity` (see this type's own doc) — a token
-                // that has one was minted by something else, or isn't one
-                // this deployment should trust.
-                return Err(CoolError::Unauthorized(
-                    "human authentication is not wired up in this deployment".to_owned(),
-                ));
-            }
-
             // Layer 2 (#24, §5.1): read now, while `claims` is still whole —
             // `scope` is a first-class field, `perms` lives in `extra`. Both
             // survive into the returned `CoolContext` below regardless of
@@ -282,45 +323,18 @@ impl AuthProvider for GatewayAuth {
             // failing here, is what lets `require_permission` be the one
             // place that decides what "no permission" means.
             let scope = claims.scope.clone();
-            let perms = extract_perms(&claims.extra);
 
-            let client_id = claims.sub;
-            let app_client = app_cache
-                .get_or_fetch(client_id.clone(), |client_id| {
-                    let db = db.clone();
-                    let sys = sys.clone();
-                    async move {
-                        db.app_client()
-                            .find_many()
-                            .where_expr(
-                                FilterExpr::from(app_client::clientId().eq(client_id))
-                                    .and(app_client::active().is_true()),
-                            )
-                            .limit(1)
-                            .run(&sys)
-                            .await?
-                            .into_iter()
-                            .next()
-                            .ok_or_else(|| CoolError::Unauthorized("unknown client".to_owned()))
-                    }
-                })
-                .await?;
+            let ctx = if claims.identity.is_some() {
+                authenticate_human(claims, &human_client_id, &user_cache, &db, &sys).await?
+            } else {
+                authenticate_app(claims, &app_cache, &db, &sys).await?
+            };
 
-            let mut ctx = Principal {
-                sub: client_id,
-                kind: PrincipalKind::App,
-                // Never "system" — that role is constructed exactly once,
-                // inside `Procedures::sys()`, never from a token. `"app"`
-                // is a sentinel that matches no `hasRole(...)` clause on
-                // any model in the schema: a machine caller's only access
-                // is the seven procedures, never generated CRUD. See
-                // `OauthSigningKey`'s own schema comment for why this
-                // specifically must never slip.
-                role: "app".to_owned(),
-                app_id: app_client.appId,
-            }
-            .into_context();
-
+            let mut ctx = ctx;
+            let perms = match ctx.extensions.remove("__perms") {
+                Some(Value::List(items)) => items,
+                _ => Vec::new(),
+            };
             // Stashed in `extensions`, not folded into `into_context`'s own
             // four `auth.fields` — those four are Layer 1's vocabulary
             // (`hasRole`/`inTenant`/`appId ==`), fixed by the schema's own
@@ -329,10 +343,8 @@ impl AuthProvider for GatewayAuth {
             // generated SQL policy — keeping them out of `auth.fields` means
             // a typo'd extra claim can never accidentally start matching a
             // `hasRole(...)` clause it was never meant to.
-            ctx.extensions.insert(
-                "perms".to_owned(),
-                Value::List(perms.into_iter().map(Value::String).collect()),
-            );
+            ctx.extensions
+                .insert("perms".to_owned(), Value::List(perms));
             ctx.extensions
                 .insert("scope".to_owned(), scope.map_or(Value::Null, Value::String));
 
@@ -346,6 +358,228 @@ impl AuthProvider for GatewayAuth {
         }
     }
 }
+
+/// The service-account (`client_credentials`) path — unchanged behaviour
+/// from before #194, pulled out of `authenticate` so that function reads as
+/// "pick a realm, then project it" rather than one long branch. `perms` for
+/// this realm is `extra["perms"]` (never actually set on this path today —
+/// see [`extract_perms`]'s own doc), stashed under the same `"__perms"`
+/// sentinel key `authenticate_human` uses, for `authenticate` to promote
+/// into the real `"perms"` extension alongside `scope` once both realms
+/// have returned.
+async fn authenticate_app(
+    claims: Claims,
+    app_cache: &TtlCache<String, schema::AppClient>,
+    db: &Cratestack,
+    sys: &CoolContext,
+) -> Result<CoolContext, CoolError> {
+    let perms = extract_perms(&claims.extra);
+    let client_id = claims.sub;
+    let app_client = app_cache
+        .get_or_fetch(client_id.clone(), |client_id| {
+            let db = db.clone();
+            let sys = sys.clone();
+            async move {
+                db.app_client()
+                    .find_many()
+                    .where_expr(
+                        FilterExpr::from(app_client::clientId().eq(client_id))
+                            .and(app_client::active().is_true()),
+                    )
+                    .limit(1)
+                    .run(&sys)
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| CoolError::Unauthorized("unknown client".to_owned()))
+            }
+        })
+        .await?;
+
+    let mut ctx = Principal {
+        sub: client_id,
+        kind: PrincipalKind::App,
+        // Never "system" — that role is constructed exactly once, inside
+        // `Procedures::sys()`, never from a token. `"app"` is a sentinel
+        // that matches no `hasRole(...)` clause on any model in the
+        // schema: a machine caller's only access is the seven procedures,
+        // never generated CRUD. See `OauthSigningKey`'s own schema comment
+        // for why this specifically must never slip.
+        role: "app".to_owned(),
+        app_id: app_client.appId,
+    }
+    .into_context();
+    ctx.extensions.insert(
+        "__perms".to_owned(),
+        Value::List(perms.into_iter().map(Value::String).collect()),
+    );
+    Ok(ctx)
+}
+
+/// The human (`authorization_code`) path, new in #194.
+///
+/// # Why this looks up `User`/`Role` per request rather than reading role
+/// and `perms` straight off the token, the way §5.3's own token-shape
+/// table describes
+///
+/// Read directly, not assumed: `authkestra-op` 0.3.3's
+/// `handle_authorization_code` (`authkestra_op::handlers::token`) issues
+/// the access token with plain `tokens.issue_user_token(auth_code.identity,
+/// ...)` — never `issue_user_token_with_extra`, the only method that can
+/// stamp additional claims onto a token at issuance. So there is no library
+/// hook this crate can reach to put `role`/`perms` on the token the way the
+/// design doc's own worked example assumed; forking that handler to add one
+/// would mean re-implementing its PKCE/redirect-uri/client-binding checks
+/// ourselves, exactly the kind of security-critical duplication this
+/// codebase avoids elsewhere (see `sms-auth::login`'s own module doc on the
+/// same tradeoff, made the same way). A per-request lookup, cached the same
+/// way `app_cache` already caches `AppClient`, needs none of that — and, as
+/// a real upside rather than a consolation, makes a role change or account
+/// deactivation take effect within one cache TTL instead of waiting out the
+/// access token's full 15-minute lifetime, which is *more* responsive than
+/// what baking into the token would have given.
+///
+/// # Fail closed on every branch
+///
+/// A human token whose `aud` doesn't match `human_client_id`, whose
+/// `identity.external_id` names no `User` row, or whose account is
+/// inactive (or soft-deleted — excluded from the read itself, see
+/// `schema.cstack`'s own `@@soft_delete` note and this crate's read-source
+/// verification) is `Unauthorized`. There is no fallback role.
+async fn authenticate_human(
+    claims: Claims,
+    human_client_id: &str,
+    user_cache: &TtlCache<String, HumanPrincipal>,
+    db: &Cratestack,
+    sys: &CoolContext,
+) -> Result<CoolContext, CoolError> {
+    // Real, per-realm audience validation — see `GatewayAuth::new`'s own
+    // doc on why this can't live in the shared `Validation` both realms
+    // decode through.
+    if claims.aud.as_deref() != Some(human_client_id) {
+        return Err(CoolError::Unauthorized(
+            "human token audience mismatch".to_owned(),
+        ));
+    }
+
+    let identity = claims
+        .identity
+        .ok_or_else(|| CoolError::Unauthorized("human token missing identity".to_owned()))?;
+    let subject = identity.external_id;
+
+    let principal = user_cache
+        .get_or_fetch(subject.clone(), |subject| {
+            let db = db.clone();
+            let sys = sys.clone();
+            async move { load_human_principal(&db, &sys, &subject).await }
+        })
+        .await?;
+
+    let mut ctx = Principal {
+        sub: subject,
+        kind: PrincipalKind::User,
+        role: principal.role_key,
+        app_id: String::new(),
+    }
+    .into_context();
+    ctx.extensions.insert(
+        "__perms".to_owned(),
+        Value::List(principal.perms.into_iter().map(Value::String).collect()),
+    );
+    Ok(ctx)
+}
+
+/// `User` (active, not soft-deleted — see [`authenticate_human`]'s own
+/// doc) by id, plus its `Role`'s unpacked `permissions` — the one query
+/// [`authenticate_human`]'s cache actually runs on a miss.
+///
+/// # Errors
+///
+/// [`CoolError::Unauthorized`] for anything that must not distinguish
+/// "no such user" from "deactivated" from "role deleted out from under
+/// them" to the caller — a revoked/renamed account must fail exactly like
+/// one that never existed, the same fail-closed posture
+/// `sms-auth::login::authenticate_user` already takes for the initial
+/// login itself.
+async fn load_human_principal(
+    db: &Cratestack,
+    sys: &CoolContext,
+    subject: &str,
+) -> Result<HumanPrincipal, CoolError> {
+    let user_row = db
+        .user()
+        .find_many()
+        .where_expr(
+            FilterExpr::from(user::id().eq(subject.to_owned())).and(user::active().is_true()),
+        )
+        .limit(1)
+        .run(sys)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| CoolError::Unauthorized("unknown or inactive user".to_owned()))?;
+
+    let role_row = db
+        .role()
+        .find_many()
+        .where_expr(FilterExpr::from(role::key().eq(user_row.roleKey)))
+        .limit(1)
+        .run(sys)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| CoolError::Unauthorized("user's role no longer exists".to_owned()))?;
+
+    // Fail closed at the point of use — the second of two independent
+    // guards, deliberately not the only one (see RESERVED_ROLE_KEYS' own
+    // doc for the first, a database-level CHECK). `Role.key`'s @regex
+    // (`^[a-z][a-z0-9_]{2,31}$`) happily accepts the literal "system": a
+    // Role row keyed "system", assigned to a human User via ordinary
+    // owner/admin-level generated CRUD (Role.create is hasRole('owner'),
+    // User.update is owner/admin), would otherwise project straight into
+    // Principal.role, and hasRole('system') would then match for that
+    // human exactly the way it matches for the real, synthetic system
+    // context — reading OauthSigningKey.privateKeyPem (the key that signs
+    // every token this system issues) and every UserCredential.passwordHash
+    // through generated CRUD. AGENTS.md's own §5.2 states the invariant
+    // this exists to protect: "system is not a row in roles... constructible
+    // only inside a process." This check is what makes that true even if
+    // the CHECK constraint below is ever bypassed (a raw migration, a
+    // future admin tool that writes past R1) — redundant with the CHECK
+    // on the common path, not redundant with the invariant itself, so
+    // don't remove either half without re-reading this comment.
+    if RESERVED_ROLE_KEYS.contains(&role_row.key.as_str()) {
+        return Err(CoolError::Unauthorized(
+            "unknown or inactive user".to_owned(),
+        ));
+    }
+
+    Ok(HumanPrincipal {
+        role_key: role_row.key,
+        perms: sms_core::unpack(&role_row.permissions)
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+    })
+}
+
+/// `Role.key` values no human account may ever carry, checked in
+/// [`load_human_principal`] and enforced a second, independent way by a
+/// `CHECK` constraint on `roles.key` (`schema/migrations/postgres/0002_bootstrap`,
+/// generated from `docs/architecture.md` §2.10 — never hand-edited).
+///
+/// - `"system"` is the one that matters: it's the literal `hasRole(...)`
+///   compares against for the synthetic internal context every procedure's
+///   own `sys()`/`system_context()` constructs — see this file's own
+///   [`PrincipalKind`] doc and §5.2 of the design doc. A `Role` row keyed
+///   `"system"` would let `hasRole('system')` match for a real human.
+/// - `"app"` is reserved too, defensively, even though it is not
+///   currently a privilege escalation: [`authenticate_app`]'s own
+///   `role: "app"` sentinel matches no `hasRole(...)` clause in the schema
+///   (`OauthSigningKey`'s own comment is explicit about this), so a human
+///   `Role` keyed `"app"` would be confusing, not exploitable — reserved
+///   to keep it that way rather than relying on that fact never changing.
+const RESERVED_ROLE_KEYS: &[&str] = &["system", "app"];
 
 #[cfg(test)]
 mod tests {
@@ -399,6 +633,7 @@ mod tests {
             schema::Cratestack::builder(pool).build(),
             "https://auth.invalid/jwks.json".to_owned(),
             "https://auth.invalid".to_owned(),
+            DEFAULT_CONSOLE_CLIENT_ID.to_owned(),
         )
     }
 

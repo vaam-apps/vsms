@@ -41,6 +41,9 @@ importers:
       '@vsms/ui':
         specifier: workspace:*
         version: link:../packages/ui
+      jose:
+        specifier: 6.2.8
+        version: 6.2.8
       next:
         specifier: 15.5.23
         version: 15.5.23(react-dom@19.2.8(react@19.2.8))(react@19.2.8)

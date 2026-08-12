@@ -3081,6 +3081,7 @@ name = "sms-auth"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "async-trait",
  "authkestra-axum",
  "authkestra-engine",
@@ -3165,6 +3166,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "sms-api",
  "sms-auth",
  "sms-provider",
