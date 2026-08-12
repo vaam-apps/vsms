@@ -1028,18 +1028,20 @@ fn parse_provider_kind(kind: &str) -> Result<ProviderKind> {
 /// later `pre-upgrade` hook both invoke this exact command, and Helm itself
 /// may retry a hook Job that failed for an unrelated reason — so that case
 /// falls back to looking the row up by key rather than treating the
-/// conflict as a failure. Returns the row id and whether it is already
-/// `state = 'active'`, so the caller can skip a needless activation write.
+/// conflict as a failure. Returns the row id, its current `@version` (#59 —
+/// `Provider` is now versioned, and the caller's own follow-up activation
+/// write needs `if_match`), and whether it is already `state = 'active'`,
+/// so the caller can skip a needless activation write.
 async fn create_or_find_provider(
     db: &Cratestack,
     ctx: &cratestack::CoolContext,
     key: &str,
     input: CreateProviderInput,
-) -> Result<(String, bool)> {
+) -> Result<(String, i64, bool)> {
     match db.provider().create(input).run(ctx).await {
         Ok(created) => {
             println!("created Provider {} (key={key:?})", created.id);
-            Ok((created.id, false))
+            Ok((created.id, created.version, false))
         }
         Err(e) if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION) => {
             let existing = db
@@ -1060,7 +1062,7 @@ async fn create_or_find_provider(
                 "Provider {} (key={key:?}) already exists — state={:?}",
                 row.id, row.state
             );
-            Ok((row.id, row.state == ProviderState::active))
+            Ok((row.id, row.version, row.state == ProviderState::active))
         }
         Err(e) => Err(e).context("creating the Provider row"),
     }
@@ -1116,6 +1118,11 @@ async fn ensure_catch_all_route(
                     enabled: Some(true),
                     ..Default::default()
                 })
+                // #59: Route is @version'd. Runtime-enforced, not
+                // compile-enforced — without this, `seed-dispatch` (the
+                // command both runbooks tell an operator to run) fails at
+                // exactly the point it is meant to repair a disabled route.
+                .if_match(row.version)
                 .run(ctx)
                 .await
                 .context("re-enabling the existing Route")?;
@@ -1220,7 +1227,7 @@ async fn seed_dispatch_command(command: Command) -> Result<()> {
     }
     .into_context();
 
-    let (provider_id, already_active) = create_or_find_provider(
+    let (provider_id, provider_version, already_active) = create_or_find_provider(
         &db,
         &ctx,
         &key,
@@ -1256,6 +1263,13 @@ async fn seed_dispatch_command(command: Command) -> Result<()> {
                 state: Some(ProviderState::active),
                 ..Default::default()
             })
+            // #59: Provider is @version'd now. Nothing else in this
+            // one-shot seeding command can race this write, but the
+            // framework refuses a versioned-model update without an
+            // If-Match at runtime — it is not a compile-time error, so
+            // a missing one surfaces only when the command is actually
+            // run.
+            .if_match(provider_version)
             .run(&ctx)
             .await
             .context("activating the Provider row")?;
@@ -1391,6 +1405,10 @@ async fn provision_user_command(command: Command) -> Result<()> {
             subject: Some(user.id.clone()),
             ..Default::default()
         })
+        // #59 (landed after this branch): User is @version'd now, and
+        // cratestack refuses a versioned update with no If-Match at
+        // runtime — cargo check stays green either way.
+        .if_match(user.version)
         .run(&ctx)
         .await
         .context("stamping the User row's own id as its subject")?;

@@ -308,6 +308,16 @@ CREATE INDEX messages_lease_reclaim_idx
 CREATE INDEX messages_app_created_idx   ON messages (app_id, created_at DESC);
 CREATE INDEX messages_state_created_idx ON messages (state, created_at DESC);
 CREATE INDEX messages_msisdn_hash_idx   ON messages (msisdn_hash, created_at DESC);
+
+-- #67's purge_retention candidate query — a terminal message, not yet
+-- purged, past its own createdAt cutoff. Partial and narrow, same style as
+-- messages_dispatch_idx/messages_lease_reclaim_idx above, rather than
+-- leaning on messages_state_created_idx alone: that index still has to
+-- scan every non-purged row of five different states before this job's
+-- own extra purged_at filter narrows it.
+CREATE INDEX messages_purge_idx ON messages (created_at)
+    WHERE purged_at IS NULL
+      AND state IN ('delivered','failed','expired','rejected','cancelled');
 CREATE INDEX messages_provider_ref_idx  ON messages (provider_id, provider_message_ref)
     WHERE provider_message_ref IS NOT NULL;
 CREATE INDEX messages_provider_ref_alt_idx ON messages (provider_id, provider_message_ref_alt)
@@ -345,6 +355,9 @@ CREATE INDEX webhook_attempts_lease_reclaim_idx ON webhook_attempts (lease_until
 
 CREATE INDEX receipts_lookup_idx  ON delivery_receipts (provider_id, provider_message_ref);
 CREATE INDEX receipts_message_idx ON delivery_receipts (message_id);
+-- #67's purge_retention delete query — receipts age off their own
+-- received_at, independent of their parent message's age (see §2.5).
+CREATE INDEX receipts_received_at_idx ON delivery_receipts (received_at);
 CREATE INDEX app_clients_app_idx  ON app_clients (app_id);
 CREATE INDEX routes_match_idx     ON routes (enabled, priority DESC);
 
@@ -427,18 +440,18 @@ ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_auth_method_jwks_check
 ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_public_requires_pkce_check
     CHECK (token_endpoint_auth_method <> 'none' OR require_pkce);
 
-INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes) VALUES
-    ('62',  'camtel', 'unverified', 'Camtel; unverified per architecture.md §3.4'),
-    ('67',  'mtn',    'likely',     'MTN 67x per architecture.md §3.4'),
-    ('68',  'unknown','contested',  'Contested between sources per architecture.md §3.4 — do not treat as reliable'),
-    ('69',  'orange', 'likely',     'Orange 69x per architecture.md §3.4'),
-    ('650', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('651', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('652', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('653', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('654', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('655', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('656', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('657', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('658', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4');
+INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes, version) VALUES
+    ('62',  'camtel', 'unverified', 'Camtel; unverified per architecture.md §3.4', 0),
+    ('67',  'mtn',    'likely',     'MTN 67x per architecture.md §3.4', 0),
+    ('68',  'unknown','contested',  'Contested between sources per architecture.md §3.4 — do not treat as reliable', 0),
+    ('69',  'orange', 'likely',     'Orange 69x per architecture.md §3.4', 0),
+    ('650', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('651', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('652', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('653', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('654', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('655', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('656', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('657', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('658', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0);

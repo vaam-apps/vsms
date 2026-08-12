@@ -288,6 +288,11 @@ async fn disable_every_route(db: &Cratestack) {
                 enabled: Some(false),
                 ..Default::default()
             })
+            // #59: Route is @version'd now. This is a runtime requirement,
+            // not a compile-time one — without it cratestack rejects the
+            // write with `PreconditionFailed("If-Match header required for
+            // versioned model")`, which `cargo check` cannot see.
+            .if_match(route.version)
             .run(&owner())
             .await
             .expect("disabling a leftover enabled route");
@@ -334,6 +339,8 @@ async fn seed_routed_provider(db: &Cratestack) -> String {
             state: Some(schema::ProviderState::active),
             ..Default::default()
         })
+        // #59: Provider is now @version'd.
+        .if_match(provider.version)
         .run(&owner())
         .await
         .expect("activating the provider");
@@ -386,12 +393,15 @@ async fn deactivate_every_active_provider(db: &Cratestack) {
         .await
         .expect("listing active providers");
     for provider in active {
+        let provider_version = provider.version;
         db.provider()
             .update(provider.id)
             .set(schema::UpdateProviderInput {
                 state: Some(schema::ProviderState::disabled),
                 ..Default::default()
             })
+            // #59: Provider is now @version'd.
+            .if_match(provider_version)
             .run(&owner())
             .await
             .expect("deactivating a leftover active provider");
@@ -432,6 +442,7 @@ async fn seed_message(db: &Cratestack, app_id: &str, max_attempts: i64) -> Messa
             expiresAt: Utc::now() + Duration::hours(1),
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await

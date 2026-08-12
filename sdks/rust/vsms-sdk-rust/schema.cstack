@@ -142,6 +142,10 @@ model App {
   transliterateToGsm7 Boolean
   active Boolean @default(true)
   deletedAt DateTime?
+  // #59: an operator-editable model, so two consoles racing a PATCH need
+  // If-Match to produce a 412 rather than a silent last-write-wins. See
+  // that ticket's own PR for the full "which models get @version" survey.
+  version Int @version
 
   clients AppClient[] @relation(fields: [id], references: [appId])
   messages Message[] @relation(fields: [id], references: [appId])
@@ -177,6 +181,8 @@ model AppClient {
   active Boolean @default(true)
   lastUsedAt DateTime?
   retiredAt DateTime?
+  // #59: operator-editable (owner/admin retire or relabel a client).
+  version Int @version
 
   @@audit
   @@paged
@@ -277,6 +283,8 @@ model SenderId {
   kind String
   notes String?
   active Boolean @default(false)
+  // #59: operator-editable (activation, notes).
+  version Int @version
 
   registrations SenderIdRegistration[] @relation(fields: [id], references: [senderIdId])
 
@@ -300,6 +308,8 @@ model SenderIdRegistration {
   approvedAt DateTime?
   reference String?
   rejectionReason String?
+  // #59: operator-editable (approve/reject a registration).
+  version Int @version
 
   // read: found live debugging #32's sendMessage — resolve_sender_id()'s
   // approval lookup runs under Procedures::sys() (kind=App, role=system),
@@ -331,6 +341,9 @@ model Provider {
   costPerSegmentXaf Decimal
   healthCheckedAt DateTime?
   healthy Boolean @default(false)
+  // #59: the ticket's own motivating case — two operators editing the
+  // same provider config must not silently last-write-wins.
+  version Int @version
 
   routes Route[] @relation(fields: [id], references: [providerId])
 
@@ -363,6 +376,9 @@ model Route {
   providerId Cuid
   provider Provider @relation(fields: [providerId], references: [id])
   failoverRouteId Cuid?
+  // #59: this is the ticket's own worked example — "two operators editing
+  // the same route" needed this field to exist before it could be true.
+  version Int @version
 
   // read: the tenth instance of AGENTS.md's own nine-times-repeated
   // hasRole('system') gap (#62) — real Route-rule routing (§6.3) now
@@ -407,6 +423,8 @@ model OperatorPrefixRule {
   lastObservedAt DateTime?
   notes String?
   active Boolean @default(true)
+  // #59: operator-editable (correcting a prefix's operator/confidence).
+  version Int @version
 
   // read: found live debugging #32's sendMessage — classify_operator()'s
   // table-rebuild query runs under Procedures::sys() (kind=App,
@@ -461,6 +479,17 @@ model Message {
   expiresAt DateTime
   submittedAt DateTime?
   finalizedAt DateTime?
+
+  // #67/#5: 90-day minimisation, decided — no split ledger. `purge_retention`
+  // (crates/sms-worker/src/jobs/purge_retention.rs) stamps this the one time
+  // it nulls `body`/`clientRef`/`idempotencyKey`/`stateReason` and overwrites
+  // `msisdn`, so "purged" is data, not an inference from "body happens to be
+  // null" — nothing else in this codebase ever nulls `body` (the #183
+  // redact-at-terminal-state idea was built and rejected; see docs/architecture.md
+  // §2.5), but a dedicated marker is unambiguous where an inferred one would
+  // silently break the day something else does. No `@default`: absent on
+  // every row until the job actually reaches it.
+  purgedAt DateTime?
 
   costXaf Decimal @default(0)
   version Int @version
@@ -537,6 +566,15 @@ model DeliveryReceipt {
   @@allow("list", auth().kind == "user" || hasRole('system'))
   @@allow("detail", auth().kind == "user" || hasRole('system'))
   @@allow("create", hasRole('system'))
+  // #67: `purge_retention` deletes a receipt past its own 90-day
+  // `@@retain` window (crates/sms-worker/src/jobs/purge_retention.rs) — the
+  // tenth instance of this file's own repeated policy-gap shape, just on
+  // `delete` instead of `list`/`detail`: the action was simply never
+  // declared (deny-by-default, not an error) because nothing needed it
+  // before this job existed. Policy-only, no DDL — `cratestack migrate
+  // diff` confirmed byte-identical before/after, same as every prior
+  // instance.
+  @@allow("delete", hasRole('system'))
 }
 
 model Job {
@@ -601,6 +639,17 @@ model WebhookEndpoint {
   maxAttempts Int
   circuitOpenUntil DateTime?
   consecutiveFailures Int @default(0)
+  // #59: named explicitly in the ticket as evidence the absence was felt —
+  // rotateWebhookSecret leaned on @isolation("serializable") alone, and
+  // hooks.rs's consecutiveFailures/circuitOpenUntil/active writes were a
+  // documented best-effort read-modify-write, both because this field
+  // didn't exist. Both call sites now use .if_match(); their existing
+  // "log and drop on any error" handling absorbs a lost race exactly like
+  // it already absorbed any other write failure, so this is strictly a
+  // detected-and-rejected race replacing a silent one, not a behaviour
+  // change. See crates/sms-worker/src/hooks.rs and
+  // crates/sms-api/src/procedures.rs::rotate_webhook_secret.
+  version Int @version
 
   attempts WebhookAttempt[] @relation(fields: [id], references: [endpointId])
 
@@ -707,6 +756,9 @@ model User {
   lastLoginAt DateTime?
   mfaEnrolled Boolean @default(false)
   deletedAt DateTime?
+  // #59: a role reassignment racing another admin's edit of the same user
+  // is a textbook lost-update — the canonical case this ticket exists for.
+  version Int @version
 
   @@soft_delete
   @@audit
@@ -739,6 +791,8 @@ model Role {
   description String?
   builtin Boolean @default(false)
   permissions String
+  // #59: two admins editing the same role's permission set concurrently.
+  version Int @version
 
   @@audit
   // read: same reasoning as User's own read policy just above — the login

@@ -161,6 +161,10 @@ async fn seed_active_provider(db: &Cratestack) -> String {
                     state: Some(schema::ProviderState::active),
                     ..Default::default()
                 })
+                // #59: Provider is @version'd now, and cratestack refuses a
+                // versioned-model update with no If-Match at *runtime* — not
+                // at compile time, so `cargo check` stays green either way.
+                .if_match(row.version)
                 .run(&owner())
                 .await
                 .expect("reactivating the provider");
@@ -194,6 +198,8 @@ async fn seed_active_provider(db: &Cratestack) -> String {
                 state: Some(schema::ProviderState::active),
                 ..Default::default()
             })
+            // #59, same as above: runtime-enforced, not compile-enforced.
+            .if_match(provider.version)
             .run(&owner())
             .await
             .expect("activating the provider");
@@ -276,6 +282,7 @@ async fn seed_message(db: &Cratestack, app_id: &str) -> Message {
             expiresAt: Utc::now() + ChronoDuration::hours(1),
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await

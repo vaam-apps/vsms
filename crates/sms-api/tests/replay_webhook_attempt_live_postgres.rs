@@ -342,6 +342,8 @@ async fn replay_also_clears_the_endpoints_open_circuit_breaker() {
             circuitOpenUntil: Some(Some(Utc::now() + chrono::Duration::minutes(15))),
             ..Default::default()
         })
+        // #59: WebhookEndpoint is now @version'd.
+        .if_match(endpoint.version)
         .run(&sys())
         .await
         .expect("tripping the endpoint's circuit breaker for the test");

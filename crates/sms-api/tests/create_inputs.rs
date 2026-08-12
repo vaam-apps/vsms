@@ -85,6 +85,10 @@ fn send_message_can_set_every_field_it_owns() {
         // backfill or a replayed DLR can carry the real time rather than now().
         submittedAt: None,
         finalizedAt: None,
+
+        // #67: `purge_retention`'s own marker — absent at creation, set only
+        // once the row is actually purged past its 90-day retention window.
+        purgedAt: None,
     };
 
     // `state`, `attempts`, `costXaf`, `id`, `createdAt` and `updatedAt` are

@@ -48,10 +48,8 @@ flowchart TB
     M5 -.-> M7
 
     D4["Decision #4 · Own ART title?"]
-    D5["Decision #5 · Retention vs minimisation"]
 
     D4 -.gates.-> M7
-    D5 -.gates.-> M6
 
     PROD{{"First production traffic"}}
     M3 --> PROD
@@ -81,8 +79,8 @@ What does block it:
 
 1. ~~**M3 finishing** (#43, #44).~~ **Resolved 2026-08-11.** Both landed; all three clauses of §12's M3 gate are automated against a real Postgres — signature verified by a real Node receiver subprocess (`hooks_node_receiver_live.rs`), no loss on a mid-drain `SIGKILL` (`kill9_reclaim_live.rs`), exactly one attempt per event across two workers (`hooks_two_workers_live.rs`). One caveat worth stating rather than burying: the Node-receiver clause only began *executing in CI* with the fix in #198 — the `live` job had no Node toolchain, so that test had failed at spawn on every run since it landed, and passed locally only because a human had run `pnpm install` by hand. "No event is lost" is now a demonstrated property; it was a belief for slightly longer than the story list suggested.
 2. **Enough of M4 to diagnose a failure.** §12's own gate for M4 is *"an operator can diagnose a failed message without touching SQL."* Not all 17 stories — the messages detail view (#50) and the jobs/workers screens (#56, #57) are the diagnostic core.
-3. **M6's compliance items** — and these are legal, not technical: retention purge (#67), consent records (#72), audit anchoring (#68). Law No. 2024/017 sanctions run to 100,000,000 FCFA and criminal penalties; this is the phase where "we'll do it after launch" is the expensive answer.
-4. **The two open decisions below.**
+3. **M6's remaining compliance items** — and these are legal, not technical: consent records (#72), audit anchoring (#68). Retention purge (#67) is done — decision #5 resolved 2026-08-11 (90-day minimisation, no split ledger) and `purge_retention` shipped in the same PR that recorded the resolution. Law No. 2024/017 sanctions run to 100,000,000 FCFA and criminal penalties; this is the phase where "we'll do it after launch" is the expensive answer.
+4. **The one open decision below.**
 
 Deliberately *not* on that list: **#187** (webhook secrets readable by every human role) is latent, because no human-login flow exists yet to hold such a token. It becomes live exactly when M4 ships real logins, which is why it sits on M4 rather than M3.
 
@@ -94,14 +92,13 @@ Deliberately *not* on that list: **#187** (webhook secrets readable by every hum
 
 ## Decisions that gate phases
 
-Both belong to the maintainer, not to engineering. Neither is answerable by reading more code.
+Belongs to the maintainer, not to engineering. Not answerable by reading more code.
 
 | Decision | Blocks | State |
 |---|---|---|
 | [#4 — own ART title?](https://github.com/vymalo/vsms/issues/4) | **Whether M7 exists at all.** Direct MNO interconnect or a short code unambiguously requires an ART title; whether a pure API consumer buying capacity from a licensed aggregator needs one is unverified. Settle before committing to SMPP, not during. | Open |
-| [#5 — 10-year retention vs 90-day minimisation](https://github.com/vymalo/vsms/issues/5) | **M6's purge (#67).** Law 2010/012 art. 25 requires ten years of traffic data; Law 2024/017 requires minimisation. §10's split-ledger proposal is the recommendation, and `docs/legal/retention-briefing.md` is already with counsel. | Open — awaiting counsel |
 
-Two earlier decisions are settled and recorded: [#3](https://github.com/vymalo/vsms/issues/3) (hosting) and [#6](https://github.com/vymalo/vsms/issues/6) (`authkestra-op` stays, pinned exactly).
+Three earlier decisions are settled and recorded: [#3](https://github.com/vymalo/vsms/issues/3) (hosting), [#6](https://github.com/vymalo/vsms/issues/6) (`authkestra-op` stays, pinned exactly), and [#5](https://github.com/vymalo/vsms/issues/5) (**2026-08-11**: 90-day minimisation, no split ledger — Law 2010/012 art. 25's ten-year traffic-data requirement is left to infrastructure-level retention outside vsms's own schema, not a parallel table inside it; see `architecture.md` §10 and #67's own PR). `docs/legal/retention-briefing.md` reflected the still-open question and is now stale on this point — the maintainer decided ahead of counsel's answer, not after it.
 
 ---
 

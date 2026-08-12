@@ -129,6 +129,8 @@ async fn ensure_provider(db: &Cratestack) -> anyhow::Result<String> {
                     state: Some(schema::ProviderState::active),
                     ..Default::default()
                 })
+                // #59: Provider is now @version'd.
+                .if_match(row.version)
                 .run(&owner())
                 .await?;
             println!(
@@ -167,6 +169,8 @@ async fn ensure_provider(db: &Cratestack) -> anyhow::Result<String> {
             state: Some(schema::ProviderState::active),
             ..Default::default()
         })
+        // #59: Provider is now @version'd.
+        .if_match(created.version)
         .run(&owner())
         .await?;
 
@@ -209,6 +213,10 @@ async fn ensure_route(db: &Cratestack, provider_id: &str) -> anyhow::Result<()> 
                     enabled: Some(true),
                     ..Default::default()
                 })
+                // #59: Route is @version'd. Runtime-enforced, not
+                // compile-enforced — see this file's sibling in
+                // app/sms-gateway/src/main.rs.
+                .if_match(row.version)
                 .run(&owner())
                 .await?;
             println!(
@@ -251,6 +259,9 @@ async fn ensure_route(db: &Cratestack, provider_id: &str) -> anyhow::Result<()> 
 async fn ensure_sender_ready(
     db: &Cratestack,
     sender_id_row_id: &str,
+    // #59: SenderId is now @version'd — needed for the activation write's
+    // if_match below.
+    sender_id_row_version: i64,
     provider_id: &str,
     already_active: bool,
 ) -> anyhow::Result<()> {
@@ -288,6 +299,7 @@ async fn ensure_sender_ready(
                 active: Some(true),
                 ..Default::default()
             })
+            .if_match(sender_id_row_version)
             .run(&owner())
             .await?;
     }
@@ -307,7 +319,7 @@ async fn ensure_approved_sender(
         .run(&owner())
         .await?;
     if let Some(row) = existing.into_iter().next() {
-        ensure_sender_ready(db, &row.id, provider_id, row.active).await?;
+        ensure_sender_ready(db, &row.id, row.version, provider_id, row.active).await?;
         println!("reusing existing SenderId {:?} ({})", row.value, row.id);
         return Ok(row.value);
     }
@@ -326,7 +338,7 @@ async fn ensure_approved_sender(
         .run(&owner())
         .await?;
 
-    ensure_sender_ready(db, &created.id, provider_id, false).await?;
+    ensure_sender_ready(db, &created.id, created.version, provider_id, false).await?;
 
     println!(
         "created, registered and activated SenderId {:?} ({}) — must already be approved on the \

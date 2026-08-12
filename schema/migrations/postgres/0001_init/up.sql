@@ -78,6 +78,7 @@ CREATE TABLE app_clients (
     active BOOLEAN NOT NULL DEFAULT true,
     last_used_at TIMESTAMPTZ,
     retired_at TIMESTAMPTZ,
+    version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -94,6 +95,7 @@ CREATE TABLE apps (
     transliterate_to_gsm7 BOOLEAN NOT NULL,
     active BOOLEAN NOT NULL DEFAULT true,
     deleted_at TIMESTAMPTZ,
+    version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -188,6 +190,7 @@ CREATE TABLE messages (
     expires_at TIMESTAMPTZ NOT NULL,
     submitted_at TIMESTAMPTZ,
     finalized_at TIMESTAMPTZ,
+    purged_at TIMESTAMPTZ,
     cost_xaf NUMERIC NOT NULL DEFAULT 0,
     version BIGINT NOT NULL,
     PRIMARY KEY (id)
@@ -230,6 +233,7 @@ CREATE TABLE operator_prefix_rules (
     last_observed_at TIMESTAMPTZ,
     notes TEXT,
     active BOOLEAN NOT NULL DEFAULT true,
+    version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -265,6 +269,7 @@ CREATE TABLE providers (
     cost_per_segment_xaf NUMERIC NOT NULL,
     health_checked_at TIMESTAMPTZ,
     healthy BOOLEAN NOT NULL DEFAULT false,
+    version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -277,6 +282,7 @@ CREATE TABLE roles (
     description TEXT,
     builtin BOOLEAN NOT NULL DEFAULT false,
     permissions TEXT NOT NULL,
+    version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -294,6 +300,7 @@ CREATE TABLE routes (
     match_prefix TEXT,
     provider_id TEXT NOT NULL,
     failover_route_id TEXT,
+    version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -308,6 +315,7 @@ CREATE TABLE sender_id_registrations (
     approved_at TIMESTAMPTZ,
     reference TEXT,
     rejection_reason TEXT,
+    version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -319,6 +327,7 @@ CREATE TABLE sender_ids (
     kind TEXT NOT NULL,
     notes TEXT,
     active BOOLEAN NOT NULL DEFAULT false,
+    version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -343,6 +352,7 @@ CREATE TABLE users (
     last_login_at TIMESTAMPTZ,
     mfa_enrolled BOOLEAN NOT NULL DEFAULT false,
     deleted_at TIMESTAMPTZ,
+    version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -381,6 +391,7 @@ CREATE TABLE webhook_endpoints (
     max_attempts BIGINT NOT NULL,
     circuit_open_until TIMESTAMPTZ,
     consecutive_failures BIGINT NOT NULL DEFAULT 0,
+    version BIGINT NOT NULL,
     PRIMARY KEY (id)
 );
 

@@ -122,6 +122,8 @@ async fn seed_account(
                 active: Some(false),
                 ..Default::default()
             })
+            // #59: User is @version'd now — runtime-enforced.
+            .if_match(user.version)
             .run(&owner())
             .await
             .expect("deactivating the User");

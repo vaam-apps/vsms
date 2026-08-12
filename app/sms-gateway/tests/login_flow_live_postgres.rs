@@ -154,6 +154,8 @@ async fn ensure_orange_cm_provider(db: &Cratestack) {
                     state: Some(schema::ProviderState::active),
                     ..Default::default()
                 })
+                // #59: Provider is @version'd now — runtime-enforced.
+                .if_match(row.version)
                 .run(&owner())
                 .await
                 .expect("reactivating the orange_cm Provider row");
@@ -187,6 +189,8 @@ async fn ensure_orange_cm_provider(db: &Cratestack) {
             state: Some(schema::ProviderState::active),
             ..Default::default()
         })
+        // #59: Provider is @version'd now — runtime-enforced.
+        .if_match(created.version)
         .run(&owner())
         .await
         .expect("activating the orange_cm Provider row");
@@ -682,12 +686,25 @@ impl ReservedRoleFixture {
             .run(&sys())
             .await
             .expect("deleting the reserved-role test UserCredential");
+        // #59 (landed after this branch): User is @version'd now, and
+        // cratestack refuses a versioned update with no If-Match at
+        // runtime. The fixture doesn't carry a version — it would go
+        // stale the moment anything else touched the row — so read the
+        // current one here instead of threading a field through.
+        let current = db
+            .user()
+            .find_unique(self.user_id.clone())
+            .run(&owner())
+            .await
+            .expect("re-reading the test User for its current version")
+            .expect("the test User still exists at cleanup time");
         db.user()
             .update(self.user_id)
             .set(schema::UpdateUserInput {
                 roleKey: Some(self.landing_role_key.clone()),
                 ..Default::default()
             })
+            .if_match(current.version)
             .run(&owner())
             .await
             .expect("reassigning the test User off the reserved-key Role before deleting it");

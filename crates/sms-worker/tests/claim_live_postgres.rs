@@ -274,6 +274,8 @@ async fn seed_provider(db: &Cratestack) -> String {
             state: Some(schema::ProviderState::active),
             ..Default::default()
         })
+        // #59: Provider is now @version'd.
+        .if_match(provider.version)
         .run(&owner())
         .await
         .expect("activating the provider");
@@ -364,6 +366,7 @@ async fn seed_message(
             expiresAt: expires_at,
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await
