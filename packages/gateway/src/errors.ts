@@ -177,3 +177,18 @@ export function mapGatewayError(status: number, body: unknown, procedure: string
     ...(fieldErrors !== undefined ? { fieldErrors } : {}),
   });
 }
+
+/**
+ * #59: the one thing an edit screen actually needs to branch on — "someone
+ * else changed this row since I loaded it, reload and try again" — rather
+ * than the generic `trpcCode: "CONFLICT"` bucket a duplicate-key 409 also
+ * falls into. Checks `httpStatus` (always present, even when the response
+ * body didn't parse as a `CoolErrorResponse`) rather than `gatewayCode`
+ * alone, so a stale `If-Match` is still recognised as such even against a
+ * malformed error body — matching this module's own "a vague 409 beats a
+ * misleading 500" bias toward a still-actionable answer over a precise one
+ * that only works on the happy path.
+ */
+export function isStaleWriteError(error: unknown): error is GatewayError {
+  return error instanceof GatewayError && error.httpStatus === 412;
+}

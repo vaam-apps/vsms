@@ -1374,24 +1374,24 @@ ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_public_requires_pkce_chec
     CHECK (token_endpoint_auth_method <> 'none' OR require_pkce);
 ```
 
-**Seed data: operator prefix rules**, current best evidence per §3.4. `650`–`659` is fully partitioned between MTN and Orange, so no separate `65` row is needed; `66`, `640`–`642` and everything else are deliberately left unseeded rather than guessed — a gap here resolves to `OperatorCode::unknown` at lookup, which is honest, where a fabricated row would not be. `source` defaults to `'seed'`:
+**Seed data: operator prefix rules**, current best evidence per §3.4. `650`–`659` is fully partitioned between MTN and Orange, so no separate `65` row is needed; `66`, `640`–`642` and everything else are deliberately left unseeded rather than guessed — a gap here resolves to `OperatorCode::unknown` at lookup, which is honest, where a fabricated row would not be. `source` defaults to `'seed'`. `version` is `0` on every row (#59): this `INSERT` bypasses the CrateStack ORM entirely, so it has to supply the same initial value `create_record_with_executor` seeds server-side for every other row — the column is `NOT NULL` with no SQL `DEFAULT` (§2.0: `@version` is deliberately excluded from any caller-settable default), and omitting it here fails migration application with `null value in column "version" ... violates not-null constraint`, caught applying this migration for real against a scratch Postgres, not by `cratestack check`:
 
 ```sql
-INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes) VALUES
-    ('62',  'camtel', 'unverified', 'Camtel; unverified per architecture.md §3.4'),
-    ('67',  'mtn',    'likely',     'MTN 67x per architecture.md §3.4'),
-    ('68',  'unknown','contested',  'Contested between sources per architecture.md §3.4 — do not treat as reliable'),
-    ('69',  'orange', 'likely',     'Orange 69x per architecture.md §3.4'),
-    ('650', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('651', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('652', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('653', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('654', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('655', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('656', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('657', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('658', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4');
+INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes, version) VALUES
+    ('62',  'camtel', 'unverified', 'Camtel; unverified per architecture.md §3.4', 0),
+    ('67',  'mtn',    'likely',     'MTN 67x per architecture.md §3.4', 0),
+    ('68',  'unknown','contested',  'Contested between sources per architecture.md §3.4 — do not treat as reliable', 0),
+    ('69',  'orange', 'likely',     'Orange 69x per architecture.md §3.4', 0),
+    ('650', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('651', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('652', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('653', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('654', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('655', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('656', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('657', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('658', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0);
 ```
 
 **Three notes on the triggers.**

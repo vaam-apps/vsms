@@ -432,18 +432,18 @@ ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_auth_method_jwks_check
 ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_public_requires_pkce_check
     CHECK (token_endpoint_auth_method <> 'none' OR require_pkce);
 
-INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes) VALUES
-    ('62',  'camtel', 'unverified', 'Camtel; unverified per architecture.md §3.4'),
-    ('67',  'mtn',    'likely',     'MTN 67x per architecture.md §3.4'),
-    ('68',  'unknown','contested',  'Contested between sources per architecture.md §3.4 — do not treat as reliable'),
-    ('69',  'orange', 'likely',     'Orange 69x per architecture.md §3.4'),
-    ('650', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('651', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('652', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('653', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('654', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4'),
-    ('655', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('656', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('657', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('658', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4'),
-    ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4');
+INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes, version) VALUES
+    ('62',  'camtel', 'unverified', 'Camtel; unverified per architecture.md §3.4', 0),
+    ('67',  'mtn',    'likely',     'MTN 67x per architecture.md §3.4', 0),
+    ('68',  'unknown','contested',  'Contested between sources per architecture.md §3.4 — do not treat as reliable', 0),
+    ('69',  'orange', 'likely',     'Orange 69x per architecture.md §3.4', 0),
+    ('650', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('651', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('652', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('653', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('654', 'mtn',    'likely',     'MTN 650-654 per architecture.md §3.4', 0),
+    ('655', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('656', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('657', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('658', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0),
+    ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0);

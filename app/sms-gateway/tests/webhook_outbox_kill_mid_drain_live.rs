@@ -222,6 +222,8 @@ async fn ensure_orange_cm_provider(db: &Cratestack) -> String {
                     state: Some(ProviderState::active),
                     ..Default::default()
                 })
+                // #59: Provider is now @version'd.
+                .if_match(row.version)
                 .run(&owner())
                 .await
                 .expect("reactivating the orange_cm Provider row");
@@ -256,6 +258,8 @@ async fn ensure_orange_cm_provider(db: &Cratestack) -> String {
             state: Some(ProviderState::active),
             ..Default::default()
         })
+        // #59: Provider is now @version'd.
+        .if_match(created.version)
         .run(&owner())
         .await
         .expect("activating the orange_cm Provider row");

@@ -169,6 +169,8 @@ async fn ensure_orange_cm_provider(db: &Cratestack) -> String {
                     state: Some(schema::ProviderState::active),
                     ..Default::default()
                 })
+                // #59: Provider is now @version'd.
+                .if_match(row.version)
                 .run(&owner())
                 .await
                 .expect("reactivating the orange_cm Provider row");
@@ -203,6 +205,8 @@ async fn ensure_orange_cm_provider(db: &Cratestack) -> String {
             state: Some(schema::ProviderState::active),
             ..Default::default()
         })
+        // #59: Provider is now @version'd.
+        .if_match(created.version)
         .run(&owner())
         .await
         .expect("activating the orange_cm Provider row");
@@ -247,6 +251,8 @@ async fn seed_approved_sender(db: &Cratestack, provider_id: &str) -> String {
             active: Some(true),
             ..Default::default()
         })
+        // #59: SenderId is now @version'd.
+        .if_match(sender.version)
         .run(&owner())
         .await
         .expect("activating the sender id");

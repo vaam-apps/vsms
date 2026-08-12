@@ -237,6 +237,8 @@ async fn provider_update_policy_matches_the_schema_exactly() {
                 maxTps: Some(7.0),
                 ..Default::default()
             })
+            // #59: Provider is now @version'd.
+            .if_match(seeded.version)
             .run(&ctx_for_role(role))
             .await;
         assert!(
@@ -260,6 +262,8 @@ async fn provider_update_policy_matches_the_schema_exactly() {
                 maxTps: Some(7.0),
                 ..Default::default()
             })
+            // #59: Provider is now @version'd.
+            .if_match(seeded.version)
             .run(&ctx_for_role(role))
             .await;
         assert!(
@@ -281,6 +285,8 @@ async fn provider_update_policy_matches_the_schema_exactly() {
             maxTps: Some(7.0),
             ..Default::default()
         })
+        // #59: Provider is now @version'd.
+        .if_match(seeded.version)
         .run(&system_ctx())
         .await;
     assert!(
@@ -440,6 +446,8 @@ async fn app_client_update_policy_matches_the_schema_exactly() {
                 label: Some("relabelled".to_owned()),
                 ..Default::default()
             })
+            // #59: AppClient is now @version'd.
+            .if_match(seeded.version)
             .run(&ctx_for_role(role))
             .await;
         assert!(
@@ -463,6 +471,8 @@ async fn app_client_update_policy_matches_the_schema_exactly() {
                 label: Some("relabelled".to_owned()),
                 ..Default::default()
             })
+            // #59: AppClient is now @version'd.
+            .if_match(seeded.version)
             .run(&ctx_for_role(role))
             .await;
         assert!(
