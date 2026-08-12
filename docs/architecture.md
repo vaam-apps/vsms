@@ -479,13 +479,19 @@ model Provider {
   costPerSegmentXaf Decimal
   healthCheckedAt DateTime?
   healthy Boolean @default(false)
+  // #63: the provider-side circuit breaker — same two-column shape as
+  // WebhookEndpoint's own.
+  consecutiveFailures Int @default(0)
+  circuitOpenUntil DateTime?
+  // #59.
+  version Int @version
 
   routes Route[] @relation(fields: [id], references: [providerId])
 
   @@audit
-  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor'))
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin'))
-  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator'))
+  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("delete", hasRole('owner'))
   @@emit(created, updated, deleted)
 }
@@ -1003,6 +1009,7 @@ ALTER TABLE webhook_endpoints       ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_attempts        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE users                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE roles                   ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE user_credentials        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE audit_anchors           ALTER COLUMN id SET DEFAULT cs_cuid();
 
 -- Timestamps mixin, and other dbgenerated() columns.
@@ -1358,6 +1365,13 @@ ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_fo
     CHECK (prefix ~ '^[0-9]{1,4}$');
 ```
 
+**Reserved `Role.key` values (#194).** `Role.key`'s own `@regex` (`^[a-z][a-z0-9_]{2,31}$`) has no way to exclude specific literals, and `@db_enforce` is a silent no-op on `@regex` fields regardless (the same gap the `operator_prefix_rules` format check above exists to close) — so nothing in the schema stops an `owner` from creating a `Role` keyed exactly `"system"` through ordinary generated CRUD (`Role.create`'s own `@@allow` is `hasRole('owner')`) and assigning a human `User` to it. `hasRole('system')` matches on `Role.key` verbatim, with no other check in Layer 1 — `system` is supposed to be synthetic, constructible only inside a process (§5.2), never a real database row a human account can reach. A `Role` named `"system"` would let a human read `OauthSigningKey.privateKeyPem` (the key that signs every token this system issues) and every `UserCredential.passwordHash` through generated CRUD, both `hasRole('system')`-gated. `"app"` is reserved alongside it, defensively — `GatewayAuth`'s own machine-caller sentinel `role: "app"` matches no `hasRole(...)` clause today (see `OauthSigningKey`'s own schema comment), so a human `Role` keyed `"app"` is confusing rather than exploitable, but reserving it costs nothing and keeps that true rather than assumed. This is one of two independent guards — `crates/sms-api/src/auth.rs`'s `load_human_principal` refuses a `"system"`/`"app"` role_key at the point of use regardless of what the database allows; see that function's own doc for why both exist rather than just one:
+
+```sql
+ALTER TABLE roles ADD CONSTRAINT roles_key_not_reserved_check
+    CHECK (key NOT IN ('system', 'app'));
+```
+
 **Client-registration invariants.** The schema can say a client names one auth method; it cannot say that the method and the rest of the row agree. Both of these are the difference between a misconfigured client failing at `INSERT` and failing at `/token`, where the symptom is an authentication error nobody can explain:
 
 ```sql
@@ -1696,6 +1710,13 @@ impl AuthProvider for GatewayAuth {
 
 The discriminator is worth noting: a client_credentials token has `identity: None` and no `kind` claim at all, because the OP can't add one. A human token gets `kind: "user"` from `issue_user_token_with_extra`, reachable on the authorization-code path. So "no `kind` claim" reliably means "service account".
 
+**#194 built this, and two things above turned out not to match the real, vendored `authkestra-op` 0.3.3 library** — recorded here rather than silently editing the prose above into agreement, per this file's own standing practice of naming a divergence rather than erasing it:
+
+- **`handle_authorization_code` never calls `issue_user_token_with_extra`.** It calls plain `issue_user_token`, which stamps no `extra` claims at all — so a human access token carries no `kind`, `role`, or `perms` claim, only the standard OIDC set plus `identity`. The discriminator above still holds (`claims.identity.is_some()` reliably means "human"), but role/perms cannot be read off the token. `sms_api::auth::GatewayAuth`'s real human path resolves them with a per-request, TTL-cached `User`/`Role` lookup instead (`crates/sms-api/src/auth.rs`'s `authenticate_human`) — a deliberate, documented departure from "baked in at issuance," not an oversight, and arguably better: a role change or deactivation now takes effect within one cache TTL (60s) rather than the access token's full 15-minute lifetime.
+- **A human token's `aud` is real** (`Some(client_id)`, i.e. `sms-console`) **and must be validated** — unlike a service-account token's self-referential `aud == sub == client_id`, which is why §4.2's own "disable audience validation" guidance exists. `GatewayAuth`'s single shared `jsonwebtoken::Validation` still carries `validate_aud = false` (it decodes both realms), so the human-only audience check is a manual, post-decode comparison in `authenticate_human` against a fixed `human_client_id` — not the library's own validation path.
+
+`sms_auth::login` (`crates/sms-auth/src/login.rs`) is the piece this section never specified: what actually authenticates a human before `handle_authorize` can run. §4.3's own prose was silent on the mechanism; #194 settled it as local Argon2id password authentication against a new `UserCredential` model (deliberately *not* a field on `User` — see that model's own `schema.cstack` comment for why: §2.0's "no field-level read masking" means a password hash living on `User` would come back verbatim from `GET /users/{id}`), not a federated external IdP. See `sms_auth::login`'s own module doc for the full weighing of that decision, and the PR that landed #194 for the Risk Assessment this new password-storage surface deserves.
+
 ### 4.4 Outbound webhook signing
 
 The one place symmetric secrets remain, because here you're the sender and your customers verify:
@@ -1852,7 +1873,7 @@ Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`,
 
 ### 5.3 Token shapes
 
-Human, via authorization code:
+Human, via authorization code — **the wire shape this section originally described, kept as the design intent**, but see the callout immediately below it for what the token vendored `authkestra-op` 0.3.3 actually issues, which is not this:
 
 ```json
 {
@@ -1864,6 +1885,8 @@ Human, via authorization code:
   "email": "ops@example.cm", "name": "Ops User"
 }
 ```
+
+**#194, found live, not by reading this section's own prose:** `authkestra_op::handlers::token::handle_authorization_code` calls plain `TokenManager::issue_user_token`, never `issue_user_token_with_extra` — so the *real* human access token carries none of `kind`/`role`/`perms`/`email`/`name`. Only `identity` (the OIDC `Identity` struct, not flattened into top-level claims) and the standard `iss`/`sub`/`aud`/`exp`/`iat`/`scope` fields exist. `sms_api::auth::GatewayAuth`'s human path (`authenticate_human`, #194) reads `claims.identity.is_some()` as the realm discriminator (still valid — nothing on the human path unsets it) and resolves `role`/`perms` with its own `User`/`Role` database lookup instead of trusting any token claim for them. Forking the library's own token-issuance handler to add `_with_extra` was considered and rejected — it would mean re-implementing PKCE/redirect-uri/client-binding validation alongside it, the exact security-critical duplication this codebase avoids elsewhere. The `id_token` (`issue_id_token`, also plain, not `_with_extra`) is unaffected by this — it still carries `sub`/`aud`/`exp`/`nonce` correctly, which is all `admin`'s own callback route needs from it.
 
 Service account, via client_credentials — note what is *absent*:
 
@@ -1880,7 +1903,7 @@ Service account, via client_credentials — note what is *absent*:
 
 No `kind`, no `appId`, no `role`, no `client_id` claim, no `azp`. `aud` echoes `sub`. That's the complete emitted claim set — `issue_client_token_with_extra` is never called there, and no hook exists to add anything.
 
-Access token 15 minutes, refresh 8 hours for humans (rotation on); no refresh token for service accounts, which the OP correctly never issues on this path. Roles resolve at issuance, so a role change takes up to 15 minutes to bite. For break-glass revocation you need a denylist keyed on `sub`, checked in `authenticate` — because **`authkestra-op` has no `/revoke` and no `/introspect`**. Not optional for a system that can spend money. The same denylist retires a compromised service account instantly, which matters because the alternative — rotating a secret — requires provisioning a whole new client.
+Access token 15 minutes; `admin`'s own session cookie caps a human session at 8 hours (`SESSION_COOKIE_MAX_AGE_SECONDS`) by simply not persisting the refresh token past that — `authkestra-op`'s own `handle_refresh_token` hardcodes a 30-day refresh-token lifetime server-side, with no config field to override it, so the 8-hour figure is enforced client-side, not by the OP. No refresh token for service accounts, which the OP correctly never issues on this path. **Roles resolve per request, not at issuance** (#194, see §4.3/§5.3's own callout above on why) — a role change or deactivation takes effect within `GatewayAuth`'s 60-second cache TTL, not up to 15 minutes. For break-glass revocation of a *token itself* (as opposed to the account behind it) you still need a denylist keyed on `sub`, checked in `authenticate` — because **`authkestra-op` has no `/revoke` and no `/introspect`**; deactivating the `User` row (which #194's per-request lookup already checks) is the practical equivalent for the human side, and a still-valid but now-role-mismatched access token simply fails the lookup on its next use. The same denylist gap for service accounts retires a compromised one instantly, which matters because the alternative — rotating a secret — requires provisioning a whole new client.
 
 ### 5.4 JWKS validation
 
@@ -1976,6 +1999,29 @@ Circuit breaker per provider: five consecutive `Unavailable` opens it for 60s, t
 **No `Route` rows configured at all refuses to dispatch, loudly** — every `accepted` message goes to `rejected` with a `stateReason` naming why (`routing::explain_no_route`), rather than a silent fallback to "any active provider." A deliberate cutover from the M2 placeholder's implicit behaviour, not an oversight: see `AGENTS.md`'s own #62 section for the reasoning and the demo-seeding consequence.
 
 `Route.failoverRouteId` and `select_route`'s own `exclude: &ExcludedRouteIds` parameter exist for #63 to build the two-hop-capped failover chain and the circuit breaker described above — calling `select_route` again with a failed route's id added to `exclude` finds the next-best route with no changes needed to this crate.
+
+**Implementation, #63 (`crates/sms-worker/src/dispatch.rs`): failover and the provider circuit breaker, landed against `sms_provider::ProviderError::routing()`'s own compiler-checked mapping, not a second hand-derived one.**
+
+`Permanent` (`TryNextRoute`) and `Unavailable` (`OpenCircuitAndTryNextRoute`) are the two variants that trigger a failover attempt; `Transient` (`RetryThisProvider`), `Rejected`/`Unsupported` (`FailMessage`), and `Indeterminate` (`HoldIndeterminate`) never do — see `crates/sms-provider/src/error.rs`'s own `routing()` table and `dispatch.rs::handle_submit_error`'s doc for the full mapping, and this section's own header paragraph for why `Indeterminate` failing over would risk a duplicate SMS. `Route.failoverRouteId` itself is **not** read by the failover mechanism — per this section's own `#62`-era paragraph above, the actual mechanism is `select_route` called again with the failed route's id added to `exclude`; the field is carried through `Winner` purely for an operator's own explanation trail.
+
+**"Failover must not double-send: the claim loop's lease is what prevents it"** (the issue's own words) — a failover reroute never calls `SmsProvider::submit` a second time inline. `dispatch.rs::attempt_failover` writes `routed -> queued` with a new `providerId`/`routeId` stamped on the same `if_match(version)`-CAS'd row and returns; the actual resubmit happens on a later claim, under the ordinary `queued -> routed -> submit` path every other reclaim in this crate already relies on. This is only safe because `TryNextRoute`/`OpenCircuitAndTryNextRoute` both mean nothing was ever accepted by the provider — `Indeterminate`, the one variant that can't make that claim, never reaches this function.
+
+**`Message.excludedRouteIds`** (a new nullable column, sentinel-packed via `sms_core::pack`/`unpack`) is each message's own accumulated exclude set, capped at two entries (§6.3's own "two hops"). Necessary, not just convenient: a `Permanent` failure never opens a provider's circuit breaker (`crates/sms-provider/src/error.rs`'s own `permanent_never_opens_the_circuit_breaker` test) — it is specific to this message (an unapproved sender ID, say), not a provider-wide outage — so nothing else marks that route ineligible for a second attempt. Without remembering it per-message, a second failover hop could pick the exact same already-failing route right back.
+
+**The provider-side circuit breaker (`Provider.consecutiveFailures`/`circuitOpenUntil`, two new columns) deliberately mirrors `WebhookEndpoint`'s own shape (#40/#41/#59)** — same two fields, same reset-on-success-and-on-trip discipline, same `if_match`-CAS'd best-effort writes — rather than inventing different semantics for a second breaker in the same codebase. The constants differ because the spec differs: five consecutive failures, 60s, not webhook delivery's 20/15min. `crates/sms-worker/src/routing.rs::convert_provider` is the one reader: an open circuit is treated exactly like `state != active` (unavailable, with a reason), so *every* future routing decision — not just the message whose failure tripped the breaker — naturally skips that provider. This is the literal mechanism behind the ticket's own second acceptance clause, "must not fail a message a healthy alternative could carry": a fresh `accepted` message never even attempts a provider whose circuit is open, proven live by `crates/sms-worker/tests/dispatch_live_postgres.rs`'s own `an_open_circuit_routes_new_messages_to_the_alternative_instead_of_rejecting`, which asserts the broken provider's own call count stays flat across a sixth, brand-new message reaching `submitted` entirely through the healthy alternative.
+
+**Deliberately not the literal "half-open with a single probe" this section's own header paragraph describes** — `Provider`'s breaker, like `WebhookEndpoint`'s, fully reopens the moment `circuitOpenUntil` passes, with no rate-limited single-probe admission. A true single-probe half-open state needs coordination this codebase has no mechanism for yet (something has to guarantee exactly one in-flight probe at a time across however many `dispatch` processes exist), and a second, differently-shaped breaker for that one property would cost more in consistency than it buys in fidelity to this paragraph's own prose. Revisit if a real incident shows the simpler reopen is too aggressive.
+
+**Found live, not by review: `Provider`'s own `update` `@@allow` didn't admit `hasRole('system')`.** `dispatch.rs`'s new circuit-breaker writes run under this crate's internal `sys()` context, and without that clause every one of them returned `Forbidden("update policy denied this operation")` — silently absorbed by the same best-effort "log and drop" handling `hooks::record_endpoint_failure` already established, so the breaker never actually opened despite every surrounding assertion (submit call counts, message states) passing. Caught by `an_open_circuit_routes_new_messages_to_the_alternative_instead_of_rejecting` itself asserting the effect (`circuitOpenUntil` genuinely set), not just that the write didn't panic. Fixed the same way every prior instance of this gap shape was: `schema.cstack` only, confirmed byte-identical DDL via `cratestack migrate diff` before and after. Safe to grant: `GatewayAuth::authenticate` (`crates/sms-api/src/auth.rs`) constructs `role: "system"` nowhere — it is minted exactly once, inside `Procedures::sys()`, never from a real bearer token — so this change adds no new HTTP-reachable capability to `PATCH /providers/{id}` (`router::PROVIDER_WRITE_ROUTES`).
+**Implementation, #54 (the admin route simulator #62 was already built to support) — a new `simulateRoute` procedure plus the Providers/Routes/Simulator screens (§11's own "Admin console screens" list: "Providers & routes with a route simulator"):**
+
+`crates/sms-api/src/route_simulator.rs` is the whole mechanism: fetch `Route`/`Provider` rows under a `sys()` context (mirroring `crates/sms-worker/src/routing.rs::decide`'s own query — necessarily a second copy, not a shared call, since `sms-api` cannot depend on `sms-worker`, the dependency runs the other way), classify the candidate's operator the same way `sendMessage` does (`Procedures::classify_operator`), call `sms_routing::select_route` with either a caller-supplied `draw` or a fresh `rand::random()`, and render the returned `Decision` onto `SimulateRouteResult` — every field a straight copy or a lossless flattening of the engine's own enum, never a second implementation of matching. `SimulateRouteInput.draw` is the load-bearing detail: omit it for a realistic sample of what would happen right now, or supply the exact value the engine reported back (`TieBreakInfo.draw`) to replay a specific tie-break deterministically — the property §6.3's own `select_route` doc names as the reason the draw is injected rather than generated internally.
+
+`noRoutesConfigured` is a distinct field from "zero eligible for this candidate," not inferred by the caller from an empty `evaluations` list — the same "dispatch refuses, loudly" state §6.3 already documents, surfaced here as its own banner rather than a table that merely looks empty.
+
+**Two schema policy changes, not one.** `Provider.read` and `Route.read` both gained `auth().kind == "app"` alongside their existing human roles — the identical shape `#56`/`#57` gave `Job`'s own `@@allow` (neither model carries an `appId` to scope a row-level predicate by), needed so the admin console's machine credential can list either model at all; `router::PROVIDER_ROUTE_READ_ROUTES` gates the four generated REST routes (`GET /providers`, `GET /providers/{id}`, `GET /routes`, `GET /routes/{id}`) on `provider:read`/`route:read` at Layer 2, the real perimeter today. `simulateRoute` itself never needed this — it already reads under `sys()`, admitted by the pre-existing `hasRole('system')` clause — but gates itself on `route:read` too via `require_permission`, for the identical reason `workerLocks`/`requeueJob` do: any `auth().kind == "app"` caller passes the procedure's own Layer 1 `@allow` unconditionally, so the scope check is the thing actually standing between a provisioned app client and every `Route`/`Provider` row in the system.
+
+**Write access is a separate question this PR does not close — and #194 (human login) landed mid-PR, which narrows *why*, not *whether*.** `Provider.update` and `Route.create`/`update`/`delete` are untouched — still `hasRole('owner') || hasRole('admin')` (plus `operator` for `Provider.update`), no `auth().kind == "app"` clause at all. §4's own #194 section is the source of truth that `GatewayAuth` now genuinely resolves a real `hasRole(...)`-meaningful context for a human `authorization_code` token — that no longer hardcodes `role: "app"` for *every* real token, only for the `client_credentials` realm. What still stands between a logged-in `owner`/`admin`/`operator` and these two write paths is one layer up: every `admin` → `sms-gateway` call this console's own `packages/gateway` package makes — including the Providers/Routes screens' own — still authenticates as the shared `SMS_CONSOLE_CLIENT_ID` machine credential (§4's own "Not wired up in this PR" paragraph), never the logged-in human's own session token. Confirmed directly against #194's own diff, not inferred: `packages/gateway/` doesn't appear in its changed-file list at all. The admin console's edit/create/delete forms are real, tested code (`packages/gateway/src/providers.ts`/`routes.ts`, wired through `#59`'s own `fetchWithEtag`/`updateWithIfMatch`) that 403s against a real gateway — proven live (`just demo`), body `missing required permission "provider:update"` — not hidden behind a flag, stated on screen instead, matching this doc's own "no dormant code" convention. Forwarding a per-session human token through `packages/gateway` (replacing or supplementing its one static credential, for every screen, not just these two) is real, separate follow-up work this PR's own scope doesn't include.
 
 ### 6.4 Grey routes
 
@@ -2627,7 +2673,9 @@ The `.cstack` file stays at `schema/`, not inside `sms-api`. `include_server_sch
 
 ### Admin console screens
 
-Dashboard (throughput, delivery rate by operator, queue depth, outbox depth, job backlog, balance, UCS-2 ratio) · Messages (filterable list, detail with a state timeline and raw provider payloads) · Composer with live encoding preview · Apps & service accounts (provision, show-secret-once, retire with overlap) · Sender IDs and per-provider registration status · Providers & routes with a route simulator · Webhooks (endpoints, attempts, replay, secret rotation) · **Jobs (queue, failures, re-enqueue)** · **Workers (which node holds which singleton lock)** · Opt-outs · Users & roles · Audit log · Settings.
+Dashboard (throughput, delivery rate by operator, queue depth, outbox depth, job backlog, balance, UCS-2 ratio) · Messages (filterable list, detail with a state timeline and raw provider payloads) · Composer with live encoding preview · Apps & service accounts (provision, show-secret-once, retire with overlap) · Sender IDs and per-provider registration status · **Providers & routes with a route simulator** · Webhooks (endpoints, attempts, replay, secret rotation) · **Jobs (queue, failures, re-enqueue)** · **Workers (which node holds which singleton lock)** · Opt-outs · Users & roles · Audit log · Settings.
+
+**Providers/Routes/Simulator landed in #54.** List/detail for both models is real over real HTTP; editing (`Provider.update`, `Route.create`/`update`/`delete`) is real, tested code, but still 403s against a real gateway — not because #194 (human login) hasn't landed (it has), but because this console's own upstream seam (`packages/gateway`) hasn't been rewired to forward a human session's own token — see §6.3's own `#54` implementation note for the full mechanism and why.
 
 The Workers screen is small and disproportionately useful: `pg_locks` joined against your role-key table answers "is dispatch running, and where" without shelling into a box.
 

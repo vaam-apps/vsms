@@ -19,7 +19,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import { GatewayError, isStaleWriteError } from "./errors";
-import { fetchWithEtag, updateWithIfMatch } from "./rest";
+import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch } from "./rest";
 
 vi.mock("./token", () => ({
   getAccessToken: vi.fn().mockResolvedValue("test-access-token"),
@@ -164,5 +164,107 @@ describe("updateWithIfMatch", () => {
       expect(error).toBeInstanceOf(GatewayError);
       expect((error as GatewayError).httpStatus).toBe(500);
     }
+  });
+});
+
+interface FakeRoute {
+  id: string;
+  name: string;
+  version: number;
+}
+
+describe("postJson", () => {
+  it("POSTs the given body and returns the parsed response, no ETag handling at all", async () => {
+    const created: FakeRoute = { id: "r1", name: "catch-all", version: 0 };
+    const fetcher = vi.fn().mockResolvedValue(jsonResponse(200, created, { etag: '"0"' }));
+
+    const result = await postJson<FakeRoute>(
+      "/routes",
+      { name: "catch-all", priority: 0, weight: 1, enabled: true, providerId: "p1" },
+      "createRoute",
+      fetcher,
+    );
+
+    expect(result).toEqual(created);
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://sms-api.test/routes");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer test-access-token");
+    expect(JSON.parse(init.body as string)).toEqual({
+      name: "catch-all",
+      priority: 0,
+      weight: 1,
+      enabled: true,
+      providerId: "p1",
+    });
+  });
+
+  it("retries exactly once, with a fresh token, on an unexpected 401", async () => {
+    const created: FakeRoute = { id: "r1", name: "catch-all", version: 0 };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(401, { code: "UNAUTHORIZED", message: "expired" }))
+      .mockResolvedValueOnce(jsonResponse(200, created));
+
+    const result = await postJson<FakeRoute>("/routes", {}, "createRoute", fetcher);
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(result).toEqual(created);
+  });
+
+  it("a validation failure surfaces as a GatewayError carrying field errors", async () => {
+    const fetcher = vi.fn().mockResolvedValue(
+      jsonResponse(422, {
+        code: "VALIDATION_ERROR",
+        message: "invalid input",
+        details: { priority: ["must be between 0 and 1000"] },
+      }),
+    );
+
+    try {
+      await postJson<FakeRoute>("/routes", { priority: -1 }, "createRoute", fetcher);
+      expect.unreachable("postJson must throw on a 422");
+    } catch (error) {
+      expect(error).toBeInstanceOf(GatewayError);
+      const gatewayError = error as GatewayError;
+      expect(gatewayError.trpcCode).toBe("BAD_REQUEST");
+      expect(gatewayError.fieldErrors?.priority).toEqual(["must be between 0 and 1000"]);
+    }
+  });
+});
+
+describe("deleteResource", () => {
+  it("sends a plain DELETE with no body and no If-Match header at all", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+
+    await deleteResource("/routes/r1", "deleteRoute", fetcher);
+
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://sms-api.test/routes/r1");
+    expect(init.method).toBe("DELETE");
+    expect(init.body).toBeUndefined();
+    expect((init.headers as Record<string, string>)["if-match"]).toBeUndefined();
+  });
+
+  it("retries exactly once, with a fresh token, on an unexpected 401", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(401, { code: "UNAUTHORIZED", message: "expired" }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await deleteResource("/routes/r1", "deleteRoute", fetcher);
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("a 404 surfaces as a real GatewayError, not a silent success", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValue(jsonResponse(404, { code: "NOT_FOUND", message: "no such route" }));
+
+    await expect(deleteResource("/routes/gone", "deleteRoute", fetcher)).rejects.toThrow(
+      GatewayError,
+    );
   });
 });

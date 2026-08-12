@@ -384,6 +384,12 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
             Workers
           </a>
           <a
+            href="/simulator"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Simulator
+          </a>
+          <a
             href="/gallery"
             className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
           >

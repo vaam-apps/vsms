@@ -44,6 +44,7 @@ use crate::cache::TtlCache;
 use crate::errors::map_database_error;
 use crate::pepper::{hmac_sha256_hex, HashPepper};
 use crate::rbac::require_permission;
+use crate::route_simulator;
 use crate::schema::{
     self, app, app_client, job, message, operator_prefix_rule, opt_out, provider, sender_id,
     sender_id_registration, webhook_attempt, webhook_endpoint,
@@ -658,6 +659,7 @@ impl Procedures {
                 providerId: None,
                 providerMessageRef: None,
                 providerMessageRefAlt: None,
+                excludedRouteIds: None,
                 maxAttempts: 3,
                 leaseOwner: None,
                 leaseUntil: None,
@@ -1216,6 +1218,79 @@ impl Procedures {
         let locks = worker_locks::current_locks(db).await?;
         Ok(schema::WorkerLocksResult { locks })
     }
+
+    /// #54: "given this recipient, class and app, which route wins and
+    /// why" — without sending anything. Reads under `sys()`, the same
+    /// reason `sendMessage`'s own `classify_operator`/routing-adjacent
+    /// reads do: `Route`/`Provider`'s own `@@allow("read", ...)` doesn't
+    /// need to admit this procedure's caller directly (it already admits
+    /// `hasRole('system')`), only `Route.read`/`Provider.read`'s new
+    /// `auth().kind == "app"` clause (this PR) needs to, and that's for the
+    /// plain `GET /providers`/`GET /routes` list screens, not this
+    /// procedure.
+    ///
+    /// `require_permission(ctx, "route:read")` is the real perimeter for
+    /// the admin console's own machine credential today, same shape as
+    /// `worker_lock_snapshot` above and `#56`/`#57`'s own `job:read`/
+    /// `worker:read` precedent: `simulateRoute`'s own `@allow` admits any
+    /// `auth().kind == "app"` caller unconditionally (no `appId` on
+    /// `Route`/`Provider` to scope a row-level predicate by), so only a
+    /// granted `route:read` scope stands between a provisioned app client
+    /// and this procedure.
+    async fn simulate(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::SimulateRouteInput,
+    ) -> Result<schema::SimulateRouteResult, CoolError> {
+        require_permission(ctx, "route:read")?;
+
+        let sys = Self::sys();
+
+        // Same validation `sendMessage`'s own step 2 applies (§3.2) — a
+        // simulated recipient should be held to the identical "is this a
+        // real mobile MSISDN" bar real dispatch would apply, not a looser
+        // one that would let the simulator answer for a number sendMessage
+        // itself would already have rejected before routing ever ran.
+        let msisdn = Msisdn::parse_mobile(&args.msisdn)
+            .map_err(|error| CoolError::Validation(error.to_string()))?;
+        let operator = self.classify_operator(db, &sys, &msisdn).await?;
+
+        let (routes, providers) = route_simulator::fetch_routes_and_providers(db, &sys).await?;
+        let no_routes_configured = routes.is_empty();
+
+        let candidate = sms_routing::RoutingCandidate {
+            operator: route_simulator::convert_operator(operator),
+            class: route_simulator::convert_class(args.class),
+            app_id: &args.appId,
+            msisdn_national: msisdn.national(),
+        };
+
+        // §54's own load-bearing property: injecting the draw, not
+        // generating it internally, is what makes this procedure a genuine
+        // replay of `sms_routing::select_route` rather than a second
+        // decision engine that happens to agree with production most of
+        // the time. `args.draw` lets a caller pin an exact value to see how
+        // a specific draw resolves a tie; omitting it draws a fresh,
+        // realistic sample the same way `crates/sms-worker/src/routing.rs::decide`
+        // does for a real dispatch.
+        let draw = args.draw.unwrap_or_else(rand::random);
+
+        let decision = sms_routing::select_route(
+            &routes,
+            &providers,
+            &candidate,
+            &sms_routing::ExcludedRouteIds::new(),
+            draw,
+        );
+
+        Ok(route_simulator::decision_to_wire(
+            &decision,
+            operator,
+            msisdn.national(),
+            no_routes_configured,
+        ))
+    }
 }
 
 impl schema::procedures::ProcedureRegistry for Procedures {
@@ -1325,6 +1400,17 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         Output = Result<schema::procedures::worker_locks::Output, CoolError>,
     > + Send {
         self.worker_lock_snapshot(db, ctx)
+    }
+
+    fn simulate_route(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::simulate_route::Args,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::simulate_route::Output, CoolError>,
+    > + Send {
+        self.simulate(db, ctx, args.args)
     }
 }
 

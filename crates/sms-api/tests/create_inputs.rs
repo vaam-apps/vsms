@@ -71,6 +71,7 @@ fn send_message_can_set_every_field_it_owns() {
         providerId: None,
         providerMessageRef: None,
         providerMessageRefAlt: None,
+        excludedRouteIds: None,
 
         // Lease fields. The claim loop CASes on these, so they must be
         // writable — a `@default` here would break reclamation outright.

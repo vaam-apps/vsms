@@ -1,11 +1,19 @@
 //! Standing up the OP itself: RS256 key management with an overlap-window
 //! rotation, [`CompositeOpStore`] assembly, and [`OpConfig`]. #20.
 //!
-//! Scoped to `client_credentials` + `private_key_jwt` only — the only
-//! caller type that exists in this system (no admin console yet, #49-59,
-//! so no human ever authenticates via the authorization-code flow). See
-//! this crate's own module doc and the design doc §4.2/§4.3 for why that's
-//! not a corner cut on what #20 actually asks for.
+//! **Was** scoped to `client_credentials` + `private_key_jwt` only — #97/98
+//! cut the authorization-code/human-login path because no admin console
+//! existed yet to need it. #194 closes that cut: [`machine_only_config`]
+//! now advertises `authorization_code`/`refresh_token` alongside
+//! `client_credentials`, and the `CompositeOpStore` this module already
+//! assembled turns out to need **no change at all** for it — see the
+//! doc on [`machine_only_store`] for why the authorization-code/refresh-
+//! token slots this module always wired to `MemoryStore` were already a
+//! real, working implementation, just never exercised. The function/type
+//! names below keep the word "machine" for now rather than a
+//! repo-wide rename touching every test file that already imports them;
+//! read it as "the OP's one store/config", not a claim about who can use
+//! it — `crates/sms-auth/src/login.rs` is #194's own human half.
 //!
 //! # API reality check (verified against vendored `authkestra-op`/
 //! `authkestra-engine`/`authkestra-axum` 0.3.2 source, not the design doc,
@@ -192,11 +200,29 @@ pub async fn load_signing_keys(
     Ok((signing, jwks))
 }
 
-/// `OpStore` for a `client_credentials`-only deployment: the real
-/// `SmsClientStore`/`SmsClientAssertionStore` (#19), and inert in-memory
-/// placeholders for the three grant types nothing here uses. See this
-/// module's own doc for why that's a documented scope cut, not a silent
-/// gap.
+/// `OpStore` for this OP: real client + assertion tracking (#19), a real
+/// (if in-memory) authorization-code and refresh-token store for #194's
+/// human login path, and an inert in-memory placeholder for device-code —
+/// the one grant this deployment genuinely never wires a caller for.
+///
+/// **The authorization-code and refresh-token slots are not placeholders,**
+/// despite `MemoryStore` also backing the unused device-code slot right
+/// next to them — worth spelling out because the type looks uniform.
+/// `authkestra_engine::store::memory::MemoryStore<T>` is a real, correct
+/// `KvStore<T>` (`AuthorizationCodeStore`/`RefreshTokenStore` come free via
+/// the blanket impls in `authkestra_op::code`/`refresh`), and in-memory is
+/// the *right* choice here, not a shortcut: `app/sms-gateway`'s deployment
+/// runs exactly one `serve` process (AGENTS.md, §4.6's own rate-limiter
+/// section makes the same single-replica assumption explicit), an
+/// authorization code lives at most `authorization_code_ttl_secs` (60s)
+/// before `/token` consumes or expires it, and a lost refresh token on
+/// restart just forces a re-login — cheap, and correct for a human session,
+/// unlike losing a spent `private_key_jwt` `jti` would be for machine
+/// replay-protection (which is why *that* one, `ClientAssertion`, stays a
+/// real table). A second gateway replica would need this to move to a
+/// shared store before human sessions could survive a restart hitting the
+/// other replica — not a concern today, and flagged here for whoever adds
+/// one.
 pub type MachineOnlyOpStore = CompositeOpStore<
     SmsClientStore,
     MemoryStore<authkestra_op::code::AuthorizationCode>,
@@ -205,8 +231,10 @@ pub type MachineOnlyOpStore = CompositeOpStore<
     SmsClientAssertionStore,
 >;
 
-/// Assemble the OP's store: real client + assertion tracking (#19), memory
-/// placeholders for the unused grant types (see the module doc).
+/// Assemble the OP's store — see [`MachineOnlyOpStore`]'s own doc for why
+/// the authorization-code/refresh-token slots below are real, not
+/// placeholders, despite being `MemoryStore` like the genuinely-unused
+/// device-code slot next to them.
 #[must_use]
 pub fn machine_only_store(db: Arc<Cratestack>, sys: CoolContext) -> MachineOnlyOpStore {
     CompositeOpStore::new(
@@ -218,19 +246,43 @@ pub fn machine_only_store(db: Arc<Cratestack>, sys: CoolContext) -> MachineOnlyO
     .with_client_assertion_store(SmsClientAssertionStore::new(db, sys))
 }
 
-/// `OpConfig` for the `client_credentials` + `private_key_jwt` surface —
-/// `grant_types_supported` names exactly that grant, not the full set
-/// `authkestra-op` can serve, since nothing else is wired.
+/// `OpConfig` for this OP's full surface: `client_credentials` +
+/// `private_key_jwt` for machine callers (§4.2), and — as of #194 —
+/// `authorization_code` + `refresh_token` with mandatory PKCE for the
+/// `sms-console` human login path (§4.3). `device_code`/`token_exchange`
+/// stay unadvertised: nothing in this deployment mounts either handler.
 #[must_use]
 pub fn machine_only_config(issuer: String) -> OpConfig {
     OpConfig {
         issuer,
-        scopes_supported: vec!["sms:send".to_owned(), "sms:read".to_owned()],
-        response_types_supported: vec![],
-        grant_types_supported: vec!["client_credentials".to_owned()],
+        // "openid"/"profile" are what #194's login flow requests so
+        // `handle_authorization_code` issues an id_token (§4.3's own
+        // consumer, `admin`'s callback route, validates it) — see that
+        // handler's own `auth_code.scope.contains("openid")` gate.
+        scopes_supported: vec![
+            "sms:send".to_owned(),
+            "sms:read".to_owned(),
+            "openid".to_owned(),
+            "profile".to_owned(),
+        ],
+        response_types_supported: vec!["code".to_owned()],
+        grant_types_supported: vec![
+            "client_credentials".to_owned(),
+            "authorization_code".to_owned(),
+            "refresh_token".to_owned(),
+        ],
         id_token_signing_alg: "RS256".to_owned(),
+        // §4.3/#194: an authorization code is a same-process, seconds-long
+        // handoff between /login and /token — 60s is generous, not tight.
         authorization_code_ttl_secs: 60,
-        // 15 minutes — §4.2.
+        // 15 minutes — §4.2, and unchanged for the human path: §5.3's own
+        // token-shape table gives humans the identical 15-minute access
+        // token TTL, with an 8-hour refresh token (authkestra-op's own
+        // refresh handler hardcodes a 30-day refresh-token lifetime — see
+        // `handle_refresh_token` — which this config has no field to
+        // override; `admin`'s own session cookie is what actually bounds a
+        // human session to 8h, by simply not persisting the refresh token
+        // past that, not by anything the OP enforces server-side).
         access_token_ttl_secs: 900,
         device_code_ttl_secs: 60,
         token_exchange_enabled: false,

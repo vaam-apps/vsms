@@ -16,7 +16,7 @@ if [ ${#roots[@]} -eq 0 ]; then
 fi
 
 hits=$(grep -rn --include='*.rs' -E 'sqlx::(query|query_as|query_scalar|raw_sql)\b' "${roots[@]}" \
-       | grep -vE 'sms-worker/src/(lease|notify|drain|jobs/(reap_outbox|anchor_audit))\.rs|sms-worker/tests/anchor_audit_live_postgres\.rs|sms-api/src/(cache|worker_locks)\.rs|sms-test-support/src/lib\.rs|sms-gateway/src/health\.rs|sms-migrate/src/main\.rs' || true)
+       | grep -vE 'sms-worker/src/(lease|notify|drain|jobs/(reap_outbox|anchor_audit))\.rs|sms-worker/tests/anchor_audit_live_postgres\.rs|sms-api/src/(cache|worker_locks)\.rs|sms-test-support/src/lib\.rs|sms-gateway/src/health\.rs|sms-migrate/src/main\.rs|sms-gateway/tests/login_flow_live_postgres\.rs' || true)
 
 if [ -n "$hits" ]; then
   echo "R1 violation — raw sqlx outside the named exceptions:" >&2

@@ -61,12 +61,12 @@ flowchart TB
 
 ## Phases
 
-| Phase | Milestones | Question it answers | Status *(2026-08-11)* |
+| Phase | Milestones | Question it answers | Status *(2026-08-12)* |
 |---|---|---|---|
 | **1 — Foundation** | M0, M1 | Can we represent a message, and prove who is asking? | **Done** — 14/14 and 9/9 closed |
 | **2 — Deliver a message** | M2, M3 | Can one SMS reach a real handset, and can the caller find out what happened? | **Done** — M2 12/12, M3 8/8, both gates passing |
 | **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M4 **7/19**, M6 **2/8** — the largest remaining block |
-| **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | **Started** (2/6) — `sms-provider-mtn` (#61) and the routing rules engine (#62) landed; failover/circuit breakers (#63), grey-route detection (#64), and the kill-Orange-in-staging gate (#65) remain |
+| **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | **Started** (3/6) — `sms-provider-mtn` (#61), the routing rules engine (#62), and failover/circuit breakers (#63) landed; grey-route detection (#64) and the kill-Orange-in-staging gate (#65) remain |
 | **5 — Conditional** | M7 | Direct MNO interconnect over SMPP | Not started, and **may never exist** — see decision #4 |
 
 ---
@@ -83,6 +83,8 @@ What does block it:
 4. **The one open decision below.**
 
 Deliberately *not* on that list: **#187** (webhook secrets readable by every human role) is latent, because no human-login flow exists yet to hold such a token. It becomes live exactly when M4 ships real logins, which is why it sits on M4 rather than M3.
+
+**#194 (human login flow) resolves the dependency #187/#193/#50/#52/#58 all shared — "no principal in this system can carry a human role."** `sms-auth`'s OP now issues real `authorization_code` + PKCE tokens against a local, Argon2id-backed `User`/`UserCredential`/`Role` model (a deliberate, flagged departure from an external-IdP federation design that was considered and set aside — see `sms_auth::login`'s own module doc), `sms_api::auth::GatewayAuth` projects one into a real `hasRole(...)`-meaningful `CoolContext`, and `admin/`'s Basic-auth gate (#48) is gone — a hard cutover to real sessions, not a parallel path. This is the *mechanism* those five stories needed, not the stories themselves: #52/#58's own screens and #50's per-app message scoping are still open, now buildable rather than blocked on a decision nobody could make. #187/#193's own latency (closed already, `e36efcb`) meant their fix shipped ahead of having a live token to prove the *allow* case with — #194 is the first PR that can actually mint one.
 
 **#46 is resolved, and it doesn't shrink this list: `cratestack studio` (evaluated live at `0.7.10`, matching the pin) covers none of M4's ten open stories.** It's model-CRUD only — no procedure surface, so #52/#54/#55's actual workflows (`provisionAppClient`, `previewMessage`, `replayWebhookAttempt`, `rotateWebhookSecret`) stay unreachable through it — and, checked live rather than assumed, it bypasses `@@allow`, `@version`/CAS, and `@@emit` outbox writes entirely (an unauthenticated read returned `OauthSigningKey.privateKeyPem` in the clear; a write left `version` unbumped and wrote zero outbox rows despite `Message.@@emit`). That's disqualifying for any deployed surface, not a gap to patch. It also can't ever cover #57 — lock ownership lives in Postgres session advisory locks with no schema model, so there's nothing for a schema-driven tool to show. #56/#57 (the diagnostic core this section already named) stay exactly as much hand-written work as before; see the issue comment on #46 for the full per-story split.
 

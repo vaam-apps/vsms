@@ -303,6 +303,7 @@ async fn seed_active_provider(db: &Cratestack) -> (String, String) {
             supportsConcat: true,
             costPerSegmentXaf: "15".parse().unwrap(),
             healthCheckedAt: None,
+            circuitOpenUntil: None,
         })
         .run(&owner())
         .await
@@ -404,6 +405,7 @@ async fn seed_message(
             providerId: None,
             providerMessageRef: None,
             providerMessageRefAlt: None,
+            excludedRouteIds: None,
             maxAttempts: max_attempts,
             leaseOwner: None,
             leaseUntil: None,

@@ -22,6 +22,11 @@ cratestack.workspace = true
 # sms-api here links its already-compiled output, the same way sms-auth
 # already does, not a second expansion.
 sms-api.workspace = true
+# #63: dispatch.rs's failover bookkeeping reads/writes Message.excludedRouteIds
+# through the same sentinel-packed-string convention every other multi-value
+# column in this schema uses (String[]/Int[] panic the server macro — see
+# sms-core's own module doc) — `pack`/`unpack`, not a hand-rolled join/split.
+sms-core.workspace = true
 # dispatch.rs's real dependency: the SmsProvider trait itself, so this crate
 # can hold `Arc<dyn SmsProvider>` without depending on any one adapter.
 sms-provider.workspace = true
@@ -100,6 +105,13 @@ sms-fake-orange.workspace = true
 # `op.rs`'s own route assembly, see AGENTS.md), so this is the same small
 # duplication, not a new pattern.
 axum.workspace = true
+# #63: dispatch_live_postgres.rs's own scripted fake providers construct a
+# real `sms_provider::Capabilities` (dispatch's `total_tps_ceiling` reads
+# it on every tick, so a fake can't `unreachable!()` there the way
+# dispatch_live_postgres.rs's pre-existing `FixedProvider` does for
+# `parse_dlr`-only fakes) — `cost_per_segment_xaf` is a real `Decimal`,
+# not this crate's own re-export of one.
+rust_decimal.workspace = true
 
 [lints]
 workspace = true

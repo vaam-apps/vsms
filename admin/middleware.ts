@@ -1,140 +1,238 @@
 /**
- * The dashboard's authentication gate — `none` or `basic`, no database.
+ * The dashboard's authentication gate (#194) — a human session, not
+ * `DASHBOARD_AUTH=none|basic`.
  *
- * This exists because `/api/trpc` is not a read-only surface: `compose.send`
- * triggers a real `sendMessage` on the gateway, which sends a real SMS on the
- * console's machine credential and costs real money. Until this middleware
- * landed, `DASHBOARD_AUTH` was validated at boot by `@vsms/env` but nothing
- * consumed it, so a deployment could pass env validation and still serve that
- * endpoint to anyone who could reach the server.
+ * **Hard cutover, not a parallel path.** The previous revision of this
+ * file (#48) gated on HTTP Basic auth against a `DASHBOARD_BASIC_USERS`
+ * env list — its own module doc was explicit about what that did and
+ * didn't provide: "Basic-auth users are not `User` rows and carry no
+ * role... SHA-256 is not a password hash... it is not a production
+ * human-auth story." #194 is that production story, and per this
+ * project's own standing convention (replace, don't run both — see
+ * `AGENTS.md`), Basic auth is gone from this file entirely: no
+ * `DASHBOARD_AUTH` env var, no fallback, no flag to re-enable it. If a
+ * deployment somehow needs it back, that's a revert of this commit, not a
+ * toggle.
  *
- * # What this does NOT provide
+ * # What this now provides that #48 explicitly said it did not
  *
- * Deliberate scope, and it must be stated rather than assumed:
+ * - **Real identity.** A session traces back to a `User` row via
+ *   `sms_auth::login::authenticate_user` (`app/sms-gateway/src/login.rs`) —
+ *   `x-vsms-actor` below is that row's own `email`, not an operator-typed
+ *   Basic-auth username with no backing account.
+ * - **Real roles**, carried in the session and forwarded as
+ *   `x-vsms-role` — not consulted by any authorization decision in *this*
+ *   process yet (every upstream call to `sms-gateway` still uses the
+ *   shared `SMS_CONSOLE_CLIENT_ID` machine credential — see
+ *   `packages/gateway/src/token.ts`'s own module doc), but no longer
+ *   structurally absent the way #48 described. Wiring per-request calls
+ *   to use the logged-in user's own access token instead of the shared
+ *   machine credential is explicitly out of scope for #194 (see the
+ *   issue's own "What is actually blocked" table, row `#50`) and tracked
+ *   as a distinct follow-up, not silently assumed done here.
+ * - **Real logout and expiry.** `POST /api/auth/logout` clears the
+ *   session cookie outright; the cookie itself carries a real expiry
+ *   (`SESSION_COOKIE_MAX_AGE_SECONDS`, §5.3's own 8h human-refresh-token
+ *   figure) and this middleware refreshes or expires it on a schedule
+ *   tied to the OP's own token lifetimes, not "until someone edits an env
+ *   var and restarts."
  *
- * - **No identity at the gateway.** Basic-auth users are not `User` rows and
- *   carry no role. Everything upstream uses one machine credential, so
- *   `cratestack_audit` attributes every write to `SMS_CONSOLE_CLIENT_ID`, not
- *   to a person.
- * - **No roles or per-user permissions.** Every authenticated user reaches
- *   every screen the machine token can reach.
- * - **No logout, revocation, lockout, or rate limiting.** Rotating
- *   `DASHBOARD_BASIC_USERS` and restarting is the whole revocation story;
- *   brute-force protection belongs at the reverse proxy.
- * - **SHA-256 is not a password hash.** It is fast by design and offline
- *   crackable from a leaked env. Acceptable only as an internal dev switch
- *   behind a network allowlist; it is not a production human-auth story.
+ * # What this still does not provide
  *
- * Runs on the Edge runtime, which is why the digest is `crypto.subtle`
- * SHA-256 rather than a real KDF — no Node APIs, no `Buffer`, no bcrypt.
+ * - **Brute-force protection on `/login` itself.** `sms-gateway`'s own
+ *   `/login` route has no rate limiting of its own yet — the same class
+ *   of gap `#156`/`#168` closed for `/token`, not yet closed here. Tracked
+ *   as explicit follow-up in this PR's own description, not silently
+ *   assumed covered by Caddy's existing `/token` zones (which don't match
+ *   this path).
+ * - **A CSRF token on the login form POST.** `POST /api/auth/login` is a
+ *   plain `<form>` submission (see `admin/app/login/page.tsx`) rather than
+ *   a fetch-based one, so it has no `Origin` header the way
+ *   `packages/api/src/context.ts`'s own tRPC mutations do to check
+ *   against. Its blast radius if forged cross-site is bounded — a forged
+ *   submission can only ever attempt *someone else's own* credentials
+ *   against `/login`, never act on an existing session — but a same-site
+ *   token would still be a real improvement, and isn't built here.
+ *
+ * # Why the PKCE/state/nonce transaction cookie is minted here, not in
+ * the `/login` page component
+ *
+ * Next.js only allows `cookies().set()` inside a Server Action, a Route
+ * Handler, or Middleware — never during a plain Server Component render,
+ * which is what `admin/app/login/page.tsx` otherwise is. So *this* file
+ * mints the transaction (`state`, `nonce`, PKCE `codeVerifier`/
+ * `codeChallenge`) the moment a `GET /login` request arrives, sets the
+ * encrypted `vsms_oidc_txn` cookie, and only then lets the request reach
+ * the page component — which renders a form that already knows nothing
+ * about any of this; `POST /api/auth/login` reads the cookie back
+ * server-side instead of trusting anything the form itself submits for
+ * `state`/`nonce`/`codeChallenge`.
  */
 import { type NextRequest, NextResponse } from "next/server";
+import {
+  decryptSession,
+  encryptSession,
+  encryptTxn,
+  generateNonce,
+  generatePkcePair,
+  generateState,
+  OIDC_COOKIE_NAMES,
+  SESSION_COOKIE_MAX_AGE_SECONDS,
+  type Session,
+  TXN_COOKIE_MAX_AGE_SECONDS,
+} from "./lib/oidc";
 
 const ACTOR_HEADER = "x-vsms-actor";
+const ROLE_HEADER = "x-vsms-role";
 
-/**
- * `/api/trpc` is included on purpose. Protecting pages while leaving the RPC
- * endpoint open is the classic version of this bug, and it is the endpoint
- * that actually sends messages.
- *
- * `api/health` is excluded — found live wiring up admin/Dockerfile's own
- * container `HEALTHCHECK` (#139): with `DASHBOARD_AUTH=basic` (the only
- * mode `NODE_ENV=production` accepts, per @vsms/env's own cross-field
- * rule), this middleware previously gated `/api/health` the same as every
- * other route, so an unauthenticated liveness probe got a `401` forever —
- * `docker compose ps` showed the container permanently `unhealthy` despite
- * the process being fine. The route's own body is `{ ok: true }`, nothing
- * more; exempting it leaks no more than "this process is answering HTTP,"
- * which is the entire point of a liveness check.
- */
+/** Same exclusions as before #194 — `api/health` still needs to answer an
+ * unauthenticated liveness probe (#139's own finding, still true: a
+ * container `HEALTHCHECK` has no session cookie to present). `/login` and
+ * `/api/auth/*` are newly reachable without a session — they're the only
+ * way to *get* one. */
 export const config = {
   matcher: [
     "/((?!_next/static|_next/image|favicon.ico|icons/|manifest.webmanifest|sw.js|api/health).*)",
   ],
 };
 
-function unauthorized(realm: string): NextResponse {
-  return new NextResponse("Unauthorized", {
-    status: 401,
-    headers: { "WWW-Authenticate": `Basic realm="${realm}", charset="UTF-8"` },
+function sessionSecret(): string {
+  const secret = process.env.SMS_CONSOLE_SESSION_SECRET;
+  if (secret === undefined || secret.length < 32) {
+    // Same posture as @vsms/env's own startup validation for this var —
+    // duplicated here (not imported from @vsms/env) because middleware
+    // runs on the Edge runtime and this file, unlike route handlers,
+    // predates any confidence that @vsms/env's full zod schema is Edge-safe
+    // end to end; a raw process.env read matches this file's own
+    // pre-#194 convention (it never imported @vsms/env either).
+    throw new Error("SMS_CONSOLE_SESSION_SECRET must be set and at least 32 characters");
+  }
+  return secret;
+}
+
+async function ensureLoginTxnCookie(response: NextResponse): Promise<void> {
+  const { codeVerifier, codeChallenge } = await generatePkcePair();
+  const token = await encryptTxn(
+    { state: generateState(), nonce: generateNonce(), codeVerifier },
+    sessionSecret(),
+  );
+  response.cookies.set(OIDC_COOKIE_NAMES.txn, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: TXN_COOKIE_MAX_AGE_SECONDS,
   });
+  // codeChallenge itself is not secret and has no reason to round-trip
+  // through a second cookie — admin/app/login/page.tsx never needs it;
+  // POST /api/auth/login reads codeVerifier back out of the txn cookie
+  // above and recomputes the identical challenge from it server-side.
+  void codeChallenge;
 }
 
-/** Constant-time compare over two equal-length hex digests. */
-function digestsMatch(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) {
-    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+/** Access-token refresh, done here (not in a route handler) so it runs
+ * ahead of *every* request, not just the ones a user happens to trigger a
+ * page load on: a session whose access token is within `REFRESH_MARGIN_MS`
+ * of expiry gets a fresh one via the real `authorization_code` flow's
+ * sibling grant, `refresh_token` — `authkestra_op`'s own
+ * `handle_refresh_token`, unmodified. Failure (network, expired refresh
+ * token, revoked client) means the session cannot continue: redirect to
+ * `/login`, same as no session at all. */
+const REFRESH_MARGIN_MS = 60_000;
+
+async function refreshSession(session: Session): Promise<Session | undefined> {
+  if (session.refreshToken === null) return undefined;
+  const issuer = process.env.SMS_AUTH_ISSUER;
+  if (issuer === undefined) return undefined;
+
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: session.refreshToken,
+    client_id: process.env.SMS_CONSOLE_OIDC_CLIENT_ID ?? "sms-console",
+  });
+  let response: Response;
+  try {
+    response = await fetch(new URL("/token", issuer), {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    });
+  } catch {
+    return undefined;
   }
-  return diff === 0;
+  if (!response.ok) return undefined;
+
+  const parsed = (await response.json()) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+  };
+  if (parsed.access_token === undefined) return undefined;
+
+  return {
+    ...session,
+    accessToken: parsed.access_token,
+    refreshToken: parsed.refresh_token ?? session.refreshToken,
+    accessTokenExpiresAtMs: Date.now() + (parsed.expires_in ?? 900) * 1000,
+  };
 }
 
-async function sha256Hex(value: string): Promise<string> {
-  const bytes = new TextEncoder().encode(value);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-function parseUsers(raw: string): Map<string, string> {
-  const users = new Map<string, string>();
-  for (const entry of raw.split(",")) {
-    const trimmed = entry.trim();
-    if (trimmed === "") continue;
-    const colon = trimmed.indexOf(":");
-    if (colon === -1) continue;
-    users.set(trimmed.slice(0, colon), trimmed.slice(colon + 1).toLowerCase());
-  }
-  return users;
+function redirectToLogin(request: NextRequest): NextResponse {
+  const response = NextResponse.redirect(new URL("/login", request.url));
+  response.cookies.delete(OIDC_COOKIE_NAMES.session);
+  return response;
 }
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {
-  // Strip any inbound actor header BEFORE anything else. Downstream code
-  // trusts `x-vsms-actor`, so a caller that could set it would be asserting
-  // whatever identity it liked.
+  const path = request.nextUrl.pathname;
+
+  // Strip any inbound actor/role headers BEFORE anything else — same
+  // reasoning #48's own version of this file already established for
+  // x-vsms-actor: downstream code trusts these, so a caller that could
+  // set them directly would be asserting whatever identity it liked.
   const headers = new Headers(request.headers);
   headers.delete(ACTOR_HEADER);
+  headers.delete(ROLE_HEADER);
 
-  const mode = process.env.DASHBOARD_AUTH ?? "none";
-  const realm = process.env.DASHBOARD_BASIC_REALM ?? "vsms admin";
-
-  if (mode !== "basic") {
-    headers.set(ACTOR_HEADER, "anonymous");
+  if (path.startsWith("/api/auth/")) {
+    // These routes manage vsms_oidc_txn/vsms_session themselves — nothing
+    // to gate or inject here.
     return NextResponse.next({ request: { headers } });
   }
 
-  const rawUsers = process.env.DASHBOARD_BASIC_USERS ?? "";
-  const users = parseUsers(rawUsers);
-  if (users.size === 0) return unauthorized(realm);
-
-  const authorization = request.headers.get("authorization");
-  if (authorization === null || !authorization.startsWith("Basic ")) {
-    return unauthorized(realm);
+  if (path === "/login" && request.method === "GET") {
+    const response = NextResponse.next({ request: { headers } });
+    await ensureLoginTxnCookie(response);
+    return response;
+  }
+  if (path === "/login") {
+    return NextResponse.next({ request: { headers } });
   }
 
-  let decoded: string;
-  try {
-    decoded = atob(authorization.slice("Basic ".length).trim());
-  } catch {
-    return unauthorized(realm);
+  const raw = request.cookies.get(OIDC_COOKIE_NAMES.session)?.value;
+  let session = raw === undefined ? undefined : await decryptSession(raw, sessionSecret());
+  if (session === undefined) {
+    return redirectToLogin(request);
   }
 
-  // Split on the FIRST colon only — passwords legitimately contain colons.
-  const colon = decoded.indexOf(":");
-  if (colon === -1) return unauthorized(realm);
-  const user = decoded.slice(0, colon);
-  const password = decoded.slice(colon + 1);
-
-  // Always hash, and always compare against a fixed-length digest, so an
-  // unknown username costs the same as a wrong password.
-  const presented = await sha256Hex(password);
-  const expected = users.get(user) ?? "0".repeat(64);
-  if (!digestsMatch(presented, expected) || !users.has(user)) {
-    return unauthorized(realm);
+  if (session.accessTokenExpiresAtMs - Date.now() < REFRESH_MARGIN_MS) {
+    const refreshed = await refreshSession(session);
+    if (refreshed === undefined) {
+      return redirectToLogin(request);
+    }
+    session = refreshed;
   }
 
-  headers.set(ACTOR_HEADER, user);
-  return NextResponse.next({ request: { headers } });
+  headers.set(ACTOR_HEADER, session.email);
+  headers.set(ROLE_HEADER, session.role);
+  const response = NextResponse.next({ request: { headers } });
+  const token = await encryptSession(session, sessionSecret());
+  response.cookies.set(OIDC_COOKIE_NAMES.session, token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/",
+    maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
+  });
+  return response;
 }

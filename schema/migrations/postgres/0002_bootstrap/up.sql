@@ -34,6 +34,7 @@ ALTER TABLE webhook_endpoints       ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_attempts        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE users                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE roles                   ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE user_credentials        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE audit_anchors           ALTER COLUMN id SET DEFAULT cs_cuid();
 
 -- Timestamps mixin, and other dbgenerated() columns.
@@ -70,6 +71,8 @@ ALTER TABLE webhook_endpoints ALTER COLUMN created_at SET DEFAULT now(),
 ALTER TABLE users ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
 ALTER TABLE roles ALTER COLUMN created_at SET DEFAULT now(),
+            ALTER COLUMN updated_at SET DEFAULT now();
+ALTER TABLE user_credentials ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
 ALTER TABLE delivery_receipts ALTER COLUMN received_at SET DEFAULT now();
 -- #68: AuditAnchor doesn't @use(Timestamps) — it has no updated_at (nothing
@@ -123,6 +126,8 @@ CREATE TRIGGER webhook_endpoints_touch BEFORE UPDATE ON webhook_endpoints
 CREATE TRIGGER users_touch BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER roles_touch BEFORE UPDATE ON roles
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER user_credentials_touch BEFORE UPDATE ON user_credentials
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 
 -- Multi-value columns are space-delimited TEXT with sentinel separators (§2.2),
@@ -419,6 +424,9 @@ ALTER TABLE webhook_attempts ADD CONSTRAINT wha_endpoint_fk
 
 ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_format_check
     CHECK (prefix ~ '^[0-9]{1,4}$');
+
+ALTER TABLE roles ADD CONSTRAINT roles_key_not_reserved_check
+    CHECK (key NOT IN ('system', 'app'));
 
 -- private_key_jwt without a key is a client that can never authenticate;
 -- `none` *with* a key is a public client someone believed was confidential.

@@ -3,9 +3,6 @@ import { z } from "zod";
 
 export const env = createEnv({
   server: {
-    DASHBOARD_AUTH: z.enum(["none", "basic"]).default("none"),
-    DASHBOARD_BASIC_REALM: z.string().optional(),
-    DASHBOARD_BASIC_USERS: z.string().optional(),
     SMS_API_URL: z.string().url(),
     SMS_API_CLIENT_CERT_PATH: z.string().optional(),
     SMS_API_CLIENT_KEY_PATH: z.string().optional(),
@@ -26,6 +23,22 @@ export const env = createEnv({
       .string()
       .min(1)
       .default("sms:send sms:read job:read job:enqueue worker:read"),
+    // #194: the human authorization-code + PKCE flow. DASHBOARD_AUTH
+    // (none|basic) is gone — a hard cutover, not a parallel path: see
+    // admin/middleware.ts's own module doc for why leaving Basic auth
+    // reachable behind a flag was rejected. ADMIN_BASE_URL is this
+    // console's own externally-reachable origin — the one fixed
+    // `redirect_uri` (`${ADMIN_BASE_URL}/api/auth/callback`) the
+    // `sms-console` OauthClient row is registered with; an exact-match
+    // requirement per RFC 6749 §3.1.2, so this must be the literal origin
+    // browsers reach this app at, not an internal/loopback address.
+    ADMIN_BASE_URL: z.string().url(),
+    SMS_CONSOLE_OIDC_CLIENT_ID: z.string().min(1).default("sms-console"),
+    // AES-256-GCM needs 32 raw bytes once hashed down (admin/lib/oidc.ts) —
+    // require real entropy up front rather than accepting a short string
+    // that would still "work" (any string hashes to 32 bytes) but with far
+    // less real keyspace than the cookie's own encryption implies.
+    SMS_CONSOLE_SESSION_SECRET: z.string().min(32),
     MESSAGE_STREAM_POLL_MS: z.coerce.number().int().min(500).default(2000),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
@@ -34,9 +47,6 @@ export const env = createEnv({
   },
   runtimeEnv: {
     // Server
-    DASHBOARD_AUTH: process.env.DASHBOARD_AUTH,
-    DASHBOARD_BASIC_REALM: process.env.DASHBOARD_BASIC_REALM,
-    DASHBOARD_BASIC_USERS: process.env.DASHBOARD_BASIC_USERS,
     SMS_API_URL: process.env.SMS_API_URL,
     SMS_API_CLIENT_CERT_PATH: process.env.SMS_API_CLIENT_CERT_PATH,
     SMS_API_CLIENT_KEY_PATH: process.env.SMS_API_CLIENT_KEY_PATH,
@@ -45,6 +55,9 @@ export const env = createEnv({
     SMS_CONSOLE_CLIENT_ID: process.env.SMS_CONSOLE_CLIENT_ID,
     SMS_CONSOLE_PRIVATE_KEY_PATH: process.env.SMS_CONSOLE_PRIVATE_KEY_PATH,
     SMS_CONSOLE_SCOPE: process.env.SMS_CONSOLE_SCOPE,
+    ADMIN_BASE_URL: process.env.ADMIN_BASE_URL,
+    SMS_CONSOLE_OIDC_CLIENT_ID: process.env.SMS_CONSOLE_OIDC_CLIENT_ID,
+    SMS_CONSOLE_SESSION_SECRET: process.env.SMS_CONSOLE_SESSION_SECRET,
     MESSAGE_STREAM_POLL_MS: process.env.MESSAGE_STREAM_POLL_MS,
     NODE_ENV: process.env.NODE_ENV,
     // Client
@@ -62,24 +75,6 @@ export const env = createEnv({
 const skipValidation = !!process.env.SKIP_ENV_VALIDATION;
 
 if (!skipValidation) {
-  if (env.DASHBOARD_AUTH === "basic") {
-    if (!env.DASHBOARD_BASIC_USERS || env.DASHBOARD_BASIC_USERS.trim() === "") {
-      throw new Error(
-        'DASHBOARD_AUTH=basic requires DASHBOARD_BASIC_USERS to be non-empty (format: "username:sha256hex,...")',
-      );
-    }
-
-    const userPattern = /^[^:,]+:[0-9a-f]{64}$/;
-    const users = env.DASHBOARD_BASIC_USERS.split(",").map((u) => u.trim());
-    for (const user of users) {
-      if (!userPattern.test(user)) {
-        throw new Error(
-          `DASHBOARD_BASIC_USERS entry '${user}' does not match expected format "username:sha256hex" (64 hex chars)`,
-        );
-      }
-    }
-  }
-
   // `next build` sets NODE_ENV=production while *compiling*, which is not the
   // same thing as *running* a production server. Next signals the compile with
   // NEXT_PHASE=phase-production-build. The two rules below exist to stop a
@@ -91,10 +86,12 @@ if (!skipValidation) {
   const isProductionBuild = process.env.NEXT_PHASE === "phase-production-build";
   const enforceDeploymentRules = env.NODE_ENV === "production" && !isProductionBuild;
 
-  if (enforceDeploymentRules && env.DASHBOARD_AUTH === "none") {
-    throw new Error(
-      "NODE_ENV=production requires DASHBOARD_AUTH to be set (basic or other auth method)",
-    );
+  // #194's own hard requirement: session cookies must be Secure, which
+  // means an HTTPS ADMIN_BASE_URL in production — a `redirect_uri` (and a
+  // cookie) served over plaintext defeats the point of encrypting the
+  // session in the first place.
+  if (enforceDeploymentRules && new URL(env.ADMIN_BASE_URL).protocol !== "https:") {
+    throw new Error("NODE_ENV=production requires ADMIN_BASE_URL to use https: protocol");
   }
 
   const apiUrl = new URL(env.SMS_API_URL);

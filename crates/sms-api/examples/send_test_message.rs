@@ -159,6 +159,7 @@ async fn ensure_provider(db: &Cratestack) -> anyhow::Result<String> {
             supportsConcat: true,
             costPerSegmentXaf: "19".parse()?,
             healthCheckedAt: None,
+            circuitOpenUntil: None,
         })
         .run(&owner())
         .await?;

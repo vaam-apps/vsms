@@ -316,7 +316,12 @@ async fn spawn_test_server(db: &Cratestack) -> (String, usize) {
     };
     spawn_key_refresh(op_state.clone(), db.clone(), sys(), issuer.clone());
 
-    let auth = GatewayAuth::new(db.clone(), format!("{issuer}/jwks.json"), issuer.clone());
+    let auth = GatewayAuth::new(
+        db.clone(),
+        format!("{issuer}/jwks.json"),
+        issuer.clone(),
+        sms_api::DEFAULT_CONSOLE_CLIENT_ID.to_owned(),
+    );
     // #134: this suite never sends a message, so — like
     // `provision_app_client_live_postgres.rs` — any pepper over the
     // minimum length works.
