@@ -29,6 +29,7 @@ ALTER TABLE routes                  ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE sender_ids              ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE sender_id_registrations ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE opt_outs                ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE consent_records         ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE operator_prefix_rules   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_endpoints       ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_attempts        ALTER COLUMN id SET DEFAULT cs_cuid();
@@ -64,6 +65,8 @@ ALTER TABLE message_parts ALTER COLUMN created_at SET DEFAULT now(),
 ALTER TABLE jobs ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
 ALTER TABLE opt_outs ALTER COLUMN created_at SET DEFAULT now(),
+            ALTER COLUMN updated_at SET DEFAULT now();
+ALTER TABLE consent_records ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
 ALTER TABLE webhook_endpoints ALTER COLUMN created_at SET DEFAULT now(),
             ALTER COLUMN updated_at SET DEFAULT now();
@@ -115,6 +118,8 @@ CREATE TRIGGER message_parts_touch BEFORE UPDATE ON message_parts
 CREATE TRIGGER jobs_touch BEFORE UPDATE ON jobs
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER opt_outs_touch BEFORE UPDATE ON opt_outs
+    FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
+CREATE TRIGGER consent_records_touch BEFORE UPDATE ON consent_records
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
 CREATE TRIGGER webhook_endpoints_touch BEFORE UPDATE ON webhook_endpoints
     FOR EACH ROW EXECUTE FUNCTION touch_updated_at();
@@ -369,6 +374,14 @@ CREATE INDEX receipts_message_idx ON delivery_receipts (message_id);
 CREATE INDEX receipts_received_at_idx ON delivery_receipts (received_at);
 CREATE INDEX app_clients_app_idx  ON app_clients (app_id);
 CREATE INDEX routes_match_idx     ON routes (enabled, priority DESC);
+
+-- #72: `Procedures::ensure_consent_on_file`'s own lookup — no `@unique` on
+-- `msisdnHash` here the way `OptOut.msisdnHash` has one, because a single
+-- recipient can legitimately hold more than one ConsentRecord (different
+-- scopes, or a re-consent over time; this model is append-only evidence,
+-- not a single mutable flag — see its own schema.cstack comment).
+CREATE INDEX consent_records_lookup_idx
+    ON consent_records (app_id, msisdn_hash, scope);
 
 -- The OP reads exactly one row at startup: the newest active signing key.
 CREATE INDEX oauth_signing_keys_active_idx ON oauth_signing_keys (created_at DESC)

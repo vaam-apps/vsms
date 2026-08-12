@@ -20,6 +20,8 @@ ALTER TABLE message_parts DROP CONSTRAINT message_parts_message_id_fkey;
 
 ALTER TABLE delivery_receipts DROP CONSTRAINT delivery_receipts_message_id_fkey;
 
+ALTER TABLE consent_records DROP CONSTRAINT consent_records_app_id_fkey;
+
 ALTER TABLE apps DROP CONSTRAINT apps_default_sender_id_id_fkey;
 
 ALTER TABLE app_clients DROP CONSTRAINT app_clients_app_id_fkey;
@@ -61,6 +63,10 @@ ALTER TABLE jobs DROP CONSTRAINT jobs_state_enum_check;
 ALTER TABLE delivery_receipts DROP CONSTRAINT delivery_receipts_network_code_enum_check;
 
 ALTER TABLE delivery_receipts DROP CONSTRAINT delivery_receipts_outcome_enum_check;
+
+ALTER TABLE consent_records DROP CONSTRAINT consent_records_channel_enum_check;
+
+ALTER TABLE consent_records DROP CONSTRAINT consent_records_scope_enum_check;
 
 DROP INDEX users_email_key;
 
@@ -119,6 +125,8 @@ DROP TABLE message_parts;
 DROP TABLE jobs;
 
 DROP TABLE delivery_receipts;
+
+DROP TABLE consent_records;
 
 DROP TABLE client_assertions;
 

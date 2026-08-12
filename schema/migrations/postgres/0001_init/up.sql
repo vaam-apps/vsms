@@ -18,6 +18,9 @@
 --   - client_assertions.created_at
 --   - client_assertions.updated_at
 --   - client_assertions.id
+--   - consent_records.created_at
+--   - consent_records.updated_at
+--   - consent_records.id
 --   - delivery_receipts.id
 --   - delivery_receipts.received_at
 --   - jobs.created_at
@@ -105,6 +108,20 @@ CREATE TABLE client_assertions (
     id TEXT NOT NULL,
     jti TEXT NOT NULL,
     expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (id)
+);
+
+CREATE TABLE consent_records (
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    id TEXT NOT NULL,
+    app_id TEXT NOT NULL,
+    msisdn_hash TEXT NOT NULL,
+    msisdn TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    consented_at TIMESTAMPTZ NOT NULL,
+    evidence_ref TEXT,
     PRIMARY KEY (id)
 );
 
@@ -422,6 +439,10 @@ CREATE UNIQUE INDEX users_subject_key ON users (subject);
 
 CREATE UNIQUE INDEX users_email_key ON users (email);
 
+ALTER TABLE consent_records ADD CONSTRAINT consent_records_scope_enum_check CHECK (scope IN ('otp', 'transactional', 'notification', 'marketing'));
+
+ALTER TABLE consent_records ADD CONSTRAINT consent_records_channel_enum_check CHECK (channel IN ('web_form', 'api', 'ivr', 'paper_form', 'verbal', 'sms_keyword', 'import', 'admin'));
+
 ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_outcome_enum_check CHECK (outcome IN ('delivered', 'uncertain', 'failed', 'expired', 'rejected', 'unknown'));
 
 ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_network_code_enum_check CHECK (network_code IN ('mtn', 'orange', 'camtel', 'nexttel', 'unknown'));
@@ -463,6 +484,8 @@ ALTER TABLE webhook_attempts ADD CONSTRAINT webhook_attempts_state_enum_check CH
 ALTER TABLE app_clients ADD CONSTRAINT app_clients_app_id_fkey FOREIGN KEY (app_id) REFERENCES apps (id);
 
 ALTER TABLE apps ADD CONSTRAINT apps_default_sender_id_id_fkey FOREIGN KEY (default_sender_id_id) REFERENCES sender_ids (id);
+
+ALTER TABLE consent_records ADD CONSTRAINT consent_records_app_id_fkey FOREIGN KEY (app_id) REFERENCES apps (id);
 
 ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_message_id_fkey FOREIGN KEY (message_id) REFERENCES messages (id);
 

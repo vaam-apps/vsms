@@ -23,7 +23,7 @@ use cratestack::{CoolContext, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, procedures::send_message, procedures::ProcedureRegistry, Cratestack, Encoding,
-    MessageState, OperatorCode,
+    MessageClass, MessageState, OperatorCode,
 };
 use sms_api::{HashPepper, Procedures};
 
@@ -270,12 +270,24 @@ async fn seed_approved_sender(db: &Cratestack) -> String {
 }
 
 fn args(to: &str, body: &str, sender_id: Option<&str>) -> send_message::Args {
+    args_with_class(to, body, sender_id, None)
+}
+
+/// #72: the same builder, with an explicit `class` — every consent/quiet-hours
+/// test below needs to control this, where every pre-#72 test was happy to
+/// let it default to `transactional`.
+fn args_with_class(
+    to: &str,
+    body: &str,
+    sender_id: Option<&str>,
+    class: Option<MessageClass>,
+) -> send_message::Args {
     send_message::Args {
         args: schema::SendMessageInput {
             to: to.to_owned(),
             body: body.to_owned(),
             senderId: sender_id.map(str::to_owned),
-            class: None,
+            class,
             clientRef: None,
             scheduledAt: None,
             validityMinutes: None,
@@ -364,6 +376,11 @@ async fn a_human_caller_is_rejected_with_a_clear_reason_not_a_guess() {
     );
 }
 
+/// #72: opt-out honouring is class-gated (`consent::requires_recipient_consent_controls`)
+/// — `notification` is one of the two classes it still covers, same as
+/// before #72 changed this from an unconditional check to a gated one. See
+/// `an_opted_out_recipient_still_receives_an_otp_or_transactional_message`
+/// below for the exemption half of the same change.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_opted_out_recipient_is_refused_before_persistence() {
@@ -390,7 +407,11 @@ async fn an_opted_out_recipient_is_refused_before_persistence() {
         .expect("seeding the opt-out");
 
     let error = procedures
-        .send_message(&db, &app_caller(&client_id), args(to, "hi", Some(&sender)))
+        .send_message(
+            &db,
+            &app_caller(&client_id),
+            args_with_class(to, "hi", Some(&sender), Some(MessageClass::notification)),
+        )
         .await
         .unwrap_err();
 
@@ -616,4 +637,302 @@ async fn the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn() {
         hash_a, hash_c,
         "the same pepper must hash the same MSISDN identically, even from a fresh Procedures"
     );
+}
+
+// ---------------------------------------------------------------------
+// #72: consent records, the classification exemption, and quiet hours.
+// ---------------------------------------------------------------------
+
+/// Seeds a `ConsentRecord` matching `to`/`scope` under the given app —
+/// mirrors `sha_of`'s own reasoning: goes through the real
+/// `hmac_sha256_hex` `sendMessage` itself uses, never a hand-rolled second
+/// copy of the hash.
+async fn seed_consent(
+    db: &Cratestack,
+    app_id: &str,
+    to: &str,
+    scope: MessageClass,
+) -> schema::ConsentRecord {
+    db.consent_record()
+        .create(schema::CreateConsentRecordInput {
+            appId: app_id.to_owned(),
+            msisdnHash: sha_of(to),
+            msisdn: to.to_owned(),
+            scope,
+            channel: schema::ConsentChannel::web_form,
+            consentedAt: Utc::now(),
+            evidenceRef: Some("send-message-live-postgres-fixture".to_owned()),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a ConsentRecord")
+}
+
+/// #72's own guard-failure demonstration, as literally asked for: a
+/// `marketing` send to a recipient with no consent record on file must be
+/// refused, and a `transactional` send to that *same* recipient must not
+/// be — proving the classification exemption is real and load-bearing, not
+/// just documented. `marketing`'s refusal reason is deliberately not
+/// pinned down further here (it could be "no consent on file" or "outside
+/// quiet hours" depending on wall-clock time when this runs — both are
+/// correct per `consent::requires_recipient_consent_controls` /
+/// `consent::subject_to_quiet_hours` — see
+/// `a_notification_send_with_no_consent_record_is_refused` below for the
+/// consent-specific reason isolated from quiet hours entirely).
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_marketing_send_is_refused_but_a_transactional_send_to_the_same_recipient_is_not() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let procedures = Procedures::new(test_pepper());
+    let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
+    let sender = seed_approved_sender(&db).await;
+    let to = unique_mtn_msisdn();
+    let to = to.as_str();
+
+    let marketing_error = procedures
+        .send_message(
+            &db,
+            &app_caller(&client_id),
+            args_with_class(
+                to,
+                "50% off today only!",
+                Some(&sender),
+                Some(MessageClass::marketing),
+            ),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(marketing_error, cratestack::CoolError::Validation(_)),
+        "a marketing send with no consent on file must be refused, got: {marketing_error:?}"
+    );
+
+    let transactional_result = procedures
+        .send_message(
+            &db,
+            &app_caller(&client_id),
+            args_with_class(
+                to,
+                "Your order has shipped",
+                Some(&sender),
+                Some(MessageClass::transactional),
+            ),
+        )
+        .await
+        .expect(
+            "a transactional send to the same recipient, with no consent record either, \
+             must not be refused — otp/transactional are exempt",
+        );
+    assert_eq!(transactional_result.state, MessageState::accepted);
+}
+
+/// The consent half of #72's guard, isolated from quiet hours entirely by
+/// using `notification` (needs consent, is never time-restricted — see
+/// `consent::subject_to_quiet_hours`'s own doc) rather than `marketing` —
+/// deterministic no matter what time this runs.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_notification_send_with_no_consent_record_is_refused() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let procedures = Procedures::new(test_pepper());
+    let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
+    let sender = seed_approved_sender(&db).await;
+    let to = unique_mtn_msisdn();
+
+    let error = procedures
+        .send_message(
+            &db,
+            &app_caller(&client_id),
+            args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification)),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, cratestack::CoolError::Validation(_)));
+
+    let count = db
+        .message()
+        .aggregate()
+        .count()
+        .where_expr(cratestack::FilterExpr::from(
+            schema::message::msisdnHash().eq(sha_of(&to)),
+        ))
+        .run(&sys())
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 0,
+        "a notification send refused for missing consent must not persist a row"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_notification_send_with_a_matching_consent_record_succeeds() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let procedures = Procedures::new(test_pepper());
+    let (client_id, app) = seed_app_and_client(&db, 1000, None).await;
+    let sender = seed_approved_sender(&db).await;
+    let to = unique_mtn_msisdn();
+
+    seed_consent(&db, &app.id, &to, MessageClass::notification).await;
+
+    let result = procedures
+        .send_message(
+            &db,
+            &app_caller(&client_id),
+            args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification)),
+        )
+        .await
+        .expect("a matching, on-file consent record must let this send through");
+
+    assert_eq!(result.state, MessageState::accepted);
+}
+
+/// A consent record scoped to `marketing` does not authorise a
+/// `notification` send to the same recipient — `ConsentRecord.scope`
+/// matches `Message.class` exactly, not "any consent this recipient ever
+/// gave".
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_consent_record_scoped_to_a_different_class_does_not_authorise_this_one() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let procedures = Procedures::new(test_pepper());
+    let (client_id, app) = seed_app_and_client(&db, 1000, None).await;
+    let sender = seed_approved_sender(&db).await;
+    let to = unique_mtn_msisdn();
+
+    seed_consent(&db, &app.id, &to, MessageClass::marketing).await;
+
+    let error = procedures
+        .send_message(
+            &db,
+            &app_caller(&client_id),
+            args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification)),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, cratestack::CoolError::Validation(_)));
+}
+
+/// The opt-out half of the same classification exemption
+/// (`an_opted_out_recipient_is_refused_before_persistence` above is the
+/// "still covered" half): an opted-out recipient must still be able to
+/// receive an OTP or a transactional message, per `docs/architecture.md`
+/// §10 — "OTP and transactional are exempt in most regimes." Before #72
+/// this was blocked unconditionally, which was accidentally *more*
+/// restrictive than specified, not a compliance gap, but not what was
+/// asked for either — see `consent.rs`'s own module doc.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_opted_out_recipient_still_receives_an_otp_or_transactional_message() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let procedures = Procedures::new(test_pepper());
+    let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
+    let sender = seed_approved_sender(&db).await;
+    let to = unique_mtn_msisdn();
+    let to = to.as_str();
+
+    db.opt_out()
+        .create(schema::CreateOptOutInput {
+            msisdnHash: sha_of(to),
+            msisdn: to.to_owned(),
+            source: schema::OptOutSource::inbound_stop,
+            scope: "all".to_owned(),
+            reason: None,
+            optedOutAt: Utc::now(),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding the opt-out");
+
+    let otp_result = procedures
+        .send_message(
+            &db,
+            &app_caller(&client_id),
+            args_with_class(
+                to,
+                "Votre code est 4821",
+                Some(&sender),
+                Some(MessageClass::otp),
+            ),
+        )
+        .await
+        .expect("an OTP send to an opted-out recipient must still succeed");
+    assert_eq!(otp_result.state, MessageState::accepted);
+
+    let transactional_result = procedures
+        .send_message(
+            &db,
+            &app_caller(&client_id),
+            args_with_class(
+                to,
+                "Your order has shipped",
+                Some(&sender),
+                Some(MessageClass::transactional),
+            ),
+        )
+        .await
+        .expect("a transactional send to an opted-out recipient must still succeed");
+    assert_eq!(transactional_result.state, MessageState::accepted);
+}
+
+/// Proves `sendMessage` actually wires `consent::is_within_marketing_quiet_hours`
+/// into the real send path — not just that the pure function itself is
+/// correct (`crates/sms-api/src/consent.rs`'s own unit tests already cover
+/// every boundary deterministically). Live-clock-adaptive by design: it
+/// asks the exact same function `send()` calls internally what the
+/// expected outcome is *right now*, so this test is correct and
+/// deterministic no matter what time of day it actually runs — it can
+/// never be flaky, and it can never silently stop testing the real
+/// boundary the way a fixed "assume it's daytime" assumption could.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_marketing_send_matches_the_real_clocks_current_quiet_hours_state() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let procedures = Procedures::new(test_pepper());
+    let (client_id, app) = seed_app_and_client(&db, 1000, None).await;
+    let sender = seed_approved_sender(&db).await;
+    let to = unique_mtn_msisdn();
+
+    // Consent on file so it can never be the reason for a refusal below —
+    // quiet hours is the only variable this test means to exercise.
+    seed_consent(&db, &app.id, &to, MessageClass::marketing).await;
+
+    let expect_accepted = sms_api::consent::is_within_marketing_quiet_hours(Utc::now());
+
+    let outcome = procedures
+        .send_message(
+            &db,
+            &app_caller(&client_id),
+            args_with_class(
+                &to,
+                "50% off today only!",
+                Some(&sender),
+                Some(MessageClass::marketing),
+            ),
+        )
+        .await;
+
+    if expect_accepted {
+        let result = outcome.expect(
+            "is_within_marketing_quiet_hours(now) is true, so this marketing send \
+             must be accepted",
+        );
+        assert_eq!(result.state, MessageState::accepted);
+    } else {
+        let error = outcome.unwrap_err();
+        assert!(
+            matches!(error, cratestack::CoolError::Validation(_)),
+            "is_within_marketing_quiet_hours(now) is false, so this marketing send \
+             must be refused, got: {error:?}"
+        );
+    }
 }

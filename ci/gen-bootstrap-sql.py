@@ -1,5 +1,5 @@
 import re, sys
-ts = "App AppClient OauthClient OauthSigningKey ClientAssertion SenderId SenderIdRegistration Provider Route OperatorPrefixRule Message MessagePart Job OptOut WebhookEndpoint User Role UserCredential".split()
+ts = "App AppClient OauthClient OauthSigningKey ClientAssertion SenderId SenderIdRegistration Provider Route OperatorPrefixRule Message MessagePart Job OptOut ConsentRecord WebhookEndpoint User Role UserCredential".split()
 DOC = 'docs/architecture.md'
 def tbl(n):
     s = re.sub(r'(?<!^)(?=[A-Z])', '_', n).lower()

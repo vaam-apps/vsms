@@ -266,6 +266,18 @@ enum OptOutSource {
   operator
 }
 
+// #72: how a ConsentRecord was captured.
+enum ConsentChannel {
+  web_form
+  api
+  ivr
+  paper_form
+  verbal
+  sms_keyword
+  import
+  admin
+}
+
 mixin Timestamps {
   createdAt DateTime @default(dbgenerated())
   updatedAt DateTime @default(dbgenerated())
@@ -707,7 +719,7 @@ model Job {
 
 Like `Message`, the transitions are enforced by a Postgres trigger, not by the schema.
 
-### 2.7 Suppression and webhooks
+### 2.7 Suppression, consent, and webhooks
 
 ```cstack
 model OptOut {
@@ -724,6 +736,35 @@ model OptOut {
   @@audit
   @@paged
   @@allow("read", auth().kind == "user" || auth().kind == "app")
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, deleted)
+}
+
+// #72: a standing grant of consent — who, when, through what channel, to
+// what scope. Not the enforcement primitive (OptOut is — its presence is
+// what blocks a send); this model is evidence a caller can point to when
+// the classification or the consent itself is challenged. Withdrawing
+// consent is a new OptOut row, not a field here, so "does this recipient
+// currently receive X" never has two disagreeing sources of truth.
+model ConsentRecord {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  appId Cuid
+  app App @relation(fields: [appId], references: [id])
+
+  msisdnHash String
+  msisdn String @pii
+
+  scope MessageClass
+  channel ConsentChannel
+  consentedAt DateTime
+  evidenceRef String?
+
+  @@audit
+  @@paged
+  @@allow("read", auth().kind == "user" || appId == auth().appId || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))
   @@emit(created, deleted)
@@ -783,6 +824,14 @@ model WebhookAttempt {
   @@allow("update", hasRole('system'))
 }
 ```
+
+**`ConsentRecord` is `appId`-scoped; `OptOut` is not.** An opt-out is a recipient's own standing decision and has to bind everywhere in this deployment — an inbound `STOP` has to suppress every app, not just the one whose message triggered it. A consent grant is the opposite: it is a specific app's own customer relationship (its own web form, its own marketing program), and there is no reason a grant captured for one app's marketing should authorise another's. `scope MessageClass` reuses the existing enum rather than a second free-form `String` the way `OptOut.scope` is — `sendMessage`'s consent check (`crates/sms-api/src/procedures.rs::ensure_consent_on_file`) matches this column against `Message.class` directly, so a typo'd scope string can never silently stop matching the class it describes.
+
+**No `@@retain` on `ConsentRecord`, and this is a real, unresolved tension.** `Message` purges `msisdn` at 90 days because minimisation applies to content with no remaining purpose — but proof of consent is not that; it is the thing you produce *because* you were challenged, which argues for keeping it at least as long as the relationship (and probably a limitation-period buffer) lasts. Keeping `msisdn` in plaintext indefinitely to serve that need reproduces the exact problem #67 closed for `Message`. Not resolved here — see `AGENTS.md`'s open-questions entry for #72. `msisdnHash` — what `ensure_consent_on_file` actually matches on — inherits the same pepper-rotation caveat as every other `msisdnHash` column in this schema (§2.5, `sms_api::pepper`'s module doc): rotating `SMS_HASH_PEPPER` orphans every row written under the old one.
+
+**Withdrawing consent is a new `OptOut` row, not a field on this model.** There is deliberately no `revokedAt` — `OptOut`'s presence is already the single enforcement primitive `sendMessage` checks, and giving `ConsentRecord` its own independent revocation flag would create two sources of truth for "does this recipient currently receive X" that could disagree. This model is append-only evidence of what was granted and when; whether it still holds is answered by `OptOut`'s absence.
+
+**What `sendMessage`'s classification exemption actually proves, and what it does not — read before treating "audit trail" as solved.** §10's own text says "keep the audit trail proving the classification." `Message.class` already carries `@@audit`, so every send writes a framework audit row, in the same transaction as the `Message` insert, capturing the declared class and the authenticated caller's identity — a real, contemporaneous record of *who declared what, when*. It does **not** prove the declaration was *true*: nothing here independently classifies a message body as marketing versus transactional, so a caller willing to mislabel traffic bypasses every check `crates/sms-api/src/consent.rs` implements, and the audit trail records that they did so accurately, not honestly. See that module's own doc for the full reasoning — this is the honest boundary of what "the audit trail proves the classification" means in this codebase.
 
 **There is no `OutboxEvent` model.** `@@emit` makes it redundant: CrateStack writes to `cratestack_event_outbox` *inside the mutation's transaction* (§8). `WebhookAttempt` is what a subscriber creates from that event, and it's the durable unit the `hooks` role retries against.
 
@@ -1004,6 +1053,7 @@ ALTER TABLE routes                  ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE sender_ids              ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE sender_id_registrations ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE opt_outs                ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE consent_records         ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE operator_prefix_rules   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_endpoints       ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE webhook_attempts        ALTER COLUMN id SET DEFAULT cs_cuid();
@@ -1297,6 +1347,14 @@ CREATE INDEX receipts_received_at_idx ON delivery_receipts (received_at);
 CREATE INDEX app_clients_app_idx  ON app_clients (app_id);
 CREATE INDEX routes_match_idx     ON routes (enabled, priority DESC);
 
+-- #72: `Procedures::ensure_consent_on_file`'s own lookup — no `@unique` on
+-- `msisdnHash` here the way `OptOut.msisdnHash` has one, because a single
+-- recipient can legitimately hold more than one ConsentRecord (different
+-- scopes, or a re-consent over time; this model is append-only evidence,
+-- not a single mutable flag — see its own schema.cstack comment).
+CREATE INDEX consent_records_lookup_idx
+    ON consent_records (app_id, msisdn_hash, scope);
+
 -- The OP reads exactly one row at startup: the newest active signing key.
 CREATE INDEX oauth_signing_keys_active_idx ON oauth_signing_keys (created_at DESC)
     WHERE active;
@@ -1504,7 +1562,7 @@ sequenceDiagram
     API->>PG: INSERT delivery_receipt<br/>submitted → delivered
 ```
 
-Steps 1 to 9 are all pre-persistence. A message that reaches the database is one you have already decided you can send — the worker's job is delivery, not validation.
+Steps 1 to 9 are all pre-persistence. A message that reaches the database is one you have already decided you can send — the worker's job is delivery, not validation. This diagram predates #72 and is not redrawn for it (mermaid parsing is CI-gated per this file's own note on that job; a diagram edit means re-verifying it, and this one is otherwise still accurate) — read `crates/sms-api/src/consent.rs`'s own module doc for the real, current step order: two more accept-time checks now sit between "opt-out check" and "quota", both class-gated (`marketing`/`notification` only; `otp`/`transactional` are exempt) — self-imposed marketing quiet hours (08:00–20:00 WAT), then a `ConsentRecord` lookup.
 
 The `client_id → App` lookup is where the absence of API keys shows up. The token carries no `appId`, because the OP can't inject one on the standard `client_credentials` path (§4.2), so the gateway derives it. That's on the hot path, so cache it — 60 seconds is short enough that retiring a client takes effect promptly and long enough that the lookup never matters.
 
@@ -2603,12 +2661,12 @@ Sanctions run to 100,000,000 FCFA, suspension, withdrawal of authorisation, and 
 
 **ART licensing.** Orange's VAS interconnection catalogue requires an ART title — a licence or a *récépissé de déclaration préalable* — plus an ART short-code allocation document, before it will interconnect you. ART has enforced this: in 2018 it announced it would dismantle unlicensed VAS providers' networks, with penalties of 100–500 million FCFA. Whether a pure API consumer buying capacity from a licensed aggregator needs its own title is **unverified**. Safe reading: direct MNO interconnection or a short code unambiguously requires one. Settle this before committing to SMPP.
 
-**Operational compliance regardless:**
+**Operational compliance regardless — landed in #72:**
 
-- Opt-out honoured at send time, before routing, for `marketing` and `notification`. OTP and transactional are exempt in most regimes but keep the audit trail proving the classification.
+- **Opt-out honoured at send time, before routing, for `marketing` and `notification`. OTP and transactional are exempt.** `crates/sms-api/src/consent.rs::requires_recipient_consent_controls` is the single, exhaustively-matched source of truth for this class split — before #72 the opt-out check ran unconditionally for every class, more restrictive than specified (an opted-out recipient couldn't receive an OTP either), not a compliance gap but not what this section asked for.
+- **Consent records: who consented, when, through what channel, to what scope.** `ConsentRecord` (§2.7) — `msisdnHash`/`msisdn`, `scope MessageClass`, `channel ConsentChannel`, `consentedAt`, `evidenceRef`. `sendMessage` refuses a `marketing`/`notification` send with no matching record on file (`Procedures::ensure_consent_on_file`). Read §2.7's own prose for what this does and does not prove about the classification itself, and for the deliberate, unresolved retention tension (no `@@retain` here yet — proof of consent and 90-day content minimisation want different answers).
 - Inbound STOP requires two-way SMS. Twilio supports neither two-way SMS nor short codes in Cameroon — inbound needs a direct MNO short code or an aggregator provisioning one locally. Until then, the Article 48 opt-out address is an email or URL in the body.
-- Self-imposed quiet hours (say 08:00–20:00 WAT) for marketing. No Cameroon-specific statutory rule was found; this is best practice, and transactional/OTP should be exempt.
-- Consent records: who consented, when, through what channel, to what scope.
+- **Self-imposed quiet hours, 08:00–20:00 WAT, for `marketing` only.** `crates/sms-api/src/consent.rs::{MARKETING_QUIET_HOURS_START_WAT,MARKETING_QUIET_HOURS_END_WAT,is_within_marketing_quiet_hours}` — named and documented as a policy knob, not a statute, per this bullet's own original wording ("No Cameroon-specific statutory rule was found"). Enforced at `sendMessage` (accept time), not `dispatch` (hold-and-release) — see that module's own doc for the tradeoff. `notification` is consent-gated but **not** quiet-hours-gated; only `marketing` is.
 
 ---
 
