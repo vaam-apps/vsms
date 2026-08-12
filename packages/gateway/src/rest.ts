@@ -48,23 +48,29 @@ import "server-only";
 // login) landed after this paragraph was written, and `GatewayAuth` now
 // genuinely resolves a real `hasRole(...)`-meaningful context for a human
 // `authorization_code` token.** What the paragraph's own conclusion still
-// gets right, for a narrower reason: `token.ts`'s `SMS_CONSOLE_CLIENT_ID`
-// credential is a *separate* `client_credentials` `AppClient`, untouched by
-// #194, and every function in this file (and every screen that calls one)
-// still authenticates exclusively through it — never the browser session's
-// own now-real human token (`admin/lib/oidc.ts::Session.accessToken`,
-// minted under a different `OauthClient`, `GatewayAuth::human_client_id`,
-// default `"sms-console"`). So `PATCH /providers/{id}` etc. are still not
-// reachable by this console's own credential, still for a structural
-// reason, just not the one originally written here — see
-// `packages/gateway/src/providers.ts`'s own module doc for the full,
-// corrected mechanism.
+// got right, for a narrower reason that #54 itself was correct about:
+// `token.ts`'s `SMS_CONSOLE_CLIENT_ID` credential is a *separate*
+// `client_credentials` `AppClient`, untouched by #194, and at the time #54
+// landed every function in this file (and every screen that calls one)
+// still authenticated exclusively through it.
+//
+// **Correction, #211: that is no longer true either.** `getAccessToken`
+// above is now `resolveUpstreamAccessToken` (`./request-credential.ts`),
+// which forwards the signed-in operator's own session token
+// (`admin/lib/oidc.ts::Session.accessToken`) when this call is running
+// inside a real admin-console request — see that module's own doc for the
+// mechanism (`AsyncLocalStorage`, set once at the tRPC route handler) and
+// for why a 401 here is a genuine denial rather than a retry-with-a-fresh-
+// token case the way it is for the machine credential. `PATCH
+// /providers/{id}` etc. are reachable today by a real, signed-in
+// `owner`/`admin`/`operator` — proven live in #211's own PR description,
+// not merely reasoned about.
 
 import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
-import { getAccessToken, invalidateAccessToken } from "./token";
+import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
 type Fetcher = typeof undiciFetch;
@@ -120,7 +126,7 @@ export async function fetchWithEtag<T>(
   const url = restUrl(path);
 
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return fetcher(url, {
       method: "GET",
       headers: {
@@ -133,7 +139,7 @@ export async function fetchWithEtag<T>(
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
 
@@ -170,7 +176,7 @@ export async function updateWithIfMatch<T>(
   const payload = JSON.stringify(body);
 
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return fetcher(url, {
       method: "PATCH",
       headers: {
@@ -186,7 +192,7 @@ export async function updateWithIfMatch<T>(
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
 
@@ -215,7 +221,7 @@ export async function postJson<T>(
   const payload = JSON.stringify(body);
 
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return fetcher(url, {
       method: "POST",
       headers: {
@@ -230,7 +236,7 @@ export async function postJson<T>(
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
 
@@ -260,7 +266,7 @@ export async function deleteResource(
   const url = restUrl(path);
 
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return fetcher(url, {
       method: "DELETE",
       headers: {
@@ -273,7 +279,7 @@ export async function deleteResource(
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
 

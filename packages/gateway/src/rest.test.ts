@@ -21,9 +21,13 @@ import { describe, expect, it, vi } from "vitest";
 import { GatewayError, isStaleWriteError } from "./errors";
 import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch } from "./rest";
 
-vi.mock("./token", () => ({
-  getAccessToken: vi.fn().mockResolvedValue("test-access-token"),
-  invalidateAccessToken: vi.fn(),
+// #211: `rest.ts` now resolves its token through `./request-credential`,
+// not `./token` directly — mock that seam instead. Real `AsyncLocalStorage`
+// scoping is exercised by `request-credential.test.ts`, not here; this file
+// only needs a fixed token value, the same as before.
+vi.mock("./request-credential", () => ({
+  resolveUpstreamAccessToken: vi.fn().mockResolvedValue("test-access-token"),
+  invalidateUpstreamAccessToken: vi.fn(),
 }));
 
 interface FakeProvider {

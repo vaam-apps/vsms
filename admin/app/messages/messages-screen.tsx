@@ -9,16 +9,41 @@
 // latency ≈ `pollMs`. Nothing in this file, its copy, or its behaviour
 // should read as "live" in the WebSocket/SSE sense.
 //
-// # Why the visible single-app-scope banner
+// # Why the visible scope banner, and a real inconsistency #211 introduces
 //
-// The console's own gateway credential (`SMS_CONSOLE_CLIENT_ID`) belongs
-// to exactly one `App`, and `Message`'s own row policy
-// (`appId == auth().appId`) enforces that server-side regardless of any
-// query param this screen sends — verified live, `@vsms/gateway/
-// messages.ts`'s own module doc, point 9. An operator with no context for
-// that would read an unfamiliar-looking, single-app list as a bug or
-// missing data. The banner below says why, explicitly, rather than
-// leaving it to be discovered.
+// **Before #211**, every call this screen made ran as the console's own
+// gateway credential (`SMS_CONSOLE_CLIENT_ID`), which belongs to exactly
+// one `App` — `Message`'s own row policy (`appId == auth().appId`)
+// enforced a single-app list server-side regardless of any query param
+// this screen sends (verified live, `@vsms/gateway/messages.ts`'s own
+// module doc, point 9).
+//
+// **#211 changes this for the initial list/detail fetch, but deliberately
+// NOT for live updates**, and that split is worth understanding rather
+// than assuming away: `messages.list`/`messages.get` now run as the
+// signed-in human (`@vsms/gateway/messages.ts::listMessages`/
+// `getMessageById`), and `Message.list`/`.detail`'s own `@@allow`
+// (`schema.cstack`) admits `auth().kind == "user"` unconditionally — so
+// for any signed-in human, regardless of role, the fetched window now
+// spans every app in this deployment, not one. `messages.onStateChange`
+// (the live-update poll below), by contrast, is backed by
+// `MessageStreamHub` — a process-wide singleton shared by every open
+// browser tab, not scoped to any one request — and deliberately keeps
+// using the console's own machine credential (`@vsms/gateway/
+// messages.ts::listMessagesForStream`, `@vsms/gateway/request-
+// credential.ts`'s own module doc explains why: there is no single human
+// to attribute a shared background poll to, and forwarding whichever
+// operator happened to open the first tab would leak that operator's
+// credential into every other tab's stream).
+//
+// The practical consequence: a row belonging to an app other than the
+// console's own machine credential's app can appear in the initial list,
+// but will never receive a live state-change update from the stream — it
+// sits on screen until the next full refetch. Accepted, not silently
+// shipped: the banner below states the list's own scope so an operator
+// doesn't misread a frozen out-of-scope row as a bug, and #211's own PR
+// description names this as a known, deliberate consequence of keeping
+// the stream on the machine credential rather than a defect.
 //
 // # Live reconciliation, briefly
 //
@@ -406,9 +431,11 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
       </header>
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-        Scoped to <span className="font-mono text-foreground">this app only</span> — the console's
-        own service-account token can only read the one app it belongs to, so there is nothing to
-        switch to. This is not a filter and not a bug; see the architecture plan's DECISIONS §1/§2.
+        This list spans <span className="font-mono text-foreground">every app</span> in this
+        deployment — you're reading it as yourself, not as a single app's service account. Live
+        updates are narrower: they only arrive for this console's own app, so a row belonging to
+        another app won't update on screen until you refresh. Not a filter and not a bug; see this
+        file's own module doc.
       </div>
 
       {degraded && (

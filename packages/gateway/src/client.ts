@@ -33,7 +33,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
-import { getAccessToken, invalidateAccessToken } from "./token";
+import { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
 
 export type Encoding = "gsm7" | "ucs2";
 export type OperatorCode = "mtn" | "orange" | "camtel" | "nexttel" | "unknown";
@@ -123,10 +123,22 @@ async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
 
 /**
  * `POST /$procs/{procedure}` with a Bearer token, retrying exactly once —
- * with a freshly minted token — on an unexpected 401. `getAccessToken`'s
+ * with a freshly minted token — on an unexpected 401. `getMachineAccessToken`'s
  * own `exp - 60s` cache margin should make a 401 unreachable in normal
  * operation; the retry exists for the one case that margin can't cover, a
  * signing-key rotation invalidating the cached token mid-window.
+ *
+ * **Deliberately the console's machine credential, never the signed-in
+ * human's own token (#211).** `crates/sms-api/src/procedures.rs::
+ * Procedures::caller_client_id` — the function both `previewMessage` and
+ * `sendMessage` call to resolve which `App` a send belongs to — hard-rejects
+ * any caller whose `kind` isn't `"app"`: "sendMessage currently requires a
+ * machine (client_credentials) caller — deriving an App for a human caller
+ * has no design yet." Forwarding a human token here wouldn't merely be the
+ * wrong credential, it would turn every composer send into a guaranteed
+ * `Validation` error. `./request-credential.ts`'s own module doc names this
+ * as one of the two call sites that must keep using `getMachineAccessToken`
+ * explicitly rather than `resolveUpstreamAccessToken`.
  */
 async function callProcedure<TArgs extends object, TResult>(
   procedure: string,
@@ -136,7 +148,7 @@ async function callProcedure<TArgs extends object, TResult>(
   const body = JSON.stringify({ args });
 
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await getMachineAccessToken();
     return undiciFetch(url, {
       method: "POST",
       headers: {
@@ -151,7 +163,7 @@ async function callProcedure<TArgs extends object, TResult>(
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateMachineAccessToken();
     response = await attempt();
   }
 

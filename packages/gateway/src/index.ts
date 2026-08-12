@@ -69,6 +69,8 @@ export type {
   UpdateProviderFields,
 } from "./providers";
 export { getProviderById, listProviders, updateProvider } from "./providers";
+export type { RequestCredential } from "./request-credential";
+export { runWithRequestCredential } from "./request-credential";
 export type { WithEtag } from "./rest";
 export { deleteResource, fetchWithEtag, postJson, updateWithIfMatch } from "./rest";
 export type {
@@ -93,6 +95,6 @@ export type {
   UpdateRouteFields,
 } from "./routes";
 export { createRoute, deleteRoute, getRouteById, listRoutes, updateRoute } from "./routes";
-export { getAccessToken, invalidateAccessToken } from "./token";
+export { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
 export type { WorkerLockInfo, WorkerLocksResult, WorkerRole } from "./workers";
 export { workerLocks } from "./workers";
