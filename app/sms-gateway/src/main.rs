@@ -437,11 +437,20 @@ enum Command {
         display_name: String,
 
         /// Must already exist — `User.roleKey` is a foreign key to
-        /// `Role.key`, and this command does not create roles (§5.2's
-        /// built-in roles are not seeded by any migration; an `owner`
-        /// account has to exist to create the first `Role` row through
-        /// the generated API, or one is inserted by hand against a fresh
-        /// database — see the deploy runbook).
+        /// `Role.key`, and this command does not create roles.
+        ///
+        /// §5.2's six built-in roles (`owner`, `admin`, `operator`,
+        /// `developer`, `auditor`, `support`) **are** seeded, by
+        /// `0002_bootstrap`, so on any migrated database one of those
+        /// keys works directly. That was not true when this command
+        /// landed: nothing seeded `roles` at all, so this argument could
+        /// not be satisfied on a fresh database by any means, and the
+        /// first human account was unreachable — the chicken-and-egg this
+        /// doc comment used to describe. See `docs/architecture.md`
+        /// §2.10's own note on the seed.
+        ///
+        /// `system` is deliberately not among them and cannot be created:
+        /// `roles_key_not_reserved_check` rejects it.
         #[arg(long)]
         role_key: String,
     },
