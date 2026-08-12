@@ -101,6 +101,23 @@ export const messagesRouter = router({
     return record;
   }),
 
+  // #50: the detail screen's timeline evidence — `DeliveryReceipt` rows
+  // for one message, via `POST /$procs/listMessageReceipts`
+  // (`@vsms/gateway`'s own module doc explains why that procedure exists
+  // rather than a REST route). An empty `receipts` array is a normal,
+  // expected outcome, not an error — the detail screen's own
+  // `buildTimeline` (`admin/app/messages/[id]/timeline.ts`) is what turns
+  // "zero receipts" into an honest "the outcome was never learned"
+  // annotation for a message sitting in `uncertain`, rather than this
+  // procedure inventing one.
+  receipts: publicProcedure.input(byIdInput).query(async ({ ctx, input }) => {
+    try {
+      return await ctx.gateway.listMessageReceipts(input.id);
+    } catch (error) {
+      rethrowGatewayError(error);
+    }
+  }),
+
   onStateChange: publicProcedure.input(onStateChangeInput).query(async ({ ctx, input }) => {
     const hub = ctx.gateway.getMessageStreamHub(env.MESSAGE_STREAM_POLL_MS);
     const controller = new AbortController();

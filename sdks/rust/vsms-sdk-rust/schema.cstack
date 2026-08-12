@@ -1269,3 +1269,43 @@ type SimulateRouteResult {
 
 procedure simulateRoute(args: SimulateRouteInput): SimulateRouteResult
   @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
+type MessageReceiptsInput {
+  messageId Cuid
+}
+
+// #50: the message detail timeline's own receipt evidence — deliberately
+// narrower than the DeliveryReceipt model itself. No rawPayload (the
+// provider's raw wire body) reaches the console; every other field is the
+// evidence a human needs to see "what did the provider actually say, and
+// when." See `procedures.rs::list_message_receipts`'s own doc for why this
+// is a bespoke type rather than the model: DeliveryReceipt's own
+// list/detail policy (`auth().kind == "user" || hasRole('system')`) never
+// admits this deployment's only real caller kind, `"app"`.
+type DeliveryReceiptSummary {
+  id Cuid
+  providerId Cuid
+  outcome DeliveryOutcome
+  rawStatus String
+  errorCode String?
+  networkCode OperatorCode
+  receivedAt DateTime
+  occurredAt DateTime?
+}
+
+type MessageReceiptsResult {
+  receipts DeliveryReceiptSummary[]
+}
+
+// #50: the timeline's own data source, chosen over the other two options
+// #50 itself names (the audit log — accurate, but needs a policy and a
+// route that don't exist; explicit transition rows — the most honest, but
+// a real schema change) precisely because DeliveryReceipt rows already
+// exist and are already the closest thing this schema has to a transition
+// history. `@authorize` enforces the same ownership boundary
+// `cancelMessage`/`requeueJob` already rely on: a caller can only ever
+// request receipts for a Message their own row policy already lets them
+// read, so cross-app access fails exactly the way `getMessageById` already
+// does (a 404, not a 403 — `@vsms/gateway/messages.ts`'s own doc, point 9).
+procedure listMessageReceipts(args: MessageReceiptsInput): MessageReceiptsResult
+  @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
+  @authorize(Message, detail, args.messageId)

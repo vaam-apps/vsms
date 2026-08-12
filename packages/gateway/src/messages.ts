@@ -325,6 +325,100 @@ export async function getMessageById(id: string): Promise<MessageRecord | null> 
   return getJson<MessageRecord>(`/messages/${encodeURIComponent(id)}`, {}, "getMessageById");
 }
 
+// --- #50: the message detail timeline's own receipt evidence. -----------
+//
+// `POST /$procs/listMessageReceipts`, not `GET /delivery_receipts` — see
+// `schema/schema.cstack`'s own comment on the procedure declaration and
+// `crates/sms-api/src/procedures.rs::message_receipts`'s doc for why:
+// `DeliveryReceipt`'s own REST policy never admits this console's `"app"`
+// -kind credential, so the procedure is the seam, gated by `@authorize`
+// against the same `Message` ownership check `getMessageById` already
+// relies on. A cross-app `messageId` denies with `Forbidden` at the
+// framework layer before this procedure's own body ever runs — mapped to
+// the same shape every other gateway error goes through
+// (`mapGatewayError`), not specially handled here.
+//
+// This function deliberately returns the raw receipts, nothing more — it
+// does NOT attempt to reconstruct a full state history from them. See
+// `admin/app/messages/[id]/timeline.ts`'s own module doc for why: a
+// `DeliveryReceipt` row is evidence a provider callback arrived and what
+// it said, not proof of what state the message moved through, and
+// `next_state`'s own outcome-to-transition mapping (`crates/sms-api/src/
+// dlr.rs`) isn't invertible after the fact — a `failed` outcome can drive
+// either `-> undelivered` or `-> failed` depending on the message's state
+// at the moment the DLR was ingested, which this row alone does not
+// record. Guessing would be exactly the "confident chronology it cannot
+// prove" #50 explicitly forbids.
+
+export type DeliveryOutcome =
+  | "delivered"
+  | "uncertain"
+  | "failed"
+  | "expired"
+  | "rejected"
+  | "unknown";
+
+/** Transcribed from `schema.cstack`'s `DeliveryReceiptSummary` — the
+ * console-facing projection of `DeliveryReceipt`, deliberately omitting
+ * `rawPayload` (the provider's raw wire body never reaches this console). */
+export interface DeliveryReceiptSummary {
+  id: string;
+  providerId: string;
+  outcome: DeliveryOutcome;
+  rawStatus: string;
+  errorCode?: string | undefined;
+  networkCode: OperatorCode;
+  receivedAt: string;
+  occurredAt?: string | undefined;
+}
+
+export interface MessageReceiptsResult {
+  receipts: DeliveryReceiptSummary[];
+}
+
+function procedureUrl(procedure: string): string {
+  return new URL(`/$procs/${procedure}`, env.SMS_API_URL).toString();
+}
+
+/**
+ * `POST /$procs/listMessageReceipts` — every `DeliveryReceipt` row this
+ * system has for one message, oldest first. Never throws on "no receipts
+ * yet" (an empty array is a completely normal outcome — see this file's
+ * own module doc on why a message can reach a terminal state with zero
+ * receipts, e.g. an `Indeterminate` submit landing directly in
+ * `uncertain`); it throws the same `GatewayError` shape every other call
+ * in this package does for a genuine transport/auth/policy failure.
+ */
+export async function listMessageReceipts(messageId: string): Promise<MessageReceiptsResult> {
+  const url = procedureUrl("listMessageReceipts");
+
+  const attempt = async (): Promise<UndiciResponse> => {
+    const token = await getAccessToken();
+    return undiciFetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ args: { messageId } }),
+      dispatcher: gatewayAgent(),
+    });
+  };
+
+  let response = await attempt();
+  if (response.status === 401) {
+    invalidateAccessToken();
+    response = await attempt();
+  }
+
+  const parsed = await parseJsonBody(response);
+  if (!response.ok) {
+    throw mapGatewayError(response.status, parsed, "listMessageReceipts");
+  }
+  return parsed as MessageReceiptsResult;
+}
+
 // --- The stream hub's own, deliberately narrower, upstream fetch. -------
 //
 // `message-stream.ts`'s module doc explains why this is a SEPARATE

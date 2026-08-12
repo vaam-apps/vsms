@@ -1429,6 +1429,28 @@ INSERT INTO operator_prefix_rules (prefix, operator, confidence, notes, version)
     ('659', 'orange', 'likely',     'Orange 655-659 per architecture.md §3.4', 0);
 ```
 
+**The built-in roles (#194).** `User.roleKey` is a foreign key to `Role.key`, so *no human account can exist until a `Role` row does* — and nothing seeded one. `sms-gateway provision-user`, the command that bootstraps the very first operator, therefore failed on every fresh database with `violates foreign key constraint "users_role_key_fkey"`, which made #194's login flow unbootstrappable in a real deployment as well as in `just demo`. `Role.builtin` existed from the start and implies exactly this seed; it was simply never written.
+
+The six rows below are §5.2's own table, verbatim. **`system` is deliberately absent** and cannot be added here: `roles_key_not_reserved_check` (above) rejects it, and §5.2 is explicit that `system` is synthetic — constructible only inside a process, never a database row a human account could be assigned to.
+
+`permissions` is sentinel-packed in `sms_core::pack`'s format — a leading space, then each value followed by a space — so a `LIKE '% perm %'` or `.contains(" perm ")` test cannot false-match a longer permission that merely starts with the same characters. `version` is `0` for the same reason every other hand-written seed sets it: these `INSERT`s bypass the framework's own server-side `@version` seeding, and the column is `NOT NULL`.
+
+```sql
+INSERT INTO roles (key, label, description, builtin, permissions, version) VALUES
+    ('owner',     'Owner',     'Break-glass. 1-2 humans.',            true,
+     ' message:read message:send message:cancel message:create message:update app:read app:write client:provision provider:read provider:update provider:delete route:read route:write sender:manage optout:manage webhook:manage job:read job:enqueue worker:read audit:read user:manage user:delete role:manage ', 0),
+    ('admin',     'Admin',     'Day-to-day administration.',          true,
+     ' message:read message:send message:cancel app:read app:write client:provision provider:read provider:update route:read route:write sender:manage optout:manage webhook:manage job:read job:enqueue worker:read audit:read user:manage ', 0),
+    ('operator',  'Operator',  'Runs traffic.',                       true,
+     ' message:read message:send message:cancel provider:read provider:update route:read sender:manage optout:manage job:read job:enqueue worker:read ', 0),
+    ('developer', 'Developer', 'Integrates apps.',                    true,
+     ' app:read webhook:manage message:read message:send ', 0),
+    ('auditor',   'Auditor',   'Read-only oversight. No mutations.',  true,
+     ' message:read app:read provider:read route:read job:read worker:read delivery:read audit:read ', 0),
+    ('support',   'Support',   'First-line support.',                 true,
+     ' message:read optout:manage delivery:read ', 0);
+```
+
 **Three notes on the triggers.**
 
 `SM001` is a user-defined SQLSTATE. CrateStack's `CoolError::DatabaseTyped` carries `DbErrorInfo { detail, sqlstate, constraint }`, so you branch on it exactly rather than substring-matching an error message:
