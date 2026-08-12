@@ -883,6 +883,69 @@ async fn an_opted_out_recipient_still_receives_an_otp_or_transactional_message()
     assert_eq!(transactional_result.state, MessageState::accepted);
 }
 
+/// The quiet-hours bypass caught in review of #213, pinned so it cannot
+/// come back.
+///
+/// The first cut of the guard checked the *accept* time. That is trivially
+/// sidestepped: send a `marketing` message at a moment inside the allowed
+/// window, with `scheduledAt` set to one outside it. `claim.rs`'s own
+/// `candidates()` filter (`scheduledAt IS NULL OR scheduledAt <= now`)
+/// holds the row until then and dispatches it — delivering during exactly
+/// the hours the policy exists to protect.
+///
+/// Deterministic regardless of when it runs, and deliberately so: it picks
+/// a `scheduledAt` the *same function `send()` calls* reports as outside
+/// the window, rather than assuming anything about the wall clock. If the
+/// window constants ever change, this test follows them instead of going
+/// quietly stale.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_marketing_send_scheduled_into_quiet_hours_is_refused_however_it_is_accepted() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let procedures = Procedures::new(test_pepper());
+    let (client_id, app) = seed_app_and_client(&db, 1000, None).await;
+    let sender = seed_approved_sender(&db).await;
+    let to = unique_mtn_msisdn();
+
+    // Consent on file, so a refusal can only be about the schedule.
+    seed_consent(&db, &app.id, &to, MessageClass::marketing).await;
+
+    // The next future instant the real guard reports as *outside* the
+    // window — asked of the same function, never assumed.
+    let mut scheduled = Utc::now() + chrono::Duration::hours(1);
+    for _ in 0..24 {
+        if !sms_api::consent::is_within_marketing_quiet_hours(scheduled) {
+            break;
+        }
+        scheduled += chrono::Duration::hours(1);
+    }
+    assert!(
+        !sms_api::consent::is_within_marketing_quiet_hours(scheduled),
+        "the search must land outside the window, or this test proves nothing"
+    );
+
+    let mut args = args_with_class(
+        &to,
+        "50% off tomorrow!",
+        Some(&sender),
+        Some(MessageClass::marketing),
+    );
+    args.args.scheduledAt = Some(scheduled);
+
+    let error = procedures
+        .send_message(&db, &app_caller(&client_id), args)
+        .await
+        .expect_err(
+            "a marketing send scheduled for delivery outside the allowed window must be \
+             refused at accept time — otherwise the worker delivers it during quiet hours",
+        );
+    assert!(
+        matches!(error, cratestack::CoolError::Validation(_)),
+        "expected the quiet-hours Validation refusal, got: {error:?}"
+    );
+}
+
 /// Proves `sendMessage` actually wires `consent::is_within_marketing_quiet_hours`
 /// into the real send path — not just that the pure function itself is
 /// correct (`crates/sms-api/src/consent.rs`'s own unit tests already cover

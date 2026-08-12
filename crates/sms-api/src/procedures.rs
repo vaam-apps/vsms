@@ -368,13 +368,28 @@ impl Procedures {
         }
     }
 
-    /// #72: is `now_utc` outside the self-imposed marketing quiet-hours
-    /// window? Only ever called when
+    /// #72: does this message's *delivery* time fall inside the
+    /// self-imposed marketing quiet-hours window? Only ever called when
     /// `consent::subject_to_quiet_hours(class)` is true — see
     /// `consent.rs`'s own module doc for the enforcement-location and
     /// policy-vs-statute reasoning.
-    fn ensure_within_marketing_quiet_hours(now_utc: DateTime<Utc>) -> Result<(), CoolError> {
-        if crate::consent::is_within_marketing_quiet_hours(now_utc) {
+    ///
+    /// **Takes the delivery time, not the accept time**, and the
+    /// distinction is the whole point. The first cut of this check passed
+    /// `now`, which a caller could bypass trivially: accept a `marketing`
+    /// message at 10:00 WAT — comfortably inside the window — with
+    /// `scheduledAt` set to 22:00, and `claim.rs`'s own `candidates()`
+    /// (`scheduledAt IS NULL OR scheduledAt <= now`) holds the row until
+    /// 22:00 and then dispatches it, squarely inside the quiet hours this
+    /// function exists to enforce. Caught in review of #213, and confirmed
+    /// against all three links — the check's argument, the persisted
+    /// `scheduledAt`, and the claim filter — rather than argued from the
+    /// signature alone.
+    ///
+    /// So the argument is `scheduledAt.unwrap_or(now)`: what the recipient
+    /// experiences, which is the only thing the policy is about.
+    fn ensure_within_marketing_quiet_hours(delivery_utc: DateTime<Utc>) -> Result<(), CoolError> {
+        if crate::consent::is_within_marketing_quiet_hours(delivery_utc) {
             Ok(())
         } else {
             Err(CoolError::Validation(format!(
@@ -651,7 +666,10 @@ impl Procedures {
         // `notification` deliberately does not gate here — see
         // `consent::subject_to_quiet_hours`'s own doc.
         if crate::consent::subject_to_quiet_hours(class) {
-            Self::ensure_within_marketing_quiet_hours(now)?;
+            // The delivery time, not the accept time — a scheduled send is
+            // what the recipient actually experiences. See the function's
+            // own doc for the bypass this closes.
+            Self::ensure_within_marketing_quiet_hours(args.scheduledAt.unwrap_or(now))?;
         }
 
         // 3b. #72: consent on file, for the classes that require it. Reads
