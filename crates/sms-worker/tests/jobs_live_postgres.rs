@@ -499,6 +499,7 @@ async fn seed_submitted_message(
             providerId: None,
             providerMessageRef: None,
             providerMessageRefAlt: None,
+            excludedRouteIds: None,
             maxAttempts: 3,
             leaseOwner: None,
             leaseUntil: None,

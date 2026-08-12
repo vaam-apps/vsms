@@ -105,6 +105,10 @@ fn assert_provider_row_carries_every_expected_field(provider: sms_api::schema::P
         costPerSegmentXaf,
         healthCheckedAt,
         healthy,
+        // #63: the provider circuit breaker's own two columns — same shape
+        // as WebhookEndpoint's.
+        consecutiveFailures,
+        circuitOpenUntil,
         version,
         createdAt,
         updatedAt,
@@ -126,6 +130,8 @@ fn assert_provider_row_carries_every_expected_field(provider: sms_api::schema::P
         costPerSegmentXaf,
         healthCheckedAt,
         healthy,
+        consecutiveFailures,
+        circuitOpenUntil,
         version,
         createdAt,
         updatedAt,
@@ -156,6 +162,9 @@ fn assert_message_row_carries_every_expected_field(message: sms_api::schema::Mes
         providerId,
         providerMessageRef,
         providerMessageRefAlt,
+        // #63: the failed Route.id's this message has already been
+        // rerouted away from — see schema.cstack's own field doc.
+        excludedRouteIds,
         attempts,
         maxAttempts,
         leaseOwner,
@@ -192,6 +201,9 @@ fn assert_message_row_carries_every_expected_field(message: sms_api::schema::Mes
         providerId,
         providerMessageRef,
         providerMessageRefAlt,
+        // #63: the failed Route.id's this message has already been
+        // rerouted away from — see schema.cstack's own field doc.
+        excludedRouteIds,
         attempts,
         maxAttempts,
         leaseOwner,

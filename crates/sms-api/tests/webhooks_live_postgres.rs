@@ -152,6 +152,7 @@ async fn seed_message(db: &Cratestack, app_id: &str, msisdn: &str) -> Message {
             providerId: None,
             providerMessageRef: None,
             providerMessageRefAlt: None,
+            excludedRouteIds: None,
             maxAttempts: 3,
             leaseOwner: None,
             leaseUntil: None,

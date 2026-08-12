@@ -1337,6 +1337,7 @@ async fn seed_dispatch_command(command: Command) -> Result<()> {
             supportsConcat: true,
             costPerSegmentXaf: cost_per_segment_xaf,
             healthCheckedAt: None,
+            circuitOpenUntil: None,
         },
     )
     .await?;

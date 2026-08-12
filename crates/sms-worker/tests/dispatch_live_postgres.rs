@@ -328,6 +328,7 @@ async fn seed_routed_provider(db: &Cratestack) -> String {
             supportsConcat: true,
             costPerSegmentXaf: "15".parse().unwrap(),
             healthCheckedAt: None,
+            circuitOpenUntil: None,
         })
         .run(&owner())
         .await
@@ -435,6 +436,7 @@ async fn seed_message(db: &Cratestack, app_id: &str, max_attempts: i64) -> Messa
             providerId: None,
             providerMessageRef: None,
             providerMessageRefAlt: None,
+            excludedRouteIds: None,
             maxAttempts: max_attempts,
             leaseOwner: None,
             leaseUntil: None,
@@ -972,5 +974,523 @@ async fn a_dlr_after_an_indeterminate_submit_still_correlates_and_resolves() {
         resolved.state,
         MessageState::delivered,
         "a late DLR echoing the callbackData reference must still resolve an uncertain message"
+    );
+}
+
+// ---------------------------------------------------------------------
+// #63: failover and the provider circuit breaker.
+// ---------------------------------------------------------------------
+
+/// A fake provider that always fails `submit` the same way and counts
+/// exactly how many times it was called. `sms-provider-orange-cm`
+/// structurally never produces `ProviderError::Permanent` — every 4xx it
+/// sees other than 429 becomes `Rejected` (see that crate's own
+/// `classify_submit_error` doc) — so the `TryNextRoute` failover arm can't
+/// be exercised through the real adapter at all; this fake drives it
+/// directly. The exact call count (not just the final `Message` state) is
+/// what actually proves "never resubmitted"/"never even attempted" below —
+/// a test that only checked state could pass even if something resubmitted
+/// and got lucky.
+struct AlwaysErr {
+    key: String,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    error: fn() -> ProviderError,
+}
+
+impl AlwaysErr {
+    fn new(
+        key: impl Into<String>,
+        error: fn() -> ProviderError,
+    ) -> (Arc<Self>, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        (
+            Arc::new(Self {
+                key: key.into(),
+                calls: calls.clone(),
+                error,
+            }),
+            calls,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl SmsProvider for AlwaysErr {
+    fn key(&self) -> &str {
+        &self.key
+    }
+    fn capabilities(&self) -> Capabilities {
+        // total_tps_ceiling reads this on every tick — unlike FixedProvider
+        // above (a DLR-only fake, never resolved through the provider
+        // registry `dispatch` sums budget from), this fake sits in
+        // `WorkerContext.providers` and must return something real.
+        Capabilities {
+            dlr: true,
+            alphanumeric_sender: true,
+            ucs2: true,
+            concatenation: true,
+            tps_ceiling: 5.0,
+            cost_per_segment_xaf: rust_decimal::Decimal::new(15, 0),
+        }
+    }
+    async fn submit(&self, _req: &SubmitRequest) -> Result<SubmitAck, ProviderError> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err((self.error)())
+    }
+    fn parse_dlr(&self, _raw: &RawCallback) -> Result<Vec<DeliveryUpdate>, ProviderError> {
+        unreachable!("dispatch never calls parse_dlr")
+    }
+    async fn health(&self) -> Health {
+        unreachable!("dispatch never calls health")
+    }
+}
+
+/// The failover target's fake — always succeeds, same call-counting
+/// discipline as [`AlwaysErr`].
+struct AlwaysOk {
+    key: String,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl AlwaysOk {
+    fn new(key: impl Into<String>) -> (Arc<Self>, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        (
+            Arc::new(Self {
+                key: key.into(),
+                calls: calls.clone(),
+            }),
+            calls,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl SmsProvider for AlwaysOk {
+    fn key(&self) -> &str {
+        &self.key
+    }
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            dlr: true,
+            alphanumeric_sender: true,
+            ucs2: true,
+            concatenation: true,
+            tps_ceiling: 5.0,
+            cost_per_segment_xaf: rust_decimal::Decimal::new(15, 0),
+        }
+    }
+    async fn submit(&self, req: &SubmitRequest) -> Result<SubmitAck, ProviderError> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(SubmitAck {
+            provider_ref: format!("scripted-ok-{n}-{}", req.reference),
+            provider_ref_alt: None,
+        })
+    }
+    fn parse_dlr(&self, _raw: &RawCallback) -> Result<Vec<DeliveryUpdate>, ProviderError> {
+        unreachable!("dispatch never calls parse_dlr")
+    }
+    async fn health(&self) -> Health {
+        unreachable!("dispatch never calls health")
+    }
+}
+
+/// Two active `Provider`s and two enabled catch-all `Route`s pointing at
+/// them, after disabling every other enabled route (same isolation
+/// reasoning as [`seed_routed_provider`]'s own doc) — `a` at priority 1000
+/// (wins first, so it's the one that fails), `b` at priority 500 (the
+/// failover target, so it only ever wins once `a` is excluded or its
+/// circuit is open).
+struct FailoverFixture {
+    a_id: String,
+    a_key: String,
+    b_id: String,
+    b_key: String,
+}
+
+/// One active `Provider`, labelled for [`seed_two_routed_providers`]'s own
+/// two calls — pulled out to module scope (clippy's `items_after_statements`
+/// would otherwise flag a nested `async fn` after the `disable_every_route`
+/// call it would sit below).
+async fn seed_one_active_provider(db: &Cratestack, label: &str) -> schema::Provider {
+    let key: String = format!("dispatch_test_{label}_{}", unique_suffix())
+        .chars()
+        .take(32)
+        .collect();
+    let provider = db
+        .provider()
+        .create(schema::CreateProviderInput {
+            key,
+            displayName: format!("Dispatch test provider {label}"),
+            kind: schema::ProviderKind::orange_cm_http,
+            config: "{}".to_owned(),
+            credentialRef: "vault://test".to_owned(),
+            maxTps: 5.0,
+            maxDailySubmissions: 1000,
+            supportsDlr: true,
+            supportsAlphaSender: true,
+            supportsUcs2: true,
+            supportsConcat: true,
+            costPerSegmentXaf: "15".parse().unwrap(),
+            healthCheckedAt: None,
+            circuitOpenUntil: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a provider");
+
+    db.provider()
+        .update(provider.id.clone())
+        .set(schema::UpdateProviderInput {
+            state: Some(schema::ProviderState::active),
+            ..Default::default()
+        })
+        .if_match(provider.version)
+        .run(&owner())
+        .await
+        .expect("activating the provider");
+
+    provider
+}
+
+async fn seed_two_routed_providers(db: &Cratestack) -> FailoverFixture {
+    disable_every_route(db).await;
+
+    let provider_a = seed_one_active_provider(db, "a").await;
+    let provider_b = seed_one_active_provider(db, "b").await;
+
+    db.route()
+        .create(schema::CreateRouteInput {
+            name: format!("dispatch-test-route-a-{}", unique_suffix()),
+            priority: 1000,
+            weight: 1,
+            enabled: true,
+            matchOperator: None,
+            matchClass: None,
+            matchAppId: None,
+            matchPrefix: None,
+            providerId: provider_a.id.clone(),
+            failoverRouteId: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding route a");
+
+    db.route()
+        .create(schema::CreateRouteInput {
+            name: format!("dispatch-test-route-b-{}", unique_suffix()),
+            priority: 500,
+            weight: 1,
+            enabled: true,
+            matchOperator: None,
+            matchClass: None,
+            matchAppId: None,
+            matchPrefix: None,
+            providerId: provider_b.id.clone(),
+            failoverRouteId: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding route b");
+
+    FailoverFixture {
+        a_id: provider_a.id,
+        a_key: provider_a.key,
+        b_id: provider_b.id,
+        b_key: provider_b.key,
+    }
+}
+
+/// The guard `crates/sms-worker/tests/dispatch_live_postgres.rs`'s own
+/// (pre-existing, single-provider) `an_indeterminate_submit_lands_in_
+/// uncertain_and_is_never_resubmitted` cannot actually prove: that test's
+/// fixture has only one route, so a broken implementation that fails
+/// `Indeterminate` over anyway would find nothing eligible to reroute to
+/// and land in the identical `uncertain` outcome by accident — passing for
+/// the wrong reason. This test uses the two-provider fixture specifically
+/// so a real healthy alternative exists, making a wrongly-attempted
+/// failover *visible*: if `handle_submit_error` ever treated
+/// `RoutingConsequence::HoldIndeterminate` as failover-eligible, this
+/// message would reroute to B, get claimed again, and reach `submitted`
+/// there — a second, real HTTP call to a second provider for a message
+/// that may already have been delivered by the first. `b_calls` staying at
+/// `0` after several more ticks is the actual proof; the final `uncertain`
+/// state alone would not be, for the same reason the single-provider test
+/// can't distinguish the two cases.
+///
+/// Confirmed to actually catch this (house standard, `crates/sms-provider`'s
+/// own `ProviderError::routing()` test file follows the same discipline):
+/// temporarily adding `RoutingConsequence::HoldIndeterminate` to
+/// `handle_submit_error`'s `should_attempt_failover` match reproduced a
+/// real failure here — `b_calls` read `1` and the message reached
+/// `submitted` through the "healthy alternative" rather than staying
+/// `uncertain` — before the line was reverted and this test re-confirmed
+/// green.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_indeterminate_submit_never_fails_over_even_with_a_healthy_alternative_available() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let fixture = seed_two_routed_providers(&db).await;
+    let (provider_a, a_calls) =
+        AlwaysErr::new(fixture.a_key.clone(), || ProviderError::Indeterminate {
+            message: "read timeout after the request was sent".to_owned(),
+        });
+    let (provider_b, b_calls) = AlwaysOk::new(fixture.b_key.clone());
+
+    let app_id = seed_app(&db).await;
+    let seeded = seed_message(&db, &app_id, 3).await;
+
+    let ctx = WorkerContext {
+        db: db.clone(),
+        providers: Arc::new(std::collections::HashMap::from([
+            (fixture.a_key.clone(), provider_a as Arc<dyn SmsProvider>),
+            (fixture.b_key.clone(), provider_b as Arc<dyn SmsProvider>),
+        ])),
+    };
+    let sys = sys();
+
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // accepted -> queued (routed to A)
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // queued -> routed -> (Indeterminate on A) -> uncertain
+
+    let after = reload(&db, &seeded.id).await;
+    assert_eq!(after.state, MessageState::uncertain);
+    assert_eq!(
+        after.providerMessageRefAlt,
+        Some(seeded.id.clone()),
+        "the reference sent before the network call must still be recorded"
+    );
+
+    // Several more ticks: `uncertain` is outside candidates()'s state
+    // filter, so none of these should touch this message, and — the actual
+    // assertion — B must never be attempted regardless.
+    for _ in 0..3 {
+        tick(&ctx, &sys, "worker-1").await.expect("tick succeeds");
+    }
+    let still_uncertain = reload(&db, &seeded.id).await;
+    assert_eq!(still_uncertain.state, MessageState::uncertain);
+    assert_eq!(
+        a_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "A must be attempted exactly once"
+    );
+    assert_eq!(
+        b_calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "an Indeterminate outcome must never fail over, even when a healthy alternative (B) \
+         exists — failing this over risks a duplicate SMS"
+    );
+}
+
+/// #63's own worked example, end to end: a `Permanent` failure on the
+/// winning route (`TryNextRoute`) must reroute — not fail outright, and
+/// not resubmit through the same route/provider — to the next-best route,
+/// and the message must still reach `submitted` there. Proves both halves
+/// of the ticket's own mapping requirement at once: `Permanent` triggers
+/// failover (unlike `Rejected`/`Unsupported`, `FailMessage`), and the
+/// reroute never touches the provider's own circuit-breaker bookkeeping
+/// (`permanent_never_opens_the_circuit_breaker`,
+/// `crates/sms-provider/src/error.rs`) — asserted directly against the
+/// `Provider` row, not just inferred from the error taxonomy's own unit
+/// test.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_permanent_failure_fails_over_to_the_next_route_and_reaches_submitted() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let fixture = seed_two_routed_providers(&db).await;
+    let (provider_a, a_calls) =
+        AlwaysErr::new(fixture.a_key.clone(), || ProviderError::Permanent {
+            code: "SENDER_ID_NOT_APPROVED".to_owned(),
+            message: "sender id not approved on this provider".to_owned(),
+        });
+    let (provider_b, b_calls) = AlwaysOk::new(fixture.b_key.clone());
+
+    let app_id = seed_app(&db).await;
+    let seeded = seed_message(&db, &app_id, 3).await;
+
+    let ctx = WorkerContext {
+        db: db.clone(),
+        providers: Arc::new(std::collections::HashMap::from([
+            (fixture.a_key.clone(), provider_a as Arc<dyn SmsProvider>),
+            (fixture.b_key.clone(), provider_b as Arc<dyn SmsProvider>),
+        ])),
+    };
+    let sys = sys();
+
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // accepted -> queued (routed to A, highest priority)
+    let after_routing = reload(&db, &seeded.id).await;
+    assert_eq!(after_routing.state, MessageState::queued);
+
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // queued -> routed -> (Permanent on A) -> failover -> queued (B)
+    let after_failover = reload(&db, &seeded.id).await;
+    assert_eq!(
+        after_failover.state,
+        MessageState::queued,
+        "a failed-over message must be immediately reclaimable, not stuck"
+    );
+    assert_ne!(
+        after_failover.providerId, after_routing.providerId,
+        "failover must have stamped a different providerId"
+    );
+    assert!(
+        after_failover
+            .stateReason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("failover")),
+        "stateReason should explain the reroute, got {:?}",
+        after_failover.stateReason
+    );
+
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // queued -> routed -> submitted (via B)
+    let after_submit = reload(&db, &seeded.id).await;
+    assert_eq!(after_submit.state, MessageState::submitted);
+    assert!(after_submit
+        .providerMessageRef
+        .as_deref()
+        .is_some_and(|r| r.starts_with("scripted-ok-")));
+
+    assert_eq!(
+        a_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the failing route must be attempted exactly once — the reroute must not retry it"
+    );
+    assert_eq!(
+        b_calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "the failover route must be attempted exactly once — no double-send"
+    );
+
+    let provider_a_row = db
+        .provider()
+        .find_many()
+        .where_expr(cratestack::FilterExpr::from(
+            schema::provider::id().eq(fixture.a_id.clone()),
+        ))
+        .limit(1)
+        .run(&sys)
+        .await
+        .expect("reloading provider a")
+        .into_iter()
+        .next()
+        .expect("provider a still exists");
+    assert_eq!(
+        provider_a_row.consecutiveFailures, 0,
+        "a Permanent failure must never touch the provider's own circuit-breaker bookkeeping"
+    );
+    assert!(provider_a_row.circuitOpenUntil.is_none());
+}
+
+/// The guard this ticket's own acceptance criterion names explicitly:
+/// "must not fail a message a healthy alternative could carry." Five
+/// separate messages each fail once against provider A (`Unavailable`,
+/// which *does* record a circuit-breaker failure — unlike the `Permanent`
+/// case above) and are individually failed over to B; the fifth failure
+/// crosses §6.3's own five-consecutive-`Unavailable` threshold and opens
+/// A's circuit. A sixth, brand-new message is then routed — proven not
+/// merely to *succeed* via B after trying A, but to never attempt A at
+/// all: `a_calls` stays at exactly 5 after the sixth message reaches
+/// `submitted`, which is the strongest form of "a healthy alternative
+/// carries it" this test can assert.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_open_circuit_routes_new_messages_to_the_alternative_instead_of_rejecting() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let fixture = seed_two_routed_providers(&db).await;
+    let (provider_a, a_calls) =
+        AlwaysErr::new(fixture.a_key.clone(), || ProviderError::Unavailable {
+            message: "connection refused".to_owned(),
+        });
+    let (provider_b, b_calls) = AlwaysOk::new(fixture.b_key.clone());
+
+    let ctx = WorkerContext {
+        db: db.clone(),
+        providers: Arc::new(std::collections::HashMap::from([
+            (fixture.a_key.clone(), provider_a as Arc<dyn SmsProvider>),
+            (fixture.b_key.clone(), provider_b as Arc<dyn SmsProvider>),
+        ])),
+    };
+    let sys = sys();
+    let app_id = seed_app(&db).await;
+
+    // Five messages, each individually routed to A, failed over to B, and
+    // resubmitted successfully there — driving A's own consecutiveFailures
+    // from 0 to the five-failure threshold one message at a time.
+    let mut seeded_ids = Vec::new();
+    for _ in 0..5 {
+        let seeded = seed_message(&db, &app_id, 3).await;
+        seeded_ids.push(seeded.id);
+    }
+
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // 5x accepted -> queued (all routed to A)
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // 5x queued -> routed -> (Unavailable on A) -> failover -> queued (B)
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // 5x queued -> routed -> submitted (via B)
+
+    for id in &seeded_ids {
+        let after = reload(&db, id).await;
+        assert_eq!(
+            after.state,
+            MessageState::submitted,
+            "every one of the five priming messages must still reach submitted via failover"
+        );
+    }
+    assert_eq!(
+        a_calls.load(std::sync::atomic::Ordering::SeqCst),
+        5,
+        "each priming message must attempt A exactly once before failing over"
+    );
+    assert_eq!(b_calls.load(std::sync::atomic::Ordering::SeqCst), 5);
+
+    let provider_a_row = db
+        .provider()
+        .find_many()
+        .where_expr(cratestack::FilterExpr::from(
+            schema::provider::id().eq(fixture.a_id.clone()),
+        ))
+        .limit(1)
+        .run(&sys)
+        .await
+        .expect("reloading provider a")
+        .into_iter()
+        .next()
+        .expect("provider a still exists");
+    assert!(
+        provider_a_row
+            .circuitOpenUntil
+            .is_some_and(|until| until > Utc::now()),
+        "five consecutive Unavailable failures must open the circuit breaker"
+    );
+    assert_eq!(
+        provider_a_row.consecutiveFailures, 0,
+        "opening the circuit resets the counter, matching hooks.rs's own reasoning"
+    );
+
+    // The guard itself: a sixth, brand-new message, routed fresh.
+    let sixth = seed_message(&db, &app_id, 3).await;
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // accepted -> queued
+    let sixth_routed = reload(&db, &sixth.id).await;
+    assert_eq!(sixth_routed.state, MessageState::queued);
+    assert_eq!(
+        sixth_routed.providerId,
+        Some(fixture.b_id.clone()),
+        "a fresh routing decision must skip A (open circuit) and land on B directly, not via a \
+         per-message failover reroute"
+    );
+
+    tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // queued -> routed -> submitted
+    let sixth_final = reload(&db, &sixth.id).await;
+    assert_eq!(sixth_final.state, MessageState::submitted);
+
+    assert_eq!(
+        a_calls.load(std::sync::atomic::Ordering::SeqCst),
+        5,
+        "provider A, whose circuit is open, must never even be attempted for a fresh message — \
+         not just eventually failed over away from"
+    );
+    assert_eq!(
+        b_calls.load(std::sync::atomic::Ordering::SeqCst),
+        6,
+        "the sixth message must have gone straight to the healthy alternative"
     );
 }

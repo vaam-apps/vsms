@@ -9,6 +9,49 @@
 //! one full miss between a message becoming claimable and this loop
 //! noticing.
 //!
+//! # #63 — failover and the provider circuit breaker
+//!
+//! Landed on top of #33's own single-provider-deployment placeholder,
+//! which collapsed every [`sms_provider::error::RoutingConsequence`] onto
+//! whichever §7.4 edge fit because no second provider existed yet to fail
+//! over to (#61/#62 built the second adapter and the routing engine that
+//! picks between routes; this is the piece that reacts to one failing).
+//!
+//! [`ProviderError::routing`] is the one source of truth for which errors
+//! trigger a failover attempt and which are terminal-for-this-message —
+//! see [`handle_submit_error`]'s own doc for the table. The two traps this
+//! ticket exists to close, both already proven live before this landed
+//! (see this crate's own tests and `crates/sms-provider/src/error.rs`'s):
+//!
+//! - **`ProviderError::Indeterminate` must never fail over.** The request
+//!   may already have reached the provider; failing it over to a different
+//!   provider risks a second, real SMS. `routing()` maps it to
+//!   `HoldIndeterminate`, and [`handle_submit_error`] never even considers
+//!   failover for that arm — this is unchanged from before #63, see
+//!   [`terminal_outcome`]'s own doc.
+//! - **A circuit breaker opening on provider A must route new work to B,
+//!   never just reject it.** `crates/sms-worker/src/routing.rs::convert_provider`
+//!   is where this actually holds: it treats an open circuit exactly like
+//!   `state != active` (unavailable, with a reason), so *every* future
+//!   routing decision — not just the one message whose failure tripped the
+//!   breaker — naturally skips A and picks whatever's left eligible.
+//!
+//! **"Failover must not double-send: the claim loop's lease is what
+//! prevents it"** (the issue's own words) is the property
+//! [`attempt_failover`] is built around: a failover reroute never calls
+//! [`sms_provider::SmsProvider::submit`] a second time inline. It writes
+//! `routed -> queued` with a *new* `providerId`/`routeId` stamped on the
+//! same CAS'd row and returns — the next claim (this tick or the next)
+//! picks it up through the ordinary `queued -> routed -> submit` path,
+//! under the same `if_match(version)` discipline every other reclaim in
+//! this crate already relies on. This is only safe because every
+//! `RoutingConsequence` that reaches [`attempt_failover`]
+//! (`TryNextRoute`/`OpenCircuitAndTryNextRoute`, i.e. `Permanent`/
+//! `Unavailable`) means *nothing was ever accepted by the provider* — see
+//! `crates/sms-provider/src/error.rs`'s own doc on why `Indeterminate` is
+//! the one variant that can't make that claim, and why it never reaches
+//! this function.
+//!
 //! # #70/#71
 //!
 //! [`submit_one`] is [`sms_metrics::DISPATCH_IN_FLIGHT_SUBMITS`]'s one
@@ -31,9 +74,11 @@ use std::time::Duration;
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::map_database_error;
-use sms_api::schema::{provider, Encoding, Message, MessageState, UpdateMessageInput};
+use sms_api::schema::{
+    provider, Encoding, Message, MessageState, Provider, UpdateMessageInput, UpdateProviderInput,
+};
 use sms_encoding::SmsEncoding;
-use sms_provider::{ProviderError, SmsProvider, SubmitRequest};
+use sms_provider::{ProviderError, RoutingConsequence, SmsProvider, SubmitRequest};
 use tracing::{error, info, warn};
 
 use crate::claim::claim_batch;
@@ -44,8 +89,25 @@ const POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// `ProviderError::Unavailable` carries no `retry_after` of its own (§6.1:
 /// it means the provider broadly, not this one message) — this crate picks
-/// a conservative fixed backoff rather than retrying immediately.
+/// a conservative fixed backoff rather than retrying immediately. Also the
+/// fallback backoff once #63's own failover is exhausted and there is
+/// nothing left to do but retry the same (still-unavailable) provider.
 const UNAVAILABLE_BACKOFF: Duration = Duration::from_secs(30);
+
+/// §6.3, verbatim: "Failover capped at two hops — beyond that you're not
+/// routing, you're spraying." Enforced in [`attempt_failover`] against
+/// `Message.excludedRouteIds`'s own length, not a separately tracked
+/// counter — see that field's doc in `schema.cstack`.
+const MAX_FAILOVER_HOPS: usize = 2;
+
+/// §6.3, verbatim: "five consecutive `Unavailable` opens it for 60s."
+const PROVIDER_CIRCUIT_FAILURE_THRESHOLD: i64 = 5;
+
+/// §6.3, verbatim: "opens it for 60s." Unlike `hooks::CIRCUIT_OPEN_DURATION`
+/// (webhook endpoints, 15 minutes) — different subsystem, different
+/// spec'd number, same *shape* of breaker. See this module's own doc on
+/// why the shape is shared but the constants are not.
+const PROVIDER_CIRCUIT_OPEN_DURATION: chrono::Duration = chrono::Duration::seconds(60);
 
 /// The `system` context this role does all its work under — `kind` and
 /// `role` both set, per the trap `#21`/`Principal::into_context`'s own doc
@@ -116,8 +178,8 @@ fn budget_for(tps_ceiling: f64) -> i64 {
 /// routed to a slow/starved provider can still consume claim slots a
 /// healthy provider could have used this tick. Real per-provider
 /// throughput isolation is §6.3's own "remaining TPS/daily budget"
-/// filtering, out of scope for #62 (see `crates/sms-routing`'s own module
-/// doc) and a natural fit for #63.
+/// filtering, out of scope for #62/#63 (see `crates/sms-routing`'s own
+/// module doc).
 fn total_tps_ceiling(providers: &ProviderRegistry) -> f64 {
     providers
         .values()
@@ -132,27 +194,30 @@ fn decode_encoding(encoding: Encoding) -> SmsEncoding {
     }
 }
 
-/// Resolve the adapter a `routed` message must submit through.
-/// `Message.providerId` (stamped by `claim.rs`'s `accepted` branch — since
-/// #62, `routing::decide`'s winning route, not `cheapest_active_provider`)
+/// Resolve the adapter a `routed` message must submit through, and the
+/// `Provider` row it came from — #63 needs the row itself, not just the
+/// adapter, to read/write `consecutiveFailures`/`circuitOpenUntil`/
+/// `version` for the circuit breaker (`record_provider_failure`/
+/// `reset_provider_failures`, below). `Message.providerId` (stamped by
+/// `claim.rs`'s `accepted` branch or by [`attempt_failover`]'s own reroute)
 /// names a `Provider` *row*; this looks that row's `key` up and resolves it
 /// against `ctx.providers`, the adapters this process actually holds
 /// credentials for. `Err` carries a human reason rather than a typed error
-/// — the caller folds it into [`ProviderError::Unavailable`]'s own
-/// backoff-and-retry handling, since both failure modes here are the same
-/// shape as "the provider is broadly unreachable right now": a `Provider`
-/// row deleted since routing, or — a real operational case, not just
-/// defensive coding — a `Route` naming a provider this particular
-/// `dispatch` process has no credentials configured for (a multi-node
-/// deployment could split providers across processes; today `dispatch` is
-/// a singleton per §7.1, so this specific case keeps retrying until an
-/// operator fixes the mismatch, which is the correct, safe behaviour, not
-/// a crash).
+/// — the caller folds it into the same `Unavailable`-shaped handling as a
+/// real submit failure ([`handle_submit_error`]), since both failure modes
+/// here are the same shape as "the provider is broadly unreachable right
+/// now": a `Provider` row deleted since routing, or — a real operational
+/// case, not just defensive coding — a `Route` naming a provider this
+/// particular `dispatch` process has no credentials configured for (a
+/// multi-node deployment could split providers across processes; today
+/// `dispatch` is a singleton per §7.1, so this specific case keeps
+/// retrying until an operator fixes the mismatch, which is the correct,
+/// safe behaviour, not a crash).
 async fn resolve_provider(
     ctx: &WorkerContext,
     sys: &CoolContext,
     message: &Message,
-) -> Result<Arc<dyn SmsProvider>, String> {
+) -> Result<(Provider, Arc<dyn SmsProvider>), String> {
     let Some(provider_id) = message.providerId.clone() else {
         return Err("message reached routed with no providerId stamped".to_owned());
     };
@@ -171,12 +236,18 @@ async fn resolve_provider(
         return Err(format!("provider {provider_id} no longer exists"));
     };
 
-    ctx.providers.get(row.key.as_str()).cloned().ok_or_else(|| {
-        format!(
-            "no adapter configured in this process for provider key {:?} (provider {provider_id})",
-            row.key
-        )
-    })
+    let adapter = ctx
+        .providers
+        .get(row.key.as_str())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "no adapter configured in this process for provider key {:?} (provider {provider_id})",
+                row.key
+            )
+        })?;
+
+    Ok((row, adapter))
 }
 
 /// Submit one already-`routed` message and write back whichever transition
@@ -204,13 +275,18 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
         return;
     };
 
-    let provider = match resolve_provider(ctx, sys, &message).await {
-        Ok(provider) => provider,
+    let (provider_row, provider) = match resolve_provider(ctx, sys, &message).await {
+        Ok(pair) => pair,
         Err(reason) => {
             warn!(message_id = %message.id, %reason, "could not resolve a provider adapter for a routed message");
-            let (next_state, reason, backoff) =
-                classify(&ProviderError::Unavailable { message: reason });
-            write_transition(ctx, sys, &message, next_state, Some(reason), backoff, None).await;
+            handle_submit_error(
+                ctx,
+                sys,
+                &message,
+                None,
+                &ProviderError::Unavailable { message: reason },
+            )
+            .await;
             return;
         }
     };
@@ -272,59 +348,116 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
                 ack.provider_ref_alt.as_deref(),
             )
             .await;
+            // #63: a successful submit is what actually happened here —
+            // this provider is not the one currently misbehaving, and any
+            // streak of prior failures it was accumulating is stale.
+            reset_provider_failures(ctx, sys, &provider_row).await;
         }
         Err(err) => {
-            // Known statically, independent of whether the provider ever
-            // answered: `req.reference` (== `message.id`) is exactly what
-            // was sent as `callbackData` before the network call was
-            // attempted. Only worth persisting for the one outcome a later
-            // DLR might still need it for — see `write_transition`'s doc.
-            let provider_ref_alt =
-                matches!(err, ProviderError::Indeterminate { .. }).then_some(message.id.as_str());
-            let (next_state, reason, backoff) = classify(&err);
-            write_transition(
-                ctx,
-                sys,
-                &message,
-                next_state,
-                Some(reason),
-                backoff,
-                provider_ref_alt,
-            )
-            .await;
+            handle_submit_error(ctx, sys, &message, Some(&provider_row), &err).await;
         }
     }
 }
 
-/// §6.1's [`ProviderError::routing`] gives the general four-way decision;
-/// this narrows it to §7.4's actual edges out of `routed` for a
-/// single-provider M2 deployment, where "try a different route" and
-/// "open the circuit and try a different route" have nowhere else to go
-/// yet (M5, #62/#63).
+/// #63's own compiler-checked mapping — driven by [`ProviderError::routing`]
+/// (`crates/sms-provider/src/error.rs`), not a second, hand-derived
+/// four-way decision duplicating it. Exactly which [`RoutingConsequence`]
+/// triggers a failover attempt and which is terminal-for-this-message:
 ///
-/// A backoff transition always targets `queued` regardless of `attempts`
-/// — `queued -> failed: max attempts` (§7.4) is enforced exactly once, in
-/// [`crate::claim::Claimable::take_lease`]'s own `queued` branch, not
-/// duplicated here. The *next* claim attempt is what decides whether
-/// `attempts >= maxAttempts` turns this row's next cycle into `failed`
-/// instead of another `routed` attempt.
+/// | `RoutingConsequence` | error | what happens |
+/// |---|---|---|
+/// | `RetryThisProvider { after }` | `Transient` | same-provider backoff, `routed -> queued`; no failover |
+/// | `TryNextRoute` | `Permanent` | [`attempt_failover`]; exhausted -> `routed -> failed`, "no alternate route available" |
+/// | `OpenCircuitAndTryNextRoute` | `Unavailable` | [`record_provider_failure`], then [`attempt_failover`]; exhausted -> same-provider backoff (the M2 single-provider degradation, still correct once no alternate exists) |
+/// | `FailMessage` | `Rejected`/`Unsupported` | `routed -> failed`; no failover — retrying anywhere fails identically |
+/// | `HoldIndeterminate` | `Indeterminate` | `routed -> uncertain`; no failover, no retry, unchanged from before #63 — see [`terminal_outcome`]'s own doc |
 ///
-/// `ProviderError::Indeterminate` is the one arm that does not fit that
-/// pattern at all: it targets `uncertain`, not `queued`, and carries no
-/// backoff, because there must be no next attempt. `uncertain` is outside
-/// [`crate::claim::Claimable::candidates`]'s state filter
-/// (`accepted`/`queued`/`routed`/`undelivered` only, #122), so once a
-/// message lands there this loop never picks it up again — the only ways
-/// out are a later DLR
-/// (`sms_api::dlr`, correlating on `providerMessageRefAlt` since we may
-/// never have gotten a `providerMessageRef` to store) or
-/// `expire_stale`'s 6h grace (`crates/sms-worker/src/jobs/expire_stale.rs`).
-/// This is a deliberate trade: a message that really did fail silently on
-/// the provider's side, with no DLR ever coming, sits unresolved for up to
-/// 6 hours before `expired` rather than being retried quickly — accepted
-/// because the alternative is a real, if less likely, duplicate SMS to a
-/// real handset.
-fn classify(err: &ProviderError) -> (MessageState, String, Option<Duration>) {
+/// `provider_row` is `None` only when [`resolve_provider`] itself failed
+/// before ever reaching a real `Provider` row (no row to record a
+/// circuit-breaker failure against) — [`submit_one`] synthesises that case
+/// as `Unavailable`, so it still reaches `OpenCircuitAndTryNextRoute` and
+/// still attempts failover, just without touching any provider's own
+/// bookkeeping (there is nothing to touch).
+///
+/// A [`CoolError`] from [`attempt_failover`]'s own routing query — not a
+/// `PreconditionFailed` on the *reroute* write, which `attempt_failover`
+/// already logs and treats as "someone else already moved this row" — is
+/// logged and nothing is written: the message is still safely `routed`
+/// with its lease intact, so `claim.rs`'s own crash-reclaim path picks it
+/// back up once the lease expires, the same fallback this file already
+/// relies on for every other failure it only logs.
+async fn handle_submit_error(
+    ctx: &WorkerContext,
+    sys: &CoolContext,
+    message: &Message,
+    provider_row: Option<&Provider>,
+    err: &ProviderError,
+) {
+    let consequence = err.routing();
+
+    if matches!(consequence, RoutingConsequence::OpenCircuitAndTryNextRoute) {
+        if let Some(row) = provider_row {
+            record_provider_failure(ctx, sys, row).await;
+        }
+    }
+
+    let should_attempt_failover = matches!(
+        consequence,
+        RoutingConsequence::TryNextRoute | RoutingConsequence::OpenCircuitAndTryNextRoute
+    );
+    if should_attempt_failover {
+        match attempt_failover(ctx, sys, message, &err.to_string()).await {
+            Ok(FailoverOutcome::Rerouted) => return,
+            Ok(FailoverOutcome::Exhausted) => {} // fall through to the terminal outcome below
+            Err(error) => {
+                warn!(
+                    message_id = %message.id, %error,
+                    "failover routing query failed; leaving routed for lease-expiry reclaim"
+                );
+                return;
+            }
+        }
+    }
+
+    let (next_state, reason, backoff) = terminal_outcome(err);
+    // Known statically, independent of whether the provider ever answered:
+    // `req.reference` (== `message.id`) is exactly what was sent as
+    // `callbackData` before the network call was attempted. Only worth
+    // persisting for the one outcome a later DLR might still need it for
+    // — see `write_transition`'s doc.
+    let provider_ref_alt =
+        matches!(err, ProviderError::Indeterminate { .. }).then_some(message.id.as_str());
+    write_transition(
+        ctx,
+        sys,
+        message,
+        next_state,
+        Some(reason),
+        backoff,
+        provider_ref_alt,
+    )
+    .await;
+}
+
+/// The terminal-for-this-message outcome once failover has nothing left to
+/// offer — either #63's own two-hop cap (`MAX_FAILOVER_HOPS`) was reached,
+/// or [`attempt_failover`] found no eligible alternate route at all. Also
+/// the *only* outcome for the three [`RoutingConsequence`] variants
+/// failover was never going to help with in the first place
+/// (`RetryThisProvider`/`FailMessage`/`HoldIndeterminate`) — see
+/// [`handle_submit_error`]'s own table for the full mapping.
+///
+/// Pure and synchronous on purpose — no I/O, no failover decision, just
+/// "given this error, and failover already exhausted or never applicable,
+/// what does `Message` do next" — so this mapping stays directly
+/// unit-testable without a database, the same discipline this file has
+/// followed since #33 (this function is `classify`'s own #33-era name,
+/// carrying the identical five non-failover-eligible cases verbatim; only
+/// `Permanent`'s own reason text changed, from "no alternate provider
+/// available in this deployment" to "no alternate route available" — true
+/// whether that's because this is still a single-provider deployment or
+/// because #63's own two-hop cap was actually reached).
+fn terminal_outcome(err: &ProviderError) -> (MessageState, String, Option<Duration>) {
     match err {
         ProviderError::Transient {
             retry_after,
@@ -341,7 +474,7 @@ fn classify(err: &ProviderError) -> (MessageState, String, Option<Duration>) {
         ),
         ProviderError::Permanent { code, message: msg } => (
             MessageState::failed,
-            format!("{code}: {msg} (no alternate provider available in this deployment)"),
+            format!("{code}: {msg} (no alternate route available)"),
             None,
         ),
         ProviderError::Rejected { code, message: msg } => {
@@ -357,6 +490,140 @@ fn classify(err: &ProviderError) -> (MessageState, String, Option<Duration>) {
             format!("submission outcome unknown, possibly already sent; not retrying: {msg}"),
             None,
         ),
+    }
+}
+
+/// What [`attempt_failover`] found.
+#[derive(Debug, PartialEq, Eq)]
+enum FailoverOutcome {
+    /// A new `providerId`/`routeId` was stamped and the row moved back to
+    /// `queued` — already written; the caller has nothing further to do.
+    Rerouted,
+    /// Either the two-hop cap (`MAX_FAILOVER_HOPS`) was already reached, or
+    /// `sms_routing::select_route` found no eligible alternate route. The
+    /// caller must still write *some* transition — see
+    /// [`handle_submit_error`].
+    Exhausted,
+}
+
+/// #63's own failover mechanism: "give me the next route after this one
+/// failed", implemented per `sms_routing::select_route`'s own doc as
+/// "call `select_route` again with the failed route's id added to
+/// `exclude`" — not a hand-rolled walk of `Route.failoverRouteId` itself
+/// (that field is carried through `Winner` for an operator's own
+/// explanation trail, never read by this function or by the pure engine —
+/// see `crates/sms-routing/src/types.rs`'s own doc on `RouteRow::
+/// failover_route_id`).
+///
+/// `Message.excludedRouteIds` (#63, `schema.cstack`) is this message's own
+/// accumulated exclude set — every route it has already been rerouted away
+/// from, sentinel-packed (`sms_core::pack`/`unpack`). Necessary, not just
+/// convenient: `RoutingConsequence::TryNextRoute` (`Permanent`) never opens
+/// a provider's circuit breaker (`crates/sms-provider/src/error.rs`'s own
+/// `permanent_never_opens_the_circuit_breaker` guarantee) — a `Permanent`
+/// failure is specific to this message (an unapproved sender ID, say), not
+/// a provider-wide outage, so nothing else marks that route ineligible.
+/// Without remembering it here, a second failover hop could pick the exact
+/// same already-failing route right back, and fail identically forever.
+///
+/// Capped at [`MAX_FAILOVER_HOPS`] (§6.3: "beyond that you're not routing,
+/// you're spraying"): once adding the current route to the exclude set
+/// would push it past that count, this returns
+/// [`FailoverOutcome::Exhausted`] without even querying — the routing pass
+/// has nothing to add once the caller isn't willing to act on its answer
+/// anyway.
+async fn attempt_failover(
+    ctx: &WorkerContext,
+    sys: &CoolContext,
+    message: &Message,
+    reason: &str,
+) -> Result<FailoverOutcome, CoolError> {
+    let mut excluded: Vec<String> =
+        sms_core::unpack(message.excludedRouteIds.as_deref().unwrap_or(""))
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect();
+    if let Some(current_route_id) = &message.routeId {
+        if !excluded.iter().any(|id| id == current_route_id) {
+            excluded.push(current_route_id.clone());
+        }
+    }
+
+    if excluded.len() > MAX_FAILOVER_HOPS {
+        return Ok(FailoverOutcome::Exhausted);
+    }
+
+    let candidate = crate::routing::Candidate {
+        operator: message.operator,
+        class: message.class,
+        app_id: &message.appId,
+        msisdn: &message.msisdn,
+        message_id: &message.id,
+    };
+    let exclude_set: sms_routing::ExcludedRouteIds = excluded.iter().cloned().collect();
+    let decision = crate::routing::decide(&ctx.db, sys, &candidate, &exclude_set).await?;
+
+    let Some(winner) = decision.winner else {
+        return Ok(FailoverOutcome::Exhausted);
+    };
+
+    let excluded_route_ids = sms_core::pack(&excluded)
+        .expect("Route.id is a Cuid — never empty, never contains the sentinel separator");
+    write_failover(
+        ctx,
+        sys,
+        message,
+        &winner,
+        &excluded_route_ids,
+        format!(
+            "failover (hop {} of {}): {reason}; rerouted to route {}",
+            excluded.len(),
+            MAX_FAILOVER_HOPS,
+            winner.route_id
+        ),
+    )
+    .await;
+    Ok(FailoverOutcome::Rerouted)
+}
+
+/// `routed -> queued` with a *new* `providerId`/`routeId` stamped — #63's
+/// own reroute write. Deliberately mirrors `claim::apply_routing_decision`'s
+/// `accepted` winner branch, not `write_transition`'s backoff scheduling: a
+/// failover retry through a *different* provider has no reason to wait, so
+/// `leaseUntil` is set to `now` (already expired by the time the very next
+/// poll tick reads it), the same "immediately claimable, not in-flight
+/// work" pattern that branch already uses.
+async fn write_failover(
+    ctx: &WorkerContext,
+    sys: &CoolContext,
+    message: &Message,
+    winner: &sms_routing::Winner,
+    excluded_route_ids: &str,
+    reason: String,
+) {
+    let now = chrono::Utc::now();
+    if let Err(error) = ctx
+        .db
+        .message()
+        .update(message.id.clone())
+        .set(UpdateMessageInput {
+            state: Some(MessageState::queued),
+            providerId: Some(Some(winner.provider_id.clone())),
+            routeId: Some(Some(winner.route_id.clone())),
+            excludedRouteIds: Some(Some(excluded_route_ids.to_owned())),
+            stateReason: Some(Some(reason)),
+            leaseUntil: Some(Some(now)),
+            ..Default::default()
+        })
+        .if_match(message.version)
+        .run(sys)
+        .await
+    {
+        log_write_failure(
+            &message.id,
+            MessageState::queued,
+            &map_database_error(error),
+        );
     }
 }
 
@@ -394,8 +661,8 @@ async fn write_submitted(
 
 /// `routed -> queued` (backoff, `leaseUntil` set to enforce the delay
 /// through the same mechanism [`crate::claim`]'s reclaim uses),
-/// `routed -> failed`, or `routed -> uncertain`, per [`classify`]'s
-/// outcome.
+/// `routed -> failed`, or `routed -> uncertain`, per
+/// [`handle_submit_error`]/[`terminal_outcome`]'s outcome.
 ///
 /// `provider_ref_alt`, when given, is stamped onto
 /// `Message.providerMessageRefAlt` alongside the transition — used only
@@ -446,6 +713,78 @@ async fn write_transition(
     }
 }
 
+/// §6.3: "five consecutive `Unavailable` opens it for 60s." Same shape as
+/// `hooks::record_endpoint_failure` — see this module's own doc for why a
+/// second breaker with different semantics here would be worse than a
+/// consistent one, and why the constants still differ (a different
+/// spec'd subsystem, not an inconsistency). Only ever called for
+/// `RoutingConsequence::OpenCircuitAndTryNextRoute` (i.e. `Unavailable`) —
+/// never `Permanent`/`Transient`/anything else, matching
+/// `crates/sms-provider/src/error.rs`'s own
+/// `permanent_never_opens_the_circuit_breaker` test.
+///
+/// Best-effort, not a CAS-retry loop, matching `hooks::record_endpoint_failure`'s
+/// own reasoning verbatim: a lost race under concurrent `dispatch` workers
+/// failing against the same provider at once undercounts by a small
+/// amount, which only matters for a heuristic that exists to stop hammering
+/// a dead provider, not to bill anyone.
+async fn record_provider_failure(ctx: &WorkerContext, sys: &CoolContext, provider: &Provider) {
+    let now = chrono::Utc::now();
+    let consecutive = provider.consecutiveFailures + 1;
+    let opening_circuit = consecutive >= PROVIDER_CIRCUIT_FAILURE_THRESHOLD;
+    let next_consecutive = if opening_circuit { 0 } else { consecutive };
+
+    let mut set = UpdateProviderInput {
+        consecutiveFailures: Some(next_consecutive),
+        ..Default::default()
+    };
+    if opening_circuit {
+        set.circuitOpenUntil = Some(Some(now + PROVIDER_CIRCUIT_OPEN_DURATION));
+        warn!(
+            provider_id = %provider.id,
+            threshold = PROVIDER_CIRCUIT_FAILURE_THRESHOLD,
+            "provider circuit breaker opened after consecutive Unavailable failures"
+        );
+    }
+
+    if let Err(error) = ctx
+        .db
+        .provider()
+        .update(provider.id.clone())
+        .set(set)
+        .if_match(provider.version)
+        .run(sys)
+        .await
+    {
+        warn!(provider_id = %provider.id, %error, "recording provider failure count failed");
+    }
+}
+
+/// A successful submit resets the breaker — same reasoning as
+/// `hooks::reset_endpoint_failures`, including skipping the write entirely
+/// when there is nothing to reset, so a healthy provider's every single
+/// success doesn't cost a pointless `UPDATE`.
+async fn reset_provider_failures(ctx: &WorkerContext, sys: &CoolContext, provider: &Provider) {
+    if provider.consecutiveFailures == 0 && provider.circuitOpenUntil.is_none() {
+        return;
+    }
+    if let Err(error) = ctx
+        .db
+        .provider()
+        .update(provider.id.clone())
+        .set(UpdateProviderInput {
+            consecutiveFailures: Some(0),
+            circuitOpenUntil: Some(None),
+            ..Default::default()
+        })
+        .if_match(provider.version)
+        .run(sys)
+        .await
+    {
+        warn!(provider_id = %provider.id, %error, "resetting provider failure count failed");
+    }
+}
+
 /// The only realistic cause of this write failing is a human operator
 /// concurrently cancelling the same message — a legitimate race, not a
 /// bug, so this logs and lets the tick continue rather than treating it as
@@ -460,7 +799,7 @@ fn log_write_failure(message_id: &str, attempted_state: MessageState, error: &Co
 
 #[cfg(test)]
 mod tests {
-    use super::{budget_for, classify, decode_encoding, UNAVAILABLE_BACKOFF};
+    use super::{budget_for, decode_encoding, terminal_outcome, UNAVAILABLE_BACKOFF};
     use sms_api::schema::{Encoding, MessageState};
     use sms_encoding::SmsEncoding;
     use sms_provider::ProviderError;
@@ -489,7 +828,7 @@ mod tests {
 
     #[test]
     fn transient_backs_off_and_stays_queued() {
-        let (state, _, backoff) = classify(&ProviderError::Transient {
+        let (state, _, backoff) = terminal_outcome(&ProviderError::Transient {
             retry_after: Duration::from_secs(5),
             message: "rate limited".to_owned(),
         });
@@ -498,8 +837,8 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_backs_off_with_a_fixed_delay_and_stays_queued() {
-        let (state, _, backoff) = classify(&ProviderError::Unavailable {
+    fn unavailable_backs_off_with_a_fixed_delay_and_stays_queued_once_failover_is_exhausted() {
+        let (state, _, backoff) = terminal_outcome(&ProviderError::Unavailable {
             message: "connection refused".to_owned(),
         });
         assert_eq!(state, MessageState::queued);
@@ -507,39 +846,42 @@ mod tests {
     }
 
     #[test]
-    fn permanent_fails_outright_in_a_single_provider_deployment() {
-        let (state, reason, backoff) = classify(&ProviderError::Permanent {
+    fn permanent_fails_outright_once_failover_is_exhausted() {
+        let (state, reason, backoff) = terminal_outcome(&ProviderError::Permanent {
             code: "SENDER_ID_NOT_APPROVED".to_owned(),
             message: "sender id not approved".to_owned(),
         });
         assert_eq!(state, MessageState::failed);
         assert_eq!(backoff, None);
-        assert!(reason.contains("no alternate provider"));
+        assert!(reason.contains("no alternate route"));
     }
 
     #[test]
-    fn rejected_and_unsupported_both_fail_outright() {
-        let (rejected_state, _, rejected_backoff) = classify(&ProviderError::Rejected {
+    fn rejected_and_unsupported_both_fail_outright_with_no_failover() {
+        let (rejected_state, _, rejected_backoff) = terminal_outcome(&ProviderError::Rejected {
             code: "INVALID_DESTINATION".to_owned(),
             message: "bad number".to_owned(),
         });
         assert_eq!(rejected_state, MessageState::failed);
         assert_eq!(rejected_backoff, None);
 
-        let (unsupported_state, _, unsupported_backoff) = classify(&ProviderError::Unsupported);
+        let (unsupported_state, _, unsupported_backoff) =
+            terminal_outcome(&ProviderError::Unsupported);
         assert_eq!(unsupported_state, MessageState::failed);
         assert_eq!(unsupported_backoff, None);
     }
 
-    /// The whole point of this ticket: an indeterminate outcome must land
-    /// in `uncertain`, not `queued` (which `claim.rs`'s `candidates()`
-    /// would pick straight back up and resubmit) and not `failed` (which
-    /// would discard a message that might still resolve via a late DLR).
-    /// No backoff either — `uncertain` isn't in the claimable set at all,
-    /// so a `leaseUntil` on it would be meaningless.
+    /// The whole point of #119, unchanged by #63: an indeterminate outcome
+    /// must land in `uncertain`, not `queued` (which `claim.rs`'s
+    /// `candidates()` would pick straight back up and resubmit) and not
+    /// `failed` (which would discard a message that might still resolve
+    /// via a late DLR) — and, per #63's own mapping, `handle_submit_error`
+    /// never even calls `attempt_failover` for this variant, so this outcome
+    /// is reached directly, not as a "failover exhausted" fallback the way
+    /// `Permanent`/`Unavailable` above are.
     #[test]
     fn indeterminate_lands_in_uncertain_with_no_backoff_and_no_retry() {
-        let (state, reason, backoff) = classify(&ProviderError::Indeterminate {
+        let (state, reason, backoff) = terminal_outcome(&ProviderError::Indeterminate {
             message: "read timeout after the request was sent".to_owned(),
         });
         assert_eq!(state, MessageState::uncertain);

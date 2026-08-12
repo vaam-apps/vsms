@@ -130,6 +130,7 @@ fn fresh_provider_input() -> schema::CreateProviderInput {
         supportsConcat: true,
         costPerSegmentXaf: "15".parse().unwrap(),
         healthCheckedAt: None,
+        circuitOpenUntil: None,
     }
 }
 
