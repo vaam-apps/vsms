@@ -19,28 +19,22 @@ import "server-only";
 // Layer 2 — the real perimeter, same shape `job:read`/`worker:read`
 // already established.
 //
-// # `updateProvider` — real code, not reachable by this console today
+// # `updateProvider` — reachable today, as of #211
 //
 // `Provider.update`'s own `@@allow` is `hasRole('owner') ||
 // hasRole('admin') || hasRole('operator')` — no `auth().kind == "app"` at
 // all. #194 (human login) landed and `GatewayAuth` genuinely resolves a
-// real `hasRole(...)`-meaningful context for a human token now — so this
-// is no longer "no principal in the system can ever satisfy that policy."
-// What still blocks it: every function in this file authenticates through
-// `getAccessToken()` (`./token.ts`, untouched by #194), which is this
-// console's own separate `SMS_CONSOLE_CLIENT_ID` machine credential
-// (`kind: "app"`, `role: "app"` always) — not the logged-in human's own
-// session token (`admin/lib/oidc.ts::Session.accessToken`), which #194's
-// own login flow mints under a *different* OAuth client
-// (`GatewayAuth::human_client_id`, default `"sms-console"`) and which
-// nothing in `packages/gateway` forwards anywhere. `updateProvider` is
-// built and tested (`rest.test.ts`) against that reality — a real `PATCH`
-// request shape, correctly wired to `updateWithIfMatch` — but 403s against
-// a real gateway regardless of who is logged into the browser, until this
-// package is rewired to use a per-session human token instead of (or
-// alongside) its one static credential — real, separate follow-up work,
-// not this ticket's own scope. `providers-screen.tsx` states this on
-// screen rather than implying the Save button works.
+// real `hasRole(...)`-meaningful context for a human token; #211 closed the
+// remaining gap this paragraph used to describe — every function in this
+// file now goes through `resolveUpstreamAccessToken()`
+// (`./request-credential.ts`), which forwards the signed-in human's own
+// session token (`admin/lib/oidc.ts::Session.accessToken`) for an ordinary
+// admin-console request, rather than this console's own separate
+// `SMS_CONSOLE_CLIENT_ID` machine credential (`kind: "app"`, `role: "app"`
+// always — still used elsewhere, deliberately, see `token.ts`'s own doc).
+// `updateProvider` was built and tested (`rest.test.ts`) against a fake
+// upstream before this landed; #211's own PR description carries the live
+// proof against a real gateway with a real signed-in `owner`.
 //
 // `GET /providers` on a non-`@@paged` model returns a bare JSON array, not
 // `{ items, totalCount, pageInfo }` — confirmed by reading
@@ -61,8 +55,8 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, updateWithIfMatch, type WithEtag } from "./rest";
-import { getAccessToken, invalidateAccessToken } from "./token";
 
 /** `schema.cstack`'s `ProviderKind`, verbatim. */
 export type ProviderKind = "orange_cm_http" | "mtn_http" | "aggregator_http" | "smpp";
@@ -148,7 +142,7 @@ function normalizeProvider<T extends Partial<ProviderRecord>>(row: T): T {
 
 async function authedGet(url: string): Promise<UndiciResponse> {
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return undiciFetch(url, {
       method: "GET",
       headers: { accept: "application/json", authorization: `Bearer ${token}` },
@@ -158,7 +152,7 @@ async function authedGet(url: string): Promise<UndiciResponse> {
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
   return response;

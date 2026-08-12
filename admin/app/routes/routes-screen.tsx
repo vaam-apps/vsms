@@ -1,10 +1,14 @@
 "use client";
 
 // The Routes screen (#54): list, plus create/edit/delete — every write real,
-// tested code that cannot succeed against a real gateway yet. See the
-// banner below and `packages/gateway/src/routes.ts`'s own module doc for
-// why (the identical `Provider.update` gap `providers-screen.tsx` already
-// documents, here for `Route.create`/`update`/`delete`).
+// tested code, and (as of #211) real against a real gateway for a
+// signed-in `owner`/`admin` — `Route.create`/`update`/`delete`'s own
+// `@@allow` is narrower than `Provider.update`'s (`hasRole('owner') ||
+// hasRole('admin')` only, no `operator`), so this screen's writes need one
+// of those two roles specifically. See `providers-screen.tsx`'s own module
+// doc for the mechanism (`resolveUpstreamAccessToken`,
+// `packages/gateway/src/request-credential.ts`) — identical here, just a
+// narrower Layer 1 gate.
 //
 // # The zero-routes state gets its own, unmissable banner
 //
@@ -218,11 +222,10 @@ export function RoutesScreen() {
       </header>
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-        This list is real. Create/Save/Delete below are real, wired code too, but cannot succeed
-        yet: this console still talks to the gateway with its own machine credential, not your
-        logged-in session, so it can never satisfy Route's owner/admin requirement. Every write
-        below will fail with <span className="font-mono text-foreground">Forbidden</span> until
-        that's rewired.
+        Create/Save/Delete act as you, not as a shared service account — they require your own role
+        to be <span className="font-mono text-foreground">owner</span> or{" "}
+        <span className="font-mono text-foreground">admin</span>; other roles (including operator)
+        will see a real <span className="font-mono text-foreground">Forbidden</span> here.
       </div>
 
       {!listQuery.isLoading && (listQuery.data?.length ?? 0) === 0 && (

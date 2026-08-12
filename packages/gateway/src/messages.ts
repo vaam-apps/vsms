@@ -93,7 +93,8 @@ import { fetch as undiciFetch } from "undici";
 import type { Encoding, MessageClass, MessageState, OperatorCode } from "./client";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
-import { getAccessToken, invalidateAccessToken } from "./token";
+import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
+import { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
 
 /** The server's own enforced ceiling (`limit must not exceed 1000`) — also
  * used as the size of the bounded window `listMessages` fetches before
@@ -222,8 +223,20 @@ async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
  * this module and `client.ts` are two temporary, independently-replaceable
  * halves of the same seam (REST list/detail vs. `$procs`), and each is
  * small enough that sharing a helper isn't worth coupling their futures
- * together before T3 replaces both anyway. */
-async function getJson<T>(
+ * together before T3 replaces both anyway.
+ *
+ * `resolveToken`/`onUnauthorized` are injected rather than hardcoded — see
+ * this file's own two call sites, [`getJson`] and [`getJsonAsMachine`], and
+ * `message-stream.ts`'s module doc for why `listMessagesForStream` must
+ * never resolve the signed-in human's own token (#211): it is driven by
+ * `MessageStreamHub`'s process-wide `setInterval` poll, not by any single
+ * request, so it has no one human to act as, and — the sharper reason —
+ * `AsyncLocalStorage` context set up by whichever request happens to first
+ * trigger `hub.start()` would otherwise leak into every later poll tick,
+ * including ticks serving *other* operators' own open tabs. */
+async function getJsonWith<T>(
+  resolveToken: () => Promise<string>,
+  onUnauthorized: () => void,
   path: string,
   query: Record<string, string | number | undefined>,
   routeLabel: string,
@@ -231,7 +244,7 @@ async function getJson<T>(
   const url = messagesUrl(path, query);
 
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveToken();
     return undiciFetch(url, {
       method: "GET",
       headers: {
@@ -244,7 +257,7 @@ async function getJson<T>(
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    onUnauthorized();
     response = await attempt();
   }
 
@@ -255,6 +268,37 @@ async function getJson<T>(
     throw mapGatewayError(response.status, parsed, routeLabel);
   }
   return parsed as T;
+}
+
+/** The signed-in operator's own credential — every ordinary admin-console
+ * read in this file (`listMessages`, `getMessageById`) goes through this.
+ * `Message.list`/`.detail`'s own `@@allow` admits `auth().kind == "user"`
+ * unconditionally (schema.cstack), so this has been reachable by any
+ * authenticated human since before #211 — #211 is what actually forwards
+ * one. */
+function getJson<T>(
+  path: string,
+  query: Record<string, string | number | undefined>,
+  routeLabel: string,
+): Promise<T | null> {
+  return getJsonWith(
+    resolveUpstreamAccessToken,
+    invalidateUpstreamAccessToken,
+    path,
+    query,
+    routeLabel,
+  );
+}
+
+/** The console's own machine credential, explicitly — see this function's
+ * one caller, `listMessagesForStream`, and this file's own doc on
+ * `getJsonWith` for why. */
+function getJsonAsMachine<T>(
+  path: string,
+  query: Record<string, string | number | undefined>,
+  routeLabel: string,
+): Promise<T | null> {
+  return getJsonWith(getMachineAccessToken, invalidateMachineAccessToken, path, query, routeLabel);
 }
 
 interface MessagesPage {
@@ -393,7 +437,7 @@ export async function listMessageReceipts(messageId: string): Promise<MessageRec
   const url = procedureUrl("listMessageReceipts");
 
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return undiciFetch(url, {
       method: "POST",
       headers: {
@@ -408,7 +452,7 @@ export async function listMessageReceipts(messageId: string): Promise<MessageRec
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
 
@@ -455,7 +499,7 @@ export type StreamCandidate = Pick<MessageRecord, (typeof STREAM_FIELDS)[number]
  * slice, not the whole table.
  */
 export async function listMessagesForStream(windowSize: number): Promise<StreamCandidate[]> {
-  const page = await getJson<{ items: StreamCandidate[] }>(
+  const page = await getJsonAsMachine<{ items: StreamCandidate[] }>(
     "/messages",
     { limit: windowSize, sort: "-updatedAt", fields: STREAM_FIELDS.join(",") },
     "listMessagesForStream",

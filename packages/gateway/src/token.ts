@@ -1,16 +1,31 @@
 import "server-only";
 
 // `client_credentials` + `private_key_jwt` (RFC 7523) token acquisition
-// against `authkestra-op`'s `/token` — the only auth shape this system
-// has (#6): no shared client secret exists anywhere. The Next.js app
-// authenticates to vsms as an app of its own (the DECISIONS section of
-// the architecture plan: "The Next.js app authenticates to vsms as an
-// app, with its own client_credentials + private_key_jwt service
-// account. User credentials never reach vsms.").
+// against `authkestra-op`'s `/token` — the console's OWN machine identity,
+// distinct from the signed-in human's own session token.
 //
-// Every write this console ever makes is audited as `SMS_CONSOLE_CLIENT_ID`,
-// never as a person — see the dashboard-auth runbook (T9) for the full
-// "does not provide" list.
+// **#211 correction:** this file used to be the ONLY credential the console
+// ever presented upstream — every write was audited as `SMS_CONSOLE_CLIENT_ID`,
+// never as a person, because nothing forwarded the human session #194 had
+// already minted. That is fixed now: `./request-credential.ts` is the seam
+// every ordinary gateway call goes through, and it forwards the signed-in
+// human's own `accessToken` (`admin/lib/oidc.ts::Session`) when one is
+// present for the current request. `getMachineAccessToken` below still
+// exists and is still real — it's the deliberate, explicit choice for the
+// small, named set of calls that must never act as a human (see
+// `request-credential.ts`'s own module doc for which, and why): `client.ts`'s
+// `previewMessage`/`sendMessage` (`crates/sms-api/src/procedures.rs::
+// caller_client_id` structurally rejects a human caller — "deriving an App
+// for a human caller has no design yet" — so forwarding a human token here
+// would not merely be wrong, it would hard-error), and `messages.ts`'s
+// `listMessagesForStream` (the process-wide `MessageStreamHub` singleton
+// polls once, shared across every open browser tab and every in-flight
+// request — there is no single human to attribute that fetch to).
+//
+// Nothing outside this package calls `getMachineAccessToken` directly —
+// every screen's own data goes through `request-credential.ts`'s
+// `resolveUpstreamAccessToken`, so a *new* call site gets the signed-in
+// human's own token by construction, not this one by accident.
 //
 // Three things below are load-bearing, each named explicitly in the task:
 //
@@ -130,13 +145,18 @@ async function requestToken(): Promise<CachedToken> {
 }
 
 /**
- * A valid Bearer access token for calling sms-api, minting and caching a
- * new one only when the cached one is within `EXPIRY_SAFETY_MARGIN_SECONDS`
- * of expiry. Concurrent callers during a cache miss share one in-flight
- * request rather than each minting their own token (and burning their own
- * `jti`) simultaneously.
+ * A valid Bearer access token for calling sms-api **as this console's own
+ * machine identity**, minting and caching a new one only when the cached
+ * one is within `EXPIRY_SAFETY_MARGIN_SECONDS` of expiry. Concurrent
+ * callers during a cache miss share one in-flight request rather than each
+ * minting their own token (and burning their own `jti`) simultaneously.
+ *
+ * Call this directly only when the machine credential is the deliberate,
+ * documented choice for this call site — see this module's own doc. Every
+ * other caller should go through `request-credential.ts`'s
+ * `resolveUpstreamAccessToken` instead.
  */
-export async function getAccessToken(): Promise<string> {
+export async function getMachineAccessToken(): Promise<string> {
   const cached = globalThis.__vsmsGatewayTokenCache;
   if (cached != null && cached.expiresAtMs > Date.now()) {
     return cached.accessToken;
@@ -156,12 +176,12 @@ export async function getAccessToken(): Promise<string> {
 }
 
 /**
- * Drops the cached access token. `client.ts` calls this once on an
+ * Drops the cached machine access token. `client.ts` calls this once on an
  * unexpected 401 from sms-api before retrying — the cache's own
  * `exp - 60s` margin should make that unreachable in normal operation, but
  * a signing-key rotation invalidating the cached token mid-window is a
  * real scenario this guards against without waiting out the full TTL.
  */
-export function invalidateAccessToken(): void {
+export function invalidateMachineAccessToken(): void {
   globalThis.__vsmsGatewayTokenCache = undefined;
 }

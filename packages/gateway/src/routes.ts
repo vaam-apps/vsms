@@ -45,8 +45,8 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
-import { getAccessToken, invalidateAccessToken } from "./token";
 
 /** `schema.cstack`'s `OperatorCode`, verbatim — duplicated from `client.ts`
  * rather than imported, same reasoning `jobs.ts`'s own `JobState` duplicate
@@ -132,7 +132,7 @@ function normalizeRoute<T extends Partial<RouteRecord>>(row: T): T {
 
 async function authedGet(url: string): Promise<UndiciResponse> {
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return undiciFetch(url, {
       method: "GET",
       headers: { accept: "application/json", authorization: `Bearer ${token}` },
@@ -142,7 +142,7 @@ async function authedGet(url: string): Promise<UndiciResponse> {
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
   return response;

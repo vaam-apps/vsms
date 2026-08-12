@@ -15,7 +15,7 @@ import { fetch as undiciFetch } from "undici";
 import type { OperatorCode } from "./client";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
-import { getAccessToken, invalidateAccessToken } from "./token";
+import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 /** One rolling hour of `Message.createdAt`, oldest first. `totalCount` is
  * that hour's throughput; `ucs2Count` is how many of those encoded UCS-2 —
@@ -41,11 +41,14 @@ export interface OperatorDeliveryStats {
 export interface DashboardSummary {
   generatedAt: string;
   /** Absent when the caller isn't scoped to one app (a real human or
-   * system context). Today, the console's own machine credential is
-   * always app-scoped (#211) — this is always present in practice, but
-   * the screen still renders off this field rather than assuming it,
-   * matching `messages-screen.tsx`'s own precedent of stating a scope
-   * limit rather than leaving it to be inferred. */
+   * system context). Before #211, this call always ran as the console's
+   * own machine credential, so `appId` was always present in practice.
+   * #211 forwards the signed-in human's own session token instead — and
+   * `Message`/`WebhookAttempt`'s own `@@allow` (`schema.cstack`) admits
+   * `auth().kind == "user"` unconditionally, unscoped by `appId` — so for
+   * any signed-in human, regardless of role, this is now genuinely
+   * `undefined` in practice: the numbers below cover every app, not one.
+   * See `dashboard-screen.tsx`'s own "Why the scope banner" section. */
   appId?: string | undefined;
   /** Current count of `Message` rows in `{accepted, queued, routed}` — a
    * live gauge, not a rate. */
@@ -111,7 +114,7 @@ export async function dashboardSummary(): Promise<DashboardSummary> {
   const url = procedureUrl("dashboardSummary");
 
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return undiciFetch(url, {
       method: "POST",
       headers: {
@@ -126,7 +129,7 @@ export async function dashboardSummary(): Promise<DashboardSummary> {
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
 

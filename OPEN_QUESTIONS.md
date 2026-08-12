@@ -46,37 +46,85 @@ proceeds, and inbound STOP handling via a real short code
 deliberately avoids the question, which is why the MTN adapter was built that
 way. It becomes urgent only when someone wants a direct interconnect.
 
-### 1.2 Should the console act as the logged-in human? ([#211](https://github.com/vymalo/vsms/issues/211))
+### 1.2 Should the console act as the logged-in human? (settled 2026-08-13, [#211](https://github.com/vymalo/vsms/issues/211))
 
-**Blocks:** [#52](https://github.com/vymalo/vsms/issues/52) (apps and service
-accounts), [#58](https://github.com/vymalo/vsms/issues/58) (users and roles),
-cross-app visibility in [#50](https://github.com/vymalo/vsms/issues/50), and
-the *allow* half of every Layer-2 permission check.
+**Answered: forward the human's own `accessToken` verbatim, at the single
+tRPC route-handler boundary, via `AsyncLocalStorage` — not a per-request
+token exchange.**
 
-#194 shipped a real authorization_code + PKCE login: a person signs in, a
-session is issued, and `GatewayAuth` resolves a genuine `User` → `Role` →
-`perms` principal. But `packages/gateway` still authenticates **upstream**
-with its own machine credential, so the human's role never reaches the
-gateway. Verified by signing in as a freshly provisioned `owner` and watching
-a `Provider` edit fail with `missing required permission "provider:update"`.
+#194 shipped a real authorization_code + PKCE login, but `packages/gateway`
+kept authenticating **upstream** with its own machine credential regardless
+of who was signed in — verified by signing in as a freshly provisioned
+`owner` and watching a `Provider` edit fail with `missing required
+permission "provider:update"`. Two shapes were on the table:
 
-The open part is not *whether* to fix it but *how*, and the two shapes differ
-in security surface:
+- **Forward the human's own `accessToken`** and let `GatewayAuth` validate
+  it directly. **Taken.** Checked, not assumed: `GatewayAuth::
+  authenticate_human` already validates a human token fully — signature via
+  JWKS, issuer, and audience against `sms-console`
+  (`GatewayAuth::human_client_id`) — and `admin/middleware.ts` already
+  refreshes the session's `accessToken` ~60s ahead of expiry on *every*
+  request, redirecting to `/login` outright if refresh fails. So by the time
+  a request reaches the tRPC route handler, the token is already fresh for
+  that request's lifetime — no separate exchange step, no expiry logic
+  needed in `packages/gateway` at all.
+- **Exchange the session for a per-request token.** Not taken — strictly
+  more moving parts for no benefit once the above was confirmed live.
 
-- **Forward the human's `id_token`** and let `GatewayAuth` validate it
-  directly. #194 already validates human tokens, so this may be nearly free —
-  but audience and expiry handling is exactly where that shortcut goes wrong.
-- **Exchange the session for a per-request token.** More moving parts, but
-  keeps the browser's cookie and the gateway's credential separate.
+**How it's plumbed, and why that shape specifically:** `packages/gateway`'s
+~13 upstream-calling functions across 9 files are called via `ctx.gateway.
+xxx()` — a module reference, not a per-request-bound instance — so an
+explicit credential parameter would have touched every one of those call
+sites *and* every router that calls them. Instead, `packages/gateway/src/
+request-credential.ts`'s `AsyncLocalStorage` is set once, at the one true
+per-request boundary (`admin/app/api/trpc/[trpc]/route.ts`'s `handler`,
+reading the `x-vsms-access-token` header `admin/middleware.ts` forwards),
+and every ordinary call site resolves it implicitly via
+`resolveUpstreamAccessToken()`. The failure mode the ticket named — a new
+screen silently getting the machine credential when it meant the human's —
+is closed structurally: `resolveUpstreamAccessToken()` throws if no
+credential scope was ever entered, rather than defaulting to the machine
+credential. Reaching for the machine credential requires importing
+`getMachineAccessToken` from `./token` directly, by name, which the module's
+own doc reserves for two documented exceptions:
+`client.ts`'s `previewMessage`/`sendMessage` (`crates/sms-api/src/
+procedures.rs::caller_client_id` structurally rejects a human caller — "no
+design yet" for deriving an `App` from one) and `messages.ts`'s
+`listMessagesForStream` (the `MessageStreamHub` singleton polls once, shared
+across every open tab — no single human to attribute it to, and
+`AsyncLocalStorage` would otherwise leak whichever operator's tab happened
+to trigger the first poll into every other tab's stream).
 
-Either way, a second decision follows: calls that are legitimately *not*
-user-initiated — the message-stream poller, health checks — may still want
-the machine credential, which argues for both paths existing rather than a
-straight swap.
+**A real, pre-existing bug found and fixed in the same PR, because the fix
+is what finally exercised it:** the seeded role `permissions`
+(`schema/migrations/postgres/0002_bootstrap`) used `message:read`/
+`message:send` where `crates/sms-api/src/rbac.rs::require_permission`
+actually checks `sms:read`/`sms:send` (the same literals the machine
+scope table already used correctly), and no role carried `dashboard:read`
+at all. Both were silent until a human token was ever forwarded to hit
+`listMessageReceipts`/`dashboardSummary` — which #211 is the first PR to
+do. Fixed by renaming the seed literals and adding `dashboard:read` to
+`owner`/`admin`/`operator`/`auditor`; data-only, no schema/DDL change.
 
-**Consequence while unanswered:** `@@audit` attributes every console write to
-one client id, so the audit log cannot say *who* did anything. That is
-precisely what #68's anchoring exists to make defensible.
+**A real, deliberate consequence, not a bug:** `Message`/`DeliveryReceipt`'s
+own `@@allow` already admitted `auth().kind == "user"` unconditionally —
+unscoped by `appId` — before this PR; nothing had ever exercised it because
+no human token reached `sms-api`. Forwarding one means the Messages list and
+Dashboard now show *every app* in this deployment to *any* signed-in human,
+not just the console's own machine credential's one app — genuinely wider
+visibility than before, and exactly the "cross-app visibility" #211's own
+issue named as something it unblocks for #50. The messages list's own
+live-update poll stays scoped to the machine credential's one app
+(deliberately, see above), so a row belonging to another app can appear in
+the initial list but won't receive a live update until the next refetch —
+documented in `messages-screen.tsx`'s own module doc, not silently shipped.
+
+**Proven live**, not just reasoned about: signed in as a freshly provisioned
+`owner`, a `Provider` edit that previously 403'd now succeeds, and
+`cratestack_audit`'s own `actor` column shows the real signed-in `User.id`
+and `role: "owner"` — the audit trail can now say *who*. A second user
+provisioned with `auditor` (which lacks `provider:update`) gets a real,
+live `Forbidden` on the identical edit.
 
 ### 1.3 Where is this hosted, and does the 90-day decision hold? (settled, recorded for context)
 

@@ -21,15 +21,22 @@
  *   `x-vsms-actor` below is that row's own `email`, not an operator-typed
  *   Basic-auth username with no backing account.
  * - **Real roles**, carried in the session and forwarded as
- *   `x-vsms-role` — not consulted by any authorization decision in *this*
- *   process yet (every upstream call to `sms-gateway` still uses the
- *   shared `SMS_CONSOLE_CLIENT_ID` machine credential — see
- *   `packages/gateway/src/token.ts`'s own module doc), but no longer
- *   structurally absent the way #48 described. Wiring per-request calls
- *   to use the logged-in user's own access token instead of the shared
- *   machine credential is explicitly out of scope for #194 (see the
- *   issue's own "What is actually blocked" table, row `#50`) and tracked
- *   as a distinct follow-up, not silently assumed done here.
+ *   `x-vsms-role` — display-only in this file (see `x-vsms-actor`'s own
+ *   note); the actual authorization decision lives at `sms-api`, driven by
+ *   the *token* forwarded below, not by this header.
+ * - **The signed-in human's own upstream credential** (#211), forwarded as
+ *   `x-vsms-access-token` — every upstream call to `sms-gateway` used to
+ *   authenticate exclusively as the shared `SMS_CONSOLE_CLIENT_ID` machine
+ *   credential (`packages/gateway/src/token.ts`) regardless of who was
+ *   signed in; #211 closed that gap. This header is how the human's own
+ *   already-validated, already-freshness-checked `session.accessToken`
+ *   (see `refreshSession`'s own doc immediately below) crosses from this
+ *   middleware into `admin/app/api/trpc/[trpc]/route.ts`, the one place
+ *   that reads it and opens a `runWithRequestCredential` scope
+ *   (`@vsms/gateway`) for the rest of that request. Same mechanism
+ *   `x-vsms-actor`/`x-vsms-role` already established — Next.js forwards a
+ *   header set here on the *request* object to every downstream Server
+ *   Component/Route Handler in the same request, no network hop involved.
  * - **Real logout and expiry.** `POST /api/auth/logout` clears the
  *   session cookie outright; the cookie itself carries a real expiry
  *   (`SESSION_COOKIE_MAX_AGE_SECONDS`, §5.3's own 8h human-refresh-token
@@ -84,6 +91,10 @@ import {
 
 const ACTOR_HEADER = "x-vsms-actor";
 const ROLE_HEADER = "x-vsms-role";
+/** #211 — see this file's own module doc. Carries the signed-in human's
+ * real, freshness-checked OAuth access token one hop downstream, in
+ * process, to the tRPC route handler. */
+const ACCESS_TOKEN_HEADER = "x-vsms-access-token";
 
 /** Same exclusions as before #194 — `api/health` still needs to answer an
  * unauthenticated liveness probe (#139's own finding, still true: a
@@ -186,13 +197,19 @@ function redirectToLogin(request: NextRequest): NextResponse {
 export async function middleware(request: NextRequest): Promise<NextResponse> {
   const path = request.nextUrl.pathname;
 
-  // Strip any inbound actor/role headers BEFORE anything else — same
-  // reasoning #48's own version of this file already established for
-  // x-vsms-actor: downstream code trusts these, so a caller that could
-  // set them directly would be asserting whatever identity it liked.
+  // Strip any inbound actor/role/access-token headers BEFORE anything else
+  // — same reasoning #48's own version of this file already established for
+  // x-vsms-actor: downstream code trusts these, so a caller that could set
+  // them directly would be asserting whatever identity (or, for
+  // ACCESS_TOKEN_HEADER, whatever credential) it liked. A forged token
+  // value alone can't forge a *valid* signature — `GatewayAuth` still
+  // verifies it against the real JWKS — but stripping it here means
+  // nothing downstream can even be tempted to trust an unvalidated
+  // caller-supplied value for it.
   const headers = new Headers(request.headers);
   headers.delete(ACTOR_HEADER);
   headers.delete(ROLE_HEADER);
+  headers.delete(ACCESS_TOKEN_HEADER);
 
   if (path.startsWith("/api/auth/")) {
     // These routes manage vsms_oidc_txn/vsms_session themselves — nothing
@@ -225,6 +242,7 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
 
   headers.set(ACTOR_HEADER, session.email);
   headers.set(ROLE_HEADER, session.role);
+  headers.set(ACCESS_TOKEN_HEADER, session.accessToken);
   const response = NextResponse.next({ request: { headers } });
   const token = await encryptSession(session, sessionSecret());
   response.cookies.set(OIDC_COOKIE_NAMES.session, token, {

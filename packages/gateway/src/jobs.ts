@@ -40,7 +40,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
-import { getAccessToken, invalidateAccessToken } from "./token";
+import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 /** `job_state_transitions` (`schema/migrations/postgres/0002_bootstrap/
  * up.sql`), verbatim — mirrors `@vsms/ui`'s own `JobState` (`status-
@@ -149,7 +149,7 @@ async function authedRequest(
   init: { method: "GET" | "POST"; body?: string },
 ): Promise<UndiciResponse> {
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return undiciFetch(url, {
       method: init.method,
       headers: {
@@ -164,7 +164,7 @@ async function authedRequest(
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
   return response;

@@ -26,13 +26,20 @@
 //
 // # Why the scope banner
 //
-// `Message`/`WebhookAttempt` numbers below are scoped to this console's
-// own app (#211: the console still authenticates upstream as a machine
-// credential, not the logged-in human) — same reasoning
-// `messages-screen.tsx`'s own banner documents. `jobBacklog` is the
-// opposite: system-wide, because `Job` has no `appId` to scope by
-// (`jobs-screen.tsx`'s own banner). Both facts are stated below rather
-// than left for an operator to infer from an unfamiliar-looking number.
+// **Changed by #211.** Before it, this call always ran as the console's
+// own machine credential, so `Message`/`WebhookAttempt` numbers were
+// scoped to that credential's one fixed `appId`. #211 forwards the
+// signed-in human's own session token instead, and `Message`/
+// `WebhookAttempt`'s own `@@allow` (`schema.cstack`) admits
+// `auth().kind == "user"` unconditionally — unscoped by `appId`, for
+// *any* signed-in human regardless of role. So the numbers below now
+// cover every app in this deployment, not one — a real widening of what a
+// signed-in operator sees, not a bug: it is the "cross-app visibility"
+// #211's own issue named as one of the things it unblocks (#50). The
+// banner still renders off `summary.appId`'s presence/absence rather than
+// assuming either shape, matching `messages-screen.tsx`'s own precedent.
+// `jobBacklog` was always system-wide regardless, because `Job` has no
+// `appId` to scope by at all (`jobs-screen.tsx`'s own banner).
 //
 // # Delivery rate, and what "uncertain" means for it
 //
@@ -203,10 +210,20 @@ export function DashboardScreen() {
       </header>
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-        Message- and webhook-based tiles below are scoped to{" "}
-        <span className="font-mono text-foreground">this app only</span> — the console's own
-        service-account token can only read the one app it belongs to.{" "}
-        <span className="font-mono text-foreground">Job backlog</span> is the opposite: system-wide,
+        {data?.appId === undefined ? (
+          <>
+            You're reading this as yourself — message- and webhook-based tiles below cover{" "}
+            <span className="font-mono text-foreground">every app</span> in this deployment, not
+            one.{" "}
+          </>
+        ) : (
+          <>
+            Message- and webhook-based tiles below are scoped to{" "}
+            <span className="font-mono text-foreground">this app only</span> — the console's own
+            service-account token can only read the one app it belongs to.{" "}
+          </>
+        )}
+        <span className="font-mono text-foreground">Job backlog</span> is always system-wide,
         because <span className="font-mono text-foreground">Job</span> has no app boundary to scope
         by. Neither is a filter, and neither is a bug.
       </div>

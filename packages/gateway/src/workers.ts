@@ -17,7 +17,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
-import { getAccessToken, invalidateAccessToken } from "./token";
+import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 /** The six §7.1 role names, verbatim (`sms_worker::Role::as_str`). */
 export type WorkerRole = "dispatch" | "drain" | "scheduler" | "hooks" | "jobs" | "smpp";
@@ -74,7 +74,7 @@ export async function workerLocks(): Promise<WorkerLocksResult> {
   const url = procedureUrl("workerLocks");
 
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return undiciFetch(url, {
       method: "POST",
       headers: {
@@ -89,7 +89,7 @@ export async function workerLocks(): Promise<WorkerLocksResult> {
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
 

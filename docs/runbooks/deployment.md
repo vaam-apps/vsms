@@ -208,10 +208,19 @@ console once one exists.
 `roles_key_not_reserved_check` rejects it, because a human account
 holding it could read the OP's signing key through generated CRUD.
 
-**Known limitation, worth setting expectations before you sign in:** the
-console authenticates *upstream* with its own machine credential, not
-your session, so a logged-in `owner` still cannot perform writes that
-require a human role — see
+**As of #211, the console authenticates upstream as the signed-in human**,
+not its own machine credential — a logged-in `owner`/`admin`/`operator` can
+now perform writes that require a human role (a `Provider` edit, for
+example). Two deliberate exceptions still use the console's own machine
+credential regardless of who is signed in: the composer's `previewMessage`/
+`sendMessage` calls (`sendMessage` structurally requires a machine caller —
+see `crates/sms-api/src/procedures.rs::caller_client_id`), and the
+messages list's own live-update poll (a process-wide singleton shared by
+every open browser tab — see `packages/gateway/src/request-credential.ts`'s
+own module doc). One consequence worth knowing before you sign in: the
+messages list and the dashboard now read *every app's* rows, not just this
+console's own — any signed-in human, regardless of role, can see across
+`App` boundaries, per `Message`'s own row policy. See
 [#211](https://github.com/vymalo/vsms/issues/211).
 
 ## 5. Bring up sms-gateway and sms-worker

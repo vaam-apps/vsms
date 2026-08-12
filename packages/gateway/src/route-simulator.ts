@@ -29,7 +29,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
-import { getAccessToken, invalidateAccessToken } from "./token";
+import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 export type SimulateOperatorCode = "mtn" | "orange" | "camtel" | "nexttel" | "unknown";
 export type SimulateMessageClass = "otp" | "transactional" | "notification" | "marketing";
@@ -144,7 +144,7 @@ export async function simulateRoute(input: SimulateRouteInput): Promise<Simulate
   const body = JSON.stringify({ args: input });
 
   const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getAccessToken();
+    const token = await resolveUpstreamAccessToken();
     return undiciFetch(url, {
       method: "POST",
       headers: {
@@ -159,7 +159,7 @@ export async function simulateRoute(input: SimulateRouteInput): Promise<Simulate
 
   let response = await attempt();
   if (response.status === 401) {
-    invalidateAccessToken();
+    invalidateUpstreamAccessToken();
     response = await attempt();
   }
 

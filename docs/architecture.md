@@ -1496,18 +1496,40 @@ The six rows below are §5.2's own table, verbatim. **`system` is deliberately a
 ```sql
 INSERT INTO roles (key, label, description, builtin, permissions, version) VALUES
     ('owner',     'Owner',     'Break-glass. 1-2 humans.',            true,
-     ' message:read message:send message:cancel message:create message:update app:read app:write client:provision provider:read provider:update provider:delete route:read route:write sender:manage optout:manage webhook:manage job:read job:enqueue worker:read audit:read user:manage user:delete role:manage ', 0),
+     ' sms:read sms:send message:cancel message:create message:update app:read app:write client:provision provider:read provider:update provider:delete route:read route:write sender:manage optout:manage webhook:manage job:read job:enqueue worker:read dashboard:read audit:read user:manage user:delete role:manage ', 0),
     ('admin',     'Admin',     'Day-to-day administration.',          true,
-     ' message:read message:send message:cancel app:read app:write client:provision provider:read provider:update route:read route:write sender:manage optout:manage webhook:manage job:read job:enqueue worker:read audit:read user:manage ', 0),
+     ' sms:read sms:send message:cancel app:read app:write client:provision provider:read provider:update route:read route:write sender:manage optout:manage webhook:manage job:read job:enqueue worker:read dashboard:read audit:read user:manage ', 0),
     ('operator',  'Operator',  'Runs traffic.',                       true,
-     ' message:read message:send message:cancel provider:read provider:update route:read sender:manage optout:manage job:read job:enqueue worker:read ', 0),
+     ' sms:read sms:send message:cancel provider:read provider:update route:read sender:manage optout:manage job:read job:enqueue worker:read dashboard:read ', 0),
     ('developer', 'Developer', 'Integrates apps.',                    true,
-     ' app:read webhook:manage message:read message:send ', 0),
+     ' app:read webhook:manage sms:read sms:send ', 0),
     ('auditor',   'Auditor',   'Read-only oversight. No mutations.',  true,
-     ' message:read app:read provider:read route:read job:read worker:read delivery:read audit:read ', 0),
+     ' sms:read app:read provider:read route:read job:read worker:read dashboard:read delivery:read audit:read ', 0),
     ('support',   'Support',   'First-line support.',                 true,
-     ' message:read optout:manage delivery:read ', 0);
+     ' sms:read optout:manage delivery:read ', 0);
 ```
+
+**Correction, #211, found while wiring the console to forward a human's own
+session token instead of its machine credential for the first time:** the
+six rows above originally used `message:read`/`message:send`, not
+`sms:read`/`sms:send`, and no role carried `dashboard:read` at all — despite
+the very next section's own sentence claiming service-account scopes and
+human `perms` are "the same literals... reused verbatim." They were not.
+`require_permission` (`crates/sms-api/src/rbac.rs`) checks the literal
+`"sms:read"`/`"sms:send"` for `listMessageReceipts`/`sendMessage`, and
+`"dashboard:read"` for `dashboardSummary` — a human role carrying
+`message:read` instead satisfied neither check. This was silent until now
+because no human token had ever reached `sms-api` before #211: the console
+authenticated upstream as its own machine credential (whose `AppClient`
+scope, `SMS_CONSOLE_SCOPE`, already correctly said `sms:read`/`dashboard:read`
+etc.), so the mismatch only lived in the human side of the vocabulary, which
+nothing had ever exercised. `message:cancel`/`message:create`/`message:update`
+are untouched — no procedure checks those literals today, so there was
+nothing to rename. Fixed here, data-only (no schema/DDL change — `permissions`
+is a `String` column; regenerated via `ci/gen-bootstrap-sql.py`, not
+hand-edited) rather than filed as a separate follow-up, because #211's own
+"prove the allow case genuinely works" requirement would otherwise fail the
+moment a human tried to open the message-detail or dashboard screens.
 
 **Three notes on the triggers.**
 
@@ -1939,10 +1961,10 @@ Humans get roles. Service accounts get OAuth scopes. Different vocabularies on p
 |---|---|---|
 | `owner` | Break-glass. 1–2 humans. | everything, incl. `role:manage`, `user:delete`, `provider:delete`, `client:provision` |
 | `admin` | Day-to-day administration | all except role editing and owner-level deletes |
-| `operator` | Runs traffic | `message:read/send/cancel`, `provider:read/update`, `route:read`, `sender:manage`, `optout:manage`, `job:read/enqueue`, `worker:read`, `dashboard:read` |
-| `developer` | Integrates apps | `app:read`, `webhook:manage`, `message:read`, `message:send` |
+| `operator` | Runs traffic | `sms:read/send`, `message:cancel`, `provider:read/update`, `route:read`, `sender:manage`, `optout:manage`, `job:read/enqueue`, `worker:read`, `dashboard:read` |
+| `developer` | Integrates apps | `app:read`, `webhook:manage`, `sms:read`, `sms:send` |
 | `auditor` | Read-only oversight | `*:read`, `audit:read`. No mutations anywhere. |
-| `support` | First-line | `message:read`, `optout:manage`, `delivery:read` |
+| `support` | First-line | `sms:read`, `optout:manage`, `delivery:read` |
 | `system` | Internal only | `message:create/update`, `receipt:create`, `job:update`. **Never issued to a human, never reachable from any HTTP route.** |
 
 Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`, and (#56/#57) `job:read`, `job:enqueue`, `worker:read`, and (#49) `dashboard:read` — the same literals `operator`'s own `perms` carry, reused verbatim rather than invented separately, since `require_permission` (§5.1) checks either claim for the identical string. Registered per `AppClient` and enforced verbatim — scopes are rejected rather than filtered, and an omitted `scope` yields `scope: None`, which your check must treat as denial.

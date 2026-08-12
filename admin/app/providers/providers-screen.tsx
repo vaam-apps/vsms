@@ -1,28 +1,27 @@
 "use client";
 
-// The Providers screen (#54): list and detail, plus editing — the latter
-// real, tested code that cannot succeed against a real gateway yet. See the
-// banner below and `packages/gateway/src/providers.ts`'s own module doc for
-// why.
+// The Providers screen (#54): list and detail, plus editing — real, tested
+// code, and (as of #211) real writes against a real gateway for a
+// signed-in `owner`/`admin`/`operator`. This screen is #211's own named
+// proof case: it was the concrete example that exposed the console
+// forwarding its machine credential regardless of who was signed in.
 //
-// # Reads work today; writes don't — and why that split is real, not a UI bug
+// # Reads and writes both work today, for a real signed-in human
 //
-// `Provider.read`'s `@@allow` gained `auth().kind == "app"` in this same PR
-// (`schema.cstack`), so this console's own machine credential — once
-// provisioned with the `provider:read` scope (`scripts/demo.sh`) — can list
-// and view every row for real, over real HTTP, through `just demo`.
-// `Provider.update` stays `hasRole('owner') || hasRole('admin') ||
-// hasRole('operator')` only, untouched: no `auth().kind == "app"` clause at
-// all. #194 (human login) has landed, and `GatewayAuth` genuinely resolves
-// a real `hasRole(...)`-meaningful context for a human token now — this is
-// no longer "no principal can ever satisfy that policy." What still blocks
-// Save: this screen calls `packages/gateway/src/providers.ts`, and every
-// function there authenticates as this console's own separate machine
-// credential (`SMS_CONSOLE_CLIENT_ID`, `role: "app"` always), never the
-// logged-in human's own session token — see that module's own doc for the
-// full mechanism. Save is real, wired code that 403s regardless of who is
-// logged into the browser, until that package is rewired to forward a
-// human session token instead.
+// `Provider.read`'s `@@allow` admits `auth().kind == "app"` (#54,
+// `schema.cstack`) alongside the human roles. `Provider.update` stays
+// `hasRole('owner') || hasRole('admin') || hasRole('operator')` only — no
+// `auth().kind == "app"` clause at all, so it was never reachable by this
+// console's own machine credential and needed a real human principal.
+// `packages/gateway/src/providers.ts` now resolves its Bearer token via
+// `resolveUpstreamAccessToken()` (`./request-credential.ts`), which
+// forwards the signed-in operator's own session token for an ordinary
+// admin-console request — see that module's own doc for the mechanism.
+// Save genuinely succeeds for a signed-in `owner`/`admin`/`operator`
+// carrying the `provider:update` permission (seeded by `0002_bootstrap`
+// for all three roles), and genuinely still 403s for a role that lacks it
+// (e.g. `auditor`) — Layer 2 real, not defense in depth, per #211's own
+// PR description.
 //
 // # Why no live poll
 //
@@ -188,11 +187,10 @@ export function ProvidersScreen() {
       </header>
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-        This list is real — the console's own credential can read every row. Saving an edit is real,
-        wired code too, but cannot succeed yet: this console still talks to the gateway with its own
-        machine credential, not your logged-in session, so it can never satisfy Provider.update's
-        owner/admin/operator requirement. Every Save below will fail with{" "}
-        <span className="font-mono text-foreground">Forbidden</span> until that's rewired.
+        Reads and writes both act as you, not as a shared service account — Save requires your own
+        role to carry <span className="font-mono text-foreground">provider:update</span> (owner,
+        admin, and operator all do by default). A role without it, or a stale edit someone else
+        already saved, will surface as a real error here rather than silently failing.
       </div>
 
       {listQuery.isError && (
