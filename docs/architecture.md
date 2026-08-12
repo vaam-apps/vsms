@@ -1010,12 +1010,17 @@ ALTER TABLE webhook_attempts        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE users                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE roles                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE user_credentials        ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE audit_anchors           ALTER COLUMN id SET DEFAULT cs_cuid();
 
 -- Timestamps mixin, and other dbgenerated() columns.
 ALTER TABLE apps ALTER COLUMN created_at SET DEFAULT now(),
                  ALTER COLUMN updated_at SET DEFAULT now();
 -- ... repeat for every table using @use(Timestamps)
 ALTER TABLE delivery_receipts ALTER COLUMN received_at SET DEFAULT now();
+-- #68: AuditAnchor doesn't @use(Timestamps) — it has no updated_at (nothing
+-- ever updates an anchor row; see its own schema.cstack doc) — so it needs
+-- its own one-off default the same way delivery_receipts.received_at does.
+ALTER TABLE audit_anchors ALTER COLUMN created_at SET DEFAULT now();
 
 -- Nothing in the framework touches updated_at on write, and remembering to set
 -- it in every call site is the kind of thing that works until it doesn't.
@@ -1305,6 +1310,13 @@ CREATE INDEX oauth_signing_keys_active_idx ON oauth_signing_keys (created_at DES
 -- own `exp`; after that the assertion is refused on `exp` regardless, so
 -- keeping the row would only grow the table.
 CREATE INDEX client_assertions_expiry_idx ON client_assertions (expires_at);
+
+-- #68's anchor_audit job reads exactly one row every run: the most recent
+-- anchor, to chain the next one off its chainHash. Never a large table (at
+-- most one row per scheduled run, per day per §7.5), but the same
+-- "index the one lookup a singleton job always makes" reasoning
+-- oauth_signing_keys_active_idx above already applies.
+CREATE INDEX audit_anchors_period_end_idx ON audit_anchors (period_end DESC);
 
 -- The framework's own outbox. `ensure_event_outbox_table` creates this lazily
 -- on the first emitting write, which is too late to index it here: applying

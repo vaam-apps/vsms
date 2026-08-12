@@ -4,9 +4,10 @@
 //! better" — the advisory lock is that clean avoidance, `dedupeKey` is
 //! belt-and-braces underneath it, not the primary mechanism.
 //!
-//! `expire_stale`, `reap_outbox` (#42) and, as of #67, `purge_retention`
-//! are registered — see [`crate::jobs`]'s own module doc for why the
-//! remaining six §7.5 kinds are scoped out rather than silently dropped.
+//! `expire_stale`, `reap_outbox` (#42), `purge_retention` (#67) and, as of
+//! #68, `anchor_audit` are registered — see [`crate::jobs`]'s own module
+//! doc for why the remaining five §7.5 kinds are scoped out rather than
+//! silently dropped.
 //!
 //! # Cadence tracking has no dedicated schema support
 //!
@@ -97,6 +98,16 @@ pub fn schedule() -> Vec<RecurringJobSpec> {
             // on is real but never urgent the way an unreclaimed lease or a
             // poison outbox row is.
             kind: "purge_retention",
+            cadence: Duration::days(1),
+            priority: 100,
+            max_attempts: 3,
+        },
+        RecurringJobSpec {
+            // §7.5's own cadence for this kind — "daily". Same priority
+            // band as purge_retention: a compliance artifact, not
+            // operationally urgent the way an unreclaimed lease or a
+            // poison outbox row is.
+            kind: "anchor_audit",
             cadence: Duration::days(1),
             priority: 100,
             max_attempts: 3,

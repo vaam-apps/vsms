@@ -15,6 +15,8 @@
 --   - apps.created_at
 --   - apps.updated_at
 --   - apps.id
+--   - audit_anchors.id
+--   - audit_anchors.created_at
 --   - client_assertions.created_at
 --   - client_assertions.updated_at
 --   - client_assertions.id
@@ -96,6 +98,18 @@ CREATE TABLE apps (
     active BOOLEAN NOT NULL DEFAULT true,
     deleted_at TIMESTAMPTZ,
     version BIGINT NOT NULL,
+    PRIMARY KEY (id)
+);
+
+CREATE TABLE audit_anchors (
+    id TEXT NOT NULL,
+    period_start TIMESTAMPTZ,
+    period_end TIMESTAMPTZ NOT NULL,
+    row_count BIGINT NOT NULL,
+    range_hash TEXT NOT NULL,
+    prev_chain_hash TEXT NOT NULL,
+    chain_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
     PRIMARY KEY (id)
 );
 
@@ -402,6 +416,8 @@ CREATE UNIQUE INDEX app_clients_client_id_key ON app_clients (client_id);
 
 CREATE UNIQUE INDEX apps_slug_key ON apps (slug);
 
+CREATE UNIQUE INDEX audit_anchors_chain_hash_key ON audit_anchors (chain_hash);
+
 CREATE UNIQUE INDEX client_assertions_jti_key ON client_assertions (jti);
 
 CREATE UNIQUE INDEX oauth_clients_client_id_key ON oauth_clients (client_id);
@@ -421,6 +437,12 @@ CREATE UNIQUE INDEX user_credentials_user_id_key ON user_credentials (user_id);
 CREATE UNIQUE INDEX users_subject_key ON users (subject);
 
 CREATE UNIQUE INDEX users_email_key ON users (email);
+
+ALTER TABLE audit_anchors ADD CONSTRAINT audit_anchors_range_hash_length_check CHECK (length(range_hash) BETWEEN 64 AND 64);
+
+ALTER TABLE audit_anchors ADD CONSTRAINT audit_anchors_prev_chain_hash_length_check CHECK (length(prev_chain_hash) BETWEEN 64 AND 64);
+
+ALTER TABLE audit_anchors ADD CONSTRAINT audit_anchors_chain_hash_length_check CHECK (length(chain_hash) BETWEEN 64 AND 64);
 
 ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_outcome_enum_check CHECK (outcome IN ('delivered', 'uncertain', 'failed', 'expired', 'rejected', 'unknown'));
 
