@@ -131,12 +131,19 @@ up() {
   # own `require_permission(ctx, "route:read")`). Editing either model still
   # needs a human role no token this deployment can issue carries (#194) —
   # scope alone doesn't change that, see `providers-screen.tsx`'s own doc.
+  #
+  # dashboard:read (#49): the Dashboard screen's own `dashboardSummary`
+  # procedure — same shape again, `DashboardSummary` isn't a model, so its
+  # `@allow` admits any `auth().kind == "app"` caller unconditionally and
+  # this scope is the real perimeter (`require_permission(ctx,
+  # "dashboard:read")`, `crates/sms-api/src/procedures.rs`'s own
+  # `dashboard_snapshot`).
   prov_out="$(DATABASE_URL="$DATABASE_URL" SMS_HASH_PEPPER="$pepper" \
     ./target/debug/sms-gateway provision-client \
     --app-id "$app_id" --label "demo console" \
     --scope sms:send --scope sms:read \
     --scope job:read --scope job:enqueue --scope worker:read \
-    --scope provider:read --scope route:read \
+    --scope provider:read --scope route:read --scope dashboard:read \
     --key-out "$KEY_FILE")"
   echo "$prov_out"
   client_id="$(echo "$prov_out" | sed -n 's/^provisioned client: \(.*\)$/\1/p')"
@@ -216,7 +223,7 @@ SMS_CONSOLE_SESSION_SECRET=demo-only-session-secret-not-for-any-real-deployment
 SMS_AUTH_ISSUER=http://127.0.0.1:${GATEWAY_PORT}
 SMS_CONSOLE_CLIENT_ID=${client_id}
 SMS_CONSOLE_PRIVATE_KEY_PATH=${KEY_FILE}
-SMS_CONSOLE_SCOPE=sms:send sms:read job:read job:enqueue worker:read provider:read route:read
+SMS_CONSOLE_SCOPE=sms:send sms:read job:read job:enqueue worker:read provider:read route:read dashboard:read
 
 MESSAGE_STREAM_POLL_MS=2000
 

@@ -161,7 +161,7 @@ DATABASE_URL=postgres://localhost/vsms_check \
     --label "admin console" \
     --scope sms:send --scope sms:read \
     --scope job:read --scope job:enqueue --scope worker:read \
-    --scope provider:read --scope route:read \
+    --scope provider:read --scope route:read --scope dashboard:read \
     --key-out ./console-client-key.pem
 ```
 
@@ -202,7 +202,7 @@ SMS_API_URL=http://127.0.0.1:8080
 SMS_AUTH_ISSUER=http://127.0.0.1:8080
 SMS_CONSOLE_CLIENT_ID=appc_...                        # from provision-client's output
 SMS_CONSOLE_PRIVATE_KEY_PATH=/absolute/path/to/console-client-key.pem
-SMS_CONSOLE_SCOPE=sms:send sms:read job:read job:enqueue worker:read provider:read route:read
+SMS_CONSOLE_SCOPE=sms:send sms:read job:read job:enqueue worker:read provider:read route:read dashboard:read
 
 # The human login flow (#194). DASHBOARD_AUTH is gone — it was replaced by
 # real sessions, not supplemented, so there is no bypass mode any more and

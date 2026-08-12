@@ -1,6 +1,7 @@
 import "server-only";
 
 import { composeRouter } from "./routers/compose";
+import { dashboardRouter } from "./routers/dashboard";
 import { jobsRouter } from "./routers/jobs";
 import { messagesRouter } from "./routers/messages";
 import { providersRouter } from "./routers/providers";
@@ -11,6 +12,7 @@ import { router } from "./trpc";
 
 export const appRouter = router({
   compose: composeRouter,
+  dashboard: dashboardRouter,
   messages: messagesRouter,
   jobs: jobsRouter,
   workers: workersRouter,
