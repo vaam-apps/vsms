@@ -574,6 +574,8 @@ async fn the_circuit_breaker_opens_and_the_endpoint_stops_being_claimed() {
             consecutiveFailures: Some(19),
             ..Default::default()
         })
+        // #59: WebhookEndpoint is now @version'd.
+        .if_match(endpoint.version)
         .run(&sys())
         .await
         .expect("fast-forwarding consecutiveFailures");

@@ -17,7 +17,7 @@ export type {
 export { previewMessage, sendMessage } from "./client";
 export { gatewayAgent } from "./dispatcher";
 export type { GatewayFieldErrors, GatewayTrpcCode } from "./errors";
-export { GatewayError, mapGatewayError } from "./errors";
+export { GatewayError, isStaleWriteError, mapGatewayError } from "./errors";
 export type {
   JobListItem,
   JobRecord,
@@ -47,6 +47,8 @@ export type {
   StreamCandidate,
 } from "./messages";
 export { getMessageById, listMessages, listMessagesForStream } from "./messages";
+export type { WithEtag } from "./rest";
+export { fetchWithEtag, updateWithIfMatch } from "./rest";
 export { getAccessToken, invalidateAccessToken } from "./token";
 export type { WorkerLockInfo, WorkerLocksResult, WorkerRole } from "./workers";
 export { workerLocks } from "./workers";

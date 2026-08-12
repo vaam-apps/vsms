@@ -391,11 +391,17 @@ async fn fetch_endpoint(
 
 /// Write whichever `WebhookAttempt`/`WebhookEndpoint` transition `outcome`
 /// implies. Up to two writes — the attempt's own state and the endpoint's
-/// failure bookkeeping are separate rows with no shared transaction here
-/// (`WebhookEndpoint` has no `@version` to make a combined CAS meaningful,
-/// and the two writes have independent failure modes worth logging
-/// separately) — but which arms touch the endpoint at all is the load-
-/// bearing decision in this function: `Success`/`Gone`/`Retryable` all
+/// failure bookkeeping are separate rows with no shared transaction here.
+/// **Update, #59:** `WebhookEndpoint` gained `@version`, so a combined CAS
+/// across both rows in one transaction is now possible in principle, but
+/// this function deliberately still doesn't do that — the two writes keep
+/// independent failure modes worth logging separately (an attempt-state
+/// write failure is a bug to alert on; an endpoint-bookkeeping write losing
+/// a race is an accepted, silent, best-effort miss), and combining them
+/// would make the attempt's own outcome hostage to a race on a value nothing
+/// else in this function needs to be atomic with. But which arms touch the
+/// endpoint at all is the load-bearing decision in this function:
+/// `Success`/`Gone`/`Retryable` all
 /// reflect something the endpoint actually did (or failed to do), so all
 /// three update its bookkeeping; `MalformedPayload` reflects nothing about
 /// the endpoint — no request was ever sent to it — and must not. Errors
@@ -584,13 +590,17 @@ async fn write_dead(
 /// therefore never records a failure against, a breaker that has already
 /// tripped.
 ///
-/// No `@version`/CAS on this write (`WebhookEndpoint` has none) — a
-/// best-effort read-modify-write, same class of race `rotateWebhookSecret`
-/// already accepts for this model (its own `@isolation("serializable")` tx
-/// closes a *different* race, not this one). Under concurrent `hooks`
-/// workers failing against the same endpoint at once, `consecutiveFailures`
-/// can under-count by a small amount — acceptable for a heuristic that
-/// exists to stop hammering a dead endpoint, not to bill anyone.
+/// **Update, #59:** `WebhookEndpoint` gained `@version`, so this write now
+/// carries `if_match(endpoint.version)`. Still deliberately best-effort,
+/// not a CAS-retry loop: a losing race falls into the same `Err(error) =>
+/// warn!(...)` arm below as any other write failure always has, so a lost
+/// race is now a detected-and-dropped `PreconditionFailed` instead of a
+/// silent overwrite — a strictly more honest failure, not a behaviour
+/// change. Under concurrent `hooks` workers failing against the same
+/// endpoint at once, `consecutiveFailures` can still under-count by a small
+/// amount (the loser's write is dropped, not retried) — acceptable for a
+/// heuristic that exists to stop hammering a dead endpoint, not to bill
+/// anyone.
 async fn record_endpoint_failure(
     ctx: &WorkerContext,
     sys: &CoolContext,
@@ -619,6 +629,7 @@ async fn record_endpoint_failure(
         .webhook_endpoint()
         .update(endpoint.id.clone())
         .set(set)
+        .if_match(endpoint.version)
         .run(sys)
         .await
     {
@@ -631,6 +642,9 @@ async fn record_endpoint_failure(
 /// the design doc for why these are the two things that reset the counter.
 /// Skips the write entirely when there is nothing to reset, so a healthy
 /// endpoint's every single success doesn't cost a pointless `UPDATE`.
+///
+/// #59: carries `if_match(endpoint.version)`, same best-effort-not-retried
+/// reasoning as `record_endpoint_failure` above.
 async fn reset_endpoint_failures(
     ctx: &WorkerContext,
     sys: &CoolContext,
@@ -648,6 +662,7 @@ async fn reset_endpoint_failures(
             circuitOpenUntil: Some(None),
             ..Default::default()
         })
+        .if_match(endpoint.version)
         .run(sys)
         .await
     {
@@ -656,6 +671,9 @@ async fn reset_endpoint_failures(
 }
 
 /// §8.5: "410 Gone deactivates the endpoint immediately."
+///
+/// #59: carries `if_match(endpoint.version)`, same best-effort-not-retried
+/// reasoning as `record_endpoint_failure` above.
 async fn deactivate_endpoint(ctx: &WorkerContext, sys: &CoolContext, endpoint: &WebhookEndpoint) {
     if let Err(error) = ctx
         .db
@@ -665,6 +683,7 @@ async fn deactivate_endpoint(ctx: &WorkerContext, sys: &CoolContext, endpoint: &
             active: Some(false),
             ..Default::default()
         })
+        .if_match(endpoint.version)
         .run(sys)
         .await
     {

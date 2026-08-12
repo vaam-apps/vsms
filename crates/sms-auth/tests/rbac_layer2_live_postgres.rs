@@ -372,6 +372,8 @@ async fn seed_sender_and_provider(db: &Cratestack) -> (String, String) {
             active: Some(true),
             ..Default::default()
         })
+        // #59: SenderId is now @version'd.
+        .if_match(sender.version)
         .run(&owner())
         .await
         .expect("activating the sender id");

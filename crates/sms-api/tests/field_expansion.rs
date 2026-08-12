@@ -40,6 +40,9 @@ fn assert_app_row_carries_every_expected_field(app: sms_api::schema::App) {
         transliterateToGsm7,
         active,
         deletedAt,
+        // #59: App is one of ten operator-editable models that gained
+        // `@version` so PATCH routes can require If-Match.
+        version,
         // If `@use(Timestamps)` silently didn't expand, these two names
         // stop existing on this struct and this function stops compiling.
         createdAt,
@@ -56,6 +59,7 @@ fn assert_app_row_carries_every_expected_field(app: sms_api::schema::App) {
         transliterateToGsm7,
         active,
         deletedAt,
+        version,
         createdAt,
         updatedAt,
     );
@@ -72,11 +76,13 @@ fn assert_app_client_row_carries_every_expected_field(app_client: sms_api::schem
         active,
         lastUsedAt,
         retiredAt,
+        version,
         createdAt,
         updatedAt,
     } = app_client;
     let _ = (
-        id, appId, clientId, label, scopes, active, lastUsedAt, retiredAt, createdAt, updatedAt,
+        id, appId, clientId, label, scopes, active, lastUsedAt, retiredAt, version, createdAt,
+        updatedAt,
     );
 }
 
@@ -99,6 +105,7 @@ fn assert_provider_row_carries_every_expected_field(provider: sms_api::schema::P
         costPerSegmentXaf,
         healthCheckedAt,
         healthy,
+        version,
         createdAt,
         updatedAt,
     } = provider;
@@ -119,6 +126,7 @@ fn assert_provider_row_carries_every_expected_field(provider: sms_api::schema::P
         costPerSegmentXaf,
         healthCheckedAt,
         healthy,
+        version,
         createdAt,
         updatedAt,
     );
@@ -156,6 +164,7 @@ fn assert_message_row_carries_every_expected_field(message: sms_api::schema::Mes
         expiresAt,
         submittedAt,
         finalizedAt,
+        purgedAt,
         costXaf,
         version,
         createdAt,
@@ -191,6 +200,7 @@ fn assert_message_row_carries_every_expected_field(message: sms_api::schema::Mes
         expiresAt,
         submittedAt,
         finalizedAt,
+        purgedAt,
         costXaf,
         version,
         createdAt,

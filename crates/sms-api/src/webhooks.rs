@@ -252,11 +252,40 @@ where
 /// hear about. Every `Message.created` call, by contrast, always maps —
 /// `state` is unconditionally `accepted` the instant a row is created,
 /// per the schema's own `@default('accepted')`.
+///
+/// **Also no-ops on a purged message — #67's own guard, found by the
+/// coordinator's review of that PR, not by this module's own author.**
+/// `Message` carries `@@emit(created, updated)`, and
+/// `crates/sms-worker/src/jobs/purge_retention.rs` writes through a real
+/// `.update()`, which means every purge fires this exact subscriber: four
+/// of the job's five terminal candidate states
+/// (`delivered`/`failed`/`expired`/`cancelled` — every one but `rejected`)
+/// map to a catalogued event per [`message_event_type`]. Without this
+/// guard, purging a 90-day-old message would enqueue — and `hooks` would
+/// then sign and POST — a live webhook to the customer's endpoint
+/// carrying the placeholder `to: "purged-msisdn"` and a `clientRef` that
+/// is already `None`, reporting on a message the endpoint was already
+/// told about three months earlier. `webhook_attempts_dedupe`
+/// (`endpoint_id`, `aggregate_id`, `event_type`) happens to swallow the
+/// common case where an attempt for this exact event already exists from
+/// the original delivery — but that is a coincidence of an unrelated
+/// unique index, not a guard against emitting an event we never meant to
+/// send, and it does not save an endpoint registered *after* the
+/// original event fired, which has no prior row to collide with. `body`
+/// is deliberately not part of this check: `body` can in principle be
+/// null for reasons unrelated to a purge (see §2.5's own note on the
+/// #183 redact-at-terminal-state idea, built and rejected) — `purgedAt`
+/// is the one field whose meaning is exactly "this row must never be
+/// reported on again."
 pub async fn enqueue_message_webhook_attempts(
     db: &Cratestack,
     source_event_id: cratestack::uuid::Uuid,
     message: &Message,
 ) -> Result<(), CoolError> {
+    if message.purgedAt.is_some() {
+        return Ok(());
+    }
+
     let Some(event_type) = message_event_type(message.state) else {
         return Ok(());
     };

@@ -72,6 +72,9 @@ tracing.workspace = true
 # test-util on top of dependencies' time — this crate's own tests pause the
 # clock to prove a stub role never resolves without waiting on a real timer.
 tokio = { workspace = true, features = ["test-util"] }
+# purge_retention.rs's own unit test: proves the placeholder it overwrites
+# `Message.msisdn` with on purge doesn't parse as a real Cameroon MSISDN.
+sms-msisdn.workspace = true
 # dispatch.rs's own live tests submit against a real OrangeCmProvider
 # pointed at a wiremock server — the only adapter that exists yet.
 sms-provider-orange-cm.workspace = true

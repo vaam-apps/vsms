@@ -1,7 +1,9 @@
 \set ON_ERROR_STOP 1
 BEGIN;
-INSERT INTO apps (name, slug, description, monthly_quota, ip_allowlist, transliterate_to_gsm7)
-VALUES ('probe','probe',NULL,0,' ',false);
+-- #59: apps.version is now NOT NULL with no SQL DEFAULT (the ORM seeds it
+-- server-side; this script writes raw SQL and has to supply it itself).
+INSERT INTO apps (name, slug, description, monthly_quota, ip_allowlist, transliterate_to_gsm7, version)
+VALUES ('probe','probe',NULL,0,' ',false,0);
 INSERT INTO messages (app_id, msisdn, msisdn_hash, operator, sender_id_value, class,
                       priority, body_hash, body_length, encoding, segments, max_attempts, expires_at)
 SELECT id,'+237690000000','h','orange','VYMALO','otp',900,'bh',0,'gsm7',1,2, now()+interval '15 min'
@@ -84,8 +86,9 @@ DO $$ BEGIN
 END $$;
 
 -- webhook dedupe index must reject the second identical (endpoint, aggregate, type)
-INSERT INTO webhook_endpoints (app_id, url, event_types, secret, mask_recipient, max_attempts)
-SELECT id, 'https://example.test/hook', ' message.delivered ', 's', true, 8 FROM apps WHERE slug='probe';
+-- #59: webhook_endpoints.version is now NOT NULL with no SQL DEFAULT.
+INSERT INTO webhook_endpoints (app_id, url, event_types, secret, mask_recipient, max_attempts, version)
+SELECT id, 'https://example.test/hook', ' message.delivered ', 's', true, 8, 0 FROM apps WHERE slug='probe';
 INSERT INTO webhook_attempts (endpoint_id, source_event_id, aggregate_id, event_type, payload)
 SELECT e.id, gen_random_uuid(), m.id, 'message.delivered', '{}' FROM webhook_endpoints e, messages m;
 DO $$ BEGIN
