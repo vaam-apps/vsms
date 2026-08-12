@@ -23,8 +23,8 @@
 use chrono::{TimeZone, Utc};
 use cratestack::Decimal;
 use sms_api::schema::{
-    ClientAuthMethod, CreateAppClientInput, CreateClientAssertionInput, CreateJobInput,
-    CreateMessageInput, CreateOauthClientInput, CreateOauthSigningKeyInput,
+    ClientAuthMethod, CreateAppClientInput, CreateAuditAnchorInput, CreateClientAssertionInput,
+    CreateJobInput, CreateMessageInput, CreateOauthClientInput, CreateOauthSigningKeyInput,
     CreateOperatorPrefixRuleInput, Encoding, MessageClass, OperatorCode,
 };
 
@@ -120,6 +120,31 @@ fn enqueue_job_can_set_every_field_it_owns() {
 
     // `state`, `attempts` and `version` are framework-owned.
     assert_eq!(input.kind, "reap_outbox");
+}
+
+/// Every field #68's `anchor_audit` job must control on the row it creates
+/// (`crates/sms-worker/src/jobs/anchor_audit.rs`). `CreateAuditAnchorInput`
+/// derives no `Default` (create inputs never do — only update inputs do),
+/// so the job's own real `.create()` call is already exhaustive by
+/// construction; this is the same regression canary the other cases in
+/// this file are, kept for consistency with how every other job/procedure
+/// writer earns one here.
+#[test]
+fn anchor_audit_can_set_every_field_it_owns() {
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+    let genesis = "0".repeat(64);
+
+    let input = CreateAuditAnchorInput {
+        periodStart: None,
+        periodEnd: now,
+        rowCount: 0,
+        rangeHash: genesis.clone(),
+        prevChainHash: genesis,
+        chainHash: "1".repeat(64),
+    };
+
+    // `id` and `createdAt` are framework-owned (`@default(dbgenerated())`).
+    assert_eq!(input.rowCount, 0);
 }
 
 /// Every field a manual or DLR-driven correction to an

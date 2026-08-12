@@ -132,8 +132,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, app, app_client, client_assertion, delivery_receipt, job, message, oauth_client,
-    oauth_signing_key, operator_prefix_rule, opt_out, provider, route, sender_id,
+    self, app, app_client, audit_anchor, client_assertion, delivery_receipt, job, message,
+    oauth_client, oauth_signing_key, operator_prefix_rule, opt_out, provider, route, sender_id,
     sender_id_registration, webhook_attempt, webhook_endpoint, ClientAuthMethod, Cratestack,
     DeliveryOutcome, Encoding, MessageClass, OperatorCode, OptOutSource, ProviderKind,
 };
@@ -197,6 +197,13 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     "OptOut",
     "WebhookEndpoint",
     "WebhookAttempt",
+    // #68: `crates/sms-worker/src/jobs/anchor_audit.rs`'s own `latest_anchor`/
+    // `verify_chain_linkage` read this model under `sys` every run — the
+    // job needs the previous anchor's `chainHash` to chain the next one, and
+    // needs every prior anchor to re-verify linkage. Never shipped broken:
+    // flagged in advance, the same way `Route` (#62) and `WebhookAttempt`
+    // (#40) were, not found live.
+    "AuditAnchor",
 ];
 
 /// Models with no internal `system`-role reader anywhere in this codebase
@@ -911,6 +918,45 @@ async fn seed_and_verify_webhook_attempt(
     seeded
 }
 
+/// #68: `anchor_audit`'s own `latest_anchor`/`verify_chain_linkage`
+/// (`crates/sms-worker/src/jobs/anchor_audit.rs`) read this model under
+/// `sys` — the first, and so far only, internal reader `AuditAnchor` has.
+/// `rangeHash`/`prevChainHash`/`chainHash` all carry a real
+/// `@length(min: 64, max: 64) @db_enforce` `CHECK`, so the seeded values
+/// have to be genuinely 64 hex characters, not placeholder text — `suffix`
+/// (already a hex string, see [`unique_suffix`]) left-padded with `'0'`
+/// satisfies that and stays unique per test run.
+async fn seed_and_verify_audit_anchor(
+    db: &Cratestack,
+    suffix: &str,
+    now: chrono::DateTime<Utc>,
+) -> schema::AuditAnchor {
+    let genesis_hex = "0".repeat(64);
+    let seeded = db
+        .audit_anchor()
+        .create(schema::CreateAuditAnchorInput {
+            periodStart: None,
+            periodEnd: now,
+            rowCount: 0,
+            rangeHash: genesis_hex.clone(),
+            prevChainHash: genesis_hex,
+            chainHash: format!("{suffix:0>64}"),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding an AuditAnchor");
+    assert_system_can_read_back!(
+        db,
+        audit_anchor,
+        audit_anchor,
+        seeded.id,
+        "AuditAnchor",
+        "@@allow(\"read\", hasRole('owner') || hasRole('admin') || hasRole('auditor') || \
+         hasRole('system'))"
+    );
+    seeded
+}
+
 /// Seeds one row per model in [`SYSTEM_READABLE_MODELS`] and proves a
 /// system context can read each one back. This is the live half of #155's
 /// guard — [`every_model_in_the_schema_is_classified`] above only checks
@@ -957,4 +1003,5 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     seed_and_verify_opt_out(&db, &suffix, now).await;
     let endpoint = seed_and_verify_webhook_endpoint(&db, &suffix, &app.id).await;
     seed_and_verify_webhook_attempt(&db, &suffix, &endpoint.id).await;
+    seed_and_verify_audit_anchor(&db, &suffix, now).await;
 }

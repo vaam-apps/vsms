@@ -49,6 +49,16 @@ sms-webhook.workspace = true
 sms-metrics.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
+# anchor_audit.rs's own row/chain hashing (#68) — the same `sha2` already
+# pinned for crates/sms-api/src/pepper.rs's HMAC, named directly here since
+# this crate's hash is unkeyed (see that module's own doc for why a keyed
+# scheme was considered and rejected).
+sha2.workspace = true
+# anchor_audit.rs encodes/decodes its 32-byte digests as the 64 hex
+# characters schema.cstack's own `@length(min: 64, max: 64)` expects —
+# already pinned for sms-webhook's signature bytes, named directly here
+# rather than hand-rolling a second hex codec.
+hex.workspace = true
 # routing.rs's own production draw for sms_routing::select_route's weighted
 # tie-break — the *only* place this crate ever touches an RNG (see that
 # module's own doc for why the engine itself never does).

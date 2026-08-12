@@ -803,6 +803,72 @@ model Role {
   @@emit(created, updated, deleted)
 }
 
+// #68: periodic hash anchoring over `cratestack_audit` — see
+// crates/sms-worker/src/jobs/anchor_audit.rs's own module doc for the full
+// design (hash-chain vs Merkle-snapshot vs external anchoring, and exactly
+// what this proves and does not). One row per `anchor_audit` run: the
+// SHA-256 fold of every `cratestack_audit` row in (periodStart, periodEnd],
+// chained to the previous anchor's own chainHash so editing or deleting any
+// covered audit row — or any earlier anchor row itself — breaks every link
+// after it.
+//
+// Write-once by construction, not by convention: no @@allow("update", ...)
+// and no @@allow("delete", ...) clause exists at all, and this schema's own
+// deny-by-default (§2.0) makes both actions unreachable through any role,
+// including `system` — nothing in this codebase, ever, updates or deletes
+// an anchor row. No @@audit on this model itself: the table already IS an
+// immutable, append-only record, and an audit trail of an audit trail is
+// circular, not useful. No @@retain: unlike Message/DeliveryReceipt, an
+// anchor is the compliance artifact, not the thing being minimised — it
+// must outlive every retention window it stands witness to.
+model AuditAnchor {
+  id Cuid @id @default(dbgenerated())
+  // Exclusive lower bound. Null only on the very first anchor this
+  // deployment ever writes, meaning "everything up to periodEnd" — there is
+  // no earlier anchor to inherit a boundary from.
+  periodStart DateTime?
+  // Inclusive upper bound — see the module doc for why this is `now` minus
+  // a small safety lag, not `now` itself.
+  periodEnd DateTime
+  rowCount Int
+  // Hex SHA-256, sequential fold over every covered row in
+  // (occurred_at, event_id) order. Recomputable from `cratestack_audit`
+  // alone; stored for diagnostics without requiring a recompute to see
+  // which period a mismatch falls in.
+  rangeHash String @length(min: 64, max: 64) @db_enforce
+  // The previous anchor's chainHash, verbatim, or 64 '0' characters (the
+  // hex encoding of the fixed 32-byte genesis value — see the module doc's
+  // GENESIS constant) on the very first anchor, which has no predecessor.
+  // A sentinel, not `String?`: `@length` on a nullable field was tried
+  // first and found to break the *generated* `UpdateAuditAnchorInput`'s
+  // `validate()` — cratestack-macros' `validate_impl_tokens(&fields, true)`
+  // (unconditionally generated for every model regardless of whether
+  // `@@allow("update", ...)` exists to route to it) wraps every update
+  // field in one `Option<...>` for "present or absent" regardless of the
+  // field's own nullability, so a `String?` field becomes
+  // `Option<Option<String>>` there; `emit_field_validators`'s own
+  // optionality check only unwraps one layer, so `validate_length` is
+  // called with `&Option<String>` where it needs `&str` — `cargo check -p
+  // sms-api` fails with `E0308` naming exactly that mismatch. Filed
+  // upstream; a non-nullable sentinel sidesteps it entirely rather than
+  // waiting on a fix, and reads as a cleaner design in its own right — this
+  // field is never actually absent in the cryptographic sense, "no
+  // predecessor" is itself a fixed, known value. A plain `String`, not a
+  // self-relation: the link that matters here is cryptographic (does this
+  // value equal what the previous row actually stored), not referential.
+  prevChainHash String @length(min: 64, max: 64) @db_enforce
+  // Hex SHA-256 over prevChainHash + periodStart + periodEnd + rowCount +
+  // rangeHash — i.e. it commits to this row's own metadata, not just to
+  // rangeHash, so tampering with periodStart/periodEnd/rowCount on an
+  // existing anchor row is exactly as detectable as tampering with the
+  // audit rows it covers.
+  chainHash String @unique @length(min: 64, max: 64) @db_enforce
+  createdAt DateTime @default(dbgenerated())
+
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('auditor') || hasRole('system'))
+  @@allow("create", hasRole('system'))
+}
+
 type SendMessageInput {
   to String
   body String

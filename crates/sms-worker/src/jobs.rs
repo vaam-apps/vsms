@@ -7,17 +7,18 @@
 //! `pending` result means "just reclaimed, not actually claimed yet" and
 //! must not be executed this tick.
 //!
-//! Three [`JobHandler`]s are registered as of #67 — [`expire_stale`] (M2),
-//! [`reap_outbox`] (#42), and [`purge_retention`] (#67) — proving the
-//! pipeline end to end without depending on infrastructure this milestone
-//! doesn't build (Orange balance/health endpoints, audit anchoring, backup
-//! verification). The retention-law question that used to block
-//! `purge_retention` (§7.5's own table, issue #5) was resolved 2026-08-11:
-//! 90-day minimisation, no split ledger — see `purge_retention`'s own
-//! module doc. The remaining six `kind`s §7.5's own table names are real,
-//! tracked gaps, not a silently dropped scope — see the module's own issue
-//! for the follow-up.
+//! Four [`JobHandler`]s are registered as of #68 — [`expire_stale`] (M2),
+//! [`reap_outbox`] (#42), [`purge_retention`] (#67), and [`anchor_audit`]
+//! (#68) — proving the pipeline end to end without depending on
+//! infrastructure this milestone doesn't build (Orange balance/health
+//! endpoints, backup verification). The retention-law question that used
+//! to block `purge_retention` (§7.5's own table, issue #5) was resolved
+//! 2026-08-11: 90-day minimisation, no split ledger — see
+//! `purge_retention`'s own module doc. The remaining five `kind`s §7.5's
+//! own table names are real, tracked gaps, not a silently dropped scope —
+//! see the module's own issue for the follow-up.
 
+pub mod anchor_audit;
 pub mod expire_stale;
 pub mod purge_retention;
 pub mod reap_outbox;
@@ -126,13 +127,15 @@ impl Default for Registry {
 }
 
 /// This milestone's registry — see the module doc for why only
-/// `expire_stale`/`reap_outbox`/`purge_retention` are wired up.
+/// `expire_stale`/`reap_outbox`/`purge_retention`/`anchor_audit` are wired
+/// up.
 #[must_use]
 pub fn default_registry() -> Registry {
     Registry::new()
         .register(expire_stale::ExpireStale)
         .register(reap_outbox::ReapOutbox)
         .register(purge_retention::PurgeRetention)
+        .register(anchor_audit::AnchorAudit)
 }
 
 fn sys(worker: &str) -> CoolContext {
