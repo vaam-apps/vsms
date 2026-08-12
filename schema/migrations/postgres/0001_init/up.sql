@@ -187,6 +187,7 @@ CREATE TABLE messages (
     expires_at TIMESTAMPTZ NOT NULL,
     submitted_at TIMESTAMPTZ,
     finalized_at TIMESTAMPTZ,
+    purged_at TIMESTAMPTZ,
     cost_xaf NUMERIC NOT NULL DEFAULT 0,
     version BIGINT NOT NULL,
     PRIMARY KEY (id)

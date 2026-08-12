@@ -303,6 +303,16 @@ CREATE INDEX messages_lease_reclaim_idx
 CREATE INDEX messages_app_created_idx   ON messages (app_id, created_at DESC);
 CREATE INDEX messages_state_created_idx ON messages (state, created_at DESC);
 CREATE INDEX messages_msisdn_hash_idx   ON messages (msisdn_hash, created_at DESC);
+
+-- #67's purge_retention candidate query — a terminal message, not yet
+-- purged, past its own createdAt cutoff. Partial and narrow, same style as
+-- messages_dispatch_idx/messages_lease_reclaim_idx above, rather than
+-- leaning on messages_state_created_idx alone: that index still has to
+-- scan every non-purged row of five different states before this job's
+-- own extra purged_at filter narrows it.
+CREATE INDEX messages_purge_idx ON messages (created_at)
+    WHERE purged_at IS NULL
+      AND state IN ('delivered','failed','expired','rejected','cancelled');
 CREATE INDEX messages_provider_ref_idx  ON messages (provider_id, provider_message_ref)
     WHERE provider_message_ref IS NOT NULL;
 CREATE INDEX messages_provider_ref_alt_idx ON messages (provider_id, provider_message_ref_alt)
@@ -340,6 +350,9 @@ CREATE INDEX webhook_attempts_lease_reclaim_idx ON webhook_attempts (lease_until
 
 CREATE INDEX receipts_lookup_idx  ON delivery_receipts (provider_id, provider_message_ref);
 CREATE INDEX receipts_message_idx ON delivery_receipts (message_id);
+-- #67's purge_retention delete query — receipts age off their own
+-- received_at, independent of their parent message's age (see §2.5).
+CREATE INDEX receipts_received_at_idx ON delivery_receipts (received_at);
 CREATE INDEX app_clients_app_idx  ON app_clients (app_id);
 CREATE INDEX routes_match_idx     ON routes (enabled, priority DESC);
 

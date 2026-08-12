@@ -183,6 +183,7 @@ async fn seed_submitted_message(
             expiresAt: Utc::now() + Duration::hours(1),
             submittedAt: None,
             finalizedAt: None,
+            purgedAt: None,
         })
         .run(&sys())
         .await
