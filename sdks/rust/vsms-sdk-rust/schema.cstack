@@ -101,6 +101,24 @@ enum OptOutSource {
   operator
 }
 
+// #72: how a `ConsentRecord` was captured. Deliberately an enum, not a
+// free-form String the way `OptOut.scope` is — `ConsentRecord.scope`
+// reuses `MessageClass` itself (see that model's own comment) rather than
+// inventing a second string vocabulary that could drift from it, and this
+// enum is the equivalent discipline for "channel". `admin`/`import` mirror
+// `OptOutSource`'s own two non-runtime-observed sources; the rest are
+// capture channels a signup flow plausibly uses.
+enum ConsentChannel {
+  web_form
+  api
+  ivr
+  paper_form
+  verbal
+  sms_keyword
+  import
+  admin
+}
+
 // The client-authentication method a registration is bound to at /token
 // (OIDC Core 9). There is deliberately no client_secret_basic and no
 // client_secret_post: machine callers authenticate with private_key_jwt and
@@ -701,6 +719,80 @@ model OptOut {
   @@audit
   @@paged
   @@allow("read", auth().kind == "user" || auth().kind == "app")
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
+  @@emit(created, deleted)
+}
+
+// #72: a standing grant of consent, evidence-shaped — who, when, through
+// what channel, to what scope — not an enforcement primitive. `OptOut` is
+// the enforcement primitive (its presence blocks a send outright); this
+// model only proves an affirmative opt-in was captured. The two are
+// deliberately not merged: an opt-out is an event with no scope-of-consent
+// question ("stop everything"), a consent grant is a standing fact with
+// provenance that has to survive being read back later. Withdrawing
+// consent is not a field on this row (no `revokedAt`) — it is a new
+// `OptOut` row, the same single enforcement mechanism `sendMessage`
+// already checks, so "does this recipient currently receive X" never has
+// two disagreeing sources of truth to reconcile. This model is append-only
+// evidence of what was granted and when; whether it still holds is
+// answered by `OptOut`'s absence, not by this model's own state.
+//
+// `appId`-scoped, unlike `OptOut`: an opt-out is a recipient's own
+// standing decision and has to bind everywhere in this deployment: a
+// consent grant is a specific app's own customer relationship (its own
+// web form, its own marketing program), and there is no reason a grant
+// captured for App A's marketing should authorise App B's.
+//
+// `scope MessageClass` reuses the existing enum rather than a second
+// free-form `String` (the shape `OptOut.scope` uses) — `sendMessage`'s own
+// consent check matches this column against `Message.class` directly, so
+// a typo'd scope string could never silently stop matching the class it
+// was meant to describe.
+//
+// No `@@retain` here on purpose, and this is a real, unresolved tension,
+// not an oversight: `Message` purges `msisdn` at 90 days precisely
+// because minimisation applies to content with no remaining purpose, but
+// proof of consent is not that — it is the thing you produce *because*
+// you were challenged, which argues for keeping it at least as long as
+// the relationship (and probably a limitation-period buffer) lasts, not
+// 90 days. Keeping `msisdn` in plaintext indefinitely to serve that need
+// reproduces the exact problem #67 closed for `Message`. Not resolved
+// here — see AGENTS.md's "Open questions" for the retention-period
+// question, and note that `msisdnHash` (not `msisdn`) is what
+// `sendMessage`'s consent check actually matches on, so a future purge
+// job for this model could null `msisdn` the same way `purge_retention`
+// does for `Message`, once someone decides after how long.
+//
+// `msisdnHash` inherits #67/§3.1's own pepper-rotation caveat unchanged:
+// rotating `SMS_HASH_PEPPER` orphans every row written under the old one,
+// silently, for the same reason it orphans `Message.msisdnHash` and
+// `OptOut.msisdnHash` — see `sms_api::pepper`'s module doc.
+model ConsentRecord {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  appId Cuid
+  app App @relation(fields: [appId], references: [id])
+
+  msisdnHash String
+  msisdn String @pii
+
+  scope MessageClass
+  channel ConsentChannel
+  consentedAt DateTime
+  evidenceRef String?
+
+  // Mirrors OptOut's own read/create/delete shape exactly (see that
+  // model's comment for the appId difference). No `auth().kind == "app"`
+  // on `create`: like OptOut, no app-level self-service consent-capture
+  // API exists yet (an app's own signup backend recording consent the
+  // instant a user opts in is the obvious future caller) — same status
+  // quo gap OptOut already has for inbound STOP, not a new one this PR
+  // introduces.
+  @@audit
+  @@paged
+  @@allow("read", auth().kind == "user" || appId == auth().appId || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))
   @@emit(created, deleted)

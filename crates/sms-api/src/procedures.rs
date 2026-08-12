@@ -51,8 +51,8 @@ use crate::pepper::{hmac_sha256_hex, HashPepper};
 use crate::rbac::require_permission;
 use crate::route_simulator;
 use crate::schema::{
-    self, app, app_client, delivery_receipt, job, message, operator_prefix_rule, opt_out, provider,
-    sender_id, sender_id_registration, webhook_attempt, webhook_endpoint,
+    self, app, app_client, consent_record, delivery_receipt, job, message, operator_prefix_rule,
+    opt_out, provider, sender_id, sender_id_registration, webhook_attempt, webhook_endpoint,
 };
 use crate::worker_locks;
 
@@ -352,6 +352,15 @@ impl Procedures {
 
     /// §3.2 step: opt-out check, on the hashed MSISDN, before anything else
     /// that would justify persisting a row.
+    ///
+    /// #72: only called for classes where
+    /// `consent::requires_recipient_consent_controls` is true — see that
+    /// function's own doc for why (§10: "for `marketing` and
+    /// `notification`. OTP and transactional are exempt"). Before #72 this
+    /// ran unconditionally for every class, which silently blocked OTP/
+    /// transactional delivery to a recipient who had only ever opted out
+    /// of marketing — more restrictive than the design doc specified, not
+    /// a compliance gap, but not what was asked for either.
     async fn ensure_not_opted_out(
         db: &schema::Cratestack,
         sys: &CoolContext,
@@ -370,6 +379,76 @@ impl Procedures {
             Err(CoolError::Validation(
                 "recipient has opted out of messages from this scope".to_owned(),
             ))
+        }
+    }
+
+    /// #72: does this message's *delivery* time fall inside the
+    /// self-imposed marketing quiet-hours window? Only ever called when
+    /// `consent::subject_to_quiet_hours(class)` is true — see
+    /// `consent.rs`'s own module doc for the enforcement-location and
+    /// policy-vs-statute reasoning.
+    ///
+    /// **Takes the delivery time, not the accept time**, and the
+    /// distinction is the whole point. The first cut of this check passed
+    /// `now`, which a caller could bypass trivially: accept a `marketing`
+    /// message at 10:00 WAT — comfortably inside the window — with
+    /// `scheduledAt` set to 22:00, and `claim.rs`'s own `candidates()`
+    /// (`scheduledAt IS NULL OR scheduledAt <= now`) holds the row until
+    /// 22:00 and then dispatches it, squarely inside the quiet hours this
+    /// function exists to enforce. Caught in review of #213, and confirmed
+    /// against all three links — the check's argument, the persisted
+    /// `scheduledAt`, and the claim filter — rather than argued from the
+    /// signature alone.
+    ///
+    /// So the argument is `scheduledAt.unwrap_or(now)`: what the recipient
+    /// experiences, which is the only thing the policy is about.
+    fn ensure_within_marketing_quiet_hours(delivery_utc: DateTime<Utc>) -> Result<(), CoolError> {
+        if crate::consent::is_within_marketing_quiet_hours(delivery_utc) {
+            Ok(())
+        } else {
+            Err(CoolError::Validation(format!(
+                "marketing messages are only sent between {:02}:00 and {:02}:00 WAT \
+                 (self-imposed quiet hours, docs/architecture.md §10) — schedule this send \
+                 for that window instead",
+                crate::consent::MARKETING_QUIET_HOURS_START_WAT,
+                crate::consent::MARKETING_QUIET_HOURS_END_WAT,
+            )))
+        }
+    }
+
+    /// #72: is there a standing `ConsentRecord` on file for this
+    /// `(appId, msisdnHash, class)` triple? Only ever called when
+    /// `consent::requires_recipient_consent_controls(class)` is true.
+    ///
+    /// Matches on `msisdnHash`, not plaintext `msisdn` — the same
+    /// pepper-rotation and post-purge caveat `ensure_not_opted_out`
+    /// already lives with (see `ConsentRecord`'s own `schema.cstack`
+    /// comment and `sms_api::pepper`'s module doc).
+    async fn ensure_consent_on_file(
+        db: &schema::Cratestack,
+        sys: &CoolContext,
+        app_id: &str,
+        msisdn_hash: &str,
+        class: schema::MessageClass,
+    ) -> Result<(), CoolError> {
+        let consented = db
+            .consent_record()
+            .find_many()
+            .where_expr(
+                FilterExpr::from(consent_record::appId().eq(app_id.to_owned()))
+                    .and(consent_record::msisdnHash().eq(msisdn_hash))
+                    .and(consent_record::scope().eq(class)),
+            )
+            .limit(1)
+            .run(sys)
+            .await?;
+        if consented.is_empty() {
+            Err(CoolError::Validation(format!(
+                "no consent record on file for this recipient for {class:?} messages — \
+                 Law No. 2024/017 requires opt-in consent before this class may be sent"
+            )))
+        } else {
+            Ok(())
         }
     }
 
@@ -552,7 +631,7 @@ impl Procedures {
         }
     }
 
-    /// §3.2/§32: the nine pre-persistence steps. A message that reaches the
+    /// §3.2/§10/#72: the pre-persistence steps. A message that reaches the
     /// database is one already decided to be sendable — this procedure's
     /// job is that decision, not delivery.
     async fn send(
@@ -584,8 +663,35 @@ impl Procedures {
             .map_err(|error| CoolError::Validation(error.to_string()))?;
         let msisdn_hash = self.keyed_hash_hex(msisdn.as_e164());
 
-        // 3. Opt-out check, before anything else persists.
-        Self::ensure_not_opted_out(db, &sys, &msisdn_hash).await?;
+        // #72: classification decided here, ahead of the checks that key
+        // off it, rather than at message-construction time further down
+        // (where it used to live, unused until then) — `crate::consent`'s
+        // own module doc is the full reasoning for what each of the next
+        // three steps does and does not prove.
+        let class = args.class.unwrap_or(schema::MessageClass::transactional);
+
+        // 3. Opt-out check, before anything else persists. Class-gated
+        // since #72 (see `ensure_not_opted_out`'s own doc).
+        if crate::consent::requires_recipient_consent_controls(class) {
+            Self::ensure_not_opted_out(db, &sys, &msisdn_hash).await?;
+        }
+
+        // 3a. #72: self-imposed marketing quiet hours (08:00-20:00 WAT).
+        // `notification` deliberately does not gate here — see
+        // `consent::subject_to_quiet_hours`'s own doc.
+        if crate::consent::subject_to_quiet_hours(class) {
+            // The delivery time, not the accept time — a scheduled send is
+            // what the recipient actually experiences. See the function's
+            // own doc for the bypass this closes.
+            Self::ensure_within_marketing_quiet_hours(args.scheduledAt.unwrap_or(now))?;
+        }
+
+        // 3b. #72: consent on file, for the classes that require it. Reads
+        // under `sys`, so it runs regardless of what the caller can see —
+        // the same reason `ensure_not_opted_out` already does.
+        if crate::consent::requires_recipient_consent_controls(class) {
+            Self::ensure_consent_on_file(db, &sys, &app.id, &msisdn_hash, class).await?;
+        }
 
         // 4. Quota.
         Self::ensure_within_quota(db, &sys, &app, now).await?;
@@ -631,7 +737,8 @@ impl Procedures {
         let segments = i64::from(report.segments);
         let estimated_cost = Self::estimate_cost(db, &sys, segments).await?;
 
-        let class = args.class.unwrap_or(schema::MessageClass::transactional);
+        // `class` was already decided at step 3, ahead of the checks that
+        // key off it.
         let validity = args
             .validityMinutes
             .map_or_else(|| default_validity(class), ChronoDuration::minutes);

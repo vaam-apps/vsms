@@ -140,6 +140,33 @@
 //! restored a pass. See this PR's own description for that run's exact
 //! output.
 //!
+//! # The fourteenth instance — `ConsentRecord`, #72
+//!
+//! New model, closed the same "flagged in advance, never shipped broken"
+//! way as `Route`/`User`/`Role` before it, not the seven-instance "found
+//! live" shape: `Procedures::ensure_consent_on_file`
+//! (`crates/sms-api/src/procedures.rs`, `sendMessage`'s own consent check
+//! for `marketing`/`notification` sends) reads this model under `sys` from
+//! the moment it was written, so `ConsentRecord` went straight into
+//! [`SYSTEM_READABLE_MODELS`] rather than through
+//! [`NOT_REQUIRED_TO_BE_SYSTEM_READABLE`] first. This file's own earlier
+//! doc comment (`NOT_REQUIRED_TO_BE_SYSTEM_READABLE`'s own reasoning
+//! paragraph) named "consent records" by name as one of the models a
+//! future milestone would add exactly this way.
+//!
+//! Proven the same way every prior instance was: with `hasRole('system')`
+//! temporarily removed from `ConsentRecord`'s own `read` clause in
+//! `schema.cstack`, this file's live half failed with:
+//!
+//! ```text
+//! a system context could not read back the ConsentRecord row it (or an
+//! owner, on its behalf) just seeded. ConsentRecord's current
+//! schema.cstack read/list/detail policy is: @@allow("read", auth().kind
+//! == "user" || appId == auth().appId || hasRole('system')).
+//! ```
+//!
+//! Restoring the clause restored a pass.
+//!
 //! Ignored by default, same convention as this workspace's other live
 //! suites. Run explicitly:
 //!
@@ -154,11 +181,11 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, app, app_client, audit_anchor, client_assertion, delivery_receipt, job, message,
-    oauth_client, oauth_signing_key, operator_prefix_rule, opt_out, provider, role, route,
+    self, app, app_client, audit_anchor, client_assertion, consent_record, delivery_receipt, job,
+    message, oauth_client, oauth_signing_key, operator_prefix_rule, opt_out, provider, role, route,
     sender_id, sender_id_registration, user, user_credential, webhook_attempt, webhook_endpoint,
-    ClientAuthMethod, Cratestack, DeliveryOutcome, Encoding, MessageClass, OperatorCode,
-    OptOutSource, ProviderKind,
+    ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass,
+    OperatorCode, OptOutSource, ProviderKind,
 };
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
@@ -211,6 +238,9 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// - `UserCredential` — #194, new in this PR. `sms_auth::login`'s own
 ///   password-hash lookup, under `sys`, is its only reader; every action
 ///   on this model is `hasRole('system')` by construction, not a gap.
+/// - `ConsentRecord` — #72, new in this PR. `Procedures::ensure_consent_on_file`
+///   (`sendMessage`'s consent check for `marketing`/`notification`) is its
+///   only reader, under `sys`, from the moment it was written.
 const SYSTEM_READABLE_MODELS: &[&str] = &[
     "App",
     "AppClient",
@@ -250,6 +280,10 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     // flagged in advance, the same way `Route` (#62) and `WebhookAttempt`
     // (#40) were, not found live.
     "AuditAnchor",
+    // #72: ensure_consent_on_file reads this under sys() from day one — not
+    // a "found live" instance either. See this file's own "fourteenth
+    // instance" doc section above.
+    "ConsentRecord",
 ];
 
 /// Models with no internal `system`-role reader anywhere in this codebase
@@ -1088,6 +1122,39 @@ async fn seed_and_verify_audit_anchor(
     seeded
 }
 
+/// #72: `Procedures::ensure_consent_on_file` reads this under `sys` from
+/// `sendMessage`'s own consent check.
+async fn seed_and_verify_consent_record(
+    db: &Cratestack,
+    suffix: &str,
+    app_id: &str,
+) -> schema::ConsentRecord {
+    let seeded = db
+        .consent_record()
+        .create(schema::CreateConsentRecordInput {
+            appId: app_id.to_owned(),
+            msisdnHash: format!("sys-golden-consent-hash-{suffix}"),
+            msisdn: "+237677900002".to_owned(),
+            scope: MessageClass::marketing,
+            channel: ConsentChannel::web_form,
+            consentedAt: Utc::now(),
+            evidenceRef: Some(format!("sys-golden-evidence-{suffix}")),
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a ConsentRecord");
+    assert_system_can_read_back!(
+        db,
+        consent_record,
+        consent_record,
+        seeded.id,
+        "ConsentRecord",
+        "@@allow(\"read\", auth().kind == \"user\" || appId == auth().appId || \
+         hasRole('system'))"
+    );
+    seeded
+}
+
 /// Seeds one row per model in [`SYSTEM_READABLE_MODELS`] and proves a
 /// system context can read each one back. This is the live half of #155's
 /// guard — [`every_model_in_the_schema_is_classified`] above only checks
@@ -1139,4 +1206,5 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     let user = seed_and_verify_user(&db, &suffix, &role.key).await;
     seed_and_verify_user_credential(&db, &user.id).await;
     seed_and_verify_audit_anchor(&db, &suffix, now).await;
+    seed_and_verify_consent_record(&db, &suffix, &app.id).await;
 }
