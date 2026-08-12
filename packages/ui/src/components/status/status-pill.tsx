@@ -3,7 +3,9 @@ import { cn } from "../../lib/cn";
 import { StateMark } from "./state-mark";
 import { MESSAGE_STATUS_META, type MessageState, type StatusHue } from "./status-tokens";
 
-const HUE_CLASSES: Record<StatusHue, { fg: string; bg: string; border: string }> = {
+/** Exported for `JobStatusPill` (#56) — same hue→class mapping, reused
+ * rather than duplicated. */
+export const HUE_CLASSES: Record<StatusHue, { fg: string; bg: string; border: string }> = {
   neutral: {
     fg: "text-state-neutral-fg",
     bg: "bg-state-neutral-bg",

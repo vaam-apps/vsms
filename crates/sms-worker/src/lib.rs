@@ -275,7 +275,7 @@ pub async fn run_singleton(
                 tracing::info!(role = %role, "cancelled before acquiring a lock");
                 return;
             }
-            result = lease::RoleLease::try_acquire(&database_url, role) => result,
+            result = lease::RoleLease::try_acquire(&database_url, role, &worker) => result,
         };
 
         match acquired {

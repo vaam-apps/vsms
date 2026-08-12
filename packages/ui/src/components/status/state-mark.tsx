@@ -1,12 +1,23 @@
 import type { SVGProps } from "react";
 import { cn } from "../../lib/cn";
-import { MESSAGE_STATUS_META, type MessageState, type StatusMark } from "./status-tokens";
+import {
+  MESSAGE_STATUS_META,
+  type MessageState,
+  type StatusMark,
+  type StatusMeta,
+} from "./status-tokens";
 
 export interface StateMarkProps extends Omit<SVGProps<SVGSVGElement>, "className"> {
   state: MessageState;
   /** Rendered size in px. Below 12 the glyph is not rendered (design doc §4.6). */
   size?: 12 | 14 | 16;
   className?: string;
+}
+
+export interface StateMarkFromMetaProps extends Omit<SVGProps<SVGSVGElement>, "className"> {
+  meta: StatusMeta;
+  size?: 12 | 14 | 16;
+  className?: string | undefined;
 }
 
 // Geometry per design doc §4.3, at a 16x16 viewBox: circle r=6 centred at
@@ -33,8 +44,7 @@ function round(n: number): number {
 
 const DIAMOND_POINTS = `${CX},${CY - 7} ${CX + 7},${CY} ${CX},${CY + 7} ${CX - 7},${CY}`;
 
-function Silhouette({ state }: { state: MessageState }) {
-  const meta = MESSAGE_STATUS_META[state];
+function Silhouette({ meta }: { meta: StatusMeta }) {
   const fill = meta.filled ? "currentColor" : "none";
   const stroke = "currentColor";
 
@@ -128,13 +138,19 @@ function InteriorMark({ mark, knockout }: { mark: StatusMark; knockout: boolean 
 }
 
 /**
- * The eleven-glyph SVG primitive (design doc §5.3). Every status
- * representation in the product renders through this. Pure: no state of
- * its own, `aria-hidden` — the accessible name lives on the wrapping
- * `StatusPill`.
+ * The same eleven-glyph geometry (design doc §5.3), parameterised on a raw
+ * [`StatusMeta`] rather than a specific state enum — what [`StateMark`]
+ * delegates to, and what a status pill for a *different* state machine
+ * (e.g. `JobStatusPill`, #56) renders through instead of forking this
+ * file's geometry. Pure: no state of its own, `aria-hidden` — the
+ * accessible name lives on the wrapping pill component.
  */
-export function StateMark({ state, size = 14, className, ...props }: StateMarkProps) {
-  const meta = MESSAGE_STATUS_META[state];
+export function StateMarkFromMeta({
+  meta,
+  size = 14,
+  className,
+  ...props
+}: StateMarkFromMetaProps) {
   return (
     <svg
       viewBox="0 0 16 16"
@@ -144,8 +160,24 @@ export function StateMark({ state, size = 14, className, ...props }: StateMarkPr
       className={cn("shrink-0", className)}
       {...props}
     >
-      <Silhouette state={state} />
+      <Silhouette meta={meta} />
       <InteriorMark mark={meta.mark} knockout={meta.filled} />
     </svg>
+  );
+}
+
+/**
+ * The eleven-glyph SVG primitive (design doc §5.3), for `MessageState`
+ * specifically. Every message status representation in the product
+ * renders through this.
+ */
+export function StateMark({ state, size = 14, className, ...props }: StateMarkProps) {
+  return (
+    <StateMarkFromMeta
+      meta={MESSAGE_STATUS_META[state]}
+      size={size}
+      className={className}
+      {...props}
+    />
   );
 }

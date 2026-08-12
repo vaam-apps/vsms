@@ -135,7 +135,12 @@ admin:
   # docs/runbooks/deployment.md's compose path documents by hand) — set
   # this after provisioning a client the same way that runbook describes.
   consoleClientId: ""
-  consoleScope: "sms:send sms:read"
+  # #56/#57: job:read/job:enqueue gate the Jobs screen, worker:read gates
+  # the Workers screen (Layer 2, `sms_api::rbac::require_permission`) — the
+  # client provisioned for `consoleClientId` above must be granted these
+  # scopes too (`sms-gateway provision-client --scope ...`), or a correctly
+  # configured token still gets a 403 reading either screen.
+  consoleScope: "sms:send sms:read job:read job:enqueue worker:read"
   messageStreamPollMs: 2000
   appName: vsms Admin Console
 

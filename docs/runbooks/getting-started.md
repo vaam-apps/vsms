@@ -160,6 +160,7 @@ DATABASE_URL=postgres://localhost/vsms_check \
     --app-id <an App.id, e.g. from `psql ... -c 'select id from app'`> \
     --label "admin console" \
     --scope sms:send --scope sms:read \
+    --scope job:read --scope job:enqueue --scope worker:read \
     --key-out ./console-client-key.pem
 ```
 
