@@ -1309,3 +1309,87 @@ type MessageReceiptsResult {
 procedure listMessageReceipts(args: MessageReceiptsInput): MessageReceiptsResult
   @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
   @authorize(Message, detail, args.messageId)
+
+// #49: the operator dashboard — throughput, delivery rate by operator,
+// queue/job/outbox depth, and a UCS-2-ratio trend. The epic's own worked
+// example is the acceptance bar: "a sudden jump means someone shipped a
+// template with a ç or a smart apostrophe, and it will show up in the
+// bill before anyone notices in the UI" — a bare percentage can't show a
+// jump, so this returns a short trend, not just a current value. No model
+// backs any of this (same as WorkerLocksResult/SimulateRouteResult
+// above), so nothing here touches DDL. See `crates/sms-api/src/
+// procedures.rs`'s own doc on `dashboard_snapshot` for exactly which
+// model each field reads, under which context (app-scoped vs
+// system-wide), and why: cratestack's own `aggregate()` has no GROUP
+// BY — `db.<model>().aggregate().count()`/`.sum()`/`.avg()`/`.min()`/
+// `.max()` only (`cratestack-sqlx-0.7.10/src/query/read/aggregate.rs`'s
+// own doc comment) — so every bucket here is its own explicit,
+// policy-scoped delegate call rather than one grouped query.
+
+// One rolling hour of `Message.createdAt`, oldest first. `totalCount` is
+// that hour's throughput; `ucs2Count` is how many of those encoded UCS-2.
+// Both come from the same underlying scan (see procedures.rs), so the
+// throughput and UCS-2 tiles share one source of truth rather than
+// disagreeing after two independent computations.
+type HourlyBucket {
+  bucketStart DateTime
+  totalCount Int
+  ucs2Count Int
+}
+
+// Delivery rate by operator, over a trailing 24h window. `terminalTotal`
+// deliberately excludes `uncertain`/`undelivered` — see DashboardSummary's
+// own comment on `stuckMessages` for why folding either into this ratio
+// would misstate it in one direction or the other.
+type OperatorDeliveryStats {
+  operator OperatorCode
+  delivered Int
+  terminalTotal Int
+}
+
+type DashboardSummary {
+  generatedAt DateTime
+  // Empty when the caller isn't scoped to a single app (a real human or
+  // system context, per Message's own `@@allow`) — see the console's own
+  // scope banner precedent (`messages-screen.tsx`) for why this is stated
+  // on screen rather than left for an operator to infer.
+  appId Cuid?
+
+  // Current count of Message rows in {accepted, queued, routed} — not
+  // time-windowed; a live gauge, not a rate.
+  queueDepth Int
+
+  // Current count of Job rows in {pending, running}, system-wide — Job
+  // has no appId to scope a row-level predicate by (the same shape the
+  // Jobs screen's own banner already states, #56/#57).
+  jobBacklog Int
+
+  // Current count of WebhookAttempt rows in {pending, delivering}, scoped
+  // to this app's own WebhookEndpoints (`WebhookAttempt`'s `@@allow` has
+  // no unscoped `auth().kind == "app"` clause — only `endpoint.appId ==
+  // auth().appId`). A genuine *depth* count — distinct from, and does not
+  // recompute, `sms_webhook_outbox_oldest_undelivered_age_seconds` /
+  // `sms_event_outbox_poison_rows` (Prometheus, `crates/sms-metrics`):
+  // those describe the framework's own internal `cratestack_event_outbox`
+  // table (drained by the `drain` role), not this schema's `WebhookAttempt`
+  // rows (delivered by the `hooks` role) — two different tables, two
+  // different numbers. See procedures.rs for the full reasoning.
+  outboxDepth Int
+
+  // Current count of Message rows in {uncertain, undelivered} — messages
+  // never confirmed either delivered or failed. Reported on its own,
+  // never folded into `operatorStats`: counting one as a failure
+  // overstates failure, counting it as delivered is a lie.
+  stuckMessages Int
+
+  // Trailing 24h, one row per OperatorCode variant, including zero-count
+  // ones — the caller decides whether to render an empty row.
+  operatorStats OperatorDeliveryStats[]
+
+  // Six rolling hours, oldest first — the throughput and UCS-2-ratio
+  // trend. `hourlyBuckets[5]` is the current, in-progress hour.
+  hourlyBuckets HourlyBucket[]
+}
+
+procedure dashboardSummary(): DashboardSummary
+  @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
