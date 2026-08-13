@@ -51,6 +51,59 @@ jobs:
           diff -u schema/migrations/postgres/0002_bootstrap/up.sql /tmp/regenerated.sql \
             || { echo "::error::0002_bootstrap/up.sql is stale — regenerate it from docs/architecture.md §2.10"; exit 1; }
 
+  schema-drift:
+    name: 0001_init matches `cratestack migrate diff`
+    runs-on: ubuntu-latest
+
+    # #204: none of the four adjacent gates this repo already had actually
+    # checked that schema/migrations/postgres/0001_init/{up,down}.sql is
+    # what `cratestack migrate diff` produces from the *current*
+    # schema/schema.cstack — the `migrations` job above only proves the
+    # committed SQL is *valid* (a migration missing a column still applies
+    # fine), and neither `rust`'s `cargo check` nor
+    # `ci/assert-sdk-schema-current.sh` ever touches generated SQL at all.
+    # Migrations here are regenerated wholesale (no committed
+    # schema.snapshot.json baseline — AGENTS.md's "Regenerating migrations"
+    # section), so two PRs each regenerating 0001_init from a different
+    # base is a real hazard: Git merges the result as ordinary text, and a
+    # non-conflicting hunk can merge silently wrong. This job does in CI
+    # exactly what AGENTS.md/CONTRIBUTING.md already tell a human to do by
+    # hand after every schema change.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Matched to the pin in root Cargo.toml, read from there rather than
+      # hardcoded a second time — the `js` job below reads its own copy of
+      # this same pin the identical way, for the identical reason: a
+      # literal version string duplicated across two workflow steps is
+      # exactly the drift AGENTS.md's release-engineering notes warn about
+      # ("grep for every other place the same list is duplicated"), and
+      # ci/assert-migrations-current.sh re-derives the pin itself too, so
+      # all three sites can never silently disagree.
+      - name: Read the pinned cratestack version from Cargo.toml
+        id: pin
+        run: |
+          version=$(sed -n 's/^cratestack = { package = "cratestack-pg", version = "=\([0-9.]*\)" }.*/\1/p' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "::error::could not read the cratestack version pin from Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      # A CLI newer (or older) than the pinned library emits DDL the
+      # compiled library never produces — AGENTS.md records this biting
+      # twice already (a stale global 0.7.4 CLI against a =0.6.7 pin, and
+      # later a drifted 0.7.4-vs-0.7.10 mismatch). Installed fresh every
+      # run, matching the `js` job's own existing approach for this exact
+      # same install below — no caching was added there, so none is
+      # invented here either.
+      - name: Install cratestack CLI (matched to the library pin)
+        run: cargo install cratestack-cli --version "${{ steps.pin.outputs.version }}" --locked
+
+      - name: Regenerate 0001_init and diff it against the committed migration
+        run: ./ci/assert-migrations-current.sh
+
   rust:
     name: cargo fmt, clippy, test
     runs-on: ubuntu-latest
@@ -211,8 +264,25 @@ jobs:
       # Version-locked to the library pin — a mismatched CLI emits a client
       # calling routes the compiled server does not serve, which is what the
       # route gate below exists to catch.
+      #
+      # Read from root Cargo.toml rather than hardcoded here — this step
+      # used to be the only place in this workflow with a literal
+      # `--version 0.7.10`; #204's own `schema-drift` job needed the
+      # identical install and would have made that a second hardcoded copy
+      # of the same value, exactly the duplicated-list drift AGENTS.md's
+      # release-engineering notes warn about, so both sites now read the
+      # single source of truth instead.
+      - name: Read the pinned cratestack version from Cargo.toml
+        id: pin
+        run: |
+          version=$(sed -n 's/^cratestack = { package = "cratestack-pg", version = "=\([0-9.]*\)" }.*/\1/p' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "::error::could not read the cratestack version pin from Cargo.toml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Install cratestack CLI (matched to the library pin)
-        run: cargo install cratestack-cli --version 0.7.10 --locked
+        run: cargo install cratestack-cli --version "${{ steps.pin.outputs.version }}" --locked
       # `just` is not preinstalled on GitHub runners, and no other job in this
       # workflow needed it — they call cargo and ci/*.sh directly. Installing
       # it keeps one definition of what generation and the route gate actually
