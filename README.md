@@ -2,48 +2,71 @@
 
 An A2P SMS gateway for Cameroon — OTP and notification delivery over MTN and Orange, with a provider abstraction that covers both HTTP APIs and SMPP.
 
-**Status: milestones 0 and 1 done; milestone 2 functionally complete.** The schema, migrations, encoding, and MSISDN-parsing crates are done. Real authentication is done — machine callers get OAuth `client_credentials` tokens via `private_key_jwt`, no shared secrets anywhere. The worker is real: leader election, optimistic-CAS claim loops, the message and job state machines, DLR ingestion, and a generic job queue all run against a live database, not stubs. The one thing still open in milestone 2 is [#36](https://github.com/vymalo/vsms/issues/36) — a real SMS to a real handset — which is blocked on physical hardware (real Orange credentials, a real phone), not code; see [the getting-started runbook](docs/runbooks/getting-started.md) to run everything short of that yourself. The admin console (milestone 4) is not started. See [the roadmap](docs/architecture.md#12-milestones) for what's next.
+**Status *(snapshot, 2026-08-13 — [`docs/roadmap.md`](docs/roadmap.md) is the maintained version, and GitHub Issues is the real tracker)*:** foundations and delivery are done. Schema, migrations, encoding, and MSISDN parsing; `private_key_jwt` machine auth and an `authorization_code` + PKCE human login; a real worker — leader election, optimistic-CAS claim loops, the message and job state machines, DLR ingestion, a job queue; and signed, at-least-once webhooks with retries and circuit breaking. Retention, audit anchoring, backup with a real restore drill, and alerting are done. The admin console is partly built (messages, dashboard, jobs, workers, providers, routes); MTN, the routing rules engine, and failover have landed.
+
+**One thing gates real traffic, and it is not code: [#36](https://github.com/vymalo/vsms/issues/36) — no message from this system has ever reached a real handset.** That needs a human with a real Orange account and a real phone. Everything automated around it proves how *this* system behaves under faults; none of it proves Orange behaves the way this code assumes.
+
+You can run all of it locally, with no carrier account, in one command — see [local development](docs/runbooks/local-development.md).
 
 ## Getting started
+
+Which door you want depends on what you're doing:
+
+| You want to… | Start here |
+|---|---|
+| **Send SMS through vsms** from your own application | [`docs/integrating.md`](docs/integrating.md) — credentials, the token exchange, sending, message states, webhooks |
+| **Run the whole thing locally**, no carrier account | [`docs/runbooks/local-development.md`](docs/runbooks/local-development.md) — `just demo` and what it gives you |
+| **Work on vsms itself** | [`docs/runbooks/getting-started.md`](docs/runbooks/getting-started.md), then [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| **Deploy or operate it** | [`docs/runbooks/deployment.md`](docs/runbooks/deployment.md) and [`docs/runbooks/`](docs/runbooks/README.md) |
+
+The short version, for a developer who just wants it running:
 
 ```bash
 git clone https://github.com/vymalo/vsms.git
 cd vsms
-just check
+just demo
 ```
 
-Then follow [`docs/runbooks/getting-started.md`](docs/runbooks/getting-started.md) — clone, build, apply migrations, run the checks, and run both binaries against a scratch database, ending with a real message moving through the real state machine. [`docs/runbooks/`](docs/runbooks/README.md) has other step-by-step procedures, including the real-handset acceptance gate.
+That brings up a scratch Postgres, the gateway, the worker, a fake Orange, and the admin console, wired together with a provisioned client — and a message reaches `delivered` without a single real SMS being sent.
 
 ## What's here
 
 | Path | What it is |
 |---|---|
+| `docs/integrating.md` | **For a developer sending SMS through vsms.** Credentials, the token exchange, request and response shapes, message states, status codes, webhooks. |
 | `docs/architecture.md` | The full design. Data model, provider abstraction, worker topology, security, compliance, and every framework constraint that shaped a decision. |
-| `docs/runbooks/` | Step-by-step operational procedures — getting started, and the milestone-2 acceptance gate. |
+| `docs/roadmap.md` | Sequencing: what order the work happens in, what genuinely blocks what, and what has to be true before real traffic. |
+| `OPEN_QUESTIONS.md` | What this system does not know the answer to — human decisions, unverified claims, accepted limitations. |
+| `docs/runbooks/` | Step-by-step operational procedures: local development, deployment, backup and restore, alerting, and the real-handset acceptance gate. |
 | `AGENTS.md` | Current project status in detail: what's built, what's still open, and every non-obvious thing found by actually running the toolchain. |
 | `CONTRIBUTING.md` | The three rules (R1/R2/R3) the codebase is written against, and the workflow for changing the schema. |
-| `schema/schema.cstack` | 19 models, 13 enums, 7 procedures. Parses, emits Postgres DDL, and expands through `include_server_schema!`. |
+| `schema/schema.cstack` | 22 models, 16 enums, 13 procedures. Parses, emits Postgres DDL, and expands through `include_server_schema!`. |
 | `schema/migrations/postgres/0001_init/` | Generated by `cratestack migrate diff`. Do not hand-edit — regenerated wholesale on every schema change; see `AGENTS.md`. |
-| `schema/migrations/postgres/0002_bootstrap/` | Everything the emitter doesn't produce: id and timestamp defaults, the `updated_at` trigger, both state machines, partial indexes, foreign keys. Generated from §2.10 of the design doc. |
+| `schema/migrations/postgres/0002_bootstrap/` | Everything the emitter doesn't produce: id and timestamp defaults, the `updated_at` trigger, the state machines, partial indexes, foreign keys. Generated from §2.10 of the design doc. |
 | `crates/sms-encoding/` | GSM 03.38 vs UCS-2 analysis, segment counting, normalisation, transliteration. |
 | `crates/sms-msisdn/` | E.164 `+237` parsing, line-type classification, operator-prefix lookup. |
-| `crates/sms-api/` | Where `include_server_schema!` expands: generated models, policies, the REST router, the procedure registry, and DLR ingestion. |
-| `crates/sms-auth/` | `authkestra-op` glue: `ClientStore`/`ClientAssertionStore` backed by CrateStack delegates, RS256 signing-key management with overlap-window rotation. |
-| `crates/sms-worker/` | The worker as a library: role selection, advisory-lock leader election, the CAS claim loop, and each role's real body (`dispatch`, `scheduler`, `jobs`). |
+| `crates/sms-api/` | Where `include_server_schema!` expands: generated models, policies, the REST router, the procedure registry, DLR ingestion, and the webhook subscribers. |
+| `crates/sms-auth/` | `authkestra-op` glue: the machine `private_key_jwt` path, the human `authorization_code` + PKCE login, and RS256 signing-key rotation. |
+| `crates/sms-worker/` | The worker as a library: role selection, advisory-lock leader election, the CAS claim loop, and each role's real body (`dispatch`, `scheduler`, `jobs`, `drain`, `hooks`). |
+| `crates/sms-webhook/` | The outbound webhook signature scheme — HMAC-SHA256, rotation overlap, cross-checked against an independent Node implementation in CI. |
 | `crates/sms-provider/` | The `SmsProvider` trait every adapter implements — capabilities, submit, DLR parsing, health — framework-free. |
-| `crates/sms-provider-orange-cm/` | The Orange Cameroon HTTP adapter: OAuth2 token caching, submission, DLR parsing. |
-| `app/sms-gateway/` | The API server binary. `serve` binds HTTP and mounts the OP; `rotate-signing-key` is the one operator action it needs before `serve` can issue tokens; `routes` prints the generated route table and needs no database. |
+| `crates/sms-provider-orange-cm/`, `crates/sms-provider-mtn/` | The Orange Cameroon and MTN adapters. |
+| `crates/sms-fake-orange/` | A fault-injecting fake of Orange's API — a participant, not a response stub. Development and testing only. |
+| `app/sms-gateway/` | The API server binary. `serve` binds HTTP and mounts the OP; `provision-client`, `provision-user`, `rotate-signing-key`, and `seed-provider` are the operator actions; `routes` prints the route table and needs no database. |
 | `app/sms-worker/` | The role-selectable worker binary (`--roles dispatch,scheduler,jobs,...`) — see its own module doc for why the package is `sms-worker-bin` but the binary is `sms-worker`. |
+| `admin/`, `packages/` | The Next.js admin console and its shared TypeScript packages. |
+| `sdks/rust/`, `examples/` | The Rust SDK, and runnable Rust and Node integration examples including a reference webhook receiver. |
+| `deploy/` | Compose stack, Caddy edge, migration job, backup and restore. |
 | `ci/` | The R1 lint, the R2 state-machine parity check, the migration runner, the bootstrap-SQL generator, and the state-machine SQL test. |
 
 `crates/` is libraries, `app/` is binaries, and nothing in `crates/` depends on anything in `app/`.
 
 ## Stack
 
-- **Rust** for the gateway and worker, on [CrateStack](https://cratestack.dev/) `=0.6.3` — schema-first, `.cstack` generates the model layer, policies, audit, events and REST surface.
-- **[Authkestra](https://github.com/marcjazz/authkestra)** `=0.3.3` as the OIDC provider. Today, every caller is a machine: OAuth `client_credentials` with `private_key_jwt` client authentication, no shared secrets anywhere in the system. Human login (authorization code + PKCE) is designed but not built — nothing needs it until the admin console does.
-- **PostgreSQL 16** as the only coordination mechanism — system of record, claim loops via optimistic CAS on `@version` (`SKIP LOCKED` isn't expressible through the framework), leader election via advisory locks, and both state machines enforced by triggers. No broker, no Redis, no consensus library.
-- **TypeScript / Next.js** for the admin console — designed, not started.
+- **Rust** for the gateway and worker, on [CrateStack](https://cratestack.dev/) `=0.7.10` — schema-first, `.cstack` generates the model layer, policies, audit, events and REST surface. Pinned exactly, and the installed CLI must match the pin; see `AGENTS.md`.
+- **[Authkestra](https://github.com/marcjazz/authkestra)** `=0.3.3` as the OIDC provider. Machine callers use OAuth `client_credentials` with `private_key_jwt` — no shared secrets anywhere in the system. Humans sign in with `authorization_code` + PKCE against a local Argon2id-backed user store.
+- **PostgreSQL 16** as the only coordination mechanism — system of record, claim loops via optimistic CAS on `@version` (`SKIP LOCKED` isn't expressible through the framework), leader election via advisory locks, and the state machines enforced by triggers. No broker, no Redis, no consensus library.
+- **TypeScript / Next.js 15** for the admin console — messages and state timelines, an operator dashboard, jobs, workers, providers, routes, and a route simulator. Partly built; see [the roadmap](docs/roadmap.md).
 
 ## Design notes worth knowing before you read the code
 
