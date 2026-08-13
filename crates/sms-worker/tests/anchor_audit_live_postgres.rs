@@ -73,9 +73,10 @@ use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::sqlx;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::CoolContext;
+use sms_api::audit_log::{verify_chain_linkage, verify_period_content};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, audit_anchor, AuditAnchor, Cratestack};
-use sms_worker::jobs::anchor_audit::{verify_chain_linkage, verify_period_content, AnchorAudit};
+use sms_worker::jobs::anchor_audit::AnchorAudit;
 use sms_worker::jobs::JobHandler;
 
 /// Same reasoning as every other live suite's own copy of this mutex — see

@@ -34,6 +34,7 @@ cratestack::include_server_schema!("../../schema/schema.cstack", db = Postgres);
 /// `sms_api::schema::{Message, Cratestack, ...}`.
 pub use crate::cratestack_schema as schema;
 
+pub mod audit_log;
 pub mod auth;
 mod cache;
 pub mod consent;

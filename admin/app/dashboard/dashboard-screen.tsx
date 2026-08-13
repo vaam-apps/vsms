@@ -205,6 +205,42 @@ export function DashboardScreen() {
           >
             Simulator
           </a>
+          {/* #52/#58: these five screens don't otherwise appear in any
+              other screen's own nav block — see `console-nav.tsx`'s own
+              doc for why they share a small component among themselves
+              rather than each pre-existing screen's header being edited
+              too. Added here so they're reachable by click from the
+              console's own hub, not only by typing a URL. */}
+          <a
+            href="/apps"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Apps
+          </a>
+          <a
+            href="/users"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Users
+          </a>
+          <a
+            href="/opt-outs"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Opt-outs
+          </a>
+          <a
+            href="/audit-log"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Audit log
+          </a>
+          <a
+            href="/settings"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Settings
+          </a>
           <a
             href="/sender-ids"
             className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"

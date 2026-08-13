@@ -93,6 +93,47 @@ export interface WithEtag<T> {
   etag: string | undefined;
 }
 
+/**
+ * Normalise an `If-Match` validator to the strong-ETag form the server
+ * actually parses.
+ *
+ * **The quotes are mandatory, and their absence does not fail the way you
+ * would expect.** `cratestack-axum`'s `parse_if_match_version`
+ * (`src/headers/etag.rs`, read directly) does:
+ *
+ * ```rust
+ * raw.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
+ *    .ok_or_else(|| CoolError::BadRequest(
+ *        "If-Match must be a strong ETag of the form \"<integer>\""))?
+ * ```
+ *
+ * So a bare `3` does not merely fail the precondition and return 412 — it
+ * fails to *parse*, and the request 400s before any version comparison
+ * happens. That is a materially different failure: a 412 means "someone
+ * else edited this, reload", which the UI handles; a 400 means the write
+ * never had a chance and reads as a server fault.
+ *
+ * Normalising here rather than at each call site is deliberate. Screens
+ * are client components and cannot import this `server-only` package, so
+ * a shared client-side helper is not available to them — which is exactly
+ * how #220's client-retire path came to send `String(client.version)` and
+ * would have 400'd on every attempt, while its sibling screen constructed
+ * the quoted form by hand and worked. This seam is the one place that
+ * knows the wire format; making it authoritative means a caller cannot
+ * get it wrong by having the integer rather than the header.
+ *
+ * A validator that already carries quotes is passed through untouched, so
+ * an `etag` captured verbatim from a `GET` — always preferable, since it
+ * is the row's own validator rather than a reconstruction — is unaffected.
+ */
+function normaliseIfMatch(etag: string): string {
+  const trimmed = etag.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed;
+  }
+  return `"${trimmed}"`;
+}
+
 async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
   const text = await response.text();
   if (text.length === 0) return undefined;
@@ -183,7 +224,7 @@ export async function updateWithIfMatch<T>(
         "content-type": "application/json",
         accept: "application/json",
         authorization: `Bearer ${token}`,
-        "if-match": etag,
+        "if-match": normaliseIfMatch(etag),
       },
       body: payload,
       dispatcher: gatewayAgent(),

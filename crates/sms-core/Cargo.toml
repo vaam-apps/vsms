@@ -11,6 +11,15 @@ publish.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+# password.rs (#52/#58): Argon2id hashing for human console-account
+# passwords, and the one-time-password generator both `sms-gateway
+# provision-user` and the console's own `provisionUser` procedure (#58)
+# call. Moved here from `sms-auth::login` (#194's original home) rather
+# than duplicated — see `password.rs`'s own module doc for why: `sms-api`
+# cannot depend on `sms-auth` (the dependency runs the other way), and this
+# crate is deliberately the one place both already sit below.
+argon2.workspace = true
+rand.workspace = true
 
 [lints]
 workspace = true

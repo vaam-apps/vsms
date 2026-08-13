@@ -267,6 +267,40 @@ failure that screen exists to catch, since it means a blocked provider account
 — it would be a bug bypassing the lease check entirely, and invisible there.
 The screen states this rather than implying otherwise.
 
+### 3.6 Neither a console-account password nor a service-account client key
+### has a rotation/reset path — only provision-a-replacement
+
+`provisionUser` (#52/#58) and `provisionAppClient` (#23) both mint a secret
+exactly once — a one-time password, a private key — with no companion
+procedure to issue a *new* one against an *existing* row. A user locked out
+of their account, or a client that needs its key rotated without downtime,
+has no self-service or admin-console recovery today:
+
+- **A user's password** can only ever be set once, at `provisionUser` time.
+  There is no write path to `UserCredential` other than that one `create`
+  call — `crates/sms-api/src/procedures.rs` has no `resetPassword`-shaped
+  procedure, and `UserCredential` itself is `hasRole('system')`-only on
+  every action, so nothing short of a new procedure could add one. A locked-
+  out account's only recovery is an `owner`/`admin` provisioning a
+  *replacement* user under a different email and deactivating the old one —
+  the account itself, and its own audit history under that identity, cannot
+  be recovered in place.
+- **A service-account client's key** has the coarser, but real, fallback
+  `AppClient.active`/`retiredAt` already documents (#23, restated in #52's
+  own admin screen): retire the old client, provision a new one, migrate the
+  integration. That is a real answer, just not a zero-downtime one — there
+  is no overlap window (see `@vsms/gateway/app-clients.ts`'s own module
+  doc).
+
+Both are the *coarse fallback* this codebase's own convention prefers to
+state plainly rather than silently accept: #52/#58's own admin screens do
+not hide either gap behind a UI that implies a reset button exists.
+Building either a real reset flow needs a decision this file's own opening
+paragraph asks for before writing code: how does a caller *prove* they are
+the account holder before a new secret is issued to them — email-verified
+token, a break-glass CLI command run by someone with database access, or
+something else? Nobody has decided.
+
 ---
 
 ## 4. Framework questions with a filed answer pending

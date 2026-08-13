@@ -82,6 +82,10 @@ serde_json.workspace = true
 sha2.workspace = true
 # #134: HMAC-SHA256 for the keyed `msisdnHash`/`bodyHash` — see `pepper.rs`.
 hmac.workspace = true
+# audit_log.rs (#58, moved from sms-worker's own anchor_audit.rs): hex
+# encoding for the audit hash chain's own SHA-256 digests — same crate and
+# version `sms-worker` already resolves to.
+hex.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 # webhooks.rs's own panic isolation (#38): `tokio::spawn` around every
@@ -127,6 +131,13 @@ sms-test-support.workspace = true
 # two edges never form a cycle in the actual build graph, only in a naive
 # "which crate mentions which" reading of it.
 sms-worker.workspace = true
+# console_identity_live_postgres.rs (#52/#58): proving `provisionUser`
+# creates an account that can genuinely log in calls
+# `sms_auth::login::authenticate_user` directly, rather than re-implementing
+# password verification in this test — same "dev-only, dependency direction
+# still runs sms-auth -> sms-api, not the reverse" reasoning as
+# `sms-worker` above.
+sms-auth.workspace = true
 
 [lints]
 workspace = true

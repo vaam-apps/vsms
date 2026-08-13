@@ -5,6 +5,41 @@ import "server-only";
 // rather than generated (T3, pending).
 
 export type {
+  AppClientListItem,
+  AppClientRecord,
+  ProvisionClientResult,
+} from "./app-clients";
+export {
+  getAppClientById,
+  listAppClientsForApp,
+  provisionClient,
+  retireAppClient,
+  unpackScopes,
+  updateAppClient,
+} from "./app-clients";
+export type {
+  AppListItem,
+  AppRecord,
+  CreateAppFields,
+  UpdateAppFields,
+} from "./apps";
+export {
+  createApp,
+  deleteApp,
+  getAppById,
+  listApps,
+  packIpAllowlist,
+  unpackIpAllowlist,
+  updateApp,
+} from "./apps";
+export type {
+  AuditChainStatus,
+  AuditLogEntry,
+  AuditLogPage,
+  AuditLogQuery,
+} from "./audit-log";
+export { fetchAuditChainStatus, fetchAuditLog } from "./audit-log";
+export type {
   Encoding,
   MessageClass,
   MessageState,
@@ -62,6 +97,20 @@ export {
   listMessagesForStream,
 } from "./messages";
 export type {
+  OptOutListItem,
+  OptOutRecord,
+  OptOutSource,
+  OptOutSummary,
+  RecordOptOutFields,
+  SearchOptOutResult,
+} from "./opt-outs";
+export {
+  deleteOptOut,
+  listOptOuts,
+  recordOptOut,
+  searchOptOutByMsisdn,
+} from "./opt-outs";
+export type {
   ProviderKind,
   ProviderListItem,
   ProviderRecord,
@@ -73,6 +122,22 @@ export type { RequestCredential } from "./request-credential";
 export { runWithRequestCredential } from "./request-credential";
 export type { WithEtag } from "./rest";
 export { deleteResource, fetchWithEtag, postJson, updateWithIfMatch } from "./rest";
+export type {
+  CreateRoleFields,
+  RoleRecord,
+  UpdateRoleFields,
+} from "./roles";
+export {
+  createRole,
+  deleteRole,
+  getRoleById,
+  isReservedRoleKey,
+  isValidRoleKeyShape,
+  listRoles,
+  packPermissions,
+  unpackPermissions,
+  updateRole,
+} from "./roles";
 export type {
   PredicateKind,
   RouteEvaluationInfo,
@@ -113,6 +178,19 @@ export {
   updateSenderIdRegistration,
 } from "./senders";
 export { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
+export type {
+  ProvisionUserResult,
+  UpdateUserFields,
+  UserListItem,
+  UserRecord,
+} from "./users";
+export {
+  deleteUser,
+  getUserById,
+  listUsers,
+  provisionUser,
+  updateUser,
+} from "./users";
 export type {
   AttemptState,
   CreatedWebhookEndpoint,
