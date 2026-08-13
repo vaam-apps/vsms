@@ -73,23 +73,20 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
-      # Matched to the pin in root Cargo.toml, read from there rather than
-      # hardcoded a second time — the `js` job below reads its own copy of
-      # this same pin the identical way, for the identical reason: a
-      # literal version string duplicated across two workflow steps is
-      # exactly the drift AGENTS.md's release-engineering notes warn about
-      # ("grep for every other place the same list is duplicated"), and
-      # ci/assert-migrations-current.sh re-derives the pin itself too, so
-      # all three sites can never silently disagree.
+      # Matched to the pin in root Cargo.toml, read through
+      # ci/cratestack-pin.sh — the single place that parses Cargo.toml for
+      # this value — rather than hardcoded, or even re-derived with a
+      # second copy of the same sed expression, here. The `js` job below
+      # calls the identical script for the identical reason: AGENTS.md's
+      # release-engineering notes warn about a duplicated hardcoded
+      # *value* drifting when only one copy is updated; a duplicated
+      # *extraction* of that value is the same smell one step removed —
+      # three regexes to keep in lockstep instead of one script three
+      # callers share. ci/assert-migrations-current.sh calls the same
+      # script too, so all three sites can never silently disagree.
       - name: Read the pinned cratestack version from Cargo.toml
         id: pin
-        run: |
-          version=$(sed -n 's/^cratestack = { package = "cratestack-pg", version = "=\([0-9.]*\)" }.*/\1/p' Cargo.toml)
-          if [ -z "$version" ]; then
-            echo "::error::could not read the cratestack version pin from Cargo.toml"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(./ci/cratestack-pin.sh)" >> "$GITHUB_OUTPUT"
 
       # A CLI newer (or older) than the pinned library emits DDL the
       # compiled library never produces — AGENTS.md records this biting
@@ -265,22 +262,18 @@ jobs:
       # calling routes the compiled server does not serve, which is what the
       # route gate below exists to catch.
       #
-      # Read from root Cargo.toml rather than hardcoded here — this step
-      # used to be the only place in this workflow with a literal
+      # Read through ci/cratestack-pin.sh rather than hardcoded here — this
+      # step used to be the only place in this workflow with a literal
       # `--version 0.7.10`; #204's own `schema-drift` job needed the
-      # identical install and would have made that a second hardcoded copy
-      # of the same value, exactly the duplicated-list drift AGENTS.md's
-      # release-engineering notes warn about, so both sites now read the
-      # single source of truth instead.
+      # identical install and, on the first cut, read the pin with its own
+      # copy of the same sed expression rather than a hardcoded literal —
+      # closing the value-drift risk but leaving the *extraction*
+      # triplicated across this step, that job's matching step, and
+      # ci/assert-migrations-current.sh. ci/cratestack-pin.sh is now the
+      # one place that parses Cargo.toml for this; all three call it.
       - name: Read the pinned cratestack version from Cargo.toml
         id: pin
-        run: |
-          version=$(sed -n 's/^cratestack = { package = "cratestack-pg", version = "=\([0-9.]*\)" }.*/\1/p' Cargo.toml)
-          if [ -z "$version" ]; then
-            echo "::error::could not read the cratestack version pin from Cargo.toml"
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(./ci/cratestack-pin.sh)" >> "$GITHUB_OUTPUT"
       - name: Install cratestack CLI (matched to the library pin)
         run: cargo install cratestack-cli --version "${{ steps.pin.outputs.version }}" --locked
       # `just` is not preinstalled on GitHub runners, and no other job in this

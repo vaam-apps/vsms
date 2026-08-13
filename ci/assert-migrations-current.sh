@@ -22,18 +22,18 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-# Read from Cargo.toml rather than hardcoding the version a second time —
-# AGENTS.md's own release-engineering notes warn specifically about a
-# duplicated hardcoded value drifting when only one copy gets updated. This
-# also means the check fails loudly on a CLI/library mismatch instead of
+# Read from ci/cratestack-pin.sh — the one place that parses Cargo.toml for
+# this — rather than re-deriving the pin here too. AGENTS.md's own
+# release-engineering notes warn specifically about a duplicated hardcoded
+# *value* drifting when only one copy gets updated; the milder version of
+# that same smell is a duplicated *extraction* of a single value, which is
+# what having this script and both ci.yml steps each carry their own copy
+# of the same sed expression against Cargo.toml would have been. This also
+# means the check fails loudly on a CLI/library mismatch instead of
 # silently trusting whatever the caller happened to install: a newer CLI
 # than the pin has, twice, emitted DDL the pinned library never produces
 # (AGENTS.md).
-pinned=$(sed -n 's/^cratestack = { package = "cratestack-pg", version = "=\([0-9.]*\)" }.*/\1/p' Cargo.toml)
-if [ -z "$pinned" ]; then
-  echo "assert-migrations-current: could not read the cratestack version pin from Cargo.toml" >&2
-  exit 1
-fi
+pinned=$(./ci/cratestack-pin.sh)
 
 installed=$(cratestack --version 2>/dev/null | awk '{print $2}' || true)
 if [ "$installed" != "$pinned" ]; then
