@@ -1061,6 +1061,7 @@ ALTER TABLE users                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE roles                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE user_credentials        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE audit_anchors           ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE route_validations       ALTER COLUMN id SET DEFAULT cs_cuid();
 
 -- Timestamps mixin, and other dbgenerated() columns.
 ALTER TABLE apps ALTER COLUMN created_at SET DEFAULT now(),
@@ -1071,6 +1072,10 @@ ALTER TABLE delivery_receipts ALTER COLUMN received_at SET DEFAULT now();
 -- ever updates an anchor row; see its own schema.cstack doc) — so it needs
 -- its own one-off default the same way delivery_receipts.received_at does.
 ALTER TABLE audit_anchors ALTER COLUMN created_at SET DEFAULT now();
+-- #64: RouteValidation is the identical shape — an append-only evidence
+-- record with no @use(Timestamps), so performed_at needs its own default
+-- the same way received_at/created_at above do.
+ALTER TABLE route_validations ALTER COLUMN performed_at SET DEFAULT now();
 
 -- Nothing in the framework touches updated_at on write, and remembering to set
 -- it in every call site is the kind of thing that works until it doesn't.
@@ -1375,6 +1380,13 @@ CREATE INDEX client_assertions_expiry_idx ON client_assertions (expires_at);
 -- "index the one lookup a singleton job always makes" reasoning
 -- oauth_signing_keys_active_idx above already applies.
 CREATE INDEX audit_anchors_period_end_idx ON audit_anchors (period_end DESC);
+
+-- #64's grey_route_watch job reads exactly one thing per route: the most
+-- recent validation, to compute staleness. Same "index the one lookup a
+-- job's own query always makes" reasoning as oauth_signing_keys_active_idx/
+-- audit_anchors_period_end_idx above.
+CREATE INDEX route_validations_route_performed_idx
+    ON route_validations (route_id, performed_at DESC);
 
 -- The framework's own outbox. `ensure_event_outbox_table` creates this lazily
 -- on the first emitting write, which is too late to index it here: applying
@@ -2135,6 +2147,8 @@ Both MNOs run SMS firewalls. Grey routes get blocked without warning, typically 
 
 Recommended posture: **Orange Developer API as primary for Orange-prefixed traffic**, **a reputable aggregator with verifiable MTN sender-ID pre-registration for MTN**, and a second aggregator as failover only. Validate every route with real handsets on each network before trusting it, and re-validate monthly. Symptoms of a grey route: sender ID silently replaced with a numeric string, intermittent total non-delivery on one network only, DLRs reporting success while handsets receive nothing.
 
+**Implementation, #64.** The monthly handset-validation half is `RouteValidation` (§2.10) plus `docs/runbooks/grey-route-validation.md` — a human runs the check and records it with `sms-gateway record-route-validation`; nothing server-side can perform or infer the check itself, since a grey route's whole effect is invisible past the wire (`DeliveryReceipt` still reports `delivered`). The divergence-alert half is `crate::jobs::grey_route_watch` (`crates/sms-worker/src/jobs/grey_route_watch.rs`): "routes that should behave identically" is read directly off this section's own two-line reasoning above — the same operator, the same message class — grouped by `Message.operator`/`Message.class`, gated on sample size (≥30 terminal messages per side), a two-proportion z-test, and a practical-significance floor (≥15 points), so a route with a handful of messages and a bad ratio is never flagged on that basis alone. See `OPEN_QUESTIONS.md` §2.4 for what this closes and — more importantly — what it still does not: neither half produces a trusted observation of what a handset actually displayed; the divergence alert is a statistical proxy, and the validation record is only as current as its own `performedAt`.
+
 ---
 
 ## 7. The worker node
@@ -2614,11 +2628,11 @@ The design question this story has to resolve before writing any code: given `we
 
 ### 9.1 Observability
 
-**Landed in #70/#71, corrected against what actually shipped rather than left as the original aspirational prose** — the five bolded items below are real (`crates/sms-metrics`, a Prometheus text endpoint on both binaries, `deploy/prometheus/alerts.yml`); everything else in this section is still the M6 target, not yet built, and the two paragraphs after the lists are the specific corrections.
+**Landed in #70/#71, corrected against what actually shipped rather than left as the original aspirational prose** — the five bolded items below are real (`crates/sms-metrics`, a Prometheus text endpoint on both binaries, `deploy/prometheus/alerts.yml`); everything else in this section is still the M6 target, not yet built, and the two paragraphs after the lists are the specific corrections. **#64 added two more of each — delivery-rate-by-pair, one of the items this section's own "still aspirational" list originally named — see that section's own note below.**
 
 - **Tracing**: `tracing`, no OpenTelemetry (no collector infrastructure exists anywhere in `deploy/`, and one was not needed for what shipped — see below). `cratestack_request_id` (an inbound `X-Request-Id` header, honoured verbatim, or freshly minted — `crates/sms-api/src/auth.rs::request_id_from`) ties every `cratestack_*`-logged line together for one HTTP request, within `sms-gateway`. It does **not** propagate into `sms-worker` or back through the DLR — those are separate processes with no shared span context, and the request that created a message is long finished by the time a worker submits it or a DLR arrives. `Message.id` is the join key across that boundary instead: `crates/sms-api/src/procedures.rs::send`, `crates/sms-worker/src/dispatch.rs::submit_one`, and `crates/sms-api/src/dlr.rs::ingest_one` each log a `message_id`-carrying event. See `docs/runbooks/alerting.md`'s "Correlating a message end to end" section for the worked example — this is real, grep-able correlation, not a claim of distributed tracing in the OpenTelemetry sense.
-- **Metrics**: five landed — **`SM001` rejection count by from/to pair** (`sms_sm001_total`, entity/from_state/to_state labels), **advisory lock holder per singleton role** (`sms_worker_singleton_lease_held{role}`), concurrent in-flight dispatch submits per provider (`sms_dispatch_in_flight_submits{provider}`), webhook outbox oldest-undelivered age (`sms_webhook_outbox_oldest_undelivered_age_seconds`), and poison event-outbox row count (`sms_event_outbox_poison_rows`). Everything else in this original list — submit rate/latency by provider, delivery rate by provider × operator, time-to-delivery percentiles, queue depth, DLR lag, `jobs` pending depth, webhook success rate, provider balance, segments per message, UCS-2 ratio, `/token` failure rate — is still aspirational; #70's own five named alert conditions are what #71 scoped metrics work to, deliberately, not this full list.
-- **Alerts that matter**: the five landed metrics each back a real, loadable Prometheus rule in `deploy/prometheus/alerts.yml` — **any singleton role unheld for more than 30s**; **a non-zero `SM001` rate**, which means code is proposing transitions the machine forbids; unexpected concurrent dispatch submits (a fleet-wide sum above 1, sustained); outbox oldest undelivered above **2 minutes**, not the 60s this line originally said (`crates/sms-worker/src/drain.rs::STALLED_THRESHOLD` is the implemented, real threshold — see `docs/runbooks/alerting.md` for why the alert matches the code, not this stale prose figure); any row with `attempts > 5` (`reap_outbox`'s own threshold, #42). Everything else in this original line — OTP p95, delivery-rate-by-pair, queue oldest-age, provider balance, DLR silence, webhook dead-letter rate — has no metric behind it yet and therefore no rule either.
+- **Metrics**: five landed with #70/#71, two more with #64 — **`SM001` rejection count by from/to pair** (`sms_sm001_total`, entity/from_state/to_state labels), **advisory lock holder per singleton role** (`sms_worker_singleton_lease_held{role}`), concurrent in-flight dispatch submits per provider (`sms_dispatch_in_flight_submits{provider}`), webhook outbox oldest-undelivered age (`sms_webhook_outbox_oldest_undelivered_age_seconds`), poison event-outbox row count (`sms_event_outbox_poison_rows`), **route delivery-rate divergence count** (`sms_route_delivery_divergence_flagged`, #64 — see §6.4 and `crates/sms-worker/src/jobs/grey_route_watch.rs`), and **overdue handset-validation route count** (`sms_route_validation_overdue`, #64). Everything else in this original list — submit rate/latency by provider, time-to-delivery percentiles, queue depth, DLR lag, `jobs` pending depth, webhook success rate, provider balance, segments per message, UCS-2 ratio, `/token` failure rate — is still aspirational; #70's own five named alert conditions plus #64's own named one are what metrics work has scoped to, deliberately, not this full list.
+- **Alerts that matter**: seven metrics, seven real, loadable Prometheus rules in `deploy/prometheus/alerts.yml` — **any singleton role unheld for more than 30s**; **a non-zero `SM001` rate**, which means code is proposing transitions the machine forbids; unexpected concurrent dispatch submits (a fleet-wide sum above 1, sustained); outbox oldest undelivered above **2 minutes**, not the 60s this line originally said (`crates/sms-worker/src/drain.rs::STALLED_THRESHOLD` is the implemented, real threshold — see `docs/runbooks/alerting.md` for why the alert matches the code, not this stale prose figure); any row with `attempts > 5` (`reap_outbox`'s own threshold, #42); **a route's delivery rate diverging, past a sample-size and statistical-significance gate, from its best-performing operator/class peer** (#64); **an enabled route with no real-handset validation in 30 days** (#64). Everything else in this original line — OTP p95, queue oldest-age, provider balance, DLR silence, webhook dead-letter rate — has no metric behind it yet and therefore no rule either.
 
 The `SM001` metric is the highest-signal one in the list. In a correct system it is flat zero — the trigger is a backstop, not a control path. Any non-zero rate means application logic and the transition table disagree, and it will tell you that before a customer does.
 

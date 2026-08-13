@@ -52,6 +52,8 @@
 --   - roles.created_at
 --   - roles.updated_at
 --   - roles.id
+--   - route_validations.id
+--   - route_validations.performed_at
 --   - routes.created_at
 --   - routes.updated_at
 --   - routes.id
@@ -320,6 +322,19 @@ CREATE TABLE roles (
     PRIMARY KEY (id)
 );
 
+CREATE TABLE route_validations (
+    id TEXT NOT NULL,
+    route_id TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    performed_at TIMESTAMPTZ NOT NULL,
+    performed_by TEXT NOT NULL,
+    expected_sender_id TEXT NOT NULL,
+    observed_sender_id TEXT NOT NULL,
+    passed BOOLEAN NOT NULL,
+    notes TEXT,
+    PRIMARY KEY (id)
+);
+
 CREATE TABLE routes (
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
@@ -495,6 +510,8 @@ ALTER TABLE providers ADD CONSTRAINT providers_kind_enum_check CHECK (kind IN ('
 
 ALTER TABLE providers ADD CONSTRAINT providers_state_enum_check CHECK (state IN ('active', 'degraded', 'disabled', 'draining'));
 
+ALTER TABLE route_validations ADD CONSTRAINT route_validations_operator_enum_check CHECK (operator IN ('mtn', 'orange', 'camtel', 'nexttel', 'unknown'));
+
 ALTER TABLE routes ADD CONSTRAINT routes_match_operator_enum_check CHECK (match_operator IN ('mtn', 'orange', 'camtel', 'nexttel', 'unknown'));
 
 ALTER TABLE routes ADD CONSTRAINT routes_match_class_enum_check CHECK (match_class IN ('otp', 'transactional', 'notification', 'marketing'));
@@ -516,6 +533,8 @@ ALTER TABLE message_parts ADD CONSTRAINT message_parts_message_id_fkey FOREIGN K
 ALTER TABLE messages ADD CONSTRAINT messages_app_id_fkey FOREIGN KEY (app_id) REFERENCES apps (id);
 
 ALTER TABLE oauth_clients ADD CONSTRAINT oauth_clients_app_client_id_fkey FOREIGN KEY (app_client_id) REFERENCES app_clients (id);
+
+ALTER TABLE route_validations ADD CONSTRAINT route_validations_route_id_fkey FOREIGN KEY (route_id) REFERENCES routes (id);
 
 ALTER TABLE routes ADD CONSTRAINT routes_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES providers (id);
 

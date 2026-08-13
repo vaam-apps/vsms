@@ -1,9 +1,11 @@
-# Alerting — the five conditions that are silent by default
+# Alerting — the seven conditions that are silent by default
 
 [#70](https://github.com/vymalo/vsms/issues/70)/[#71](https://github.com/vymalo/vsms/issues/71),
-epic [#66](https://github.com/vymalo/vsms/issues/66). §9.1 of
-[the design doc](../architecture.md#91-observability) is the spec this
-implements; [`crates/sms-metrics/src/lib.rs`](../../crates/sms-metrics/src/lib.rs)'s
+epic [#66](https://github.com/vymalo/vsms/issues/66), plus two more from
+[#64](https://github.com/vymalo/vsms/issues/64) (grey-route detection,
+epic [#60](https://github.com/vymalo/vsms/issues/60)). §9.1 of
+[the design doc](../architecture.md#91-observability) is the spec #70/#71
+implement; [`crates/sms-metrics/src/lib.rs`](../../crates/sms-metrics/src/lib.rs)'s
 own module doc is the authoritative reference for what each metric
 measures and why it's shaped the way it is. This file is the operator-
 facing half: what fires, and what to do about it.
@@ -69,7 +71,7 @@ example, given `sms-gateway=info,sms_worker_bin=info` (the default
 grep '"message_id":"msg_abc123"' /var/log/sms-gateway.log /var/log/sms-worker.log | sort -k1
 ```
 
-## The five alerts
+## The seven alerts
 
 ### SM001 {#sm001}
 
@@ -186,6 +188,48 @@ row has retried past that threshold with no successful delivery.
    that is a deliberate, manual `DELETE` an operator runs by hand against
    `cratestack_event_outbox`, not something this job or any generated
    route does automatically.
+
+### Route delivery-rate divergence {#route-divergence}
+
+**`SMSRouteDeliveryDivergence`** — `sum(sms_route_delivery_divergence_flagged) > 0`,
+debounced 5m. Set by `crate::jobs::grey_route_watch`'s daily run (see
+`crates/sms-worker/src/jobs/grey_route_watch.rs`'s own module doc for the
+full mechanism): a route's own delivery rate, over the last 7 days, is both
+statistically implausible (a two-proportion z-test past a conservative
+threshold) and practically meaningful (at least a 15-point gap) worse than
+the best-performing route serving the same `(operator, class)` pair, with
+both sides carrying at least 30 terminal messages.
+
+1. This is a proxy signal, not a confirmed grey route — §6.4's own
+   framing: a grey route "looks fine in every metric except delivery
+   quality," and this alert is built entirely from delivery-outcome
+   counts, never from what a handset actually displayed.
+2. Read the per-pair `warn!` log `grey_route_watch`'s own `check_divergence`
+   emits — `operator`/`class`/`reference_route_id`/`route_id`/`rate`/`n`/
+   `z_score` name exactly which route diverged from which, and by how much.
+3. Run `docs/runbooks/grey-route-validation.md` against the flagged
+   `route_id` specifically — a real handset check is the only way to turn
+   "worth investigating" into "confirmed."
+4. If confirmed, disable the route (`Route.enabled = false`) immediately
+   rather than waiting for a scheduled fix — §6.3 already excludes a
+   disabled route from every future routing decision.
+
+### Route validation overdue {#route-validation-overdue}
+
+**`SMSRouteValidationOverdue`** — `sum(sms_route_validation_overdue) > 0`,
+debounced 5m. Set by the same `grey_route_watch` run: an `enabled` `Route`
+with no `RouteValidation` row in the last 30 days.
+
+1. This metric knows nothing about whether the route is actually healthy —
+   only that nobody has looked recently. It fires identically for a route
+   that has never had a single problem and one that turned grey the day
+   after its last check.
+2. Run `docs/runbooks/grey-route-validation.md` against every route named
+   in the per-route `warn!` log (`route_id`/`route_name`/`last_validated`).
+3. A permanently retired route that will never carry traffic again should
+   be `enabled = false`, not left `enabled` and perpetually overdue — this
+   alert has no way to distinguish "forgotten" from "decommissioned but
+   never disabled."
 
 ## Running this locally
 

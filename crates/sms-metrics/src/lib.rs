@@ -41,7 +41,7 @@
 //! it off keeps this crate's own dependency footprint to the metric types
 //! themselves.
 //!
-//! # The five metrics, and why each is shaped the way it is
+//! # The seven metrics, and why each is shaped the way it is
 //!
 //! - [`SM001_TOTAL`] — §9.1 of the design doc names this "the highest-
 //!   signal metric in the list... in a correct system it is flat zero."
@@ -112,14 +112,40 @@
 //!   `0` on first touch), and summing across every `jobs`-role instance
 //!   gives the right total either way.
 //!
+//! - [`ROUTE_DELIVERY_DIVERGENCE_FLAGGED`] — #64 (grey-route detection).
+//!   Count of `(operator, class)` peer groups where one route's delivery
+//!   rate diverged from its group's best-performing route, found on this
+//!   process's most recent `grey_route_watch` job run. Same sticky-gauge
+//!   shape as [`EVENT_OUTBOX_POISON_ROWS`] — `grey_route_watch` is a `Job`
+//!   (CAS-claimed, not a singleton lease), so a fresh process reporting `0`
+//!   because it has never won a claim is already correct, not a false
+//!   all-clear. See
+//!   `crates/sms-worker/src/jobs/grey_route_watch.rs`'s own module doc for
+//!   what "diverged" means and why it deliberately does not fire on a small
+//!   sample with a large delta — that gate is the entire point of this
+//!   metric existing rather than a naive "route X is below Y% delivered."
+//! - [`ROUTE_VALIDATION_OVERDUE`] — #64's other half. Count of `enabled`
+//!   routes with no [`RouteValidation`](../sms_api/schema/index.html) row
+//!   in the last 30 days, found on this process's most recent
+//!   `grey_route_watch` run. Same sticky-gauge shape as
+//!   [`ROUTE_DELIVERY_DIVERGENCE_FLAGGED`]. This metric does **not** know
+//!   whether a route is actually a grey route — only whether the one thing
+//!   that could tell you (a human looking at a real handset) has happened
+//!   recently enough to trust. See `OPEN_QUESTIONS.md` §2.4: nothing in
+//!   this crate closes the "no ground truth" gap that entry names, and this
+//!   metric is deliberately scoped to not imply otherwise.
+//!
 //! # Deliberately not built here
 //!
-//! No histogram of submit/procedure latency, no per-operator delivery-rate
-//! gauge, no balance/spend tracking — §9.1's own prose lists several more
-//! metrics than #70's five named alert conditions need, and building ahead
-//! of a named requirement is exactly what this repository's own delivery
-//! convention (`AGENTS.md`) argues against. Five metrics, five alerts, no
-//! more.
+//! No histogram of submit/procedure latency, no balance/spend tracking —
+//! §9.1's own prose lists several more metrics than #70's five originally
+//! named alert conditions needed, and building ahead of a named requirement
+//! is exactly what this repository's own delivery convention (`AGENTS.md`)
+//! argues against. The two #64 metrics above are the one deliberate
+//! exception: #64's own issue text names the alert condition directly
+//! ("delivery-rate divergence between routes that should behave
+//! identically"), which is a named requirement, not scope creep. Seven
+//! metrics, seven alerts, no more.
 
 use std::sync::LazyLock;
 
@@ -233,6 +259,40 @@ pub static EVENT_OUTBOX_POISON_ROWS: LazyLock<IntGauge> = LazyLock::new(|| {
     REGISTRY
         .register(Box::new(gauge.clone()))
         .expect("sms_event_outbox_poison_rows registered exactly once per process");
+    gauge
+});
+
+/// `(operator, class)` peer groups with a divergent route, found on this
+/// process's most recent `grey_route_watch` run. See this module's own doc.
+pub static ROUTE_DELIVERY_DIVERGENCE_FLAGGED: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::new(
+        "sms_route_delivery_divergence_flagged",
+        "Route pairs where one route's delivery rate diverged from its (operator, class) peer \
+         group's best route, found on this process's most recent grey_route_watch run. Gated on \
+         sample size and statistical significance — see crates/sms-worker/src/jobs/\
+         grey_route_watch.rs.",
+    )
+    .expect("sms_route_delivery_divergence_flagged: static metric definition is valid");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("sms_route_delivery_divergence_flagged registered exactly once per process");
+    gauge
+});
+
+/// `enabled` routes with no handset validation in the last 30 days, found on
+/// this process's most recent `grey_route_watch` run. See this module's own
+/// doc.
+pub static ROUTE_VALIDATION_OVERDUE: LazyLock<IntGauge> = LazyLock::new(|| {
+    let gauge = IntGauge::new(
+        "sms_route_validation_overdue",
+        "Enabled routes with no RouteValidation row in the last 30 days, found on this \
+         process's most recent grey_route_watch run. Staleness of the human handset check, not \
+         evidence of an actual grey route — see OPEN_QUESTIONS.md §2.4.",
+    )
+    .expect("sms_route_validation_overdue: static metric definition is valid");
+    REGISTRY
+        .register(Box::new(gauge.clone()))
+        .expect("sms_route_validation_overdue registered exactly once per process");
     gauge
 });
 
@@ -383,6 +443,8 @@ mod tests {
             .set(0);
         super::WEBHOOK_OUTBOX_OLDEST_UNDELIVERED_AGE_SECONDS.set(0.0);
         super::EVENT_OUTBOX_POISON_ROWS.set(0);
+        super::ROUTE_DELIVERY_DIVERGENCE_FLAGGED.set(0);
+        super::ROUTE_VALIDATION_OVERDUE.set(0);
 
         let body = render().expect("rendering the registry must not fail");
         for name in [
@@ -391,6 +453,8 @@ mod tests {
             "sms_dispatch_in_flight_submits",
             "sms_webhook_outbox_oldest_undelivered_age_seconds",
             "sms_event_outbox_poison_rows",
+            "sms_route_delivery_divergence_flagged",
+            "sms_route_validation_overdue",
         ] {
             assert!(
                 body.contains(name),

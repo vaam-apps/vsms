@@ -66,7 +66,7 @@ flowchart TB
 | **1 — Foundation** | M0, M1 | Can we represent a message, and prove who is asking? | **Done** — 14/14 and 9/9 closed |
 | **2 — Deliver a message** | M2, M3 | Can one SMS reach a real handset, and can the caller find out what happened? | **Done** — M2 12/12, M3 8/8, both gates passing |
 | **3 — Operate it** | M4, M6 | Can a human run this without a database console, and does it satisfy Cameroonian law? | M6 **done** (9/9, gate passed). M4 **14/20** — #53/#55 landed 2026-08-13; the two screens left (#52, #58) were gated on #211 until it landed |
-| **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | **Started** (3/6) — `sms-provider-mtn` (#61), the routing rules engine (#62) and failover/circuit breakers (#63) landed; grey-route detection (#64) and the kill-Orange-in-staging gate (#65) remain, both needing the real-handset evidence `OPEN_QUESTIONS.md` §2.2 records as still missing |
+| **4 — Survive an operator** | M5 | Does traffic keep flowing when Orange breaks? | **Started** (4/6) — `sms-provider-mtn` (#61), the routing rules engine (#62), failover/circuit breakers (#63), and grey-route detection (#64) landed; the kill-Orange-in-staging gate (#65) remains, and #64's own two proxies (delivery-rate divergence, handset-validation staleness) are explicitly not a substitute for the real-handset evidence `OPEN_QUESTIONS.md` §2.2 records as still missing — see §2.4 |
 | **5 — Conditional** | M7 | Direct MNO interconnect over SMPP | Not started, and **may never exist** — see decision #4 |
 
 ---
