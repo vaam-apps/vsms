@@ -33,6 +33,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
 
 export type Encoding = "gsm7" | "ucs2";
@@ -111,16 +112,6 @@ function procedureUrl(procedure: string): string {
   return new URL(`/$procs/${procedure}`, env.SMS_API_URL).toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 /**
  * `POST /$procs/{procedure}` with a Bearer token, retrying exactly once —
  * with a freshly minted token — on an unexpected 401. `getMachineAccessToken`'s
@@ -167,7 +158,7 @@ async function callProcedure<TArgs extends object, TResult>(
     response = await attempt();
   }
 
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, procedure);
   }

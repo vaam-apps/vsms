@@ -14,6 +14,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 export interface AuditLogEntry {
@@ -57,16 +58,6 @@ export interface AuditChainStatus {
 
 type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 async function authedPost(url: string, body: unknown): Promise<UndiciResponse> {
   const attempt = async (): Promise<UndiciResponse> => {
     const token = await resolveUpstreamAccessToken();
@@ -89,42 +80,33 @@ async function authedPost(url: string, body: unknown): Promise<UndiciResponse> {
   return response;
 }
 
-function normalizeEntry(entry: AuditLogEntry): AuditLogEntry {
-  return {
-    ...entry,
-    tenant: entry.tenant ?? undefined,
-    before: entry.before ?? undefined,
-    after: entry.after ?? undefined,
-    requestId: entry.requestId ?? undefined,
-  };
-}
-
-/** `POST /$procs/auditLog`. */
+/** `POST /$procs/auditLog`. `AuditLogEntry`'s nullable fields (`tenant`,
+ * `before`, `after`, `requestId`) no longer need a local `normalizeEntry` —
+ * #221's shared seam (`./json.ts`) already converts the wire's `null` to
+ * `undefined` for every response this module parses, including these,
+ * *before* this function ever sees the body. `before`/`after`/`actor`/
+ * `primaryKey` are themselves JSON-encoded `String` columns (see
+ * `AuditLogEntry`'s own doc), so that seam's recursion never descends into
+ * their own encoded contents either — see `./json.ts`'s module doc for the
+ * full reasoning. */
 export async function fetchAuditLog(query: AuditLogQuery): Promise<AuditLogPage> {
   const url = new URL("/$procs/auditLog", env.SMS_API_URL).toString();
   const response = await authedPost(url, { args: query });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "auditLog");
   }
-  const page = parsed as AuditLogPage;
-  return { entries: page.entries.map(normalizeEntry), hasMore: page.hasMore };
+  return parsed as AuditLogPage;
 }
 
-/** `POST /$procs/auditChainStatus`. */
+/** `POST /$procs/auditChainStatus`. Same seam, same reasoning as
+ * [`fetchAuditLog`] above. */
 export async function fetchAuditChainStatus(): Promise<AuditChainStatus> {
   const url = new URL("/$procs/auditChainStatus", env.SMS_API_URL).toString();
   const response = await authedPost(url, {});
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "auditChainStatus");
   }
-  const status = parsed as AuditChainStatus;
-  return {
-    ...status,
-    latestAnchorId: status.latestAnchorId ?? undefined,
-    latestPeriodEnd: status.latestPeriodEnd ?? undefined,
-    latestRowCount: status.latestRowCount ?? undefined,
-    latestContentVerified: status.latestContentVerified ?? undefined,
-  };
+  return parsed as AuditChainStatus;
 }

@@ -93,6 +93,7 @@ import { fetch as undiciFetch } from "undici";
 import type { Encoding, MessageClass, MessageState, OperatorCode } from "./client";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
 
@@ -102,10 +103,21 @@ import { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
 const MAX_SERVER_LIMIT = 1000;
 
 /** The full row shape `GET /messages`/`GET /messages/{id}` can return.
- * Transcribed from a live response, field-for-field — not from the
- * schema's own `Message` model doc comment, which doesn't say which
- * fields are omitted from JSON when `null` (all of them are, confirmed
- * live: a message with no `stateReason` simply has no `stateReason` key). */
+ * Transcribed from a live response, field-for-field.
+ *
+ * **Correction, #221: this doc comment used to claim a nullable column is
+ * "omitted from JSON when `null`... confirmed live" for every field here.**
+ * That was checked live for exactly one field, `stateReason`, and never
+ * true in general — #50 found a real, contradicting `"submittedAt": null`
+ * in a genuine response body (`admin/app/messages/[id]/timeline.ts`'s own
+ * doc has the full story), which is precisely what let a `!== undefined`
+ * check through and rendered a bogus Unix-epoch timeline entry. The correct
+ * statement is the opposite: sms-api always sends an explicit JSON `null`
+ * for a nullable column with no value, never an omitted key.
+ * `packages/gateway/src/json.ts` is now the one place this package converts
+ * that `null` to this module's own `undefined`-only convention, applied to
+ * every field below without this module needing its own `normalize*`
+ * function — see that file's own module doc for the full mechanism. */
 export interface MessageRecord {
   id: string;
   appId: string;
@@ -208,16 +220,6 @@ function messagesUrl(path: string, query: Record<string, string | number | undef
   return url.toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 /** `GET` with a Bearer token, retrying once on an unexpected 401 — same
  * shape as `client.ts`'s `callProcedure`, duplicated rather than shared:
  * this module and `client.ts` are two temporary, independently-replaceable
@@ -263,7 +265,7 @@ async function getJsonWith<T>(
 
   if (response.status === 404) return null;
 
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, routeLabel);
   }
@@ -456,7 +458,7 @@ export async function listMessageReceipts(messageId: string): Promise<MessageRec
     response = await attempt();
   }
 
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listMessageReceipts");
   }

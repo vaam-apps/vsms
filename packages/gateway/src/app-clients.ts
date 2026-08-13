@@ -30,6 +30,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, updateWithIfMatch, type WithEtag } from "./rest";
 
@@ -79,16 +80,6 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
   return url.toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 async function authedRequest(
   url: string,
   init: { method: "GET" | "POST"; body?: string },
@@ -125,20 +116,6 @@ interface AppClientsPage {
   };
 }
 
-/** The wire sends an explicit JSON `null` for `lastUsedAt`/`retiredAt`
- * (never never used, never retired), not an omitted key — the same finding
- * `users.ts::normalizeUser`'s own doc records at length, discovered live
- * against a real `demo` run; applied here preventively rather than waiting
- * for a screen that renders either field to hit the identical
- * `new Date(null)` epoch bug. */
-function normalizeAppClient<T extends Partial<AppClientRecord>>(record: T): T {
-  return {
-    ...record,
-    lastUsedAt: record.lastUsedAt ?? undefined,
-    retiredAt: record.retiredAt ?? undefined,
-  };
-}
-
 function pickListFields(record: AppClientRecord): AppClientListItem {
   const out = {} as AppClientListItem;
   for (const field of LIST_FIELDS) {
@@ -165,20 +142,16 @@ export async function listAppClientsForApp(appId: string): Promise<AppClientList
     fields: LIST_FIELDS.join(","),
   });
   const response = await authedRequest(url, { method: "GET" });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listAppClientsForApp");
   }
   const page = parsed as AppClientsPage;
-  return page.items.map(normalizeAppClient).map(pickListFields);
+  return page.items.map(pickListFields);
 }
 
 export async function getAppClientById(id: string): Promise<WithEtag<AppClientRecord> | null> {
-  const result = await fetchWithEtag<AppClientRecord>(
-    `/app_clients/${encodeURIComponent(id)}`,
-    "getAppClient",
-  );
-  return result === null ? null : { ...result, data: normalizeAppClient(result.data) };
+  return fetchWithEtag<AppClientRecord>(`/app_clients/${encodeURIComponent(id)}`, "getAppClient");
 }
 
 export interface ProvisionClientResult {
@@ -205,7 +178,7 @@ export async function provisionClient(
     method: "POST",
     body: JSON.stringify({ args: { appId, label, scopes } }),
   });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "provisionAppClient");
   }

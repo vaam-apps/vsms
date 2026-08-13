@@ -40,6 +40,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 /** `job_state_transitions` (`schema/migrations/postgres/0002_bootstrap/
@@ -53,7 +54,16 @@ const MAX_SERVER_LIMIT = 1000;
 /** The full row shape `GET /jobs`/`GET /jobs/{id}` can return — transcribed
  * from `schema.cstack`'s `Job` model, `payload` excluded from the list
  * projection (same reasoning `messages.ts` excludes `body`: potentially
- * large, and this screen's own table has no use for the raw JSON). */
+ * large, and this screen's own table has no use for the raw JSON).
+ *
+ * **This module never had its own `normalize*` function, and that was a
+ * latent instance of the exact bug #221 was filed over, not a clean
+ * bill of health.** `dedupeKey`/`leaseOwner`/`leaseUntil`/`lastError`/
+ * `startedAt`/`finishedAt` are exactly as nullable-on-the-wire as
+ * `Route.match*` or `User.lastLoginAt` — nothing had simply driven the Jobs
+ * screen through a case that rendered one of them yet.
+ * `packages/gateway/src/json.ts`'s shared seam now covers this module the
+ * same as every other. */
 export interface JobRecord {
   id: string;
   kind: string;
@@ -128,16 +138,6 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
   return url.toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 /** `GET`/`POST` with a Bearer token, retrying once on an unexpected 401 —
  * the same shape `client.ts`'s `callProcedure` and `messages.ts`'s
  * `getJson` each already carry, duplicated a third time rather than
@@ -205,7 +205,7 @@ export async function listJobs(input: ListJobsInput = {}): Promise<ListJobsResul
     fields: LIST_FIELDS.join(","),
   });
   const response = await authedRequest(url, { method: "GET" });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listJobs");
   }
@@ -251,7 +251,7 @@ export async function requeueJob(jobId: string): Promise<RequeueJobResult> {
     method: "POST",
     body: JSON.stringify({ args: { jobId } }),
   });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "requeueJob");
   }

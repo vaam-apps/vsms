@@ -47,14 +47,18 @@ import "server-only";
 // confirmed live against a real gateway (`just demo`), the same finding
 // `routes.ts`'s own module doc records at length for `Route`'s four
 // `match*` columns, against `messages-screen.tsx`'s own contradicting claim
-// for `Message.stateReason`. [`normalizeProvider`] is the equivalent
-// single normalization point here — one field today, but the same
-// discipline `routes.ts` needed for five.
+// for `Message.stateReason`.
+//
+// **#221 correction:** this module used to carry its own single-field
+// `normalizeProvider` for exactly `healthCheckedAt`. `packages/gateway/src/
+// json.ts` now converts every response's `null` to `undefined` once, for
+// every model this package parses — see that file's own module doc.
 
 import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, updateWithIfMatch, type WithEtag } from "./rest";
 
@@ -121,25 +125,9 @@ function providersUrl(path: string, query: Record<string, string | number | unde
   return url.toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 /** `GET` with a Bearer token, retrying once on an unexpected 401 — same
  * shape as `jobs.ts`'s own `authedRequest`, duplicated for the same
  * "independently-replaceable seam" reason that module's doc gives. */
-/** See module doc — the wire's explicit `null` becomes this seam's own
- * `undefined`-only convention. */
-function normalizeProvider<T extends Partial<ProviderRecord>>(row: T): T {
-  return { ...row, healthCheckedAt: row.healthCheckedAt ?? undefined };
-}
-
 async function authedGet(url: string): Promise<UndiciResponse> {
   const attempt = async (): Promise<UndiciResponse> => {
     const token = await resolveUpstreamAccessToken();
@@ -167,11 +155,11 @@ async function authedGet(url: string): Promise<UndiciResponse> {
 export async function listProviders(): Promise<ProviderListItem[]> {
   const url = providersUrl("/providers", { fields: LIST_FIELDS.join(",") });
   const response = await authedGet(url);
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listProviders");
   }
-  return (parsed as ProviderListItem[]).map(normalizeProvider);
+  return parsed as ProviderListItem[];
 }
 
 /**
@@ -180,11 +168,7 @@ export async function listProviders(): Promise<ProviderListItem[]> {
  * on a 404.
  */
 export async function getProviderById(id: string): Promise<WithEtag<ProviderRecord> | null> {
-  const result = await fetchWithEtag<ProviderRecord>(
-    `/providers/${encodeURIComponent(id)}`,
-    "getProvider",
-  );
-  return result === null ? null : { ...result, data: normalizeProvider(result.data) };
+  return fetchWithEtag<ProviderRecord>(`/providers/${encodeURIComponent(id)}`, "getProvider");
 }
 
 /** The operationally-relevant fields this screen lets a human edit —

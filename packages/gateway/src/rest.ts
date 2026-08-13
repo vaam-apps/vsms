@@ -70,6 +70,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
@@ -134,16 +135,6 @@ function normaliseIfMatch(etag: string): string {
   return `"${trimmed}"`;
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 function restUrl(path: string): string {
   return new URL(path, env.SMS_API_URL).toString();
 }
@@ -186,7 +177,7 @@ export async function fetchWithEtag<T>(
 
   if (response.status === 404) return null;
 
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, routeLabel);
   }
@@ -237,7 +228,7 @@ export async function updateWithIfMatch<T>(
     response = await attempt();
   }
 
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, routeLabel);
   }
@@ -281,7 +272,7 @@ export async function postJson<T>(
     response = await attempt();
   }
 
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, routeLabel);
   }
@@ -325,7 +316,7 @@ export async function deleteResource(
   }
 
   if (!response.ok) {
-    const parsed = await parseJsonBody(response);
+    const parsed = await parseGatewayJson(response);
     throw mapGatewayError(response.status, parsed, routeLabel);
   }
 }

@@ -24,6 +24,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 /** `schema.cstack`'s `OptOutSource`, verbatim. */
@@ -68,16 +69,6 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
   return url.toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 async function authedRequest(
   url: string,
   init: { method: "GET" | "POST" | "DELETE"; body?: string },
@@ -114,16 +105,6 @@ interface OptOutsPage {
   };
 }
 
-/** The wire sends an explicit JSON `null` for an absent `reason`, not an
- * omitted key — the same finding `users.ts::normalizeUser`'s own doc
- * records at length. `opt-outs-screen.tsx`'s own `row.reason ?? "—"` read
- * already tolerates this, but normalizing here keeps the module's own
- * `undefined`-only convention true for every field, not just the ones a
- * screen happens to guard defensively. */
-function normalizeOptOut<T extends Partial<OptOutRecord>>(record: T): T {
-  return { ...record, reason: record.reason ?? undefined };
-}
-
 function pickListFields(record: OptOutRecord): OptOutListItem {
   const out = {} as OptOutListItem;
   for (const field of LIST_FIELDS) {
@@ -142,12 +123,12 @@ export async function listOptOuts(limit = 100): Promise<OptOutListItem[]> {
     fields: LIST_FIELDS.join(","),
   });
   const response = await authedRequest(url, { method: "GET" });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listOptOuts");
   }
   const page = parsed as OptOutsPage;
-  return page.items.map(normalizeOptOut).map(pickListFields);
+  return page.items.map(pickListFields);
 }
 
 export interface OptOutSummary {
@@ -164,20 +145,23 @@ export interface SearchOptOutResult {
   optOut?: OptOutSummary | undefined;
 }
 
-/** `POST /$procs/searchOptOutByMsisdn` — see module doc for what a `null`
- * result can and cannot mean. */
+/** `POST /$procs/searchOptOutByMsisdn` — see module doc for what a "not
+ * found" result can and cannot mean. The wire sends `{"optOut": null}` for
+ * "not found," not an omitted key — `./json.ts`'s shared seam converts that
+ * to `optOut: undefined` before this function ever sees the body, so the
+ * cast below is exactly [`SearchOptOutResult`]'s own shape, not a
+ * `| null` variant of it. */
 export async function searchOptOutByMsisdn(msisdn: string): Promise<SearchOptOutResult> {
   const url = new URL("/$procs/searchOptOutByMsisdn", env.SMS_API_URL).toString();
   const response = await authedRequest(url, {
     method: "POST",
     body: JSON.stringify({ args: { msisdn } }),
   });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "searchOptOutByMsisdn");
   }
-  const result = parsed as { optOut: OptOutSummary | null };
-  return { optOut: result.optOut ?? undefined };
+  return parsed as SearchOptOutResult;
 }
 
 export interface RecordOptOutFields {
@@ -199,11 +183,11 @@ export async function recordOptOut(fields: RecordOptOutFields): Promise<OptOutRe
     method: "POST",
     body: JSON.stringify({ args: fields }),
   });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "recordOptOut");
   }
-  return normalizeOptOut(parsed as OptOutRecord);
+  return parsed as OptOutRecord;
 }
 
 /** `DELETE /opt_outs/{id}` — `OptOut.delete`'s own `@@allow` is
@@ -215,7 +199,7 @@ export async function deleteOptOut(id: string): Promise<void> {
   const url = gatewayUrl(`/opt_outs/${encodeURIComponent(id)}`, {});
   const response = await authedRequest(url, { method: "DELETE" });
   if (!response.ok) {
-    const parsed = await parseJsonBody(response);
+    const parsed = await parseGatewayJson(response);
     throw mapGatewayError(response.status, parsed, "deleteOptOut");
   }
 }

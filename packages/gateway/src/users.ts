@@ -22,6 +22,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, updateWithIfMatch, type WithEtag } from "./rest";
 
@@ -32,6 +33,13 @@ export interface UserRecord {
   displayName: string;
   roleKey: string;
   active: boolean;
+  /** The wire sends an explicit JSON `null` here for an account that has
+   * never logged in, never an omitted key — confirmed live in the PR that
+   * added this module (`lastLoginAt` rendered as `1970-01-01`,
+   * `new Date(null)`'s own epoch, before the fix). #221 replaced this
+   * module's own single-field `normalizeUser` with `packages/gateway/src/
+   * json.ts`'s shared seam, applied once to every response this package
+   * parses rather than per model. */
   lastLoginAt?: string | undefined;
   mfaEnrolled: boolean;
   version: number;
@@ -61,16 +69,6 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
   return url.toString();
-}
-
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
 }
 
 async function authedRequest(
@@ -109,19 +107,6 @@ interface UsersPage {
   };
 }
 
-/** The wire sends an explicit JSON `null` for an absent nullable column,
- * never an omitted key — confirmed live in this same PR (`lastLoginAt`
- * rendered as `1970-01-01` — `new Date(null)`'s own epoch — for an account
- * that had never logged in, because nothing here converted the wire's
- * `null` to this module's own `undefined`-only convention before a
- * `!== undefined` check in `users-screen.tsx` let it through). Same
- * finding `routes.ts`/`route-simulator.ts`/`providers.ts` each already
- * document for their own nullable fields; this module just hadn't needed
- * it demonstrated yet. */
-function normalizeUser<T extends Partial<UserRecord>>(record: T): T {
-  return { ...record, lastLoginAt: record.lastLoginAt ?? undefined };
-}
-
 function pickListFields(record: UserRecord): UserListItem {
   const out = {} as UserListItem;
   for (const field of LIST_FIELDS) {
@@ -138,17 +123,16 @@ function pickListFields(record: UserRecord): UserListItem {
 export async function listUsers(): Promise<UserListItem[]> {
   const url = gatewayUrl("/users", { limit: 500, sort: "email", fields: LIST_FIELDS.join(",") });
   const response = await authedRequest(url, { method: "GET" });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listUsers");
   }
   const page = parsed as UsersPage;
-  return page.items.map(normalizeUser).map(pickListFields);
+  return page.items.map(pickListFields);
 }
 
 export async function getUserById(id: string): Promise<WithEtag<UserRecord> | null> {
-  const result = await fetchWithEtag<UserRecord>(`/users/${encodeURIComponent(id)}`, "getUser");
-  return result === null ? null : { ...result, data: normalizeUser(result.data) };
+  return fetchWithEtag<UserRecord>(`/users/${encodeURIComponent(id)}`, "getUser");
 }
 
 export interface UpdateUserFields {
@@ -182,7 +166,7 @@ export async function deleteUser(id: string): Promise<void> {
   const url = gatewayUrl(`/users/${encodeURIComponent(id)}`, {});
   const response = await authedRequest(url, { method: "DELETE" });
   if (!response.ok) {
-    const parsed = await parseJsonBody(response);
+    const parsed = await parseGatewayJson(response);
     throw mapGatewayError(response.status, parsed, "deleteUser");
   }
 }
@@ -210,7 +194,7 @@ export async function provisionUser(
     method: "POST",
     body: JSON.stringify({ args: { email, displayName, roleKey } }),
   });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "provisionUser");
   }

@@ -107,6 +107,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
 
@@ -145,33 +146,30 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
   return url.toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
+/** #221 correction: this module used to fold both the wire's `null` *and*
+ * its own `""`-means-cleared sentinel (module doc's "a real framework gap"
+ * section) to `undefined` here. The `null` half is now handled once, for
+ * every response this package parses, by `packages/gateway/src/json.ts` —
+ * see that file's own module doc. What's left is genuinely this module's
+ * own concern, unrelated to #221: `""` is a working "clear" sentinel for a
+ * *different*, still-open framework gap (cratestack#567 — a generated
+ * `PATCH` route cannot distinguish an explicit `null` from an absent key,
+ * so this module writes `""` instead when it means "clear this field").
+ * Folding it back to `undefined` on read is what makes that write-side
+ * workaround invisible to a round-trip read. */
+function foldClearedSentinel(value: string | undefined): string | undefined {
+  return value === "" ? undefined : value;
 }
 
-/** See module doc — the wire's explicit `null` becomes this seam's own
- * `undefined`-only convention (`providers.ts`'s own `normalizeProvider`,
- * `routes.ts`'s `normalizeRoute`), applied to both resources here. Also
- * folds this module's own `""`-means-cleared sentinel (module doc's "a real
- * framework gap" section) back to `undefined`, so a round-trip read can't
- * tell a genuinely-never-set column apart from one this module cleared. */
 function normalizeSenderId<T extends Partial<SenderIdRecord>>(row: T): T {
-  return { ...row, notes: row.notes === "" ? undefined : (row.notes ?? undefined) };
+  return { ...row, notes: foldClearedSentinel(row.notes) };
 }
 
 function normalizeRegistration<T extends Partial<SenderIdRegistrationRecord>>(row: T): T {
   return {
     ...row,
-    submittedAt: row.submittedAt ?? undefined,
-    approvedAt: row.approvedAt ?? undefined,
-    reference: row.reference === "" ? undefined : (row.reference ?? undefined),
-    rejectionReason: row.rejectionReason === "" ? undefined : (row.rejectionReason ?? undefined),
+    reference: foldClearedSentinel(row.reference),
+    rejectionReason: foldClearedSentinel(row.rejectionReason),
   };
 }
 
@@ -196,7 +194,7 @@ async function authedGet(url: string): Promise<UndiciResponse> {
 /** `GET /sender_ids` — every `SenderId` row this deployment has. */
 export async function listSenderIds(): Promise<SenderIdRecord[]> {
   const response = await authedGet(gatewayUrl("/sender_ids"));
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listSenderIds");
   }
@@ -210,7 +208,7 @@ export async function listSenderIds(): Promise<SenderIdRecord[]> {
  * practice, a handful of rows total. */
 export async function listSenderIdRegistrations(): Promise<SenderIdRegistrationRecord[]> {
   const response = await authedGet(gatewayUrl("/sender_id_registrations"));
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listSenderIdRegistrations");
   }

@@ -17,11 +17,22 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 /** The six §7.1 role names, verbatim (`sms_worker::Role::as_str`). */
 export type WorkerRole = "dispatch" | "drain" | "scheduler" | "hooks" | "jobs" | "smpp";
 
+/**
+ * **This module never had its own `normalize*` function either — another
+ * latent instance of the bug #221 was filed over, alongside `jobs.ts`.**
+ * `workerId`/`pid`/`heldSince` are `null` on the wire for a role currently
+ * showing `held: false`, exactly the same shape as every other nullable
+ * column this package has found the hard way; nothing had driven the
+ * Workers screen through a standby role to render one before now.
+ * `packages/gateway/src/json.ts`'s shared seam covers this module the same
+ * as every other.
+ */
 export interface WorkerLockInfo {
   role: WorkerRole;
   /** `false` for `hooks`/`jobs` (`Cardinality::ScaleToN`) — those two never
@@ -54,16 +65,6 @@ function procedureUrl(procedure: string): string {
   return new URL(`/$procs/${procedure}`, env.SMS_API_URL).toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 /**
  * `POST /$procs/workerLocks` — a snapshot of which node holds which
  * singleton-role advisory lock, right now. No caller-supplied args (the
@@ -93,7 +94,7 @@ export async function workerLocks(): Promise<WorkerLocksResult> {
     response = await attempt();
   }
 
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "workerLocks");
   }

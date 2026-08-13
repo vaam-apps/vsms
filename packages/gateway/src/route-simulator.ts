@@ -12,23 +12,30 @@ import "server-only";
 // module doc for the guarantee that this is a faithful rendering of the
 // engine's own answer, never a second implementation of matching.
 //
-// One normalization *is* applied, not zero: `null` -> `undefined`, the
-// same fix `routes.ts`'s own module doc records at length for `Route`'s
-// `match*` columns. Found the same way, live, against a real `just demo` —
-// a single-route candidate with nothing to tie-break sent `"tieBreak":
-// null`, and `simulator-screen.tsx`'s own `result.tieBreak !== undefined`
-// check let that null through, crashing the render with "Cannot read
-// properties of null (reading 'priority')" the instant it tried
-// `result.tieBreak.priority`. [`normalizeResult`] is this file's own
-// single normalization point, covering `tieBreak`, `winner`,
-// `winner.failoverRouteId`, and every optional field on each
-// `RouteEvaluationInfo` — so `simulator-screen.tsx` (and any other
-// consumer) can keep using a plain `!== undefined` check throughout.
+// A `null` -> `undefined` normalization *is* applied, not zero, the same
+// fix `routes.ts`'s own module doc records at length for `Route`'s `match*`
+// columns. Found the same way, live, against a real `just demo` — a
+// single-route candidate with nothing to tie-break sent `"tieBreak": null`,
+// and `simulator-screen.tsx`'s own `result.tieBreak !== undefined` check
+// let that null through, crashing the render with "Cannot read properties
+// of null (reading 'priority')" the instant it tried `result.tieBreak.
+// priority`.
+//
+// **#221 correction:** this module used to carry its own `normalizeResult`,
+// hand-enumerating `tieBreak`, `winner`, `winner.failoverRouteId`, and
+// every optional field on each `RouteEvaluationInfo`. `SimulateRouteResult`
+// is ordinary structured JSON all the way down — nested objects and arrays
+// of objects, no JSON-encoded-as-`String` field anywhere in it — so
+// `packages/gateway/src/json.ts`'s generic recursive walk covers every one
+// of those fields, at every depth, without this module needing to name a
+// single one of them. See that file's own module doc for the full
+// reasoning and for why it's safe to apply without enumerating fields here.
 
 import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 export type SimulateOperatorCode = "mtn" | "orange" | "camtel" | "nexttel" | "unknown";
@@ -102,37 +109,6 @@ function procedureUrl(procedure: string): string {
   return new URL(`/$procs/${procedure}`, env.SMS_API_URL).toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
-/** See module doc — the wire's explicit `null` becomes this seam's own
- * `undefined`-only convention, for every optional field this procedure's
- * result carries. */
-function normalizeResult(result: SimulateRouteResult): SimulateRouteResult {
-  return {
-    ...result,
-    evaluations: result.evaluations.map((evaluation) => ({
-      ...evaluation,
-      predicateKind: evaluation.predicateKind ?? undefined,
-      predicateExpected: evaluation.predicateExpected ?? undefined,
-      predicateActual: evaluation.predicateActual ?? undefined,
-      unavailableReason: evaluation.unavailableReason ?? undefined,
-    })),
-    tieBreak: result.tieBreak ?? undefined,
-    winner:
-      result.winner === undefined || result.winner === null
-        ? undefined
-        : { ...result.winner, failoverRouteId: result.winner.failoverRouteId ?? undefined },
-  };
-}
-
 /**
  * `POST /$procs/simulateRoute`. Reads `Route`/`Provider` under the
  * procedure's own `sys()` context server-side (`route_simulator.rs`'s own
@@ -163,9 +139,9 @@ export async function simulateRoute(input: SimulateRouteInput): Promise<Simulate
     response = await attempt();
   }
 
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "simulateRoute");
   }
-  return normalizeResult(parsed as SimulateRouteResult);
+  return parsed as SimulateRouteResult;
 }
