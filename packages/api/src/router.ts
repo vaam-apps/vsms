@@ -13,6 +13,8 @@ import { rolesRouter } from "./routers/roles";
 import { routeSimulatorRouter } from "./routers/route-simulator";
 import { routesRouter } from "./routers/routes";
 import { usersRouter } from "./routers/users";
+import { senderIdRegistrationsRouter, senderIdsRouter } from "./routers/senders";
+import { webhookAttemptsRouter, webhookEndpointsRouter } from "./routers/webhooks";
 import { workersRouter } from "./routers/workers";
 import { router } from "./trpc";
 
@@ -31,6 +33,10 @@ export const appRouter = router({
   roles: rolesRouter,
   optOuts: optOutsRouter,
   auditLog: auditLogRouter,
+  senderIds: senderIdsRouter,
+  senderIdRegistrations: senderIdRegistrationsRouter,
+  webhookEndpoints: webhookEndpointsRouter,
+  webhookAttempts: webhookAttemptsRouter,
 });
 
 export type AppRouter = typeof appRouter;

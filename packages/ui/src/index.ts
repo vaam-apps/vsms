@@ -33,6 +33,7 @@ export * from "./components/primitives/textarea";
 export * from "./components/primitives/theme-toggle";
 export * from "./components/primitives/toast";
 export * from "./components/primitives/tooltip";
+export * from "./components/status/attempt-status-pill";
 export * from "./components/status/job-status-pill";
 export * from "./components/status/state-mark";
 export * from "./components/status/status-pill";

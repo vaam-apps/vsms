@@ -426,6 +426,18 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
           >
             Component gallery
           </a>
+          <a
+            href="/sender-ids"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Sender IDs
+          </a>
+          <a
+            href="/webhooks"
+            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
+          >
+            Webhooks
+          </a>
           <ThemeToggle />
         </div>
       </header>
