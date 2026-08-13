@@ -6,6 +6,15 @@
 // before writing any of this — that a verbatim JSON-as-string field (like
 // `WebhookAttempt.payload`) survives completely untouched, including when
 // its own encoded text contains the literal substring `null`.
+//
+// A second hazard, found in review rather than at the issue's own filing:
+// `normalizeGatewayJson` is exported for a value already in hand, not just
+// for `parseGatewayJson`'s own `JSON.parse` output — so its input isn't
+// guaranteed to be JSON-shaped. `typeof value === "object"` is also true
+// for a `Date`/`Map`/`Set`, and `Object.entries` on one of those silently
+// returns `[]`, which would otherwise rebuild the value into a bare `{}`
+// with no error anywhere — the "non-plain objects are never descended
+// into" tests below cover exactly that.
 
 import { describe, expect, it } from "vitest";
 import { normalizeGatewayJson, parseGatewayJson } from "./json";
@@ -57,6 +66,26 @@ describe("normalizeGatewayJson", () => {
   it("leaves non-null primitives, zero, false, and empty string untouched", () => {
     const result = normalizeGatewayJson({ count: 0, active: false, notes: "" });
     expect(result).toEqual({ count: 0, active: false, notes: "" });
+  });
+
+  // --- The hazard found in review: a value already in hand isn't
+  // guaranteed to be JSON.parse output, so `normalizeValue`'s object
+  // branch must not silently empty out a Date/Map/Set the way a naive
+  // `Object.entries` walk would. ------------------------------------------
+  describe("non-plain objects are never descended into", () => {
+    it("returns a nested Date as the exact same instance, and still normalizes its sibling null", () => {
+      const createdAt = new Date("2026-08-08T14:03:07.412Z");
+      const result = normalizeGatewayJson({ createdAt, description: null });
+      expect(result.createdAt).toBe(createdAt);
+      expect(result.description).toBeUndefined();
+    });
+
+    it("returns a nested Map as the exact same instance, and still normalizes its sibling null", () => {
+      const tags = new Map([["a", 1]]);
+      const result = normalizeGatewayJson({ tags, description: null });
+      expect(result.tags).toBe(tags);
+      expect(result.description).toBeUndefined();
+    });
   });
 
   // --- The paged envelope every @@paged model returns. --------------------

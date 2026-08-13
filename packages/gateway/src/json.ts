@@ -82,6 +82,29 @@ import "server-only";
 // `opt-outs.ts`'s `searchOptOutByMsisdn` result (`{ optOut: OptOutSummary |
 // null }`) is exactly the same "absent nullable value" shape this module
 // exists to fix, not an exception to it.
+//
+// # A second kind of value this walk must never touch: anything that isn't
+// a plain object at all
+//
+// `typeof value === "object"` is also true for a `Date`, a `Map`, a `Set`,
+// a `RegExp` — every exotic built-in, not just the plain `{}` objects
+// `JSON.parse` produces. `Object.entries` on any of those silently returns
+// `[]` rather than throwing, so without a guard this walk would rebuild a
+// `Date` into a bare `{}`, discarding it with no error anywhere — the exact
+// "a screen renders a confident wrong value instead of throwing" shape
+// #221 itself is about, just one level removed from JSON nulls.
+// `parseGatewayJson` alone could never hit this — `JSON.parse` never
+// produces a `Date`/`Map`/`Set` — but `normalizeGatewayJson` is exported
+// specifically for a value already in hand (see its own doc), so this
+// function cannot assume its input came from `JSON.parse` just because its
+// usual caller's input did. [`normalizeValue`]'s prototype check
+// (`Object.getPrototypeOf(value) !== Object.prototype`) returns any such
+// value completely untouched, the same "leave it alone rather than guess"
+// discipline `VERBATIM_STRING_FIELDS` already applies by field name — this
+// is the equivalent guard by *shape*, for values this module has no name
+// to look up in advance. `json.test.ts` proves both that a `Date`/`Map`
+// survive as the exact same instance and that a sibling `null` in the same
+// object still normalizes.
 
 /**
  * Schema columns that hold free-form or pre-serialised JSON, encoded as a
@@ -107,6 +130,25 @@ function normalizeValue(value: unknown): unknown {
   if (value === null) return undefined;
   if (Array.isArray(value)) return value.map((entry) => normalizeValue(entry));
   if (typeof value === "object") {
+    // A `Date`/`Map`/`Set`/`RegExp`/etc. is also `typeof "object"`, and
+    // `Object.entries` on one of those silently returns `[]` rather than
+    // throwing — without this guard, `normalizeValue` would rebuild any
+    // such value into a bare `{}`, discarding it, with no error anywhere.
+    // `JSON.parse` itself never produces one of these (the whole reason
+    // `parseGatewayJson` was safe without this guard), but
+    // `normalizeGatewayJson` is exported specifically for a value already
+    // in hand — a test fixture, or a caller that didn't get here via
+    // `JSON.parse` — so this function cannot assume its input is
+    // JSON-shaped just because its usual caller's input is. A prototype
+    // check (rather than an `instanceof` allowlist) covers every exotic
+    // object shape, including ones nobody has written yet; `proto === null`
+    // still falls through to the plain-object branch below, since
+    // `Object.create(null)` is exactly what `JSON.parse` produces for an
+    // object literal containing a `"__proto__"` key, and that value must
+    // still be walked normally.
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) return value;
+
     const out: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
       out[key] = VERBATIM_STRING_FIELDS.has(key) ? entry : normalizeValue(entry);
@@ -123,6 +165,13 @@ function normalizeValue(value: unknown): unknown {
  * test fixture, or a body some future caller parses without going through
  * this module for some reason) can still go through the identical
  * normalization rather than a hand-rolled approximation of it.
+ *
+ * Because of that "value already in hand" use, this function's own input
+ * isn't guaranteed to be `JSON.parse` output the way `parseGatewayJson`'s
+ * always is — see [`normalizeValue`]'s own prototype guard (module doc's
+ * "a second kind of value this walk must never touch" section) for why a
+ * `Date`/`Map`/`Set`/etc. passed in here comes back as the exact same
+ * value, not a silently emptied `{}`.
  */
 export function normalizeGatewayJson<T>(value: T): T {
   return normalizeValue(value) as T;
