@@ -241,6 +241,18 @@ tower = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 unicode-normalization = "0.1"
+# Dev-only: #65's kill-Orange gate needs to bind a fresh listener on the
+# *exact same* local port a previous one (deliberately dropped, to model a
+# real outage) used, so `dispatch`'s already-constructed `OrangeCmProvider`
+# — whose `base_url` is fixed at construction — resumes talking to
+# "Orange" the moment it comes back, without needing a second adapter
+# instance. Plain `std::net::TcpListener::bind` doesn't set `SO_REUSEADDR`,
+# so a same-port rebind fails `EADDRINUSE` once any connection on that port
+# has gone through `TIME_WAIT` (verified empirically, not assumed — see
+# that test's own module doc). Already present in `Cargo.lock` transitively
+# (0.6.5, via `tokio`'s own internals) — named directly here rather than
+# reimplementing a raw `setsockopt` call.
+socket2 = "0.6"
 # Dev-only: every provider-facing live/unit test suite in this workspace
 # (sms-provider-orange-cm, sms-worker, app/sms-worker) mocks Orange's HTTP
 # API against the same wiremock server, so one version lives here rather
