@@ -93,7 +93,17 @@ sms-msisdn.workspace = true
 # dispatch.rs's own live tests submit against a real OrangeCmProvider
 # pointed at a wiremock server — the only adapter that exists yet.
 sms-provider-orange-cm.workspace = true
+# #65's kill-Orange gate: the real second adapter (#61), against a real
+# wiremock server standing in for the aggregator, not a hand-rolled
+# AlwaysOk fake — proves MTN's own real HTTP request/response handling
+# stays unaffected by Orange's outage, not just that some `SmsProvider`
+# impl does.
+sms-provider-mtn.workspace = true
 wiremock.workspace = true
+# #65's kill-Orange gate: rebinding a listener on the exact port a
+# previously-dropped one used — see the root Cargo.toml's own comment on
+# this dependency for why a plain `TcpListener::bind` isn't enough.
+socket2.workspace = true
 # The four live suites in tests/ (claim/dispatch/jobs/live_postgres.rs) get
 # their DATABASE_URL from this instead of the environment.
 sms-test-support.workspace = true
