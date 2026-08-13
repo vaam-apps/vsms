@@ -37,6 +37,7 @@ ALTER TABLE users                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE roles                   ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE user_credentials        ALTER COLUMN id SET DEFAULT cs_cuid();
 ALTER TABLE audit_anchors           ALTER COLUMN id SET DEFAULT cs_cuid();
+ALTER TABLE route_validations       ALTER COLUMN id SET DEFAULT cs_cuid();
 
 -- Timestamps mixin, and other dbgenerated() columns.
 ALTER TABLE apps ALTER COLUMN created_at SET DEFAULT now(),
@@ -82,6 +83,10 @@ ALTER TABLE delivery_receipts ALTER COLUMN received_at SET DEFAULT now();
 -- ever updates an anchor row; see its own schema.cstack doc) — so it needs
 -- its own one-off default the same way delivery_receipts.received_at does.
 ALTER TABLE audit_anchors ALTER COLUMN created_at SET DEFAULT now();
+-- #64: RouteValidation is the identical shape — an append-only evidence
+-- record with no @use(Timestamps), so performed_at needs its own default
+-- the same way received_at/created_at above do.
+ALTER TABLE route_validations ALTER COLUMN performed_at SET DEFAULT now();
 
 -- Nothing in the framework touches updated_at on write, and remembering to set
 -- it in every call site is the kind of thing that works until it doesn't.
@@ -403,6 +408,13 @@ CREATE INDEX client_assertions_expiry_idx ON client_assertions (expires_at);
 -- "index the one lookup a singleton job always makes" reasoning
 -- oauth_signing_keys_active_idx above already applies.
 CREATE INDEX audit_anchors_period_end_idx ON audit_anchors (period_end DESC);
+
+-- #64's grey_route_watch job reads exactly one thing per route: the most
+-- recent validation, to compute staleness. Same "index the one lookup a
+-- job's own query always makes" reasoning as oauth_signing_keys_active_idx/
+-- audit_anchors_period_end_idx above.
+CREATE INDEX route_validations_route_performed_idx
+    ON route_validations (route_id, performed_at DESC);
 
 -- The framework's own outbox. `ensure_event_outbox_table` creates this lazily
 -- on the first emitting write, which is too late to index it here: applying

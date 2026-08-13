@@ -195,16 +195,40 @@ pins this down as a permanent regression assertion, not a one-off finding: a
 today gives Orange an idempotency key. **Closing this needs a provider-side
 dedup key that no adapter currently sends.**
 
-### 2.4 Grey-route detection has no ground truth ([#64](https://github.com/vymalo/vsms/issues/64))
+### 2.4 Grey-route detection has no ground truth ([#64](https://github.com/vymalo/vsms/issues/64)) — landed, gap narrowed not closed
 
 Grey routes silently replace the sender ID, which breaks the Article 48
 identity requirement and looks fine in every metric except delivery quality.
-The issue proposes monthly handset validation per route plus an alert on
-delivery-rate divergence between routes that should behave identically.
+The issue proposed monthly handset validation per route plus an alert on
+delivery-rate divergence between routes that should behave identically —
+both landed (`crates/sms-worker/src/jobs/grey_route_watch.rs`,
+`RouteValidation`, `docs/runbooks/grey-route-validation.md`,
+`sms-gateway record-route-validation`).
 
-Both require something this system does not have: **a trusted observation of
-what actually arrived on a handset.** Until §2.2's gate runs with real
-hardware, there is no baseline to diverge *from*.
+**What changed: the divergence half is now a real, gated statistical
+proxy, and the validation half is now a real, queryable record of staleness
+— not a placeholder for either.** "Routes that should behave identically"
+is `Message.operator`/`Message.class` grouping, taken from the issue's own
+text; a finding requires a 30-message sample floor, a two-proportion z-test
+past a conservative threshold, and a 15-point practical-significance floor,
+all three, specifically so a small sample never pages anyone. A `Route`
+with no `RouteValidation` row in the last 30 days is now visible
+(`sms_route_validation_overdue`) rather than invisible.
+
+**What did not change, and cannot change without §2.2's own gate:** neither
+half is, or claims to be, a trusted observation of what a handset actually
+displays. The divergence check is built entirely from `DeliveryReceipt`-
+adjacent outcome counts — a grey route's whole effect is invisible to every
+one of them, per this entry's own opening paragraph, so it is evidence
+worth investigating, never confirmation. The validation record is exactly
+as trustworthy as the human who filed it and exactly as current as its own
+`performedAt` — a route that turns grey the day after a passing check
+reports "fine" until the next scheduled run or a divergence finding
+happens to cross the statistical bar first. **There is still no baseline
+to diverge *from* in the sense of "known-good," only "better than its own
+peers right now"** — until §2.2's gate runs with real hardware, both halves
+remain proxies, documented as such in `grey_route_watch.rs`'s own module
+doc and the runbook's closing section.
 
 ---
 
@@ -311,7 +335,7 @@ should be written once resolved.
 | Question | Where | State |
 |---|---|---|
 | Does `cratestack studio`'s direct-DB mode intend to bypass `@version` and `@@emit`? | [cratestack#507](https://github.com/cratestack/cratestack/issues/507) | Filed 2026-08-12. A Studio write leaves a stale version that a later `if_match` still accepts, and fires no outbox events. |
-| Should `@length` on a nullable field compile? | [cratestack#537](https://github.com/cratestack/cratestack/issues/537) | Filed 2026-08-12. Breaks the generated `Update{Model}Input::validate()`; worked around here with a non-null sentinel. |
+| Should `@length` on a nullable field compile? | [cratestack#537](https://github.com/cratestack/cratestack/issues/537) | Filed 2026-08-12. Breaks the generated `Update{Model}Input::validate()`; worked around on `AuditAnchor.prevChainHash` with a non-null sentinel, and reproduced again on `RouteValidation.notes` (#64) — a sentinel doesn't fit free text, so that field simply carries no `@length` bound instead. Still unfixed upstream as of #64. |
 | Should `auth().isSystem()` replace the `hasRole('system')` convention? | [#176](https://github.com/vymalo/vsms/issues/176) | Not evaluated. Would touch the gap this codebase has hit **eleven times**. |
 | Should `.upsert().do_nothing()` replace create-then-catch-`23505`? | [#177](https://github.com/vymalo/vsms/issues/177) | Not evaluated. Affects `ClientAssertion`, seed-dispatch, and scheduler dedupe. |
 | Can a generated `PATCH` route clear a nullable field at all? | [cratestack#567](https://github.com/cratestack/cratestack/issues/567) | Filed 2026-08-13 (#53/#55). No — JSON `null` is a verified no-op, indistinguishable from an absent key (serde's "double Option" ambiguity; the generated `Update{Model}Input` applies no `deserialize_with` to disambiguate). Worked around in `@vsms/gateway/senders.ts` with an explicit empty-string sentinel for `SenderId.notes`/`SenderIdRegistration.reference`/`rejectionReason` — safe there only because nothing queries or branches on those columns' `NULL`-ness. |

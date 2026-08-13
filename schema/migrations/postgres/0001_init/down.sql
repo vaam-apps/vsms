@@ -12,6 +12,8 @@ ALTER TABLE sender_id_registrations DROP CONSTRAINT sender_id_registrations_send
 
 ALTER TABLE routes DROP CONSTRAINT routes_provider_id_fkey;
 
+ALTER TABLE route_validations DROP CONSTRAINT route_validations_route_id_fkey;
+
 ALTER TABLE oauth_clients DROP CONSTRAINT oauth_clients_app_client_id_fkey;
 
 ALTER TABLE messages DROP CONSTRAINT messages_app_id_fkey;
@@ -33,6 +35,8 @@ ALTER TABLE sender_ids DROP CONSTRAINT sender_ids_value_length_check;
 ALTER TABLE routes DROP CONSTRAINT routes_match_class_enum_check;
 
 ALTER TABLE routes DROP CONSTRAINT routes_match_operator_enum_check;
+
+ALTER TABLE route_validations DROP CONSTRAINT route_validations_operator_enum_check;
 
 ALTER TABLE providers DROP CONSTRAINT providers_state_enum_check;
 
@@ -113,6 +117,8 @@ DROP TABLE sender_ids;
 DROP TABLE sender_id_registrations;
 
 DROP TABLE routes;
+
+DROP TABLE route_validations;
 
 DROP TABLE roles;
 

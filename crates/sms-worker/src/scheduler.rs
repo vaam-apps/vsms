@@ -4,10 +4,12 @@
 //! better" — the advisory lock is that clean avoidance, `dedupeKey` is
 //! belt-and-braces underneath it, not the primary mechanism.
 //!
-//! `expire_stale`, `reap_outbox` (#42), `purge_retention` (#67) and, as of
-//! #68, `anchor_audit` are registered — see [`crate::jobs`]'s own module
-//! doc for why the remaining five §7.5 kinds are scoped out rather than
-//! silently dropped.
+//! `expire_stale`, `reap_outbox` (#42), `purge_retention` (#67), `anchor_audit`
+//! (#68), and, as of #64, `grey_route_watch` are registered — see
+//! [`crate::jobs`]'s own module doc for why the remaining five §7.5 kinds
+//! are scoped out rather than silently dropped, and
+//! `crate::jobs::grey_route_watch`'s own doc for why that last one isn't
+//! one of §7.5's named kinds at all.
 //!
 //! # Cadence tracking has no dedicated schema support
 //!
@@ -108,6 +110,19 @@ pub fn schedule() -> Vec<RecurringJobSpec> {
             // operationally urgent the way an unreclaimed lease or a
             // poison outbox row is.
             kind: "anchor_audit",
+            cadence: Duration::days(1),
+            priority: 100,
+            max_attempts: 3,
+        },
+        RecurringJobSpec {
+            // #64: not one of §7.5's own named kinds — see
+            // crate::jobs::grey_route_watch's own module doc. Daily is
+            // enough for both halves it checks: the divergence check
+            // recomputes a fresh 7-day rolling window every run regardless
+            // of how often it's called, and handset-validation staleness
+            // moves on the order of days/weeks, not minutes. Same priority
+            // band as the other daily compliance/observability jobs.
+            kind: "grey_route_watch",
             cadence: Duration::days(1),
             priority: 100,
             max_attempts: 3,

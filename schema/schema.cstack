@@ -442,6 +442,11 @@ model Route {
   // the same route" needed this field to exist before it could be true.
   version Int @version
 
+  // #64: the handset-validation half of grey-route detection. Back-relation
+  // only — RouteValidation carries the FK, matching every other one-to-many
+  // shape in this schema (Provider.routes, App.messages, ...).
+  validations RouteValidation[] @relation(fields: [id], references: [routeId])
+
   // read: the tenth instance of AGENTS.md's own nine-times-repeated
   // hasRole('system') gap (#62) — real Route-rule routing (§6.3) now
   // exists (crates/sms-worker/src/routing.rs, driven from
@@ -472,6 +477,91 @@ model Route {
   @@allow("update", hasRole('owner') || hasRole('admin'))
   @@allow("delete", hasRole('owner') || hasRole('admin'))
   @@emit(created, updated, deleted)
+}
+
+// #64 (grey-route detection, epic #60): the handset-validation half named in
+// the issue's own text — "monthly handset validation per route." A grey
+// route silently substitutes the sender ID and looks identical to a healthy
+// one in every server-side signal (DLR still says delivered); the only way
+// to know what a recipient's handset actually displayed is a human looking
+// at one. This model is that observation, recorded so a route's staleness
+// (never validated, or validated too long ago) becomes a real, queryable
+// fact instead of tribal knowledge — see
+// crates/sms-worker/src/jobs/grey_route_watch.rs for the job that reads it,
+// and docs/runbooks/grey-route-validation.md for the human procedure that
+// writes it.
+//
+// Deliberately append-only, the same shape DeliveryReceipt/ConsentRecord
+// already use for evidence records: no `update` @@allow at all. Correcting a
+// mistaken entry means recording a new one, not editing history — an
+// evidence log that can be silently rewritten proves nothing. `delete`
+// exists only for owner/admin, matching ConsentRecord's own precedent, for
+// the rare case of a genuinely bogus entry (fat-fingered route id, a test
+// row) rather than a disagreement with what a past validation found.
+//
+// No `@@retain`: unlike Message's 90-day content-minimisation window (which
+// exists to stop holding a *recipient's* personal data past its purpose),
+// this record holds no recipient PII at all — `observedSenderId` is the
+// sender's own brand identity, not the tester's. There is no comparable
+// pressure to purge it, and its evidentiary value (proving Article 48
+// compliance was actually checked) plausibly wants to outlive any fixed
+// window. Not resolved with certainty — see OPEN_QUESTIONS.md §2.4.
+model RouteValidation {
+  id Cuid @id @default(dbgenerated())
+  routeId Cuid
+  route Route @relation(fields: [routeId], references: [id])
+
+  // Which network's handset actually ran this check. A route can be a
+  // wildcard across operators (`Route.matchOperator` nullable), so the
+  // route id alone doesn't say which network was tested — this does.
+  operator OperatorCode
+
+  // Framework-stamped, like DeliveryReceipt.receivedAt/AuditAnchor.createdAt
+  // — this model has no @use(Timestamps) (nothing ever updates a row), so it
+  // gets its own one-off `now()` default in §2.10 rather than the mixin's.
+  performedAt DateTime @default(dbgenerated())
+
+  // Free text, not a User FK on purpose: the human physically holding the
+  // phone is not necessarily the identity the recording API call
+  // authenticates as (a CLI run under a service identity, an ops engineer
+  // filing someone else's field report). `@@audit` already captures the
+  // real API caller; this captures who actually looked at the handset.
+  performedBy String @length(min: 2, max: 128)
+
+  // What the recipient's handset displayed, and what it should have
+  // displayed — §6.4's own named symptom is "sender ID silently replaced
+  // with a numeric string." Both required: "passed" without a record of
+  // what was actually seen is an assertion, not evidence.
+  expectedSenderId String @length(min: 1, max: 20)
+  observedSenderId String @length(min: 1, max: 20)
+  passed Boolean
+
+  // No `@length` here on purpose — cratestack#537 (filed, unfixed as of
+  // 0.7.10): `@length` on a nullable `String?` breaks the generated
+  // `Update{Model}Input::validate()` at compile time (`E0308`, `&str`
+  // expected where `&Option<String>` is passed), a real gap this repo hit
+  // first on `AuditAnchor.prevChainHash` and worked around there with a
+  // non-null sentinel. A sentinel doesn't fit free-text notes the way it
+  // fit a fixed-length hash, so this field is unbounded instead — matching
+  // `SenderId.notes`/`ConsentRecord.evidenceRef`'s own precedent of no
+  // `@length` on a nullable free-text field.
+  notes String?
+
+  @@audit
+  @@paged
+  // The eleventh instance of AGENTS.md's own repeated hasRole('system') gap
+  // shape — flagged in advance, not found live: crates/sms-worker/src/jobs/
+  // grey_route_watch.rs reads this model under a system context to compute
+  // each route's staleness, the same reason Route/WebhookEndpoint/User were
+  // each classified into SYSTEM_READABLE_MODELS before their own first
+  // internal reader ever ran. No `auth().kind == "app"` clause: unlike
+  // Route/Provider/Job, nothing needs a machine-credential read path for
+  // this model yet — no admin screen exists for it (see this PR's own scope
+  // note), so a signed-in human's `auth().kind == "user"` is the only
+  // non-system reader today.
+  @@allow("read", auth().kind == "user" || hasRole('system'))
+  @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('system'))
+  @@allow("delete", hasRole('owner') || hasRole('admin'))
 }
 
 // Feeds sms_msisdn::OperatorPrefixTable, which ships with zero built-in rows

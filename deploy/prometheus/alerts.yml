@@ -8,6 +8,10 @@
 # loaded by a real Prometheus/Alertmanager an operator points at
 # deploy/docker-compose.yml's sms-gateway:9090 and sms-worker:9091 targets
 # (see deploy/prometheus/prometheus.yml's own scrape config).
+#
+# #64 (grey-route detection) added a sixth group below, vsms-grey-route-
+# detection — the same shape as the five, just added later, once #64
+# named its own alert condition directly.
 groups:
   - name: vsms-sm001
     rules:
@@ -162,3 +166,51 @@ groups:
             logs on whichever sms-worker instance last ran reap_outbox for
             model/operation/last_error. See
             docs/runbooks/alerting.md#poison-rows.
+
+  - name: vsms-grey-route-detection
+    rules:
+      # #64: "alert on delivery-rate divergence between routes that should
+      # behave identically." Same sticky-gauge shape as
+      # SMSEventOutboxPoisonRows above — grey_route_watch is a CAS-claimed
+      # Job, not a singleton lease role, so a fresh process reporting `0`
+      # because it has never won a claim is already correct, and the same
+      # 5m debounce is used for the same reason: this is a proxy signal
+      # worth a moment to confirm isn't a one-tick fluke, not a "single
+      # instance is worth paging on" condition the way SM001 is.
+      #
+      # This condition is gated hard against noise before it ever reaches
+      # this rule — see crates/sms-worker/src/jobs/grey_route_watch.rs's
+      # own module doc for the sample-size floor, delta floor, and z-test
+      # behind the metric this alert reads. A firing alert here means a
+      # route's own recent delivery rate is both statistically and
+      # practically worse than its best-performing peer serving the same
+      # (operator, class) — not merely "different."
+      - alert: SMSRouteDeliveryDivergence
+        expr: sum(sms_route_delivery_divergence_flagged) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'A route''s delivery rate diverges from its operator/class peer group'
+          description: >-
+            {{ $value }} route pair(s) flagged as divergent on the most
+            recent grey_route_watch run. This is a proxy for a possible
+            grey route (Article 48 identity substitution) — it is not
+            confirmation. See docs/runbooks/grey-route-validation.md to
+            confirm with a real handset.
+      # #64's other half: "monthly handset validation per route." This
+      # metric knows nothing about whether a route is actually healthy —
+      # only whether the one thing that could tell you (a human, a real
+      # handset) has happened recently enough to trust. See
+      # docs/runbooks/grey-route-validation.md's own closing section.
+      - alert: SMSRouteValidationOverdue
+        expr: sum(sms_route_validation_overdue) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'An enabled route has gone unvalidated by a real handset for over 30 days'
+          description: >-
+            {{ $value }} enabled route(s) have no RouteValidation row in
+            the last 30 days, per the most recent grey_route_watch run.
+            See docs/runbooks/grey-route-validation.md.

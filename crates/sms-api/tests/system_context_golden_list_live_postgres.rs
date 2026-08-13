@@ -167,6 +167,16 @@
 //!
 //! Restoring the clause restored a pass.
 //!
+//! # The fifteenth instance — `RouteValidation`, #64
+//!
+//! New model, closed the same "flagged in advance, never shipped broken"
+//! way as `Route`/`User`/`Role`/`ConsentRecord` before it:
+//! `crates/sms-worker/src/jobs/grey_route_watch.rs`'s own
+//! `check_overdue_validations` reads this model under `sys` from the moment
+//! it was written, to compute each `enabled` route's own handset-validation
+//! staleness. `schema.cstack`'s own comment on this model names the
+//! shape explicitly, matching this file's own precedent.
+//!
 //! Ignored by default, same convention as this workspace's other live
 //! suites. Run explicitly:
 //!
@@ -183,9 +193,9 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, app, app_client, audit_anchor, client_assertion, consent_record, delivery_receipt, job,
     message, oauth_client, oauth_signing_key, operator_prefix_rule, opt_out, provider, role, route,
-    sender_id, sender_id_registration, user, user_credential, webhook_attempt, webhook_endpoint,
-    ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass,
-    OperatorCode, OptOutSource, ProviderKind,
+    route_validation, sender_id, sender_id_registration, user, user_credential, webhook_attempt,
+    webhook_endpoint, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding,
+    MessageClass, OperatorCode, OptOutSource, ProviderKind,
 };
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
@@ -241,6 +251,9 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// - `ConsentRecord` — #72, new in this PR. `Procedures::ensure_consent_on_file`
 ///   (`sendMessage`'s consent check for `marketing`/`notification`) is its
 ///   only reader, under `sys`, from the moment it was written.
+/// - `RouteValidation` — #64, new in this PR. `crate::jobs::grey_route_watch`'s
+///   own `check_overdue_validations` (`crates/sms-worker/src/jobs/grey_route_watch.rs`)
+///   is its only reader, under `sys`, from the moment it was written.
 const SYSTEM_READABLE_MODELS: &[&str] = &[
     "App",
     "AppClient",
@@ -284,6 +297,10 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     // a "found live" instance either. See this file's own "fourteenth
     // instance" doc section above.
     "ConsentRecord",
+    // #64: grey_route_watch::check_overdue_validations reads this under
+    // sys() from day one — not a "found live" instance either. See this
+    // file's own "fifteenth instance" doc section above.
+    "RouteValidation",
 ];
 
 /// Models with no internal `system`-role reader anywhere in this codebase
@@ -1174,6 +1191,36 @@ async fn seed_and_verify_consent_record(
     seeded
 }
 
+async fn seed_and_verify_route_validation(
+    db: &Cratestack,
+    suffix: &str,
+    route_id: &str,
+) -> schema::RouteValidation {
+    let seeded = db
+        .route_validation()
+        .create(schema::CreateRouteValidationInput {
+            routeId: route_id.to_owned(),
+            operator: OperatorCode::orange,
+            performedBy: format!("system golden list tester {suffix}"),
+            expectedSenderId: "VYMALO".to_owned(),
+            observedSenderId: "VYMALO".to_owned(),
+            passed: true,
+            notes: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a RouteValidation");
+    assert_system_can_read_back!(
+        db,
+        route_validation,
+        route_validation,
+        seeded.id,
+        "RouteValidation",
+        "@@allow(\"read\", auth().kind == \"user\" || hasRole('system'))"
+    );
+    seeded
+}
+
 /// Seeds one row per model in [`SYSTEM_READABLE_MODELS`] and proves a
 /// system context can read each one back. This is the live half of #155's
 /// guard — [`every_model_in_the_schema_is_classified`] above only checks
@@ -1211,7 +1258,7 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     seed_and_verify_client_assertion(&db, &suffix, now).await;
     let sender_id = seed_and_verify_sender_id(&db, &suffix).await;
     let provider = seed_and_verify_provider(&db, &suffix).await;
-    seed_and_verify_route(&db, &suffix, &provider.id).await;
+    let route = seed_and_verify_route(&db, &suffix, &provider.id).await;
     seed_and_verify_sender_id_registration(&db, &sender_id.id, &provider.id, now).await;
     seed_and_verify_operator_prefix_rule(&db).await;
     let message = seed_and_verify_message(&db, &suffix, &app.id, now).await;
@@ -1226,4 +1273,5 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     seed_and_verify_user_credential(&db, &user.id).await;
     seed_and_verify_audit_anchor(&db, &suffix, now).await;
     seed_and_verify_consent_record(&db, &suffix, &app.id).await;
+    seed_and_verify_route_validation(&db, &suffix, &route.id).await;
 }
