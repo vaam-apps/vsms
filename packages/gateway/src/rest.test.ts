@@ -272,3 +272,34 @@ describe("deleteResource", () => {
     );
   });
 });
+
+describe("If-Match normalisation", () => {
+  // #220: the client-retire path sent a bare `String(client.version)`.
+  // `cratestack-axum`'s parse_if_match_version requires the quoted strong
+  // form and 400s on anything else — so this would have failed every
+  // retire, and with a status the UI reads as a server fault rather than
+  // as a stale write.
+  it("quotes a bare version so the server can parse it at all", async () => {
+    const seen: Record<string, string> = {};
+    const fetcher = vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      Object.assign(seen, init.headers);
+      return jsonResponse(200, { id: "a" }, { etag: '"4"' });
+    });
+
+    await updateWithIfMatch("/apps/a", { active: false }, "3", "apps.retire", fetcher as never);
+
+    expect(seen["if-match"]).toBe('"3"');
+  });
+
+  it("leaves a validator captured from a GET untouched", async () => {
+    const seen: Record<string, string> = {};
+    const fetcher = vi.fn(async (_url: string, init: { headers: Record<string, string> }) => {
+      Object.assign(seen, init.headers);
+      return jsonResponse(200, { id: "a" }, { etag: '"4"' });
+    });
+
+    await updateWithIfMatch("/apps/a", { active: false }, '"3"', "apps.retire", fetcher as never);
+
+    expect(seen["if-match"]).toBe('"3"');
+  });
+});
