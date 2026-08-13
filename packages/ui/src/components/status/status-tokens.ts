@@ -329,3 +329,96 @@ export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
 export function isTerminalJobState(state: JobState): boolean {
   return JOB_STATUS_META[state].family === "terminal";
 }
+
+/**
+ * #55: `attempt_state_transitions` (`schema/migrations/postgres/
+ * 0002_bootstrap/up.sql`), verbatim — `pending`, `delivering`, `succeeded`,
+ * `failed`, `dead`. Same "not equivalent to `MessageState` even where a
+ * name matches" caution `JOB_STATUS_META`'s own doc gives: `failed` here is
+ * `hooks.rs`'s own retry-with-backoff state, not a terminal one — the same
+ * shape `JobState.failed` already has, and styled identically to it for
+ * that reason (`unresolved`/`uncertain`, not `danger`).
+ */
+export const ATTEMPT_STATES = ["pending", "delivering", "succeeded", "failed", "dead"] as const;
+
+export type AttemptState = (typeof ATTEMPT_STATES)[number];
+
+/**
+ * - **`pending`** — claimable on the next `hooks` tick (a fresh attempt, or
+ *   one whose backoff has elapsed).
+ * - **`delivering`** — currently being POSTed. A row can also sit here
+ *   because a worker crashed mid-attempt with a stale lease — `claim.rs`'s
+ *   own crash-reclaim resumes it without double-counting `attempts`
+ *   (AGENTS.md's #40 section) — this table has no separate state for that,
+ *   the same way `Message.routed` covers both "in flight" and "reclaimable".
+ * - **`succeeded`** — the endpoint returned 2xx. Terminal.
+ * - **`failed`** — the last attempt errored and it will retry automatically
+ *   after a backoff, unless `attempts` is exhausted (then `dead`). Not
+ *   terminal, exactly the retry-with-backoff shape `JOB_STATUS_META.failed`
+ *   already documents for `Job`.
+ * - **`dead`** — `maxAttempts` exhausted, or an immediate 410 Gone
+ *   (`hooks.rs`'s own doc). Terminal, and (#43) the one state
+ *   `replayWebhookAttempt` accepts alongside `failed`.
+ */
+export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = {
+  pending: {
+    family: "in-flight",
+    silhouette: "circle",
+    mark: "pie-1",
+    hue: "neutral",
+    filled: false,
+    attention: "quiet",
+    labelEn: "Pending",
+    labelFr: "En attente",
+    tooltipEn: "Claimable on the next delivery tick, or waiting out a retry backoff.",
+  },
+  delivering: {
+    family: "in-flight",
+    silhouette: "circle",
+    mark: "pie-3",
+    hue: "neutral",
+    filled: false,
+    attention: "quiet",
+    labelEn: "Delivering",
+    labelFr: "En livraison",
+    tooltipEn: "Currently being POSTed to the endpoint.",
+  },
+  succeeded: {
+    family: "terminal",
+    silhouette: "circle",
+    mark: "check",
+    hue: "success",
+    filled: true,
+    attention: "quiet",
+    labelEn: "Succeeded",
+    labelFr: "Réussi",
+    tooltipEn: "The endpoint returned 2xx.",
+  },
+  failed: {
+    family: "unresolved",
+    silhouette: "diamond",
+    mark: "clock",
+    hue: "uncertain",
+    filled: false,
+    attention: "loud",
+    labelEn: "Failed (retrying)",
+    labelFr: "Échec (nouvel essai)",
+    tooltipEn:
+      "The last attempt errored. Not terminal — it will retry automatically after a backoff, unless attempts are exhausted (then it moves to Dead).",
+  },
+  dead: {
+    family: "terminal",
+    silhouette: "circle",
+    mark: "cross",
+    hue: "danger",
+    filled: true,
+    attention: "loud",
+    labelEn: "Dead",
+    labelFr: "Abandonné",
+    tooltipEn: "Every attempt failed and the retry budget is exhausted. Replay to try again.",
+  },
+};
+
+export function isTerminalAttemptState(state: AttemptState): boolean {
+  return ATTEMPT_STATUS_META[state].family === "terminal";
+}

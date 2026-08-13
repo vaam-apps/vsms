@@ -13,7 +13,7 @@ yet lives in GitHub Issues, not here. If the only thing standing between a
 question and its answer is someone doing the work, it is not an open
 question — it is a ticket.
 
-**Status is a dated snapshot** *(2026-08-12)*. GitHub is the tracker and is
+**Status is a dated snapshot** *(2026-08-13)*. GitHub is the tracker and is
 always more current; `docs/roadmap.md` owns sequencing; `docs/architecture.md`
 §12 owns what each milestone means. This file owns only the *unknowns*.
 
@@ -280,6 +280,7 @@ should be written once resolved.
 | Should `@length` on a nullable field compile? | [cratestack#537](https://github.com/cratestack/cratestack/issues/537) | Filed 2026-08-12. Breaks the generated `Update{Model}Input::validate()`; worked around here with a non-null sentinel. |
 | Should `auth().isSystem()` replace the `hasRole('system')` convention? | [#176](https://github.com/vymalo/vsms/issues/176) | Not evaluated. Would touch the gap this codebase has hit **eleven times**. |
 | Should `.upsert().do_nothing()` replace create-then-catch-`23505`? | [#177](https://github.com/vymalo/vsms/issues/177) | Not evaluated. Affects `ClientAssertion`, seed-dispatch, and scheduler dedupe. |
+| Can a generated `PATCH` route clear a nullable field at all? | [cratestack#567](https://github.com/cratestack/cratestack/issues/567) | Filed 2026-08-13 (#53/#55). No — JSON `null` is a verified no-op, indistinguishable from an absent key (serde's "double Option" ambiguity; the generated `Update{Model}Input` applies no `deserialize_with` to disambiguate). Worked around in `@vsms/gateway/senders.ts` with an explicit empty-string sentinel for `SenderId.notes`/`SenderIdRegistration.reference`/`rejectionReason` — safe there only because nothing queries or branches on those columns' `NULL`-ness. |
 
 ---
 

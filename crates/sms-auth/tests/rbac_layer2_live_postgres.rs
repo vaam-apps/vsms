@@ -798,3 +798,103 @@ async fn job_read_route_succeeds_for_a_token_carrying_job_read() {
         "GET /jobs must return the standard paged envelope: {body}"
     );
 }
+
+/// #53/#55's own anchor — `router::SENDER_AND_WEBHOOK_WRITE_ROUTES`. Same
+/// shape as `PROVIDER_WRITE_ROUTES`'s own tests above and the same reason
+/// this suite cannot prove a live *success* case here either:
+/// `SenderId.create`'s own `@@allow` (`schema.cstack`) is `hasRole('owner')
+/// || hasRole('admin') || hasRole('operator')` — no `hasRole('app')` — and
+/// this suite's only mintable token is a `client_credentials` one, which
+/// `GatewayAuth` never issues any role but `"app"`/`"system"` for (no
+/// human-login path this suite can drive; #97/#98's scope cut, unchanged
+/// here). Layer 1 alone already refuses every token this test harness can
+/// mint on this route, so — exactly like `PROVIDER_WRITE_ROUTES` — only the
+/// *denial* shapes are provable over this real HTTP round trip. The live
+/// *success* case (a real signed-in `owner`/`admin`/`operator`) is proven a
+/// different way: `packages/gateway/src/senders.ts`'s own module doc.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn sender_write_route_denies_a_token_with_no_scope_at_all() {
+    let _guard = TEST_MUTEX.lock().await;
+    let server = setup().await;
+    let token_response = request_token(&server, None).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/sender_ids", server.issuer))
+        .bearer_auth(access_token(&token_response))
+        .header(reqwest::header::ACCEPT, "application/json")
+        .json(&serde_json::json!({"value": unique_suffix(), "kind": "alphanumeric"}))
+        .send()
+        .await
+        .expect("calling POST /sender_ids");
+
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    let body: serde_json::Value = response.json().await.expect("parsing the error body");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("sender:manage"),
+        "expected the denial to name the missing permission: {body}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn sender_write_route_denies_a_token_that_is_correctly_scoped_for_something_else() {
+    // Same point as `provider_write_route_denies_a_token_that_is_correctly_
+    // scoped_for_something_else`: a token this suite already proved *works*
+    // for sendMessage must not spill over into granting `sender:manage`.
+    let _guard = TEST_MUTEX.lock().await;
+    let server = setup().await;
+    let token_response = request_token(&server, Some("sms:send")).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/sender_ids", server.issuer))
+        .bearer_auth(access_token(&token_response))
+        .header(reqwest::header::ACCEPT, "application/json")
+        .json(&serde_json::json!({"value": unique_suffix(), "kind": "alphanumeric"}))
+        .send()
+        .await
+        .expect("calling POST /sender_ids");
+
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+}
+
+/// The webhook-endpoint half of the same anchor, `webhook:manage` rather
+/// than `sender:manage` — `WebhookEndpoint.create`'s own `@@allow` is
+/// `hasRole('owner') || hasRole('admin') || hasRole('developer')`, same
+/// "no `hasRole('app')`" shape, same reason only denial is provable here.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn webhook_write_route_denies_a_token_with_no_scope_at_all() {
+    let _guard = TEST_MUTEX.lock().await;
+    let server = setup().await;
+    let token_response = request_token(&server, None).await;
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/webhook_endpoints", server.issuer))
+        .bearer_auth(access_token(&token_response))
+        .header(reqwest::header::ACCEPT, "application/json")
+        .json(&serde_json::json!({
+            "appId": "does-not-matter-layer2-runs-first",
+            "url": "https://example.test/hooks",
+            "eventTypes": " message.delivered ",
+            "secret": format!("whsec_test_{}", unique_suffix()),
+            "maskRecipient": true,
+            "maxAttempts": 8,
+        }))
+        .send()
+        .await
+        .expect("calling POST /webhook_endpoints");
+
+    assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+    let body: serde_json::Value = response.json().await.expect("parsing the error body");
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("webhook:manage"),
+        "expected the denial to name the missing permission: {body}"
+    );
+}

@@ -95,6 +95,46 @@ export type {
   UpdateRouteFields,
 } from "./routes";
 export { createRoute, deleteRoute, getRouteById, listRoutes, updateRoute } from "./routes";
+export type {
+  CreateSenderIdFields,
+  CreateSenderIdRegistrationFields,
+  SenderIdRecord,
+  SenderIdRegistrationRecord,
+  UpdateSenderIdFields,
+  UpdateSenderIdRegistrationFields,
+} from "./senders";
+export {
+  createSenderId,
+  createSenderIdRegistration,
+  getSenderIdById,
+  listSenderIdRegistrations,
+  listSenderIds,
+  updateSenderId,
+  updateSenderIdRegistration,
+} from "./senders";
 export { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
+export type {
+  AttemptState,
+  CreatedWebhookEndpoint,
+  CreateWebhookEndpointFields,
+  ListWebhookAttemptsInput,
+  ListWebhookAttemptsResult,
+  UpdateWebhookEndpointFields,
+  WebhookAttemptRecord,
+  WebhookEndpointRecord,
+  WebhookEventType,
+} from "./webhooks";
+export {
+  ATTEMPT_STATES,
+  createWebhookEndpoint,
+  deleteWebhookEndpoint,
+  getWebhookEndpointById,
+  listWebhookAttempts,
+  listWebhookEndpoints,
+  replayWebhookAttempt,
+  rotateWebhookSecret,
+  updateWebhookEndpoint,
+  WEBHOOK_EVENT_TYPES,
+} from "./webhooks";
 export type { WorkerLockInfo, WorkerLocksResult, WorkerRole } from "./workers";
 export { workerLocks } from "./workers";
