@@ -4,43 +4,39 @@ A minimal Express receiver showing what a *correct* handler of vsms delivery
 webhooks looks like — the inbound half of a vsms integration. The outbound
 half (authenticating and sending) is [#149](https://github.com/vymalo/vsms/issues/149).
 
-## Read this before trusting anything below
+## Status: this is now verified against a live sender
 
-**vsms cannot deliver webhooks over HTTP yet, but the signature this
-receiver verifies is real and confirmed.** Two different claims, worth
-keeping separate:
+**An earlier revision of this file said vsms could not deliver webhooks over
+HTTP yet, and that this receiver had never been verified against a live vsms
+process. Both were true when written and are no longer true.**
+[#38–#40](https://github.com/vymalo/vsms/issues/38) landed: the `drain` and
+`hooks` worker roles are real bodies, not idling stubs, and `hooks` does
+signed HTTP delivery with retries and circuit breaking.
 
-- **Outbound HTTP delivery is still unbuilt.** The `drain` and `hooks`
-  worker roles (`crates/sms-worker`) are stubs that idle;
-  [#38–#40, #42](https://github.com/vymalo/vsms/issues/38) are open. So
-  nothing here has ever received a webhook POST from a live vsms process,
-  and this example still can't be verified end to end against one.
-- **The signature scheme is [#41](https://github.com/vymalo/vsms/issues/41)
-  — implemented, not a guess any more.** `crates/sms-webhook` is the real
-  Rust implementation `rotate_webhook_secret`
-  (`crates/sms-api/src/procedures.rs`) and the future `hooks` role both
-  use. This file's own algorithm — HMAC-SHA256, transcribed from §4.4's
-  prose before #41 existed — turned out to match it exactly, and that's no
-  longer just asserted: `src/cross-language-vectors.test.ts` loads a
-  fixture of signatures computed by a *third*, independent implementation
-  (`openssl dgst -sha256 -hmac`) and asserts this file's own
-  `verifySignature` agrees with every one. `docs/architecture.md` §4 is
-  explicit that request signing was dropped for *inbound* API calls in
-  favour of `private_key_jwt`; that decision says nothing about *this*,
-  the outbound signature vsms attaches to a webhook it sends you — §4.4 is
-  the relevant section instead.
+What changed for this example specifically: `app/sms-worker/tests/hooks_node_receiver_live.rs`
+— [#44](https://github.com/vymalo/vsms/issues/44)'s own acceptance gate —
+spawns a genuinely separate `sms-worker --roles hooks` process and a
+genuinely separate `node src/gate-receiver.ts` process, with a real loopback
+TCP connection between them and a real Postgres-backed `WebhookAttempt` row
+claimed through the real CAS claim loop. **It runs this directory's actual
+code** — not a copy, not a reimplementation. So the assumptions this file
+used to flag as unconfirmed (that what gets signed is byte-identical to what
+goes on the wire; that the four headers are really what a receiver sees) are
+now demonstrated properties, and a regression in any of them fails CI.
 
-So: **this example still cannot be verified against a live, webhook-sending
-vsms — that part hasn't shipped.** What you can verify, and what running
-`pnpm start` / `pnpm test` actually proves, is narrower but no longer
-carries an asterisk on the crypto: **this receiver's own logic —
-idempotent handling, tolerance of out-of-order delivery, fast-ack-then-
-process, and signature verification with rotation support, using the
-*confirmed* real algorithm — is correct**, exercised against a local
-emitter that stands in for vsms until #38–#40 ship. That is a real,
-load-bearing distinction; see "What this does and doesn't prove" below.
+The signature scheme itself was already confirmed independently, and still
+is: `src/cross-language-vectors.test.ts` checks this file's `verifySignature`
+against fixtures computed by a *third* implementation (`openssl dgst -sha256
+-hmac`), so three implementations agree rather than one asserting.
+`docs/architecture.md` §4 is explicit that request signing was dropped for
+*inbound* API calls in favour of `private_key_jwt`; that decision says
+nothing about *this*, the outbound signature vsms attaches to a webhook it
+sends you — §4.4 is the relevant section.
 
-## What's settled vs. what's still ahead of a real sender
+Both CI jobs are real gates, not decoration: the cross-language vectors and
+the live gate receiver each run on every push.
+
+## What's settled
 
 **All of the signature scheme is settled — confirmed, not just specified.**
 `docs/architecture.md` §4.4 specifies, literally: the four header names,
