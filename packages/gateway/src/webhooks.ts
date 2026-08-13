@@ -75,6 +75,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { deleteResource, fetchWithEtag, updateWithIfMatch, type WithEtag } from "./rest";
 
@@ -198,41 +199,18 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
   return url.toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 interface WireEndpoint extends Omit<WebhookEndpointRecord, "eventTypes"> {
   eventTypes: string;
 }
 
+/** The one transformation this module still needs beyond #221's generic
+ * `null` -> `undefined` seam (`./json.ts`, applied automatically to every
+ * response this module parses): `eventTypes` is a sentinel-packed `String`
+ * on the wire, not the `WebhookEventType[]` this module's own types declare
+ * — [`unpackEventTypes`] is model-specific shape logic, not null-handling,
+ * so it stays here rather than folding into the generic seam. */
 function normalizeEndpoint(row: WireEndpoint): WebhookEndpointRecord {
-  return {
-    ...row,
-    eventTypes: unpackEventTypes(row.eventTypes),
-    prevSecret: row.prevSecret ?? undefined,
-    secretRotatedAt: row.secretRotatedAt ?? undefined,
-    circuitOpenUntil: row.circuitOpenUntil ?? undefined,
-  };
-}
-
-function normalizeAttempt<T extends Partial<WebhookAttemptRecord>>(row: T): T {
-  return {
-    ...row,
-    leaseOwner: row.leaseOwner ?? undefined,
-    leaseUntil: row.leaseUntil ?? undefined,
-    nextAttemptAt: row.nextAttemptAt ?? undefined,
-    lastStatusCode: row.lastStatusCode ?? undefined,
-    lastError: row.lastError ?? undefined,
-    lastAttemptAt: row.lastAttemptAt ?? undefined,
-    deliveredAt: row.deliveredAt ?? undefined,
-  };
+  return { ...row, eventTypes: unpackEventTypes(row.eventTypes) };
 }
 
 async function authedRequest(
@@ -269,7 +247,7 @@ async function authedRequest(
  * for `Job`). */
 export async function listWebhookEndpoints(): Promise<WebhookEndpointRecord[]> {
   const response = await authedRequest(gatewayUrl("/webhook_endpoints"), { method: "GET" });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listWebhookEndpoints");
   }
@@ -323,7 +301,7 @@ export async function createWebhookEndpoint(
     method: "POST",
     body,
   });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "createWebhookEndpoint");
   }
@@ -378,7 +356,7 @@ export async function rotateWebhookSecret(endpointId: string): Promise<WebhookEn
     method: "POST",
     body: JSON.stringify({ args: { endpointId } }),
   });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "rotateWebhookSecret");
   }
@@ -449,12 +427,12 @@ export async function listWebhookAttempts(
       method: "GET",
     },
   );
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listWebhookAttempts");
   }
   const page = parsed as AttemptsPage;
-  const window = page.items.map(normalizeAttempt);
+  const window = page.items;
 
   const filtered = window
     .filter((record) => {
@@ -487,9 +465,9 @@ export async function replayWebhookAttempt(attemptId: string): Promise<WebhookAt
     method: "POST",
     body: JSON.stringify({ args: { attemptId } }),
   });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "replayWebhookAttempt");
   }
-  return normalizeAttempt(parsed as WebhookAttemptRecord);
+  return parsed as WebhookAttemptRecord;
 }

@@ -28,6 +28,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
 
@@ -77,16 +78,6 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
   return url.toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 async function authedRequest(
   url: string,
   init: { method: "GET" | "DELETE" },
@@ -107,28 +98,20 @@ async function authedRequest(
   return response;
 }
 
-/** The wire sends an explicit JSON `null` for an absent `description`, not
- * an omitted key — the same finding `users.ts::normalizeUser`'s own doc
- * records at length. */
-function normalizeRole<T extends Partial<RoleRecord>>(record: T): T {
-  return { ...record, description: record.description ?? undefined };
-}
-
 /** `GET /roles` — unpaged, every role this deployment has (the built-in
  * six plus whatever `owner` has added). */
 export async function listRoles(): Promise<RoleRecord[]> {
   const url = gatewayUrl("/roles", {});
   const response = await authedRequest(url, { method: "GET" });
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listRoles");
   }
-  return (parsed as RoleRecord[]).map(normalizeRole);
+  return parsed as RoleRecord[];
 }
 
 export async function getRoleById(id: string): Promise<WithEtag<RoleRecord> | null> {
-  const result = await fetchWithEtag<RoleRecord>(`/roles/${encodeURIComponent(id)}`, "getRole");
-  return result === null ? null : { ...result, data: normalizeRole(result.data) };
+  return fetchWithEtag<RoleRecord>(`/roles/${encodeURIComponent(id)}`, "getRole");
 }
 
 export interface CreateRoleFields {
@@ -189,7 +172,7 @@ export async function deleteRole(id: string): Promise<void> {
   const url = gatewayUrl(`/roles/${encodeURIComponent(id)}`, {});
   const response = await authedRequest(url, { method: "DELETE" });
   if (!response.ok) {
-    const parsed = await parseJsonBody(response);
+    const parsed = await parseGatewayJson(response);
     throw mapGatewayError(response.status, parsed, "deleteRole");
   }
 }

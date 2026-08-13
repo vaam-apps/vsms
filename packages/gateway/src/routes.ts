@@ -32,19 +32,26 @@ import "server-only";
 // `routes-screen.tsx`'s own `predicateSummary` checked `!== undefined`,
 // which is `true` for a JSON `null` — every wildcard route rendered as
 // "operator=null, class=null, ..." instead of "matches anything".
-// [`normalizeRoute`] is the one place that turns the wire's `null` into
-// this package's own `undefined`-only convention (`field?: T | undefined`,
-// matching every other type in this seam), so every consumer downstream —
-// `routes-screen.tsx` included — can keep using a plain `!== undefined`
-// check rather than every call site needing to remember `!= null`.
 // `Provider.healthCheckedAt` shows the identical shape live
 // (`"healthCheckedAt":null`) — `providers.ts`'s own type reflects it too,
 // even though nothing currently renders that field.
+//
+// **#221 correction:** this module used to carry its own `normalizeRoute`
+// function, turning the wire's `null` into this package's own
+// `undefined`-only convention for exactly the four `match*` columns plus
+// `failoverRouteId`. That was the first of what turned out to be fourteen
+// near-identical `normalize*` functions across this package, each written
+// the moment a screen happened to render the one field that exposed the
+// bug — `packages/gateway/src/json.ts` now does this once, for every field
+// of every response this package parses, so nothing here needs its own
+// copy any more. See that file's own module doc for the full reasoning,
+// including why it's safe to apply blindly here.
 
 import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
 
@@ -104,32 +111,6 @@ function routesUrl(path: string, query: Record<string, string | number | undefin
   return url.toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
-/** Converts the wire's explicit `null` (see module doc) into `undefined`
- * for every nullable column this seam re-exposes — the one normalization
- * point, so nothing downstream needs its own `!= null` check. `T` is
- * always either `RouteRecord` or `RouteListItem` (a subset of the same
- * fields), so a single generic covers both list and detail. */
-function normalizeRoute<T extends Partial<RouteRecord>>(row: T): T {
-  return {
-    ...row,
-    matchOperator: row.matchOperator ?? undefined,
-    matchClass: row.matchClass ?? undefined,
-    matchAppId: row.matchAppId ?? undefined,
-    matchPrefix: row.matchPrefix ?? undefined,
-    failoverRouteId: row.failoverRouteId ?? undefined,
-  };
-}
-
 async function authedGet(url: string): Promise<UndiciResponse> {
   const attempt = async (): Promise<UndiciResponse> => {
     const token = await resolveUpstreamAccessToken();
@@ -161,17 +142,16 @@ export async function listRoutes(): Promise<RouteListItem[]> {
     sort: "-priority",
   });
   const response = await authedGet(url);
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listRoutes");
   }
-  return (parsed as RouteListItem[]).map(normalizeRoute);
+  return parsed as RouteListItem[];
 }
 
 /** `GET /routes/{id}` with its `ETag` captured. `null` on a 404. */
 export async function getRouteById(id: string): Promise<WithEtag<RouteRecord> | null> {
-  const result = await fetchWithEtag<RouteRecord>(`/routes/${encodeURIComponent(id)}`, "getRoute");
-  return result === null ? null : { ...result, data: normalizeRoute(result.data) };
+  return fetchWithEtag<RouteRecord>(`/routes/${encodeURIComponent(id)}`, "getRoute");
 }
 
 export interface CreateRouteFields {

@@ -32,6 +32,7 @@ import { env } from "@vsms/env";
 import { fetch as undiciFetch } from "undici";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
 
@@ -77,16 +78,6 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
   return url.toString();
 }
 
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
-}
-
 async function authedGet(url: string): Promise<UndiciResponse> {
   const attempt = async (): Promise<UndiciResponse> => {
     const token = await resolveUpstreamAccessToken();
@@ -112,20 +103,6 @@ interface AppsPage {
     offset: number | null;
     hasNextPage: boolean;
     hasPreviousPage: boolean;
-  };
-}
-
-/** The wire sends an explicit JSON `null` for `description`/
- * `defaultSenderIdId`, not an omitted key — the same finding
- * `users.ts::normalizeUser`'s own doc records at length. `apps-screen.tsx`'s
- * own `description` read already tolerates this via `??`, but
- * `defaultSenderIdId` (and any future consumer of either field) should not
- * have to independently rediscover the same gotcha. */
-function normalizeApp<T extends Partial<AppRecord>>(record: T): T {
-  return {
-    ...record,
-    description: record.description ?? undefined,
-    defaultSenderIdId: record.defaultSenderIdId ?? undefined,
   };
 }
 
@@ -160,7 +137,7 @@ export function packIpAllowlist(entries: string[]): string {
 export async function listApps(): Promise<AppListItem[]> {
   const url = gatewayUrl("/apps", { limit: 500, sort: "name", fields: LIST_FIELDS.join(",") });
   const response = await authedGet(url);
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "listApps");
   }
@@ -171,8 +148,7 @@ export async function listApps(): Promise<AppListItem[]> {
 /** `GET /apps/{id}` with its `ETag` captured — the version a subsequent
  * [`updateApp`] call must echo back as `If-Match`. `null` on a 404. */
 export async function getAppById(id: string): Promise<WithEtag<AppRecord> | null> {
-  const result = await fetchWithEtag<AppRecord>(`/apps/${encodeURIComponent(id)}`, "getApp");
-  return result === null ? null : { ...result, data: normalizeApp(result.data) };
+  return fetchWithEtag<AppRecord>(`/apps/${encodeURIComponent(id)}`, "getApp");
 }
 
 export interface CreateAppFields {
@@ -248,7 +224,7 @@ export async function deleteApp(id: string): Promise<void> {
     response = await attempt();
   }
   if (!response.ok) {
-    const parsed = await parseJsonBody(response);
+    const parsed = await parseGatewayJson(response);
     throw mapGatewayError(response.status, parsed, "deleteApp");
   }
 }

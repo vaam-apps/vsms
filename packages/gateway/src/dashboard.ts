@@ -15,6 +15,7 @@ import { fetch as undiciFetch } from "undici";
 import type { OperatorCode } from "./client";
 import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
+import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 /** One rolling hour of `Message.createdAt`, oldest first. `totalCount` is
@@ -78,30 +79,10 @@ export interface DashboardSummary {
   hourlyBuckets: HourlyBucket[];
 }
 
-/** The wire's `appId` is an explicit JSON `null` when absent, not an
- * omitted key (`Cuid?` in `schema.cstack`) — the same trap
- * `routes.ts`/`providers.ts`'s own `normalizeRoute`/`normalizeProvider`
- * already document and guard against (found live wiring #54: `!==
- * undefined` is `true` for a JSON `null`). One normalization point here
- * too, so nothing downstream needs its own `!= null` check. */
-function normalizeDashboardSummary(raw: DashboardSummary): DashboardSummary {
-  return { ...raw, appId: raw.appId ?? undefined };
-}
-
 type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
 
 function procedureUrl(procedure: string): string {
   return new URL(`/$procs/${procedure}`, env.SMS_API_URL).toString();
-}
-
-async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
-  const text = await response.text();
-  if (text.length === 0) return undefined;
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { code: "UNPARSEABLE_RESPONSE", message: text };
-  }
 }
 
 /**
@@ -109,6 +90,11 @@ async function parseJsonBody(response: UndiciResponse): Promise<unknown> {
  * server's own `dashboard_cache`) snapshot for the Dashboard screen. No
  * caller-supplied args; `{}` as the body, matching every other `$procs`
  * call's envelope (`{ args }`).
+ *
+ * The wire's `appId` is an explicit JSON `null` when absent, not an omitted
+ * key — `./json.ts`'s shared seam converts that to `undefined` for this and
+ * every other response this package parses (#221), so this function no
+ * longer needs its own `normalizeDashboardSummary`.
  */
 export async function dashboardSummary(): Promise<DashboardSummary> {
   const url = procedureUrl("dashboardSummary");
@@ -133,9 +119,9 @@ export async function dashboardSummary(): Promise<DashboardSummary> {
     response = await attempt();
   }
 
-  const parsed = await parseJsonBody(response);
+  const parsed = await parseGatewayJson(response);
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "dashboardSummary");
   }
-  return normalizeDashboardSummary(parsed as DashboardSummary);
+  return parsed as DashboardSummary;
 }

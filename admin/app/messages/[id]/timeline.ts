@@ -96,7 +96,7 @@ import type { StateTransition } from "@vsms/ui";
  * `submittedAt`/`finalizedAt` are typed `| null` here, not just
  * `| undefined` — found live, driving a real message through this exact
  * screen against `just demo`, not assumed from `@vsms/gateway/
- * messages.ts`'s own module doc (which claims "all of [the nullable
+ * messages.ts`'s own module doc (which claimed "all of [the nullable
  * fields] are omitted from JSON when null," confirmed there only for
  * `stateReason`, a `String?` column). A real `Indeterminate`-submit
  * message (`routed -> uncertain` directly, per `crates/sms-api/src/
@@ -108,9 +108,20 @@ import type { StateTransition } from "@vsms/ui";
  * (`string | undefined`) didn't catch this at compile time either:
  * `getJson`'s `parsed as T` is a raw cast with no runtime validation, so a
  * `DateTime?` column reaching this layer as `null` was never something
- * `tsc` could see. Fixed here with `!= null` (loose, catching both) —
- * `@vsms/gateway`'s own type declaration is a separate, pre-existing
- * issue, not fixed in this PR (see this file's own PR description).
+ * `tsc` could see.
+ *
+ * **Correction, #221:** `@vsms/gateway`'s own type declaration being wrong
+ * about this was named at the time as "a separate, pre-existing issue, not
+ * fixed in this PR." It's fixed now — `packages/gateway/src/json.ts` is
+ * the single seam that converts sms-api's `null` to `undefined` for every
+ * response this package parses, so `MessageRecord.submittedAt`/
+ * `finalizedAt` genuinely are `string | undefined` (never `null`) by the
+ * time they reach this file. The `| null` half of this type and the loose
+ * `!= null` check below are deliberately left in place anyway: this
+ * function's own contract shouldn't depend on trusting one particular
+ * upstream package to have normalized its input, and `timeline.test.ts`'s
+ * `submittedAt: null` case exercises `buildTimeline` directly, bypassing
+ * `@vsms/gateway` entirely — a real regression test, not a hypothetical.
  */
 export interface TimelineMessageInput {
   state: StateTransition["toState"];
