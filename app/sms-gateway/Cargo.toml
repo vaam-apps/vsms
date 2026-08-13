@@ -28,10 +28,13 @@ form_urlencoded.workspace = true
 sms-provider.workspace = true
 sms-provider-orange-cm.workspace = true
 
-# Command::ProvisionUser (#194)'s one-time random password generation —
-# same crate and version every other keygen/secret-generation site in this
-# workspace already resolves to.
-rand.workspace = true
+# Command::ProvisionUser (#194)'s one-time password generation and hashing —
+# #52/#58 moved `sms_core::password::{generate_password, hash_password}`
+# below both `sms-api` and `sms-auth` so the console's own `provisionUser`
+# procedure can call the identical logic; this binary now reaches it
+# directly rather than through `sms-auth::login`, which no longer re-exports
+# either function. See that module's own doc.
+sms-core.workspace = true
 
 anyhow.workspace = true
 clap.workspace = true

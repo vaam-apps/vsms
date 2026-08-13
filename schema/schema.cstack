@@ -1485,3 +1485,187 @@ type DashboardSummary {
 
 procedure dashboardSummary(): DashboardSummary
   @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
+
+// #52: provision a console account from the admin screens — the same
+// "generate server-side, return once" shape `provisionAppClient` (#23)
+// already established for a client's private key, applied here to a
+// human's one-time password. `User.create`'s own `@@allow` already admits
+// `hasRole('owner') || hasRole('admin')` directly (a plain `POST /users`
+// would work) but `UserCredential` is `hasRole('system')`-only on every
+// action (see that model's own schema comment — no console screen may
+// read or write it directly), so nothing outside a procedure running under
+// a system context can ever attach a password to the account it just
+// created. See `crates/sms-api/src/procedures.rs::provision_user`'s own
+// doc for why the hashing itself lives in `sms_core::password` rather than
+// `sms-auth::login` (where it lived before this procedure needed it too).
+//
+// No retire/deactivate action here: `User.active`/`PATCH /users/{id}`
+// (owner/admin, already reachable) is the existing, coarser mechanism —
+// the same "documented coarser fallback, not silently pretended to be
+// more" precedent `AppClient.active`/`retiredAt` set for #23. There is
+// also no password-rotation or reset procedure anywhere in this schema —
+// see OPEN_QUESTIONS.md for why that is a named, accepted gap rather than
+// an oversight.
+type ProvisionUserInput {
+  email String
+  displayName String
+  roleKey String
+}
+
+type ProvisionUserResult {
+  userId Cuid
+  email String
+  roleKey String
+  // Shown exactly once — this procedure's response is the only place it
+  // ever exists outside the Argon2id hash `UserCredential.passwordHash`
+  // stores. Never logged, never persisted a second time.
+  password String
+}
+
+mutation procedure provisionUser(args: ProvisionUserInput): ProvisionUserResult
+  @allow(hasRole('owner') || hasRole('admin'))
+  @isolation("serializable")
+
+// #58: record an opt-out from a plaintext MSISDN. `OptOut.create`'s own
+// `@@allow` already admits `hasRole('owner') || hasRole('admin') ||
+// hasRole('operator')` directly, but every one of those callers would need
+// to compute `msisdnHash` themselves first — and the console has no access
+// to `SMS_HASH_PEPPER` (by design; see `sms_api::pepper`'s own module doc),
+// so it structurally cannot. This procedure does the one thing a plain
+// `POST /opt_outs` cannot: hash server-side, under the pepper only
+// `sms-api` ever holds, the same way `sendMessage`'s own opt-out check
+// already does internally.
+//
+// `hasRole('support')` is added here even though `OptOut.create`'s own
+// `@@allow` doesn't admit it — §5.2's role table grants `support` the
+// `optout:manage` permission specifically because opt-outs are that role's
+// stated job ("first-line support"), but Layer 1 on the model itself had
+// no clause admitting it at all, which would have made the grant dead on
+// arrival the moment a `support` account existed to use it (#194's own
+// human-login path). This procedure runs its write under this crate's
+// internal `sys()` context regardless of the caller's own role — the same
+// pattern `provisionAppClient`/`rotateWebhookSecret` already use — so it
+// needed no change to `OptOut.create`'s own `@@allow` to grant `support`
+// real write access; only this procedure's own `@allow` needed to admit
+// the role that permission is meant for.
+type RecordOptOutInput {
+  msisdn String
+  source OptOutSource
+  scope String
+  reason String?
+}
+
+mutation procedure recordOptOut(args: RecordOptOutInput): OptOut
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('support'))
+  @isolation("serializable")
+
+// #58: search opt-outs by a plaintext MSISDN the caller supplies — the
+// read-side mirror of `recordOptOut` above, for the identical "the console
+// cannot compute msisdnHash itself" reason. `OptOutSummary` is a bespoke
+// type rather than `OptOut` itself, the same "lossless, presentational
+// flattening" precedent `DeliveryReceiptSummary`/`WorkerLockInfo` already
+// set, not a new convention invented here.
+//
+// **What "not found" can honestly mean, and why this procedure cannot
+// tell the two apart:** either no opt-out was ever recorded for this
+// number, or one was, under a `SMS_HASH_PEPPER` value that has since
+// rotated — a rotation orphans every `msisdnHash` computed under the old
+// pepper, silently, forever (OPEN_QUESTIONS.md §3.1; `sms_api::pepper`'s
+// own module doc). This procedure never had the plaintext of any row
+// other than the one it's about to hash and compare, so it has no way to
+// distinguish "genuinely never opted out" from "opted out, but unfindable
+// since the last rotation" — see `crates/sms-api/src/procedures.rs::
+// search_opt_out`'s own doc for how the search is built specifically so a
+// caller can never be shown someone else's row by accident even though it
+// cannot make this particular distinction. The console's own copy states
+// the caveat plainly rather than implying a clean "not opted out."
+type OptOutSummary {
+  id Cuid
+  msisdnHash String
+  source OptOutSource
+  scope String
+  reason String?
+  optedOutAt DateTime
+  createdAt DateTime
+}
+
+type OptOutSearchInput {
+  msisdn String
+}
+
+type OptOutSearchResult {
+  optOut OptOutSummary?
+}
+
+procedure searchOptOutByMsisdn(args: OptOutSearchInput): OptOutSearchResult
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('support'))
+
+// #58: the read-only console view over `cratestack_audit` and its own
+// `AuditAnchor` hash chain. See `crates/sms-api/src/audit_log.rs`'s own
+// module doc for the full mechanism — moved there from #68's
+// `anchor_audit` job so the writer and this reader share one
+// implementation rather than risking two hash algorithms silently
+// drifting apart. No model backs either type below (same as
+// `WorkerLocksResult`/`SimulateRouteResult` above), so nothing here
+// touches DDL — and there is no write counterpart to either procedure: see
+// `audit_log.rs`'s own doc for the compile-time proof that no
+// `AuditAnchor` update/delete path exists at all, for any role.
+type AuditLogQuery {
+  model String?
+  operation String?
+  // Matches `actor->>'id'` in the raw `cratestack_audit` row — the one
+  // sub-field every audited write's `actor` JSONB blob populates. "Who did
+  // this," not a free-text search.
+  actorId String?
+  since DateTime?
+  until DateTime?
+  limit Int?
+  offset Int?
+}
+
+// A lossless, presentational flattening of one `cratestack_audit` row —
+// `primaryKey`/`actor`/`before`/`after` stay JSON-encoded `String`s rather
+// than this schema inventing a second JSON scalar type, the same
+// convention `Provider.config`/`Route.config` already use for a
+// JSON-shaped column.
+type AuditLogEntry {
+  eventId String
+  model String
+  operation String
+  primaryKey String
+  actor String
+  tenant String?
+  before String?
+  after String?
+  requestId String?
+  occurredAt DateTime
+}
+
+type AuditLogPage {
+  entries AuditLogEntry[]
+  hasMore Boolean
+}
+
+procedure auditLog(args: AuditLogQuery): AuditLogPage
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('auditor'))
+
+// No arguments — mirrors `dashboardSummary`'s own "one system, one answer"
+// shape (#49): there is exactly one audit chain in this deployment, not
+// one per caller.
+type AuditChainStatus {
+  latestAnchorId Cuid?
+  latestPeriodEnd DateTime?
+  latestRowCount Int?
+  // Empty means every anchor's own prevChainHash/chainHash links are
+  // internally consistent — see `audit_log.rs::verify_chain_linkage`'s own
+  // doc for exactly what this can and cannot catch.
+  linkageBreaks String[]
+  // `null` when there is no anchor yet, or the content re-verification
+  // itself could not run this call (a transient read failure, not a
+  // tampering finding) — see `ChainStatus::latest_period_content_verified`'s
+  // own doc for why that's deliberately not folded into `false`.
+  latestContentVerified Boolean?
+}
+
+procedure auditChainStatus(): AuditChainStatus
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('auditor'))

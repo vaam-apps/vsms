@@ -312,6 +312,21 @@ const NOT_REQUIRED_TO_BE_SYSTEM_READABLE: &[(&str, &str)] = &[(
 /// parser is line-based"): a model declaration is always `model Name {` on
 /// its own line — the same shape every model in this schema already
 /// follows.
+///
+/// **Must require the trailing `{` on the same line, not just a leading
+/// `"model "` after trimming.** #58 found this the hard way: `AuditLogQuery`/
+/// `AuditLogEntry` both declare an ordinary field literally named `model`
+/// (matching `cratestack_audit`'s own column name — the same convention
+/// every other wire field in this schema already follows, matching a real
+/// column) — e.g. `  model String?` inside a `type { ... }` block. Trimmed,
+/// that line starts with `"model "` exactly like a real `model Name {`
+/// declaration does, and the original version of this function (matching
+/// only the prefix, with no requirement on how the line ends) mistook it
+/// for a model named `"String?"`. A real model declaration's line always
+/// ends with `{` (the grammar constraint this function's own doc already
+/// states); an ordinary field line inside a `type` block never does — that
+/// distinction, not just the prefix, is what a model declaration actually
+/// requires.
 fn model_names_from_schema() -> Vec<String> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schema/schema.cstack");
     let text = std::fs::read_to_string(&path)
@@ -319,7 +334,11 @@ fn model_names_from_schema() -> Vec<String> {
 
     text.lines()
         .filter_map(|line| {
-            line.trim()
+            let trimmed = line.trim();
+            if !trimmed.ends_with('{') {
+                return None;
+            }
+            trimmed
                 .strip_prefix("model ")
                 .map(|rest| rest.trim_end_matches('{').trim().to_owned())
         })

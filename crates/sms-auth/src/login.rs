@@ -56,12 +56,19 @@
 //! password" by response latency. Both fail with the identical
 //! [`LoginError::InvalidCredentials`], carrying no detail a caller could
 //! use to enumerate accounts.
+//!
+//! # #52/#58: hashing itself moved to `sms_core::password`
+//!
+//! `hash_password`/`verify_password` used to live in this file. They now
+//! live in [`sms_core::password`] — the console's own `provisionUser`
+//! procedure (#58) needs to hash a freshly generated one-time password from
+//! `sms-api`, which cannot depend on this crate (`sms-auth` depends on
+//! `sms-api`, not the reverse). See that module's own doc for the full
+//! reasoning; this file now calls it exactly like any other caller.
 
-use argon2::password_hash::rand_core::OsRng;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::schema::{self, role, user, user_credential, Cratestack};
+use sms_core::password::{hash_password, verify_password};
 use sms_core::unpack;
 use thiserror::Error;
 
@@ -128,34 +135,6 @@ pub enum LoginError {
         /// The `Role.key` value that named no existing row.
         role_key: String,
     },
-}
-
-/// Hash `password` with Argon2id, using the crate's own recommended default
-/// parameters (19 MiB memory, 2 iterations, 1 lane — OWASP's own minimum
-/// recommendation for Argon2id as of 2024) and a fresh random salt.
-///
-/// # Errors
-///
-/// Only on an internal Argon2 failure (buffer sizing) — not reachable for
-/// any password this crate's own callers pass it, since none of them are
-/// unbounded in length before reaching here.
-pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Error> {
-    let salt = SaltString::generate(&mut OsRng);
-    let hash = Argon2::default().hash_password(password.as_bytes(), &salt)?;
-    Ok(hash.to_string())
-}
-
-/// Verify `password` against a stored Argon2id PHC string. `false` on any
-/// parse failure of `hash` too — a corrupt stored hash must never verify,
-/// the fail-closed default this whole flow leans on throughout.
-#[must_use]
-fn verify_password(password: &str, hash: &str) -> bool {
-    let Ok(parsed) = PasswordHash::new(hash) else {
-        return false;
-    };
-    Argon2::default()
-        .verify_password(password.as_bytes(), &parsed)
-        .is_ok()
 }
 
 /// The full login check: look up `User` by `email` under `sys` (necessarily

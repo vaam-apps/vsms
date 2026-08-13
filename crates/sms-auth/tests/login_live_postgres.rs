@@ -19,7 +19,8 @@
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack};
-use sms_auth::login::{authenticate_user, hash_password, LoginError};
+use sms_auth::login::{authenticate_user, LoginError};
+use sms_core::password::hash_password;
 
 /// Same reasoning as every other live suite's own copy of this mutex —
 /// #102.

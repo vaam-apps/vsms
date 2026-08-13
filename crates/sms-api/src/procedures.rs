@@ -44,6 +44,7 @@ use sms_encoding::{analyse, normalise, transliterate_to_gsm7, SmsEncoding};
 use sms_msisdn::{Msisdn, OperatorPrefixTable};
 use tracing::info;
 
+use crate::audit_log;
 use crate::auth::{Principal, PrincipalKind};
 use crate::cache::TtlCache;
 use crate::errors::map_database_error;
@@ -1744,6 +1745,280 @@ impl Procedures {
             })
             .await
     }
+
+    /// #52/#58: `provisionUser` — see `schema.cstack`'s own doc on this
+    /// procedure for the full reasoning (why `UserCredential` forces a
+    /// procedure rather than a plain `POST /users`, and why there is no
+    /// retire/rotate counterpart). Two writes in one transaction, the
+    /// identical two-write shape `app/sms-gateway/src/main.rs`'s own
+    /// `provision_user_command` (#194) already accepts for the CLI's
+    /// bootstrap path: `User.subject` is `@unique` and this delegate
+    /// doesn't know its own generated id ahead of the `create()` call, so
+    /// a unique placeholder is written first and corrected to the row's
+    /// own id in a second update.
+    ///
+    /// **Mixed-context write, deliberately, not sloppily**: `User.create`/
+    /// `User.update`'s own `@@allow` admits `hasRole('owner') ||
+    /// hasRole('admin')` — no `hasRole('system')` — so those two writes run
+    /// under the *caller's own* `ctx` (already role-checked by this
+    /// procedure's own `@allow`, which is exactly as restrictive).
+    /// `UserCredential.create` is `hasRole('system')`-only, so that write,
+    /// and only that one, runs under `sys`. Unlike `provisionAppClient`
+    /// (where every write target is `hasRole('system')`-only and `sys` is
+    /// used throughout), a single uniform context would either fail the
+    /// `User` writes (under `sys`, which `User`'s own policy doesn't
+    /// admit) or fail the `UserCredential` write (under `ctx`, which that
+    /// model's policy never admits from any human role).
+    async fn provision_console_user(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::ProvisionUserInput,
+    ) -> Result<schema::ProvisionUserResult, CoolError> {
+        require_permission(ctx, "user:manage")?;
+
+        let password = sms_core::password::generate_password(24);
+        let password_hash = sms_core::password::hash_password(&password).map_err(|error| {
+            CoolError::Internal(format!("hashing the generated password: {error}"))
+        })?;
+
+        let sys = Self::sys();
+        let email = args.email;
+        let display_name = args.displayName;
+        let role_key = args.roleKey;
+
+        let user_id =
+            run_in_isolated_tx(db.pool(), TransactionIsolation::Serializable, |mut tx| {
+                let sys = &sys;
+                let email = email.clone();
+                let display_name = display_name.clone();
+                let role_key = role_key.clone();
+                let password_hash = password_hash.clone();
+                async move {
+                    let user = db
+                        .user()
+                        .create(schema::CreateUserInput {
+                            subject: format!("pending-{}", cratestack::uuid::Uuid::new_v4()),
+                            email,
+                            displayName: display_name,
+                            roleKey: role_key,
+                            lastLoginAt: None,
+                            deletedAt: None,
+                        })
+                        .run_in_tx(&mut tx, ctx)
+                        .await?;
+                    let user_id = user.id.clone();
+
+                    db.user()
+                        .update(user.id.clone())
+                        .set(schema::UpdateUserInput {
+                            subject: Some(user.id.clone()),
+                            ..Default::default()
+                        })
+                        .if_match(user.version)
+                        .run_in_tx(&mut tx, ctx)
+                        .await?;
+
+                    db.user_credential()
+                        .create(schema::CreateUserCredentialInput {
+                            userId: user_id.clone(),
+                            passwordHash: password_hash,
+                        })
+                        .run_in_tx(&mut tx, sys)
+                        .await?;
+
+                    Ok((user_id, tx))
+                }
+            })
+            .await
+            .map_err(map_database_error)?;
+
+        Ok(schema::ProvisionUserResult {
+            userId: user_id,
+            email,
+            roleKey: role_key,
+            password,
+        })
+    }
+
+    /// #58: hash `args.msisdn` under this crate's own pepper and record an
+    /// `OptOut` — see `schema.cstack`'s own doc on `recordOptOut` for why
+    /// this needs to be a procedure (the console has no access to
+    /// `SMS_HASH_PEPPER`) and why it admits `hasRole('support')` at the
+    /// procedure level even though `OptOut.create`'s own `@@allow` does
+    /// not. Runs under `sys` unconditionally — the same reason, not a new
+    /// one: it is what lets a `support`-role caller's write succeed at all
+    /// without touching `OptOut.create`'s own policy.
+    async fn create_opt_out_entry(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::RecordOptOutInput,
+    ) -> Result<schema::OptOut, CoolError> {
+        require_permission(ctx, "optout:manage")?;
+
+        let msisdn = Msisdn::parse_mobile(&args.msisdn)
+            .map_err(|error| CoolError::Validation(error.to_string()))?;
+        let msisdn_hash = self.keyed_hash_hex(msisdn.as_e164());
+
+        let sys = Self::sys();
+        db.opt_out()
+            .create(schema::CreateOptOutInput {
+                msisdnHash: msisdn_hash,
+                msisdn: msisdn.as_e164().to_owned(),
+                source: args.source,
+                scope: args.scope,
+                reason: args.reason,
+                optedOutAt: Utc::now(),
+            })
+            .run(&sys)
+            .await
+            .map_err(map_database_error)
+    }
+
+    /// #58: `searchOptOutByMsisdn` — hash `args.msisdn` under this crate's
+    /// own pepper and look up the one `OptOut` row (`msisdnHash` is
+    /// `@unique`) it could ever match, if any. See `schema.cstack`'s own
+    /// doc on `searchOptOutByMsisdn` for what "not found" can honestly
+    /// mean here.
+    ///
+    /// **The house standard this ticket asks for, said in code, not just
+    /// in the doc comment above it: this can never fall back to an
+    /// unfiltered list.** `where_expr` always carries the equality
+    /// predicate below — there is no code path in this function that omits
+    /// it, so a hash that matches nothing produces an empty `Vec`, never
+    /// "everything."
+    ///
+    /// Broken deliberately once, for real, to prove the live test actually
+    /// guards this rather than passing by construction:
+    /// `crates/sms-api/tests/console_identity_live_postgres.rs`'s own
+    /// `searching_an_unrecorded_number_finds_nothing_even_with_other_rows_present`
+    /// seeds three unrelated `OptOut` rows, then searches for a fourth
+    /// number that was never recorded. With `.where_expr(...)` below
+    /// temporarily commented out (an unfiltered `find_many().limit(1)`),
+    /// the test failed with:
+    ///
+    /// ```text
+    /// a search that matches nothing must return None, not one of the
+    /// unrelated seeded rows: got Some(OptOutSummary { id:
+    /// "c13e89f454a21777db190cb", msisdnHash: "hmac-sha256-v1:0b0b17...",
+    /// source: admin, scope: "all", reason: None, optedOutAt:
+    /// 2026-08-12T23:35:06.486625Z, createdAt:
+    /// 2026-08-12T23:35:06.486733Z })
+    /// ```
+    ///
+    /// — a real, unrelated opt-out row, returned as though it matched.
+    /// Restoring the `where_expr` call restored a pass on all seven tests
+    /// in that file.
+    async fn search_opt_out(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::OptOutSearchInput,
+    ) -> Result<schema::OptOutSearchResult, CoolError> {
+        require_permission(ctx, "optout:manage")?;
+
+        let msisdn = Msisdn::parse_mobile(&args.msisdn)
+            .map_err(|error| CoolError::Validation(error.to_string()))?;
+        let msisdn_hash = self.keyed_hash_hex(msisdn.as_e164());
+
+        let sys = Self::sys();
+        let matches = db
+            .opt_out()
+            .find_many()
+            .where_expr(FilterExpr::from(opt_out::msisdnHash().eq(msisdn_hash)))
+            .limit(1)
+            .run(&sys)
+            .await?;
+
+        Ok(schema::OptOutSearchResult {
+            optOut: matches.into_iter().next().map(to_opt_out_summary),
+        })
+    }
+
+    /// #58: `auditLog` — a filtered, paged window over `cratestack_audit`.
+    /// See `crate::audit_log`'s own module doc for the mechanism; this is
+    /// a thin translation between the wire query/page shape and that
+    /// module's own filter/page types.
+    async fn list_audit_log(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::AuditLogQuery,
+    ) -> Result<schema::AuditLogPage, CoolError> {
+        require_permission(ctx, "audit:read")?;
+
+        let filter = audit_log::AuditLogFilter {
+            model: args.model,
+            operation: args.operation,
+            actor_id: args.actorId,
+            since: args.since,
+            until: args.until,
+        };
+        let limit = args.limit.unwrap_or(50);
+        let offset = args.offset.unwrap_or(0);
+        let page = audit_log::list_audit_entries(db, &filter, limit, offset).await?;
+
+        Ok(schema::AuditLogPage {
+            entries: page.entries.into_iter().map(to_audit_log_entry).collect(),
+            hasMore: page.has_more,
+        })
+    }
+
+    /// #58: `auditChainStatus` — see `crate::audit_log::chain_status`'s own
+    /// doc. Read-only, computed live every call (cheap: see that module's
+    /// own reasoning), never writes an `AuditAnchor` row.
+    async fn audit_chain_snapshot(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+    ) -> Result<schema::AuditChainStatus, CoolError> {
+        require_permission(ctx, "audit:read")?;
+
+        let sys = Self::sys();
+        let status = audit_log::chain_status(db, &sys).await?;
+
+        Ok(schema::AuditChainStatus {
+            latestAnchorId: status.latest_anchor.as_ref().map(|a| a.id.clone()),
+            latestPeriodEnd: status.latest_anchor.as_ref().map(|a| a.periodEnd),
+            latestRowCount: status.latest_anchor.as_ref().map(|a| a.rowCount),
+            linkageBreaks: status.linkage_breaks,
+            latestContentVerified: status.latest_period_content_verified,
+        })
+    }
+}
+
+/// [`schema::OptOut`] flattened onto the console's own bespoke wire type —
+/// see `schema.cstack`'s own comment on `OptOutSummary` for why this isn't
+/// the raw model.
+fn to_opt_out_summary(row: schema::OptOut) -> schema::OptOutSummary {
+    schema::OptOutSummary {
+        id: row.id,
+        msisdnHash: row.msisdnHash,
+        source: row.source,
+        scope: row.scope,
+        reason: row.reason,
+        optedOutAt: row.optedOutAt,
+        createdAt: row.createdAt,
+    }
+}
+
+/// [`audit_log::AuditLogEntry`] onto the wire — the crate-internal
+/// `snake_case` struct `crate::audit_log` returns, camelCased for the
+/// generated `AuditLogEntry` type.
+fn to_audit_log_entry(entry: audit_log::AuditLogEntry) -> schema::AuditLogEntry {
+    schema::AuditLogEntry {
+        eventId: entry.event_id,
+        model: entry.model,
+        operation: entry.operation,
+        primaryKey: entry.primary_key,
+        actor: entry.actor,
+        tenant: entry.tenant,
+        before: entry.before,
+        after: entry.after,
+        requestId: entry.request_id,
+        occurredAt: entry.occurred_at,
+    }
 }
 
 impl schema::procedures::ProcedureRegistry for Procedures {
@@ -1886,6 +2161,60 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         Output = Result<schema::procedures::dashboard_summary::Output, CoolError>,
     > + Send {
         self.dashboard_snapshot(db, ctx)
+    }
+
+    fn provision_user(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::provision_user::Args,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::provision_user::Output, CoolError>,
+    > + Send {
+        self.provision_console_user(db, ctx, args.args)
+    }
+
+    fn record_opt_out(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::record_opt_out::Args,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::record_opt_out::Output, CoolError>,
+    > + Send {
+        self.create_opt_out_entry(db, ctx, args.args)
+    }
+
+    fn search_opt_out_by_msisdn(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::search_opt_out_by_msisdn::Args,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::search_opt_out_by_msisdn::Output, CoolError>,
+    > + Send {
+        self.search_opt_out(db, ctx, args.args)
+    }
+
+    fn audit_log(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        args: schema::procedures::audit_log::Args,
+    ) -> impl core::future::Future<Output = Result<schema::procedures::audit_log::Output, CoolError>>
+           + Send {
+        self.list_audit_log(db, ctx, args.args)
+    }
+
+    fn audit_chain_status(
+        &self,
+        db: &schema::Cratestack,
+        ctx: &CoolContext,
+        _args: schema::procedures::audit_chain_status::Args,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::audit_chain_status::Output, CoolError>,
+    > + Send {
+        self.audit_chain_snapshot(db, ctx)
     }
 }
 

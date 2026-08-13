@@ -144,17 +144,26 @@ export function mapGatewayError(status: number, body: unknown, procedure: string
   const trpcCode = trpcCodeForStatus(status);
 
   if (status === 401 || status === 403) {
-    // A caller's own session being denied is expected and unremarkable —
-    // the machine token being denied is not. This is the console's own
-    // service-account credential failing against sms-api (a scope
-    // mismatch, a retired client, a signing-key rotation the console
-    // hasn't picked up yet), which is an operator problem every time, so
-    // it's logged loudly here rather than only surfacing as a generic
-    // "forbidden" toast in the browser.
+    // #211 correction: this used to assert unconditionally that a 401/403
+    // here always means the console's own machine credential was rejected
+    // (a scope mismatch, a retired client, a signing-key rotation) —
+    // written before `resolveUpstreamAccessToken` existed, when the
+    // machine credential really was the only thing ever presented
+    // upstream. That's no longer true: most calls now forward the
+    // signed-in human's own session token, and a 403 from those is
+    // frequently an entirely ordinary, expected outcome — a `support`
+    // account clicking an action their role's own permissions don't cover,
+    // for instance (#58's opt-out screens are exactly this shape). This
+    // module has no visibility into which credential a given call used
+    // (that decision lives in `request-credential.ts`, one layer down), so
+    // it can no longer claim to know which one failed — logged as
+    // information for whoever operates this deployment, not asserted as a
+    // fault.
     console.error(
-      `[@vsms/gateway] ${procedure}: sms-api rejected the console's own credential ` +
-        `(${status}). This means the app's own token was denied, not a caller's — check ` +
-        `SMS_CONSOLE_CLIENT_ID's scopes and whether its signing key was rotated out.`,
+      `[@vsms/gateway] ${procedure}: sms-api returned ${status}. Could be an ordinary ` +
+        `permission denial for the signed-in caller, or the console's own machine credential ` +
+        `(SMS_CONSOLE_CLIENT_ID) being rejected — check which credential this call used before ` +
+        `assuming either.`,
       body,
     );
   }

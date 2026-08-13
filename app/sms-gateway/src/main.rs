@@ -14,7 +14,6 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::FilterExpr;
-use rand::Rng;
 use sms_api::schema::procedures::{provision_app_client, ProcedureRegistry};
 use sms_api::schema::{
     provider as provider_filter, route as route_filter, ClientAuthMethod, Cratestack,
@@ -417,8 +416,12 @@ enum Command {
     /// so the very first account is necessarily bootstrapped this way).
     ///
     /// Generates a random password, hashes it with the real
-    /// `sms_auth::login::hash_password` (Argon2id — never a weaker
-    /// scheme just because this is a CLI tool), and prints the plaintext
+    /// `sms_core::password::hash_password` (Argon2id — never a weaker
+    /// scheme just because this is a CLI tool; #52/#58 moved this function
+    /// out of `sms-auth::login`, where it lived when this comment was
+    /// first written, down to `sms-core` so the console's own
+    /// `provisionUser` procedure could call the identical logic), and
+    /// prints the plaintext
     /// exactly once — the same "returned once, never stored, never
     /// logged" discipline `ProvisionClient`'s own `privateKeyPem` already
     /// follows, applied here because there is no operator-supplied
@@ -1432,18 +1435,12 @@ async fn provision_user_command(command: Command) -> Result<()> {
         unreachable!("only ever called with Command::ProvisionUser")
     };
 
-    // 24 alphanumeric characters is ~142 bits of entropy — comfortably
-    // more than Argon2id's own hashing cost is meant to protect against a
-    // brute-force guess of, and short enough an operator can read it over
-    // a phone call for a break-glass first account. rand::thread_rng(),
-    // not a hand-rolled PRNG — the same source rsa::RsaPrivateKey::new
-    // already trusts elsewhere in this workspace for key material.
-    let password: String = rand::thread_rng()
-        .sample_iter(&rand::distributions::Alphanumeric)
-        .take(24)
-        .map(char::from)
-        .collect();
-    let password_hash = sms_auth::login::hash_password(&password)
+    // #52/#58: both the password generator and the hasher now live in
+    // `sms_core::password` — the console's own `provisionUser` procedure
+    // needs the identical logic from `sms-api`, which cannot depend on
+    // `sms-auth` (where this used to live). See that module's own doc.
+    let password = sms_core::password::generate_password(24);
+    let password_hash = sms_core::password::hash_password(&password)
         .map_err(|error| anyhow::anyhow!("hashing the generated password: {error}"))?;
 
     let pool = PgPoolOptions::new()
@@ -1513,7 +1510,11 @@ async fn provision_user_command(command: Command) -> Result<()> {
     println!("provisioned user: {email} (id={})", user.id);
     println!("one-time password (never stored, never shown again): {password}");
     println!();
-    println!("no password-rotation flow exists yet (#58 tracks the users-and-roles screens) —");
+    // #52/#58 landed the users-and-roles screens (`provisionUser` is the
+    // console-side equivalent of this command), but still no
+    // rotate/reset — see OPEN_QUESTIONS.md §3.6 for why, and what
+    // deciding one for real would need.
+    println!("no password-rotation flow exists yet — see OPEN_QUESTIONS.md §3.6 —");
     println!(
         "share this over a channel the recipient controls, not this command's own stdout log."
     );

@@ -229,7 +229,7 @@ async fn ensure_console_client(db: &Cratestack) {
 /// A `Role` + `User` + `UserCredential`, seeded the same shape
 /// `sms-gateway provision-user` (#194) constructs for real —
 /// [`TEST_PASSWORD`] is the plaintext this suite's own login attempts use,
-/// hashed with the real `sms_auth::login::hash_password` before storage,
+/// hashed with the real `sms_core::password::hash_password` before storage,
 /// never stored in the clear.
 async fn seed_login_account(db: &Cratestack, suffix: &str) -> String {
     let role_key = format!("loginflow{}", suffix.to_lowercase());
@@ -262,7 +262,7 @@ async fn seed_login_account(db: &Cratestack, suffix: &str) -> String {
     db.user_credential()
         .create(schema::CreateUserCredentialInput {
             userId: user.id,
-            passwordHash: sms_auth::login::hash_password(TEST_PASSWORD)
+            passwordHash: sms_core::password::hash_password(TEST_PASSWORD)
                 .expect("hashing the test password"),
         })
         .run(&sys())
@@ -810,7 +810,7 @@ async fn seed_reserved_role_login_account(
         .user_credential()
         .create(schema::CreateUserCredentialInput {
             userId: user.id.clone(),
-            passwordHash: sms_auth::login::hash_password(TEST_PASSWORD)
+            passwordHash: sms_core::password::hash_password(TEST_PASSWORD)
                 .expect("hashing the test password"),
         })
         .run(&sys())
