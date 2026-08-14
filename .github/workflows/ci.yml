@@ -246,6 +246,9 @@ jobs:
   js:
     name: pnpm biome, typecheck, build, test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # npm publish --provenance needs an OIDC token
 
     # The TypeScript half had NO automated gate at all until this job existed:
     # six PRs of real application code (the workspace, @vsms/env, @vsms/ui, the
@@ -334,12 +337,13 @@ jobs:
         run: pnpm install --ignore-workspace --frozen-lockfile && node --test
         working-directory: examples/node/webhook-receiver
 
-      - name: Official Node SDK (@vsms/sdk) — test and typecheck
+      - name: Official Node SDK (@vymalo/vsms-node) — test, typecheck and dry-run publish
         run: |
           pnpm install --ignore-workspace --frozen-lockfile
           pnpm run build
           pnpm run typecheck
           node --test
+          npm publish --provenance --dry-run
         working-directory: sdks/node/vsms-sdk-node
 
   rules:
