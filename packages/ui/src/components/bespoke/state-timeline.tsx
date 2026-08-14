@@ -22,7 +22,6 @@ export interface StateTimelineProps {
   transitions: StateTransition[];
   currentState: MessageState;
   isTerminal: boolean;
-  locale?: "en" | "fr";
   timezone?: "UTC" | "Africa/Douala";
 }
 
@@ -91,7 +90,6 @@ export function StateTimeline({
   transitions,
   currentState,
   isTerminal,
-  locale = "en",
   timezone = "UTC",
 }: StateTimelineProps) {
   if (transitions.length === 0) {
@@ -129,7 +127,7 @@ export function StateTimeline({
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline justify-between gap-2">
             <p className="font-medium text-body text-foreground">
-              {locale === "fr" ? meta.labelFr : meta.labelEn}{" "}
+              {meta.label}{" "}
               <span className="font-mono text-subtle-foreground">{transition.toState}</span>
             </p>
             <div className="shrink-0 text-right">

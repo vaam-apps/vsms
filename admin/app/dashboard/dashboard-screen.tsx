@@ -61,7 +61,7 @@
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@vsms/api";
 import { trpc } from "@vsms/hooks";
-import { Card, CardBody, CardHeader, Skeleton, ThemeToggle } from "@vsms/ui";
+import { Card, CardBody, CardHeader, Skeleton } from "@vsms/ui";
 import { HourlyBars } from "./hourly-bars";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
@@ -253,7 +253,6 @@ export function DashboardScreen() {
           >
             Webhooks
           </a>
-          <ThemeToggle />
         </div>
       </header>
 

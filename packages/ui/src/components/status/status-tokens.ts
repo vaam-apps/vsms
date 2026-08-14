@@ -17,6 +17,16 @@
  * notably, a job's `failed` is *retryable* (`failed -> pending` is a legal
  * edge) and is therefore not equivalent to a message's terminal `failed`,
  * which needs its own reasoning rather than a silent copy-paste here.
+ *
+ * English only (console-redesign.md D10, English-only constraint 1):
+ * `labelFr` is deleted outright, not merely unused, and `labelEn`/
+ * `tooltipEn` are renamed to plain `label`/`tooltip` — with the French
+ * fields gone, a stray reader is a compile error rather than silently-dead
+ * code. This does not foreclose localisation forever: #231 tracks a real
+ * `react-i18next` layer for the console later, still English-only by
+ * default with additional languages opted into via env-var config — a
+ * proper mechanism, not two ad hoc string fields on a domain-semantics
+ * table that nothing ever rendered.
  */
 
 export const MESSAGE_STATES = [
@@ -71,9 +81,8 @@ export interface StatusMeta {
   /** Terminal marks sit on a filled silhouette; in-flight/unresolved marks are stroked-only. */
   filled: boolean;
   attention: StatusAttention;
-  labelEn: string;
-  labelFr: string;
-  tooltipEn: string;
+  label: string;
+  tooltip: string;
 }
 
 /**
@@ -93,9 +102,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "neutral",
     filled: false,
     attention: "quiet",
-    labelEn: "Accepted",
-    labelFr: "Acceptée",
-    tooltipEn: "Received and validated. Not yet queued.",
+    label: "Accepted",
+    tooltip: "Received and validated. Not yet queued.",
   },
   queued: {
     family: "in-flight",
@@ -104,9 +112,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "neutral",
     filled: false,
     attention: "quiet",
-    labelEn: "Queued",
-    labelFr: "En file",
-    tooltipEn: "Waiting for a dispatch worker to claim it.",
+    label: "Queued",
+    tooltip: "Waiting for a dispatch worker to claim it.",
   },
   routed: {
     family: "in-flight",
@@ -115,9 +122,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "neutral",
     filled: false,
     attention: "quiet",
-    labelEn: "Routed",
-    labelFr: "Routée",
-    tooltipEn: "A route and provider were chosen. Not yet submitted.",
+    label: "Routed",
+    tooltip: "A route and provider were chosen. Not yet submitted.",
   },
   submitted: {
     family: "in-flight",
@@ -126,9 +132,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "neutral",
     filled: false,
     attention: "quiet",
-    labelEn: "Submitted",
-    labelFr: "Soumise",
-    tooltipEn: "Handed to the provider. Awaiting a delivery receipt.",
+    label: "Submitted",
+    tooltip: "Handed to the provider. Awaiting a delivery receipt.",
   },
   delivered: {
     family: "terminal",
@@ -137,9 +142,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "success",
     filled: true,
     attention: "quiet",
-    labelEn: "Delivered",
-    labelFr: "Distribuée",
-    tooltipEn: "The provider confirmed delivery to the handset.",
+    label: "Delivered",
+    tooltip: "The provider confirmed delivery to the handset.",
   },
   cancelled: {
     family: "terminal",
@@ -148,9 +152,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "neutral",
     filled: true,
     attention: "quiet",
-    labelEn: "Cancelled",
-    labelFr: "Annulée",
-    tooltipEn: "Cancelled before delivery, on request.",
+    label: "Cancelled",
+    tooltip: "Cancelled before delivery, on request.",
   },
   expired: {
     family: "terminal",
@@ -159,9 +162,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "expired",
     filled: true,
     attention: "loud",
-    labelEn: "Expired",
-    labelFr: "Expirée",
-    tooltipEn: "Passed its validity window before it could be delivered.",
+    label: "Expired",
+    tooltip: "Passed its validity window before it could be delivered.",
   },
   rejected: {
     family: "terminal",
@@ -170,9 +172,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "danger",
     filled: true,
     attention: "loud",
-    labelEn: "Rejected",
-    labelFr: "Rejetée",
-    tooltipEn: "Refused at acceptance — opt-out, quota, bad sender ID, or malformed.",
+    label: "Rejected",
+    tooltip: "Refused at acceptance — opt-out, quota, bad sender ID, or malformed.",
   },
   failed: {
     family: "terminal",
@@ -181,9 +182,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "danger",
     filled: true,
     attention: "loud",
-    labelEn: "Failed",
-    labelFr: "Échouée",
-    tooltipEn: "Permanently failed. The provider error is on the timeline.",
+    label: "Failed",
+    tooltip: "Permanently failed. The provider error is on the timeline.",
   },
   uncertain: {
     family: "unresolved",
@@ -192,9 +192,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "uncertain",
     filled: false,
     attention: "loud",
-    labelEn: "Uncertain",
-    labelFr: "Incertaine",
-    tooltipEn:
+    label: "Uncertain",
+    tooltip:
       "Sent, but the outcome was never learned. It will not be retried automatically — this deliberately avoids sending a duplicate. Re-send manually only if a duplicate is acceptable.",
   },
   undelivered: {
@@ -204,9 +203,8 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     hue: "parked",
     filled: false,
     attention: "loud",
-    labelEn: "Undelivered",
-    labelFr: "Non distribuée",
-    tooltipEn:
+    label: "Undelivered",
+    tooltip:
       "The provider could not deliver it. Retryable in principle — but no retry driver is running today (#122), so it will stay here until someone acts.",
   },
 };
@@ -264,9 +262,8 @@ export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
     hue: "neutral",
     filled: false,
     attention: "quiet",
-    labelEn: "Pending",
-    labelFr: "En attente",
-    tooltipEn: "Waiting to be claimed, or waiting out a retry backoff.",
+    label: "Pending",
+    tooltip: "Waiting to be claimed, or waiting out a retry backoff.",
   },
   running: {
     family: "in-flight",
@@ -275,9 +272,8 @@ export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
     hue: "neutral",
     filled: false,
     attention: "quiet",
-    labelEn: "Running",
-    labelFr: "En cours",
-    tooltipEn: "Claimed by a worker and currently executing.",
+    label: "Running",
+    tooltip: "Claimed by a worker and currently executing.",
   },
   succeeded: {
     family: "terminal",
@@ -286,9 +282,8 @@ export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
     hue: "success",
     filled: true,
     attention: "quiet",
-    labelEn: "Succeeded",
-    labelFr: "Réussi",
-    tooltipEn: "Completed without error.",
+    label: "Succeeded",
+    tooltip: "Completed without error.",
   },
   failed: {
     family: "unresolved",
@@ -297,9 +292,8 @@ export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
     hue: "uncertain",
     filled: false,
     attention: "loud",
-    labelEn: "Failed (retrying)",
-    labelFr: "Échec (nouvel essai)",
-    tooltipEn:
+    label: "Failed (retrying)",
+    tooltip:
       "The last attempt errored. Not terminal — it will retry automatically after a backoff, unless attempts are exhausted (then it moves to Dead).",
   },
   dead: {
@@ -309,9 +303,8 @@ export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
     hue: "danger",
     filled: true,
     attention: "loud",
-    labelEn: "Dead",
-    labelFr: "Abandonné",
-    tooltipEn: "Every attempt failed and the retry budget is exhausted. Requeue to try again.",
+    label: "Dead",
+    tooltip: "Every attempt failed and the retry budget is exhausted. Requeue to try again.",
   },
   cancelled: {
     family: "terminal",
@@ -320,9 +313,8 @@ export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
     hue: "neutral",
     filled: true,
     attention: "quiet",
-    labelEn: "Cancelled",
-    labelFr: "Annulé",
-    tooltipEn: "Cancelled before it ran.",
+    label: "Cancelled",
+    tooltip: "Cancelled before it ran.",
   },
 };
 
@@ -368,9 +360,8 @@ export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = {
     hue: "neutral",
     filled: false,
     attention: "quiet",
-    labelEn: "Pending",
-    labelFr: "En attente",
-    tooltipEn: "Claimable on the next delivery tick, or waiting out a retry backoff.",
+    label: "Pending",
+    tooltip: "Claimable on the next delivery tick, or waiting out a retry backoff.",
   },
   delivering: {
     family: "in-flight",
@@ -379,9 +370,8 @@ export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = {
     hue: "neutral",
     filled: false,
     attention: "quiet",
-    labelEn: "Delivering",
-    labelFr: "En livraison",
-    tooltipEn: "Currently being POSTed to the endpoint.",
+    label: "Delivering",
+    tooltip: "Currently being POSTed to the endpoint.",
   },
   succeeded: {
     family: "terminal",
@@ -390,9 +380,8 @@ export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = {
     hue: "success",
     filled: true,
     attention: "quiet",
-    labelEn: "Succeeded",
-    labelFr: "Réussi",
-    tooltipEn: "The endpoint returned 2xx.",
+    label: "Succeeded",
+    tooltip: "The endpoint returned 2xx.",
   },
   failed: {
     family: "unresolved",
@@ -401,9 +390,8 @@ export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = {
     hue: "uncertain",
     filled: false,
     attention: "loud",
-    labelEn: "Failed (retrying)",
-    labelFr: "Échec (nouvel essai)",
-    tooltipEn:
+    label: "Failed (retrying)",
+    tooltip:
       "The last attempt errored. Not terminal — it will retry automatically after a backoff, unless attempts are exhausted (then it moves to Dead).",
   },
   dead: {
@@ -413,9 +401,8 @@ export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = {
     hue: "danger",
     filled: true,
     attention: "loud",
-    labelEn: "Dead",
-    labelFr: "Abandonné",
-    tooltipEn: "Every attempt failed and the retry budget is exhausted. Replay to try again.",
+    label: "Dead",
+    tooltip: "Every attempt failed and the retry budget is exhausted. Replay to try again.",
   },
 };
 

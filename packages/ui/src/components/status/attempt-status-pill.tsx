@@ -10,7 +10,6 @@ export interface AttemptStatusPillProps {
   variant?: "auto" | "quiet" | "loud";
   size?: "sm" | "md";
   showLiteral?: boolean;
-  locale?: "en" | "fr";
   detail?: ReactNode;
   className?: string;
 }
@@ -31,7 +30,6 @@ export function AttemptStatusPill({
   variant = "auto",
   size = "sm",
   showLiteral = false,
-  locale = "en",
   detail,
   className,
 }: AttemptStatusPillProps) {
@@ -39,14 +37,13 @@ export function AttemptStatusPill({
   const resolvedVariant = variant === "auto" ? meta.attention : variant;
   const loud = resolvedVariant === "loud";
   const hue = HUE_CLASSES[meta.hue];
-  const label = locale === "fr" ? meta.labelFr : meta.labelEn;
   const markSize = size === "md" ? 16 : 14;
 
   return (
     <span
       role="img"
-      title={meta.tooltipEn}
-      aria-label={`${state} — ${label}`}
+      title={meta.tooltip}
+      aria-label={`${state} — ${meta.label}`}
       className={cn(
         "inline-flex items-center gap-[5px] whitespace-nowrap align-middle",
         "text-caption",
@@ -56,7 +53,7 @@ export function AttemptStatusPill({
       )}
     >
       <StateMarkFromMeta meta={meta} size={markSize} className={hue.fg} />
-      <span className={loud ? hue.fg : "text-muted-foreground"}>{label}</span>
+      <span className={loud ? hue.fg : "text-muted-foreground"}>{meta.label}</span>
       {showLiteral && <span className="font-mono text-subtle-foreground text-[11px]">{state}</span>}
       {detail != null && <span className="font-mono text-subtle-foreground">{detail}</span>}
     </span>

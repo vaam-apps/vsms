@@ -106,7 +106,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  ThemeToggle,
   TimestampDisplay,
 } from "@vsms/ui";
 import { parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
@@ -122,7 +121,7 @@ type MessageListItem = RouterOutputs["messages"]["list"]["items"][number];
 type StreamFrame = RouterOutputs["messages"]["onStateChange"]["frames"][number];
 
 const STATE_LABELS: Record<MessageState, string> = Object.fromEntries(
-  MESSAGE_STATES.map((state) => [state, MESSAGE_STATUS_META[state].labelEn]),
+  MESSAGE_STATES.map((state) => [state, MESSAGE_STATUS_META[state].label]),
 ) as Record<MessageState, string>;
 
 function todayIsoDate(): string {
@@ -438,7 +437,6 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
           >
             Webhooks
           </a>
-          <ThemeToggle />
         </div>
       </header>
 

@@ -56,7 +56,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  ThemeToggle,
   TimestampDisplay,
 } from "@vsms/ui";
 import type { ReactNode } from "react";
@@ -190,7 +189,6 @@ export function MessageDetailScreen({ messageId }: MessageDetailScreenProps) {
           >
             ← Back to messages
           </a>
-          <ThemeToggle />
         </div>
       </header>
 

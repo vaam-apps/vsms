@@ -36,7 +36,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  ThemeToggle,
   TimestampDisplay,
 } from "@vsms/ui";
 
@@ -117,7 +116,6 @@ export function WorkersScreen() {
           >
             Webhooks
           </a>
-          <ThemeToggle />
         </div>
       </header>
 

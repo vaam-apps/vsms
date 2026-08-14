@@ -1,31 +1,57 @@
 /*
- * @vsms/ui design tokens (T6).
+ * @vsms/ui design tokens (T6), redesigned per docs/design/console-redesign.md
+ * (the admin console redesign, Phase 0).
  *
- * Source of truth: dashboard-design-system.md §3 (tokens) and §4 (status
- * system), as amended by dashboard-architecture-plan.md's DECISIONS §4/§5
- * (daisyUI + Radix, `delivered` gets a green pill, eleven states).
+ * Source of truth: docs/design/console-redesign.md §2 (decision ledger,
+ * D8/D9) and §1 (reference lock), superseding this file's earlier
+ * dashboard-design-system.md/dashboard-architecture-plan.md lineage where
+ * the two disagree — see D8/D9 in that document for the reasoning behind
+ * every change below.
  *
- * daisyUI v5 is CSS-first: `@plugin "daisyui/theme"` blocks below define the
- * two themes daisyUI already ships under the built-in names "dark" and
- * "light" (see the "Customize Built-in daisyUI Theme" pattern in daisyUI's
- * own docs) so every native daisyUI class (`.btn`, `.input`, `.card`,
- * `.badge`, `.table`, `.tabs`, …) themes correctly with zero patching, and
- * so `admin/app/layout.tsx`'s existing `data-theme="dark"` needs no change
- * — dark is the default theme both by daisyUI's own `default: true` flag
- * and by that hardcoded attribute.
+ * **Dark-only (D9).** The `"light"` `@plugin "daisyui/theme"` block and its
+ * paired `[data-theme="light"]` block are deleted outright, not merely
+ * unreferenced — constraint 2 ("no light theme, no toggle") and this
+ * project's own standing "no dormant code" rule (CLAUDE.md, "Delivery
+ * style") both rule out keeping a second, unreachable theme alive in the
+ * codebase. `admin/app/layout.tsx` keeps `data-theme="dark"` on `<html>`
+ * regardless — harmless, and documents intent even with only one theme
+ * registered.
+ *
+ * **Radius (D8).** Rewritten from the previous near-square 2px system to a
+ * visibly, deliberately rounded one. This is a genuine visual-identity
+ * break from what shipped before, and it is intended, not a cautious
+ * half-step — see D8's own entry in the decision ledger for the full
+ * reasoning: the previous 2px system was a real, careful decision under an
+ * earlier brief, and this redesign replaces it outright rather than
+ * splitting the difference with it.
+ *
+ * daisyUI v5 is CSS-first: the `@plugin "daisyui/theme"` block below
+ * defines the one theme this console ships, under daisyUI's own built-in
+ * name "dark" (see the "Customize Built-in daisyUI Theme" pattern in
+ * daisyUI's own docs), so every native daisyUI class (`.btn`, `.input`,
+ * `.card`, `.badge`, `.table`, `.tabs`, …) themes correctly with zero
+ * patching.
  *
  * Everything daisyUI has no concept of — the extra surface-3 hover step,
  * hairline border tiers, muted/subtle text tiers, focus-ring colour, and
  * above all the eleven-state status system — lives in plain CSS custom
- * properties scoped by the same `[data-theme]` attribute immediately below
- * each daisyUI theme block, then re-exposed as Tailwind utilities via
- * `@theme inline` so component code can write `bg-surface-3` /
- * `text-state-danger-fg` instead of `bg-[var(--surface-3)]` everywhere.
+ * properties scoped by `[data-theme="dark"]` immediately below the daisyUI
+ * theme block, then re-exposed as Tailwind utilities via `@theme inline` so
+ * component code can write `bg-surface-3` / `text-state-danger-fg` instead
+ * of `bg-[var(--surface-3)]` everywhere. This is deliberately NOT folded
+ * into daisyUI's own theme config: daisyUI has no vocabulary for a
+ * six-hue/eleven-state status system, a three-tier border ladder, or two
+ * distinct floating-layer shadows, so these stay hand-written CSS custom
+ * properties by necessity, not by omission — with only one theme left to
+ * maintain, this file is already substantially smaller and more
+ * daisyUI-driven than before (D9 alone removes the entire duplicate
+ * light-theme block), and every token below that daisyUI *can* express
+ * lives in its theme block, not out here.
  *
  * One deliberate rename from the design doc: its `--border` token (default
  * container border colour) is called `--edge` here instead. daisyUI
  * reserves `--border` for component border *width* (see the `--border: 1px`
- * key inside the theme blocks below) — reusing the name for a colour would
+ * key inside the theme block below) — reusing the name for a colour would
  * silently overwrite that width value at `[data-theme=...]` scope. `--edge`
  * carries the same three-step ladder (`--edge-subtle` / `--edge` /
  * `--edge-strong`) the design doc specifies, just under a collision-free
@@ -77,50 +103,23 @@
   --color-error: #e5534b;
   --color-error-content: #ffffff;
 
-  /* §3.5: 2px universally. Floating layers get 4px by hand (--radius-md
-     below) since daisyUI has no separate "floating" radius category. */
-  --radius-selector: 2px;
-  --radius-field: 2px;
-  --radius-box: 2px;
-  --size-selector: 0.25rem;
-  --size-field: 0.25rem;
-  --border: 1px;
-  --depth: 0;
-  --noise: 0;
-}
-
-@plugin "daisyui/theme" {
-  name: "light";
-  color-scheme: light;
-
-  /* base-300 == base-100 here on purpose: §3.1 light-theme surface-2 is
-     "separated by border, not fill" — cards are white-on-white. */
-  --color-base-100: #ffffff;
-  --color-base-200: #f7f8f9;
-  --color-base-300: #ffffff;
-  --color-base-content: #14161a;
-
-  --color-primary: #14161a;
-  --color-primary-content: #ffffff;
-  --color-secondary: #14161a;
-  --color-secondary-content: #ffffff;
-  --color-accent: #14161a;
-  --color-accent-content: #ffffff;
-  --color-neutral: #f1f3f5;
-  --color-neutral-content: #14161a;
-
-  --color-info: #5c636e;
-  --color-info-content: #ffffff;
-  --color-success: #15803d;
-  --color-success-content: #ffffff;
-  --color-warning: #b54708;
-  --color-warning-content: #ffffff;
-  --color-error: #b42318;
-  --color-error-content: #ffffff;
-
-  --radius-selector: 2px;
-  --radius-field: 2px;
-  --radius-box: 2px;
+  /* D8: a visibly rounded register, three deliberately distinct steps —
+     small controls (selector) noticeably tighter than fields, fields
+     noticeably tighter than boxes — so the progression itself reads as
+     intentional, not just "rounded everywhere by the same amount". Judged
+     against §1's reference lock (LottieFiles' filled-rounded-rectangle
+     active nav row, Column's selected-row fill, Polar's drawer/card
+     corners), not against the 2px system this replaces: every one of
+     those references reads as genuinely, confidently rounded, not a
+     restrained near-square nudge. Still short of `--radius-full` (a true
+     pill) — §1.1's own description of the LottieFiles active row is
+     explicit that it is "not fully pill-shaped either", and a data table's
+     own row/cell chrome would look novelty-bubbly at pill radius — but
+     within that ceiling this is the confident end of the range, not the
+     cautious one. */
+  --radius-selector: 8px;
+  --radius-field: 12px;
+  --radius-box: 20px;
   --size-selector: 0.25rem;
   --size-field: 0.25rem;
   --border: 1px;
@@ -133,6 +132,10 @@
  * background / surface-1 / surface-2. --surface-3 (row hover, pressed,
  * selected fill) is one step daisyUI's own three-tier base system doesn't
  * have, so it lives here as a plain extra token.
+ *
+ * D9: this used to be paired with a `[data-theme="light"]` block carrying
+ * the same token set under a light palette. That block is deleted, not
+ * merely unused — see this file's own header comment.
  */
 [data-theme="dark"] {
   --surface-3: #1c1f25;
@@ -179,50 +182,6 @@
   --state-parked-fg: #c4b5fd;
   --state-parked-bg: rgb(167 139 250 / 0.1);
   --state-parked-border: rgb(167 139 250 / 0.28);
-}
-
-[data-theme="light"] {
-  --surface-3: #f1f3f5;
-
-  --shadow-popover: 0 4px 12px -2px rgb(16 18 22 / 0.1), 0 0 0 1px var(--edge);
-  --shadow-dialog: 0 16px 40px -8px rgb(16 18 22 / 0.16), 0 0 0 1px var(--edge);
-
-  --edge-subtle: #ebedf0;
-  --edge: #dde0e5;
-  --edge-strong: #c3c8d0;
-
-  --muted-foreground: #5c636e;
-  --subtle-foreground: #868e9a;
-
-  --ring: #2563eb;
-  --ring-subtle: rgb(37 99 235 / 0.14);
-
-  --destructive: #b42318;
-  --destructive-foreground: #ffffff;
-
-  --state-neutral-fg: #5c636e;
-  --state-neutral-bg: transparent;
-  --state-neutral-border: transparent;
-
-  --state-success-fg: #15803d;
-  --state-success-bg: transparent;
-  --state-success-border: transparent;
-
-  --state-danger-fg: #b42318;
-  --state-danger-bg: #fef3f2;
-  --state-danger-border: #fecdc9;
-
-  --state-uncertain-fg: #b54708;
-  --state-uncertain-bg: #fffaeb;
-  --state-uncertain-border: #fedf89;
-
-  --state-expired-fg: #57534e;
-  --state-expired-bg: #f5f5f4;
-  --state-expired-border: #e7e5e4;
-
-  --state-parked-fg: #6941c6;
-  --state-parked-bg: #f4f3ff;
-  --state-parked-border: #d9d6fe;
 }
 
 /*
@@ -282,12 +241,15 @@
  * Theme-invariant tokens: radius, fonts, type scale. Redeclaring Tailwind's
  * own `--radius-sm` / `--radius-md` / `--font-sans` / `--font-mono` /
  * `--text-*` keys overrides Tailwind's stock scale app-wide, which is the
- * point — `rounded-sm` now literally means 2px everywhere, not Tailwind's
- * default 0.125rem.
+ * point — `rounded-sm` now literally means 12px everywhere, not Tailwind's
+ * default 0.125rem. D8: aliased onto the same register as
+ * `--radius-field`/`--radius-box` above so `rounded-sm`/`rounded-md` read
+ * consistently with daisyUI's own `rounded-field`/`rounded-box` utilities
+ * rather than reintroducing a fourth, disconnected scale.
  */
 @theme {
-  --radius-sm: 2px;
-  --radius-md: 4px;
+  --radius-sm: 12px;
+  --radius-md: 20px;
   /* --radius-full (9999px) is already Tailwind's default; not redeclared. */
 
   --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
