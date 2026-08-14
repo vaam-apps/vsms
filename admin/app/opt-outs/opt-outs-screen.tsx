@@ -3,6 +3,22 @@
 // The Opt-outs screen (#58): search by hashed MSISDN, record a new
 // opt-out, and browse recent activity.
 //
+// Console redesign (docs/design/console-redesign.md, Phase 2
+// "Operations"): dropped the old `ConsoleNav` hand-rolled link strip for
+// `ConsoleShell`'s own sidebar/top bar, and added a row-click
+// `QuickDetailDrawer` (§3/D14) for the recent-activity table — the full
+// record (`msisdnHash`, `scope`, `reason`, both timestamps) is one tap
+// away rather than needing every column visible on a phone; `Remove`
+// lives in both the table row (fast path for an operator already scanning
+// the list) and the drawer footer (reachable from the peek too), both
+// driving the same confirm `Dialog`.
+//
+// Record-opt-out stays a `Dialog`, not a drawer: four fields, no
+// sub-navigation, no nested history — exactly §3's own "short
+// single-purpose forms with no sub-navigation (rename, confirm-requeue)"
+// bucket, not "the full record plus an edit form" a `MoreDetailDrawer` is
+// for.
+//
 // # Search is a procedure, not a filtered list, for a structural reason
 //
 // `OptOut.msisdnHash` is a peppered HMAC (`SMS_HASH_PEPPER`) this console
@@ -32,10 +48,12 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  IdDisplay,
   InlineEmptyState,
   Input,
   Label,
   MsisdnDisplay,
+  QuickDetailDrawer,
   Select,
   SelectContent,
   SelectItem,
@@ -51,8 +69,8 @@ import {
   TimestampDisplay,
   toast,
 } from "@vsms/ui";
-import { useState } from "react";
-import { ConsoleNav } from "../console-nav";
+import { ChevronRight } from "lucide-react";
+import { type ReactNode, useState } from "react";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type OptOutListItem = RouterOutputs["optOuts"]["list"][number];
@@ -70,7 +88,7 @@ function SearchPanel() {
 
   return (
     <div className="flex flex-col gap-3 rounded-sm border border-edge bg-surface-2 p-4">
-      <div className="flex items-end gap-2">
+      <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end">
         <div className="flex flex-1 flex-col gap-1.5">
           <Label htmlFor="opt-out-search">Search by MSISDN</Label>
           <Input
@@ -222,33 +240,43 @@ function RecordDialog({
   );
 }
 
+function OptOutDetailField({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-0.5 border-edge-subtle border-b py-2 last:border-b-0">
+      <dt className="text-caption text-subtle-foreground">{label}</dt>
+      <dd className="text-body text-foreground">{value}</dd>
+    </div>
+  );
+}
+
 export function OptOutsScreen() {
   const listQuery = trpc.optOuts.list.useQuery({});
   const utils = trpc.useUtils();
   const [recordOpen, setRecordOpen] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [detailRow, setDetailRow] = useState<OptOutListItem | null>(null);
 
   const deleteMutation = trpc.optOuts.delete.useMutation({
     onSuccess: () => {
       toast({ title: "Opt-out removed", variant: "success" });
       setDeleteConfirmId(null);
+      setDetailRow(null);
       void utils.optOuts.list.invalidate();
     },
   });
 
+  const liveDetailRow =
+    detailRow === null
+      ? null
+      : (listQuery.data?.find((row) => row.id === detailRow.id) ?? detailRow);
+
   return (
-    <main className="mx-auto flex max-w-[1200px] flex-col gap-6 px-6 py-10">
-      <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
-        <div>
-          <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-            vsms admin console
-          </p>
-          <h1 className="mt-1 font-medium text-foreground text-title">Opt-outs</h1>
-          <p className="mt-1 max-w-xl text-body text-muted-foreground">
-            Search by MSISDN, record a new opt-out, or browse recent activity.
-          </p>
-        </div>
-        <ConsoleNav current="/opt-outs" />
+    <div className="flex flex-col gap-6">
+      <header className="flex flex-col gap-1">
+        <h1 className="font-medium text-foreground text-title">Opt-outs</h1>
+        <p className="max-w-xl text-body text-muted-foreground">
+          Search by MSISDN, record a new opt-out, or browse recent activity.
+        </p>
       </header>
 
       <SearchPanel />
@@ -271,9 +299,11 @@ export function OptOutsScreen() {
           <TableRow>
             <TableHead>MSISDN</TableHead>
             <TableHead>Source</TableHead>
-            <TableHead>Scope</TableHead>
-            <TableHead>Reason</TableHead>
-            <TableHead align="end">Opted out</TableHead>
+            <TableHead className="hidden md:table-cell">Scope</TableHead>
+            <TableHead className="hidden lg:table-cell">Reason</TableHead>
+            <TableHead align="end" className="hidden sm:table-cell">
+              Opted out
+            </TableHead>
             <TableHead align="end">Actions</TableHead>
           </TableRow>
         </TableHeader>
@@ -293,27 +323,53 @@ export function OptOutsScreen() {
             </tr>
           )}
           {listQuery.data?.map((row: OptOutListItem) => (
-            <TableRow key={row.id}>
+            <TableRow
+              key={row.id}
+              tabIndex={0}
+              role="button"
+              aria-label={`View details for opt-out ${row.msisdn}`}
+              className="cursor-pointer"
+              onClick={() => setDetailRow(row)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setDetailRow(row);
+                }
+              }}
+            >
               <TableCell>
                 <MsisdnDisplay value={row.msisdn} />
               </TableCell>
               <TableCell mono>{row.source}</TableCell>
-              <TableCell mono>{row.scope}</TableCell>
-              <TableCell className="text-caption text-muted-foreground">
+              <TableCell mono className="hidden md:table-cell">
+                {row.scope}
+              </TableCell>
+              <TableCell className="hidden max-w-[240px] truncate text-caption text-muted-foreground lg:table-cell">
                 {row.reason ?? "—"}
               </TableCell>
-              <TableCell align="end">
+              <TableCell align="end" className="hidden sm:table-cell">
                 <TimestampDisplay value={row.optedOutAt} />
               </TableCell>
               <TableCell align="end">
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setDeleteConfirmId(row.id)}
-                >
-                  Remove
-                </Button>
+                <div className="flex items-center justify-end gap-1.5">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleteConfirmId(row.id);
+                    }}
+                  >
+                    Remove
+                  </Button>
+                  <ChevronRight
+                    size={14}
+                    strokeWidth={1.5}
+                    aria-hidden="true"
+                    className="text-subtle-foreground"
+                  />
+                </div>
               </TableCell>
             </TableRow>
           ))}
@@ -321,6 +377,68 @@ export function OptOutsScreen() {
       </Table>
 
       <RecordDialog open={recordOpen} onOpenChange={setRecordOpen} />
+
+      <QuickDetailDrawer
+        open={liveDetailRow !== null}
+        onOpenChange={(open) => !open && setDetailRow(null)}
+        title={liveDetailRow != null ? liveDetailRow.msisdn : "Opt-out"}
+        description={liveDetailRow != null ? `Opt-out ${liveDetailRow.id}` : undefined}
+        footer={
+          liveDetailRow != null ? (
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={() => setDeleteConfirmId(liveDetailRow.id)}
+            >
+              Remove
+            </Button>
+          ) : undefined
+        }
+      >
+        {liveDetailRow != null && (
+          <dl className="flex flex-col">
+            <OptOutDetailField
+              label="MSISDN"
+              value={<MsisdnDisplay value={liveDetailRow.msisdn} />}
+            />
+            <OptOutDetailField
+              label="MSISDN hash"
+              value={<IdDisplay value={liveDetailRow.msisdnHash} variant="full" />}
+            />
+            <OptOutDetailField
+              label="Source"
+              value={<span className="font-mono">{liveDetailRow.source}</span>}
+            />
+            <OptOutDetailField
+              label="Scope"
+              value={<span className="font-mono">{liveDetailRow.scope}</span>}
+            />
+            <OptOutDetailField
+              label="Reason"
+              value={
+                liveDetailRow.reason != null ? (
+                  <span className="whitespace-pre-wrap break-words">{liveDetailRow.reason}</span>
+                ) : (
+                  "—"
+                )
+              }
+            />
+            <OptOutDetailField
+              label="Opted out at"
+              value={<TimestampDisplay value={liveDetailRow.optedOutAt} />}
+            />
+            <OptOutDetailField
+              label="Recorded at"
+              value={<TimestampDisplay value={liveDetailRow.createdAt} />}
+            />
+            <OptOutDetailField
+              label="Id"
+              value={<IdDisplay value={liveDetailRow.id} variant="full" />}
+            />
+          </dl>
+        )}
+      </QuickDetailDrawer>
 
       <Dialog
         open={deleteConfirmId !== null}
@@ -347,6 +465,6 @@ export function OptOutsScreen() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </main>
+    </div>
   );
 }
