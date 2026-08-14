@@ -1,7 +1,6 @@
-import { IdDisplay, TimestampDisplay } from "@vsms/ui";
+import { DetailList, DetailRow, IdDisplay, TimestampDisplay } from "@vsms/ui";
 import type { RouteListItem } from "../route-domain";
 import { predicateSummary } from "../route-domain";
-import { DetailList, DetailRow } from "./detail-row";
 
 // Dumb, route-local (R6): the `QuickDetailDrawer`'s summary `dl`.
 export function RouteQuickDetailBody({ route }: { route: RouteListItem }) {
@@ -14,7 +13,7 @@ export function RouteQuickDetailBody({ route }: { route: RouteListItem }) {
       <DetailRow label="Weight">
         <span className="font-mono">{route.weight}</span>
       </DetailRow>
-      <DetailRow label="Predicates" stacked>
+      <DetailRow label="Predicates" variant="stacked">
         {predicateSummary(route)}
       </DetailRow>
       <DetailRow label="Provider">

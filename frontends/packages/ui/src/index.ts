@@ -13,6 +13,7 @@ export * from "./components/bespoke/state-timeline";
 // Data-display (design doc §7): consistency is the deliverable, so these
 // are components, not ad hoc per-screen formatting.
 export * from "./components/data/code";
+export * from "./components/data/detail-row";
 export * from "./components/data/id-display";
 export * from "./components/data/msisdn-display";
 export * from "./components/data/timestamp-display";

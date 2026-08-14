@@ -1,5 +1,5 @@
+import { DetailList, DetailRow } from "@vsms/ui";
 import { type EndpointListItem, EVENT_TYPES } from "../webhook-domain";
-import { DetailList, DetailRow } from "./detail-row";
 import { SecretField } from "./secret-field";
 
 // Dumb (R6): the `QuickDetailDrawer`'s summary `dl` for one endpoint.

@@ -5,7 +5,7 @@
 // one frame after `open` flips `false`. `entry` is nullable so this can
 // render (closed) before any row has ever been clicked.
 
-import { QuickDetailDrawer, TimestampDisplay } from "@vsms/ui";
+import { DetailList, DetailRow, QuickDetailDrawer, TimestampDisplay } from "@vsms/ui";
 import { prettyJson } from "../audit-log-format";
 import type { AuditLogEntry } from "../types";
 import { JsonBlock } from "./json-block";
@@ -28,24 +28,23 @@ export function AuditEntryDrawer({
     >
       {entry !== null && (
         <div className="flex flex-col gap-4">
-          <dl className="flex flex-col gap-2 text-body">
-            <div className="flex justify-between gap-4">
-              <dt className="text-muted-foreground">Event id</dt>
-              <dd className="truncate font-mono text-caption text-foreground">{entry.eventId}</dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-muted-foreground">Request id</dt>
-              <dd className="truncate font-mono text-caption text-foreground">
+          <DetailList>
+            <DetailRow label="Event id">
+              <span className="truncate font-mono text-caption text-foreground">
+                {entry.eventId}
+              </span>
+            </DetailRow>
+            <DetailRow label="Request id">
+              <span className="truncate font-mono text-caption text-foreground">
                 {entry.requestId ?? <span className="text-subtle-foreground">none</span>}
-              </dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-muted-foreground">Tenant</dt>
-              <dd className="truncate font-mono text-caption text-foreground">
+              </span>
+            </DetailRow>
+            <DetailRow label="Tenant">
+              <span className="truncate font-mono text-caption text-foreground">
                 {entry.tenant ?? <span className="text-subtle-foreground">none</span>}
-              </dd>
-            </div>
-          </dl>
+              </span>
+            </DetailRow>
+          </DetailList>
 
           <JsonBlock label="Primary key" value={prettyJson(entry.primaryKey)} />
           <JsonBlock label="Actor" value={prettyJson(entry.actor)} />

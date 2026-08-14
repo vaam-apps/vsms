@@ -2,7 +2,14 @@
 
 // Route-local (R6): moved verbatim out of `page.tsx`.
 
-import { Button, Input, MoreDetailDrawer, QuickDetailDrawer } from "@vsms/ui";
+import {
+  Button,
+  DetailList,
+  DetailRow,
+  Input,
+  MoreDetailDrawer,
+  QuickDetailDrawer,
+} from "@vsms/ui";
 import { useState } from "react";
 import { Section } from "./section";
 
@@ -35,20 +42,17 @@ export function DetailDrawerGallery() {
           </Button>
         }
       >
-        <dl className="flex flex-col gap-3 text-body">
-          <div className="flex justify-between gap-4">
-            <dt className="text-muted-foreground">State</dt>
-            <dd className="text-foreground">delivered</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-muted-foreground">Operator</dt>
-            <dd className="text-foreground">mtn</dd>
-          </div>
-          <div className="flex justify-between gap-4">
-            <dt className="text-muted-foreground">Segments</dt>
-            <dd className="text-foreground">1</dd>
-          </div>
-        </dl>
+        <DetailList>
+          <DetailRow label="State">
+            <span className="text-foreground">delivered</span>
+          </DetailRow>
+          <DetailRow label="Operator">
+            <span className="text-foreground">mtn</span>
+          </DetailRow>
+          <DetailRow label="Segments">
+            <span className="text-foreground">1</span>
+          </DetailRow>
+        </DetailList>
       </QuickDetailDrawer>
 
       <MoreDetailDrawer
