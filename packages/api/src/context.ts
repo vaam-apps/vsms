@@ -42,9 +42,63 @@ import "server-only";
 
 import { TRPCError } from "@trpc/server";
 import type { FetchCreateContextFnOptions } from "@trpc/server/adapters/fetch";
+import { env } from "@vsms/env";
 import * as gateway from "@vsms/gateway";
 
 const ACTOR_HEADER = "x-vsms-actor";
+
+/**
+ * The origin a browser is genuinely expected to reach this console at.
+ *
+ * **Not** `new URL(req.url).origin`, which is what this check used until
+ * #243 and which is wrong the moment the console runs in a container.
+ * Measured, not inferred: a Next.js 15 standalone server behind a reverse
+ * proxy reports `req.url` as `https://0.0.0.0:3000/...` — the host comes
+ * from the server's own `HOSTNAME`/`PORT` bind, and neither `Host` nor
+ * `X-Forwarded-Host` influences it (`X-Forwarded-Proto` does reach the
+ * scheme, which is why the old value looked half-plausible). No browser
+ * can ever send `https://0.0.0.0:3000` as its `Origin`, so every POST —
+ * i.e. every mutation in the console — was rejected in the production
+ * compose stack and under the Helm chart. Reads were unaffected, which is
+ * part of why it survived: the check returns early on anything but POST.
+ *
+ * `ADMIN_BASE_URL` is the right source of truth and needs no new trust.
+ * `@vsms/env` already validates it as a URL at startup, `deploy/docker-
+ * compose.yml` already documents it as "the public console origin a
+ * browser actually reaches", and `sms-gateway seed-console-client`
+ * already registers the OIDC `redirect_uri` against it — compared as a
+ * whole string per RFC 6749 3.1.2, so a deployment with this value wrong
+ * cannot complete a login at all. A console that can log in therefore has
+ * this value right, by construction.
+ *
+ * Deliberately not `X-Forwarded-Host`: that would mean trusting a header
+ * an attacker controls to decide what counts as same-origin, which
+ * inverts the control. #163 already reasoned this repo cannot blanket-
+ * trust `X-Forwarded-*` anyway — `deploy/docker-compose.yml` has two
+ * internal callers of the gateway, not one, so there is no single trusted
+ * hop to pin.
+ *
+ * **Computed lazily, not at module scope.** The first version of this
+ * evaluated `new URL(env.ADMIN_BASE_URL)` as a module-level `const` and
+ * broke `next build` with `TypeError: Invalid URL` while collecting page
+ * data for `/api/trpc/[trpc]`: CI builds with `SKIP_ENV_VALIDATION=true`
+ * (there is no real upstream to point at during a build), so
+ * `ADMIN_BASE_URL` is `undefined` there and `new URL(undefined)` throws.
+ * It passed locally only because the developer's shell happened to have
+ * the variable set. Next's build-time page-data collection imports this
+ * module without ever serving a request, so anything evaluated at module
+ * scope must hold for a build with no runtime configuration at all.
+ * Deferring to first use keeps the failure where it belongs: on a real
+ * request, in a real deployment, where the value is genuinely required.
+ */
+let expectedOrigin: string | undefined;
+
+function expectedConsoleOrigin(): string {
+  if (expectedOrigin === undefined) {
+    expectedOrigin = new URL(env.ADMIN_BASE_URL).origin;
+  }
+  return expectedOrigin;
+}
 
 export interface Context {
   /** Display-only local actor name — see module doc. Never sent upstream. */
@@ -67,7 +121,7 @@ function assertSameOriginForMutations(req: Request): void {
     });
   }
 
-  const expected = new URL(req.url).origin;
+  const expected = expectedConsoleOrigin();
   if (origin !== expected) {
     throw new TRPCError({
       code: "FORBIDDEN",
