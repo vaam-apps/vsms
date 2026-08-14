@@ -60,24 +60,18 @@ describe("assertSameOriginForMutations", () => {
     ({ createContext } = await import("./context"));
   });
 
+  const ctx = (req: Request) =>
+    // biome-ignore lint/suspicious/noExplicitAny: test helper providing partial options
+    createContext({ req } as any);
+
   it("accepts a browser POST whose Origin matches ADMIN_BASE_URL, even though req.url is the container's bind address", () => {
-    expect(() =>
-      createContext({
-        req: post({ origin: ADMIN_BASE_URL }),
-        resHeaders: new Headers(),
-        info: { isBatchCall: false, calls: [] },
-      }),
-    ).not.toThrow();
+    expect(() => ctx(post({ origin: ADMIN_BASE_URL }))).not.toThrow();
   });
 
   it("rejects a POST from a different origin", () => {
-    expect(() =>
-      createContext({
-        req: post({ origin: "https://evil.example.com" }),
-        resHeaders: new Headers(),
-        info: { isBatchCall: false, calls: [] },
-      }),
-    ).toThrow(/cross-origin request rejected/);
+    expect(() => ctx(post({ origin: "https://evil.example.com" }))).toThrow(
+      /cross-origin request rejected/,
+    );
   });
 
   it("rejects a POST with no Origin header at all", () => {
@@ -85,23 +79,11 @@ describe("assertSameOriginForMutations", () => {
     // browser always sets `Origin` on a fetch POST, so a caller that omits
     // it is a non-browser client. This endpoint reaches `sendMessage`,
     // which sends a real billed SMS, so absence is refusal.
-    expect(() =>
-      createContext({
-        req: post({}),
-        resHeaders: new Headers(),
-        info: { isBatchCall: false, calls: [] },
-      }),
-    ).toThrow(/requires an Origin header/);
+    expect(() => ctx(post({}))).toThrow(/requires an Origin header/);
   });
 
   it("does not check the origin of a GET", () => {
-    expect(() =>
-      createContext({
-        req: new Request(CONTAINER_REQUEST_URL, { method: "GET" }),
-        resHeaders: new Headers(),
-        info: { isBatchCall: false, calls: [] },
-      }),
-    ).not.toThrow();
+    expect(() => ctx(new Request(CONTAINER_REQUEST_URL, { method: "GET" }))).not.toThrow();
   });
 
   it("ignores a forged X-Forwarded-Host — the expected origin comes from configuration, not from a header", () => {
@@ -110,14 +92,12 @@ describe("assertSameOriginForMutations", () => {
     // who can set that header must not be able to redefine what counts
     // as same-origin.
     expect(() =>
-      createContext({
-        req: post({
+      ctx(
+        post({
           origin: "https://evil.example.com",
           "x-forwarded-host": "evil.example.com",
         }),
-        resHeaders: new Headers(),
-        info: { isBatchCall: false, calls: [] },
-      }),
+      ),
     ).toThrow(/cross-origin request rejected/);
   });
 });
