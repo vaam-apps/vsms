@@ -40,6 +40,17 @@ export const env = createEnv({
     // less real keyspace than the cookie's own encryption implies.
     SMS_CONSOLE_SESSION_SECRET: z.string().min(32),
     MESSAGE_STREAM_POLL_MS: z.coerce.number().int().min(500).default(2000),
+    // R6 (AGENTS.md): a tuning value, same shape as `MESSAGE_STREAM_POLL_MS`
+    // above — one place, validated at boot, instead of a `REFETCH_INTERVAL_MS
+    // = 5000` const copy-pasted per screen. This entry is the Jobs (#56) and
+    // Workers (#57) screens' shared poll cadence; `webhooks-screen.tsx` polls
+    // the same 5000ms today and should converge on this same env var rather
+    // than keep its own copy — not done here because that screen belongs to
+    // a different route group. `dashboard-screen.tsx`'s 15_000ms is a
+    // materially different cadence (an overview, not a diagnostics table)
+    // and deliberately gets no entry here — it needs its own, sized for what
+    // it actually polls.
+    DIAGNOSTICS_POLL_MS: z.coerce.number().int().min(500).default(5000),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   client: {
@@ -59,6 +70,7 @@ export const env = createEnv({
     SMS_CONSOLE_OIDC_CLIENT_ID: process.env.SMS_CONSOLE_OIDC_CLIENT_ID,
     SMS_CONSOLE_SESSION_SECRET: process.env.SMS_CONSOLE_SESSION_SECRET,
     MESSAGE_STREAM_POLL_MS: process.env.MESSAGE_STREAM_POLL_MS,
+    DIAGNOSTICS_POLL_MS: process.env.DIAGNOSTICS_POLL_MS,
     NODE_ENV: process.env.NODE_ENV,
     // Client
     NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
