@@ -1,6 +1,6 @@
 # Contributing to vsms
 
-Five rules constrain everything else. Each is a default with named exceptions, and the exceptions are the interesting part. The full reasoning is in [docs/architecture.md](docs/architecture.md); this file is the version you should have in your head during review.
+Six rules constrain everything else. Each is a default with named exceptions, and the exceptions are the interesting part. The full reasoning is in [docs/architecture.md](docs/architecture.md); this file is the version you should have in your head during review.
 
 ---
 
@@ -88,7 +88,7 @@ Related, and easy to get wrong: **`@pii` and `@sensitive` redact audit snapshots
 
 Concretely, for any change:
 
-- **No server-side code may depend on the console existing.** `crates/` and `app/` reference `frontends/apps/admin/` only in comments today, and that is the invariant — a Rust file that needs a value only the console produces is a violation. `sms-gateway serve` must start, serve, and pass its health checks with no console deployed anywhere.
+- **No server-side code may depend on the console existing.** `backends/crates/` and `backends/apps/` reference `frontends/apps/admin/` only in comments today, and that is the invariant — a Rust file that needs a value only the console produces is a violation. `sms-gateway serve` must start, serve, and pass its health checks with no console deployed anywhere.
 - **Every operator action must be reachable without a browser.** This is what makes the rule survivable rather than aspirational. `provision-client`, `provision-user`, `seed-console-client`, `seed-dispatch`, `rotate-signing-key` and `record-route-validation` exist as `sms-gateway` subcommands for exactly this reason. If you add a console screen that performs an action no CLI subcommand can perform, you have made the console load-bearing — add the subcommand in the same change.
 - **Deployment must be able to omit it.** The Helm chart and the compose stack must both bring up a working gateway + worker + migrate with the console switched off, and nothing console-specific may be a hard-`required` value in that configuration. `sms-console`'s `OauthClient`, `ADMIN_BASE_URL`, `SMS_CONSOLE_*` and the OIDC session secret are all console-only concerns; a backend-only install must not need any of them.
 - **A backend-only deployment must still be observable and operable.** Metrics, alerting, the DLR endpoint, webhooks and the audit trail are backend concerns and must not degrade. The console is a *view* onto this system, never a component of it.
@@ -113,6 +113,24 @@ Do not add a second chart. Do not hand-roll a manifest that the library chart ca
 `deploy/charts/vsms/Chart.yaml` currently pins `common` at `4.6.2`. Note it is a **classic HTTP repository dependency, not an OCI one** — no OCI reference for the library chart exists, verified against the GHCR API and bjw-s-labs' own release workflow rather than assumed. That is recorded in the chart's own comments; don't "modernise" it to `oci://` without checking that again.
 
 R4 applies here too: whatever this chart grows, installing it with the console switched off must remain possible.
+
+---
+
+## R6 — UI architecture: pages compose, smart components decide, dumb components style.
+
+A view file contains **no CSS classes**. Not a `className`, not a `cn(...)`, not a hoisted `const COL_ID = "hidden lg:table-cell"` (four exist today in `frontends/apps/admin/app/jobs/jobs-screen.tsx`), not a `styles.ts` module of class strings. Classes live in dumb components and nowhere else.
+
+- **Pages** (`frontends/apps/admin/app/<route>/page.tsx`) compose smart and dumb components. No markup, no classes, no fetching.
+- **Smart components** (`<name>-screen.tsx`) hold data fetching, mutations, permissions, URL state and handlers — and render dumb components. No markup, no classes.
+- **Dumb components** (`frontends/packages/ui/**` when shared, `frontends/apps/admin/app/<route>/components/**` when route-local) own markup, classes, CVA variants and iteration — and know nothing about where their data came from.
+
+The stack exists to make this cheap: Tailwind supplies atoms, DaisyUI factorises them into semantic component classes, CVA turns variants into a typed table, and `clsx` + `tailwind-merge` compose the rest. A long class string means a DaisyUI component class or a CVA variant is missing, not that more atoms are needed.
+
+**No hardcoded configuration in a component.** A tuning value is configuration: `REFETCH_INTERVAL_MS` is currently duplicated across four screens (`5000` in jobs/workers/webhooks, `15_000` in dashboard) and cannot be changed without a rebuild. `MESSAGE_STREAM_POLL_MS` in `@vsms/env` is the pattern to follow — validated at boot, defaulted in one place.
+
+**Avoid `useState`.** URL/filter state belongs in `nuqs` (keeping tables shareable), server data in tRPC/react-query (never mirrored into local state), forms in `react-hook-form` + `zod`, non-rendering values in `useRef`, and grouped transitions in `useReducer`. `useState` is fine for an ephemeral toggle inside a dumb component; anything else needs a sentence in the PR explaining which of the above was considered.
+
+Full statement, with the layer table and the reasoning, is in `AGENTS.md`'s own R6 section.
 
 ---
 
