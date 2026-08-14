@@ -88,7 +88,7 @@ Related, and easy to get wrong: **`@pii` and `@sensitive` redact audit snapshots
 
 Concretely, for any change:
 
-- **No server-side code may depend on the console existing.** `crates/` and `app/` reference `frontends/apps/admin/` only in comments today, and that is the invariant — a Rust file that needs a value only the console produces is a violation. `sms-gateway serve` must start, serve, and pass its health checks with no console deployed anywhere.
+- **No server-side code may depend on the console existing.** `backends/crates/` and `backends/apps/` reference `frontends/apps/admin/` only in comments today, and that is the invariant — a Rust file that needs a value only the console produces is a violation. `sms-gateway serve` must start, serve, and pass its health checks with no console deployed anywhere.
 - **Every operator action must be reachable without a browser.** This is what makes the rule survivable rather than aspirational. `provision-client`, `provision-user`, `seed-console-client`, `seed-dispatch`, `rotate-signing-key` and `record-route-validation` exist as `sms-gateway` subcommands for exactly this reason. If you add a console screen that performs an action no CLI subcommand can perform, you have made the console load-bearing — add the subcommand in the same change.
 - **Deployment must be able to omit it.** The Helm chart and the compose stack must both bring up a working gateway + worker + migrate with the console switched off, and nothing console-specific may be a hard-`required` value in that configuration. `sms-console`'s `OauthClient`, `ADMIN_BASE_URL`, `SMS_CONSOLE_*` and the OIDC session secret are all console-only concerns; a backend-only install must not need any of them.
 - **A backend-only deployment must still be observable and operable.** Metrics, alerting, the DLR endpoint, webhooks and the audit trail are backend concerns and must not degrade. The console is a *view* onto this system, never a component of it.
@@ -126,7 +126,7 @@ A view file contains **no CSS classes**. Not a `className`, not a `cn(...)`, not
 
 The stack exists to make this cheap: Tailwind supplies atoms, DaisyUI factorises them into semantic component classes, CVA turns variants into a typed table, and `clsx` + `tailwind-merge` compose the rest. A long class string means a DaisyUI component class or a CVA variant is missing, not that more atoms are needed.
 
-**No hardcoded configuration in a component.** A tuning value is configuration: `REFETCH_INTERVAL_MS = 5000` is currently duplicated across three screens and cannot be changed without a rebuild. `MESSAGE_STREAM_POLL_MS` in `@vsms/env` is the pattern to follow — validated at boot, defaulted in one place.
+**No hardcoded configuration in a component.** A tuning value is configuration: `REFETCH_INTERVAL_MS` is currently duplicated across four screens (`5000` in jobs/workers/webhooks, `15_000` in dashboard) and cannot be changed without a rebuild. `MESSAGE_STREAM_POLL_MS` in `@vsms/env` is the pattern to follow — validated at boot, defaulted in one place.
 
 **Avoid `useState`.** URL/filter state belongs in `nuqs` (keeping tables shareable), server data in tRPC/react-query (never mirrored into local state), forms in `react-hook-form` + `zod`, non-rendering values in `useRef`, and grouped transitions in `useReducer`. `useState` is fine for an ephemeral toggle inside a dumb component; anything else needs a sentence in the PR explaining which of the above was considered.
 
