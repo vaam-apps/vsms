@@ -35,10 +35,12 @@ import {
   LiveRow,
   MESSAGE_STATES,
   type MessageState,
+  MoreDetailDrawer,
   PayloadInspector,
   Popover,
   PopoverContent,
   PopoverTrigger,
+  QuickDetailDrawer,
   Select,
   SelectContent,
   SelectItem,
@@ -382,6 +384,85 @@ function OverlaysGallery() {
   );
 }
 
+// console-redesign.md §3/D14: the two baked-direction, baked-dim drawer
+// variants Phase 2's "Delivery" agent will build every Provider/Route/
+// Sender ID/Webhook quick-vs-more pair on top of. This is the QA surface
+// for both — resize the browser pane to check the phone/desktop split
+// (base = bottom sheet, `md`+ = right panel) and confirm quick details
+// never dims while more details does.
+function DetailDrawerGallery() {
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  return (
+    <Section
+      title="Quick details vs. more details"
+      description="Narrow/undimmed peek (§1.4, Mercury) vs. wide/dimmed destination (§1.5, Polar) — same vaul primitive, direction/width/dim baked in per variant so a call site can't blur the two."
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="secondary" onClick={() => setQuickOpen(true)}>
+          Open quick details
+        </Button>
+        <Button variant="secondary" onClick={() => setMoreOpen(true)}>
+          Open more details
+        </Button>
+      </div>
+
+      <QuickDetailDrawer
+        open={quickOpen}
+        onOpenChange={setQuickOpen}
+        title="cs_msg_001"
+        description="Quick details — a peek, not a destination."
+        footer={
+          <Button variant="ghost" size="sm" onClick={() => setQuickOpen(false)}>
+            View full details
+          </Button>
+        }
+      >
+        <dl className="flex flex-col gap-3 text-body">
+          <div className="flex justify-between gap-4">
+            <dt className="text-muted-foreground">State</dt>
+            <dd className="text-foreground">delivered</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-muted-foreground">Operator</dt>
+            <dd className="text-foreground">mtn</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-muted-foreground">Segments</dt>
+            <dd className="text-foreground">1</dd>
+          </div>
+        </dl>
+      </QuickDetailDrawer>
+
+      <MoreDetailDrawer
+        open={moreOpen}
+        onOpenChange={setMoreOpen}
+        title="Provider: orange_cm"
+        description="More details — the full record, edit form, destructive actions."
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setMoreOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" onClick={() => setMoreOpen(false)}>
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4 text-body">
+          <p className="text-muted-foreground">
+            A wide, dimmed drawer wide enough for a real edit form — this gallery entry stands in
+            for what `providers-screen.tsx` will build in Phase 2.
+          </p>
+          <Input defaultValue="Orange Cameroon" aria-label="Display name" />
+        </div>
+      </MoreDetailDrawer>
+    </Section>
+  );
+}
+
 function PayloadInspectorGallery() {
   return (
     <Section title="Payload inspector">
@@ -507,6 +588,8 @@ export default function GalleryPage() {
         <TabsGallery />
         <Separator />
         <OverlaysGallery />
+        <Separator />
+        <DetailDrawerGallery />
         <Separator />
         <PayloadInspectorGallery />
         <Separator />
