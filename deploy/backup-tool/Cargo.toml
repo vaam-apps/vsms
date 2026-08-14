@@ -1,0 +1,58 @@
+[workspace]
+# A separate Cargo workspace, deliberately not a member of the root one —
+# same reasoning `examples/rust/Cargo.toml`/`sdks/rust/vsms-sdk-rust`
+# already give: this crate picks its own dependency versions, has nothing
+# to do with the schema/framework the root workspace's own MSRV and
+# `include_server_schema!` memory budget are about, and must never show up
+# in `cargo check --workspace`/`cargo test --workspace` run from the repo
+# root. Root `Cargo.toml`'s own `members` list is explicit paths, not a
+# glob, so this directory is invisible to it regardless — see that file's
+# own comment on why `exclude` there isn't load-bearing today.
+
+[package]
+name = "vsms-backup"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The Rust replacement for deploy/{backup,restore,restore-drill,backup-entrypoint}.sh — pg_dump/pg_restore + rclone orchestration, with no bash anywhere in the picture."
+
+[[bin]]
+name = "vsms-backup"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+# Sync, not tokio — this tool's only genuinely concurrent concern is
+# "sleep until the next cron tick, or wake early on SIGTERM", which a
+# blocking loop with a short poll interval handles without an async
+# runtime. `pg_dump`/`pg_restore`/`rclone` are external processes either
+# way (see main.rs's own module doc for why they can't be anything else),
+# so there is no I/O-bound fan-out here that would benefit from async.
+postgres = "0.19"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+sha2 = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The `schedule` subcommand's own cron-expression parser and next-occurrence
+# computation — replaces Alpine's busybox `crond` + a hand-written
+# `/etc/crontabs/root` line entirely (see `run_schedule`'s own doc for why
+# that's a strict simplification, not just a rewrite).
+cron = "0.17"
+# `restore-drill`'s own fallback when `SMS_HASH_PEPPER` is unset (a drill
+# run with no real pepper configured) — replaces `openssl rand`, dropping
+# the runtime image's own `openssl` package dependency entirely.
+rand = "0.10"
+base64 = "0.23"
+# Graceful shutdown for `schedule`, running as this container's PID 1: a
+# process that is PID 1 *within its own PID namespace* (which this always
+# is, under Docker) gets the kernel's default-signal-disposition exemption
+# unless it explicitly installs a handler — an unhandled SIGTERM would be
+# silently ignored, not "terminate by default", the opposite of every
+# other process on the system. `docker stop`/`docker compose down` would
+# hang for the full stop-grace-period and then SIGKILL every time. Found
+# by reading the relevant `pid_namespaces(7)` behaviour while designing
+# this subcommand, not live — the old shell entrypoint never hit this
+# because `exec crond -f` replaced this container's PID 1 with `crond`
+# itself, which installs its own signal handling.
+signal-hook = "0.4"

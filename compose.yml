@@ -3,16 +3,29 @@
 # The maintainer's standing direction is Docker Compose over hand-built
 # `docker run` invocations, for full portability — this file, plus
 # `crates/sms-test-support`'s conversion to drive it via `docker compose`
-# instead of raw `docker run`, is the first step. A later phase points
-# `scripts/demo.sh` at this same file (a distinct Compose *project name*,
-# the same way the test harness does below — see that script's own module
-# doc once it lands) rather than its own hand-rolled `docker run`.
+# instead of raw `docker run`, is the first step.
+#
+# **Correction, containerize-tooling PR:** an earlier revision of this
+# comment predicted `scripts/demo.sh` would eventually point at this same
+# file (a distinct Compose *project name*, the same way the test harness
+# does below). That script is gone now — replaced by `compose.dev.yaml`,
+# its own full, from-source stack — but it does NOT `include:`/`-f` this
+# file. Considered and rejected once actually built: Compose's multi-file
+# merge rules for list-typed keys (`ports`, specifically) made publishing a
+# *different* host port than this file's own `VSMS_POSTGRES_PORT` default
+# more fragile to verify than a six-line duplicated `postgres:` service —
+# and `compose.demo.yaml` had already independently made the identical
+# call for the identical reason. See `compose.dev.yaml`'s own header
+# comment for the full reasoning; this paragraph exists so this file
+# doesn't keep asserting a plan nothing downstream of it actually took.
 #
 # What is deliberately NOT here: `deploy/docker-compose.yml` is the
 # production-shaped stack (Caddy edge, the migrate job, the real gateway/
-# worker binaries) and is untouched by this file. This one is Postgres
-# alone, for whichever local process wants a database — `cargo run`, a live
-# test suite, a human at a `psql` prompt — without pulling in anything else.
+# worker binaries), `compose.demo.yaml` is the GHCR-only showcase, and
+# `compose.dev.yaml` is the from-source developer stack — all three
+# untouched by this file. This one is Postgres alone, for whichever local
+# process wants a database — `cargo run`, a live test suite, a human at a
+# `psql` prompt — without pulling in anything else.
 #
 # Default project name is `vsms` (a bare `docker compose up` uses it).
 # `crates/sms-test-support` overrides it with `-p vsms-test-harness` and

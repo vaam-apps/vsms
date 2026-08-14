@@ -1,0 +1,28 @@
+[package]
+name = "vsms-e2e-integration"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "#160's joined integration story, ported off scripts/e2e-integration.sh: an external integrator sends over real HTTP, the console's own credential reads the same message id back — proving cross-principal, same-App visibility end to end against compose.dev.yaml."
+
+[[bin]]
+name = "vsms-e2e-integration"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Same path-dependency shape `examples/rust/sms-send` already uses (see
+# that crate's own Cargo.toml comment) — the private_key_jwt token
+# exchange, caching, and bounded-refresh-on-401 logic lives there once,
+# not reimplemented a second time here.
+vsms-sdk-rust = { path = "../../../sdks/rust/vsms-sdk-rust" }
+# Same package rename and version pin as `vsms-sdk-rust`'s own
+# `Cargo.toml` (`SdkError::Client` wraps this crate's `ClientError`
+# directly) — needed here only to pattern-match a `404` out of it for the
+# "message exists but this principal can't see it" case, see main.rs.
+cratestack = { package = "cratestack-client", version = "=0.7.16", default-features = false, features = [
+  "codec-json",
+  "decimal-rust-decimal",
+] }

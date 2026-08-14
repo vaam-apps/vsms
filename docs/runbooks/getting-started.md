@@ -25,9 +25,14 @@ just check
 ```bash
 createdb vsms_check
 export DATABASE_URL=postgres://localhost/vsms_check
-./ci/apply-migrations.sh
+cargo run -p sms-migrate
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/test-state-machine.sql
 ```
+
+`cargo run -p sms-migrate` is the same binary a real deployment's `migrate`
+step runs (`app/sms-migrate`) — `ci/apply-migrations.sh`, a shell wrapper
+that used to do this by shelling `psql \i` out per migration file, is gone
+(no bash script survives in this repo — see `AGENTS.md`'s xtask section).
 
 The last command asserts, against a real trigger, that legal state transitions succeed, illegal ones raise `SM001`, terminal states have no exits, and generated ids satisfy CrateStack's format guard. It runs inside a transaction and rolls back — nothing it does is left behind. `ALL ASSERTIONS PASSED` is the expected last line.
 

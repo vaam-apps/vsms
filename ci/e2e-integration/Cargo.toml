@@ -1,0 +1,12 @@
+# A separate Cargo workspace, deliberately not a member of the root one —
+# same shape `examples/rust/Cargo.toml` already uses (see that file's own
+# comment): this crate has nothing to do with the schema/framework the
+# root workspace's `include_server_schema!` memory budget and MSRV are
+# about, and must never show up in `cargo check --workspace`/`cargo test
+# --workspace` run from the repo root. Root `Cargo.toml`'s own `members`
+# list is explicit paths, not a glob, so this directory is invisible to it
+# regardless.
+
+[workspace]
+resolver = "3"
+members = ["vsms-e2e-integration"]

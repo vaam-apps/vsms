@@ -10,24 +10,28 @@ This is the runbook for daily development, whether you are working on vsms or ag
 just demo
 ```
 
-From a cold start this takes a few minutes (it builds the workspace). It brings up, in order: a scratch Postgres container, both migrations, an OP signing key, an `App` + `Provider` + `SenderId`, a machine client, the `sms-console` OIDC client, a human operator account, `sms-fake-orange`, `sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs`), and the admin console.
-
-It finishes by printing the URLs and the login it just generated:
-
-```text
-admin console:  http://127.0.0.1:3100/
-sign in with:   demo@vsms.local / <generated, printed once>
-sms-gateway:    http://127.0.0.1:8080/
-sms-fake-orange (NOT a real provider): http://127.0.0.1:8090/
-postgres:       postgres://postgres:postgres@localhost:15433/vsms_demo
-```
+Everything runs as a container, built from this checkout's own source — `compose.dev.yaml` (see that file's own header for the full design, including why it's a third, separate compose file alongside `compose.yml` and `compose.demo.yaml` rather than a reuse of either). From a cold start this takes a few minutes (it builds every image). It brings up, in order: a scratch Postgres, both migrations, an OP signing key, an `App` + `Provider` + `Route` + `SenderId`, a machine client, the `sms-console` OIDC client, a human operator account, `sms-fake-orange`, `sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs`), and the admin console.
 
 ```bash
 just demo-status   # what's running
-just demo-down     # stop everything, remove only its own container
+just demo-login    # the generated demo@vsms.local password — printed once, to a container log
+just demo-down     # stop everything, remove its own volumes only
 ```
 
-`just demo` resets the database on every `up`. It is meant to be re-run, not kept alive for days.
+Default ports (override via env if these collide with something already running on your machine — every one of the seven services in `compose.dev.yaml`'s own build already races other parallel work on a shared Docker daemon in some environments, so collisions are real, not hypothetical):
+
+| Var | Default | What |
+|---|---|---|
+| `VSMS_DEMO_PG_PORT` | `15433` | Postgres, published on loopback |
+| `VSMS_DEMO_GATEWAY_PORT` | `8080` | `sms-gateway` |
+| `VSMS_DEMO_ORANGE_PORT` | `8090` | `sms-fake-orange` |
+| `VSMS_DEMO_CONSOLE_PORT` | `3100` | the admin console |
+
+```bash
+VSMS_DEMO_GATEWAY_PORT=18080 just demo
+```
+
+`just demo` resets to a genuinely fresh state on every `up` — `compose.dev.yaml`'s own named volumes are wiped first (`down -v`), not a targeted `DROP DATABASE`/`CREATE DATABASE` the way the pre-containerisation version of this script used to do it. It is meant to be re-run, not kept alive for days.
 
 ## Why there is no carrier
 
@@ -35,37 +39,38 @@ just demo-down     # stop everything, remove only its own container
 
 Nothing in the gateway or the worker knows it exists. The only difference from production is `ORANGE_CM_BASE_URL`. Every other code path — routing, submission, DLR ingestion, the state machine, webhooks — is the one that runs in production.
 
-**Never point a deployment at it.** It logs a `WARN` saying so on every start, and no compose file references it.
+**Never point a deployment at it.** It logs a `WARN` saying so on every start, and no production compose file (`deploy/docker-compose.yml`) references it.
 
-## What `just demo` leaves on disk
+## Where everything actually is
 
-Everything lands in `.demo/` (gitignored):
+There is no `.demo/` directory of pidfiles and logs any more — every process is a container, so `docker` already owns process supervision, and Compose's own named volumes (`vsms-dev_vsms_dev_pgdata`, `vsms-dev_vsms_dev_secrets`, both scoped to the `vsms-dev` Compose project — see `compose.dev.yaml`'s own header for why this file doesn't reuse `compose.yml`'s `vsms` project) own state:
 
-| Path | What |
-|---|---|
-| `.demo/pepper` | The run's `SMS_HASH_PEPPER`. Every process must share it. |
-| `.demo/console-client-key.pem` | The console's machine client private key. |
-| `.demo/console-client-id`, `.demo/app-id` | Ids other scripts reuse. |
-| `.demo/{gateway,worker,fake-orange,admin}.log` | Where to look when something is wrong. |
-| `.demo/*.pid` | Used by `demo-status` / `demo-down`. |
+```bash
+docker compose -f compose.dev.yaml --profile console logs -f sms-gateway   # or sms-worker, sms-fake-orange, admin
+docker compose -f compose.dev.yaml --profile console ps                     # same as `just demo-status`
+```
 
-The logs are the first place to check, in that order — a message that never leaves `accepted` is a worker problem, one stuck at `routed` is a fake-orange problem.
+`docker compose ... logs <service>` is where to look when something is wrong — a message that never leaves `accepted` is a worker problem (`logs sms-worker`), one stuck at `routed` is a fake-orange problem (`logs sms-fake-orange`).
+
+The console's own machine client (`provision-client`, a real, HTTP-usable `private_key_jwt` credential — never gated behind `--profile console`, R4) and the human operator account both write their one-time secrets to their own container's log, never to a file on disk:
+
+```bash
+docker compose -f compose.dev.yaml logs provision-client   # the console's client id + where its key landed
+docker compose -f compose.dev.yaml logs provision-user     # demo@vsms.local's generated password (just demo-login)
+```
 
 ## Giving each developer their own credential
 
-`just demo` provisions one client, for the console. Each service or developer should get their own against the same `App`:
+`just demo` provisions one client, for the console. Each service or developer should get their own against the same `App` (`vsms-demo`, the fixed slug `compose.dev.yaml`'s own `seed-demo-app` step uses):
 
 ```bash
-DATABASE_URL=postgres://postgres:postgres@localhost:15433/vsms_demo \
-SMS_HASH_PEPPER="$(cat .demo/pepper)" \
-./target/debug/sms-gateway provision-client \
-  --app-id "$(cat .demo/app-id)" \
-  --label "billing service — alice" \
+docker compose -f compose.dev.yaml run --rm -v "$(pwd)/.e2e:/out" sms-gateway \
+  provision-client --app-slug vsms-demo --label "billing service — alice" \
   --scope sms:send --scope sms:read \
-  --key-out ~/.vsms/alice-key.pem
+  --key-out /out/alice-key.pem --client-id-out /out/alice-client-id
 ```
 
-`--key-out` is written once at `0600` and the command refuses to overwrite an existing path. Point your application at `http://127.0.0.1:8080` with that client id and key — see [`../integrating.md`](../integrating.md).
+`--key-out` is written once at `0600` and the command refuses to overwrite an existing path — `-v "$(pwd)/.e2e:/out"` (a plain host bind mount, not the named secrets volume the compose stack's own services use, since `docker compose run --rm` removes its container immediately and there is no `docker compose cp` source afterward) lands the result somewhere you control. Point your application at `http://127.0.0.1:${VSMS_DEMO_GATEWAY_PORT:-8080}` with that client id and key — see [`../integrating.md`](../integrating.md).
 
 ## Proving the whole chain
 
@@ -73,23 +78,24 @@ SMS_HASH_PEPPER="$(cat .demo/pepper)" \
 just e2e-integration
 ```
 
-Rebuilds the stack, provisions a *second* independent client as an "external integrator", sends through [`examples/rust/sms-send`](../../examples/rust/sms-send) over real HTTP, then polls `GET /messages/{id}` **as the console's own credential** until that exact message reaches `delivered`. It exits non-zero at the first broken link, naming the step. [`e2e-integration.md`](e2e-integration.md) explains what it proves and what it fakes.
+Rebuilds the stack (`just demo`), provisions a *second* independent client as an "external integrator", sends through [`ci/e2e-integration`](../../ci/e2e-integration) (a small Rust tool, not `examples/rust/sms-send` — see that tool's own module doc for why it has to run *inside* the Compose network rather than as a host process against this stack specifically) over real HTTP, then polls `GET /messages/{id}` **as the console's own credential** until that exact message reaches `delivered`. It exits non-zero at the first broken link, naming the step. [`e2e-integration.md`](e2e-integration.md) explains what it proves and what it fakes.
 
-This is the script to hand someone who asks "what should my integration look like?"
+`examples/rust/sms-send` is still the thing to hand someone who asks "what should my integration look like?" — it's an integrator-facing example, meant to run bare against a real, single-address gateway, which is exactly what it's for; it just can't reach `compose.dev.yaml`'s stack directly, for the reason `ci/e2e-integration`'s own module doc explains.
 
 ## Injecting failures
 
-The happy path is the least interesting thing a fake carrier can do. Stop the fake and restart it with a fault mode:
+The happy path is the least interesting thing a fake carrier can do. Override `sms-fake-orange`'s own command to run it with a fault mode:
 
 ```bash
-kill "$(cat .demo/fake-orange.pid)"
-
-./target/debug/sms-fake-orange \
-  --bind-addr 127.0.0.1:8090 \
-  --dlr-endpoint http://127.0.0.1:8080/dlr/orange_cm \
+docker compose -f compose.dev.yaml stop sms-fake-orange
+docker compose -f compose.dev.yaml run --rm --service-ports sms-fake-orange \
+  --bind-addr 0.0.0.0:8090 \
+  --dlr-endpoint http://sms-gateway:8080/dlr/orange_cm \
   --sender-number +2370000 \
   --fault-mode seeded --seed 3
 ```
+
+(`stop` first, so the fault-mode `run` can bind the same service network alias the stopped container was using; `--service-ports` republishes `compose.dev.yaml`'s own loopback port mapping for it.)
 
 | Flag | What it simulates |
 |---|---|
@@ -112,17 +118,17 @@ just all-checks   # everything CI runs, in CI's order
 
 ## Known gaps
 
-- **No container image for `sms-fake-orange`.** [`deploy/docker-compose.yml`](../../deploy/docker-compose.yml) accepts `ORANGE_CM_BASE_URL` pointed at a fake, and its header reserves a `fake-orange` profile, but no Dockerfile exists for it (only gateway, worker, migrate, and admin have one). A **shared** team dev instance therefore needs that image and compose service built first; a per-developer `just demo` needs nothing.
-- **`just demo` is loopback-only.** Every service binds `127.0.0.1`. Reaching it from another machine, a phone, or a container needs the bind addresses changed.
+- **`just demo` is loopback-only.** Every service publishes only on `127.0.0.1`. Reaching it from another machine, a phone, or a container needs the port bindings in `compose.dev.yaml` changed.
+- **The first build on a machine can hit a real Docker BuildKit cache-mount race.** `just demo`'s own recipe forces `COMPOSE_PARALLEL_LIMIT=1` for exactly this reason — see that recipe's own comment in the `justfile` for the mechanism (several `app/*/Dockerfile` builder stages deliberately share one cargo-registry cache-mount id, which several genuinely-first, uncached builds racing at once can corrupt). A cache already warmed by a previous `just demo` doesn't hit this.
 
 ## Troubleshooting
 
 | Symptom | Cause |
 |---|---|
-| Gateway exits immediately at startup | No active OP signing key (`rotate-signing-key`) or no active `orange_cm` `Provider` row (`seed-provider`). Both are checked *before* the listener binds, so this is a startup failure, never a first-request one. |
-| Messages stay `accepted` | The worker isn't running, or isn't running the `dispatch` role. Check `.demo/worker.log`. |
-| Messages reach `routed` and stop | `sms-fake-orange` isn't reachable at `ORANGE_CM_BASE_URL`. Check `.demo/fake-orange.log`. |
-| Messages reach `submitted` and stop | The DLR never arrived — the fake's `--dlr-endpoint` doesn't match the gateway's actual port. |
-| `429` from everything | A rate-limit bucket. Restart the gateway to reset, or slow down. |
+| Gateway exits immediately at startup | No active OP signing key or no active `orange_cm` `Provider`/`Route` — both checked *before* the listener binds, so this is a startup failure, never a first-request one. `docker compose -f compose.dev.yaml logs seed-signing-key` / `logs seed-dispatch` show whether those one-shot steps actually completed. |
+| Messages stay `accepted` | The worker isn't running, or isn't running the `dispatch` role. `docker compose -f compose.dev.yaml logs sms-worker`. |
+| Messages reach `routed` and stop | `sms-fake-orange` isn't reachable at `ORANGE_CM_BASE_URL`. `docker compose -f compose.dev.yaml logs sms-fake-orange`. |
+| Messages reach `submitted` and stop | The DLR never arrived — check `sms-gateway`'s own `ORANGE_CM_DLR_NOTIFY_URL`/`sms-worker`'s `ORANGE_CM_DLR_NOTIFY_URL` in `compose.dev.yaml` match the internal `sms-gateway:8080` address, not a host-published port. |
+| `429` from everything | A rate-limit bucket. `docker compose -f compose.dev.yaml restart sms-gateway` to reset, or slow down. |
 | Console login fails | The `sms-console` OIDC client's `redirect_uri` must match the console's port **exactly**; a changed `VSMS_DEMO_CONSOLE_PORT` needs a fresh `just demo`. |
-| A hash-related failure after mixing runs | `SMS_HASH_PEPPER` differs between processes. Every process in one stack must share `.demo/pepper` — nothing detects a mismatch. |
+| A hash-related failure after mixing runs | `SMS_HASH_PEPPER` differs between processes. Every service in `compose.dev.yaml` is pinned to the same hardcoded demo value in that file — nothing detects a mismatch if you've overridden one service's environment by hand and not another's. |

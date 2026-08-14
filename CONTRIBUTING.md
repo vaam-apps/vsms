@@ -132,7 +132,7 @@ cargo xtask bootstrap-sql schema/migrations/postgres/0002_bootstrap/up.sql
 
 # 4. prove it applies to an empty database, and that the machines still hold
 createdb vsms_check
-DATABASE_URL=postgres://localhost/vsms_check ./ci/apply-migrations.sh
+DATABASE_URL=postgres://localhost/vsms_check cargo run -q -p sms-migrate
 psql postgres://localhost/vsms_check -v ON_ERROR_STOP=1 -f ci/test-state-machine.sql
 dropdb vsms_check
 
