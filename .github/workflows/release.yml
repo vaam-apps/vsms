@@ -129,10 +129,10 @@ jobs:
           # (`Command::SeedDemoApp`) — moved into its own binary/crate/image
           # by the same image-hygiene PR that introduced this nested
           # naming convention, so no demo-only code ships inside a
-          # production image. See app/vsms-demo-seed/src/main.rs's own
+          # production image. See backends/apps/vsms-demo-seed/src/main.rs's own
           # module doc.
           - image: demo
-            dockerfile: app/vsms-demo-seed/Dockerfile
+            dockerfile: backends/apps/vsms-demo-seed/Dockerfile
             repo: vsms/demo
 
     steps:

@@ -30,7 +30,7 @@ both migrations), `seed-signing-key` (an active OP signing key —
 `sms-gateway` refuses to bind its listener without one), `seed-dispatch`
 (a `Provider` + `Route`, same reason), `seed-demo-app` (an `App` +
 approved `SenderId`, seeded by the dedicated `vsms-demo-seed` binary/image
-— see `app/vsms-demo-seed/src/main.rs`'s own doc for why this step exists
+— see `backends/apps/vsms-demo-seed/src/main.rs`'s own doc for why this step exists
 only for this showcase and isn't compiled into the production
 `sms-gateway` image), `provision-client` (a real, HTTP-usable machine
 credential), and, because `--profile console` is present,

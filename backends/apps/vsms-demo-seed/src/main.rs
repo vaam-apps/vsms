@@ -68,7 +68,7 @@
 //! (#52/#58's App CRUD screen). The fixed defaults below — an
 //! auto-approved `SenderIdRegistration` with no real provider approval
 //! behind it — exist only to unblock the showcase. This is the GHCR-only
-//! equivalent of `crates/sms-api/examples/send_test_message.rs`'s own
+//! equivalent of `backends/crates/sms-api/examples/send_test_message.rs`'s own
 //! fixture-seeding half; that binary is a `cargo run --example`, never
 //! published as a GHCR image, so a `build:`-free compose stack has no way
 //! to invoke it either.
@@ -182,7 +182,7 @@ async fn create_or_find_demo_app(
 
 /// Ensure an `active` `SenderId` with an `approved` `SenderIdRegistration`
 /// against `provider_id` exists. `Procedures::resolve_sender_id`
-/// (`crates/sms-api/src/procedures.rs`) is the real reader this satisfies:
+/// (`backends/crates/sms-api/src/procedures.rs`) is the real reader this satisfies:
 /// it requires both, not just one or the other, matching
 /// `send_test_message.rs`'s own `ensure_sender_ready`.
 async fn ensure_demo_sender_id(

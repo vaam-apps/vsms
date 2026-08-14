@@ -1,14 +1,14 @@
 # syntax=docker/dockerfile:1
 #
-# Build context is the repository root, not app/vsms-demo-seed/ — same
+# Build context is the repository root, not backends/apps/vsms-demo-seed/ — same
 # reason as every other Dockerfile in this workspace: `schema/` has to be in
 # the build context for `include_server_schema!` (pulled in transitively
 # through sms-api), and the whole workspace is resolved against one root
-# `Cargo.lock`. Build with `docker build -f app/vsms-demo-seed/Dockerfile .`
+# `Cargo.lock`. Build with `docker build -f backends/apps/vsms-demo-seed/Dockerfile .`
 # from the repo root.
 #
 # **This image is a development/demo tool, not a production artifact** —
-# see app/vsms-demo-seed/src/main.rs's own module doc for the full
+# see backends/apps/vsms-demo-seed/src/main.rs's own module doc for the full
 # reasoning on why this exists as its own binary/image rather than a
 # subcommand of `sms-gateway` (it used to be one: `Command::SeedDemoApp`).
 # Never point this at a production database: it seeds an auto-approved
