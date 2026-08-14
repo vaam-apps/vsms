@@ -57,6 +57,15 @@ export const env = createEnv({
     // server-side in `audit-log/page.tsx` and handed down as a prop, the
     // identical shape that file already uses.
     AUDIT_LOG_PAGE_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+    // Dashboard screen (#49). Same "operational tuning value, not
+    // protocol/security" reasoning AGENTS.md's R6 already gives for
+    // `MESSAGE_STREAM_POLL_MS` — a hoisted `REFETCH_INTERVAL_MS` in the
+    // screen file itself was the R6 violation; this is the fix, not a
+    // shared constant, since `jobs-screen.tsx`/`workers-screen.tsx`/
+    // `webhooks-screen.tsx` each own their own independent 5000ms copy of
+    // the same *kind* of decision, not this same value — merging the four
+    // into one env var is a separate call for whoever owns those screens.
+    DASHBOARD_REFETCH_INTERVAL_MS: z.coerce.number().int().min(1000).default(15_000),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   client: {
@@ -78,6 +87,7 @@ export const env = createEnv({
     MESSAGE_STREAM_POLL_MS: process.env.MESSAGE_STREAM_POLL_MS,
     DIAGNOSTICS_POLL_MS: process.env.DIAGNOSTICS_POLL_MS,
     AUDIT_LOG_PAGE_SIZE: process.env.AUDIT_LOG_PAGE_SIZE,
+    DASHBOARD_REFETCH_INTERVAL_MS: process.env.DASHBOARD_REFETCH_INTERVAL_MS,
     NODE_ENV: process.env.NODE_ENV,
     // Client
     NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
