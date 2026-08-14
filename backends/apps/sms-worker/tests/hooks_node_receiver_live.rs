@@ -292,7 +292,7 @@ fn node_receiver_dir() -> std::path::PathBuf {
     // CARGO_MANIFEST_DIR is backends/apps/sms-worker; the Node package lives at the
     // repo root's examples/node/webhook-receiver.
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/node/webhook-receiver")
+        .join("../../../examples/node/webhook-receiver")
         .canonicalize()
         .expect(
             "examples/node/webhook-receiver must exist relative to backends/apps/sms-worker's own \
