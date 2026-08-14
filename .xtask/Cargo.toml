@@ -1,0 +1,22 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
+
+[dependencies]
+# Used only for the two checks that genuinely need pattern matching over
+# free-form text (mermaid diagrams, SQL VALUES lists, the R1 grep-alike) —
+# everything else here is plain std. Already resolved in Cargo.lock via
+# several transitive dependencies, so this adds no new version to the
+# graph, only a new dependent of the existing one.
+regex = "1"

@@ -736,7 +736,7 @@ impl ReservedRoleFixture {
 /// only the constraint removal/restoration is raw SQL — every actual data
 /// write goes through a real `CrateStack` delegate, audited and
 /// policy-checked exactly as any other). This is the R1 exception named in
-/// `ci/assert-no-raw-sqlx.sh` and `CONTRIBUTING.md` for this file: schema
+/// `cargo xtask no-raw-sqlx` and `CONTRIBUTING.md` for this file: schema
 /// DDL to construct an otherwise-unreachable test fixture, not a
 /// production data-access bypass.
 ///

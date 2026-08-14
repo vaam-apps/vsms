@@ -1,7 +1,7 @@
 //! Leader election by Postgres advisory lock. §7.2 of the design doc.
 //!
-//! **R1 exception** — one of three named ones (migrations, `pg_advisory_lock`,
-//! `LISTEN`/`NOTIFY`). `ci/assert-no-raw-sqlx.sh` allowlists this exact file
+//! **R1 exception** — one of the named ones (migrations, `pg_advisory_lock`,
+//! `LISTEN`/`NOTIFY`). `cargo xtask no-raw-sqlx` allowlists this exact file
 //! by path; adding a raw `sqlx::query*` call anywhere else in this crate is
 //! still a build failure, on purpose.
 //!

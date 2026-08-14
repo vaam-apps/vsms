@@ -4,7 +4,7 @@
 -- defaults, the updated_at trigger, the two state machines, non-unique and
 -- partial indexes, and foreign keys.
 --
--- Generated from docs/architecture.md section 2.10 by ci/gen-bootstrap-sql.py.
+-- Generated from docs/architecture.md section 2.10 by cargo xtask bootstrap-sql.
 -- Do not hand-edit: edit the document, regenerate, and commit both.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;

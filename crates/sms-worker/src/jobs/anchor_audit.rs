@@ -224,7 +224,7 @@
 //!
 //! The raw `cratestack_audit` reads themselves moved to
 //! `crates/sms-api/src/audit_log.rs` (#58) — see that module's own doc for
-//! the up-to-date exception reasoning and `ci/assert-no-raw-sqlx.sh`/
+//! the up-to-date exception reasoning and `cargo xtask no-raw-sqlx`/
 //! `CONTRIBUTING.md`'s own exceptions table, which both name that file now.
 //! This file itself contains no raw SQL query call any more.
 //! `crates/sms-worker/tests/anchor_audit_live_postgres.rs` keeps its own,

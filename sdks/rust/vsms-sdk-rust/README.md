@@ -58,7 +58,9 @@ version of this against a real gateway (`just demo`).
 ## What's vendored, and why
 
 `schema.cstack` in this directory is a plain copy of the main repo's
-`schema/schema.cstack`, refreshed by `vendor-schema.sh`. It has to live
+`schema/schema.cstack`, refreshed by `cargo xtask sdk-schema-vendor` (run
+from the repo root; `.xtask` was `sdks/rust/vsms-sdk-rust/vendor-schema.sh`
+before the maintainer's "no bash scripts" cutover). It has to live
 inside this crate (not be reached via a `../../schema/` path climb) so
 that `include_client_schema!` still resolves once this crate is published
 and built from a downstream integrator's own Cargo registry cache — see

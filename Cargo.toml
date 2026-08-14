@@ -22,6 +22,14 @@ members = [
   "app/sms-worker",
   "app/sms-fake-orange",
   "app/sms-migrate",
+  # Repo automation ("no bash scripts — xtask + Docker" is the standing
+  # direction): a dot-directory at the repo root, invoked via the
+  # `[alias] xtask` in .cargo/config.toml, mirroring the sibling vpay
+  # repo's own xtask shape. Deliberately depends on nothing above it in
+  # this list — no sms-api, nothing that expands `include_server_schema!`
+  # — so `cargo xtask <check>` stays fast to build even though it lives in
+  # the same workspace.
+  ".xtask",
 ]
 # examples/rust is its own, separate [workspace] (see its own Cargo.toml
 # and examples/README.md) — an integrator's copy-pasteable client, kept

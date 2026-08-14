@@ -1,0 +1,10 @@
+[alias]
+xtask = "run --quiet --package xtask --"
+
+# Deliberately nothing else here. vpay's own .cargo/config.toml (the
+# reference this repo's xtask shape is modelled on) also carries a
+# `target-dir` override and musl `rustflags` for its own static-build ADR —
+# neither applies here: this repo's build profile settings already live in
+# the root Cargo.toml ([profile.release]/[profile.dist], the CARGO_BUILD_JOBS
+# cap documented there and in the justfile), and changing build behaviour is
+# out of scope for adding a task runner.

@@ -12,7 +12,7 @@
 //! the conventional layout is to keep the `.cstack` file inside the crate that
 //! expands it. Here it stays at the repository root next to
 //! `schema/migrations/`, because three other things already read it — the
-//! migration diff, `ci/gen-bootstrap-sql.py`, and (soon) `sms-worker` — and
+//! migration diff, `cargo xtask bootstrap-sql`, and (soon) `sms-worker` — and
 //! splitting the schema from its own migrations to satisfy a macro's default
 //! path resolution is the wrong trade. Hence the `../../` in the path below.
 //!

@@ -63,12 +63,26 @@ deny:
 
 # Everything CI runs, in CI's order
 all-checks: lint test
-	./ci/assert-no-raw-sqlx.sh
-	python3 ci/assert-state-machine-parity.py
+	{{_cargo}} xtask no-raw-sqlx
+	{{_cargo}} xtask parity
 
 # R2: the state diagram and the transition table must agree
 parity:
-	python3 ci/assert-state-machine-parity.py
+	{{_cargo}} xtask parity
+
+# R1: all data access goes through CrateStack delegates
+no-raw-sqlx:
+	{{_cargo}} xtask no-raw-sqlx
+
+# The Rust SDK's vendored schema.cstack must match schema/schema.cstack
+sdk-schema-check:
+	{{_cargo}} xtask sdk-schema-check
+
+# 0001_init must match what `cratestack migrate diff` produces from the
+# current schema.cstack. Needs a `cratestack` CLI on PATH, version-locked
+# to the pin `cargo xtask cratestack-pin` reads from Cargo.toml.
+migrations-current:
+	{{_cargo}} xtask migrations-current
 
 # Print the generated route table. Needs no database.
 routes:
@@ -83,7 +97,7 @@ schema-check:
 
 # Regenerate 0002_bootstrap from §2.10 of the design doc
 bootstrap-sql:
-	python3 ci/gen-bootstrap-sql.py schema/migrations/postgres/0002_bootstrap/up.sql
+	{{_cargo}} xtask bootstrap-sql schema/migrations/postgres/0002_bootstrap/up.sql
 
 # Regenerate packages/sms-client from schema/schema.cstack (T3). Per the
 # owner's standing rule, generated code is never committed — this package

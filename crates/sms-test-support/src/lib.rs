@@ -146,11 +146,10 @@
 //!
 //! # R1
 //!
-//! This crate is a fourth path calling raw `sqlx`, alongside the three
-//! named in `CONTRIBUTING.md` (migrations, advisory locks, `LISTEN`/
-//! `NOTIFY`) — `ci/assert-no-raw-sqlx.sh` allowlists this file by path. It
-//! fits the *spirit* of the "migrations" exception rather than being a new
-//! category: every raw query below exists only to decide whether
+//! This crate is a named R1 exception in its own right — `CONTRIBUTING.md`'s
+//! own "Live-Postgres test harness" row — and `cargo xtask no-raw-sqlx`
+//! allowlists this file by path. It fits the *spirit* of the "migrations"
+//! exception too: every raw query below exists only to decide whether
 //! `schema/migrations/postgres/**` has already been applied to a throwaway
 //! test database, and to serialize that decision (via
 //! `pg_advisory_lock`/`pg_advisory_unlock` — itself the *second* named

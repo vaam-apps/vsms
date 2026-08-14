@@ -66,7 +66,7 @@
 //! own lazily-created bookkeeping table (`ensure_event_outbox_table`), not
 //! one of `schema.cstack`'s models — no delegate exists to read or write
 //! it, so there is no row-level policy to bypass, no audit trail to skip,
-//! no `@version`/soft-delete concern. `ci/assert-no-raw-sqlx.sh` and
+//! no `@version`/soft-delete concern. `cargo xtask no-raw-sqlx` and
 //! `CONTRIBUTING.md`'s own exceptions table both name this file.
 //!
 //! Unlike `drain.rs`, this job cannot lean on `db.events().drain()` having
@@ -85,10 +85,10 @@ use chrono::{DateTime, Duration, Utc};
 // `cratestack::sqlx` the module, not individual items — every call site
 // below spells the raw calls out fully-qualified (`sqlx::query(...)`,
 // `sqlx::query_as(...)`), matching `app/sms-migrate/src/main.rs`'s own
-// convention for the same reason: `ci/assert-no-raw-sqlx.sh`'s grep looks
-// for the literal substring `sqlx::query`/`sqlx::query_as`/`sqlx::raw_sql`,
+// convention for the same reason: `cargo xtask no-raw-sqlx`'s pattern
+// matches the literal substring `sqlx::query`/`sqlx::query_as`/`sqlx::raw_sql`,
 // so the exception has to be visible at the call site, not hidden behind a
-// braced multi-item `use` the grep can't see through.
+// braced multi-item `use` the check can't see through.
 use cratestack::sqlx;
 use cratestack::CoolContext;
 use sms_api::schema::{Cratestack, Job};
