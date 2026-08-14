@@ -32,21 +32,27 @@ check:
 test:
 	{{_cargo}} test --workspace
 
-# Run every live-Postgres suite. `sms-test-support` starts (or reuses) one
-# shared, self-healing Postgres 16 container and applies both migrations —
-# needs Docker, nothing else. Safe to rerun: the container is named
-# deterministically and reused, not recreated, across runs.
+# Run every live-Postgres suite. `sms-test-support` brings up (or reuses)
+# root compose.yml's `postgres` service, under its own reserved Compose
+# project (`vsms-test-harness`), and applies both migrations — needs
+# Docker, nothing else. Safe to rerun: the project+service name is fixed
+# and Compose revives or reuses rather than recreates across runs.
 test-live:
 	{{_cargo}} test --workspace -- --ignored
 
-# Remove the shared test-harness container. Scoped by the exact label
-# `sms-test-support` itself sets (`dev.vsms.test-harness=true`) — never by
-# image or a bare name pattern, so this can never touch a container this
-# workspace's tests did not create. Not required for correctness (the
-# harness self-heals on its own next run) — this is just for a developer
-# who wants their machine back to zero right now.
+# Tear down the shared test-harness Postgres — container, network, and its
+# named volume (so data doesn't linger as orphaned state). Scoped by the
+# exact Compose project name (`vsms-test-harness`) `sms-test-support`
+# itself reserves — never by image or a bare name pattern, so this can
+# never touch a container this workspace's tests, or a developer's own
+# `docker compose up` against the same compose.yml, did not create. Also
+# removes a one-off pre-Compose leftover by its own exact legacy name, for
+# a machine mid-migration off the old `docker run`-based harness. Not
+# required for correctness (the harness self-heals on its own next run) —
+# this is just for a developer who wants their machine back to zero now.
 test-live-clean:
-	docker rm -f $(docker ps -aq --filter "label=dev.vsms.test-harness=true") 2>/dev/null || true
+	docker rm -f vsms-test-harness-postgres 2>/dev/null || true
+	docker compose -p vsms-test-harness -f compose.yml down --volumes --remove-orphans
 
 # Format, then lint with warnings as errors
 lint:
