@@ -36,6 +36,16 @@ const CONSOLE_NAV_TOGGLE_ID = "console-nav";
 // everything else in this shell. See `side-nav.tsx`'s own module doc for
 // the full mechanism, and its `NavLink`/`GroupSection` doc comments for
 // why a JS breakpoint read isn't needed here in the first place.
+//
+// Postscript: `@uidotdev/usehooks` is no longer a dependency of this repo
+// at all. Once the rework above removed the only call site, it was a
+// declared package with zero live imports — and its last real publish was
+// 2023-10-23, predating React 19, which this console runs on. D12 in
+// `docs/design/console-redesign.md` carries the full reasoning. The
+// package name survives in this comment only as the record of a bug worth
+// not repeating: a hook that throws in `getServerSnapshot` fails every
+// server-rendered page while `pnpm build` stays green, because every route
+// here is dynamic and build-time generation never executes them.
 
 export function ConsoleShell({
   children,
