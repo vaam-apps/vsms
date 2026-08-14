@@ -15,7 +15,7 @@
 /// from this crate (`backends/crates/sms-api/`) to the repository root, then into
 /// `backends/migrations/postgres/0003_idempotency_table/up.sql`.
 const IDEMPOTENCY_TABLE_SQL: &str =
-    include_str!("../../../backends/migrations/postgres/0003_idempotency_table/up.sql");
+    include_str!("../../../../backends/migrations/postgres/0003_idempotency_table/up.sql");
 
 #[test]
 fn idempotency_table_ddl_carries_cratestacks_own_ddl_verbatim() {
