@@ -31,24 +31,27 @@
 // screen with switches that don't connect to anything — matching this
 // project's own "no dormant code" convention applied to UI rather than
 // server code.
-
-import { ConsoleNav } from "../console-nav";
+//
+// # Console redesign (Phase 2, Admin group)
+//
+// A visual pass only, no behavioural change: the per-screen `<header>` +
+// `ConsoleNav` block is gone (`ConsoleShell`'s sidebar already carries
+// every route this used to link), and the outer wrapper is a plain `<div>`
+// rather than a second, nested `<main>` — `ConsoleShell` already renders
+// one around every route's `children` (docs/design/console-redesign.md
+// §6.2). This screen stays a `Page` (§3: purely informational, nothing
+// with per-record state to peek at), so no drawer of either weight
+// applies here.
 
 export function SettingsScreen() {
   return (
-    <main className="mx-auto flex max-w-[1200px] flex-col gap-6 px-6 py-10">
-      <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
-        <div>
-          <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-            vsms admin console
-          </p>
-          <h1 className="mt-1 font-medium text-foreground text-title">Settings</h1>
-          <p className="mt-1 max-w-xl text-body text-muted-foreground">
-            There is no runtime-configurable settings model in this system today.
-          </p>
-        </div>
-        <ConsoleNav current="/settings" />
-      </header>
+    <div className="flex flex-col gap-6">
+      <div className="border-edge border-b pb-6">
+        <h1 className="font-medium text-foreground text-title">Settings</h1>
+        <p className="mt-1 max-w-xl text-body text-muted-foreground">
+          There is no runtime-configurable settings model in this system today.
+        </p>
+      </div>
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
         This screen exists because #58 named &quot;settings&quot; as one of the remaining pages, not
@@ -105,6 +108,6 @@ export function SettingsScreen() {
           </p>
         </div>
       </div>
-    </main>
+    </div>
   );
 }
