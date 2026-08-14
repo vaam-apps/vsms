@@ -1,4 +1,4 @@
-import { Button, Input, Label } from "@vsms/ui";
+import { Button, InlineBanner, Input, Label } from "@vsms/ui";
 
 /**
  * The login screen's markup and classes — the dumb layer for
@@ -48,12 +48,9 @@ export function LoginForm({ errorMessage }: { errorMessage?: string | undefined 
       <h1 className="font-semibold text-foreground text-xl">Sign in</h1>
 
       {errorMessage !== undefined && (
-        <p
-          role="alert"
-          className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-foreground"
-        >
-          {errorMessage}
-        </p>
+        <InlineBanner variant="danger" className="text-foreground">
+          <span role="alert">{errorMessage}</span>
+        </InlineBanner>
       )}
 
       <form method="post" action="/api/auth/login" className="flex flex-col gap-4">

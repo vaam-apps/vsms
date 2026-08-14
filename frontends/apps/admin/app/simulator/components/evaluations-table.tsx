@@ -39,24 +39,24 @@ export function EvaluationsTable({ rows, winnerRouteId }: EvaluationsTableProps)
     <Table>
       <TableHeader>
         <TableRow>
-          <TableHead align="end" className="hidden sm:table-cell">
+          <TableHead align="end" hideBelow="sm">
             Priority
           </TableHead>
-          <TableHead align="end" className="hidden sm:table-cell">
+          <TableHead align="end" hideBelow="sm">
             Weight
           </TableHead>
           <TableHead>Route</TableHead>
           <TableHead>Outcome</TableHead>
-          <TableHead className="hidden md:table-cell">Detail</TableHead>
+          <TableHead hideBelow="md">Detail</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {rows.map((evaluation) => (
           <TableRow key={evaluation.routeId} selected={evaluation.routeId === winnerRouteId}>
-            <TableCell align="end" className="hidden sm:table-cell" mono>
+            <TableCell align="end" hideBelow="sm" mono>
               {evaluation.priority}
             </TableCell>
-            <TableCell align="end" className="hidden sm:table-cell" mono>
+            <TableCell align="end" hideBelow="sm" mono>
               {evaluation.weight}
             </TableCell>
             <TableCell>
@@ -70,7 +70,7 @@ export function EvaluationsTable({ rows, winnerRouteId }: EvaluationsTableProps)
             <TableCell>
               <OutcomePill outcome={evaluation.outcome} />
             </TableCell>
-            <TableCell className="hidden text-caption text-muted-foreground md:table-cell">
+            <TableCell hideBelow="md" className="text-caption text-muted-foreground">
               {evaluation.outcome === "predicate_failed" &&
                 evaluation.predicateKind !== undefined && (
                   <>

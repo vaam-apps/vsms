@@ -5,6 +5,7 @@
 import {
   Button,
   Card,
+  InlineBanner,
   InlineEmptyState,
   LiveRow,
   type MessageState,
@@ -36,7 +37,7 @@ export function TableGallery() {
   return (
     <Section
       title="Table + LiveRow"
-      description="Status column first (§6.4). Click the button to trigger a 240ms wash on the first row, as if its state had just changed — nothing else in the row moves. Third row's id is deliberately long, to check overflow/wrap behaviour rather than only ever testing with tidy fixture data."
+      description="Status column first (§6.4). Click the button to trigger a 240ms wash on the first row, as if its state had just changed — nothing else in the row moves. Third row's id is deliberately long, to check overflow/wrap behaviour rather than only ever testing with tidy fixture data. The Version column demonstrates hideBelow='sm' — resize the viewport narrower than sm to see it disappear."
     >
       <Button variant="secondary" size="sm" onClick={() => setTick((t) => t + 1)}>
         Simulate a state change on row 1
@@ -48,7 +49,9 @@ export function TableGallery() {
               <TableHead>Status</TableHead>
               <TableHead>Recipient</TableHead>
               <TableHead>Id</TableHead>
-              <TableHead align="end">Version</TableHead>
+              <TableHead align="end" hideBelow="sm">
+                Version
+              </TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -59,7 +62,7 @@ export function TableGallery() {
                 </TableCell>
                 <TableCell mono>{row.recipient}</TableCell>
                 <TableCell mono>{row.id}</TableCell>
-                <TableCell align="end" mono>
+                <TableCell align="end" hideBelow="sm" mono>
                   {row.version}
                 </TableCell>
               </LiveRow>
@@ -71,9 +74,9 @@ export function TableGallery() {
       <p className="text-caption text-muted-foreground">
         Error state (a failed query, inline — never a placard):
       </p>
-      <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
+      <InlineBanner variant="danger">
         Couldn't load webhook attempts: sms-api returned 500.
-      </div>
+      </InlineBanner>
 
       <InlineEmptyState
         message="No webhook attempts match the current filters."

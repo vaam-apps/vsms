@@ -43,9 +43,9 @@ export function ReceiptsTable({ receipts, isLoading }: ReceiptsTableProps) {
       <TableHeader>
         <TableRow>
           <TableHead>Outcome</TableHead>
-          <TableHead className="hidden sm:table-cell">Raw status</TableHead>
-          <TableHead className="hidden md:table-cell">Error code</TableHead>
-          <TableHead className="hidden md:table-cell">Network</TableHead>
+          <TableHead hideBelow="sm">Raw status</TableHead>
+          <TableHead hideBelow="md">Error code</TableHead>
+          <TableHead hideBelow="md">Network</TableHead>
           <TableHead align="end">Received</TableHead>
         </TableRow>
       </TableHeader>
@@ -53,13 +53,13 @@ export function ReceiptsTable({ receipts, isLoading }: ReceiptsTableProps) {
         {receipts.map((receipt) => (
           <TableRow key={receipt.id}>
             <TableCell mono>{receipt.outcome}</TableCell>
-            <TableCell className="hidden sm:table-cell" mono>
+            <TableCell hideBelow="sm" mono>
               {receipt.rawStatus}
             </TableCell>
-            <TableCell className="hidden md:table-cell" mono>
+            <TableCell hideBelow="md" mono>
               {receipt.errorCode ?? "—"}
             </TableCell>
-            <TableCell className="hidden md:table-cell" mono>
+            <TableCell hideBelow="md" mono>
               {receipt.networkCode}
             </TableCell>
             <TableCell align="end">
