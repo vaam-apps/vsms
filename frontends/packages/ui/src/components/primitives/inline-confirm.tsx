@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
+import { InlineBanner } from "../bespoke/inline-banner";
 import { Button } from "./button";
 
 /**
@@ -96,11 +97,7 @@ export function InlineConfirm({
 
       {children != null && <div className="flex flex-col gap-4">{children}</div>}
 
-      {error != null && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          {error}
-        </div>
-      )}
+      {error != null && <InlineBanner variant="danger">{error}</InlineBanner>}
 
       <div className="flex items-center justify-end gap-2">
         <Button type="button" variant="ghost" size="sm" disabled={pending} onClick={onCancel}>

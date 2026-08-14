@@ -33,6 +33,10 @@ export function EndpointEditFields({
       {/* Not a `FormField` — see `create-endpoint-fields.tsx`'s identical
           comment: `EventTypeToggles` is a group of toggle buttons with no
           single `id` a `htmlFor` could name. */}
+      {/* A `<fieldset>`, not a `FormField` — see
+          `create-endpoint-fields.tsx`'s own note: a checkbox group needs
+          fieldset/legend semantics, which a single-control `htmlFor`
+          cannot express. */}
       <fieldset className="flex flex-col gap-1.5">
         <legend className="font-medium text-body text-foreground">Event types</legend>
         <EventTypeToggles selected={eventTypes} onChange={onEventTypesChange} />

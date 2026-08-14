@@ -99,7 +99,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { trpc } from "@vsms/hooks";
-import { ScreenStack, toast } from "@vsms/ui";
+import { InlineConfirm, ScreenStack, toast } from "@vsms/ui";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -119,7 +119,6 @@ import { AppsHeader } from "./components/apps-header";
 import { AppsTable } from "./components/apps-table";
 import { CreateAppDialogView } from "./components/create-app-dialog-view";
 import { ErrorBanner } from "./components/error-banner";
-import { InlineConfirmPanel } from "./components/inline-confirm-panel";
 import { ProvisionClientPanelView } from "./components/provision-client-panel-view";
 import { parseIpAllowlistLines, toIpAllowlistLines } from "./ip-allowlist";
 import type { AppClientListItem, AppListItem } from "./types";
@@ -210,7 +209,7 @@ function AppClientsPanel({ appId }: { appId: string }) {
       onRetireClick={(client) => setRetiringId(client.id)}
     >
       {retiringId !== null && (
-        <InlineConfirmPanel
+        <InlineConfirm
           title="Retire this client?"
           description="This is immediate and total — there is no overlap window. The client's current key stops authenticating the instant this succeeds. If a live integration still uses it, provision its replacement and migrate first."
           confirmLabel="Retire client"
@@ -420,7 +419,7 @@ function AppDetailDrawer({
       deleteConfirm={
         deleteConfirmOpen &&
         appId !== null && (
-          <InlineConfirmPanel
+          <InlineConfirm
             title="Delete this app?"
             description="This soft-deletes the row (owner only) — existing messages and clients referencing it are untouched, but the app stops being usable for new sends."
             confirmLabel="Delete"
