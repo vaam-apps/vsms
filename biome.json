@@ -6,7 +6,13 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!frontends/packages/sms-client", "!frontends/apps/admin/.next", "!**/dist", "!**/node_modules"]
+    "includes": [
+      "**",
+      "!frontends/packages/sms-client",
+      "!frontends/apps/admin/.next",
+      "!**/dist",
+      "!**/node_modules"
+    ]
   },
   "formatter": {
     "enabled": true,

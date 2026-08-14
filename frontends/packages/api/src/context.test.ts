@@ -62,16 +62,21 @@ describe("assertSameOriginForMutations", () => {
 
   it("accepts a browser POST whose Origin matches ADMIN_BASE_URL, even though req.url is the container's bind address", () => {
     expect(() =>
-      // biome-ignore lint/suspicious/noExplicitAny: the fetch adapter's own
-      // options type carries fields this check never reads.
-      createContext({ req: post({ origin: ADMIN_BASE_URL }) } as any),
+      createContext({
+        req: post({ origin: ADMIN_BASE_URL }),
+        resHeaders: new Headers(),
+        info: { isBatchCall: false, calls: [] },
+      }),
     ).not.toThrow();
   });
 
   it("rejects a POST from a different origin", () => {
     expect(() =>
-      // biome-ignore lint/suspicious/noExplicitAny: as above.
-      createContext({ req: post({ origin: "https://evil.example.com" }) } as any),
+      createContext({
+        req: post({ origin: "https://evil.example.com" }),
+        resHeaders: new Headers(),
+        info: { isBatchCall: false, calls: [] },
+      }),
     ).toThrow(/cross-origin request rejected/);
   });
 
@@ -81,17 +86,21 @@ describe("assertSameOriginForMutations", () => {
     // it is a non-browser client. This endpoint reaches `sendMessage`,
     // which sends a real billed SMS, so absence is refusal.
     expect(() =>
-      // biome-ignore lint/suspicious/noExplicitAny: as above.
-      createContext({ req: post({}) } as any),
+      createContext({
+        req: post({}),
+        resHeaders: new Headers(),
+        info: { isBatchCall: false, calls: [] },
+      }),
     ).toThrow(/requires an Origin header/);
   });
 
   it("does not check the origin of a GET", () => {
     expect(() =>
       createContext({
-        // biome-ignore lint/suspicious/noExplicitAny: as above.
-        req: new Request(CONTAINER_REQUEST_URL, { method: "GET" }) as any,
-      } as any),
+        req: new Request(CONTAINER_REQUEST_URL, { method: "GET" }),
+        resHeaders: new Headers(),
+        info: { isBatchCall: false, calls: [] },
+      }),
     ).not.toThrow();
   });
 
@@ -102,12 +111,13 @@ describe("assertSameOriginForMutations", () => {
     // as same-origin.
     expect(() =>
       createContext({
-        // biome-ignore lint/suspicious/noExplicitAny: as above.
         req: post({
           origin: "https://evil.example.com",
           "x-forwarded-host": "evil.example.com",
-        }) as any,
-      } as any),
+        }),
+        resHeaders: new Headers(),
+        info: { isBatchCall: false, calls: [] },
+      }),
     ).toThrow(/cross-origin request rejected/);
   });
 });

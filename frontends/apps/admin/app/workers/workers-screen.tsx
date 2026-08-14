@@ -126,8 +126,10 @@ export function WorkersScreen() {
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
         A two-key advisory lock can never be held by two sessions at once — Postgres itself prevents
         that. This screen can show "unheld when it should be held," never "two holders." See{" "}
-        <span className="font-mono text-foreground">backends/crates/sms-api/src/worker_locks.rs</span> for
-        what was verified live.
+        <span className="font-mono text-foreground">
+          backends/crates/sms-api/src/worker_locks.rs
+        </span>{" "}
+        for what was verified live.
       </div>
 
       {locksQuery.isError && (
