@@ -6,6 +6,20 @@
 // and errors, one-click replay, and rotation with the overlap window made
 // visible" — the issue's own words, verbatim.
 //
+// # Quick vs. more detail (console-redesign.md §3/D14)
+//
+// An endpoint row opens `QuickDetailDrawer` (URL, active, circuit state,
+// event count, the current secret masked) with a "View full details"
+// action that upgrades to `MoreDetailDrawer` (`?panel=<id>`) — the edit
+// form, event-type toggles, and secret reveal/rotate. A delivery attempt
+// row opens its own `QuickDetailDrawer` (state/event/endpoint/attempts/
+// status/error, a Replay action) with "View payload" upgrading to a second
+// `MoreDetailDrawer` (`?attempt=<id>`) holding `PayloadInspector` — the
+// same "peek, then upgrade" shape §3 asks for, applied to a second record
+// type on this same screen. Delete and secret rotation are irreversible-
+// enough to stay centered `Dialog`s (§1.7), opened from inside the
+// endpoint's more-detail drawer.
+//
 // # `WebhookEndpoint.secret`/`prevSecret` are shown, masked by default, with
 // an explicit Reveal — see `@vsms/gateway/webhooks.ts`'s own module doc for
 // the full reasoning (`@sensitive` doesn't redact API responses, only audit
@@ -36,6 +50,7 @@
 // unreplayed indefinitely after that) — not a fresh snapshot of the
 // message's current state.
 
+import { zodResolver } from "@hookform/resolvers/zod";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@vsms/api";
 import { trpc } from "@vsms/hooks";
@@ -54,7 +69,9 @@ import {
   InlineEmptyState,
   Input,
   Label,
+  MoreDetailDrawer,
   PayloadInspector,
+  QuickDetailDrawer,
   Select,
   SelectContent,
   SelectItem,
@@ -70,8 +87,10 @@ import {
   TimestampDisplay,
   toast,
 } from "@vsms/ui";
-import { parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
+import { parseAsString, parseAsStringEnum, useQueryState, useQueryStates } from "nuqs";
 import { useState } from "react";
+import { Controller, useForm } from "react-hook-form";
+import { z } from "zod";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type EndpointListItem = RouterOutputs["webhookEndpoints"]["list"][number];
@@ -157,35 +176,62 @@ function EventTypeToggles({
   );
 }
 
-interface EndpointFormState {
-  url: string;
-  eventTypes: EventType[];
-  maskRecipient: boolean;
-  active: boolean;
-  maxAttempts: string;
-}
+const endpointSchema = z.object({
+  url: z.string().trim().min(1, "URL is required"),
+  maxAttempts: z
+    .string()
+    .trim()
+    .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 20, {
+      message: "1–20",
+    }),
+  maskRecipient: z.boolean(),
+  active: z.boolean(),
+});
+type EndpointFormValues = z.infer<typeof endpointSchema>;
+
+const createSchema = z.object({
+  appId: z.string().trim().min(1, "App id is required"),
+  url: z.string().trim().min(1, "URL is required"),
+  maxAttempts: z
+    .string()
+    .trim()
+    .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 20, {
+      message: "1–20",
+    }),
+  maskRecipient: z.boolean(),
+});
+type CreateFormValues = z.infer<typeof createSchema>;
 
 export function WebhooksScreen() {
   const utils = trpc.useUtils();
   const endpointsQuery = trpc.webhookEndpoints.list.useQuery();
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [form, setForm] = useState<EndpointFormState | null>(null);
-  const [justCreatedSecret, setJustCreatedSecret] = useState<string | null>(null);
-  const [justRotatedSecret, setJustRotatedSecret] = useState<string | null>(null);
+  // --- Endpoints: quick + more detail ---------------------------------
 
-  function openEndpoint(endpoint: EndpointListItem) {
-    setSelectedId(endpoint.id);
-    setForm({
+  const [quickId, setQuickId] = useState<string | null>(null);
+  const quickDetail = endpointsQuery.data?.find((e) => e.id === quickId);
+
+  const [panelId, setPanelId] = useQueryState("panel", parseAsString);
+  const panelTarget = endpointsQuery.data?.find((e) => e.id === panelId);
+
+  const [eventTypes, setEventTypes] = useState<EventType[]>([]);
+  const form = useForm<EndpointFormValues>({ resolver: zodResolver(endpointSchema) });
+
+  function openMore(endpoint: EndpointListItem) {
+    void setPanelId(endpoint.id);
+    setEventTypes(endpoint.eventTypes);
+    form.reset({
       url: endpoint.url,
-      eventTypes: endpoint.eventTypes,
+      maxAttempts: String(endpoint.maxAttempts),
       maskRecipient: endpoint.maskRecipient,
       active: endpoint.active,
-      maxAttempts: String(endpoint.maxAttempts),
     });
     setJustCreatedSecret(null);
     setJustRotatedSecret(null);
   }
+
+  const [justCreatedSecret, setJustCreatedSecret] = useState<string | null>(null);
+  const [justRotatedSecret, setJustRotatedSecret] = useState<string | null>(null);
 
   const updateMutation = trpc.webhookEndpoints.update.useMutation({
     onSuccess: () => {
@@ -194,11 +240,28 @@ export function WebhooksScreen() {
     },
   });
 
+  function saveEndpoint(values: EndpointFormValues) {
+    if (panelTarget === undefined) return;
+    updateMutation.mutate({
+      id: panelTarget.id,
+      etag: String(panelTarget.version),
+      url: values.url,
+      eventTypes,
+      maskRecipient: values.maskRecipient,
+      active: values.active,
+      maxAttempts: Number(values.maxAttempts),
+    });
+  }
+
+  function closeMore() {
+    void setPanelId(null);
+  }
+
   const deleteMutation = trpc.webhookEndpoints.remove.useMutation({
     onSuccess: () => {
       toast({ title: "Endpoint deleted", variant: "success" });
-      setSelectedId(null);
-      setForm(null);
+      setDeleteTarget(null);
+      closeMore();
       void utils.webhookEndpoints.list.invalidate();
       void utils.webhookAttempts.list.invalidate();
     },
@@ -212,69 +275,46 @@ export function WebhooksScreen() {
       setRotateTarget(null);
       setJustRotatedSecret(updated.secret);
       void utils.webhookEndpoints.list.invalidate();
-      if (selectedId === updated.id) {
-        setForm({
-          url: updated.url,
-          eventTypes: updated.eventTypes,
-          maskRecipient: updated.maskRecipient,
-          active: updated.active,
-          maxAttempts: String(updated.maxAttempts),
-        });
-      }
     },
   });
 
   const [createOpen, setCreateOpen] = useState(false);
-  const [createForm, setCreateForm] = useState({
-    appId: "",
-    url: "",
-    eventTypes: [] as EventType[],
-    maskRecipient: true,
-    maxAttempts: "8",
+  const [createEventTypes, setCreateEventTypes] = useState<EventType[]>([]);
+  const createForm = useForm<CreateFormValues>({
+    resolver: zodResolver(createSchema),
+    defaultValues: { appId: "", url: "", maxAttempts: "8", maskRecipient: true },
   });
   const createMutation = trpc.webhookEndpoints.create.useMutation({
     onSuccess: (created) => {
       toast({ title: "Endpoint created", variant: "success" });
       setCreateOpen(false);
-      setCreateForm({ appId: "", url: "", eventTypes: [], maskRecipient: true, maxAttempts: "8" });
+      createForm.reset({ appId: "", url: "", maxAttempts: "8", maskRecipient: true });
+      setCreateEventTypes([]);
       void utils.webhookEndpoints.list.invalidate();
-      openEndpoint({
-        id: created.endpoint.id,
-        appId: created.endpoint.appId,
+      void setPanelId(created.endpoint.id);
+      setEventTypes(created.endpoint.eventTypes);
+      form.reset({
         url: created.endpoint.url,
-        eventTypes: created.endpoint.eventTypes,
-        secret: created.endpoint.secret,
-        prevSecret: created.endpoint.prevSecret,
-        secretRotatedAt: created.endpoint.secretRotatedAt,
+        maxAttempts: String(created.endpoint.maxAttempts),
         maskRecipient: created.endpoint.maskRecipient,
         active: created.endpoint.active,
-        maxAttempts: created.endpoint.maxAttempts,
-        circuitOpenUntil: created.endpoint.circuitOpenUntil,
-        consecutiveFailures: created.endpoint.consecutiveFailures,
-        version: created.endpoint.version,
-        createdAt: created.endpoint.createdAt,
-        updatedAt: created.endpoint.updatedAt,
       });
       setJustCreatedSecret(created.secret);
+      setJustRotatedSecret(null);
     },
   });
 
-  const selected = endpointsQuery.data?.find((e) => e.id === selectedId);
-
-  function saveEndpoint() {
-    if (selected === undefined || form === null) return;
-    updateMutation.mutate({
-      id: selected.id,
-      etag: String(selected.version),
-      url: form.url,
-      eventTypes: form.eventTypes,
-      maskRecipient: form.maskRecipient,
-      active: form.active,
-      maxAttempts: Number(form.maxAttempts),
+  function submitCreate(values: CreateFormValues) {
+    createMutation.mutate({
+      appId: values.appId,
+      url: values.url,
+      eventTypes: createEventTypes,
+      maskRecipient: values.maskRecipient,
+      maxAttempts: Number(values.maxAttempts),
     });
   }
 
-  // --- Attempts history ---------------------------------------------------
+  // --- Attempts: quick + more detail -----------------------------------
 
   const [filters, setFilters] = useQueryStates(
     {
@@ -299,7 +339,10 @@ export function WebhooksScreen() {
     },
   });
   const [replayTarget, setReplayTarget] = useState<AttemptListItem | null>(null);
-  const [inspectTarget, setInspectTarget] = useState<AttemptListItem | null>(null);
+  const [quickAttemptId, setQuickAttemptId] = useState<string | null>(null);
+  const quickAttempt = attemptsQuery.data?.items.find((a) => a.id === quickAttemptId);
+  const [attemptPanelId, setAttemptPanelId] = useQueryState("attempt", parseAsString);
+  const attemptPanelTarget = attemptsQuery.data?.items.find((a) => a.id === attemptPanelId);
 
   function endpointUrlFor(endpointId: string): string {
     return endpointsQuery.data?.find((e) => e.id === endpointId)?.url ?? endpointId;
@@ -311,44 +354,30 @@ export function WebhooksScreen() {
     setReplayTarget(null);
   }
 
+  function payloadFor(attempt: AttemptListItem) {
+    try {
+      return JSON.stringify(JSON.parse(attempt.payload), null, 2);
+    } catch {
+      return attempt.payload;
+    }
+  }
+
   return (
-    <main className="mx-auto flex max-w-[1400px] flex-col gap-6 px-6 py-10">
-      <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
-        <div>
-          <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-            vsms admin console
-          </p>
-          <h1 className="mt-1 font-medium text-foreground text-title">Webhooks</h1>
-          <p className="mt-1 max-w-xl text-body text-muted-foreground">
-            Endpoints, delivery attempts, and secret rotation.
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <a
-            href="/dashboard"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Dashboard
-          </a>
-          <a
-            href="/sender-ids"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Sender IDs
-          </a>
-          <a
-            href="/"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Composer
-          </a>
-        </div>
+    <main className="mx-auto flex max-w-[1400px] flex-col gap-6 px-4 py-6 sm:px-6 sm:py-10">
+      <header className="flex flex-col gap-1 border-edge border-b pb-6">
+        <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
+          vsms admin console
+        </p>
+        <h1 className="font-medium text-foreground text-title">Webhooks</h1>
+        <p className="max-w-xl text-body text-muted-foreground">
+          Endpoints, delivery attempts, and secret rotation.
+        </p>
       </header>
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
         Reads and writes act as you — endpoint saves and secret rotation require{" "}
         <span className="font-mono text-foreground">webhook:manage</span> (owner, admin, and
-        developer all carry it by default). The secret column below is the live value, not a
+        developer all carry it by default). The secret shown below is the live value, not a
         placeholder — masked here as a screen-share precaution, not a security boundary; see the
         screen's own note for why.
       </div>
@@ -371,9 +400,11 @@ export function WebhooksScreen() {
           <TableRow>
             <TableHead>Active</TableHead>
             <TableHead>URL</TableHead>
-            <TableHead>Events</TableHead>
-            <TableHead>Circuit</TableHead>
-            <TableHead align="end">Updated</TableHead>
+            <TableHead className="hidden md:table-cell">Events</TableHead>
+            <TableHead className="hidden sm:table-cell">Circuit</TableHead>
+            <TableHead align="end" className="hidden md:table-cell">
+              Updated
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -402,7 +433,7 @@ export function WebhooksScreen() {
               <TableRow
                 key={endpoint.id}
                 className="cursor-pointer"
-                onClick={() => openEndpoint(endpoint)}
+                onClick={() => setQuickId(endpoint.id)}
               >
                 <TableCell>
                   {endpoint.active ? (
@@ -412,28 +443,31 @@ export function WebhooksScreen() {
                   )}
                 </TableCell>
                 <TableCell mono>
-                  <span className="line-clamp-1 max-w-[320px]" title={endpoint.url}>
+                  <span
+                    className="line-clamp-1 max-w-[220px] sm:max-w-[320px]"
+                    title={endpoint.url}
+                  >
                     {endpoint.url}
                   </span>
                 </TableCell>
-                <TableCell>
+                <TableCell className="hidden md:table-cell">
                   <span className="text-caption text-muted-foreground">
                     {endpoint.eventTypes.length} of {EVENT_TYPES.length}
                   </span>
                 </TableCell>
-                <TableCell>
+                <TableCell className="hidden sm:table-cell">
                   {circuitOpen ? (
                     <span
                       className="text-state-danger-fg"
                       title={`Open until ${endpoint.circuitOpenUntil}`}
                     >
-                      open ({endpoint.consecutiveFailures} failures)
+                      open ({endpoint.consecutiveFailures})
                     </span>
                   ) : (
                     <span className="text-muted-foreground">closed</span>
                   )}
                 </TableCell>
-                <TableCell align="end">
+                <TableCell align="end" className="hidden md:table-cell">
                   <TimestampDisplay value={endpoint.updatedAt} />
                 </TableCell>
               </TableRow>
@@ -442,86 +476,163 @@ export function WebhooksScreen() {
         </TableBody>
       </Table>
 
-      {/* Endpoint detail / edit */}
-      <Dialog
-        open={selectedId !== null}
-        onOpenChange={(open) => {
-          if (!open) {
-            setSelectedId(null);
-            setForm(null);
-          }
-        }}
+      {/* Quick detail — a peek, no route (D14). */}
+      <QuickDetailDrawer
+        open={quickId !== null}
+        onOpenChange={(open) => !open && setQuickId(null)}
+        title={quickDetail?.url ?? "Endpoint"}
+        description={
+          quickDetail !== undefined && <IdDisplay value={quickDetail.id} variant="full" />
+        }
+        footer={
+          <>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setQuickId(null)}>
+              Close
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                if (quickDetail === undefined) return;
+                openMore(quickDetail);
+                setQuickId(null);
+              }}
+            >
+              View full details
+            </Button>
+          </>
+        }
       >
-        <DialogContent className="max-w-[640px]">
-          <DialogHeader>
-            <DialogTitle>{selected?.url ?? "Endpoint"}</DialogTitle>
-            <DialogDescription>
-              {selectedId !== null && <IdDisplay value={selectedId} variant="full" />}
-            </DialogDescription>
-          </DialogHeader>
-
-          {selected != null && form != null && (
-            <div className="flex flex-col gap-4">
-              {justCreatedSecret != null && (
-                <div className="rounded-sm border border-state-uncertain-border bg-state-uncertain-bg px-3 py-2 text-caption text-state-uncertain-fg">
-                  This endpoint's secret is shown below — copy it into your receiver now. It stays
-                  visible via "Reveal" any time afterward (see the screen's own note on why), but
-                  this is the newest, safest moment to grab it.
-                </div>
-              )}
-              {justRotatedSecret != null && (
-                <div className="rounded-sm border border-state-uncertain-border bg-state-uncertain-bg px-3 py-2 text-caption text-state-uncertain-fg">
-                  Rotated. The new secret is below — copy it into your receiver. Your{" "}
-                  <span className="font-mono">previous secret</span> keeps verifying until the{" "}
-                  <em>next</em> rotation, so there is no rush, but don't wait indefinitely.
-                </div>
-              )}
-
-              <div className="flex flex-col gap-3 rounded-sm border border-edge bg-surface-2 p-3">
-                <SecretField label="Current secret" value={selected.secret} />
-                {selected.prevSecret != null && (
-                  <>
-                    <SecretField
-                      label="Previous secret (still verifies)"
-                      value={selected.prevSecret}
-                    />
-                    <p className="text-caption text-subtle-foreground">
-                      Rotated{" "}
-                      {selected.secretRotatedAt != null && (
-                        <TimestampDisplay value={selected.secretRotatedAt} />
-                      )}{" "}
-                      — this value keeps accepting signatures until you rotate again. There is no
-                      fixed expiry.
-                    </p>
-                  </>
+        {quickDetail !== undefined && (
+          <dl className="flex flex-col gap-3 text-body">
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Active</dt>
+              <dd>{quickDetail.active ? "yes" : "no"}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Events</dt>
+              <dd className="font-mono text-caption">
+                {quickDetail.eventTypes.length} of {EVENT_TYPES.length}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Circuit</dt>
+              <dd>
+                {quickDetail.circuitOpenUntil != null &&
+                new Date(quickDetail.circuitOpenUntil) > new Date() ? (
+                  <span className="text-state-danger-fg">
+                    open ({quickDetail.consecutiveFailures} failures)
+                  </span>
+                ) : (
+                  <span className="text-muted-foreground">closed</span>
                 )}
-                <div>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setRotateTarget(selected)}
-                  >
-                    Rotate secret
-                  </Button>
-                </div>
-              </div>
+              </dd>
+            </div>
+            <SecretField label="Current secret" value={quickDetail.secret} />
+          </dl>
+        )}
+      </QuickDetailDrawer>
 
+      {/* More detail — the endpoint's own edit form, secret reveal/rotate,
+          and Delete (D14). */}
+      <MoreDetailDrawer
+        open={panelId !== null}
+        onOpenChange={(open) => !open && closeMore()}
+        title={panelTarget?.url ?? "Endpoint"}
+        description={
+          panelTarget !== undefined && <IdDisplay value={panelTarget.id} variant="full" />
+        }
+        footer={
+          <>
+            {panelTarget !== undefined && (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="mr-auto"
+                onClick={() => setDeleteTarget(panelTarget)}
+              >
+                Delete
+              </Button>
+            )}
+            <Button type="button" variant="ghost" onClick={closeMore}>
+              Close
+            </Button>
+            <Button type="submit" form="endpoint-edit-form" disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? "Saving…" : "Save"}
+            </Button>
+          </>
+        }
+      >
+        {panelTarget !== undefined && (
+          <div className="flex flex-col gap-4">
+            {justCreatedSecret != null && (
+              <div className="rounded-sm border border-state-uncertain-border bg-state-uncertain-bg px-3 py-2 text-caption text-state-uncertain-fg">
+                This endpoint's secret is shown below — copy it into your receiver now. It stays
+                visible via "Reveal" any time afterward (see the screen's own note on why), but this
+                is the newest, safest moment to grab it.
+              </div>
+            )}
+            {justRotatedSecret != null && (
+              <div className="rounded-sm border border-state-uncertain-border bg-state-uncertain-bg px-3 py-2 text-caption text-state-uncertain-fg">
+                Rotated. The new secret is below — copy it into your receiver. Your{" "}
+                <span className="font-mono">previous secret</span> keeps verifying until the{" "}
+                <em>next</em> rotation, so there is no rush, but don't wait indefinitely.
+              </div>
+            )}
+
+            <div className="flex flex-col gap-3 rounded-sm border border-edge bg-surface-2 p-3">
+              <SecretField label="Current secret" value={panelTarget.secret} />
+              {panelTarget.prevSecret != null && (
+                <>
+                  <SecretField
+                    label="Previous secret (still verifies)"
+                    value={panelTarget.prevSecret}
+                  />
+                  <p className="text-caption text-subtle-foreground">
+                    Rotated{" "}
+                    {panelTarget.secretRotatedAt != null && (
+                      <TimestampDisplay value={panelTarget.secretRotatedAt} />
+                    )}{" "}
+                    — this value keeps accepting signatures until you rotate again. There is no
+                    fixed expiry.
+                  </p>
+                </>
+              )}
+              <div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setRotateTarget(panelTarget)}
+                >
+                  Rotate secret
+                </Button>
+              </div>
+            </div>
+
+            <form
+              id="endpoint-edit-form"
+              onSubmit={form.handleSubmit(saveEndpoint)}
+              className="flex flex-col gap-4"
+            >
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="endpoint-url">URL</Label>
                 <Input
                   id="endpoint-url"
-                  value={form.url}
-                  onChange={(e) => setForm({ ...form, url: e.target.value })}
+                  aria-invalid={form.formState.errors.url != null}
+                  {...form.register("url")}
                 />
+                {form.formState.errors.url != null && (
+                  <p className="text-caption text-state-danger-fg">
+                    {form.formState.errors.url.message}
+                  </p>
+                )}
               </div>
 
               <div className="flex flex-col gap-1.5">
                 <Label>Event types</Label>
-                <EventTypeToggles
-                  selected={form.eventTypes}
-                  onChange={(eventTypes) => setForm({ ...form, eventTypes })}
-                />
+                <EventTypeToggles selected={eventTypes} onChange={setEventTypes} />
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -529,32 +640,47 @@ export function WebhooksScreen() {
                   <Label htmlFor="endpoint-max-attempts">Max attempts</Label>
                   <Input
                     id="endpoint-max-attempts"
-                    type="number"
-                    min="1"
-                    max="20"
-                    value={form.maxAttempts}
-                    onChange={(e) => setForm({ ...form, maxAttempts: e.target.value })}
+                    inputMode="numeric"
+                    aria-invalid={form.formState.errors.maxAttempts != null}
+                    {...form.register("maxAttempts")}
                   />
+                  {form.formState.errors.maxAttempts != null && (
+                    <p className="text-caption text-state-danger-fg">
+                      {form.formState.errors.maxAttempts.message}
+                    </p>
+                  )}
                 </div>
                 <div className="flex flex-col justify-end gap-2 pb-2">
-                  <label className="flex items-center gap-2 text-body text-foreground">
-                    <input
-                      type="checkbox"
-                      checked={form.maskRecipient}
-                      onChange={(e) => setForm({ ...form, maskRecipient: e.target.checked })}
-                      className="checkbox"
-                    />
-                    Mask recipient MSISDN in payload
-                  </label>
-                  <label className="flex items-center gap-2 text-body text-foreground">
-                    <input
-                      type="checkbox"
-                      checked={form.active}
-                      onChange={(e) => setForm({ ...form, active: e.target.checked })}
-                      className="checkbox"
-                    />
-                    Active
-                  </label>
+                  <Controller
+                    control={form.control}
+                    name="maskRecipient"
+                    render={({ field }) => (
+                      <label className="flex items-center gap-2 text-body text-foreground">
+                        <input
+                          type="checkbox"
+                          checked={field.value}
+                          onChange={(e) => field.onChange(e.target.checked)}
+                          className="checkbox"
+                        />
+                        Mask recipient MSISDN in payload
+                      </label>
+                    )}
+                  />
+                  <Controller
+                    control={form.control}
+                    name="active"
+                    render={({ field }) => (
+                      <label className="flex items-center gap-2 text-body text-foreground">
+                        <input
+                          type="checkbox"
+                          checked={field.value}
+                          onChange={(e) => field.onChange(e.target.checked)}
+                          className="checkbox"
+                        />
+                        Active
+                      </label>
+                    )}
+                  />
                 </div>
               </div>
 
@@ -563,38 +689,12 @@ export function WebhooksScreen() {
                   Save failed: {updateMutation.error.message}
                 </div>
               )}
-            </div>
-          )}
+            </form>
+          </div>
+        )}
+      </MoreDetailDrawer>
 
-          <DialogFooter className="justify-between">
-            <Button
-              type="button"
-              variant="destructive"
-              size="sm"
-              onClick={() => selected != null && setDeleteTarget(selected)}
-            >
-              Delete
-            </Button>
-            <div className="flex gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => {
-                  setSelectedId(null);
-                  setForm(null);
-                }}
-              >
-                Close
-              </Button>
-              <Button type="button" disabled={updateMutation.isPending} onClick={saveEndpoint}>
-                {updateMutation.isPending ? "Saving…" : "Save"}
-              </Button>
-            </div>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Create endpoint */}
+      {/* Create endpoint — short single-purpose form (§3). */}
       <Dialog open={createOpen} onOpenChange={(open) => !open && setCreateOpen(false)}>
         <DialogContent className="max-w-[560px]">
           <DialogHeader>
@@ -603,14 +703,18 @@ export function WebhooksScreen() {
               A signing secret is generated automatically and shown once creation completes.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-4">
+          <form
+            id="create-endpoint-form"
+            onSubmit={createForm.handleSubmit(submitCreate)}
+            className="flex flex-col gap-4"
+          >
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="new-endpoint-app-id">App ID</Label>
               <Input
                 id="new-endpoint-app-id"
                 placeholder="the App this endpoint belongs to"
-                value={createForm.appId}
-                onChange={(e) => setCreateForm({ ...createForm, appId: e.target.value })}
+                aria-invalid={createForm.formState.errors.appId != null}
+                {...createForm.register("appId")}
               />
             </div>
             <div className="flex flex-col gap-1.5">
@@ -618,41 +722,39 @@ export function WebhooksScreen() {
               <Input
                 id="new-endpoint-url"
                 placeholder="https://example.com/webhooks/vsms"
-                value={createForm.url}
-                onChange={(e) => setCreateForm({ ...createForm, url: e.target.value })}
+                aria-invalid={createForm.formState.errors.url != null}
+                {...createForm.register("url")}
               />
             </div>
             <div className="flex flex-col gap-1.5">
               <Label>Event types</Label>
-              <EventTypeToggles
-                selected={createForm.eventTypes}
-                onChange={(eventTypes) => setCreateForm({ ...createForm, eventTypes })}
-              />
+              <EventTypeToggles selected={createEventTypes} onChange={setCreateEventTypes} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="new-endpoint-max-attempts">Max attempts</Label>
                 <Input
                   id="new-endpoint-max-attempts"
-                  type="number"
-                  min="1"
-                  max="20"
-                  value={createForm.maxAttempts}
-                  onChange={(e) => setCreateForm({ ...createForm, maxAttempts: e.target.value })}
+                  inputMode="numeric"
+                  {...createForm.register("maxAttempts")}
                 />
               </div>
               <div className="flex flex-col justify-end pb-2">
-                <label className="flex items-center gap-2 text-body text-foreground">
-                  <input
-                    type="checkbox"
-                    checked={createForm.maskRecipient}
-                    onChange={(e) =>
-                      setCreateForm({ ...createForm, maskRecipient: e.target.checked })
-                    }
-                    className="checkbox"
-                  />
-                  Mask recipient MSISDN
-                </label>
+                <Controller
+                  control={createForm.control}
+                  name="maskRecipient"
+                  render={({ field }) => (
+                    <label className="flex items-center gap-2 text-body text-foreground">
+                      <input
+                        type="checkbox"
+                        checked={field.value}
+                        onChange={(e) => field.onChange(e.target.checked)}
+                        className="checkbox"
+                      />
+                      Mask recipient MSISDN
+                    </label>
+                  )}
+                />
               </div>
             </div>
             {createMutation.isError && (
@@ -660,28 +762,15 @@ export function WebhooksScreen() {
                 Create failed: {createMutation.error.message}
               </div>
             )}
-          </div>
+          </form>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => setCreateOpen(false)}>
               Cancel
             </Button>
             <Button
-              type="button"
-              disabled={
-                createMutation.isPending ||
-                createForm.appId === "" ||
-                createForm.url === "" ||
-                createForm.eventTypes.length === 0
-              }
-              onClick={() =>
-                createMutation.mutate({
-                  appId: createForm.appId,
-                  url: createForm.url,
-                  eventTypes: createForm.eventTypes,
-                  maskRecipient: createForm.maskRecipient,
-                  maxAttempts: Number(createForm.maxAttempts),
-                })
-              }
+              type="submit"
+              form="create-endpoint-form"
+              disabled={createMutation.isPending || createEventTypes.length === 0}
             >
               {createMutation.isPending ? "Creating…" : "Create"}
             </Button>
@@ -689,7 +778,7 @@ export function WebhooksScreen() {
         </DialogContent>
       </Dialog>
 
-      {/* Delete confirm */}
+      {/* Delete confirm — destructive, centered Dialog (§1.7/§3). */}
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
@@ -720,7 +809,8 @@ export function WebhooksScreen() {
         </DialogContent>
       </Dialog>
 
-      {/* Rotate secret confirm */}
+      {/* Rotate secret confirm — destructive-with-consequence, centered
+          Dialog (§1.7/§3). */}
       <Dialog open={rotateTarget !== null} onOpenChange={(open) => !open && setRotateTarget(null)}>
         <DialogContent>
           <DialogHeader>
@@ -766,7 +856,7 @@ export function WebhooksScreen() {
               void setFilters({ endpointId: value === "__all" ? null : value })
             }
           >
-            <SelectTrigger id="attempts-endpoint" className="w-[280px]">
+            <SelectTrigger id="attempts-endpoint" className="w-[220px] sm:w-[280px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -787,7 +877,7 @@ export function WebhooksScreen() {
               void setFilters({ state: value === "__all" ? null : (value as AttemptState) })
             }
           >
-            <SelectTrigger id="attempts-state" className="w-[200px]">
+            <SelectTrigger id="attempts-state" className="w-[160px] sm:w-[200px]">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -828,13 +918,13 @@ export function WebhooksScreen() {
         <TableHeader>
           <TableRow>
             <TableHead>State</TableHead>
-            <TableHead>Event</TableHead>
-            <TableHead>Endpoint</TableHead>
-            <TableHead>Attempts</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Last error</TableHead>
-            <TableHead>Last attempt</TableHead>
-            <TableHead align="end">Action</TableHead>
+            <TableHead className="hidden md:table-cell">Event</TableHead>
+            <TableHead className="hidden lg:table-cell">Endpoint</TableHead>
+            <TableHead align="end" className="hidden sm:table-cell">
+              Attempts
+            </TableHead>
+            <TableHead className="hidden sm:table-cell">Status</TableHead>
+            <TableHead className="hidden md:table-cell">Last attempt</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -842,7 +932,7 @@ export function WebhooksScreen() {
             Array.from({ length: 6 }).map((_, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton rows, never reordered or diffed
               <TableRow key={i}>
-                <TableCell colSpan={8}>
+                <TableCell colSpan={6}>
                   <Skeleton className="h-4 w-full" />
                 </TableCell>
               </TableRow>
@@ -850,7 +940,7 @@ export function WebhooksScreen() {
 
           {!attemptsQuery.isLoading && (attemptsQuery.data?.items.length ?? 0) === 0 && (
             <tr>
-              <td colSpan={8}>
+              <td colSpan={6}>
                 <InlineEmptyState message="No delivery attempts match the current filters." />
               </td>
             </tr>
@@ -860,13 +950,15 @@ export function WebhooksScreen() {
             <TableRow
               key={attempt.id}
               className="cursor-pointer"
-              onClick={() => setInspectTarget(attempt)}
+              onClick={() => setQuickAttemptId(attempt.id)}
             >
               <TableCell>
                 <AttemptStatusPill state={attempt.state} />
               </TableCell>
-              <TableCell mono>{attempt.eventType}</TableCell>
-              <TableCell mono>
+              <TableCell mono className="hidden md:table-cell">
+                {attempt.eventType}
+              </TableCell>
+              <TableCell mono className="hidden lg:table-cell">
                 <span
                   className="line-clamp-1 max-w-[220px]"
                   title={endpointUrlFor(attempt.endpointId)}
@@ -874,41 +966,17 @@ export function WebhooksScreen() {
                   {endpointUrlFor(attempt.endpointId)}
                 </span>
               </TableCell>
-              <TableCell mono>{attempt.attempts}</TableCell>
-              <TableCell mono>{attempt.lastStatusCode ?? "—"}</TableCell>
-              <TableCell>
-                {attempt.lastError != null ? (
-                  <span
-                    className="line-clamp-1 max-w-[260px] text-caption text-muted-foreground"
-                    title={attempt.lastError}
-                  >
-                    {attempt.lastError}
-                  </span>
-                ) : (
-                  <span className="text-muted-foreground">—</span>
-                )}
+              <TableCell mono align="end" className="hidden sm:table-cell">
+                {attempt.attempts}
               </TableCell>
-              <TableCell>
+              <TableCell mono className="hidden sm:table-cell">
+                {attempt.lastStatusCode ?? "—"}
+              </TableCell>
+              <TableCell className="hidden md:table-cell">
                 {attempt.lastAttemptAt != null ? (
                   <TimestampDisplay value={attempt.lastAttemptAt} />
                 ) : (
                   <span className="text-muted-foreground">never</span>
-                )}
-              </TableCell>
-              <TableCell align="end">
-                {(attempt.state === "failed" || attempt.state === "dead") && (
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    disabled={replayMutation.isPending}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setReplayTarget(attempt);
-                    }}
-                  >
-                    Replay
-                  </Button>
                 )}
               </TableCell>
             </TableRow>
@@ -916,46 +984,126 @@ export function WebhooksScreen() {
         </TableBody>
       </Table>
 
-      {/* Payload inspector */}
-      <Dialog
-        open={inspectTarget !== null}
-        onOpenChange={(open) => !open && setInspectTarget(null)}
+      {/* Attempt quick detail — a peek, no route (D14). */}
+      <QuickDetailDrawer
+        open={quickAttemptId !== null}
+        onOpenChange={(open) => !open && setQuickAttemptId(null)}
+        title={quickAttempt?.eventType ?? "Attempt"}
+        description={
+          quickAttempt !== undefined && <IdDisplay value={quickAttempt.id} variant="full" />
+        }
+        footer={
+          <>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setQuickAttemptId(null)}>
+              Close
+            </Button>
+            {quickAttempt !== undefined &&
+              (quickAttempt.state === "failed" || quickAttempt.state === "dead") && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  size="sm"
+                  disabled={replayMutation.isPending}
+                  onClick={() => setReplayTarget(quickAttempt)}
+                >
+                  Replay
+                </Button>
+              )}
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => {
+                if (quickAttempt === undefined) return;
+                void setAttemptPanelId(quickAttempt.id);
+                setQuickAttemptId(null);
+              }}
+            >
+              View payload
+            </Button>
+          </>
+        }
       >
-        <DialogContent className="max-w-[640px]">
-          <DialogHeader>
-            <DialogTitle>{inspectTarget?.eventType}</DialogTitle>
-            <DialogDescription>
-              {inspectTarget != null && <IdDisplay value={inspectTarget.id} variant="full" />}
-            </DialogDescription>
-          </DialogHeader>
-          {inspectTarget != null && (
-            <PayloadInspector
-              exchanges={[
-                {
-                  direction: "callback",
-                  method: "POST",
-                  url: endpointUrlFor(inspectTarget.endpointId),
-                  body: (() => {
-                    try {
-                      return JSON.stringify(JSON.parse(inspectTarget.payload), null, 2);
-                    } catch {
-                      return inspectTarget.payload;
-                    }
-                  })(),
-                  ...(inspectTarget.lastStatusCode !== undefined
-                    ? { status: inspectTarget.lastStatusCode }
-                    : {}),
-                  ...(inspectTarget.lastError !== undefined
-                    ? { error: inspectTarget.lastError }
-                    : {}),
-                },
-              ]}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
+        {quickAttempt !== undefined && (
+          <dl className="flex flex-col gap-3 text-body">
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">State</dt>
+              <dd>
+                <AttemptStatusPill state={quickAttempt.state} showLiteral />
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Endpoint</dt>
+              <dd className="max-w-[240px] truncate font-mono text-caption">
+                {endpointUrlFor(quickAttempt.endpointId)}
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Attempts</dt>
+              <dd className="font-mono">{quickAttempt.attempts}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Last status code</dt>
+              <dd className="font-mono">{quickAttempt.lastStatusCode ?? "—"}</dd>
+            </div>
+            {quickAttempt.lastError != null && (
+              <div className="flex flex-col gap-1">
+                <dt className="text-muted-foreground">Last error</dt>
+                <dd className="text-caption text-state-danger-fg">{quickAttempt.lastError}</dd>
+              </div>
+            )}
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Last attempt</dt>
+              <dd>
+                {quickAttempt.lastAttemptAt != null ? (
+                  <TimestampDisplay value={quickAttempt.lastAttemptAt} />
+                ) : (
+                  <span className="text-muted-foreground">never</span>
+                )}
+              </dd>
+            </div>
+          </dl>
+        )}
+      </QuickDetailDrawer>
 
-      {/* Replay confirm */}
+      {/* Attempt more detail — the raw payload, owns `?attempt=<id>` (D14):
+          a payload with per-exchange tabs is "its own internal structure",
+          the reason §3 gives for upgrading past a narrow peek. */}
+      <MoreDetailDrawer
+        open={attemptPanelId !== null}
+        onOpenChange={(open) => !open && void setAttemptPanelId(null)}
+        title={attemptPanelTarget?.eventType ?? "Attempt payload"}
+        description={
+          attemptPanelTarget !== undefined && (
+            <IdDisplay value={attemptPanelTarget.id} variant="full" />
+          )
+        }
+        footer={
+          <Button type="button" variant="ghost" onClick={() => void setAttemptPanelId(null)}>
+            Close
+          </Button>
+        }
+      >
+        {attemptPanelTarget !== undefined && (
+          <PayloadInspector
+            exchanges={[
+              {
+                direction: "callback",
+                method: "POST",
+                url: endpointUrlFor(attemptPanelTarget.endpointId),
+                body: payloadFor(attemptPanelTarget),
+                ...(attemptPanelTarget.lastStatusCode !== undefined
+                  ? { status: attemptPanelTarget.lastStatusCode }
+                  : {}),
+                ...(attemptPanelTarget.lastError !== undefined
+                  ? { error: attemptPanelTarget.lastError }
+                  : {}),
+              },
+            ]}
+          />
+        )}
+      </MoreDetailDrawer>
+
+      {/* Replay confirm. */}
       <Dialog open={replayTarget !== null} onOpenChange={(open) => !open && setReplayTarget(null)}>
         <DialogContent>
           <DialogHeader>
