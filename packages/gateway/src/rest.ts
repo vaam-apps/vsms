@@ -281,51 +281,82 @@ export async function postJson<T>(
 }
 
 /**
- * `DELETE <path>`, no body — #54's `Route` delete.
+ * `DELETE <path>` — #54's `Route` delete, and every other model-delete
+ * screen built on top of it since.
  *
- * **Stale as of the cratestack 0.7.16 bump — this function does NOT send
- * `If-Match`, and for an `@version` model it now needs to.** This doc used
- * to say the generated delete handler needed no `If-Match` at all
+ * **Fixed for the cratestack 0.7.16 bump: this function now acquires an
+ * `ETag` and sends it as `If-Match`.** The doc here used to say the
+ * generated delete handler needed no `If-Match` at all
  * (`cratestack-macros-0.7.10/src/axum/model/prep/etag.rs`'s `EtagTokens`
- * only wired `update_if_match_*`/`get_etag_*`, nothing for delete — true at
- * the time, read directly rather than assumed). cratestack 0.7.13
+ * only wired `update_if_match_*`/`get_etag_*`, nothing for delete — true
+ * at the time, read directly rather than assumed). cratestack 0.7.13
  * (cratestack#519, `cratestack-macros`'s `prep/etag.rs` gaining
  * `delete_if_match_decl`/`delete_if_match_apply`) closed that asymmetry:
- * `DELETE` on a `@version` model now requires `If-Match` and returns `412`
- * on a stale or missing value, exactly like `PATCH` already did. Every
- * caller of this function today (`deleteRoute`, `deleteWebhookEndpoint`,
- * `deleteApp`... — grep `deleteResource(`) targets a `@version`'d model
- * (`Route`/`WebhookEndpoint`/`App`/`User`/`Role`, per #59) and passes no
- * etag, so every one of these delete buttons now genuinely 412s against a
- * real gateway rather than deleting the row. Verified by reading the
- * upstream `cratestack-sqlx`/`cratestack-macros` 0.7.16 source for this
- * bump (`crates/sms-api`'s own Rust-side delete tests needed the identical
- * `.if_match(...)` fix — see `AGENTS.md`'s 0.7.16 bump section), not
- * reasoned about from this file alone.
+ * `DELETE` on an `@version` model now requires `If-Match` and returns
+ * `412` on a stale or missing value, exactly like `PATCH` already did.
+ * Every caller of this function (`deleteRoute`, `deleteWebhookEndpoint`,
+ * `deleteApp`… — grep `deleteResource(`) targets a `@version`'d model
+ * (`Route`/`WebhookEndpoint`/`App`/`User`/`Role`, per #59), so without
+ * this fix every one of those delete buttons would genuinely 412 against
+ * a real 0.7.16 gateway. Verified live against a real gateway
+ * (`just demo`), not just reasoned about: a real delete now succeeds, and
+ * a deliberately stale `If-Match` still produces a real `412` — see
+ * `AGENTS.md`'s 0.7.16 bump section for both terminal transcripts.
  *
- * **Not fixed here.** Threading an etag through requires every caller to
- * have one on hand at delete time (most don't today — a list row doesn't
- * carry its own `ETag` response header, only a `GET`/`PATCH` response
- * does), which means real changes to the calling screens under `admin/`,
- * out of scope for the dependency-bump PR that added this comment and
- * colliding with an in-flight console redesign. Tracked as a follow-up
- * instead of silently left broken.
+ * **The shape: a `GET` (via `fetchWithEtag`) to capture the row's current
+ * `ETag`, then the `DELETE` carrying it as `If-Match`.** Deliberately kept
+ * the function's own signature unchanged — every existing call site
+ * (`deleteRoute`, `deleteWebhookEndpoint`, …) keeps working with zero
+ * changes, no screen touched, nothing to collide with the console
+ * redesign in flight under `admin/`.
+ *
+ * **Be honest about what this shape costs.** There is a real TOCTOU
+ * window between the `GET` and the `DELETE`: if the row is edited in
+ * between (another operator's concurrent `PATCH`), the captured `ETag` is
+ * stale and the `DELETE` gets a real `412` — that is `If-Match` doing
+ * exactly its job, not a bug, but it does mean this shape can fail a
+ * delete that would have succeeded a moment earlier. A caller that
+ * already holds the row's current `version` — which every screen does,
+ * since it necessarily rendered the row to offer a delete button in the
+ * first place — could pass it straight through and skip both the extra
+ * round trip and the race entirely. That is the better long-term shape;
+ * it needs a signature change (`deleteResource` would need an optional
+ * `etag`/`version` parameter) and per-screen wiring under `admin/`, which
+ * is exactly the work the console redesign already in flight should do
+ * for Phase 2, not a reason to leave deletes broken today. This function
+ * is the interim: it keeps every delete working now, without touching a
+ * single screen.
+ *
+ * A `404` on the `GET` means the row is already gone — nothing to send
+ * `If-Match` against — so the `DELETE` below still runs with no `If-Match`
+ * header at all, and its own response is what decides the outcome,
+ * unchanged from this function's pre-existing behaviour for a row that
+ * doesn't exist. A model with no `@version` field (`OptOut`'s own
+ * hand-rolled delete, not routed through this function, is the one
+ * example today) never has an `ETag` to capture either, so this adds no
+ * behaviour there.
  */
 export async function deleteResource(
   path: string,
   routeLabel: string,
   fetcher: Fetcher = undiciFetch,
 ): Promise<void> {
+  const existing = await fetchWithEtag<unknown>(path, routeLabel, fetcher);
+
   const url = restUrl(path);
 
   const attempt = async (): Promise<UndiciResponse> => {
     const token = await resolveUpstreamAccessToken();
+    const headers: Record<string, string> = {
+      accept: "application/json",
+      authorization: `Bearer ${token}`,
+    };
+    if (existing?.etag !== undefined) {
+      headers["if-match"] = normaliseIfMatch(existing.etag);
+    }
     return fetcher(url, {
       method: "DELETE",
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
+      headers,
       dispatcher: gatewayAgent(),
     });
   };

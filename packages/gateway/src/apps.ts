@@ -34,7 +34,7 @@ import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
-import { fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
+import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
 
 /** The full row shape `GET /apps`/`GET /apps/{id}` can return — transcribed
  * from `schema.cstack`'s `App` model. */
@@ -209,31 +209,16 @@ export async function updateApp(
  * removing the row — existing `Message`/`AppClient` rows referencing it are
  * untouched.
  *
- * **Stale as of the cratestack 0.7.16 bump: `App` also carries `@version`
- * (#59), and cratestack 0.7.13 (cratestack#519) made `DELETE` on a
- * `@version` model require `If-Match` — independent of `@@soft_delete`,
- * per `cratestack-sqlx`'s own `delete_exec.rs` doc comment ("if_match gates
- * on version_column alone ... whether or not it is also soft_delete_column").
- * This function sends none, so it now 412s against a real gateway. Same
- * "not fixed here, tracked separately" reasoning as `rest.ts`'s
- * `deleteResource` doc.** */
+ * **Delegates to `rest.ts`'s `deleteResource` as of the cratestack 0.7.16
+ * bump, rather than hand-rolling the same request a second time.** `App`
+ * also carries `@version` (#59), and cratestack 0.7.13 (cratestack#519)
+ * made `DELETE` on a `@version` model require `If-Match` — independent of
+ * `@@soft_delete`, per `cratestack-sqlx`'s own `delete_exec.rs` doc
+ * comment ("if_match gates on version_column alone ... whether or not it
+ * is also soft_delete_column"). This function's own hand-rolled `DELETE`
+ * sent none and would 412 against a real gateway; `deleteResource` now
+ * acquires the current `ETag` via a `GET` first — see its own doc comment
+ * for the shape and its honestly-stated TOCTOU cost. */
 export async function deleteApp(id: string): Promise<void> {
-  const url = gatewayUrl(`/apps/${encodeURIComponent(id)}`, {});
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "DELETE",
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
-      dispatcher: gatewayAgent(),
-    });
-  };
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
-  if (!response.ok) {
-    const parsed = await parseGatewayJson(response);
-    throw mapGatewayError(response.status, parsed, "deleteApp");
-  }
+  return deleteResource(`/apps/${encodeURIComponent(id)}`, "deleteApp");
 }
