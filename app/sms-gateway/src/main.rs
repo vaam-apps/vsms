@@ -1230,20 +1230,28 @@ async fn provision_client_command(command: Command) -> Result<()> {
     };
 
     let procedures = Procedures::new(pepper);
-    let provisioned = procedures
-        .provision_app_client(
-            &db,
-            &ctx,
-            provision_app_client::Args {
-                args: ProvisionClientInput {
-                    appId: app_id,
-                    label,
-                    scopes,
-                },
-            },
-        )
-        .await
-        .context("provisioning the client")?;
+    let args = provision_app_client::Args {
+        args: ProvisionClientInput {
+            appId: app_id,
+            label,
+            scopes,
+        },
+    };
+    // cratestack 0.7.13 (cratestack#512): calling `procedures.provision_app_client(&db,
+    // &ctx, args)` directly used to skip `@allow` entirely — the `--role`
+    // check above already enforced the same "owner or admin" policy by
+    // hand, so this was always a redundant guard rather than a live gap,
+    // but the framework no longer offers the 3-argument shape at all.
+    // `invoke_with_db` is "the sanctioned way to invoke a procedure from
+    // non-HTTP code" per its own doc comment — it runs the real
+    // `authorize_with_db` (so this CLI command now genuinely enforces
+    // `provisionAppClient`'s policy, not just this file's own copy of it)
+    // and hands the resulting `Authorized` witness into the trait method.
+    let provisioned = provision_app_client::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.provision_app_client(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .context("provisioning the client")?;
 
     // Destructured immediately and never reassembled: nothing past this
     // point may hold, log, or `{:?}`-print `provisioned` as a whole — see

@@ -257,14 +257,20 @@ async fn provisioning_persists_linked_app_client_and_oauth_client_rows() {
     let app = seed_app(&db).await;
     let procedures = Procedures::new(test_pepper());
 
-    let result = procedures
-        .provision_app_client(
-            &db,
-            &owner(),
-            provision_args(&app.id, "otp service", vec!["sms:send".to_owned()]),
-        )
-        .await
-        .expect("provisioning a well-formed request must succeed");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment.
+    let args = provision_args(&app.id, "otp service", vec!["sms:send".to_owned()]);
+    // `&owner()` called twice in one statement would borrow a temporary that
+    // doesn't outlive the closure's returned future (E0515) — bind it once
+    // instead.
+    let ctx = owner();
+    let result = provision_app_client::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.provision_app_client(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("provisioning a well-formed request must succeed");
 
     assert!(
         result.clientId.len() >= 8,
@@ -343,18 +349,22 @@ async fn the_returned_private_key_builds_an_assertion_the_op_accepts() {
     let procedures = Procedures::new(test_pepper());
     let issuer = spawn_token_endpoint(&db).await;
 
-    let result = procedures
-        .provision_app_client(
-            &db,
-            &owner(),
-            provision_args(
-                &app.id,
-                "token flow test client",
-                vec!["sms:send".to_owned()],
-            ),
-        )
-        .await
-        .expect("provisioning a well-formed request must succeed");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // test above.
+    let args = provision_args(
+        &app.id,
+        "token flow test client",
+        vec!["sms:send".to_owned()],
+    );
+    // `&owner()` called twice in one statement would borrow a temporary that
+    // doesn't outlive the closure's returned future (E0515) — bind it once
+    // instead.
+    let ctx = owner();
+    let result = provision_app_client::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.provision_app_client(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("provisioning a well-formed request must succeed");
 
     let assertion = sign_client_assertion(&result.clientId, &issuer, &result.privateKeyPem);
 

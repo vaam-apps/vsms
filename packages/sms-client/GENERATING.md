@@ -50,8 +50,14 @@ Run this **once, right after `pnpm install`**, before `pnpm run build`,
 touches this package. A fresh `git clone` has no `src/` here until you do.
 
 CI (`.github/workflows/ci.yml`'s `js` job) does this automatically, using
-the **published** `cratestack` 0.7.10 — never a locally built binary, so
-the CI gate proves something on every machine, not just one developer's.
+the **published** `cratestack` CLI at whatever version is currently pinned
+in the root `Cargo.toml` (read via `cargo xtask cratestack-pin`, `=0.7.16`
+as of this bump) — never a locally built binary, so the CI gate proves
+something on every machine, not just one developer's. This paragraph used
+to name a literal version number here as if it were hardcoded in the
+workflow; it isn't (see `AGENTS.md`'s xtask section) — worth saying
+explicitly since a stale hardcoded-looking version number in prose is
+exactly the kind of doc drift this repo keeps finding the hard way.
 
 ## Verifying the generated client actually matches the running server
 

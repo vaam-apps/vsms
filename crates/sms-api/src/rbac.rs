@@ -154,6 +154,17 @@ pub async fn enforce_route_permission(
 
     let headers = request.headers().clone();
     let query = request.uri().query().map(str::to_owned);
+    // cratestack 0.7.13 (cratestack#552): `RequestContext` gained an
+    // `extensions: &http::Extensions` field so an `AuthProvider` can read
+    // whatever a preceding tower/axum layer inserted (`ConnectInfo`, an
+    // mTLS peer identity, ...). `GatewayAuth::authenticate` doesn't read it
+    // today, but the field is mandatory to construct `RequestContext` at
+    // all, so this middleware — which builds one by hand, outside the
+    // generated dispatch path that already threads it through — has to
+    // supply *a* value. Cloning `request`'s own extensions is the correct
+    // one regardless of whether anything reads it yet: it is exactly what
+    // the generated router's own handler would see for this same request.
+    let extensions = request.extensions().clone();
     let request_ctx = RequestContext {
         method: method.as_str(),
         path: &path,
@@ -163,6 +174,7 @@ pub async fn enforce_route_permission(
         // generated router's own handler does, and this middleware leaves
         // `request`'s body untouched for it.
         body: &[],
+        extensions: &extensions,
     };
 
     let ctx = match state.auth.authenticate(&request_ctx).await {

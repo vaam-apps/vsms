@@ -640,12 +640,19 @@ mod tests {
     #[tokio::test]
     async fn a_request_with_no_bearer_token_is_unauthorized() {
         let headers = cratestack::axum::http::HeaderMap::new();
+        // cratestack 0.7.13 (cratestack#552): `RequestContext` gained an
+        // `extensions` field. Nothing in this test needs one to exist
+        // (`GatewayAuth::authenticate` never reads it), so an empty value
+        // is fine — see `rbac.rs`'s identical comment for the live version
+        // of this same construction.
+        let extensions = cratestack::axum::http::Extensions::new();
         let request = RequestContext {
             method: "GET",
             path: "/messages",
             query: None,
             headers: &headers,
             body: &[],
+            extensions: &extensions,
         };
         let error = gateway_auth().authenticate(&request).await.unwrap_err();
         assert!(matches!(error, CoolError::Unauthorized(_)));
@@ -663,12 +670,16 @@ mod tests {
             cratestack::axum::http::header::AUTHORIZATION,
             "Bearer not-a-jwt".parse().unwrap(),
         );
+        // cratestack 0.7.13 (cratestack#552): see the identical comment on
+        // the test above.
+        let extensions = cratestack::axum::http::Extensions::new();
         let request = RequestContext {
             method: "GET",
             path: "/messages",
             query: None,
             headers: &headers,
             body: &[],
+            extensions: &extensions,
         };
         let error = gateway_auth().authenticate(&request).await.unwrap_err();
         assert!(matches!(error, CoolError::Unauthorized(_)));

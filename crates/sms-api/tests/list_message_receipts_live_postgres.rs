@@ -63,12 +63,28 @@ fn owner() -> CoolContext {
 /// provisioned since #22/#24) — `kind == "app"`, matching `listMessageReceipts`'
 /// broad `@allow`, plus the Layer 2 scope this procedure's own
 /// `require_permission` checks.
-fn app_caller_with_sms_read() -> CoolContext {
+///
+/// **`app_id` is a real parameter, not a hardcoded empty string, as of the
+/// cratestack 0.7.16 bump.** Before that bump, calling `ProcedureRegistry`
+/// methods directly (the 3-argument shape this whole file used) silently
+/// skipped `@authorize(Message, detail, args.messageId)` entirely — the
+/// exact bug cratestack#512 closed — so this context's own `app_id` never
+/// mattered: nothing ever checked it against the target `Message.appId`.
+/// Once `invoke_with_db` started actually running that check (via the new
+/// `Authorized` witness), every test below started failing with
+/// `Forbidden("detail policy denied this operation")`, because
+/// `Message.detail`'s own `@@allow` requires `appId == auth().appId` for a
+/// `kind == "app"` caller (`schema.cstack`) and an empty string never
+/// equals a real seeded app's id. Found live, not assumed: this was always
+/// a latent mismatch in this fixture, invisible only because the bypass
+/// bug hid it. Fixed at the root — every caller of this function now
+/// passes the actual seeded app id.
+fn app_caller_with_sms_read(app_id: &str) -> CoolContext {
     let mut ctx = Principal {
         sub: "list-message-receipts-test-console-client".to_owned(),
         kind: PrincipalKind::App,
         role: "app".to_owned(),
-        app_id: String::new(),
+        app_id: app_id.to_owned(),
     }
     .into_context();
     ctx.extensions.insert(
@@ -79,13 +95,15 @@ fn app_caller_with_sms_read() -> CoolContext {
 }
 
 /// The identical caller shape, but without `sms:read` — the exact
-/// "an omitted scope yields denial" shape §5.2 documents.
-fn app_caller_without_sms_read() -> CoolContext {
+/// "an omitted scope yields denial" shape §5.2 documents. See
+/// [`app_caller_with_sms_read`]'s own doc for why `app_id` is now a real
+/// parameter.
+fn app_caller_without_sms_read(app_id: &str) -> CoolContext {
     let mut ctx = Principal {
         sub: "list-message-receipts-test-console-client-no-scope".to_owned(),
         kind: PrincipalKind::App,
         role: "app".to_owned(),
-        app_id: String::new(),
+        app_id: app_id.to_owned(),
     }
     .into_context();
     ctx.extensions
@@ -271,18 +289,22 @@ async fn returns_every_receipt_for_the_message_oldest_first() {
         "the seed order must actually be the received order for this test to prove anything"
     );
 
-    let result = Procedures::new(test_pepper())
-        .list_message_receipts(
-            &db,
-            &app_caller_with_sms_read(),
-            list_message_receipts::Args {
-                args: schema::MessageReceiptsInput {
-                    messageId: message.id.clone(),
-                },
-            },
-        )
-        .await
-        .expect("listing receipts for an owned message must succeed");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_sms_read(&app_id);
+    let args = list_message_receipts::Args {
+        args: schema::MessageReceiptsInput {
+            messageId: message.id.clone(),
+        },
+    };
+    let result = list_message_receipts::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.list_message_receipts(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("listing receipts for an owned message must succeed");
 
     assert_eq!(
         result.receipts.len(),
@@ -363,18 +385,20 @@ async fn a_message_with_no_receipts_returns_an_empty_list_not_an_error() {
         .expect("submitted -> uncertain");
     assert_eq!(uncertain.state, MessageState::uncertain);
 
-    let result = Procedures::new(test_pepper())
-        .list_message_receipts(
-            &db,
-            &app_caller_with_sms_read(),
-            list_message_receipts::Args {
-                args: schema::MessageReceiptsInput {
-                    messageId: uncertain.id.clone(),
-                },
-            },
-        )
-        .await
-        .expect("an uncertain message with zero receipts must not error");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // test above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_sms_read(&app_id);
+    let args = list_message_receipts::Args {
+        args: schema::MessageReceiptsInput {
+            messageId: uncertain.id.clone(),
+        },
+    };
+    let result = list_message_receipts::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.list_message_receipts(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("an uncertain message with zero receipts must not error");
 
     assert!(
         result.receipts.is_empty(),
@@ -383,31 +407,60 @@ async fn a_message_with_no_receipts_returns_an_empty_list_not_an_error() {
     );
 }
 
-/// Layer 2 (§5.1): an app-kind caller with no `sms:read` scope is denied
-/// before the procedure touches the database at all — proven by pointing
-/// it at a message id that doesn't even exist and confirming the error is
-/// still `Forbidden`, not `NotFound` (which would mean the permission
-/// check was skipped and the lookup ran anyway) — same proof shape
-/// `requeue_job_live_postgres.rs`'s own
-/// `requeue_denies_a_caller_with_no_job_enqueue_scope` uses.
+/// Layer 2 (§5.1): an app-kind caller with no `sms:read` scope is denied.
+///
+/// **Rewritten for the cratestack 0.7.16 bump — no longer points at a
+/// nonexistent message id.** cratestack 0.7.13 (cratestack#512) made
+/// `invoke_with_db` genuinely run `@authorize(Message, detail,
+/// args.messageId)` as part of Layer 1, *before* this procedure's own
+/// Layer 2 `require_permission(ctx, "sms:read")` ever runs — a real
+/// `SELECT 1 FROM messages WHERE id = $1 AND <detail policy>` preflight
+/// (`cratestack-sqlx-0.7.16/src/query/support/conditions.rs`). Pointing
+/// this test at a ***nonexistent*** id (the pre-0.7.16 shape) now means
+/// that preflight itself returns `Forbidden("detail policy denied this
+/// operation")` for *everyone*, regardless of Layer 2 scope — Layer 2 is
+/// never reached, so the test would no longer prove what its own name
+/// claims. Confirmed live before fixing: with the old nonexistent-id
+/// version restored temporarily, this test failed exactly that way
+/// (`expected the denial to name the missing permission: detail policy
+/// denied this operation`), for a caller that legitimately lacks
+/// `sms:read` and one that legitimately holds it alike — proof the
+/// nonexistent-id shape can no longer distinguish the two.
+///
+/// The fix: seed a **real** message under the caller's own `app_id`, so
+/// `@authorize`'s preflight passes (matching `Message.detail`'s own
+/// `appId == auth().appId` clause) and `require_permission` is what
+/// actually produces the denial — restoring the property this test has
+/// always claimed to prove. `requeuing_an_unknown_job_id_is_not_found`/
+/// `requeue_denies_a_caller_with_no_job_enqueue_scope`
+/// (`requeue_job_live_postgres.rs`) needed the identical fix for the
+/// identical reason.
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn denies_a_caller_with_no_sms_read_scope() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
+    let app_id = seed_app(&db).await;
+    let message = seed_message(&db, &app_id).await;
 
-    let error = Procedures::new(test_pepper())
-        .list_message_receipts(
-            &db,
-            &app_caller_without_sms_read(),
-            list_message_receipts::Args {
-                args: schema::MessageReceiptsInput {
-                    messageId: "irrelevant-the-gate-must-fire-first".to_owned(),
-                },
-            },
-        )
-        .await
-        .expect_err("a caller with no sms:read scope must be denied");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`, which runs the real Layer 1 `@allow`/`@authorize`
+    // checks first — `auth().kind == "app"` and `appId == auth().appId`
+    // both admit this caller (`schema.cstack`'s `listMessageReceipts`
+    // `@allow`, `Message.detail`'s own `@@allow`), so this reaches Layer 2.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_without_sms_read(&app_id);
+    let args = list_message_receipts::Args {
+        args: schema::MessageReceiptsInput {
+            messageId: message.id.clone(),
+        },
+    };
+    let error = list_message_receipts::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.list_message_receipts(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect_err("a caller with no sms:read scope must be denied");
 
     assert!(
         matches!(error, CoolError::Forbidden(_)),

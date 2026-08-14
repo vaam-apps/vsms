@@ -120,25 +120,28 @@ async fn audit_log_finds_a_freshly_audited_write_filtered_by_model() {
     let db = db().await;
     let (app_id, slug) = seed_audited_app(&db).await;
 
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment.
     let procedures = Procedures::new(test_pepper());
-    let page = procedures
-        .audit_log(
-            &db,
-            &owner_with_audit_read(),
-            audit_log::Args {
-                args: schema::AuditLogQuery {
-                    model: Some("App".to_owned()),
-                    operation: Some("create".to_owned()),
-                    actorId: None,
-                    since: None,
-                    until: None,
-                    limit: Some(200),
-                    offset: None,
-                },
-            },
-        )
-        .await
-        .expect("listing the audit log filtered by model");
+    let ctx = owner_with_audit_read();
+    let args = audit_log::Args {
+        args: schema::AuditLogQuery {
+            model: Some("App".to_owned()),
+            operation: Some("create".to_owned()),
+            actorId: None,
+            since: None,
+            until: None,
+            limit: Some(200),
+            offset: None,
+        },
+    };
+    let page = audit_log::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.audit_log(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("listing the audit log filtered by model");
 
     let entry = page
         .entries
@@ -175,23 +178,28 @@ async fn audit_log_denies_a_caller_with_no_audit_read_permission() {
     let db = db().await;
     let procedures = Procedures::new(test_pepper());
 
-    let result = procedures
-        .audit_log(
-            &db,
-            &owner(), // no perms claim at all
-            audit_log::Args {
-                args: schema::AuditLogQuery {
-                    model: None,
-                    operation: None,
-                    actorId: None,
-                    since: None,
-                    until: None,
-                    limit: None,
-                    offset: None,
-                },
-            },
-        )
-        .await;
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`, which runs the real Layer 1 `@allow` check first —
+    // `hasRole('owner')` already admits this caller there (`schema.cstack`'s
+    // `auditLog` `@allow`), and `auditLog` carries no `@authorize` model
+    // check, so this stays a genuine Layer 2 (`require_permission`) denial.
+    let ctx = owner(); // no perms claim at all
+    let args = audit_log::Args {
+        args: schema::AuditLogQuery {
+            model: None,
+            operation: None,
+            actorId: None,
+            since: None,
+            until: None,
+            limit: None,
+            offset: None,
+        },
+    };
+    let result = audit_log::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.audit_log(&db, &ctx, args.clone(), authorized)
+    })
+    .await;
     assert!(
         matches!(result, Err(CoolError::Forbidden(_))),
         "expected Forbidden, got {result:?}"
@@ -209,10 +217,15 @@ async fn audit_chain_status_reports_no_anchor_on_a_never_anchored_database() {
     let db = db().await;
     let procedures = Procedures::new(test_pepper());
 
-    let status = procedures
-        .audit_chain_status(&db, &owner_with_audit_read(), audit_chain_status::Args {})
-        .await
-        .expect("audit chain status must succeed even with no anchor yet");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on
+    // `audit_log_finds_a_freshly_audited_write_filtered_by_model` above.
+    let ctx = owner_with_audit_read();
+    let args = audit_chain_status::Args {};
+    let status = audit_chain_status::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.audit_chain_status(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("audit chain status must succeed even with no anchor yet");
 
     assert!(status.latestAnchorId.is_none());
     assert!(

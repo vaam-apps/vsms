@@ -713,8 +713,21 @@ impl ReservedRoleFixture {
             .run(&owner())
             .await
             .expect("reassigning the test User off the reserved-key Role before deleting it");
+        // cratestack 0.7.13 (cratestack#519): DELETE on an `@version` model
+        // now enforces `If-Match`, the same reason the `User` reassignment
+        // just above re-reads its current version rather than threading one
+        // through this fixture. `Role` was never updated after creation, so
+        // a fresh read here is always current.
+        let current_role = db
+            .role()
+            .find_unique(self.role_id.clone())
+            .run(&owner())
+            .await
+            .expect("re-reading the test Role for its current version")
+            .expect("the test Role still exists at cleanup time");
         db.role()
             .delete(self.role_id)
+            .if_match(current_role.version)
             .run(&owner())
             .await
             .expect("deleting the reserved-role test Role");

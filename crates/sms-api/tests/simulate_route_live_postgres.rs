@@ -219,21 +219,25 @@ async fn a_single_matching_route_wins_and_is_reported_eligible() {
     let provider_id = create_active_provider(&db, &suffix).await;
     let route = create_route(&db, &provider_id, &app_id, 0, 1).await;
 
-    let result = Procedures::new(test_pepper())
-        .simulate_route(
-            &db,
-            &app_caller_with_route_read(),
-            simulate_route::Args {
-                args: schema::SimulateRouteInput {
-                    msisdn: "+237677123456".to_owned(),
-                    class: schema::MessageClass::otp,
-                    appId: app_id,
-                    draw: None,
-                },
-            },
-        )
-        .await
-        .expect("simulateRoute must succeed for a caller with route:read");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_route_read();
+    let args = simulate_route::Args {
+        args: schema::SimulateRouteInput {
+            msisdn: "+237677123456".to_owned(),
+            class: schema::MessageClass::otp,
+            appId: app_id,
+            draw: None,
+        },
+    };
+    let result = simulate_route::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.simulate_route(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("simulateRoute must succeed for a caller with route:read");
 
     assert!(!result.noRoutesConfigured);
     let own_evaluation = result
@@ -267,21 +271,23 @@ async fn a_route_scoped_to_a_different_app_is_reported_as_a_predicate_failure() 
     let provider_id = create_active_provider(&db, &suffix).await;
     let route = create_route(&db, &provider_id, &route_app_id, 0, 1).await;
 
-    let result = Procedures::new(test_pepper())
-        .simulate_route(
-            &db,
-            &app_caller_with_route_read(),
-            simulate_route::Args {
-                args: schema::SimulateRouteInput {
-                    msisdn: "+237677123456".to_owned(),
-                    class: schema::MessageClass::otp,
-                    appId: candidate_app_id.clone(),
-                    draw: None,
-                },
-            },
-        )
-        .await
-        .expect("simulateRoute must succeed for a caller with route:read");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // test above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_route_read();
+    let args = simulate_route::Args {
+        args: schema::SimulateRouteInput {
+            msisdn: "+237677123456".to_owned(),
+            class: schema::MessageClass::otp,
+            appId: candidate_app_id.clone(),
+            draw: None,
+        },
+    };
+    let result = simulate_route::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.simulate_route(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("simulateRoute must succeed for a caller with route:read");
 
     assert!(result.winner.is_none());
     let evaluation = result
@@ -325,28 +331,34 @@ async fn zero_configured_routes_is_reported_distinctly_from_zero_eligible_routes
         .await
         .expect("listing every Route row to clear them");
     for row in existing {
+        // cratestack 0.7.13 (cratestack#519): DELETE on an `@version` model
+        // now enforces `If-Match` — `row.version` is the value this exact
+        // `find_many` call just read, so it always matches.
+        let version = row.version;
         db.route()
             .delete(row.id)
+            .if_match(version)
             .run(&owner())
             .await
             .expect("deleting a leftover Route row");
     }
 
-    let result = Procedures::new(test_pepper())
-        .simulate_route(
-            &db,
-            &app_caller_with_route_read(),
-            simulate_route::Args {
-                args: schema::SimulateRouteInput {
-                    msisdn: "+237677123456".to_owned(),
-                    class: schema::MessageClass::otp,
-                    appId: format!("simroute-app-{}", unique_suffix()),
-                    draw: None,
-                },
-            },
-        )
-        .await
-        .expect("simulateRoute must succeed against an empty Route table");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_route_read();
+    let args = simulate_route::Args {
+        args: schema::SimulateRouteInput {
+            msisdn: "+237677123456".to_owned(),
+            class: schema::MessageClass::otp,
+            appId: format!("simroute-app-{}", unique_suffix()),
+            draw: None,
+        },
+    };
+    let result = simulate_route::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.simulate_route(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("simulateRoute must succeed against an empty Route table");
 
     assert!(result.noRoutesConfigured);
     assert!(result.evaluations.is_empty());
@@ -361,21 +373,28 @@ async fn simulate_route_denies_a_caller_with_no_route_read_scope() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
 
-    let error = Procedures::new(test_pepper())
-        .simulate_route(
-            &db,
-            &app_caller_without_route_read(),
-            simulate_route::Args {
-                args: schema::SimulateRouteInput {
-                    msisdn: "+237677123456".to_owned(),
-                    class: schema::MessageClass::otp,
-                    appId: format!("simroute-app-{}", unique_suffix()),
-                    draw: None,
-                },
-            },
-        )
-        .await
-        .expect_err("a caller with no route:read scope must be denied");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`, which runs the real Layer 1 `@allow` check first —
+    // `auth().kind == "app"` already admits this caller there
+    // (`schema.cstack`'s `simulateRoute` `@allow`), and `simulateRoute`
+    // carries no `@authorize` model check, so this stays a genuine Layer 2
+    // (`require_permission`) denial, not a Layer 1 one.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_without_route_read();
+    let args = simulate_route::Args {
+        args: schema::SimulateRouteInput {
+            msisdn: "+237677123456".to_owned(),
+            class: schema::MessageClass::otp,
+            appId: format!("simroute-app-{}", unique_suffix()),
+            draw: None,
+        },
+    };
+    let error = simulate_route::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.simulate_route(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect_err("a caller with no route:read scope must be denied");
 
     assert!(
         matches!(error, CoolError::Forbidden(_)),
@@ -438,14 +457,21 @@ async fn a_supplied_draw_reproduces_the_same_winner_on_replay() {
     let procedures = Procedures::new(test_pepper());
     let ctx = app_caller_with_route_read();
 
-    let first = procedures
-        .simulate_route(&db, &ctx, input(0.9))
-        .await
-        .expect("first simulateRoute call");
-    let second = procedures
-        .simulate_route(&db, &ctx, input(0.9))
-        .await
-        .expect("second simulateRoute call with the identical draw");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let first_args = input(0.9);
+    let first = simulate_route::invoke_with_db(&db, &first_args, &ctx, |authorized| {
+        procedures.simulate_route(&db, &ctx, first_args.clone(), authorized)
+    })
+    .await
+    .expect("first simulateRoute call");
+    let second_args = input(0.9);
+    let second = simulate_route::invoke_with_db(&db, &second_args, &ctx, |authorized| {
+        procedures.simulate_route(&db, &ctx, second_args.clone(), authorized)
+    })
+    .await
+    .expect("second simulateRoute call with the identical draw");
 
     assert_eq!(
         first.winner.as_ref().map(|w| w.routeId.clone()),
@@ -478,10 +504,12 @@ async fn a_supplied_draw_reproduces_the_same_winner_on_replay() {
     // Comfortably inside `[low, high)`, away from either boundary.
     let other_draw = other_range.low + (other_range.high - other_range.low) / 2.0;
 
-    let third = procedures
-        .simulate_route(&db, &ctx, input(other_draw))
-        .await
-        .expect("third simulateRoute call with a draw landing in the other route's range");
+    let third_args = input(other_draw);
+    let third = simulate_route::invoke_with_db(&db, &third_args, &ctx, |authorized| {
+        procedures.simulate_route(&db, &ctx, third_args.clone(), authorized)
+    })
+    .await
+    .expect("third simulateRoute call with a draw landing in the other route's range");
     assert_eq!(
         third.winner.as_ref().map(|w| w.routeId.clone()),
         Some(other_range.routeId.clone()),
@@ -519,21 +547,24 @@ async fn fixture_routes_from_other_tests_do_not_leak_into_an_unrelated_candidate
         "a freshly minted app id must start with zero scoped routes, regardless of what earlier tests left behind"
     );
 
-    let result = Procedures::new(test_pepper())
-        .simulate_route(
-            &db,
-            &app_caller_with_route_read(),
-            simulate_route::Args {
-                args: schema::SimulateRouteInput {
-                    msisdn: "+237677123456".to_owned(),
-                    class: schema::MessageClass::otp,
-                    appId: app_id,
-                    draw: None,
-                },
-            },
-        )
-        .await
-        .expect("simulateRoute must succeed");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_route_read();
+    let args = simulate_route::Args {
+        args: schema::SimulateRouteInput {
+            msisdn: "+237677123456".to_owned(),
+            class: schema::MessageClass::otp,
+            appId: app_id,
+            draw: None,
+        },
+    };
+    let result = simulate_route::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.simulate_route(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("simulateRoute must succeed");
 
     // Every other test's own fixture routes are scoped to their own app
     // id, so none of them can appear as `eligible`/`predicate_failed`

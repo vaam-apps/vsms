@@ -238,38 +238,100 @@ describe("postJson", () => {
 });
 
 describe("deleteResource", () => {
-  it("sends a plain DELETE with no body and no If-Match header at all", async () => {
-    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+  // cratestack 0.7.16 bump (cratestack#519): DELETE on an `@version` model
+  // now requires `If-Match`, so this function does a `GET` first (via
+  // `fetchWithEtag`) to acquire the row's current `ETag`, then sends it as
+  // `If-Match` on the `DELETE` — see `rest.ts`'s own `deleteResource` doc
+  // for the full mechanism and its honestly-stated TOCTOU cost. Every test
+  // below therefore mocks two calls, GET then DELETE, not one.
 
-    await deleteResource("/routes/r1", "deleteRoute", fetcher);
-
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://sms-api.test/routes/r1");
-    expect(init.method).toBe("DELETE");
-    expect(init.body).toBeUndefined();
-    expect((init.headers as Record<string, string>)["if-match"]).toBeUndefined();
-  });
-
-  it("retries exactly once, with a fresh token, on an unexpected 401", async () => {
+  it("acquires the current ETag via a GET, then sends it verbatim as If-Match on the DELETE", async () => {
+    const route: FakeProvider = { id: "r1", displayName: "catch-all", version: 4 };
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(401, { code: "UNAUTHORIZED", message: "expired" }))
-      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+      .mockResolvedValueOnce(jsonResponse(200, route, { etag: '"4"' })) // the GET
+      .mockResolvedValueOnce(new Response(null, { status: 204 })); // the DELETE
 
     await deleteResource("/routes/r1", "deleteRoute", fetcher);
 
     expect(fetcher).toHaveBeenCalledTimes(2);
+    const [getUrl, getInit] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(getUrl).toBe("http://sms-api.test/routes/r1");
+    expect(getInit.method).toBe("GET");
+
+    const [deleteUrl, deleteInit] = fetcher.mock.calls[1] as [string, RequestInit];
+    expect(deleteUrl).toBe("http://sms-api.test/routes/r1");
+    expect(deleteInit.method).toBe("DELETE");
+    expect(deleteInit.body).toBeUndefined();
+    // The raw header value, quotes included — the exact wire form
+    // `normaliseIfMatch` produces and a real server's `parse_if_match_version`
+    // requires (see that function's own doc comment on the mandatory quotes).
+    expect((deleteInit.headers as Record<string, string>)["if-match"]).toBe('"4"');
   });
 
-  it("a 404 surfaces as a real GatewayError, not a silent success", async () => {
+  it("sends no If-Match at all when the model carries no @version (the GET's own etag is undefined)", async () => {
     const fetcher = vi
       .fn()
-      .mockResolvedValue(jsonResponse(404, { code: "NOT_FOUND", message: "no such route" }));
+      .mockResolvedValueOnce(jsonResponse(200, { id: "o1" })) // GET, no etag header
+      .mockResolvedValueOnce(new Response(null, { status: 204 })); // DELETE
+
+    await deleteResource("/opt_outs/o1", "deleteOptOut", fetcher);
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const [, deleteInit] = fetcher.mock.calls[1] as [string, RequestInit];
+    expect((deleteInit.headers as Record<string, string>)["if-match"]).toBeUndefined();
+  });
+
+  it("a row already gone (404 on the GET) still issues the DELETE, with no If-Match to send", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(404, { code: "NOT_FOUND", message: "no such route" }))
+      .mockResolvedValueOnce(jsonResponse(404, { code: "NOT_FOUND", message: "no such route" }));
 
     await expect(deleteResource("/routes/gone", "deleteRoute", fetcher)).rejects.toThrow(
       GatewayError,
     );
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const [, deleteInit] = fetcher.mock.calls[1] as [string, RequestInit];
+    expect((deleteInit.headers as Record<string, string>)["if-match"]).toBeUndefined();
+  });
+
+  it("a stale If-Match on the DELETE surfaces as a recognisably-stale GatewayError — proof the header is honoured, not ignored", async () => {
+    const route: FakeProvider = { id: "r1", displayName: "catch-all", version: 4 };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, route, { etag: '"4"' })) // GET: version 4
+      .mockResolvedValueOnce(
+        // Another operator's concurrent write landed between the GET above
+        // and this DELETE — the TOCTOU window `deleteResource`'s own doc
+        // names explicitly. The server rejects the now-stale If-Match.
+        jsonResponse(412, {
+          code: "PRECONDITION_FAILED",
+          message: "version mismatch: expected 4, found 5",
+        }),
+      );
+
+    const error: unknown = await deleteResource("/routes/r1", "deleteRoute", fetcher).catch(
+      (e: unknown) => e,
+    );
+
+    expect(error).toBeInstanceOf(GatewayError);
+    expect(isStaleWriteError(error)).toBe(true);
+    expect((error as GatewayError).httpStatus).toBe(412);
+  });
+
+  it("retries exactly once, with a fresh token, on an unexpected 401 during the DELETE itself", async () => {
+    const route: FakeProvider = { id: "r1", displayName: "catch-all", version: 4 };
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, route, { etag: '"4"' })) // GET
+      .mockResolvedValueOnce(jsonResponse(401, { code: "UNAUTHORIZED", message: "expired" })) // DELETE, 1st attempt
+      .mockResolvedValueOnce(new Response(null, { status: 204 })); // DELETE, retried
+
+    await deleteResource("/routes/r1", "deleteRoute", fetcher);
+
+    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 });
 

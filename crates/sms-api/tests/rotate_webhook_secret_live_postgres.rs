@@ -164,18 +164,22 @@ async fn rotating_moves_the_current_secret_to_prev_and_mints_a_fresh_one() {
     let endpoint = seed_endpoint(&db, &app_id, "original-secret-before-any-rotation").await;
 
     let before = Utc::now();
-    let rotated = Procedures::new(test_pepper())
-        .rotate_webhook_secret(
-            &db,
-            &owner_with_webhook_manage(),
-            rotate_webhook_secret::Args {
-                args: schema::EndpointInput {
-                    endpointId: endpoint.id.clone(),
-                },
-            },
-        )
-        .await
-        .expect("rotating a fresh endpoint's secret");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = owner_with_webhook_manage();
+    let args = rotate_webhook_secret::Args {
+        args: schema::EndpointInput {
+            endpointId: endpoint.id.clone(),
+        },
+    };
+    let rotated = rotate_webhook_secret::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.rotate_webhook_secret(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("rotating a fresh endpoint's secret");
 
     assert_eq!(rotated.id, endpoint.id);
     assert_ne!(
@@ -218,17 +222,24 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
             endpointId: endpoint.id.clone(),
         },
     };
+    let ctx = owner_with_webhook_manage();
 
-    let first = procedures
-        .rotate_webhook_secret(&db, &owner_with_webhook_manage(), args())
-        .await
-        .expect("first rotation");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // test above.
+    let first_args = args();
+    let first = rotate_webhook_secret::invoke_with_db(&db, &first_args, &ctx, |authorized| {
+        procedures.rotate_webhook_secret(&db, &ctx, first_args.clone(), authorized)
+    })
+    .await
+    .expect("first rotation");
     assert_eq!(first.prevSecret.as_deref(), Some("generation-zero-secret"));
 
-    let second = procedures
-        .rotate_webhook_secret(&db, &owner_with_webhook_manage(), args())
-        .await
-        .expect("second rotation");
+    let second_args = args();
+    let second = rotate_webhook_secret::invoke_with_db(&db, &second_args, &ctx, |authorized| {
+        procedures.rotate_webhook_secret(&db, &ctx, second_args.clone(), authorized)
+    })
+    .await
+    .expect("second rotation");
     assert_eq!(
         second.prevSecret.as_deref(),
         Some(first.secret.as_str()),
@@ -257,18 +268,20 @@ async fn rotating_an_unknown_endpoint_id_is_not_found() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
 
-    let error = Procedures::new(test_pepper())
-        .rotate_webhook_secret(
-            &db,
-            &owner_with_webhook_manage(),
-            rotate_webhook_secret::Args {
-                args: schema::EndpointInput {
-                    endpointId: format!("nosuchendpoint{}", unique_suffix()),
-                },
-            },
-        )
-        .await
-        .expect_err("a nonexistent endpoint id must not silently succeed");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // test above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = owner_with_webhook_manage();
+    let args = rotate_webhook_secret::Args {
+        args: schema::EndpointInput {
+            endpointId: format!("nosuchendpoint{}", unique_suffix()),
+        },
+    };
+    let error = rotate_webhook_secret::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.rotate_webhook_secret(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect_err("a nonexistent endpoint id must not silently succeed");
 
     assert!(
         matches!(error, cratestack::CoolError::NotFound(_)),
@@ -296,18 +309,24 @@ async fn rotate_denies_a_caller_with_no_webhook_manage_permission() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
 
-    let error = Procedures::new(test_pepper())
-        .rotate_webhook_secret(
-            &db,
-            &developer_without_permission(),
-            rotate_webhook_secret::Args {
-                args: schema::EndpointInput {
-                    endpointId: format!("irrelevant-the-gate-must-fire-first{}", unique_suffix()),
-                },
-            },
-        )
-        .await
-        .expect_err("a caller with no webhook:manage permission must be denied");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`, which runs the real Layer 1 `@allow` check first —
+    // `hasRole('developer')` already admits this caller there
+    // (`schema.cstack`'s `rotateWebhookSecret` `@allow`), so this stays a
+    // genuine Layer 2 (`require_permission`) denial, not a Layer 1 one.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = developer_without_permission();
+    let args = rotate_webhook_secret::Args {
+        args: schema::EndpointInput {
+            endpointId: format!("irrelevant-the-gate-must-fire-first{}", unique_suffix()),
+        },
+    };
+    let error = rotate_webhook_secret::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.rotate_webhook_secret(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect_err("a caller with no webhook:manage permission must be denied");
 
     assert!(
         matches!(error, cratestack::CoolError::Forbidden(_)),

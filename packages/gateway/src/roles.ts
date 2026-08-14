@@ -30,7 +30,7 @@ import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
-import { fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
+import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
 
 export interface RoleRecord {
   id: string;
@@ -167,12 +167,14 @@ export async function updateRole(
 /** `DELETE /roles/{id}` — `owner`-only. A `Role` still referenced by a
  * `User.roleKey` will fail this with a foreign-key violation, surfaced as
  * an ordinary gateway error rather than this module trying to pre-check
- * it — the database is the correct place to enforce that. */
+ * it — the database is the correct place to enforce that.
+ *
+ * **Delegates to `rest.ts`'s `deleteResource` as of the cratestack 0.7.16
+ * bump, rather than hand-rolling the same request a second time.** `Role`
+ * also carries `@version` (#59) and, per cratestack 0.7.13
+ * (cratestack#519), `DELETE` on a `@version` model now requires
+ * `If-Match` — see `rest.ts`'s `deleteResource` doc for the mechanism and
+ * its honestly-stated TOCTOU cost. */
 export async function deleteRole(id: string): Promise<void> {
-  const url = gatewayUrl(`/roles/${encodeURIComponent(id)}`, {});
-  const response = await authedRequest(url, { method: "DELETE" });
-  if (!response.ok) {
-    const parsed = await parseGatewayJson(response);
-    throw mapGatewayError(response.status, parsed, "deleteRole");
-  }
+  return deleteResource(`/roles/${encodeURIComponent(id)}`, "deleteRole");
 }
