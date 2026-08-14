@@ -529,6 +529,11 @@ async fn verify_idempotency_principal(
         let path = request.uri().path().to_owned();
         let headers = request.headers().clone();
         let query = request.uri().query().map(str::to_owned);
+        // cratestack 0.7.13 (cratestack#552): see
+        // `rbac::enforce_route_permission`'s identical comment on why this
+        // hand-built `RequestContext` needs an `extensions` value even
+        // though `GatewayAuth::authenticate` doesn't read it today.
+        let extensions = request.extensions().clone();
         let request_ctx = RequestContext {
             method: method.as_str(),
             path: &path,
@@ -538,6 +543,7 @@ async fn verify_idempotency_principal(
             // `rbac::enforce_route_permission`'s identical comment on
             // this exact point.
             body: &[],
+            extensions: &extensions,
         };
         if let Ok(ctx) = state.auth.authenticate(&request_ctx).await {
             if let Some(Value::String(sub)) = ctx.auth_field("sub") {
@@ -727,30 +733,45 @@ pub fn router(
     // this must not share the per-principal layer's store.
     let source_rate_limit_store: Arc<dyn RateLimitStore> = Arc::new(InMemoryRateLimitStore::new());
 
-    schema::axum::router(db, Procedures::new(pepper), JsonCodec, auth)
-        .layer(from_fn_with_state(rbac_state, enforce_route_permission))
-        .layer(from_fn_with_state(job_rbac_state, enforce_route_permission))
-        .layer(from_fn_with_state(
-            provider_route_rbac_state,
-            enforce_route_permission,
-        ))
-        .layer(from_fn_with_state(
-            sender_and_webhook_rbac_state,
-            enforce_route_permission,
-        ))
-        .layer(
-            IdempotencyLayer::new(idempotency_store, idempotency_ttl)
-                .with_principal_fingerprint(verified_idempotency_fingerprint),
-        )
-        .layer(from_fn_with_state(
-            idempotency_auth_state,
-            verify_idempotency_principal,
-        ))
-        .layer(RateLimitLayer::new(rate_limit_store, rate_limit).with_key_fn(client_id_fingerprint))
-        .layer(
-            RateLimitLayer::new(source_rate_limit_store, source_rate_limit)
-                .with_key_fn(source_fingerprint),
-        )
+    // cratestack 0.7.12 (cratestack#413): the generated `router()` gained a
+    // real, required `body_limit_bytes` constructor parameter — a request
+    // body cap that used to be axum's own implicit, unnamed 2 MiB
+    // `Bytes`-extractor default. `cratestack::DEFAULT_BODY_LIMIT_BYTES` is
+    // that exact same 2 MiB figure, re-exported by the `cratestack-pg`
+    // facade from `cratestack-core`'s `limits` module — passing it here is
+    // provably a no-op on this upgrade, not a new restriction. No message
+    // body, webhook payload, or provider response this system handles is
+    // remotely close to 2 MiB.
+    schema::axum::router(
+        db,
+        Procedures::new(pepper),
+        JsonCodec,
+        auth,
+        cratestack::DEFAULT_BODY_LIMIT_BYTES,
+    )
+    .layer(from_fn_with_state(rbac_state, enforce_route_permission))
+    .layer(from_fn_with_state(job_rbac_state, enforce_route_permission))
+    .layer(from_fn_with_state(
+        provider_route_rbac_state,
+        enforce_route_permission,
+    ))
+    .layer(from_fn_with_state(
+        sender_and_webhook_rbac_state,
+        enforce_route_permission,
+    ))
+    .layer(
+        IdempotencyLayer::new(idempotency_store, idempotency_ttl)
+            .with_principal_fingerprint(verified_idempotency_fingerprint),
+    )
+    .layer(from_fn_with_state(
+        idempotency_auth_state,
+        verify_idempotency_principal,
+    ))
+    .layer(RateLimitLayer::new(rate_limit_store, rate_limit).with_key_fn(client_id_fingerprint))
+    .layer(
+        RateLimitLayer::new(source_rate_limit_store, source_rate_limit)
+            .with_key_fn(source_fingerprint),
+    )
 }
 
 /// Every route the schema generated, for `sms-gateway routes`.

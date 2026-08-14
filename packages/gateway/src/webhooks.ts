@@ -338,8 +338,10 @@ export async function updateWebhookEndpoint(
   return { ...result, data: normalizeEndpoint(result.data) };
 }
 
-/** `DELETE /webhook_endpoints/{id}` — no `If-Match` (see `rest.ts`'s own
- * doc on [`deleteResource`]). */
+/** `DELETE /webhook_endpoints/{id}`. **Stale as of the cratestack 0.7.16
+ * bump: this now needs `If-Match` and does not send one — see `rest.ts`'s
+ * own doc on [`deleteResource`] for the mechanism and why it isn't fixed
+ * here.** */
 export async function deleteWebhookEndpoint(id: string): Promise<void> {
   return deleteResource(`/webhook_endpoints/${encodeURIComponent(id)}`, "deleteWebhookEndpoint");
 }

@@ -304,14 +304,17 @@ async fn a_well_formed_send_is_accepted_and_classified() {
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
     let sender = seed_approved_sender(&db).await;
 
-    let result = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args("+237677123456", "Votre code est 4821", Some(&sender)),
-        )
-        .await
-        .expect("a well-formed send must be accepted");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment.
+    let ctx = app_caller(&client_id);
+    let send_args = args("+237677123456", "Votre code est 4821", Some(&sender));
+    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .expect("a well-formed send must be accepted");
 
     assert_eq!(result.state, MessageState::accepted);
     assert_eq!(result.encoding, Encoding::gsm7);
@@ -329,14 +332,15 @@ async fn an_unknown_client_id_is_unauthorized() {
     let db = db().await;
     let procedures = Procedures::new(test_pepper());
 
-    let error = procedures
-        .send_message(
-            &db,
-            &app_caller("no-such-client"),
-            args("+237677123456", "hi", None),
-        )
-        .await
-        .unwrap_err();
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // test above.
+    let ctx = app_caller("no-such-client");
+    let send_args = args("+237677123456", "hi", None);
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, cratestack::CoolError::Unauthorized(_)));
 }
@@ -364,10 +368,18 @@ async fn a_human_caller_is_rejected_with_a_clear_reason_not_a_guess() {
         .extensions
         .insert("scope".to_owned(), Value::String("sms:send".to_owned()));
 
-    let error = procedures
-        .send_message(&db, &human, args("+237677123456", "hi", None))
-        .await
-        .unwrap_err();
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`. This caller's `hasRole('owner')` already admits it
+    // at Layer 1 (`schema.cstack`'s `sendMessage` `@allow`), so this stays
+    // the documented `kind == "app"` gap this test means to exercise, not
+    // an incidental Layer 1 denial.
+    let send_args = args("+237677123456", "hi", None);
+    let error = send_message::invoke_with_db(&db, &send_args, &human, |authorized| {
+        procedures.send_message(&db, &human, send_args.clone(), authorized)
+    })
+    .await
+    .unwrap_err();
 
     let message = error.to_string();
     assert!(
@@ -406,14 +418,16 @@ async fn an_opted_out_recipient_is_refused_before_persistence() {
         .await
         .expect("seeding the opt-out");
 
-    let error = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args_with_class(to, "hi", Some(&sender), Some(MessageClass::notification)),
-        )
-        .await
-        .unwrap_err();
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let send_args = args_with_class(to, "hi", Some(&sender), Some(MessageClass::notification));
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, cratestack::CoolError::Validation(_)));
 
@@ -454,14 +468,16 @@ async fn a_full_monthly_quota_is_refused() {
     let (client_id, _app) = seed_app_and_client(&db, 0, None).await;
     let sender = seed_approved_sender(&db).await;
 
-    let error = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args("+237677123456", "hi", Some(&sender)),
-        )
-        .await
-        .unwrap_err();
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let send_args = args("+237677123456", "hi", Some(&sender));
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, cratestack::CoolError::Validation(_)));
 }
@@ -474,14 +490,16 @@ async fn no_sender_id_and_no_default_is_refused() {
     let procedures = Procedures::new(test_pepper());
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
 
-    let error = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args("+237677123456", "hi", None),
-        )
-        .await
-        .unwrap_err();
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let send_args = args("+237677123456", "hi", None);
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, cratestack::CoolError::Validation(_)));
 }
@@ -494,14 +512,16 @@ async fn an_unregistered_sender_id_is_refused() {
     let procedures = Procedures::new(test_pepper());
     let (client_id, _app) = seed_app_and_client(&db, 1000, None).await;
 
-    let error = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args("+237677123456", "hi", Some("NOTREGISTERED")),
-        )
-        .await
-        .unwrap_err();
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let send_args = args("+237677123456", "hi", Some("NOTREGISTERED"));
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, cratestack::CoolError::Validation(_)));
 }
@@ -528,14 +548,16 @@ async fn an_app_default_sender_is_used_when_none_is_given() {
         .unwrap();
     let (client_id, _app) = seed_app_and_client(&db, 1000, Some(sender_row.id)).await;
 
-    let result = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args("+237677123456", "hi", None),
-        )
-        .await
-        .expect("the app's default sender must be used");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let send_args = args("+237677123456", "hi", None);
+    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .expect("the app's default sender must be used");
 
     assert_eq!(result.state, MessageState::accepted);
 }
@@ -552,14 +574,16 @@ async fn an_unrecognised_prefix_classifies_as_unknown_not_a_guess() {
     // 640 is a valid, assigned mobile prefix (sms_msisdn::plan) that
     // 0002_bootstrap's seed data deliberately leaves unseeded (§3.4) — a
     // gap in the routing hint, not a reason to reject the send.
-    let result = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args("+237640123456", "hi", Some(&sender)),
-        )
-        .await
-        .expect("an unrecognised prefix is still a valid send");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let send_args = args("+237640123456", "hi", Some(&sender));
+    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .expect("an unrecognised prefix is still a valid send");
 
     assert_eq!(result.operator, OperatorCode::unknown);
 }
@@ -607,18 +631,34 @@ async fn the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn() {
         "the two test peppers in this test must actually differ"
     );
 
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
     let (client_a, _app_a) = seed_app_and_client(&db, 1000, None).await;
-    let sent_a = Procedures::new(test_pepper())
-        .send_message(&db, &app_caller(&client_a), args(to, "hi", Some(&sender)))
-        .await
-        .expect("sending under pepper A");
+    let ctx_a = app_caller(&client_a);
+    let args_a = args(to, "hi", Some(&sender));
+    // `Procedures::new(...)` has to be bound to a local first — a temporary
+    // constructed inline inside the closure would be dropped at the end of
+    // the closure's own body while the returned future still borrows `&self`
+    // from it (E0515), the same trap `&owner()` called inline hits elsewhere
+    // in this workspace's live suites.
+    let procedures_a = Procedures::new(test_pepper());
+    let sent_a = send_message::invoke_with_db(&db, &args_a, &ctx_a, |authorized| {
+        procedures_a.send_message(&db, &ctx_a, args_a.clone(), authorized)
+    })
+    .await
+    .expect("sending under pepper A");
     let hash_a = msisdn_hash_of(&db, &sent_a.messageId).await;
 
     let (client_b, _app_b) = seed_app_and_client(&db, 1000, None).await;
-    let sent_b = Procedures::new(other_pepper)
-        .send_message(&db, &app_caller(&client_b), args(to, "hi", Some(&sender)))
-        .await
-        .expect("sending under pepper B — a distinct App, so quota/dedupe don't interfere");
+    let ctx_b = app_caller(&client_b);
+    let args_b = args(to, "hi", Some(&sender));
+    let procedures_b = Procedures::new(other_pepper);
+    let sent_b = send_message::invoke_with_db(&db, &args_b, &ctx_b, |authorized| {
+        procedures_b.send_message(&db, &ctx_b, args_b.clone(), authorized)
+    })
+    .await
+    .expect("sending under pepper B — a distinct App, so quota/dedupe don't interfere");
     let hash_b = msisdn_hash_of(&db, &sent_b.messageId).await;
 
     assert_ne!(
@@ -627,10 +667,14 @@ async fn the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn() {
     );
 
     let (client_c, _app_c) = seed_app_and_client(&db, 1000, None).await;
-    let sent_c = Procedures::new(test_pepper())
-        .send_message(&db, &app_caller(&client_c), args(to, "hi", Some(&sender)))
-        .await
-        .expect("sending under pepper A again, from an independent Procedures instance");
+    let ctx_c = app_caller(&client_c);
+    let args_c = args(to, "hi", Some(&sender));
+    let procedures_c = Procedures::new(test_pepper());
+    let sent_c = send_message::invoke_with_db(&db, &args_c, &ctx_c, |authorized| {
+        procedures_c.send_message(&db, &ctx_c, args_c.clone(), authorized)
+    })
+    .await
+    .expect("sending under pepper A again, from an independent Procedures instance");
     let hash_c = msisdn_hash_of(&db, &sent_c.messageId).await;
 
     assert_eq!(
@@ -690,35 +734,36 @@ async fn a_marketing_send_is_refused_but_a_transactional_send_to_the_same_recipi
     let to = unique_mtn_msisdn();
     let to = to.as_str();
 
-    let marketing_error = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args_with_class(
-                to,
-                "50% off today only!",
-                Some(&sender),
-                Some(MessageClass::marketing),
-            ),
-        )
-        .await
-        .unwrap_err();
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let marketing_args = args_with_class(
+        to,
+        "50% off today only!",
+        Some(&sender),
+        Some(MessageClass::marketing),
+    );
+    let marketing_error = send_message::invoke_with_db(&db, &marketing_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, marketing_args.clone(), authorized)
+    })
+    .await
+    .unwrap_err();
     assert!(
         matches!(marketing_error, cratestack::CoolError::Validation(_)),
         "a marketing send with no consent on file must be refused, got: {marketing_error:?}"
     );
 
-    let transactional_result = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args_with_class(
-                to,
-                "Your order has shipped",
-                Some(&sender),
-                Some(MessageClass::transactional),
-            ),
-        )
+    let transactional_args = args_with_class(
+        to,
+        "Your order has shipped",
+        Some(&sender),
+        Some(MessageClass::transactional),
+    );
+    let transactional_result =
+        send_message::invoke_with_db(&db, &transactional_args, &ctx, |authorized| {
+            procedures.send_message(&db, &ctx, transactional_args.clone(), authorized)
+        })
         .await
         .expect(
             "a transactional send to the same recipient, with no consent record either, \
@@ -741,14 +786,16 @@ async fn a_notification_send_with_no_consent_record_is_refused() {
     let sender = seed_approved_sender(&db).await;
     let to = unique_mtn_msisdn();
 
-    let error = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification)),
-        )
-        .await
-        .unwrap_err();
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let send_args = args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification));
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, cratestack::CoolError::Validation(_)));
 
@@ -780,14 +827,16 @@ async fn a_notification_send_with_a_matching_consent_record_succeeds() {
 
     seed_consent(&db, &app.id, &to, MessageClass::notification).await;
 
-    let result = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification)),
-        )
-        .await
-        .expect("a matching, on-file consent record must let this send through");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let send_args = args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification));
+    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .expect("a matching, on-file consent record must let this send through");
 
     assert_eq!(result.state, MessageState::accepted);
 }
@@ -808,14 +857,16 @@ async fn a_consent_record_scoped_to_a_different_class_does_not_authorise_this_on
 
     seed_consent(&db, &app.id, &to, MessageClass::marketing).await;
 
-    let error = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification)),
-        )
-        .await
-        .unwrap_err();
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let send_args = args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification));
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .unwrap_err();
 
     assert!(matches!(error, cratestack::CoolError::Validation(_)));
 }
@@ -852,32 +903,33 @@ async fn an_opted_out_recipient_still_receives_an_otp_or_transactional_message()
         .await
         .expect("seeding the opt-out");
 
-    let otp_result = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args_with_class(
-                to,
-                "Votre code est 4821",
-                Some(&sender),
-                Some(MessageClass::otp),
-            ),
-        )
-        .await
-        .expect("an OTP send to an opted-out recipient must still succeed");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let otp_args = args_with_class(
+        to,
+        "Votre code est 4821",
+        Some(&sender),
+        Some(MessageClass::otp),
+    );
+    let otp_result = send_message::invoke_with_db(&db, &otp_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, otp_args.clone(), authorized)
+    })
+    .await
+    .expect("an OTP send to an opted-out recipient must still succeed");
     assert_eq!(otp_result.state, MessageState::accepted);
 
-    let transactional_result = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args_with_class(
-                to,
-                "Your order has shipped",
-                Some(&sender),
-                Some(MessageClass::transactional),
-            ),
-        )
+    let transactional_args = args_with_class(
+        to,
+        "Your order has shipped",
+        Some(&sender),
+        Some(MessageClass::transactional),
+    );
+    let transactional_result =
+        send_message::invoke_with_db(&db, &transactional_args, &ctx, |authorized| {
+            procedures.send_message(&db, &ctx, transactional_args.clone(), authorized)
+        })
         .await
         .expect("a transactional send to an opted-out recipient must still succeed");
     assert_eq!(transactional_result.state, MessageState::accepted);
@@ -925,21 +977,26 @@ async fn a_marketing_send_scheduled_into_quiet_hours_is_refused_however_it_is_ac
         "the search must land outside the window, or this test proves nothing"
     );
 
-    let mut args = args_with_class(
+    let mut send_args = args_with_class(
         &to,
         "50% off tomorrow!",
         Some(&sender),
         Some(MessageClass::marketing),
     );
-    args.args.scheduledAt = Some(scheduled);
+    send_args.args.scheduledAt = Some(scheduled);
 
-    let error = procedures
-        .send_message(&db, &app_caller(&client_id), args)
-        .await
-        .expect_err(
-            "a marketing send scheduled for delivery outside the allowed window must be \
-             refused at accept time — otherwise the worker delivers it during quiet hours",
-        );
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await
+    .expect_err(
+        "a marketing send scheduled for delivery outside the allowed window must be \
+         refused at accept time — otherwise the worker delivers it during quiet hours",
+    );
     assert!(
         matches!(error, cratestack::CoolError::Validation(_)),
         "expected the quiet-hours Validation refusal, got: {error:?}"
@@ -971,18 +1028,20 @@ async fn a_marketing_send_matches_the_real_clocks_current_quiet_hours_state() {
 
     let expect_accepted = sms_api::consent::is_within_marketing_quiet_hours(Utc::now());
 
-    let outcome = procedures
-        .send_message(
-            &db,
-            &app_caller(&client_id),
-            args_with_class(
-                &to,
-                "50% off today only!",
-                Some(&sender),
-                Some(MessageClass::marketing),
-            ),
-        )
-        .await;
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = app_caller(&client_id);
+    let send_args = args_with_class(
+        &to,
+        "50% off today only!",
+        Some(&sender),
+        Some(MessageClass::marketing),
+    );
+    let outcome = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    })
+    .await;
 
     if expect_accepted {
         let result = outcome.expect(

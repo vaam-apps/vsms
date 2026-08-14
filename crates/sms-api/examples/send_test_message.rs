@@ -427,23 +427,28 @@ async fn main() -> anyhow::Result<()> {
     ensure_app_and_client(&db).await?;
 
     let procedures = Procedures::new(pepper);
-    let result = procedures
-        .send_message(
-            &db,
-            &app_caller(),
-            send_message::Args {
-                args: schema::SendMessageInput {
-                    to: cli.to.clone(),
-                    body: cli.body.clone(),
-                    senderId: Some(sender_value),
-                    class: None,
-                    clientRef: None,
-                    scheduledAt: None,
-                    validityMinutes: None,
-                },
-            },
-        )
-        .await?;
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment. See `app/
+    // sms-gateway/src/main.rs`'s `provision_client_command` for the
+    // established pattern.
+    let ctx = app_caller();
+    let args = send_message::Args {
+        args: schema::SendMessageInput {
+            to: cli.to.clone(),
+            body: cli.body.clone(),
+            senderId: Some(sender_value),
+            class: None,
+            clientRef: None,
+            scheduledAt: None,
+            validityMinutes: None,
+        },
+    };
+    let result = send_message::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.send_message(&db, &ctx, args.clone(), authorized)
+    })
+    .await?;
 
     println!();
     println!("message id:       {}", result.messageId);

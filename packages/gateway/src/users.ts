@@ -161,7 +161,12 @@ export async function updateUser(
 }
 
 /** `DELETE /users/{id}` — `User.delete`'s own `@@allow` is `hasRole('owner')`
- * only. `User` carries `@@soft_delete`. */
+ * only. `User` carries `@@soft_delete`.
+ *
+ * **Stale as of the cratestack 0.7.16 bump: `User` also carries `@version`
+ * (#59) and, per cratestack 0.7.13 (cratestack#519), `DELETE` on a
+ * `@version` model now requires `If-Match` — see `apps.ts`'s
+ * `deleteApp`/`rest.ts`'s `deleteResource` doc for the mechanism.** */
 export async function deleteUser(id: string): Promise<void> {
   const url = gatewayUrl(`/users/${encodeURIComponent(id)}`, {});
   const response = await authedRequest(url, { method: "DELETE" });

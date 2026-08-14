@@ -278,14 +278,18 @@ async fn a_caller_with_no_dashboard_read_scope_is_denied() {
     let db = db().await;
     let app_id = seed_app(&db).await;
 
-    let error = Procedures::new(test_pepper())
-        .dashboard_summary(
-            &db,
-            &app_caller_without_dashboard_read(&app_id),
-            dashboard_summary::Args {},
-        )
-        .await
-        .expect_err("a caller with no dashboard:read scope must be refused");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_without_dashboard_read(&app_id);
+    let args = dashboard_summary::Args {};
+    let error = dashboard_summary::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.dashboard_summary(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect_err("a caller with no dashboard:read scope must be refused");
 
     assert!(
         matches!(error, CoolError::Forbidden(_)),
@@ -328,14 +332,16 @@ async fn operator_stats_excludes_uncertain_from_both_numerator_and_denominator()
     )
     .await;
 
-    let summary = Procedures::new(test_pepper())
-        .dashboard_summary(
-            &db,
-            &app_caller_with_dashboard_read(&app_id),
-            dashboard_summary::Args {},
-        )
-        .await
-        .expect("dashboardSummary for a caller holding dashboard:read");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // test above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_dashboard_read(&app_id);
+    let args = dashboard_summary::Args {};
+    let summary = dashboard_summary::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.dashboard_summary(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("dashboardSummary for a caller holding dashboard:read");
 
     let mtn = find_operator(&summary.operatorStats, OperatorCode::mtn);
     assert_eq!(mtn.delivered, 1, "exactly one message actually delivered");
@@ -369,14 +375,15 @@ async fn the_current_hour_bucket_splits_gsm7_and_ucs2_correctly() {
     seed_message(&db, &app_id, OperatorCode::mtn, Encoding::gsm7).await;
     seed_message(&db, &app_id, OperatorCode::orange, Encoding::ucs2).await;
 
-    let summary = Procedures::new(test_pepper())
-        .dashboard_summary(
-            &db,
-            &app_caller_with_dashboard_read(&app_id),
-            dashboard_summary::Args {},
-        )
-        .await
-        .expect("dashboardSummary for a caller holding dashboard:read");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_dashboard_read(&app_id);
+    let args = dashboard_summary::Args {};
+    let summary = dashboard_summary::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.dashboard_summary(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("dashboardSummary for a caller holding dashboard:read");
 
     assert_eq!(
         summary.queueDepth, 3,
@@ -417,14 +424,18 @@ async fn message_based_tiles_are_scoped_to_the_callers_own_app() {
     seed_message(&db, &app_a, OperatorCode::mtn, Encoding::gsm7).await;
     seed_message(&db, &app_a, OperatorCode::mtn, Encoding::gsm7).await;
 
-    let summary_b = Procedures::new(test_pepper())
-        .dashboard_summary(
-            &db,
-            &app_caller_with_dashboard_read(&app_b),
-            dashboard_summary::Args {},
-        )
-        .await
-        .expect("dashboardSummary for app B's own caller");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`. Kept as two separate `Procedures::new(...)` calls,
+    // matching the pre-existing shape, rather than sharing one instance.
+    let ctx_b = app_caller_with_dashboard_read(&app_b);
+    let args_b = dashboard_summary::Args {};
+    let procedures_b = Procedures::new(test_pepper());
+    let summary_b = dashboard_summary::invoke_with_db(&db, &args_b, &ctx_b, |authorized| {
+        procedures_b.dashboard_summary(&db, &ctx_b, args_b.clone(), authorized)
+    })
+    .await
+    .expect("dashboardSummary for app B's own caller");
 
     assert_eq!(
         summary_b.queueDepth, 0,
@@ -432,14 +443,14 @@ async fn message_based_tiles_are_scoped_to_the_callers_own_app() {
     );
     assert_eq!(summary_b.appId.as_deref(), Some(app_b.as_str()));
 
-    let summary_a = Procedures::new(test_pepper())
-        .dashboard_summary(
-            &db,
-            &app_caller_with_dashboard_read(&app_a),
-            dashboard_summary::Args {},
-        )
-        .await
-        .expect("dashboardSummary for app A's own caller");
+    let ctx_a = app_caller_with_dashboard_read(&app_a);
+    let args_a = dashboard_summary::Args {};
+    let procedures_a = Procedures::new(test_pepper());
+    let summary_a = dashboard_summary::invoke_with_db(&db, &args_a, &ctx_a, |authorized| {
+        procedures_a.dashboard_summary(&db, &ctx_a, args_a.clone(), authorized)
+    })
+    .await
+    .expect("dashboardSummary for app A's own caller");
     assert_eq!(
         summary_a.queueDepth, 2,
         "app A's own caller sees both of its messages"
@@ -459,26 +470,31 @@ async fn job_backlog_and_outbox_depth_move_when_rows_are_seeded() {
     let app_id = seed_app(&db).await;
     let endpoint = seed_endpoint(&db, &app_id).await;
 
-    let before = Procedures::new(test_pepper())
-        .dashboard_summary(
-            &db,
-            &app_caller_with_dashboard_read(&app_id),
-            dashboard_summary::Args {},
-        )
-        .await
-        .expect("dashboardSummary before seeding");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`. Kept as two separate `Procedures::new(...)` calls
+    // (rather than one `procedures` shared across both `invoke_with_db`
+    // calls) — this test's own doc comment says a fresh `Procedures` per
+    // call is load-bearing so `dashboard_cache`'s 15s TTL never masks the
+    // seed between "before" and "after".
+    let ctx = app_caller_with_dashboard_read(&app_id);
+    let args = dashboard_summary::Args {};
+    let before_procedures = Procedures::new(test_pepper());
+    let before = dashboard_summary::invoke_with_db(&db, &args, &ctx, |authorized| {
+        before_procedures.dashboard_summary(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("dashboardSummary before seeding");
 
     seed_job(&db, "dashboard_summary_test_job").await;
     seed_webhook_attempt(&db, &endpoint.id).await;
 
-    let after = Procedures::new(test_pepper())
-        .dashboard_summary(
-            &db,
-            &app_caller_with_dashboard_read(&app_id),
-            dashboard_summary::Args {},
-        )
-        .await
-        .expect("dashboardSummary after seeding");
+    let after_procedures = Procedures::new(test_pepper());
+    let after = dashboard_summary::invoke_with_db(&db, &args, &ctx, |authorized| {
+        after_procedures.dashboard_summary(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("dashboardSummary after seeding");
 
     assert!(
         after.jobBacklog > before.jobBacklog,

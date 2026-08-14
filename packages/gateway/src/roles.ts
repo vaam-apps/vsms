@@ -167,7 +167,12 @@ export async function updateRole(
 /** `DELETE /roles/{id}` — `owner`-only. A `Role` still referenced by a
  * `User.roleKey` will fail this with a foreign-key violation, surfaced as
  * an ordinary gateway error rather than this module trying to pre-check
- * it — the database is the correct place to enforce that. */
+ * it — the database is the correct place to enforce that.
+ *
+ * **Stale as of the cratestack 0.7.16 bump: `Role` also carries `@version`
+ * (#59) and, per cratestack 0.7.13 (cratestack#519), `DELETE` on a
+ * `@version` model now requires `If-Match` — see `apps.ts`'s
+ * `deleteApp`/`rest.ts`'s `deleteResource` doc for the mechanism.** */
 export async function deleteRole(id: string): Promise<void> {
   const url = gatewayUrl(`/roles/${encodeURIComponent(id)}`, {});
   const response = await authedRequest(url, { method: "DELETE" });

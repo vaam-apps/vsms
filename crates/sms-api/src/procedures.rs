@@ -944,7 +944,16 @@ impl Procedures {
                         retiredAt: None,
                     })
                     .run_in_tx(&mut tx, sys)
-                    .await?;
+                    .await?
+                    // cratestack 0.7.13 (#554): `run_in_tx` write builders
+                    // now return `RunInTxOutcome<T>` (the value plus any
+                    // `AuditEvent`s built for a caller-installed `AuditSink`
+                    // to fan out after commit). This codebase installs no
+                    // `AuditSink` — `@@audit` rows still land in
+                    // `cratestack_audit` the way they always have, inside
+                    // this same transaction, regardless — so `.value` is
+                    // the only thing any call site here needs.
+                    .value;
 
                 db.oauth_client()
                     .create(schema::CreateOauthClientInput {
@@ -1085,7 +1094,10 @@ impl Procedures {
                     // serialization-failure retry.
                     .if_match(endpoint.version)
                     .run_in_tx(&mut tx, sys)
-                    .await?;
+                    .await?
+                    // cratestack 0.7.13 (#554): see the identical comment on
+                    // `provisionAppClient`'s own `run_in_tx` call above.
+                    .value;
 
                 Ok((updated, tx))
             }
@@ -1187,7 +1199,10 @@ impl Procedures {
                     })
                     .if_match(attempt.version)
                     .run_in_tx(&mut tx, sys)
-                    .await?;
+                    .await?
+                    // cratestack 0.7.13 (#554): see the identical comment on
+                    // `provisionAppClient`'s own `run_in_tx` call above.
+                    .value;
 
                 let endpoint = db
                     .webhook_endpoint()
@@ -1308,7 +1323,10 @@ impl Procedures {
                     })
                     .if_match(existing.version)
                     .run_in_tx(&mut tx, sys)
-                    .await?;
+                    .await?
+                    // cratestack 0.7.13 (#554): see the identical comment on
+                    // `provisionAppClient`'s own `run_in_tx` call above.
+                    .value;
 
                 Ok((updated, tx))
             }
@@ -1806,7 +1824,11 @@ impl Procedures {
                             deletedAt: None,
                         })
                         .run_in_tx(&mut tx, ctx)
-                        .await?;
+                        .await?
+                        // cratestack 0.7.13 (#554): see the identical
+                        // comment on `provisionAppClient`'s own
+                        // `run_in_tx` call above.
+                        .value;
                     let user_id = user.id.clone();
 
                     db.user()
@@ -2027,6 +2049,12 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         _db: &schema::Cratestack,
         _ctx: &CoolContext,
         args: schema::procedures::preview_message::Args,
+        // cratestack 0.7.13 (cratestack#512): every `ProcedureRegistry`
+        // method gained a trailing, unconstructible witness parameter —
+        // proof this call went through `authorize_with_db`/`invoke_with_db`
+        // rather than skipping `@allow`. Never read; see procedures.rs's
+        // own module doc if this pattern needs re-deriving.
+        _authorized: schema::procedures::preview_message::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::preview_message::Output, CoolError>,
     > + Send {
@@ -2038,6 +2066,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::send_message::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::send_message::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::send_message::Output, CoolError>,
     > + Send {
@@ -2049,6 +2080,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         _db: &schema::Cratestack,
         _ctx: &CoolContext,
         _args: schema::procedures::list_messages_page::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::list_messages_page::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::list_messages_page::Output, CoolError>,
     > + Send {
@@ -2060,6 +2094,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         _db: &schema::Cratestack,
         _ctx: &CoolContext,
         _args: schema::procedures::cancel_message::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::cancel_message::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::cancel_message::Output, CoolError>,
     > + Send {
@@ -2071,6 +2108,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         _db: &schema::Cratestack,
         _ctx: &CoolContext,
         _args: schema::procedures::enqueue_job::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::enqueue_job::Authorized,
     ) -> impl core::future::Future<Output = Result<schema::procedures::enqueue_job::Output, CoolError>>
            + Send {
         core::future::ready(Err(not_yet("enqueueJob", "milestone 2 (the jobs role)")))
@@ -2081,6 +2121,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::provision_app_client::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::provision_app_client::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::provision_app_client::Output, CoolError>,
     > + Send {
@@ -2092,6 +2135,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::rotate_webhook_secret::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::rotate_webhook_secret::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::rotate_webhook_secret::Output, CoolError>,
     > + Send {
@@ -2103,6 +2149,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::replay_webhook_attempt::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::replay_webhook_attempt::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::replay_webhook_attempt::Output, CoolError>,
     > + Send {
@@ -2114,6 +2163,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::requeue_job::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::requeue_job::Authorized,
     ) -> impl core::future::Future<Output = Result<schema::procedures::requeue_job::Output, CoolError>>
            + Send {
         self.requeue(db, ctx, args.args)
@@ -2124,6 +2176,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         _args: schema::procedures::worker_locks::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::worker_locks::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::worker_locks::Output, CoolError>,
     > + Send {
@@ -2135,6 +2190,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::simulate_route::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::simulate_route::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::simulate_route::Output, CoolError>,
     > + Send {
@@ -2146,6 +2204,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::list_message_receipts::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::list_message_receipts::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::list_message_receipts::Output, CoolError>,
     > + Send {
@@ -2157,6 +2218,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         _args: schema::procedures::dashboard_summary::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::dashboard_summary::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::dashboard_summary::Output, CoolError>,
     > + Send {
@@ -2168,6 +2232,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::provision_user::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::provision_user::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::provision_user::Output, CoolError>,
     > + Send {
@@ -2179,6 +2246,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::record_opt_out::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::record_opt_out::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::record_opt_out::Output, CoolError>,
     > + Send {
@@ -2190,6 +2260,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::search_opt_out_by_msisdn::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::search_opt_out_by_msisdn::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::search_opt_out_by_msisdn::Output, CoolError>,
     > + Send {
@@ -2201,6 +2274,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         args: schema::procedures::audit_log::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::audit_log::Authorized,
     ) -> impl core::future::Future<Output = Result<schema::procedures::audit_log::Output, CoolError>>
            + Send {
         self.list_audit_log(db, ctx, args.args)
@@ -2211,6 +2287,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         db: &schema::Cratestack,
         ctx: &CoolContext,
         _args: schema::procedures::audit_chain_status::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::audit_chain_status::Authorized,
     ) -> impl core::future::Future<
         Output = Result<schema::procedures::audit_chain_status::Output, CoolError>,
     > + Send {

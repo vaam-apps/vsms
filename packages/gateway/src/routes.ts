@@ -208,8 +208,10 @@ export async function updateRoute(
   );
 }
 
-/** `DELETE /routes/{id}` — no `If-Match` needed (`rest.ts`'s own
- * `deleteResource` doc). Same reachability caveat as [`createRoute`]. */
+/** `DELETE /routes/{id}`. **Stale as of the cratestack 0.7.16 bump: this
+ * now needs `If-Match` and does not send one — see `rest.ts`'s own
+ * `deleteResource` doc for the mechanism and why it isn't fixed here.**
+ * Same reachability caveat as [`createRoute`]. */
 export async function deleteRoute(id: string): Promise<void> {
   return deleteResource(`/routes/${encodeURIComponent(id)}`, "deleteRoute");
 }

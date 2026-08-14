@@ -281,14 +281,35 @@ export async function postJson<T>(
 }
 
 /**
- * `DELETE <path>`, no body and no `If-Match` — #54's `Route` delete. Unlike
- * `PATCH`, the generated delete handler needs no `If-Match` at all
+ * `DELETE <path>`, no body — #54's `Route` delete.
+ *
+ * **Stale as of the cratestack 0.7.16 bump — this function does NOT send
+ * `If-Match`, and for an `@version` model it now needs to.** This doc used
+ * to say the generated delete handler needed no `If-Match` at all
  * (`cratestack-macros-0.7.10/src/axum/model/prep/etag.rs`'s `EtagTokens`
- * only ever wires `update_if_match_*`/`get_etag_*`, nothing for delete —
- * read directly, not assumed, while adding this function). A `DELETE` that
- * races a concurrent edit isn't a lost-update the way an unguarded `PATCH`
- * would be: the row is simply gone either way, which is what the caller
- * asked for.
+ * only wired `update_if_match_*`/`get_etag_*`, nothing for delete — true at
+ * the time, read directly rather than assumed). cratestack 0.7.13
+ * (cratestack#519, `cratestack-macros`'s `prep/etag.rs` gaining
+ * `delete_if_match_decl`/`delete_if_match_apply`) closed that asymmetry:
+ * `DELETE` on a `@version` model now requires `If-Match` and returns `412`
+ * on a stale or missing value, exactly like `PATCH` already did. Every
+ * caller of this function today (`deleteRoute`, `deleteWebhookEndpoint`,
+ * `deleteApp`... — grep `deleteResource(`) targets a `@version`'d model
+ * (`Route`/`WebhookEndpoint`/`App`/`User`/`Role`, per #59) and passes no
+ * etag, so every one of these delete buttons now genuinely 412s against a
+ * real gateway rather than deleting the row. Verified by reading the
+ * upstream `cratestack-sqlx`/`cratestack-macros` 0.7.16 source for this
+ * bump (`crates/sms-api`'s own Rust-side delete tests needed the identical
+ * `.if_match(...)` fix — see `AGENTS.md`'s 0.7.16 bump section), not
+ * reasoned about from this file alone.
+ *
+ * **Not fixed here.** Threading an etag through requires every caller to
+ * have one on hand at delete time (most don't today — a list row doesn't
+ * carry its own `ETag` response header, only a `GET`/`PATCH` response
+ * does), which means real changes to the calling screens under `admin/`,
+ * out of scope for the dependency-bump PR that added this comment and
+ * colliding with an in-flight console redesign. Tracked as a follow-up
+ * instead of silently left broken.
  */
 export async function deleteResource(
   path: string,

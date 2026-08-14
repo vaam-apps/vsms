@@ -207,7 +207,16 @@ export async function updateApp(
  * only, the narrowest write action this screen exposes. `App` carries
  * `@@soft_delete`, so this marks `deletedAt` rather than physically
  * removing the row — existing `Message`/`AppClient` rows referencing it are
- * untouched. */
+ * untouched.
+ *
+ * **Stale as of the cratestack 0.7.16 bump: `App` also carries `@version`
+ * (#59), and cratestack 0.7.13 (cratestack#519) made `DELETE` on a
+ * `@version` model require `If-Match` — independent of `@@soft_delete`,
+ * per `cratestack-sqlx`'s own `delete_exec.rs` doc comment ("if_match gates
+ * on version_column alone ... whether or not it is also soft_delete_column").
+ * This function sends none, so it now 412s against a real gateway. Same
+ * "not fixed here, tracked separately" reasoning as `rest.ts`'s
+ * `deleteResource` doc.** */
 export async function deleteApp(id: string): Promise<void> {
   const url = gatewayUrl(`/apps/${encodeURIComponent(id)}`, {});
   const attempt = async (): Promise<UndiciResponse> => {

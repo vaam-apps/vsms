@@ -200,18 +200,22 @@ async fn requeuing_a_dead_job_resets_it_to_pending_with_a_fresh_attempts_counter
     assert!(seeded.lastError.is_some());
 
     let before = Utc::now();
-    let requeued = Procedures::new(test_pepper())
-        .requeue_job(
-            &db,
-            &app_caller_with_job_enqueue(),
-            requeue_job::Args {
-                args: schema::RequeueJobInput {
-                    jobId: seeded.id.clone(),
-                },
-            },
-        )
-        .await
-        .expect("requeuing a dead job must succeed");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_job_enqueue();
+    let args = requeue_job::Args {
+        args: schema::RequeueJobInput {
+            jobId: seeded.id.clone(),
+        },
+    };
+    let requeued = requeue_job::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.requeue_job(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("requeuing a dead job must succeed");
 
     assert_eq!(requeued.id, seeded.id, "requeue must reset the same row");
     assert_eq!(requeued.state, JobState::pending);
@@ -251,18 +255,19 @@ async fn requeuing_a_non_dead_job_is_a_conflict_not_a_crash() {
         let seeded = seed_job_in_state(&db, &kind, state).await;
         assert_eq!(seeded.state, state, "precondition for {label}");
 
-        let error = procedures
-            .requeue_job(
-                &db,
-                &app_caller_with_job_enqueue(),
-                requeue_job::Args {
-                    args: schema::RequeueJobInput {
-                        jobId: seeded.id.clone(),
-                    },
-                },
-            )
-            .await
-            .expect_err(&format!("requeuing a {label} job must not succeed"));
+        // cratestack 0.7.13 (cratestack#512): see the identical comment on
+        // the test above.
+        let ctx = app_caller_with_job_enqueue();
+        let args = requeue_job::Args {
+            args: schema::RequeueJobInput {
+                jobId: seeded.id.clone(),
+            },
+        };
+        let error = requeue_job::invoke_with_db(&db, &args, &ctx, |authorized| {
+            procedures.requeue_job(&db, &ctx, args.clone(), authorized)
+        })
+        .await
+        .expect_err(&format!("requeuing a {label} job must not succeed"));
 
         assert!(
             matches!(error, CoolError::Conflict(_)),
@@ -271,55 +276,108 @@ async fn requeuing_a_non_dead_job_is_a_conflict_not_a_crash() {
     }
 }
 
-/// A bogus job id is a clear `NotFound`, not a silent no-op.
+/// A bogus job id is refused, not a silent no-op.
+///
+/// **The expected error changed from `NotFound` to `Forbidden` in the
+/// cratestack 0.7.16 bump — this is real, verified production behavior,
+/// not a test-only artifact.** Same mechanism
+/// `replay_webhook_attempt_live_postgres.rs`'s own
+/// `replaying_an_unknown_attempt_id_is_refused` documents in full: before
+/// cratestack 0.7.13 (cratestack#512), calling `ProcedureRegistry` methods
+/// directly silently skipped `@authorize(Job, detail, args.jobId)`
+/// entirely, so this test only ever observed the procedure body's own
+/// internal `.ok_or_else(NotFound)` lookup. Now `invoke_with_db` genuinely
+/// runs `authorize_with_db` first, which executes `db.job().
+/// authorize_detail(id, ctx)` — a real `SELECT 1 FROM jobs WHERE id = $1
+/// AND <detail policy>` preflight — *before* the procedure body ever runs.
+/// For a nonexistent id that query cannot distinguish "no row" from "row
+/// exists but policy denies" (`CONTRIBUTING.md`'s own documented
+/// `CoolError::Forbidden` ambiguity, now reachable here too), so it always
+/// returns `Forbidden("detail policy denied this operation")` — the
+/// procedure's own `NotFound` branch is unreachable for a missing id.
+/// Confirmed live: reverting this assertion to `NotFound` reproduces
+/// `expected NotFound, got Forbidden("detail policy denied this
+/// operation")` on every run.
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
-async fn requeuing_an_unknown_job_id_is_not_found() {
+async fn requeuing_an_unknown_job_id_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
 
-    let error = Procedures::new(test_pepper())
-        .requeue_job(
-            &db,
-            &app_caller_with_job_enqueue(),
-            requeue_job::Args {
-                args: schema::RequeueJobInput {
-                    jobId: format!("nosuchjob{}", unique_suffix()),
-                },
-            },
-        )
-        .await
-        .expect_err("a nonexistent job id must not silently succeed");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — which is also what makes this test's own
+    // `Forbidden` expectation (see the doc comment above) the real,
+    // production-accurate outcome rather than an artifact of the direct
+    // call.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_job_enqueue();
+    let args = requeue_job::Args {
+        args: schema::RequeueJobInput {
+            jobId: format!("nosuchjob{}", unique_suffix()),
+        },
+    };
+    let error = requeue_job::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.requeue_job(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect_err("a nonexistent job id must not silently succeed");
 
     assert!(
-        matches!(error, CoolError::NotFound(_)),
-        "expected NotFound, got {error:?}"
+        matches!(error, CoolError::Forbidden(_)),
+        "expected Forbidden (the @authorize detail-policy preflight denying a nonexistent row — \
+         see this test's own doc comment), got {error:?}"
     );
 }
 
-/// Layer 2 (§5.1): an app-kind caller with no `job:enqueue` scope is denied
-/// before the procedure touches the database at all — proven by pointing
-/// it at a job id that doesn't even exist and confirming the error is still
-/// `Forbidden`, not `NotFound` (which would mean the permission check was
-/// skipped and the lookup ran anyway).
+/// Layer 2 (§5.1): an app-kind caller with no `job:enqueue` scope is denied.
+///
+/// **Rewritten for the cratestack 0.7.16 bump — no longer points at a
+/// nonexistent job id.** Same root cause as
+/// `requeuing_an_unknown_job_id_is_refused`'s own doc comment:
+/// `invoke_with_db` now genuinely runs `@authorize(Job, detail,
+/// args.jobId)` as part of Layer 1, *before* this procedure's own Layer 2
+/// `require_permission(ctx, "job:enqueue")` ever runs. Pointing this test
+/// at a nonexistent id meant Layer 1's own preflight denied it first,
+/// every time, regardless of the caller's actual scope — so the test could
+/// no longer prove what its own name claims. Confirmed live before fixing:
+/// with the old nonexistent-id version restored temporarily, this test
+/// failed with `expected the denial to name the missing permission: detail
+/// policy denied this operation`.
+///
+/// The fix: seed a real, `dead` (requeueable) job. `Job.detail`'s own
+/// `@@allow` (`schema.cstack`) is `auth().kind == "app" || hasRole('owner')
+/// || hasRole('admin') || hasRole('operator') || hasRole('system')` —
+/// `app_caller_without_job_enqueue()` is `kind: PrincipalKind::App`, which
+/// already satisfies that clause unconditionally (`Job` carries no `appId`
+/// to scope by regardless), so Layer 1 passes and Layer 2's own
+/// `require_permission` is what actually produces the denial.
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn requeue_denies_a_caller_with_no_job_enqueue_scope() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
+    let kind = format!("requeue-no-scope-{}", unique_suffix());
+    let seeded = seed_job_in_state(&db, &kind, JobState::dead).await;
 
-    let error = Procedures::new(test_pepper())
-        .requeue_job(
-            &db,
-            &app_caller_without_job_enqueue(),
-            requeue_job::Args {
-                args: schema::RequeueJobInput {
-                    jobId: "irrelevant-the-gate-must-fire-first".to_owned(),
-                },
-            },
-        )
-        .await
-        .expect_err("a caller with no job:enqueue scope must be denied");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`, which runs the real Layer 1 `@allow`/`@authorize`
+    // checks first — `kind == "app"` already admits this caller at both
+    // (`schema.cstack`'s `requeueJob` `@allow` and `Job.detail`'s own
+    // `@@allow`, per the doc comment above), so this reaches Layer 2.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_without_job_enqueue();
+    let args = requeue_job::Args {
+        args: schema::RequeueJobInput {
+            jobId: seeded.id.clone(),
+        },
+    };
+    let error = requeue_job::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.requeue_job(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect_err("a caller with no job:enqueue scope must be denied");
 
     assert!(
         matches!(error, CoolError::Forbidden(_)),
@@ -360,18 +418,21 @@ async fn a_stale_version_is_a_conflict_not_a_lost_update() {
 
     // A concurrent write moves the row on first — simulating a second
     // `requeueJob` call (or any other write) winning the race.
-    let requeued = Procedures::new(test_pepper())
-        .requeue_job(
-            &db,
-            &app_caller_with_job_enqueue(),
-            requeue_job::Args {
-                args: schema::RequeueJobInput {
-                    jobId: seeded.id.clone(),
-                },
-            },
-        )
-        .await
-        .expect("the first requeue must succeed");
+    //
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // headline test above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_job_enqueue();
+    let args = requeue_job::Args {
+        args: schema::RequeueJobInput {
+            jobId: seeded.id.clone(),
+        },
+    };
+    let requeued = requeue_job::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.requeue_job(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("the first requeue must succeed");
     assert_eq!(requeued.state, JobState::pending);
     assert_ne!(
         requeued.version, stale_version,

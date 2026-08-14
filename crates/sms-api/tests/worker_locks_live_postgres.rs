@@ -106,10 +106,17 @@ async fn a_held_lease_is_reported_with_its_workers_id() {
         .expect("attempting the dispatch lock")
         .expect("this test holds the only attempt at the dispatch lock this tick");
 
-    let snapshot = Procedures::new(test_pepper())
-        .worker_locks(&db, &app_caller_with_worker_read(), worker_locks::Args {})
-        .await
-        .expect("workerLocks must succeed for a caller with worker:read");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_worker_read();
+    let args = worker_locks::Args {};
+    let snapshot = worker_locks::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.worker_locks(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("workerLocks must succeed for a caller with worker:read");
 
     let dispatch = find_role(&snapshot.locks, "dispatch");
     assert!(dispatch.singleton, "dispatch is a singleton role (§7.1)");
@@ -138,10 +145,16 @@ async fn an_unheld_singleton_role_is_reported_as_not_held() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
 
-    let snapshot = Procedures::new(test_pepper())
-        .worker_locks(&db, &app_caller_with_worker_read(), worker_locks::Args {})
-        .await
-        .expect("workerLocks must succeed for a caller with worker:read");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // test above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_worker_read();
+    let args = worker_locks::Args {};
+    let snapshot = worker_locks::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.worker_locks(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("workerLocks must succeed for a caller with worker:read");
 
     let scheduler = find_role(&snapshot.locks, "scheduler");
     assert!(
@@ -164,10 +177,15 @@ async fn scale_to_n_roles_are_reported_as_non_singleton_and_unheld() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
 
-    let snapshot = Procedures::new(test_pepper())
-        .worker_locks(&db, &app_caller_with_worker_read(), worker_locks::Args {})
-        .await
-        .expect("workerLocks must succeed for a caller with worker:read");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_with_worker_read();
+    let args = worker_locks::Args {};
+    let snapshot = worker_locks::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.worker_locks(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("workerLocks must succeed for a caller with worker:read");
 
     assert_eq!(snapshot.locks.len(), 6, "all six §7.1 roles, always");
     for name in ["hooks", "jobs"] {
@@ -185,14 +203,20 @@ async fn worker_locks_denies_a_caller_with_no_worker_read_scope() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
 
-    let error = Procedures::new(test_pepper())
-        .worker_locks(
-            &db,
-            &app_caller_without_worker_read(),
-            worker_locks::Args {},
-        )
-        .await
-        .expect_err("a caller with no worker:read scope must be denied");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — which runs the real `@allow` (Layer 1) first. This
+    // caller's `auth().kind == "app"` still satisfies Layer 1 unconditionally
+    // (`schema.cstack`'s `workerLocks` `@allow`), so this stays a genuine
+    // Layer 2 (`require_permission`) denial, not a Layer 1 one.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = app_caller_without_worker_read();
+    let args = worker_locks::Args {};
+    let error = worker_locks::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.worker_locks(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect_err("a caller with no worker:read scope must be denied");
 
     assert!(
         matches!(error, CoolError::Forbidden(_)),
@@ -221,19 +245,24 @@ async fn releasing_a_lease_is_reflected_immediately() {
         .expect("attempting the smpp lock")
         .expect("this test holds the only attempt at the smpp lock this tick");
 
+    // cratestack 0.7.13 (cratestack#512): see the identical comment above.
     let procedures = Procedures::new(test_pepper());
-    let while_held = procedures
-        .worker_locks(&db, &app_caller_with_worker_read(), worker_locks::Args {})
-        .await
-        .expect("workerLocks must succeed");
+    let ctx = app_caller_with_worker_read();
+    let args = worker_locks::Args {};
+    let while_held = worker_locks::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.worker_locks(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("workerLocks must succeed");
     assert!(find_role(&while_held.locks, "smpp").held);
 
     held.release().await.expect("releasing the test lease");
 
-    let after_release = procedures
-        .worker_locks(&db, &app_caller_with_worker_read(), worker_locks::Args {})
-        .await
-        .expect("workerLocks must succeed");
+    let after_release = worker_locks::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.worker_locks(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("workerLocks must succeed");
     assert!(
         !find_role(&after_release.locks, "smpp").held,
         "a released lease must stop being reported as held immediately"

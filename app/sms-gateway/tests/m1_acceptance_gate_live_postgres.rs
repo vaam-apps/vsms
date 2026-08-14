@@ -618,18 +618,24 @@ async fn a_persisted_client_credentials_client_survives_a_process_restart_and_a_
     // why this is a direct procedure call rather than an HTTP request to
     // process #1.
     let procedures = Procedures::new(test_pepper());
-    let provisioned = procedures
-        .provision_app_client(
-            &db,
-            &owner(),
-            provision_args(
-                &app.id,
-                "m1 acceptance gate client",
-                vec!["sms:send".to_owned()],
-            ),
-        )
-        .await
-        .expect("provisioning a service account through the real procedure");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — see `provision_app_client_live_postgres.rs`'s
+    // identical comment.
+    let args = provision_args(
+        &app.id,
+        "m1 acceptance gate client",
+        vec!["sms:send".to_owned()],
+    );
+    // `&owner()` called twice in one statement would borrow a temporary that
+    // doesn't outlive the closure's returned future (E0515) — bind it once
+    // instead.
+    let ctx = owner();
+    let provisioned = provision_app_client::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.provision_app_client(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("provisioning a service account through the real procedure");
     assert!(
         provisioned.privateKeyPem.contains("PRIVATE KEY"),
         "provisioning must return a real PEM-encoded private key"

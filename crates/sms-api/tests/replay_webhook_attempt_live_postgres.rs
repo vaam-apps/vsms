@@ -247,18 +247,22 @@ async fn replaying_a_dead_attempt_resets_it_to_pending_with_a_fresh_counter() {
     assert_eq!(seeded.attempts, 3);
 
     let before = Utc::now();
-    let replayed = Procedures::new(test_pepper())
-        .replay_webhook_attempt(
-            &db,
-            &developer_with_webhook_manage(),
-            replay_webhook_attempt::Args {
-                args: schema::ReplayWebhookAttemptInput {
-                    attemptId: seeded.id.clone(),
-                },
-            },
-        )
-        .await
-        .expect("replaying a dead attempt must succeed");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = developer_with_webhook_manage();
+    let args = replay_webhook_attempt::Args {
+        args: schema::ReplayWebhookAttemptInput {
+            attemptId: seeded.id.clone(),
+        },
+    };
+    let replayed = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("replaying a dead attempt must succeed");
 
     assert_eq!(replayed.id, seeded.id, "replay must reset the same row");
     assert_eq!(
@@ -303,18 +307,20 @@ async fn replaying_a_failed_attempt_resets_it_to_pending() {
     .await;
     assert_eq!(seeded.state, AttemptState::failed);
 
-    let replayed = Procedures::new(test_pepper())
-        .replay_webhook_attempt(
-            &db,
-            &developer_with_webhook_manage(),
-            replay_webhook_attempt::Args {
-                args: schema::ReplayWebhookAttemptInput {
-                    attemptId: seeded.id.clone(),
-                },
-            },
-        )
-        .await
-        .expect("replaying a failed attempt must succeed");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // test above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = developer_with_webhook_manage();
+    let args = replay_webhook_attempt::Args {
+        args: schema::ReplayWebhookAttemptInput {
+            attemptId: seeded.id.clone(),
+        },
+    };
+    let replayed = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("replaying a failed attempt must succeed");
 
     assert_eq!(replayed.state, AttemptState::pending);
     assert_eq!(replayed.attempts, 0);
@@ -356,18 +362,19 @@ async fn replay_also_clears_the_endpoints_open_circuit_breaker() {
     )
     .await;
 
-    Procedures::new(test_pepper())
-        .replay_webhook_attempt(
-            &db,
-            &developer_with_webhook_manage(),
-            replay_webhook_attempt::Args {
-                args: schema::ReplayWebhookAttemptInput {
-                    attemptId: seeded.id.clone(),
-                },
-            },
-        )
-        .await
-        .expect("replaying against a circuit-open endpoint must still succeed");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment above.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = developer_with_webhook_manage();
+    let args = replay_webhook_attempt::Args {
+        args: schema::ReplayWebhookAttemptInput {
+            attemptId: seeded.id.clone(),
+        },
+    };
+    replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("replaying against a circuit-open endpoint must still succeed");
 
     let reread = db
         .webhook_endpoint()
@@ -420,18 +427,19 @@ async fn replaying_a_non_replayable_attempt_is_a_conflict_not_a_crash() {
         let seeded = seed_attempt_in_state(&db, &endpoint.id, &aggregate_id, state).await;
         assert_eq!(seeded.state, state, "precondition for {label}");
 
-        let error = procedures
-            .replay_webhook_attempt(
-                &db,
-                &developer_with_webhook_manage(),
-                replay_webhook_attempt::Args {
-                    args: schema::ReplayWebhookAttemptInput {
-                        attemptId: seeded.id.clone(),
-                    },
-                },
-            )
-            .await
-            .expect_err(&format!("replaying a {label} attempt must not succeed"));
+        // cratestack 0.7.13 (cratestack#512): see the identical comment on
+        // the test above.
+        let ctx = developer_with_webhook_manage();
+        let args = replay_webhook_attempt::Args {
+            args: schema::ReplayWebhookAttemptInput {
+                attemptId: seeded.id.clone(),
+            },
+        };
+        let error = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
+            procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+        })
+        .await
+        .expect_err(&format!("replaying a {label} attempt must not succeed"));
 
         assert!(
             matches!(error, CoolError::Conflict(_)),
@@ -440,30 +448,62 @@ async fn replaying_a_non_replayable_attempt_is_a_conflict_not_a_crash() {
     }
 }
 
-/// A bogus attempt id is a clear `NotFound`, not a silent no-op or a
-/// generic database error.
+/// A bogus attempt id is refused, not a silent no-op.
+///
+/// **The expected error changed from `NotFound` to `Forbidden` in the
+/// cratestack 0.7.16 bump — this is real, verified production behavior,
+/// not a test-only artifact.** Before cratestack 0.7.13 (cratestack#512),
+/// calling `ProcedureRegistry` methods directly silently skipped
+/// `@authorize(WebhookAttempt, detail, args.attemptId)` entirely, so this
+/// test only ever observed the procedure body's own internal
+/// `.ok_or_else(NotFound)` lookup. Now `invoke_with_db` genuinely runs
+/// `authorize_with_db` first, which executes `db.webhook_attempt().
+/// authorize_detail(id, ctx)` — a real `SELECT 1 FROM webhook_attempts
+/// WHERE id = $1 AND <detail policy>` preflight
+/// (`cratestack-sqlx-0.7.16/src/delegate/model_authorize.rs`,
+/// `src/query/support/conditions.rs`) — *before* the procedure body ever
+/// runs. For a nonexistent id that query structurally cannot distinguish
+/// "no row" from "row exists but policy denies" (the exact ambiguity
+/// `CONTRIBUTING.md`'s own R1 section already documents for
+/// `CoolError::Forbidden` on update/delete — this is the same ambiguity,
+/// now reachable from a procedure's own `@authorize` preflight too), so it
+/// always returns `Forbidden("detail policy denied this operation")`. The
+/// procedure's own `NotFound`-producing branch is unreachable for a
+/// missing id as a result — it can now only ever fire in the (vanishingly
+/// unlikely) TOCTOU window where a row exists at authorize time and is
+/// deleted before the procedure body's own lookup runs a moment later.
+/// Confirmed live, not assumed: reverting this assertion to `NotFound`
+/// reproduces `expected NotFound, got Forbidden("detail policy denied
+/// this operation")` on every run.
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
-async fn replaying_an_unknown_attempt_id_is_not_found() {
+async fn replaying_an_unknown_attempt_id_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
 
-    let error = Procedures::new(test_pepper())
-        .replay_webhook_attempt(
-            &db,
-            &developer_with_webhook_manage(),
-            replay_webhook_attempt::Args {
-                args: schema::ReplayWebhookAttemptInput {
-                    attemptId: format!("nosuchattempt{}", unique_suffix()),
-                },
-            },
-        )
-        .await
-        .expect_err("a nonexistent attempt id must not silently succeed");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — which is also what makes this test's own
+    // `Forbidden` expectation (see the doc comment above) the real,
+    // production-accurate outcome rather than an artifact of the direct
+    // call.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = developer_with_webhook_manage();
+    let args = replay_webhook_attempt::Args {
+        args: schema::ReplayWebhookAttemptInput {
+            attemptId: format!("nosuchattempt{}", unique_suffix()),
+        },
+    };
+    let error = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect_err("a nonexistent attempt id must not silently succeed");
 
     assert!(
-        matches!(error, CoolError::NotFound(_)),
-        "expected NotFound, got {error:?}"
+        matches!(error, CoolError::Forbidden(_)),
+        "expected Forbidden (the @authorize detail-policy preflight denying a nonexistent row — \
+         see this test's own doc comment), got {error:?}"
     );
 }
 
@@ -472,24 +512,62 @@ async fn replaying_an_unknown_attempt_id_is_not_found() {
 /// it at an attempt id that doesn't even exist and confirming the error is
 /// still `Forbidden`, not `NotFound` (which would mean the permission
 /// check was skipped and the lookup ran anyway).
+///
+/// **Rewritten for the cratestack 0.7.16 bump — no longer points at a
+/// nonexistent attempt id.** Same root cause as
+/// `replaying_an_unknown_attempt_id_is_refused`'s own doc comment:
+/// `invoke_with_db` now genuinely runs `@authorize(WebhookAttempt, detail,
+/// args.attemptId)` as part of Layer 1, *before* this procedure's own
+/// Layer 2 `require_permission(ctx, "webhook:manage")` ever runs. Pointing
+/// this test at a nonexistent id meant Layer 1's own preflight denied it
+/// first, every time, regardless of the caller's actual permissions — so
+/// the test could no longer prove what its own name claims. Confirmed
+/// live before fixing: with the old nonexistent-id version restored
+/// temporarily, this test failed with `expected the denial to name the
+/// missing permission: detail policy denied this operation`.
+///
+/// The fix: seed a real, `failed` (replayable) attempt. `WebhookAttempt
+/// .detail`'s own `@@allow` (`schema.cstack`) is `auth().kind == "user" ||
+/// endpoint.appId == auth().appId || hasRole('system')` —
+/// `developer_without_permission()` is `kind: PrincipalKind::User`, which
+/// already satisfies that clause unconditionally (irrespective of which
+/// app the endpoint belongs to), so Layer 1 passes and Layer 2's own
+/// `require_permission` is what actually produces the denial.
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn replay_denies_a_caller_with_no_webhook_manage_permission() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
+    let attempt = seed_attempt_in_state(
+        &db,
+        &endpoint.id,
+        &format!("msg-{suffix}"),
+        AttemptState::failed,
+    )
+    .await;
 
-    let error = Procedures::new(test_pepper())
-        .replay_webhook_attempt(
-            &db,
-            &developer_without_permission(),
-            replay_webhook_attempt::Args {
-                args: schema::ReplayWebhookAttemptInput {
-                    attemptId: "irrelevant-the-gate-must-fire-first".to_owned(),
-                },
-            },
-        )
-        .await
-        .expect_err("a caller with no webhook:manage permission must be denied");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`, which runs the real Layer 1 `@allow`/`@authorize`
+    // checks first — `kind == "user"` already admits this caller at both
+    // (`schema.cstack`'s `replayWebhookAttempt` `@allow` and
+    // `WebhookAttempt.detail`'s own `@@allow`, per the doc comment above),
+    // so this reaches Layer 2.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = developer_without_permission();
+    let args = replay_webhook_attempt::Args {
+        args: schema::ReplayWebhookAttemptInput {
+            attemptId: attempt.id.clone(),
+        },
+    };
+    let error = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect_err("a caller with no webhook:manage permission must be denied");
 
     assert!(
         matches!(error, CoolError::Forbidden(_)),

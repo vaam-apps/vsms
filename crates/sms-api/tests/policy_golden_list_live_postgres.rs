@@ -327,9 +327,17 @@ async fn provider_delete_policy_matches_the_schema_exactly() {
         .run(&ctx_for_role("owner"))
         .await
         .expect("seeding a provider to delete");
+    // cratestack 0.7.13 (cratestack#519): DELETE on an `@version` model now
+    // enforces `If-Match` exactly like PATCH already did — omitting it
+    // returns `PreconditionFailed` before the delete policy is ever
+    // evaluated, which would make every case below (allowed and forbidden
+    // alike) fail with the same error instead of exercising the policy this
+    // test actually checks. `seeded.version` is fresh from the create
+    // above, so it always matches.
     let result = db
         .provider()
         .delete(seeded.id)
+        .if_match(seeded.version)
         .run(&ctx_for_role("owner"))
         .await;
     assert!(
@@ -347,6 +355,7 @@ async fn provider_delete_policy_matches_the_schema_exactly() {
         let result = db
             .provider()
             .delete(seeded.id)
+            .if_match(seeded.version)
             .run(&ctx_for_role(role))
             .await;
         assert!(
@@ -508,6 +517,9 @@ async fn app_client_delete_policy_matches_the_schema_exactly() {
     let app = fresh_app(&db).await;
 
     // schema.cstack: @@allow("delete", hasRole('owner') || hasRole('admin'))
+    // cratestack 0.7.13 (cratestack#519): see `provider_delete_policy_matches_the_schema_exactly`'s
+    // identical comment on why `.if_match(seeded.version)` is required on
+    // every delete below now, not just the allowed-role ones.
     let allowed = ["owner", "admin"];
     for role in allowed {
         let seeded = db
@@ -520,6 +532,7 @@ async fn app_client_delete_policy_matches_the_schema_exactly() {
         let result = db
             .app_client()
             .delete(seeded.id)
+            .if_match(seeded.version)
             .run(&ctx_for_role(role))
             .await;
         assert!(
@@ -539,6 +552,7 @@ async fn app_client_delete_policy_matches_the_schema_exactly() {
         let result = db
             .app_client()
             .delete(seeded.id)
+            .if_match(seeded.version)
             .run(&ctx_for_role(role))
             .await;
         assert!(

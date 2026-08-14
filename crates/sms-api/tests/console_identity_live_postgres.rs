@@ -162,20 +162,24 @@ async fn a_provisioned_user_can_actually_log_in_with_the_returned_password() {
     let suffix = unique_suffix();
     let email = format!("provisioned-{suffix}@example.test");
 
-    let result = Procedures::new(test_pepper())
-        .provision_user(
-            &db,
-            &owner_with_user_manage(),
-            provision_user::Args {
-                args: schema::ProvisionUserInput {
-                    email: email.clone(),
-                    displayName: "Provisioned Test User".to_owned(),
-                    roleKey: "console_identity_owner_role".to_owned(),
-                },
-            },
-        )
-        .await
-        .expect("provisioning a user");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db` — the "sanctioned way to invoke a procedure from
+    // non-HTTP code" per that function's own doc comment.
+    let procedures = Procedures::new(test_pepper());
+    let ctx = owner_with_user_manage();
+    let args = provision_user::Args {
+        args: schema::ProvisionUserInput {
+            email: email.clone(),
+            displayName: "Provisioned Test User".to_owned(),
+            roleKey: "console_identity_owner_role".to_owned(),
+        },
+    };
+    let result = provision_user::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.provision_user(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("provisioning a user");
 
     assert_eq!(result.email, email);
     assert!(!result.password.is_empty());
@@ -228,14 +232,21 @@ async fn provisioning_the_same_email_twice_is_a_conflict() {
         },
     };
 
-    procedures
-        .provision_user(&db, &owner_with_user_manage(), args())
-        .await
-        .expect("first provision succeeds");
+    // cratestack 0.7.13 (cratestack#512): see the identical comment on the
+    // test above.
+    let ctx = owner_with_user_manage();
+    let first_args = args();
+    provision_user::invoke_with_db(&db, &first_args, &ctx, |authorized| {
+        procedures.provision_user(&db, &ctx, first_args.clone(), authorized)
+    })
+    .await
+    .expect("first provision succeeds");
 
-    let second = procedures
-        .provision_user(&db, &owner_with_user_manage(), args())
-        .await;
+    let second_args = args();
+    let second = provision_user::invoke_with_db(&db, &second_args, &ctx, |authorized| {
+        procedures.provision_user(&db, &ctx, second_args.clone(), authorized)
+    })
+    .await;
     assert!(
         matches!(second, Err(cratestack::CoolError::Conflict(_))),
         "expected a named Conflict on a duplicate email, got {second:?}"
@@ -264,35 +275,35 @@ async fn recording_an_opt_out_makes_it_findable_by_the_same_number() {
     let procedures = Procedures::new(test_pepper());
     let msisdn = test_msisdn("001");
 
-    let recorded = procedures
-        .record_opt_out(
-            &db,
-            &operator_with_optout_manage(),
-            record_opt_out::Args {
-                args: schema::RecordOptOutInput {
-                    msisdn: msisdn.clone(),
-                    source: schema::OptOutSource::admin,
-                    scope: "all".to_owned(),
-                    reason: Some("test seed".to_owned()),
-                },
-            },
-        )
-        .await
-        .expect("recording an opt-out");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = operator_with_optout_manage();
+    let record_args = record_opt_out::Args {
+        args: schema::RecordOptOutInput {
+            msisdn: msisdn.clone(),
+            source: schema::OptOutSource::admin,
+            scope: "all".to_owned(),
+            reason: Some("test seed".to_owned()),
+        },
+    };
+    let recorded = record_opt_out::invoke_with_db(&db, &record_args, &ctx, |authorized| {
+        procedures.record_opt_out(&db, &ctx, record_args.clone(), authorized)
+    })
+    .await
+    .expect("recording an opt-out");
     assert_eq!(recorded.msisdn, "+237677000001");
 
-    let found = procedures
-        .search_opt_out_by_msisdn(
-            &db,
-            &operator_with_optout_manage(),
-            search_opt_out_by_msisdn::Args {
-                args: schema::OptOutSearchInput {
-                    msisdn: msisdn.clone(),
-                },
-            },
-        )
-        .await
-        .expect("searching for the just-recorded number");
+    let search_args = search_opt_out_by_msisdn::Args {
+        args: schema::OptOutSearchInput {
+            msisdn: msisdn.clone(),
+        },
+    };
+    let found = search_opt_out_by_msisdn::invoke_with_db(&db, &search_args, &ctx, |authorized| {
+        procedures.search_opt_out_by_msisdn(&db, &ctx, search_args.clone(), authorized)
+    })
+    .await
+    .expect("searching for the just-recorded number");
 
     let summary = found.optOut.expect("the recorded opt-out must be found");
     assert_eq!(summary.id, recorded.id);
@@ -313,37 +324,38 @@ async fn searching_an_unrecorded_number_finds_nothing_even_with_other_rows_prese
 
     // Seed three unrelated opt-outs first, so an unfiltered fallback would
     // have something to wrongly return.
+    //
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = operator_with_optout_manage();
     for suffix in ["101", "102", "103"] {
-        procedures
-            .record_opt_out(
-                &db,
-                &operator_with_optout_manage(),
-                record_opt_out::Args {
-                    args: schema::RecordOptOutInput {
-                        msisdn: test_msisdn(suffix),
-                        source: schema::OptOutSource::admin,
-                        scope: "all".to_owned(),
-                        reason: None,
-                    },
-                },
-            )
-            .await
-            .expect("seeding an unrelated opt-out");
+        let args = record_opt_out::Args {
+            args: schema::RecordOptOutInput {
+                msisdn: test_msisdn(suffix),
+                source: schema::OptOutSource::admin,
+                scope: "all".to_owned(),
+                reason: None,
+            },
+        };
+        record_opt_out::invoke_with_db(&db, &args, &ctx, |authorized| {
+            procedures.record_opt_out(&db, &ctx, args.clone(), authorized)
+        })
+        .await
+        .expect("seeding an unrelated opt-out");
     }
 
     let never_recorded = test_msisdn("999");
-    let result = procedures
-        .search_opt_out_by_msisdn(
-            &db,
-            &operator_with_optout_manage(),
-            search_opt_out_by_msisdn::Args {
-                args: schema::OptOutSearchInput {
-                    msisdn: never_recorded,
-                },
-            },
-        )
-        .await
-        .expect("searching for a number that was never recorded");
+    let search_args = search_opt_out_by_msisdn::Args {
+        args: schema::OptOutSearchInput {
+            msisdn: never_recorded,
+        },
+    };
+    let result = search_opt_out_by_msisdn::invoke_with_db(&db, &search_args, &ctx, |authorized| {
+        procedures.search_opt_out_by_msisdn(&db, &ctx, search_args.clone(), authorized)
+    })
+    .await
+    .expect("searching for a number that was never recorded");
 
     assert!(
         result.optOut.is_none(),
@@ -366,21 +378,23 @@ async fn a_support_role_caller_can_record_an_opt_out_the_bare_model_policy_would
     let db = db().await;
     let procedures = Procedures::new(test_pepper());
 
-    let recorded = procedures
-        .record_opt_out(
-            &db,
-            &support_with_optout_manage(),
-            record_opt_out::Args {
-                args: schema::RecordOptOutInput {
-                    msisdn: test_msisdn("201"),
-                    source: schema::OptOutSource::inbound_stop,
-                    scope: "all".to_owned(),
-                    reason: None,
-                },
-            },
-        )
-        .await
-        .expect("a support-role caller with optout:manage must be able to record an opt-out");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = support_with_optout_manage();
+    let args = record_opt_out::Args {
+        args: schema::RecordOptOutInput {
+            msisdn: test_msisdn("201"),
+            source: schema::OptOutSource::inbound_stop,
+            scope: "all".to_owned(),
+            reason: None,
+        },
+    };
+    let recorded = record_opt_out::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.record_opt_out(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("a support-role caller with optout:manage must be able to record an opt-out");
     assert_eq!(recorded.source, schema::OptOutSource::inbound_stop);
 }
 
@@ -395,35 +409,41 @@ async fn recording_or_searching_denies_a_caller_with_no_optout_manage_permission
     let db = db().await;
     let procedures = Procedures::new(test_pepper());
 
-    let record_result = procedures
-        .record_opt_out(
-            &db,
-            &operator_without_permission(),
-            record_opt_out::Args {
-                args: schema::RecordOptOutInput {
-                    msisdn: test_msisdn("301"),
-                    source: schema::OptOutSource::admin,
-                    scope: "all".to_owned(),
-                    reason: None,
-                },
-            },
-        )
-        .await;
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`, which runs the real Layer 1 `@allow` check first —
+    // `hasRole('operator')` already admits this caller there
+    // (`schema.cstack`'s `recordOptOut`/`searchOptOutByMsisdn` `@allow`),
+    // and neither procedure carries an `@authorize` model check, so this
+    // stays a genuine Layer 2 (`require_permission`) denial, not a Layer 1
+    // one.
+    let ctx = operator_without_permission();
+    let record_args = record_opt_out::Args {
+        args: schema::RecordOptOutInput {
+            msisdn: test_msisdn("301"),
+            source: schema::OptOutSource::admin,
+            scope: "all".to_owned(),
+            reason: None,
+        },
+    };
+    let record_result = record_opt_out::invoke_with_db(&db, &record_args, &ctx, |authorized| {
+        procedures.record_opt_out(&db, &ctx, record_args.clone(), authorized)
+    })
+    .await;
     assert!(
         matches!(record_result, Err(cratestack::CoolError::Forbidden(_))),
         "expected Forbidden, got {record_result:?}"
     );
 
-    let search_result = procedures
-        .search_opt_out_by_msisdn(
-            &db,
-            &operator_without_permission(),
-            search_opt_out_by_msisdn::Args {
-                args: schema::OptOutSearchInput {
-                    msisdn: test_msisdn("301"),
-                },
-            },
-        )
+    let search_args = search_opt_out_by_msisdn::Args {
+        args: schema::OptOutSearchInput {
+            msisdn: test_msisdn("301"),
+        },
+    };
+    let search_result =
+        search_opt_out_by_msisdn::invoke_with_db(&db, &search_args, &ctx, |authorized| {
+            procedures.search_opt_out_by_msisdn(&db, &ctx, search_args.clone(), authorized)
+        })
         .await;
     assert!(
         matches!(search_result, Err(cratestack::CoolError::Forbidden(_))),
@@ -442,21 +462,23 @@ async fn recording_an_opt_out_stamps_a_current_opted_out_at() {
     let procedures = Procedures::new(test_pepper());
 
     let before = Utc::now();
-    let recorded = procedures
-        .record_opt_out(
-            &db,
-            &operator_with_optout_manage(),
-            record_opt_out::Args {
-                args: schema::RecordOptOutInput {
-                    msisdn: test_msisdn("401"),
-                    source: schema::OptOutSource::admin,
-                    scope: "all".to_owned(),
-                    reason: None,
-                },
-            },
-        )
-        .await
-        .expect("recording an opt-out");
+    // cratestack 0.7.13 (cratestack#512): calling the trait method directly
+    // now requires an `Authorized` witness, obtainable only through
+    // `invoke_with_db`.
+    let ctx = operator_with_optout_manage();
+    let args = record_opt_out::Args {
+        args: schema::RecordOptOutInput {
+            msisdn: test_msisdn("401"),
+            source: schema::OptOutSource::admin,
+            scope: "all".to_owned(),
+            reason: None,
+        },
+    };
+    let recorded = record_opt_out::invoke_with_db(&db, &args, &ctx, |authorized| {
+        procedures.record_opt_out(&db, &ctx, args.clone(), authorized)
+    })
+    .await
+    .expect("recording an opt-out");
     let after = Utc::now();
 
     assert!(recorded.optedOutAt >= before && recorded.optedOutAt <= after);
