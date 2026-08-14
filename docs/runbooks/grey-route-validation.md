@@ -40,10 +40,10 @@ substitution can affect one network's leg of a route and not another's.
    with a narrow `matchPrefix`/`matchOperator` that only your test MSISDN
    can hit, or a temporary priority bump — this repo has no "force this
    message down this exact route" debug flag, and building one is out of
-   this ticket's scope. `crates/sms-api/examples/send_test_message.rs`
+   this ticket's scope. `backends/crates/sms-api/examples/send_test_message.rs`
    (`docs/runbooks/36-handset-gate.md`'s own trigger) sends a real message
    through the normal `sendMessage` path; #54's route simulator
-   (`admin/app/simulator`, or `simulateRoute` directly) tells you which
+   (`frontends/apps/admin/app/simulator`, or `simulateRoute` directly) tells you which
    route a given `(operator, class, appId, msisdn)` combination would
    actually resolve to, *before* you spend a real SMS confirming it.
 2. **Watch the handset.** Record exactly what the sender ID field shows —
@@ -102,7 +102,7 @@ inherent to a periodic human check, not a shortcut this runbook is taking.
 - **`SMSRouteDeliveryDivergence`** means a route's own recent delivery rate
   is statistically and practically worse than its best-performing peer
   serving the same `(operator, class)` combination — see
-  `crates/sms-worker/src/jobs/grey_route_watch.rs`'s own module doc for the
+  `backends/crates/sms-worker/src/jobs/grey_route_watch.rs`'s own module doc for the
   exact gates. It is evidence worth investigating, not a confirmed grey
   route; the fastest way to turn "worth investigating" into "confirmed" is
   this runbook, run against the flagged route specifically.

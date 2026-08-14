@@ -5,7 +5,7 @@ document is the reference lock and decision ledger later build agents work from 
 if a later agent's output disagrees with this document, the document wins; propose
 an amendment here first, don't silently drift.
 
-Scope: `admin/` (18 route directories) and `packages/ui/` (31 existing components).
+Scope: `frontends/apps/admin/` (18 route directories) and `frontends/packages/ui/` (31 existing components).
 Constraints below are the maintainer's own words, verbatim where quoted, and are
 non-negotiable.
 
@@ -207,7 +207,7 @@ production — no change needed there beyond the Headless UI port (§2).
 ## 2. Decision ledger
 
 Every real choice below states the alternative considered and why it lost. Where
-an existing `packages/ui` decision conflicts with a new constraint, that is called
+an existing `frontends/packages/ui` decision conflicts with a new constraint, that is called
 out explicitly — the new constraint always wins, but the reasoning for the old
 choice is recorded so nobody re-litigates it from scratch.
 
@@ -221,7 +221,7 @@ choice is recorded so nobody re-litigates it from scratch.
 | D6 | `@radix-ui/react-separator` is deleted outright, replaced by a 3-line plain `<div role="separator">` styled with a DaisyUI-token border color | Keep Radix Separator | It is already a near-trivial wrapper (`SeparatorPrimitive.Root` renders a styled div); zero behavior is lost by dropping it | §5 |
 | D7 | Sidebar responsive collapse uses **DaisyUI's own `.drawer` CSS component** (checkbox-driven off-canvas container, no JS state) for the mobile/tablet nav, kept semantically and *nominally* distinct from `vaul`'s `Drawer` (used only for record detail panels) | Reuse `vaul` for the off-canvas sidebar too, since "drawer" is already the vocabulary | These are two different concerns with an unfortunate name collision: `vaul`'s `Drawer` is a JS-driven, swipeable, portal-rendered overlay for *content* (detail panels); DaisyUI's `.drawer` is a pure-CSS, checkbox-driven, non-portal off-canvas *layout* container purpose-built for exactly "sidebar that becomes an overlay below a breakpoint." Using `vaul` for navigation chrome would add JS overhead and swipe-gesture behavior nothing asks for, and using DaisyUI's `.drawer` for record detail would fight `vaul`'s own portal/animation model. The new nav component is named `ConsoleShell`/`SideNav`, never "Drawer," specifically so later agents don't reach for the wrong one by name association | §4, §6 |
 | D8 | Radius scale is **rewritten from the existing near-square 2px system to a confidently rounded one**: `--radius-selector: 8px`, `--radius-field: 12px`, `--radius-box: 20px`; Tailwind's own `--radius-sm`/`--radius-md` aliases move from `2px`/`4px` to `12px`/`20px` to match; `--radius-full` (9999px) stays available for true pills | A moderate register (an earlier draft of this document picked `6/8/12px` specifically to stay close to the outgoing 2px system) | Judged on the reference lock alone, not against what shipped before: LottieFiles' filled-rounded-rectangle active nav row, Column's selected-row fill, and Polar's drawer/card corners (§1.1, §1.2, §1.5) all read as genuinely, confidently rounded — not a restrained nudge off square. This project's own standing convention is a hard cutover, not a cautious half-step, when replacing something ("we're breaking what exists" — maintainer, on this exact decision): "it was already built carefully" is not a reason to hedge the replacement. The one thing the register still respects is the reference lock's own ceiling, not the old system's: §1.1 is explicit that even LottieFiles' own active row is "not fully pill-shaped", and a data table's chrome would look novelty-bubbly at true pill radius — so this stays short of `--radius-full`, but at the confident end of what's short of it, not the cautious end | §1.1, §1.2, §1.5, §2 (theme.css) |
-| D9 | Dark-only theming: **delete** the `"light"` `@plugin "daisyui/theme"` block and its paired `[data-theme="light"]` CSS block from `theme.css` entirely; delete `theme-toggle.tsx`; remove every `<ThemeToggle />` usage; `admin/app/layout.tsx` keeps `<html data-theme="dark">` (harmless, avoids any `[data-theme]`-selector edge case in DaisyUI internals, and documents intent) even though only one theme exists | Keep both themes defined but simply never expose a toggle in the UI | Constraint 2 says "no light theme" — leaving dead light-theme tokens in the codebase is exactly the kind of dormant code the project's own delivery-style rule forbids ("never implement something and leave it dormant"); a maintained second theme nobody can reach is a liability, not a convenience | Constraint 2, project CLAUDE.md "Delivery style" |
+| D9 | Dark-only theming: **delete** the `"light"` `@plugin "daisyui/theme"` block and its paired `[data-theme="light"]` CSS block from `theme.css` entirely; delete `theme-toggle.tsx`; remove every `<ThemeToggle />` usage; `frontends/apps/admin/app/layout.tsx` keeps `<html data-theme="dark">` (harmless, avoids any `[data-theme]`-selector edge case in DaisyUI internals, and documents intent) even though only one theme exists | Keep both themes defined but simply never expose a toggle in the UI | Constraint 2 says "no light theme" — leaving dead light-theme tokens in the codebase is exactly the kind of dormant code the project's own delivery-style rule forbids ("never implement something and leave it dormant"); a maintained second theme nobody can reach is a liability, not a convenience | Constraint 2, project CLAUDE.md "Delivery style" |
 | D10 | English-only: **`labelFr`/`tooltipFr` are deleted outright** from `status-tokens.ts`, and the `locale` **prop is removed** from every UI component's public API (`StatusPill`, `StateTimeline`, transitively `JobStatusPill`/`AttemptStatusPill`). Every call site renders English, unconditionally | Keep the French data as unused fields, on the theory a future CSV export or compliance report might want them | **Settled by the maintainer, 2026-08-14: delete them.** This document originally inferred "keep the data, drop the switch" and flagged the question; the answer is the stronger reading of the constraint. Retaining localisation data that nothing renders is the same "claims a capability that does not exist" smell this repo has repeatedly found and fixed (an unenforced permission literal, an event type nothing could emit) — and a future consumer that genuinely needs French can add it deliberately, against a real requirement, rather than inheriting a half-maintained table nothing exercises. **Deleting the fields is what makes the removal verifiable**: with them gone, any surviving reader is a compile error rather than silently-dead code. **Not an abandonment of localisation** — [#231](https://github.com/vymalo/vsms/issues/231), filed after this decision, tracks a real `react-i18next` layer for the console, still English-only by default with additional languages opted into via env-var config; that is the actual mechanism this decision defers to, not two ad hoc string fields on a domain-semantics table | Constraint 1 |
 | D11 | `cva()` replaces the existing hand-written `Record<Variant, string>` variant maps (`Button`'s `VARIANT_CLASSES`/`SIZE_CLASSES`, `Badge`'s inline ternaries) | Keep the `Record`-based maps, since `clsx`+`tailwind-merge` already work today | Constraint 8 names CVA specifically, not just "some variant mechanism" — and `cva` gives `compoundVariants` for states the `Record` approach can't express cleanly (e.g. a future `loading` + `size=icon` combination). Migration is mechanical and must preserve byte-identical class output, verified before merge (see §6, §7) | Constraint 8 |
 | D12 | **`@uidotdev/usehooks` is not a dependency of this repo — the constraint was withdrawn by the maintainer on 2026-08-14, after Phase 0.** Two findings drove it. First, the package's `useMediaQuery` has a `getServerSnapshot` that is a hard `throw new Error("useMediaQuery is a client-only hook")` (read directly from `@uidotdev/usehooks/index.js`; the only hook in the library built that way, confirmed by grepping every `getServerSnapshot` in it) — that 500'd every full page load in `SideNav` while `pnpm build` stayed green, because every route here is dynamic and build-time generation never executes them. Second, its last real publish was **2023-10-23** (verified against npm's own `time` map — note `time.modified` reads 2026-05-14 and is a metadata touch, not a release), so it predates React 19 entirely, which this repo is on. **Breakpoints are CSS-first**: the sidebar's three bands (§6.1) and the drawer's mobile/desktop weights (§6.4) are plain Tailwind responsive classes — no hook, no client-only render boundary, no SSR trap. Where a value genuinely must be *read in JS* and cannot be expressed as a style, write the hook by hand in `@vsms/hooks` and give it an explicit SSR-safe default. `LiveRow`'s `prefers-reduced-motion` check is the one confirmed such case (it feeds a numeric `setTimeout` duration, which no CSS query can drive) and its **existing** hand-rolled check is already SSR-safe by its own shape: `typeof window !== "undefined" && window.matchMedia(...).matches`, evaluated at render time rather than stored in state, defaulting to "motion allowed" on the server and re-evaluating identically on the client's first render. Leave it exactly as it is | Adopt the package as originally constrained; or keep it for the handful of generic hooks it does provide | An unmaintained dependency that predates the React major this repo runs on, whose headline hook is actively hostile to server rendering, is not worth carrying for three generic hooks that are a few lines each to write. After Phase 0's CSS-first rework it had **zero live imports** — a declared dependency with no call sites — which made dropping it free rather than a migration | Maintainer, superseding constraint 9 |
@@ -427,10 +427,10 @@ convention, kept — it already reads correctly against the reference density).
 ### 6.2 App shell sketch
 
 Illustrative only — locks the composition, not final class names. `ConsoleShell`
-wraps every authenticated route; `admin/app/layout.tsx` renders it once.
+wraps every authenticated route; `frontends/apps/admin/app/layout.tsx` renders it once.
 
 ```tsx
-// admin/app/console-shell.tsx (new; replaces console-nav.tsx's per-screen
+// frontends/apps/admin/app/console-shell.tsx (new; replaces console-nav.tsx's per-screen
 // header pattern — see §7, "must survive untouched" for what this must NOT
 // change about data fetching)
 "use client";
@@ -479,7 +479,7 @@ Locks the exact shape D4/D11 describe: a standalone exported variant function,
 `Button` built on top of it, no `asChild`.
 
 ```tsx
-// packages/ui/src/components/primitives/button.tsx
+// frontends/packages/ui/src/components/primitives/button.tsx
 import { cva, type VariantProps } from "class-variance-authority";
 import type { ButtonHTMLAttributes } from "react";
 import { forwardRef } from "react";
@@ -539,7 +539,7 @@ now uses (CSS-driven, not a JS breakpoint read) rather than assuming the
 sketch's own `useMediaQuery` call is safe as written.
 
 ```tsx
-// packages/ui/src/components/primitives/drawer.tsx
+// frontends/packages/ui/src/components/primitives/drawer.tsx
 "use client";
 
 import { Drawer as DrawerPrimitive } from "vaul";
@@ -622,10 +622,10 @@ nobody builds a screen against a shell that hasn't landed yet.
 
 **Phase 0 — tokens and shell (one agent, blocking, must land and typecheck before
 Phase 1 starts):**
-- `packages/ui/src/styles/theme.css` — delete the light theme (D9), rewrite the
+- `frontends/packages/ui/src/styles/theme.css` — delete the light theme (D9), rewrite the
   radius scale (D8).
-- `packages/ui/src/components/primitives/theme-toggle.tsx` — delete.
-- `packages/ui/package.json` — **add** `@headlessui/react`, `class-variance-authority`
+- `frontends/packages/ui/src/components/primitives/theme-toggle.tsx` — delete.
+- `frontends/packages/ui/package.json` — **add** `@headlessui/react`, `class-variance-authority`
   (`cva`), `@uidotdev/usehooks` (D3–D6, D11, D12). **Correction, found landing
   Phase 0: do not remove the `@radix-ui/*` packages here.** The line below this
   one originally said "swap Radix packages for `@headlessui/react`" — that's
@@ -635,9 +635,9 @@ Phase 1 starts):**
   which is exactly the gate this phase has to pass before Phase 1 can start.
   Every `@radix-ui/*` entry stays in `package.json` through Phase 0; Phase 1's
   Bucket A removes each one as it ports the primitive that uses it (D3–D6).
-- New: `admin/app/console-shell.tsx`, `admin/app/nav-groups.ts` (§4 as data),
-  `packages/ui/src/components/primitives/side-nav.tsx` (§6.2).
-- `admin/app/layout.tsx` — wrap in `ConsoleShell`.
+- New: `frontends/apps/admin/app/console-shell.tsx`, `frontends/apps/admin/app/nav-groups.ts` (§4 as data),
+  `frontends/packages/ui/src/components/primitives/side-nav.tsx` (§6.2).
+- `frontends/apps/admin/app/layout.tsx` — wrap in `ConsoleShell`.
 
 **Phase 1 — primitives, three independent buckets (parallel, after Phase 0):**
 - **Bucket A — Headless UI ports** (owns every file in the "Port"/"Rebuild" rows
@@ -650,23 +650,23 @@ Phase 1 starts):**
 - **Bucket C — drawer semantics** (owns `drawer.tsx` per §6.4 only): the
   narrowest bucket, one file, can land independently of A and B.
 
-These three buckets touch disjoint files inside `packages/ui/src/components/
+These three buckets touch disjoint files inside `frontends/packages/ui/src/components/
 primitives/`, so they can run as three parallel agents with no merge conflicts;
 `index.ts` re-exports are additive per file and merge cleanly.
 
 **Phase 2 — screens, grouped by §4's IA (parallel, after Phase 0 + Phase 1 all
-land and `packages/ui` typechecks clean):**
-- **Agent "Messaging"** owns `admin/app/page.tsx` (composer), `admin/app/
-  messages/**`, `admin/app/simulator/**`.
-- **Agent "Delivery"** owns `admin/app/providers/**`, `admin/app/routes/**`,
-  `admin/app/sender-ids/**`, `admin/app/webhooks/**` — this is also the agent
+land and `frontends/packages/ui` typechecks clean):**
+- **Agent "Messaging"** owns `frontends/apps/admin/app/page.tsx` (composer), `frontends/apps/admin/app/
+  messages/**`, `frontends/apps/admin/app/simulator/**`.
+- **Agent "Delivery"** owns `frontends/apps/admin/app/providers/**`, `frontends/apps/admin/app/routes/**`,
+  `frontends/apps/admin/app/sender-ids/**`, `frontends/apps/admin/app/webhooks/**` — this is also the agent
   that builds the first real Quick/More-detail drawer pairs (§3), since every
   screen in this group needs one.
-- **Agent "Operations"** owns `admin/app/jobs/**`, `admin/app/workers/**`,
-  `admin/app/opt-outs/**`.
-- **Agent "Admin"** owns `admin/app/apps/**`, `admin/app/users/**`, `admin/app/
-  audit-log/**`, `admin/app/settings/**`.
-- **Agent "Dashboard+Gallery"** owns `admin/app/dashboard/**` and `admin/app/
+- **Agent "Operations"** owns `frontends/apps/admin/app/jobs/**`, `frontends/apps/admin/app/workers/**`,
+  `frontends/apps/admin/app/opt-outs/**`.
+- **Agent "Admin"** owns `frontends/apps/admin/app/apps/**`, `frontends/apps/admin/app/users/**`, `frontends/apps/admin/app/
+  audit-log/**`, `frontends/apps/admin/app/settings/**`.
+- **Agent "Dashboard+Gallery"** owns `frontends/apps/admin/app/dashboard/**` and `frontends/apps/admin/app/
   gallery/page.tsx` last, specifically because the gallery page is the one
   file that imports and exercises *every* `@vsms/ui` export — it is the natural
   final visual-QA surface, not a screen to build early.
@@ -700,10 +700,10 @@ redesign can silently regress if a screen gets rewritten instead of re-skinned:*
   in it verbatim and change only JSX/class names. Re-implementing "the same
   behavior" from scratch is exactly how the original `refetchInterval` bug would
   reappear.
-- **`packages/gateway/src/request-credential.ts`'s `AsyncLocalStorage`-based
+- **`frontends/packages/gateway/src/request-credential.ts`'s `AsyncLocalStorage`-based
   per-request human-token forwarding**, and the two documented, deliberate
   exceptions to it (`client.ts`'s `sendMessage`/`previewMessage`, `messages.ts`'s
-  `listMessagesForStream`) — nothing in this redesign touches `packages/gateway`
+  `listMessagesForStream`) — nothing in this redesign touches `frontends/packages/gateway`
   at all, but a screen agent adding a *new* data-fetching call must resolve the
   token the same implicit way every existing call does, not import
   `getMachineAccessToken` by hand "for simplicity."
@@ -722,8 +722,8 @@ redesign can silently regress if a screen gets rewritten instead of re-skinned:*
 - **`nuqs` URL-state filters** on the Messages screen and any other filterable
   table — these are shareable/bookmarkable URLs today; a rebuild must not
   silently move filter state into component-local `useState`.
-- **The OIDC login flow's PKCE/state/nonce cookie handling** (`admin/middleware.ts`,
-  `admin/lib/oidc.ts`, `admin/app/api/auth/**`) — entirely outside `packages/ui`
+- **The OIDC login flow's PKCE/state/nonce cookie handling** (`frontends/apps/admin/middleware.ts`,
+  `frontends/apps/admin/lib/oidc.ts`, `frontends/apps/admin/app/api/auth/**`) — entirely outside `frontends/packages/ui`
   and the route screens this document scopes, and must stay that way; the
   `/login` page itself (§4, not in the nav) gets only a visual pass, never a
   logic change.

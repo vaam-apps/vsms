@@ -18,7 +18,7 @@ use std::path::Path;
 use regex::{Regex, RegexBuilder};
 
 const DOC: &str = "docs/architecture.md";
-const SQL: &str = "schema/migrations/postgres/0002_bootstrap/up.sql";
+const SQL: &str = "backends/migrations/postgres/0002_bootstrap/up.sql";
 
 /// mermaid's start/end pseudo-state. Entry into the initial state and exit
 /// from a terminal one are not rows in the table — terminality is expressed

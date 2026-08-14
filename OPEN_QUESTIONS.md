@@ -52,7 +52,7 @@ way. It becomes urgent only when someone wants a direct interconnect.
 tRPC route-handler boundary, via `AsyncLocalStorage` — not a per-request
 token exchange.**
 
-#194 shipped a real authorization_code + PKCE login, but `packages/gateway`
+#194 shipped a real authorization_code + PKCE login, but `frontends/packages/gateway`
 kept authenticating **upstream** with its own machine credential regardless
 of who was signed in — verified by signing in as a freshly provisioned
 `owner` and watching a `Provider` edit fail with `missing required
@@ -62,23 +62,23 @@ permission "provider:update"`. Two shapes were on the table:
   it directly. **Taken.** Checked, not assumed: `GatewayAuth::
   authenticate_human` already validates a human token fully — signature via
   JWKS, issuer, and audience against `sms-console`
-  (`GatewayAuth::human_client_id`) — and `admin/middleware.ts` already
+  (`GatewayAuth::human_client_id`) — and `frontends/apps/admin/middleware.ts` already
   refreshes the session's `accessToken` ~60s ahead of expiry on *every*
   request, redirecting to `/login` outright if refresh fails. So by the time
   a request reaches the tRPC route handler, the token is already fresh for
   that request's lifetime — no separate exchange step, no expiry logic
-  needed in `packages/gateway` at all.
+  needed in `frontends/packages/gateway` at all.
 - **Exchange the session for a per-request token.** Not taken — strictly
   more moving parts for no benefit once the above was confirmed live.
 
-**How it's plumbed, and why that shape specifically:** `packages/gateway`'s
+**How it's plumbed, and why that shape specifically:** `frontends/packages/gateway`'s
 ~13 upstream-calling functions across 9 files are called via `ctx.gateway.
 xxx()` — a module reference, not a per-request-bound instance — so an
 explicit credential parameter would have touched every one of those call
-sites *and* every router that calls them. Instead, `packages/gateway/src/
+sites *and* every router that calls them. Instead, `frontends/packages/gateway/src/
 request-credential.ts`'s `AsyncLocalStorage` is set once, at the one true
-per-request boundary (`admin/app/api/trpc/[trpc]/route.ts`'s `handler`,
-reading the `x-vsms-access-token` header `admin/middleware.ts` forwards),
+per-request boundary (`frontends/apps/admin/app/api/trpc/[trpc]/route.ts`'s `handler`,
+reading the `x-vsms-access-token` header `frontends/apps/admin/middleware.ts` forwards),
 and every ordinary call site resolves it implicitly via
 `resolveUpstreamAccessToken()`. The failure mode the ticket named — a new
 screen silently getting the machine credential when it meant the human's —
@@ -87,7 +87,7 @@ credential scope was ever entered, rather than defaulting to the machine
 credential. Reaching for the machine credential requires importing
 `getMachineAccessToken` from `./token` directly, by name, which the module's
 own doc reserves for two documented exceptions:
-`client.ts`'s `previewMessage`/`sendMessage` (`crates/sms-api/src/
+`client.ts`'s `previewMessage`/`sendMessage` (`backends/crates/sms-api/src/
 procedures.rs::caller_client_id` structurally rejects a human caller — "no
 design yet" for deriving an `App` from one) and `messages.ts`'s
 `listMessagesForStream` (the `MessageStreamHub` singleton polls once, shared
@@ -97,8 +97,8 @@ to trigger the first poll into every other tab's stream).
 
 **A real, pre-existing bug found and fixed in the same PR, because the fix
 is what finally exercised it:** the seeded role `permissions`
-(`schema/migrations/postgres/0002_bootstrap`) used `message:read`/
-`message:send` where `crates/sms-api/src/rbac.rs::require_permission`
+(`backends/migrations/postgres/0002_bootstrap`) used `message:read`/
+`message:send` where `backends/crates/sms-api/src/rbac.rs::require_permission`
 actually checks `sms:read`/`sms:send` (the same literals the machine
 scope table already used correctly), and no role carried `dashboard:read`
 at all. Both were silent until a human token was ever forwarded to hit
@@ -155,7 +155,7 @@ silent.
 
 ### 2.1 The MTN aggregator API shape is invented
 
-`crates/sms-provider-mtn` targets a **placeholder** request/response contract
+`backends/crates/sms-provider-mtn` targets a **placeholder** request/response contract
 — `POST {base_url}/v1/messages`, Bearer API-key auth, a `201` with a
 `messageId`, and a DLR echoing it back. That shape was chosen to match the
 common pattern across the aggregators §6.2 names as candidates; it was **not**
@@ -186,7 +186,7 @@ faults. None of it proves Orange behaves the way this code assumes.
 
 ### 2.3 A crash between submit and persistence sends the message twice
 
-Known, tested, and accepted rather than fixed. `app/sms-worker/tests/kill9_reclaim_live.rs`
+Known, tested, and accepted rather than fixed. `backends/apps/sms-worker/tests/kill9_reclaim_live.rs`
 pins this down as a permanent regression assertion, not a one-off finding: a
 `SIGKILL` in the window between an outbound submit and persisting
 `providerMessageRef` produces two real submissions on recovery.
@@ -201,7 +201,7 @@ Grey routes silently replace the sender ID, which breaks the Article 48
 identity requirement and looks fine in every metric except delivery quality.
 The issue proposed monthly handset validation per route plus an alert on
 delivery-rate divergence between routes that should behave identically —
-both landed (`crates/sms-worker/src/jobs/grey_route_watch.rs`,
+both landed (`backends/crates/sms-worker/src/jobs/grey_route_watch.rs`,
 `RouteValidation`, `docs/runbooks/grey-route-validation.md`,
 `sms-gateway record-route-validation`).
 
@@ -247,7 +247,7 @@ already been purged **never can be**.
 
 So after `purge_retention` runs, a pepper rotation silently stops opt-out
 matching from working against those rows, and nothing detects the mismatch.
-See `crates/sms-api/src/pepper.rs`'s own module doc.
+See `backends/crates/sms-api/src/pepper.rs`'s own module doc.
 
 ### 3.2 An `Indeterminate` submit trades a possibly-lost message for never sending a duplicate
 
@@ -302,7 +302,7 @@ has no self-service or admin-console recovery today:
 
 - **A user's password** can only ever be set once, at `provisionUser` time.
   There is no write path to `UserCredential` other than that one `create`
-  call — `crates/sms-api/src/procedures.rs` has no `resetPassword`-shaped
+  call — `backends/crates/sms-api/src/procedures.rs` has no `resetPassword`-shaped
   procedure, and `UserCredential` itself is `hasRole('system')`-only on
   every action, so nothing short of a new procedure could add one. A locked-
   out account's only recovery is an `owner`/`admin` provisioning a
@@ -342,7 +342,7 @@ bump), but the blocking reason for each is gone.
 | Should `@length` on a nullable field compile? | [cratestack#537](https://github.com/cratestack/cratestack/issues/537) | **Closed 2026-08-13, cratestack 0.7.13** (PR [cratestack#546](https://github.com/cratestack/cratestack/pull/546)). The two workarounds this repo carries — `AuditAnchor.prevChainHash`'s non-null sentinel, `RouteValidation.notes`'s dropped `@length` bound (#64) — are now removable in principle, but reverting either is a real `schema.cstack` edit with its own migration-regeneration and re-verification cost, not attempted in this dependency-bump PR. Left for a follow-up that wants to spend that budget deliberately. |
 | Should `auth().isSystem()` replace the `hasRole('system')` convention? | [#176](https://github.com/vymalo/vsms/issues/176) | Not evaluated. Would touch the gap this codebase has hit **eleven times**. **Unchanged by 0.7.16** — no commit in `v0.7.10...v0.7.16` touches `isSystem` (it landed in cratestack 0.7.10 itself, per cratestack#500; nothing in the six releases since built on it further). |
 | Should `.upsert().do_nothing()` replace create-then-catch-`23505`? | [#177](https://github.com/vymalo/vsms/issues/177) | Not evaluated. Affects `ClientAssertion`, seed-dispatch, and scheduler dedupe. **Unchanged by 0.7.16** — same as above: landed in cratestack 0.7.10 (cratestack#501), no further work on it in `v0.7.10...v0.7.16`. |
-| Can a generated `PATCH` route clear a nullable field at all? | [cratestack#567](https://github.com/cratestack/cratestack/issues/567) | **Closed 2026-08-13, cratestack 0.7.15** (PR [cratestack#574](https://github.com/cratestack/cratestack/pull/574), "distinguish PATCH null-clear from omitted field on nullable columns" — marked breaking upstream). `@vsms/gateway/senders.ts`'s `foldClearedSentinel` empty-string workaround for `SenderId.notes`/`SenderIdRegistration.reference`/`rejectionReason` is now removable in principle, but the fixed wire shape has not been verified live against this exact schema, and the workaround lives in `packages/gateway` (adjacent to `admin/`, which a concurrent console redesign is actively touching) — reverting it is left as a deliberate follow-up, not attempted here. |
+| Can a generated `PATCH` route clear a nullable field at all? | [cratestack#567](https://github.com/cratestack/cratestack/issues/567) | **Closed 2026-08-13, cratestack 0.7.15** (PR [cratestack#574](https://github.com/cratestack/cratestack/pull/574), "distinguish PATCH null-clear from omitted field on nullable columns" — marked breaking upstream). `@vsms/gateway/senders.ts`'s `foldClearedSentinel` empty-string workaround for `SenderId.notes`/`SenderIdRegistration.reference`/`rejectionReason` is now removable in principle, but the fixed wire shape has not been verified live against this exact schema, and the workaround lives in `frontends/packages/gateway` (adjacent to `frontends/apps/admin/`, which a concurrent console redesign is actively touching) — reverting it is left as a deliberate follow-up, not attempted here. |
 
 ---
 
@@ -362,7 +362,7 @@ Recorded because they came out of doing the work, and would otherwise be lost.
   ([#204](https://github.com/vymalo/vsms/issues/204)) Nothing does today. The
   check was performed by hand on every schema-touching PR in this session,
   which is exactly the kind of discipline that stops happening.
-- **Is `packages/sms-client` meant to be committed?** It is generated, partly
-  tracked, and not imported at runtime by anything. `packages/gateway`'s
+- **Is `frontends/packages/sms-client` meant to be committed?** It is generated, partly
+  tracked, and not imported at runtime by anything. `frontends/packages/gateway`'s
   hand-rolled seam exists to make swapping to it a one-package change, but
   nobody has decided when that swap happens.

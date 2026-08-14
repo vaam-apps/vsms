@@ -2,8 +2,8 @@
 //! `client_credentials`) — the one part of this SDK with no generated
 //! counterpart, and the part every hand-rolled integration in this repo
 //! has had to get right on its own: `examples/rust/sms-send`,
-//! `packages/gateway/src/token.ts`, and
-//! `app/sms-gateway/tests/provision_client_cli_live_postgres.rs` each
+//! `frontends/packages/gateway/src/token.ts`, and
+//! `backends/apps/sms-gateway/tests/provision_client_cli_live_postgres.rs` each
 //! implement this dance separately today. This module is the one place
 //! it should live.
 //!
@@ -18,7 +18,7 @@
 //!   `sign_assertion` mints a new `jti` on every call, so a retry
 //!   naturally regenerates the whole assertion.
 //! - **Tokens are cached with a 60-second expiry margin**, not minted
-//!   per-call — matching `packages/gateway/src/token.ts`'s own
+//!   per-call — matching `frontends/packages/gateway/src/token.ts`'s own
 //!   `EXPIRY_SAFETY_MARGIN_SECONDS` exactly, so a request never starts
 //!   with a token that expires before the response comes back.
 //! - **`aud` accepts either the token endpoint URL or the bare issuer**
@@ -30,7 +30,7 @@
 //! - **The private key is never logged, and never reachable through a
 //!   derived `Debug`.** `PrivateKeyJwtTokenStore` writes its own `Debug`
 //!   impl that omits the signing key entirely — the same pattern
-//!   `crates/sms-api/src/pepper.rs`'s `HashPepper` uses in the main vsms
+//!   `backends/crates/sms-api/src/pepper.rs`'s `HashPepper` uses in the main vsms
 //!   repo, for the same reason: a derived `Debug` on a struct that holds
 //!   this would leak it through any `{:?}` logging call site upstream of
 //!   this crate, not just ones written here.
@@ -45,7 +45,7 @@ use crate::error::SdkError;
 
 /// Client assertions are meant to be short-lived — long enough to reach
 /// `/token`, never long enough to be useful if intercepted in transit.
-/// Matches `packages/gateway/src/token.ts`'s own `ASSERTION_TTL_SECONDS`.
+/// Matches `frontends/packages/gateway/src/token.ts`'s own `ASSERTION_TTL_SECONDS`.
 const ASSERTION_TTL_SECONDS: i64 = 60;
 
 /// Mint a fresh access token this many seconds before the cached one
@@ -158,7 +158,7 @@ pub struct PrivateKeyJwtConfig {
 impl std::fmt::Debug for PrivateKeyJwtConfig {
     /// Hand-written, not derived — `private_key_pem` must never reach a
     /// `{:?}` log line. Same discipline as `PrivateKeyJwtTokenStore`'s own
-    /// `Debug` below and `crates/sms-api/src/pepper.rs`'s `HashPepper` in
+    /// `Debug` below and `backends/crates/sms-api/src/pepper.rs`'s `HashPepper` in
     /// the main vsms repo.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PrivateKeyJwtConfig")
@@ -254,7 +254,7 @@ struct TokenResponse {
 
 /// The default, and currently only, [`TokenStore`] implementation: OAuth2
 /// `client_credentials` + `private_key_jwt` against `authkestra-op`'s
-/// `/token`, exactly as `packages/gateway/src/token.ts` and
+/// `/token`, exactly as `frontends/packages/gateway/src/token.ts` and
 /// `examples/rust/sms-send` already did by hand — unified into one place.
 pub struct PrivateKeyJwtTokenStore {
     http: reqwest::Client,

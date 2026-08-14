@@ -1,5 +1,5 @@
 # #70/#71: the five alert conditions #70's own issue text names, each
-# backed by a real metric — see crates/sms-metrics/src/lib.rs's own module
+# backed by a real metric — see backends/crates/sms-metrics/src/lib.rs's own module
 # doc for what each metric measures and why it's shaped the way it is, and
 # docs/runbooks/alerting.md for what an operator does when one of these
 # fires. This is the honest deliverable #70 asked for: the metrics and the
@@ -38,7 +38,7 @@ groups:
     rules:
       # §9.1: "any singleton role unheld for more than 30s." One rule per
       # singleton role this milestone actually runs — `smpp` is M7 scaffold
-      # only (crates/sms-worker/src/lib.rs's own `Cardinality::Singleton`
+      # only (backends/crates/sms-worker/src/lib.rs's own `Cardinality::Singleton`
       # list also includes it, but no deployment configures `--roles smpp`
       # today, so a rule for it would be permanently and correctly firing
       # on every environment that exists, which is not useful signal).
@@ -122,7 +122,7 @@ groups:
   - name: vsms-webhook-outbox
     rules:
       # §9.1: "outbox oldest undelivered above 60s" — this deployment's own
-      # implemented threshold (crates/sms-worker/src/drain.rs's
+      # implemented threshold (backends/crates/sms-worker/src/drain.rs's
       # STALLED_THRESHOLD) is 2 minutes, not 60s; the alert below matches
       # the code that actually runs, not the design doc's original prose
       # figure. See sms_metrics::WEBHOOK_OUTBOX_OLDEST_UNDELIVERED_AGE_SECONDS's
@@ -148,7 +148,7 @@ groups:
   - name: vsms-event-outbox
     rules:
       # #70/#42: "attempts > 5 — a poison row retrying forever." Reuses
-      # crates/sms-worker/src/jobs/reap_outbox.rs's own
+      # backends/crates/sms-worker/src/jobs/reap_outbox.rs's own
       # POISON_ATTEMPTS_THRESHOLD (5) verbatim — the metric only ever holds
       # a count of rows already past that threshold, so any non-zero value
       # here already means the condition #70 names.
@@ -179,7 +179,7 @@ groups:
       # instance is worth paging on" condition the way SM001 is.
       #
       # This condition is gated hard against noise before it ever reaches
-      # this rule — see crates/sms-worker/src/jobs/grey_route_watch.rs's
+      # this rule — see backends/crates/sms-worker/src/jobs/grey_route_watch.rs's
       # own module doc for the sample-size floor, delta floor, and z-test
       # behind the metric this alert reads. A firing alert here means a
       # route's own recent delivery rate is both statistically and

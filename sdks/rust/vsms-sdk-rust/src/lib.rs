@@ -8,7 +8,7 @@
 //! The typed model/input/procedure surface below (`schema` — `Message`,
 //! `SendMessageInput`, `procedures::send_message`, ...) is **not**
 //! hand-written. It comes from `cratestack::include_client_schema!`, the
-//! HTTP-client sibling of `include_server_schema!` (`crates/sms-api` in the
+//! HTTP-client sibling of `include_server_schema!` (`backends/crates/sms-api` in the
 //! main vsms repo uses that one). An earlier version of this crate's brief
 //! said "there is no Rust generator" and proposed hand-writing this surface
 //! — that was wrong. There is no `cratestack generate-rust` **CLI
@@ -40,7 +40,7 @@
 //! downstream integrator's own `~/.cargo/registry/src/.../vsms-sdk-rust-*/`
 //! checkout, where nothing above that directory exists. So `schema.cstack`
 //! lives inside this crate's own directory — a plain vendored copy of
-//! `schema/schema.cstack`, refreshed by `cargo xtask sdk-schema-vendor`
+//! `schemas/vsms.cstack`, refreshed by `cargo xtask sdk-schema-vendor`
 //! (`sdks/rust/vsms-sdk-rust/vendor-schema.sh` before the maintainer's
 //! "no bash scripts" cutover) and committed in the same change as any
 //! schema edit this SDK's surface should track. **Correction: this module
@@ -51,7 +51,7 @@
 //! gate for this since before this correction was written; the true gap
 //! is narrower than the original sentence claimed — that gate is real and
 //! wired into CI, it just doesn't run as part of *this* crate's own
-//! `cargo test`, the way `packages/sms-client`'s `client-check` is wired
+//! `cargo test`, the way `frontends/packages/sms-client`'s `client-check` is wired
 //! into the `js` CI job.
 //!
 //! # Measured build cost

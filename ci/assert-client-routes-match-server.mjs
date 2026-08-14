@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // The drift gate for T3 (M4 #47's underlying concern) over the freshly
-// generated `packages/sms-client` — see packages/sms-client/GENERATING.md.
+// generated `frontends/packages/sms-client` — see frontends/packages/sms-client/GENERATING.md.
 //
-// `packages/sms-client` is entirely generated at build/CI time and is not
+// `frontends/packages/sms-client` is entirely generated at build/CI time and is not
 // committed (the owner's standing rule: generated code never goes into
 // version control — see the repo root .gitignore's comment on that
 // package). There used to be a second gate here, reimplementing
@@ -26,7 +26,7 @@
 // So this builds the real server binary from the pinned library, asks it
 // for its own route table (`sms-gateway routes`), and asserts every HTTP
 // call the generated client can make (extracted straight from
-// `packages/sms-client/src/client.ts`, not re-derived from the schema)
+// `frontends/packages/sms-client/src/client.ts`, not re-derived from the schema)
 // names a route that server table actually serves. It is a plain set
 // comparison against ~102 lines — cheap, and it is the only gate here
 // that would catch this specific skew.
@@ -42,7 +42,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const clientPath = join(repoRoot, "packages/sms-client/src/client.ts");
+const clientPath = join(repoRoot, "frontends/packages/sms-client/src/client.ts");
 
 function serverRoutes() {
   const binary = join(repoRoot, "target/debug/sms-gateway");

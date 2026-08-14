@@ -1,18 +1,18 @@
 # better-auth evaluation — should it replace the admin console's session layer?
 
-**Status: evaluation only. No code under `admin/`, `packages/`, or `crates/` changed by
+**Status: evaluation only. No code under `frontends/apps/admin/`, `frontends/packages/`, or `crates/` changed by
 this document or its PR.** A console redesign is in flight across several agents and
-already owns `admin/`; this document changes nothing there.
+already owns `frontends/apps/admin/`; this document changes nothing there.
 
 **Question asked:** should [`better-auth`](https://www.better-auth.com/) replace the
 admin console's hand-rolled session layer — the OIDC relying-party mechanics in
-`admin/middleware.ts`, `admin/lib/oidc.ts`, `admin/lib/session.ts`, and
-`admin/app/api/auth/**`?
+`frontends/apps/admin/middleware.ts`, `frontends/apps/admin/lib/oidc.ts`, `frontends/apps/admin/lib/session.ts`, and
+`frontends/apps/admin/app/api/auth/**`?
 
 **Scoped deliberately, and the boundary is fixed, not re-litigated here.** Identity and
 token issuance stay in Rust and Postgres — `User`, `UserCredential`, `Role`, Argon2id
-hashing in `crates/sms-auth/src/login.rs`, and `authkestra-op` (`crates/sms-auth/src/op.rs`)
-minting the tokens `crates/sms-api/src/auth.rs`'s `GatewayAuth` validates. **R4 is the
+hashing in `backends/crates/sms-auth/src/login.rs`, and `authkestra-op` (`backends/crates/sms-auth/src/op.rs`)
+minting the tokens `backends/crates/sms-api/src/auth.rs`'s `GatewayAuth` validates. **R4 is the
 reason** (`CONTRIBUTING.md`): a deployment with no console at all must still authenticate
 humans and validate tokens, so identity cannot live in a TypeScript library that only
 ships with the console. This document does not propose moving it, and does not propose a
@@ -20,9 +20,9 @@ design where better-auth owns a user table. What's in scope is narrower: the con
 role as an **OIDC relying party** — the PKCE/state/nonce transaction, the code exchange,
 `id_token` validation, the session cookie, refresh, and logout.
 
-**Method.** Read every file under evaluation (`admin/middleware.ts`,
-`admin/lib/oidc.ts`, `admin/lib/session.ts`, `admin/app/api/auth/**`) and their Rust
-counterparts (`crates/sms-auth/src/login.rs`, `src/op.rs`, `crates/sms-api/src/auth.rs`),
+**Method.** Read every file under evaluation (`frontends/apps/admin/middleware.ts`,
+`frontends/apps/admin/lib/oidc.ts`, `frontends/apps/admin/lib/session.ts`, `frontends/apps/admin/app/api/auth/**`) and their Rust
+counterparts (`backends/crates/sms-auth/src/login.rs`, `src/op.rs`, `backends/crates/sms-api/src/auth.rs`),
 not sampled. Checked better-auth's actual behaviour **from its source** on GitHub
 (`better-auth/better-auth`, `main` branch, which as of this check tracks the same commit
 published to npm as `1.6.28` on 2026-08-13 — one day before this check), not from its
@@ -39,13 +39,13 @@ once this week for a different check (napi-rs release tooling).
 better-auth is a full authentication **framework**, not a thin OIDC-client library: its
 core (`betterAuth({...})`) always provisions `user`, `session`, `account`, and
 `verification` tables through a database adapter (Kysely, Drizzle, Prisma, or MongoDB —
-checked against `packages/core/src/db`; there is no adapter-less mode for anything that
+checked against `frontends/packages/core/src/db`; there is no adapter-less mode for anything that
 touches OAuth account linking). The plugin that acts as an OIDC/OAuth2 **relying party**
 against an arbitrary third-party provider is `genericOAuth`
-(`packages/better-auth/src/plugins/generic-oauth`), part of the core `better-auth`
+(`frontends/packages/better-auth/src/plugins/generic-oauth`), part of the core `better-auth`
 package. A second, separate package, [`@better-auth/sso`](https://www.npmjs.com/package/@better-auth/sso)
 (MIT, same release cadence — `1.6.28`, 2026-08-13), adds an OIDC-specific connector
-(`packages/sso/src/routes/sso.ts`) aimed at enterprise multi-tenant SSO (domain
+(`frontends/packages/sso/src/routes/sso.ts`) aimed at enterprise multi-tenant SSO (domain
 verification, per-organization IdP configs, a self-service onboarding dashboard) that
 happens to also work as a single fixed-provider RP.
 
@@ -55,15 +55,15 @@ obvious sole candidate:
 | | `genericOAuth` (core) | `@better-auth/sso` |
 |---|---|---|
 | PKCE | Opt-in, `pkce?: boolean`, **default `false`** (`generic-oauth/types.ts:95`) | Opt-in, same shape |
-| `id_token` handling | `decodeJwt()` from `jose` — **decodes the payload, does not verify the signature** (`generic-oauth/routes.ts:11,795`) | Real verification: `jwtVerify()` against a `createRemoteJWKSet()` built from `config.jwksEndpoint`, checking `audience`/`issuer` (`packages/core/src/oauth2/validate-authorization-code.ts:170-189`, called from `sso.ts:1673`) |
-| `nonce` claim | Not in the config type at all — grepped the whole plugin, zero occurrences of `nonce` | **Also absent.** `validateToken`'s own options type is `{ audience?, issuer? }` — no `nonce` parameter exists anywhere in `@better-auth/sso`'s source (grepped `packages/sso/src/**`, zero occurrences) |
+| `id_token` handling | `decodeJwt()` from `jose` — **decodes the payload, does not verify the signature** (`generic-oauth/routes.ts:11,795`) | Real verification: `jwtVerify()` against a `createRemoteJWKSet()` built from `config.jwksEndpoint`, checking `audience`/`issuer` (`frontends/packages/core/src/oauth2/validate-authorization-code.ts:170-189`, called from `sso.ts:1673`) |
+| `nonce` claim | Not in the config type at all — grepped the whole plugin, zero occurrences of `nonce` | **Also absent.** `validateToken`'s own options type is `{ audience?, issuer? }` — no `nonce` parameter exists anywhere in `@better-auth/sso`'s source (grepped `frontends/packages/sso/src/**`, zero occurrences) |
 | Database of its own | Yes — links into better-auth's `user`/`account` tables via `handleOAuthUserInfo`, same as every other social provider | Yes — identical `handleOAuthUserInfo` call site (`sso.ts:1735`) |
 | Fit for "one fixed first-party OIDC provider, no hosted third-party login page" | Assumes a classic redirect-to-provider dance; nothing hosts a login form on our side of the exchange | Same — plus organization/domain-verification machinery this deployment has no use for (one issuer, one client, no multi-tenant IdP registry) |
 
 **The decisive finding is in the source, not the docs.** better-auth's own docs for
 `genericOAuth` don't mention nonce handling one way or the other, and describe issuer
 checking in a way that reads as more thorough than it is. Reading
-`packages/better-auth/src/plugins/generic-oauth/routes.ts` directly settles it:
+`frontends/packages/better-auth/src/plugins/generic-oauth/routes.ts` directly settles it:
 
 ```ts
 // routes.ts:11
@@ -83,12 +83,12 @@ verifies a `genericOAuth` `id_token` at all.
 `@better-auth/sso` is genuinely better here — `validateToken` does real
 `createRemoteJWKSet` + `jwtVerify` with `audience`/`issuer` checked (and `exp`, which
 `jwtVerify` checks unconditionally) — but its own `validateToken` signature has no
-`nonce` parameter, and nothing in `packages/sso/src/**` reads a `nonce` claim at all.
+`nonce` parameter, and nothing in `frontends/packages/sso/src/**` reads a `nonce` claim at all.
 Confirmed by grep across the whole package, not inferred from the absence of docs. The
 Node.js pattern this evaluation had originally hoped for (drop in a library, keep the
 same guarantees) does not exist in either candidate: even the stronger of the two
 candidates has a real, silent gap on exactly one of the four checks this system's own
-`admin/lib/oidc.ts` / `admin/app/api/auth/callback/route.ts` currently enforce.
+`frontends/apps/admin/lib/oidc.ts` / `frontends/apps/admin/app/api/auth/callback/route.ts` currently enforce.
 
 ---
 
@@ -97,10 +97,10 @@ candidates has a real, silent gap on exactly one of the four checks this system'
 | # | Property | better-auth (`genericOAuth`) | better-auth (`@better-auth/sso`) | Verdict |
 |---|---|---|---|---|
 | 1 | Pure relying party — no own identity provider, no own user/account/session tables, no database of its own | **Fails.** Core `betterAuth({...})` always provisions `user`/`session`/`account`/`verification` via a DB adapter; OAuth sign-in always links into `account` through `handleOAuthUserInfo`, regardless of "stateless session" mode (which only removes the *session-validation* read, not account provisioning) | **Fails**, identically — same `handleOAuthUserInfo` call site | **Reject** |
-| 2 | Runs on the Edge runtime (`admin/middleware.ts`'s hard constraint) | **Fails**, per better-auth's own docs (verbatim below) | Same session-handling code path — same failure | **Reject** |
+| 2 | Runs on the Edge runtime (`frontends/apps/admin/middleware.ts`'s hard constraint) | **Fails**, per better-auth's own docs (verbatim below) | Same session-handling code path — same failure | **Reject** |
 | 3 | Full OIDC validation: S256 PKCE, constant-time `state`, `nonce` against the transaction, `id_token` signature via JWKS + `iss`/`aud`/`exp` | **Fails** on three of four — PKCE off by default, no signature verification, no `nonce` | **Fails** on one of four — no `nonce`; PKCE still opt-in, but signature/`iss`/`aud`/`exp` are real | **Reject** (genericOAuth outright; sso partial, see below) |
-| 4 | Yields the signed-in human's real access token per request, forwardable one hop downstream via `x-vsms-access-token` (`packages/gateway`'s `AsyncLocalStorage`) | Not a built-in offering either way — `admin/middleware.ts` would still need to read whatever better-auth stores server-side and set the same header itself | Same | **No net gain** either way — see below |
-| 5 | R4 — doesn't make the console load-bearing for the backend; no new required env var or migration for a backend-only deployment | R4 is about the *backend* not depending on the console, so this specific rule is not directly violated — but adopting either plugin gives the console **its first database dependency ever** (`admin/` has none today — checked; no `DATABASE_URL`, no adapter package, nothing) | Same | **New, unforced architectural dependency** |
+| 4 | Yields the signed-in human's real access token per request, forwardable one hop downstream via `x-vsms-access-token` (`frontends/packages/gateway`'s `AsyncLocalStorage`) | Not a built-in offering either way — `frontends/apps/admin/middleware.ts` would still need to read whatever better-auth stores server-side and set the same header itself | Same | **No net gain** either way — see below |
+| 5 | R4 — doesn't make the console load-bearing for the backend; no new required env var or migration for a backend-only deployment | R4 is about the *backend* not depending on the console, so this specific rule is not directly violated — but adopting either plugin gives the console **its first database dependency ever** (`frontends/apps/admin/` has none today — checked; no `DATABASE_URL`, no adapter package, nothing) | Same | **New, unforced architectural dependency** |
 
 **On property 3, being precise rather than just failing both wholesale:** `genericOAuth`
 fails PKCE (off by default — would need `pkce: true` set explicitly, which is at least
@@ -109,8 +109,8 @@ auth/sso` gets PKCE (opt-in, achievable) and signature/`iss`/`aud`/`exp` for fre
 real improvement over `genericOAuth` — but still fails nonce, silently, with no
 configuration knob to add it. Since nonce defends against `id_token`
 replay/substitution across concurrent login attempts on the same browser — precisely the
-threat `admin/lib/oidc.ts::verifyNonce` exists for — adopting `@better-auth/sso` would
-mean **removing an existing, working, tested defence** (`admin/lib/oidc.test.ts`'s own
+threat `frontends/apps/admin/lib/oidc.ts::verifyNonce` exists for — adopting `@better-auth/sso` would
+mean **removing an existing, working, tested defence** (`frontends/apps/admin/lib/oidc.test.ts`'s own
 `a_mismatched_state_is_rejected` guard-failure proof, and the equivalent nonce logic) and
 not getting an equivalent back. The only way to close that gap is to hand-write nonce
 verification on top of the library anyway — which reintroduces the OIDC-specific
@@ -135,7 +135,7 @@ inferred from generic Edge-runtime knowledge — pulled the actual page text):
 > `getSessionCookie` function only checks for the existence of a session cookie; it does
 > **not** validate it" — and the docs' own security warning: **"THIS IS NOT SECURE!"**
 
-`admin/package.json` pins `next@15.5.23` — below the Next 16 line where Node middleware
+`frontends/apps/admin/package.json` pins `next@15.5.23` — below the Next 16 line where Node middleware
 stops being experimental. So the real choices for a better-auth-backed session gate on
 this stack are: (a) run middleware in the Node runtime under an experimental flag for a
 security-critical gate, (b) make an HTTP round trip from Edge middleware to a Node route
@@ -145,7 +145,7 @@ say is not secure and only fit for optimistic UI redirects.
 
 **Worth being precise about why, because the honest framing matters more than the
 verdict:** this is not "the Edge runtime can't do session crypto" — this codebase's own
-`admin/lib/oidc.ts` disproves that framing every request, using `jose`'s WebCrypto
+`frontends/apps/admin/lib/oidc.ts` disproves that framing every request, using `jose`'s WebCrypto
 backend for AES-GCM decrypt, SHA-256, and PKCE challenge computation, entirely on Edge,
 with no database call at all (the session *is* the encrypted cookie; refresh is a plain
 `fetch` to `/token`). The actual disqualifier is narrower and structural: better-auth's
@@ -163,36 +163,36 @@ it doesn't treat OAuth-issued tokens as the source of truth for its own session.
 
 | File | Lines | What it does |
 |---|---|---|
-| `admin/middleware.ts` | 256 | Session decrypt, refresh-ahead-of-expiry, txn-cookie minting on `GET /login`, header injection/stripping (`x-vsms-actor`/`x-vsms-role`/`x-vsms-access-token`) |
-| `admin/lib/oidc.ts` | 210 | PKCE pair generation, state/nonce generation, constant-time `verifyState`/`verifyNonce`, JWE encrypt/decrypt for both cookies |
-| `admin/lib/session.ts` | 77 | Node-runtime cookie read/write wrappers around `oidc.ts` for the route handlers |
-| `admin/app/api/auth/login/route.ts` | 80 | Reads the txn cookie, calls `sms-gateway`'s own `POST /login` (password + PKCE/state/nonce in one call), redirects |
-| `admin/app/api/auth/callback/route.ts` | 140 | State check, `/token` exchange, `id_token` verify (JWKS/iss/aud/exp), nonce check, session cookie write |
-| `admin/app/api/auth/logout/route.ts` | 20 | Clears the session cookie |
+| `frontends/apps/admin/middleware.ts` | 256 | Session decrypt, refresh-ahead-of-expiry, txn-cookie minting on `GET /login`, header injection/stripping (`x-vsms-actor`/`x-vsms-role`/`x-vsms-access-token`) |
+| `frontends/apps/admin/lib/oidc.ts` | 210 | PKCE pair generation, state/nonce generation, constant-time `verifyState`/`verifyNonce`, JWE encrypt/decrypt for both cookies |
+| `frontends/apps/admin/lib/session.ts` | 77 | Node-runtime cookie read/write wrappers around `oidc.ts` for the route handlers |
+| `frontends/apps/admin/app/api/auth/login/route.ts` | 80 | Reads the txn cookie, calls `sms-gateway`'s own `POST /login` (password + PKCE/state/nonce in one call), redirects |
+| `frontends/apps/admin/app/api/auth/callback/route.ts` | 140 | State check, `/token` exchange, `id_token` verify (JWKS/iss/aud/exp), nonce check, session cookie write |
+| `frontends/apps/admin/app/api/auth/logout/route.ts` | 20 | Clears the session cookie |
 | **Total** | **783** | |
 
 **What better-auth would add back, not remove for free:**
 
 - A database adapter and its own migration (`user`/`session`/`account`/`verification`) —
-  a genuinely new piece of infrastructure for `admin/`, which owns none today. Realistic
+  a genuinely new piece of infrastructure for `frontends/apps/admin/`, which owns none today. Realistic
   size for a minimal Postgres-via-Kysely setup: on the order of 50–100 lines of adapter
   wiring plus a schema this repository's own migration discipline (`AGENTS.md`'s
   "Regenerating migrations" section) has no hook for, since it's a second, independent
   schema in the same database or a second database entirely.
 - The `nonce` check `@better-auth/sso` doesn't provide — hand-written on top of the
-  library, the same ~15 lines `admin/lib/oidc.ts::verifyNonce` already is.
+  library, the same ~15 lines `frontends/apps/admin/lib/oidc.ts::verifyNonce` already is.
 - The `x-vsms-actor`/`x-vsms-role`/`x-vsms-access-token` header bridge into
-  `packages/gateway`'s `AsyncLocalStorage` scope (property 4) — not a better-auth
+  `frontends/packages/gateway`'s `AsyncLocalStorage` scope (property 4) — not a better-auth
   concept at all, so this stays exactly as hand-written as it is today, roughly the
   30-line tail of `middleware.ts`'s own `middleware()` function.
 - **A structural mismatch neither plugin's docs surface, found by reading what `#194`
   actually built:** `genericOAuth`/`@better-auth/sso` both assume the classic
   redirect-the-browser-to-the-provider's-own-hosted-login-page OAuth dance — the browser
   is sent to an `/authorize`-shaped URL that renders *someone else's* login form.
-  `crates/sms-auth`'s OP deliberately does not expose one: `AGENTS.md`'s own #194 section
+  `backends/crates/sms-auth`'s OP deliberately does not expose one: `AGENTS.md`'s own #194 section
   is explicit that `GET /authorize` is "never mounted... a spec-compliant
   redirect-to-a-hosted-login-page dance buys nothing a first-party BFF needs." `POST
-  /login` (`app/sms-gateway/src/login.rs`) collapses "authenticate the human" and "run
+  /login` (`backends/apps/sms-gateway/src/login.rs`) collapses "authenticate the human" and "run
   `handle_authorize`" into one server-to-server call from `admin`'s own `POST
   /api/auth/login`, specifically so the console can render its *own* login form rather
   than redirecting to a separate hosted page. Neither better-auth plugin has a mode for
@@ -222,17 +222,17 @@ same-origin check comparing against the wrong source of truth. Neither is a defe
 hand-rolled cryptography, and neither would have been caught or prevented by using
 better-auth instead of the current code:
 
-- `#211` is about *which token* gets forwarded downstream to `packages/gateway`, a
+- `#211` is about *which token* gets forwarded downstream to `frontends/packages/gateway`, a
   concern entirely outside any session library's scope — better-auth doesn't know this
   system's `AsyncLocalStorage` credential-scoping convention exists.
-- `#243` is `packages/api/src/context.ts`'s CSRF check comparing `Origin` against
+- `#243` is `frontends/packages/api/src/context.ts`'s CSRF check comparing `Origin` against
   `new URL(req.url).origin` inside a Next.js standalone container — a Next.js
   request-object quirk, unrelated to how the session cookie is produced or validated.
 
 If the real risk in this subsystem is deployment topology, not OIDC crypto, then
 replacing the crypto layer trades a small, already-tested, already-guard-proven risk
 (this codebase's own convention: every check here has a recorded "broken the guard,
-watched it fail, restored it" proof — `admin/lib/oidc.test.ts`'s
+watched it fail, restored it" proof — `frontends/apps/admin/lib/oidc.test.ts`'s
 `a_mismatched_state_is_rejected`, the four guard-failure proofs in `AGENTS.md`'s #194
 section) for a new, less-tested one (an authentication framework's database adapter,
 migration, and a plugin with a confirmed silent gap on one of four required checks).
@@ -244,7 +244,7 @@ migration, and a plugin with a confirmed silent gap on one of four required chec
 Three of the five must-survive properties fail outright (pure-RP/no-DB, Edge runtime,
 full OIDC validation), a fourth is a wash (token forwarding — not something either side
 offers for free), and the fifth introduces a new, currently-nonexistent architectural
-dependency (a database for `admin/`) that this evaluation's own brief didn't ask for and
+dependency (a database for `frontends/apps/admin/`) that this evaluation's own brief didn't ask for and
 R4's spirit argues against adding without a forcing reason. The line-count math doesn't
 rescue it: net code removed is real but modest once the adapter, the missing nonce
 check, and (if kept) the redirect-based-authorize mismatch are priced in, and the biggest
@@ -263,12 +263,12 @@ above:**
   over `@better-auth/sso` — a straightforward downgrade, not a simplification, exactly
   the failure mode this task's brief warned against accepting quietly.
 - **Edge-native, no-round-trip session validation.** Every request today decrypts and
-  (when near expiry) refreshes the session inside `admin/middleware.ts`, on Edge, with
+  (when near expiry) refreshes the session inside `frontends/apps/admin/middleware.ts`, on Edge, with
   no network hop for the common case. A better-auth-backed session gate on Next 15.5
   either adds a per-request HTTP round trip from Edge to Node, or runs middleware
   under an experimental Next.js flag for a security-critical check, or falls back to a
   check the library's own docs call insecure.
-- **A zero-database console.** `admin/` needs no database of its own today — every
+- **A zero-database console.** `frontends/apps/admin/` needs no database of its own today — every
   session concern round-trips through `sms-gateway`. Adopting either better-auth plugin
   changes that permanently.
 

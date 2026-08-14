@@ -35,7 +35,7 @@ VSMS_DEMO_GATEWAY_PORT=18080 just demo
 
 ## Why there is no carrier
 
-`sms-fake-orange` ([`app/sms-fake-orange`](../../app/sms-fake-orange)) impersonates Orange Cameroon's token and submit endpoints, and independently POSTs delivery receipts back to the gateway's `POST /dlr/{providerKey}` route. It is a **participant, not a response stub** — "the SMS never arrived" is the absence of a later callback, which a mock that only answers the submit call can never model.
+`sms-fake-orange` ([`backends/apps/sms-fake-orange`](../../backends/apps/sms-fake-orange)) impersonates Orange Cameroon's token and submit endpoints, and independently POSTs delivery receipts back to the gateway's `POST /dlr/{providerKey}` route. It is a **participant, not a response stub** — "the SMS never arrived" is the absence of a later callback, which a mock that only answers the submit call can never model.
 
 Nothing in the gateway or the worker knows it exists. The only difference from production is `ORANGE_CM_BASE_URL`. Every other code path — routing, submission, DLR ingestion, the state machine, webhooks — is the one that runs in production.
 
@@ -103,7 +103,7 @@ docker compose -f compose.dev.yaml run --rm --service-ports sms-fake-orange \
 | `--reject-tokens` | Carrier credentials revoked mid-flight — every submit fails `Permanent`. |
 | `--dlr-delay-ms 30000` | Slow delivery, for testing your own timeouts and polling. |
 
-The same weighted distribution drives [`crates/sms-worker/tests/chaos_live_postgres.rs`](../../crates/sms-worker/tests/chaos_live_postgres.rs), which asserts invariants rather than outcomes: no message lost, nothing left claimable, and a message that went `uncertain` never submitted twice.
+The same weighted distribution drives [`backends/crates/sms-worker/tests/chaos_live_postgres.rs`](../../backends/crates/sms-worker/tests/chaos_live_postgres.rs), which asserts invariants rather than outcomes: no message lost, nothing left claimable, and a message that went `uncertain` never submitted twice.
 
 ## Running the tests
 

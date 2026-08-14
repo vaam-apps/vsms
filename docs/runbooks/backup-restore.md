@@ -95,14 +95,14 @@ section) reached this last corner of `deploy/`.** `deploy/backup.sh`,
 `restore.sh`, `restore-drill.sh`, and `backup-entrypoint.sh` are gone —
 a hard cutover, not a parallel path. `deploy/backup-tool` (a small,
 separate Cargo workspace — see its own `Cargo.toml`/`src/main.rs` module
-doc for why it isn't part of the root workspace or `app/`) is one binary,
+doc for why it isn't part of the root workspace or `backends/apps/`) is one binary,
 `vsms-backup`, with four subcommands: `backup`, `restore`,
 `restore-drill`, `schedule`. Same mechanism, same manifest shape, same
 guarantees — the shell orchestration is what changed, not what it does.
 
 Still shipped inside `deploy/backup.Dockerfile` (`postgres:16-alpine` +
 `rclone` — the exact `pg_dump`/`pg_restore` this stack's own Postgres
-major version needs; unlike `app/sms-migrate`, this one has no substitute
+major version needs; unlike `backends/apps/sms-migrate`, this one has no substitute
 for a real `postgres` client toolchain, so it stays on that base image
 rather than distroless). The runtime image is smaller than the shell-era
 one in one concrete way: no `bash`, no `openssl` — the `restore-drill`
@@ -167,7 +167,7 @@ the VM itself.
 ## The pepper is part of the recoverable state, not just the database
 
 `Message.msisdnHash`/`Message.bodyHash` are `HMAC-SHA256` keyed by
-`SMS_HASH_PEPPER` (`crates/sms-api/src/pepper.rs`, landed in #134). A
+`SMS_HASH_PEPPER` (`backends/crates/sms-api/src/pepper.rs`, landed in #134). A
 `pg_dump` backup captures the *hashes*, never the plaintext `msisdn`/body
 that produced them (that's the point of hashing them) — which means the
 backup is only useful for opt-out matching and dedupe if it is restored

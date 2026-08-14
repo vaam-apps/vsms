@@ -1,0 +1,170 @@
+[package]
+name = "sms-api"
+description = "Generated CrateStack surface for the SMS gateway: models, policies, REST router, procedures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+# cratestack 0.7.16 bump: `cratestack::include_server_schema!` (backends/crates/sms-api/
+# src/lib.rs) generates a `pub mod procedures` with one `invoke_with_db`
+# function per procedure, each carrying an illustrative doc comment example
+# (cratestack#512's own doc). That example is deliberately non-compiling
+# prose, not a real call site — it references `reconcile_accounts`, a
+# procedure that does not exist in this schema, and names
+# `db`/`registry`/`SystemContext` as though already in scope at the crate
+# root, which they are not — correctly fenced ```` ```ignore ```` upstream,
+# so a plain `cargo test` genuinely skips it (`18 ignored`, not a failure).
+# The break is `cargo test -- --ignored`'s own separate, unrelated meaning:
+# rustdoc reuses the identical "ignored" bucket for both "a real test,
+# temporarily skipped" (what `--ignored` is meant to force-run) and "a doc
+# example marked non-compiling on purpose" (which `--ignored` then also
+# force-compiles, with nothing to distinguish the two). `cargo test
+# --workspace -- --ignored` (no `--tests`, the exact command CI runs) hits
+# this for all 18 generated procedures — reproduced locally
+# (`cannot find module or crate 'procedures'`/`cannot find value 'db'`/
+# etc.), not assumed from the CI log alone. Filed upstream:
+# https://github.com/cratestack/cratestack/issues/611. Checked before
+# disabling, not assumed: `backends/crates/sms-api/src/` has exactly one fenced code
+# block in its own hand-written source (`procedures.rs`, a ` ```text `
+# block, never compiled as a doctest regardless), so this crate has zero
+# genuine hand-written doctests to lose — disabling costs nothing real. See
+# `AGENTS.md`'s 0.7.16 bump section for the full writeup.
+[lib]
+doctest = false
+
+[dependencies]
+cratestack.workspace = true
+cratestack-codec-json.workspace = true
+sms-encoding.workspace = true
+sms-msisdn.workspace = true
+# route_simulator.rs (#54): `select_route` itself, the pure engine — this is
+# the "future #54 simulator procedure" the workspace root `Cargo.toml`'s own
+# comment on this dependency already anticipated. `sms-api` cannot depend on
+# `sms-worker` (the dependency runs the other way — `sms-worker.workspace =
+# true` below, dev-only, proves the direction), so `backends/crates/sms-worker/src/
+# routing.rs`'s own I/O glue (fetch rows, convert the schema's enums onto
+# `sms_routing`'s mirrored ones) is necessarily re-implemented here rather
+# than reused — see `route_simulator.rs`'s own module doc for the exact
+# duplication and why it's accepted rather than factored out.
+sms-routing.workspace = true
+# provision_client (#23)'s pack() for the sentinel-delimited scopes/
+# grantTypes columns — sms-core has no internal dependencies of its own,
+# so pulling it in here doesn't risk a cycle with sms-auth (which depends
+# on both sms-api and sms-core already).
+#
+# Also rbac.rs's `require_permission` (#24, Layer 2): the same sentinel-
+# delimited membership test `AppClient.scopes`/`OauthClient.scopes` already
+# use for their DB columns, reused here for the JWT `scope` claim rather
+# than reinvented — see sms-core's own module doc for why the sentinel form
+# matters even though `contains`/`unpack` tolerate the plain OAuth form too.
+sms-core.workspace = true
+# #41: rotate_webhook_secret's generate_secret() — the one non-pure
+# function in sms-webhook, generating a fresh whsec_<hex> value. The
+# signing/verification side of that crate has no caller here; it's
+# sms-worker's hooks role (#40) that signs outbound deliveries.
+sms-webhook.workspace = true
+# #70/#71: errors.rs's map_database_error is the one place every SM001 this
+# workspace ever sees is classified — this crate's own count of it.
+sms-metrics.workspace = true
+# dlr.rs's real dependency: the SmsProvider trait's DeliveryUpdate/
+# DeliveryOutcome/RawCallback/ProviderError types — never a concrete
+# adapter, the same reason sms-worker depends on this and not on
+# sms-provider-orange-cm directly.
+sms-provider.workspace = true
+# auth.rs's GatewayAuth (#21): JWKS-backed validation. authkestra-engine
+# for Claims/extract_bearer_token, authkestra-resource for JwksCache,
+# jsonwebtoken for Validation — see auth.rs's own doc for why JwtStrategy
+# itself isn't used directly (its cache/validation fields are private).
+# provision_client (#23) reuses TokenManager::new_asymmetric/public_jwk from
+# the same crate to derive the client's public JWK, mirroring
+# sms_auth::op::rotate_signing_key's own pattern for the OP's key — sms-api
+# can't depend on sms-auth (sms-auth depends on sms-api), so the small
+# keygen snippet is duplicated here rather than shared.
+authkestra-engine.workspace = true
+authkestra-resource.workspace = true
+jsonwebtoken.workspace = true
+# router.rs's `client_id_fingerprint` (#153): a lightweight, unverified
+# base64url decode of a bearer JWT's payload segment, to partition
+# IdempotencyLayer/RateLimitLayer by the token's stable `sub` (client_id)
+# claim rather than the library defaults' raw-header hash — see that
+# function's own doc for why the default breaks across a token refresh.
+# Same version already resolved transitively through authkestra-op
+# (`Cargo.toml`'s own comment on the workspace-level pin).
+base64.workspace = true
+# provision_client (#23)'s RSA keypair generation — same crates and version
+# sms-auth::op::rotate_signing_key uses for the OP's own signing key.
+rsa.workspace = true
+rand.workspace = true
+
+chrono.workspace = true
+serde.workspace = true
+# `Claims.extra` (authkestra_engine::token::Claims, auth.rs) is a
+# `HashMap<String, serde_json::Value>` — needed to read the `perms` claim
+# out of it in `GatewayAuth::authenticate`.
+serde_json.workspace = true
+sha2.workspace = true
+# #134: HMAC-SHA256 for the keyed `msisdnHash`/`bodyHash` — see `pepper.rs`.
+hmac.workspace = true
+# audit_log.rs (#58, moved from sms-worker's own anchor_audit.rs): hex
+# encoding for the audit hash chain's own SHA-256 digests — same crate and
+# version `sms-worker` already resolves to.
+hex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+# webhooks.rs's own panic isolation (#38): `tokio::spawn` around every
+# subscriber body, so a panic surfaces as a `JoinError` here rather than
+# unwinding through the `@@emit` mutation that triggered it (§8.2 —
+# handlers are not panic-isolated by the framework itself). No extra
+# features needed: the workspace-level `tokio` dependency already carries
+# `rt-multi-thread`, which is all `spawn` requires, and this crate never
+# runs outside a process that already installed that runtime
+# (`backends/apps/sms-gateway`, `backends/apps/sms-worker`, both `#[tokio::main]`).
+tokio.workspace = true
+
+[dev-dependencies]
+# router.rs's #163 live-server tests bind a real ephemeral-port listener
+# (`net`) and drive it with a real HTTP client (`reqwest`, below) — the
+# only way to prove `ConnectInfo<SocketAddr>` behaves the way the two
+# `RateLimitLayer`s' key functions assume, short of a live-Postgres suite
+# these tests deliberately avoid needing (the lazy pool never connects,
+# same trick `router_builds_without_a_live_database` already uses).
+tokio = { workspace = true, features = ["time", "net"] }
+reqwest.workspace = true
+# metrics.rs's own tests drive its standalone router via `oneshot`, the
+# standard axum in-process testing pattern — no real socket needed. Same
+# version already resolved transitively through axum/cratestack-axum's own
+# routing internals (see token_rate_limit.rs's own identical comment for
+# the equivalent case in backends/apps/sms-gateway).
+tower.workspace = true
+# dlr_ingestion_live_postgres.rs's FixedProvider — a test-only SmsProvider
+# fake, needing the same #[async_trait] the real trait is declared with.
+async-trait.workspace = true
+# examples/send_test_message.rs — the #36 acceptance gate's seed/send tool.
+clap.workspace = true
+anyhow.workspace = true
+# The four *_live_postgres.rs suites in tests/ get their DATABASE_URL from
+# this instead of the environment — see its own module doc.
+sms-test-support.workspace = true
+# worker_locks_live_postgres.rs (#57) needs a real RoleLease held over a
+# real connection to prove `Procedures::worker_locks` reports it correctly
+# — not a hand-built pg_locks row. Dev-only, and safe despite `sms-worker`'s
+# own normal dependency on `sms-api`: Cargo builds `sms-api`'s *library*
+# (which `sms-worker` depends on) independently of `sms-api`'s *test*
+# binaries (which is the only place this dev-dependency is used), so the
+# two edges never form a cycle in the actual build graph, only in a naive
+# "which crate mentions which" reading of it.
+sms-worker.workspace = true
+# console_identity_live_postgres.rs (#52/#58): proving `provisionUser`
+# creates an account that can genuinely log in calls
+# `sms_auth::login::authenticate_user` directly, rather than re-implementing
+# password verification in this test — same "dev-only, dependency direction
+# still runs sms-auth -> sms-api, not the reverse" reasoning as
+# `sms-worker` above.
+sms-auth.workspace = true
+
+[lints]
+workspace = true

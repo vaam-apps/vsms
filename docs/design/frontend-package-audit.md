@@ -1,24 +1,24 @@
 # Frontend package audit — hand-rolled machinery vs. well-maintained libraries
 
-**Status: investigation only. No code under `packages/` or `admin/` changed by this
+**Status: investigation only. No code under `frontends/packages/` or `frontends/apps/admin/` changed by this
 document or its PR.** A console redesign (`docs/design/console-redesign.md`) is
-in flight across several agents and already owns `admin/` and `packages/ui/`;
+in flight across several agents and already owns `frontends/apps/admin/` and `frontends/packages/ui/`;
 this audit defers to it wherever the two overlap and says so explicitly.
 
-**Question asked (maintainer, 2026-08-14):** *"Your `packages/*` for frontend
+**Question asked (maintainer, 2026-08-14):** *"Your `frontends/packages/*` for frontend
 apps do have a lot of manual work. Investigate if that cannot be reduced by
 using well maintained pre-existing libraries."*
 
-**Method.** Every file under `packages/gateway`, `packages/api`, `packages/ui`,
-`packages/hooks`, `packages/env` was read, not sampled. `packages/sms-client`
+**Method.** Every file under `frontends/packages/gateway`, `frontends/packages/api`, `frontends/packages/ui`,
+`frontends/packages/hooks`, `frontends/packages/env` was read, not sampled. `frontends/packages/sms-client`
 was actually generated (`cratestack generate-typescript`, into a scratch
-directory outside the repo — nothing under `packages/sms-client` was touched)
+directory outside the repo — nothing under `frontends/packages/sms-client` was touched)
 and its output read line by line, because the question "why is it unused" only
 has a real answer once you've seen what it produces today, not what the
 committed `GENERATING.md` said as of its last edit. Every library named below
 was checked against the npm registry on 2026-08-14 for its actual latest
 version, release date, and peer-dependency range — not assumed from
-familiarity. `admin/` screens were read to find where gateway/UI packages are
+familiarity. `frontends/apps/admin/` screens were read to find where gateway/UI packages are
 actually consumed, since a package's own file doesn't show whether its shape
 is exercised or dead weight.
 
@@ -28,40 +28,40 @@ is exercised or dead weight.
 
 | Package | Hand-rolled machinery | Verdict | One-line reasoning |
 |---|---|---|---|
-| `packages/gateway` | ~20 duplicated fetch-with-bearer-token-and-401-retry shells across 17 files | **Reject** the 3 named libraries (ky/ofetch/openapi-fetch) | None of them do ETag/If-Match, none remove the credential/error-mapping logic; the win is a same-file dedup, not a library |
-| `packages/gateway` | ETag capture / `If-Match` replay (`rest.ts`) | **Keep as-is** | Confirmed no candidate library exposes response headers the way this needs — see sms-client below |
-| `packages/gateway` | `AsyncLocalStorage` credential scoping (`request-credential.ts`) | **Keep as-is** | Already idiomatic Node for this; a library here is a downgrade |
-| `packages/gateway` | mTLS `Agent` + `private_key_jwt` minting (`dispatcher.ts`, `token.ts`) | **Keep as-is** | Already built on `jose` and `undici` (both well-maintained); the glue around them is inherently deployment-specific |
-| `packages/gateway` | `MessageStreamHub` poll-with-backoff singleton (`message-stream.ts`) | **Keep as-is** | Explicitly named as must-survive; no library replaces a shared-poll-loop-feeding-a-server-long-poll |
-| `packages/gateway` | `null`→`undefined` JSON normalization (`json.ts`) | **Keep as-is** | Already a single, tested, schema-aware function — this *is* the fix, not a gap |
-| `packages/sms-client` | Generated, unused CrateStack TS client | **Reject** as a runtime dependency | Structurally cannot support `ETag`/`If-Match` (discards the `Response` object); browser-facing react-query design, wrong architecture for this server-only mTLS BFF; `Decimal` fields are now class instances, not strings |
-| `packages/api` | tRPC routers | **Keep as-is** | Already thin wrappers over tRPC + zod; nothing to replace |
-| `packages/env` | Env validation + cross-field rules | **Keep as-is** | Already built on `@t3-oss/env-nextjs`; the extra logic is cross-field validation t3-env doesn't support declaratively |
-| `packages/hooks` | tRPC/react-query provider (3 files, ~50 lines) | **Keep as-is** | Nothing to replace; not where the redesign's hook question lives |
-| `packages/ui` | Radix primitives, hand toast store | **Defer** to `console-redesign.md` | Primitives are already mid-migration to Headless UI/DaisyUI elsewhere; toast store is small, correct, and encodes a real product rule |
-| `admin/*-screen.tsx` (not owned by this audit, referenced) | Hand `useState` create/edit forms, 7 screens / ~10 forms | **Adopt** `react-hook-form` + `zod` | Already dependencies, already used correctly in the composer; every other write screen reinvents the same state/validation glue |
-| `admin/audit-log-screen.tsx` | Hand `useState` filters + offset pagination | **Adopt** `nuqs` | Already the pattern for messages/jobs/webhooks; this screen was simply missed |
-| `admin/*-screen.tsx` tables | Static JSX tables, no client-side sort/filter | **Reject** `@tanstack/react-table` (for now) | Confirmed zero click-to-sort or client-side row filtering anywhere in `admin/`; nothing today for it to replace |
-| `packages/hooks` (redesign-owned) | `useDebouncedValue`/scroll-listener/media-query hooks scattered in `admin/` | **Not this audit's call** — already `console-redesign.md` D12/D13 | Independently reaches the same conclusion this audit would; one staleness risk flagged below |
+| `frontends/packages/gateway` | ~20 duplicated fetch-with-bearer-token-and-401-retry shells across 17 files | **Reject** the 3 named libraries (ky/ofetch/openapi-fetch) | None of them do ETag/If-Match, none remove the credential/error-mapping logic; the win is a same-file dedup, not a library |
+| `frontends/packages/gateway` | ETag capture / `If-Match` replay (`rest.ts`) | **Keep as-is** | Confirmed no candidate library exposes response headers the way this needs — see sms-client below |
+| `frontends/packages/gateway` | `AsyncLocalStorage` credential scoping (`request-credential.ts`) | **Keep as-is** | Already idiomatic Node for this; a library here is a downgrade |
+| `frontends/packages/gateway` | mTLS `Agent` + `private_key_jwt` minting (`dispatcher.ts`, `token.ts`) | **Keep as-is** | Already built on `jose` and `undici` (both well-maintained); the glue around them is inherently deployment-specific |
+| `frontends/packages/gateway` | `MessageStreamHub` poll-with-backoff singleton (`message-stream.ts`) | **Keep as-is** | Explicitly named as must-survive; no library replaces a shared-poll-loop-feeding-a-server-long-poll |
+| `frontends/packages/gateway` | `null`→`undefined` JSON normalization (`json.ts`) | **Keep as-is** | Already a single, tested, schema-aware function — this *is* the fix, not a gap |
+| `frontends/packages/sms-client` | Generated, unused CrateStack TS client | **Reject** as a runtime dependency | Structurally cannot support `ETag`/`If-Match` (discards the `Response` object); browser-facing react-query design, wrong architecture for this server-only mTLS BFF; `Decimal` fields are now class instances, not strings |
+| `frontends/packages/api` | tRPC routers | **Keep as-is** | Already thin wrappers over tRPC + zod; nothing to replace |
+| `frontends/packages/env` | Env validation + cross-field rules | **Keep as-is** | Already built on `@t3-oss/env-nextjs`; the extra logic is cross-field validation t3-env doesn't support declaratively |
+| `frontends/packages/hooks` | tRPC/react-query provider (3 files, ~50 lines) | **Keep as-is** | Nothing to replace; not where the redesign's hook question lives |
+| `frontends/packages/ui` | Radix primitives, hand toast store | **Defer** to `console-redesign.md` | Primitives are already mid-migration to Headless UI/DaisyUI elsewhere; toast store is small, correct, and encodes a real product rule |
+| `frontends/apps/admin/*-screen.tsx` (not owned by this audit, referenced) | Hand `useState` create/edit forms, 7 screens / ~10 forms | **Adopt** `react-hook-form` + `zod` | Already dependencies, already used correctly in the composer; every other write screen reinvents the same state/validation glue |
+| `frontends/apps/admin/audit-log-screen.tsx` | Hand `useState` filters + offset pagination | **Adopt** `nuqs` | Already the pattern for messages/jobs/webhooks; this screen was simply missed |
+| `frontends/apps/admin/*-screen.tsx` tables | Static JSX tables, no client-side sort/filter | **Reject** `@tanstack/react-table` (for now) | Confirmed zero click-to-sort or client-side row filtering anywhere in `frontends/apps/admin/`; nothing today for it to replace |
+| `frontends/packages/hooks` (redesign-owned) | `useDebouncedValue`/scroll-listener/media-query hooks scattered in `frontends/apps/admin/` | **Not this audit's call** — already `console-redesign.md` D12/D13 | Independently reaches the same conclusion this audit would; one staleness risk flagged below |
 
 Rough payoff estimate (see each section for the basis):
 
 | Adopt item | Estimated lines removed/simplified | Risk | Owner |
 |---|---|---|---|
-| `react-hook-form` + `zod` for 7 admin write screens | ~250–350 lines of hand-rolled form state/validation glue | Low — library already proven in this codebase (composer) | `admin/` (redesign-adjacent, sequence after it) |
-| `nuqs` for `audit-log-screen.tsx` | ~15–20 lines, mostly URL-sync boilerplate removed | Very low — direct copy of an existing pattern | `admin/` |
-| **Not filed as an issue** — internal (no new dependency) dedup of the gateway's ~20 duplicated fetch shells | ~150–250 lines within `packages/gateway` | Low, if scoped to exclude `rest.ts`/`token.ts`/`message-stream.ts` | mentioned for completeness, see below |
+| `react-hook-form` + `zod` for 7 admin write screens | ~250–350 lines of hand-rolled form state/validation glue | Low — library already proven in this codebase (composer) | `frontends/apps/admin/` (redesign-adjacent, sequence after it) |
+| `nuqs` for `audit-log-screen.tsx` | ~15–20 lines, mostly URL-sync boilerplate removed | Very low — direct copy of an existing pattern | `frontends/apps/admin/` |
+| **Not filed as an issue** — internal (no new dependency) dedup of the gateway's ~20 duplicated fetch shells | ~150–250 lines within `frontends/packages/gateway` | Low, if scoped to exclude `rest.ts`/`token.ts`/`message-stream.ts` | mentioned for completeness, see below |
 
 The single biggest reduction available is the **admin write-screen forms**
 (`react-hook-form`/`zod`) — real, hand-transcribed state machines duplicated
 across seven screens, replacing a pattern this codebase already trusts
-elsewhere. The single biggest *rejected* temptation is **`packages/sms-client`**
+elsewhere. The single biggest *rejected* temptation is **`frontends/packages/sms-client`**
 — it looks like the obvious fix for "hand-transcribed types" and is
 structurally wrong for this app's transport.
 
 ---
 
-## `packages/gateway`
+## `frontends/packages/gateway`
 
 This is where the "a lot of manual work" observation is most visible, and
 where it's most heavily — and, on inspection, mostly correctly — justified in
@@ -72,7 +72,7 @@ manual-ness paying for something a library can't give for free."
 
 ### The duplicated fetch-with-retry shape
 
-`grep -l "const attempt = async ()" packages/gateway/src/*.ts` (excluding
+`grep -l "const attempt = async ()" frontends/packages/gateway/src/*.ts` (excluding
 tests) matches **17 files** — `app-clients.ts`, `apps.ts` (×2), `audit-log.ts`,
 `client.ts`, `dashboard.ts`, `jobs.ts` (×2), `messages.ts` (×3),
 `opt-outs.ts`, `providers.ts`, `rest.ts` (×4), `roles.ts`, `route-simulator.ts`,
@@ -98,7 +98,7 @@ not accidental — e.g. `messages.ts`: *"same shape as `client.ts`'s
 `callProcedure`, duplicated rather than shared: this module and `client.ts`
 are two temporary, independently-replaceable halves of the same seam... each
 is small enough that sharing a helper isn't worth coupling their futures
-together before T3 replaces both anyway."* T3 is `packages/sms-client`. Since
+together before T3 replaces both anyway."* T3 is `frontends/packages/sms-client`. Since
 T3 turns out not to be viable (next section), that reasoning's premise is
 gone, which makes this duplication worth actually fixing — but not
 necessarily with a *library*.
@@ -137,7 +137,7 @@ verdict" rule — it's mentioned here so it isn't lost, and because leaving the
 duplication until "T3 lands" (which now isn't going to happen — see below) is
 no longer the right reason to defer it.
 
-### Everything else in `packages/gateway`
+### Everything else in `frontends/packages/gateway`
 
 - **`rest.ts` (322 lines) — ETag capture / `If-Match` replay.** Confirmed by
   generating the real client (below): no evaluated library exposes the
@@ -152,7 +152,7 @@ no longer the right reason to defer it.
   more code, not less) improves on 50 lines of `AsyncLocalStorage` plus a
   throw. **Keep as-is**, and any future refactor of the fetch-shell
   duplication above must preserve this function's exact throw-not-fallback
-  contract — `packages/gateway/src/request-credential.test.ts` already
+  contract — `frontends/packages/gateway/src/request-credential.test.ts` already
   proves it fails loudly; that test must keep passing unmodified.
 - **`token.ts` (187 lines) / `dispatcher.ts` (91 lines) — `private_key_jwt`
   minting and the mTLS `undici.Agent`.** Already built on `jose` (6.2.8) —
@@ -165,8 +165,8 @@ no longer the right reason to defer it.
   as-is.**
 - **`message-stream.ts` (292 lines) — the poll-with-backoff singleton
   hub.** Named explicitly in the brief as must-survive: this is **not**
-  `useQuery({ refetchInterval })`, on purpose — `packages/hooks/src/
-  provider.tsx`'s own module doc and `packages/api/src/routers/messages.ts`'s
+  `useQuery({ refetchInterval })`, on purpose — `frontends/packages/hooks/src/
+  provider.tsx`'s own module doc and `frontends/packages/api/src/routers/messages.ts`'s
   own module doc both record that combination stalling after one or two
   calls when it was tried live. What this hub does that no data-fetching
   library offers as a primitive: **one** upstream poll shared across every
@@ -203,12 +203,12 @@ no longer the right reason to defer it.
 
 ---
 
-## `packages/sms-client` — why it's unused, and whether that reason still holds
+## `frontends/packages/sms-client` — why it's unused, and whether that reason still holds
 
-`packages/sms-client/GENERATING.md` (the one committed file; everything else
+`frontends/packages/sms-client/GENERATING.md` (the one committed file; everything else
 is gitignored and regenerated) gives the standing reason: cratestack's
 `Decimal` TypeScript emission was broken until `cratestack#456` (fixed in
-0.7.8), and `packages/gateway/src/client.ts`'s own module doc says this
+0.7.8), and `frontends/packages/gateway/src/client.ts`'s own module doc says this
 package "will replace" the hand-transcribed types "once an upstream `Decimal`
 fix ships." **That fix has shipped** — `cratestack --version` in this
 environment reports `0.7.12`, well past the `0.7.10` pin this repo already
@@ -217,8 +217,8 @@ became real `decimal.js` instances in 0.7.10. So the *documented* reason the
 client is unused is stale. That does not mean the client is now adoptable —
 it means the real reason had to be found by actually generating it and
 reading the output, which this audit did (`cratestack generate-typescript
---schema schema/schema.cstack --out <scratch dir>`, never touching the
-tracked `packages/sms-client/`).
+--schema schemas/vsms.cstack --out <scratch dir>`, never touching the
+tracked `frontends/packages/sms-client/`).
 
 **What the generated client actually is, read from `src/runtime.ts` and
 `src/client.ts` directly:**
@@ -240,7 +240,7 @@ This is disqualifying, not inconvenient: `rest.ts`'s entire job is reading
 `ETag` off a `GET`/detail response and sending it back as `If-Match` on the
 following `PATCH`, and the generated runtime structurally cannot hand that
 header back without patching `runtime.ts` by hand — which doesn't survive
-`packages/sms-client` being gitignored and regenerated on every
+`frontends/packages/sms-client` being gitignored and regenerated on every
 `just client-gen`. #59's whole optimistic-concurrency story (ten `@version`d
 models, `PATCH /providers/{id}` etc.) depends on this exact round trip; the
 generated client cannot carry it.
@@ -286,12 +286,12 @@ live against a real gateway. It's a good, already-correct implementation of
 that grammar. It is not, on its own, worth taking a dependency on the whole
 client for.
 
-**Verdict: reject `packages/sms-client` as a runtime dependency.** The
+**Verdict: reject `frontends/packages/sms-client` as a runtime dependency.** The
 disqualifying reason is structural (no ETag path), not the Decimal issue the
 committed doc currently blames — which is itself now stale. **Recommended,
 not filed as an issue** (a documentation-only fix, not a library adoption):
-correct `packages/sms-client/GENERATING.md` and `OPEN_QUESTIONS.md` §5
-("Is `packages/sms-client` meant to be committed?") to record the real
+correct `frontends/packages/sms-client/GENERATING.md` and `OPEN_QUESTIONS.md` §5
+("Is `frontends/packages/sms-client` meant to be committed?") to record the real
 reason (no `ETag`/`If-Match` support, wrong browser-facing architecture)
 rather than the now-outdated "waiting on a Decimal fix" — the current text
 will otherwise mislead the next person who checks whether the blocker
@@ -300,7 +300,7 @@ pattern `AGENTS.md` already tracks five instances of.
 
 ---
 
-## `packages/api`
+## `frontends/packages/api`
 
 Seventeen router files, ~1,124 lines total, every one a thin
 `publicProcedure.input(zodSchema).query/mutation(async ({ ctx, input }) =>
@@ -316,7 +316,7 @@ found here worth replacing.
 
 ---
 
-## `packages/env`
+## `frontends/packages/env`
 
 Already built on [`@t3-oss/env-nextjs`](https://www.npmjs.com/package/@t3-oss/env-nextjs)
 (latest `0.13.11`, released 2026-03-22 — actively maintained) — this
@@ -340,14 +340,14 @@ one cross-field check — a strictly worse trade than the current ~40 lines.
 
 ---
 
-## `packages/hooks`
+## `frontends/packages/hooks`
 
 Three files, ~50 lines: a `TrpcProvider` (`QueryClientProvider` +
 `trpc.Provider`, one `httpBatchStreamLink`) and a type-only `trpc` client.
 There is no hand-rolled generic-hook machinery in this package today —
 `useDebouncedValue`, a scroll-position listener, and a media-query check all
-currently live *inside* `admin/` screens (`admin/app/page.tsx`,
-`admin/app/apps/apps-screen.tsx`, `bespoke/live-row.tsx`), not here.
+currently live *inside* `frontends/apps/admin/` screens (`frontends/apps/admin/app/page.tsx`,
+`frontends/apps/admin/app/apps/apps-screen.tsx`, `bespoke/live-row.tsx`), not here.
 
 This is exactly the ground `docs/design/console-redesign.md` already covers,
 independently, and reaches the same place this audit would:
@@ -366,7 +366,7 @@ That is the identical distinction this audit's own gateway section draws
 between `json.ts`/`request-credential.ts` (keep — encodes a real property)
 and the duplicated fetch shells (fix — encodes nothing). Since this decision
 is already made and owned elsewhere, **this audit makes no independent
-recommendation for `packages/hooks`** — deferring avoids exactly the
+recommendation for `frontends/packages/hooks`** — deferring avoids exactly the
 collision the task brief warned about.
 
 **One flag worth handing back, not a verdict:** `@uidotdev/usehooks`'s own
@@ -384,7 +384,7 @@ whichever agent executes D12/D13: verify the specific hooks used
 React 19 strict mode before relying on them, since the package's own release
 history predates React 19 by roughly a year and a half.
 
-**Second flag, a genuine gap in D12's own enumeration:** `admin/app/page.tsx`
+**Second flag, a genuine gap in D12's own enumeration:** `frontends/apps/admin/app/page.tsx`
 hand-rolls a fourth generic hook, `useDebouncedValue` (used for the composer's
 debounced preview inputs), that D12's list of three doesn't mention. It's the
 same shape `usehooks`' `useDebounce` already covers — worth folding into
@@ -393,7 +393,7 @@ instance after the other three move.
 
 ---
 
-## `packages/ui`
+## `frontends/packages/ui`
 
 Thirty-one components, already itemised component-by-component in
 `console-redesign.md` §5 ("Component inventory") with its own Port/Refresh/
@@ -425,19 +425,19 @@ Two things outside that inventory's direct scope, checked independently:
 - **`primitives/table.tsx` (81 lines)** is a presentation-only wrapper
   (`<table>`/`<thead>`/`<tbody>`/`<tr>`/`<th>`/`<td>` with the design
   system's spacing/border/hover classes) — it does not own sorting,
-  filtering, or pagination; those live per-screen in `admin/`. See the next
+  filtering, or pagination; those live per-screen in `frontends/apps/admin/`. See the next
   section for why that matters to the `@tanstack/react-table` question.
 
 ---
 
-## `admin/*-screen.tsx` — referenced, not owned by this audit
+## `frontends/apps/admin/*-screen.tsx` — referenced, not owned by this audit
 
-`admin/` is explicitly off-limits to edit for this task (the console
+`frontends/apps/admin/` is explicitly off-limits to edit for this task (the console
 redesign owns it), but the maintainer's question can't be answered honestly
-without reading what actually consumes `packages/gateway`/`packages/ui`.
+without reading what actually consumes `frontends/packages/gateway`/`frontends/packages/ui`.
 Two real, independent findings came out of that reading, both outside
 `console-redesign.md`'s own scope (that document covers visual/structural
-redesign of `admin/` and `packages/ui/`; it does not cover form-state
+redesign of `frontends/apps/admin/` and `frontends/packages/ui/`; it does not cover form-state
 management or data-fetching), and both are filed as GitHub issues.
 
 ### Tables: `@tanstack/react-table` — reject, not adopt-later
@@ -447,7 +447,7 @@ sorting, filtering, and pagination. Checked directly:
 
 ```
 grep -rln "onClick.*[Ss]ort\|toggleSort\|sortBy\|\.sort((a, ?b)" admin --include="*.tsx"
-→ no matches anywhere in admin/
+→ no matches anywhere in frontends/apps/admin/
 ```
 
 **There is no client-side sorting or row filtering anywhere in this admin
@@ -490,11 +490,11 @@ that need.
 Both are already dependencies (`react-hook-form@7.85.0`, `zod@4.4.3`, both
 current — `react-hook-form`'s latest release was six days before this audit
 and its peer range is explicitly `^16.8.0 || ^17 || ^18 || ^19`) and are
-already used correctly in the composer (`admin/app/page.tsx`). Checked which
+already used correctly in the composer (`frontends/apps/admin/app/page.tsx`). Checked which
 other screens use them:
 
 ```
-grep -rl "react-hook-form" admin --include="*.tsx"  →  admin/app/page.tsx  (only)
+grep -rl "react-hook-form" admin --include="*.tsx"  →  frontends/apps/admin/app/page.tsx  (only)
 ```
 
 Every other screen with a create/edit form hand-rolls its own state. Read in
@@ -536,7 +536,7 @@ these wrong is a real regression, not a style nit:**
 
 - **412 (`isStaleWriteError`) handling stays exactly as-is.** This is
   independent of form *state* management — it's a response-shape check in
-  `packages/gateway/src/errors.ts`, already decoupled from how a screen
+  `frontends/packages/gateway/src/errors.ts`, already decoupled from how a screen
   manages its input fields. A form library must not swallow or reinterpret
   it; the "someone else changed this, reload" UX it drives is a hard
   requirement `#59` was built for.
@@ -547,7 +547,7 @@ these wrong is a real regression, not a style nit:**
   the right shape and should be kept as a form-level error, not remapped
   onto a specific field.
 - **`trpc.ts`'s `errorFormatter` already threads `GatewayError.fieldErrors`
-  through** (`packages/api/src/trpc.ts`, `fieldErrors` on `error.data`) —
+  through** (`frontends/packages/api/src/trpc.ts`, `fieldErrors` on `error.data`) —
   this was built *for* `react-hook-form`'s `setError`, per its own module
   doc, and is currently unused by every hand-rolled screen. Adopting RHF is
   what actually turns this dormant plumbing live, not new work.
@@ -596,42 +596,42 @@ convert these three fields to `useQueryStates` the same way
 
 Collected here so this investigation doesn't get redone in three months:
 
-1. **`packages/gateway/src/rest.ts`** — ETag capture / `If-Match` replay.
+1. **`frontends/packages/gateway/src/rest.ts`** — ETag capture / `If-Match` replay.
    Confirmed no library (generated or third-party) exposes the response
    headers this needs without hand-patching generated code.
-2. **`packages/gateway/src/request-credential.ts`** — `AsyncLocalStorage`
+2. **`frontends/packages/gateway/src/request-credential.ts`** — `AsyncLocalStorage`
    credential scoping, fail-loud on no scope. Already idiomatic; the
    fail-loud property is a named hard requirement.
-3. **`packages/gateway/src/token.ts` / `dispatcher.ts`** — `private_key_jwt`
+3. **`frontends/packages/gateway/src/token.ts` / `dispatcher.ts`** — `private_key_jwt`
    minting (on top of `jose`, already a well-maintained library) and the
    mTLS `undici.Agent`. Deployment-specific glue, not reinvention.
-4. **`packages/gateway/src/message-stream.ts`** — the poll-with-backoff
+4. **`frontends/packages/gateway/src/message-stream.ts`** — the poll-with-backoff
    singleton hub. Named must-survive; no library offers "one poll shared
    across N subscribers, feeding a bounded server-side long-poll" as a
    primitive.
-5. **`packages/gateway/src/json.ts`** — the `null`→`undefined`
+5. **`frontends/packages/gateway/src/json.ts`** — the `null`→`undefined`
    normalization. Already the fix for a real, three-times-found bug; a
    generic deep-null-strip library would be actively unsafe against this
    schema's pre-serialised-JSON-as-`String` columns.
-6. **`packages/gateway/src/errors.ts`** — sms-api-specific error→tRPC-code
+6. **`frontends/packages/gateway/src/errors.ts`** — sms-api-specific error→tRPC-code
    mapping. No generic library encodes this app's vocabulary.
-7. **`packages/api`** — thin tRPC + zod routers. Already minimal.
-8. **`packages/env`** — already `@t3-oss/env-nextjs`; the extra logic is
+7. **`frontends/packages/api`** — thin tRPC + zod routers. Already minimal.
+8. **`frontends/packages/env`** — already `@t3-oss/env-nextjs`; the extra logic is
    legitimate cross-field validation with no declarative equivalent in
    t3-env or znv.
-9. **`packages/ui/src/components/primitives/toast.tsx`** — small, correct,
+9. **`frontends/packages/ui/src/components/primitives/toast.tsx`** — small, correct,
    `useSyncExternalStore`-based, and encodes a real "no toast for
    actionable content" product rule a generic toast library doesn't know.
-10. **`admin/app/messages/messages-screen.tsx`'s poll loop** — explicitly
+10. **`frontends/apps/admin/app/messages/messages-screen.tsx`'s poll loop** — explicitly
     not `useQuery({ refetchInterval })` for a documented, previously-live
     reason (stalls after one or two calls). Any future data-fetching
     library adopted elsewhere in this codebase must not be applied here
     without re-proving that failure mode is actually fixed, live, first.
-11. **`packages/hooks`** — already minimal; the redesign's own D12/D13 in
+11. **`frontends/packages/hooks`** — already minimal; the redesign's own D12/D13 in
     `console-redesign.md` already correctly separates what should move to
     `usehooks` from what must stay custom (`TimestampDisplay`'s shared
     tick, the messages poll loop).
-12. **`admin/*-screen.tsx` tables** (`Table`/`TableRow`/etc. usage) — no
+12. **`frontends/apps/admin/*-screen.tsx` tables** (`Table`/`TableRow`/etc. usage) — no
     client-side sort/filter exists anywhere to replace; `@tanstack/
     react-table` is a good library with nothing in this codebase to solve
     yet.
@@ -644,8 +644,8 @@ Collected here so this investigation doesn't get redone in three months:
 |---|---|
 | `ky` / `ofetch` for the gateway's fetch layer | Neither handles `ETag`/`If-Match`; the actually-expensive logic (credential resolution, error mapping) stays custom regardless; the one thing they'd centralize (retry-on-401) is cheaper as an internal helper with no new dependency |
 | `openapi-fetch` | No OpenAPI/Swagger document exists anywhere in this repo for it to generate against |
-| `packages/sms-client` as a runtime dependency | Generated `CratestackRuntime.request()` discards the `Response` object — structurally cannot support the `ETag` round trip `#59` depends on; designed for direct browser calls (`@tanstack/react-query` peer dep) against a server-only mTLS BFF; `Decimal` fields are now class instances requiring a real migration |
-| `@tanstack/react-table` | Zero client-side sorting/filtering exists anywhere in `admin/` today for it to replace; would collide with `console-redesign.md`'s own in-flight `table.tsx` rebuild |
+| `frontends/packages/sms-client` as a runtime dependency | Generated `CratestackRuntime.request()` discards the `Response` object — structurally cannot support the `ETag` round trip `#59` depends on; designed for direct browser calls (`@tanstack/react-query` peer dep) against a server-only mTLS BFF; `Decimal` fields are now class instances requiring a real migration |
+| `@tanstack/react-table` | Zero client-side sorting/filtering exists anywhere in `frontends/apps/admin/` today for it to replace; would collide with `console-redesign.md`'s own in-flight `table.tsx` rebuild |
 | `sonner` (toast) | Existing 105-line store is already correct, minimal, and encodes a product rule (no toast for actionable content) the library doesn't know about |
 | `znv` (env validation) | Already using the more actively maintained `@t3-oss/env-nextjs`; both share the identical cross-field-validation gap this repo's hand-written rules fill |
 

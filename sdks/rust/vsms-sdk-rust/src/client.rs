@@ -27,7 +27,7 @@ use crate::error::SdkError;
 use crate::schema;
 use crate::token::{PrivateKeyJwtConfig, PrivateKeyJwtTokenStore, TokenStore};
 
-/// Response header name `IdempotencyLayer` (`crates/sms-api/src/router.rs`,
+/// Response header name `IdempotencyLayer` (`backends/crates/sms-api/src/router.rs`,
 /// `cratestack_axum::idempotency`) appends to a replayed response.
 /// `HeaderMap`/`RuntimeHeader` comparisons are case-insensitive per HTTP,
 /// so the exact case here doesn't have to match the wire byte-for-byte.
@@ -104,7 +104,7 @@ impl VsmsClient {
     ///
     /// `idempotency_key`, when `Some`, is sent as the `Idempotency-Key`
     /// request header — `IdempotencyLayer` (#153,
-    /// `crates/sms-api/src/router.rs`) then guarantees a repeated call
+    /// `backends/crates/sms-api/src/router.rs`) then guarantees a repeated call
     /// under the same key within its TTL (24h by default) never
     /// re-executes `sendMessage`: it replays the first response verbatim,
     /// no second SMS, no second `Message` row. That is a *different*

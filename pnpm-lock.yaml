@@ -28,19 +28,19 @@ importers:
         version: 11.18.0(typescript@5.9.3)
       '@vsms/api':
         specifier: workspace:*
-        version: link:../packages/api
+        version: link:../frontends/packages/api
       '@vsms/env':
         specifier: workspace:*
-        version: link:../packages/env
+        version: link:../frontends/packages/env
       '@vsms/gateway':
         specifier: workspace:*
-        version: link:../packages/gateway
+        version: link:../frontends/packages/gateway
       '@vsms/hooks':
         specifier: workspace:*
-        version: link:../packages/hooks
+        version: link:../frontends/packages/hooks
       '@vsms/ui':
         specifier: workspace:*
-        version: link:../packages/ui
+        version: link:../frontends/packages/ui
       jose:
         specifier: 6.2.8
         version: 6.2.8
@@ -91,7 +91,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)
 
-  packages/api:
+  frontends/packages/api:
     dependencies:
       '@trpc/server':
         specifier: 11.18.0
@@ -122,7 +122,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)
 
-  packages/env:
+  frontends/packages/env:
     dependencies:
       '@t3-oss/env-nextjs':
         specifier: 0.13.11
@@ -138,7 +138,7 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
-  packages/gateway:
+  frontends/packages/gateway:
     dependencies:
       '@vsms/env':
         specifier: workspace:*
@@ -163,7 +163,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)
 
-  packages/hooks:
+  frontends/packages/hooks:
     dependencies:
       '@tanstack/react-query':
         specifier: 5.101.4
@@ -200,7 +200,7 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
-  packages/sms-client:
+  frontends/packages/sms-client:
     dependencies:
       decimal.js:
         specifier: ^10.6.0
@@ -213,7 +213,7 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
-  packages/ui:
+  frontends/packages/ui:
     dependencies:
       '@headlessui/react':
         specifier: ^2.2.10

@@ -27,7 +27,6 @@ in a row with no manual cleanup in between is the normal way to use it, not a sp
    checkout's own source (`compose.dev.yaml`), including a scratch Postgres,
    `sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs`), `sms-fake-orange`, and the
    admin console, plus one `App` (`vsms-demo`) and a "demo console" `AppClient`.
-2. **Provisions a SECOND, independent `AppClient`** — "external integrator" — against
    that same `App`, via `docker compose run --rm sms-gateway provision-client`. Two real
    credentials: different `clientId`, different RSA keypair, each provisioned separately.
    See "Why the same `App`" below for why this is the right design, not a shortcut.
@@ -52,7 +51,7 @@ in a row with no manual cleanup in between is the normal way to use it, not a sp
 5. **Polls `GET /messages/{id}` as the console**, once a second, until that exact id
    reaches `delivered` (or a terminal non-delivered state, or a 60s timeout — either
    fails the tool loudly). This is the same route
-   `packages/gateway/src/messages.ts`'s `getMessageById` calls — not a database query.
+   `frontends/packages/gateway/src/messages.ts`'s `getMessageById` calls — not a database query.
    Every poll also asserts the returned `appId` matches the App both clients share.
 
 The tool prints the exact message id, the App id, both client ids, and the observed state
@@ -60,7 +59,7 @@ progression.
 
 ## Why the same `App` for both clients, not two
 
-`Message`'s own row policy in `schema/schema.cstack` is:
+`Message`'s own row policy in `schemas/vsms.cstack` is:
 
 ```
 @@allow("list", auth().kind == "user" || appId == auth().appId || hasRole('system'))
@@ -70,7 +69,7 @@ progression.
 No `auth().kind == "user"` token exists anywhere in this deployment — `GatewayAuth` only
 ever mints `role: "app"`/`"system"` (`AGENTS.md`'s M1 section: no human-login flow exists
 yet). So the console's own credential is, today, just another `App`-scoped principal —
-not a cross-tenant "operator" one. `admin/app/messages/messages-screen.tsx` already says
+not a cross-tenant "operator" one. `frontends/apps/admin/app/messages/messages-screen.tsx` already says
 this on screen, verbatim: *"Scoped to this app only — the console's own service-account
 token can only read the one app it belongs to, so there is nothing to switch to. This is
 not a filter and not a bug."*

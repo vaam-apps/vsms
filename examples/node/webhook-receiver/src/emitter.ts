@@ -27,7 +27,7 @@ import type { WebhookEnvelope } from "./types.ts";
  * The signing it performs uses the same `computeSignature` the receiver
  * verifies with (signature.ts) — this emitter is not a second, drifting
  * reimplementation of that scheme. The scheme itself is §4.4's HMAC-SHA256
- * construction, confirmed correct by #41 (`crates/sms-webhook`) — see
+ * construction, confirmed correct by #41 (`backends/crates/sms-webhook`) — see
  * signature.ts's own module doc for how.
  */
 

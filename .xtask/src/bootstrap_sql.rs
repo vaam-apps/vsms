@@ -1,4 +1,4 @@
-//! Regenerate `schema/migrations/postgres/0002_bootstrap/up.sql` from
+//! Regenerate `backends/migrations/postgres/0002_bootstrap/up.sql` from
 //! §2.10 of `docs/architecture.md`.
 //!
 //! Port of the deleted `ci/gen-bootstrap-sql.py`. This is the highest-risk
@@ -53,7 +53,7 @@ use std::path::Path;
 const DOC: &str = "docs/architecture.md";
 const SECTION_START: &str = "### 2.10 Hand-written SQL";
 const SECTION_END: &str = "## 3. The send path";
-const OUTPUT: &str = "schema/migrations/postgres/0002_bootstrap/up.sql";
+const OUTPUT: &str = "backends/migrations/postgres/0002_bootstrap/up.sql";
 
 /// `ts` in the Python script, verbatim and in the same order — the models
 /// that `@use(Timestamps)` and therefore need a `created_at`/`updated_at`

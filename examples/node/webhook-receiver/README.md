@@ -13,7 +13,7 @@ process. Both were true when written and are no longer true.**
 `hooks` worker roles are real bodies, not idling stubs, and `hooks` does
 signed HTTP delivery with retries and circuit breaking.
 
-What changed for this example specifically: `app/sms-worker/tests/hooks_node_receiver_live.rs`
+What changed for this example specifically: `backends/apps/sms-worker/tests/hooks_node_receiver_live.rs`
 — [#44](https://github.com/vymalo/vsms/issues/44)'s own acceptance gate —
 spawns a genuinely separate `sms-worker --roles hooks` process and a
 genuinely separate `node src/gate-receiver.ts` process, with a real loopback
@@ -75,11 +75,11 @@ Settled, cited inline in the source:
   turns that string into the hex digest. `src/signature.ts` implemented
   HMAC-SHA256 as the obvious Stripe-style reading of that shape *before*
   #41 existed — that substitution was this example's one genuine guess.
-  `crates/sms-webhook` (#41) is now the real answer, and it agrees:
+  `backends/crates/sms-webhook` (#41) is now the real answer, and it agrees:
   `src/cross-language-vectors.test.ts` proves it by checking this file's
   `verifySignature` against fixture signatures neither implementation
   computed (a third, independent `openssl` computation instead) — see
-  that test file and `crates/sms-webhook/src/lib.rs`'s own module doc for
+  that test file and `backends/crates/sms-webhook/src/lib.rs`'s own module doc for
   the full cross-language proof.
 
 **Still a deliberate scope decision by this example, not a gap in §4.4 or
@@ -105,7 +105,7 @@ src/
   index.ts                        entry point: starts the receiver, runs the local emitter, prints a summary
   server.ts                       the Express app: raw-body capture, fast ack, off-path processing
   signature.ts                    THE SEAM — a §4.4 transcription, confirmed correct by #41 (see its own doc comment)
-  cross-language-vectors.test.ts  proves signature.ts against fixture signatures crates/sms-webhook (#41) didn't compute
+  cross-language-vectors.test.ts  proves signature.ts against fixture signatures backends/crates/sms-webhook (#41) didn't compute
   store.ts                        in-memory idempotency (primary: X-Sms-Event-Id; secondary: aggregateId+eventType) + out-of-order-tolerant state tracking
   work-queue.ts                   a tiny off-request-path queue (what "work off the request path" means, made concrete)
   emitter.ts                      local stand-in for vsms; drives #150's required scenarios plus a timestamp-freshness check
@@ -127,7 +127,7 @@ pnpm start   # the full local-emitter demo below
 
 This package is a member of the `examples/` pnpm workspace (`examples/pnpm-workspace.yaml`,
 glob `node/*`), which is a *separate* workspace from the repo root's — so installing here
-never touches `admin/`'s lockfile. `pnpm install` from this directory resolves
+never touches `frontends/apps/admin/`'s lockfile. `pnpm install` from this directory resolves
 `examples/` as its nearest workspace root and works with no flags.
 
 One trap worth knowing if you ever add an example *outside* that glob: pnpm walks up to
@@ -187,7 +187,7 @@ requests, over a real (if local) network round trip, with a real async
 work queue decoupling the response from the "database write" it simulates
 — **and**, separately (`cross-language-vectors.test.ts`, no HTTP involved),
 that `verifySignature`'s algorithm itself is HMAC-SHA256 over exactly
-§4.4's canonical string, agreeing with `crates/sms-webhook` (#41) and with
+§4.4's canonical string, agreeing with `backends/crates/sms-webhook` (#41) and with
 a third, independent computation neither of them produced.
 
 **Does not prove, from `pnpm start` alone:** that this matches what a real,
@@ -216,7 +216,7 @@ observe what it verified over HTTP rather than scraping stdout. Point a real
 `sms-worker --roles hooks` process at it (a real `WebhookEndpoint.url`
 pointed at `http://<host>:<port>/webhooks/vsms`, matching secret) and it
 verifies a real, live delivery — see
-`app/sms-worker/tests/hooks_node_receiver_live.rs` for the automated version
+`backends/apps/sms-worker/tests/hooks_node_receiver_live.rs` for the automated version
 of exactly this, and the two assumptions this section used to flag as
 unconfirmed:
 

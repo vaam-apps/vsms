@@ -1,32 +1,32 @@
 [workspace]
 resolver = "3"
 members = [
-  "crates/sms-core",
-  "crates/sms-encoding",
-  "crates/sms-msisdn",
-  "crates/sms-webhook",
+  "backends/crates/sms-core",
+  "backends/crates/sms-encoding",
+  "backends/crates/sms-msisdn",
+  "backends/crates/sms-webhook",
   # #70/#71: Prometheus metric definitions shared by sms-api and
   # sms-worker — pure, no schema/framework dependency, same reasoning as
   # sms-webhook above for living below both.
-  "crates/sms-metrics",
-  "crates/sms-api",
-  "crates/sms-auth",
-  "crates/sms-worker",
-  "crates/sms-provider",
-  "crates/sms-provider-orange-cm",
-  "crates/sms-provider-mtn",
-  "crates/sms-routing",
-  "crates/sms-fake-orange",
-  "crates/sms-test-support",
-  "app/sms-gateway",
-  "app/sms-worker",
-  "app/sms-fake-orange",
-  "app/sms-migrate",
+  "backends/crates/sms-metrics",
+  "backends/crates/sms-api",
+  "backends/crates/sms-auth",
+  "backends/crates/sms-worker",
+  "backends/crates/sms-provider",
+  "backends/crates/sms-provider-orange-cm",
+  "backends/crates/sms-provider-mtn",
+  "backends/crates/sms-routing",
+  "backends/crates/sms-fake-orange",
+  "backends/crates/sms-test-support",
+  "backends/apps/sms-gateway",
+  "backends/apps/sms-worker",
+  "backends/apps/sms-fake-orange",
+  "backends/apps/sms-migrate",
   # Demo-only: seeds the App/SenderId fixtures compose.demo.yaml needs.
-  # Moved out of app/sms-gateway (formerly `Command::SeedDemoApp`) so no
+  # Moved out of backends/apps/sms-gateway (formerly `Command::SeedDemoApp`) so no
   # demo-seeding logic is compiled into the production sms-gateway image —
-  # see app/vsms-demo-seed/src/main.rs's own module doc.
-  "app/vsms-demo-seed",
+  # see backends/apps/vsms-demo-seed/src/main.rs's own module doc.
+  "backends/apps/vsms-demo-seed",
   # Repo automation ("no bash scripts — xtask + Docker" is the standing
   # direction): a dot-directory at the repo root, invoked via the
   # `[alias] xtask` in .cargo/config.toml, mirroring the sibling vpay
@@ -74,43 +74,43 @@ publish = false
 [workspace.dependencies]
 # Internal crates. `crates/` is libraries, `app/` is binaries — a binary may
 # depend on any library, never the reverse.
-sms-core = { path = "./crates/sms-core" }
-sms-encoding = { path = "./crates/sms-encoding" }
-sms-msisdn = { path = "./crates/sms-msisdn" }
+sms-core = { path = "./backends/crates/sms-core" }
+sms-encoding = { path = "./backends/crates/sms-encoding" }
+sms-msisdn = { path = "./backends/crates/sms-msisdn" }
 # #41: outbound webhook HMAC signing/verification and secret generation.
 # Pure (bar generate_secret's OS randomness) and deliberately not
 # schema-coupled — both sms-api (rotateWebhookSecret) and sms-worker's
 # hooks role (#40) depend on this directly rather than on each other.
-sms-webhook = { path = "./crates/sms-webhook" }
+sms-webhook = { path = "./backends/crates/sms-webhook" }
 # #70/#71: metric name/help/label definitions, so sms-api and sms-worker
 # (two separate processes — see the crate's own module doc) can't drift
 # apart on what a given metric is called.
-sms-metrics = { path = "./crates/sms-metrics" }
-sms-api = { path = "./crates/sms-api" }
-sms-auth = { path = "./crates/sms-auth" }
-sms-worker = { path = "./crates/sms-worker" }
-sms-provider = { path = "./crates/sms-provider" }
-sms-provider-orange-cm = { path = "./crates/sms-provider-orange-cm" }
+sms-metrics = { path = "./backends/crates/sms-metrics" }
+sms-api = { path = "./backends/crates/sms-api" }
+sms-auth = { path = "./backends/crates/sms-auth" }
+sms-worker = { path = "./backends/crates/sms-worker" }
+sms-provider = { path = "./backends/crates/sms-provider" }
+sms-provider-orange-cm = { path = "./backends/crates/sms-provider-orange-cm" }
 # #61: MTN Cameroon capacity bought through a licensed aggregator, not a
 # direct interconnect — see the crate's own module doc for exactly which
 # parts of the request/response shape are a verified pattern vs. an
 # invented placeholder pending a real aggregator contract.
-sms-provider-mtn = { path = "./crates/sms-provider-mtn" }
+sms-provider-mtn = { path = "./backends/crates/sms-provider-mtn" }
 # #62's pure route-selection engine — no cratestack, no I/O. sms-worker
-# (crates/sms-worker/src/routing.rs) is the I/O glue; a future #54
+# (backends/crates/sms-worker/src/routing.rs) is the I/O glue; a future #54
 # simulator procedure in sms-api is expected to depend on this directly
 # too.
-sms-routing = { path = "./crates/sms-routing" }
+sms-routing = { path = "./backends/crates/sms-routing" }
 # Dev-only: the shared live-Postgres test harness (see its own module doc).
 # Depended on via [dev-dependencies] everywhere it's used, never
 # [dependencies] — no production binary links against it.
-sms-test-support = { path = "./crates/sms-test-support" }
+sms-test-support = { path = "./backends/crates/sms-test-support" }
 # Dev-only, same discipline as sms-test-support above: a fault-injecting
 # fake of Orange's HTTP API for the chaos suite (see its own module doc).
-# No production binary links against it — app/sms-fake-orange, the one
+# No production binary links against it — backends/apps/sms-fake-orange, the one
 # binary that does, is itself a dev/demo tool, never referenced by a
 # production compose file (see that binary's own module doc).
-sms-fake-orange = { path = "./crates/sms-fake-orange" }
+sms-fake-orange = { path = "./backends/crates/sms-fake-orange" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`
 # paths, so the facade has to be in scope under exactly that name. Pinned
@@ -178,7 +178,7 @@ jsonwebtoken = { version = "11", default-features = false, features = ["rust_cry
 # from a generated RSA keypair — same base64 version already resolved
 # transitively through authkestra-op.
 base64 = "0.22"
-# app/sms-gateway's own op.rs mounts axum routes directly against
+# backends/apps/sms-gateway's own op.rs mounts axum routes directly against
 # authkestra-axum's handler functions — same axum version cratestack-pg
 # and authkestra-axum both already resolve to (verified: Cargo.lock has
 # exactly one axum entry, 0.8.9), so this doesn't fork the tree.
@@ -190,7 +190,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
 # #168: parses `/token`'s form-urlencoded body for `client_id` in
-# `app/sms-gateway/src/token_rate_limit.rs`. Already present in Cargo.lock
+# `backends/apps/sms-gateway/src/token_rate_limit.rs`. Already present in Cargo.lock
 # transitively at this exact version (part of the `url` crate family, a
 # dependency of axum's own `Form` extractor, which `authkestra_axum`'s
 # token handler uses to parse `TokenRequest`) — this doesn't add a second
@@ -206,8 +206,8 @@ form_urlencoded = "1"
 # this dependency tree (cratestack-sqlx, authkestra-engine both resolve to
 # hyper-rustls), so this doesn't introduce a second TLS stack to build.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-# Named directly (not just pulled in transitively) so app/sms-gateway's and
-# app/sms-worker's own main.rs can call
+# Named directly (not just pulled in transitively) so backends/apps/sms-gateway's and
+# backends/apps/sms-worker's own main.rs can call
 # `rustls::crypto::ring::default_provider().install_default()` before
 # constructing any HTTP client — see authkestra-op's own comment above for
 # why that call has to exist at all now that `rustls-no-provider` leaves
@@ -219,7 +219,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # workspace-wide (0.23.x, verified against Cargo.lock) — this doesn't fork
 # the rustls tree, just names the one version already there.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-# #70/#71: crates/sms-metrics's registry/counters/gauges and text
+# #70/#71: backends/crates/sms-metrics's registry/counters/gauges and text
 # exposition encoder. `default-features = false` drops the `protobuf`
 # feature (Prometheus's older binary scrape format, via the `protobuf`
 # crate) — nothing in this deployment's tooling speaks it, every consumer
@@ -267,7 +267,7 @@ unicode-normalization = "0.1"
 # reimplementing a raw `setsockopt` call.
 socket2 = "0.6"
 # Dev-only: every provider-facing live/unit test suite in this workspace
-# (sms-provider-orange-cm, sms-worker, app/sms-worker) mocks Orange's HTTP
+# (sms-provider-orange-cm, sms-worker, backends/apps/sms-worker) mocks Orange's HTTP
 # API against the same wiremock server, so one version lives here rather
 # than three copies of the same string.
 wiremock = "0.6"

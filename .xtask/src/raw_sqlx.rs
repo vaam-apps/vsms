@@ -6,7 +6,7 @@
 //!
 //! Porting this surfaced one real disagreement between the two, not
 //! invented for this PR: the shipped script's allowlist has always
-//! included `crates/sms-test-support/src/lib.rs` (it takes
+//! included `backends/crates/sms-test-support/src/lib.rs` (it takes
 //! `pg_advisory_lock`/`pg_advisory_unlock` and issues `CREATE DATABASE`/
 //! `DROP DATABASE` against the test-harness's own per-binary scratch
 //! databases — advisory locks and DDL, the same two categories two
@@ -150,11 +150,11 @@ mod tests {
 
     #[test]
     fn allowlisted_paths_are_suffix_matched() {
-        let rel = "crates/sms-worker/src/lease.rs";
+        let rel = "backends/crates/sms-worker/src/lease.rs";
         assert!(ALLOWLIST.iter().any(|a| rel.ends_with(a)));
-        let rel = "app/sms-gateway/src/health.rs";
+        let rel = "backends/apps/sms-gateway/src/health.rs";
         assert!(ALLOWLIST.iter().any(|a| rel.ends_with(a)));
-        let rel = "crates/sms-api/src/procedures.rs";
+        let rel = "backends/crates/sms-api/src/procedures.rs";
         assert!(!ALLOWLIST.iter().any(|a| rel.ends_with(a)));
     }
 }
