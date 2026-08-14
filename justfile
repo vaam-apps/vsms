@@ -87,6 +87,7 @@ deny:
 all-checks: lint test
 	{{_cargo}} xtask no-raw-sqlx
 	{{_cargo}} xtask parity
+	{{_cargo}} xtask workflow-paths
 
 # R2: the state diagram and the transition table must agree
 parity:
@@ -95,6 +96,10 @@ parity:
 # R1: all data access goes through CrateStack delegates
 no-raw-sqlx:
 	{{_cargo}} xtask no-raw-sqlx
+
+# Every path a workflow names must exist (release.yml never runs on a PR)
+workflow-paths:
+	{{_cargo}} xtask workflow-paths
 
 # The Rust SDK's vendored schema.cstack must match schemas/vsms.cstack
 sdk-schema-check:

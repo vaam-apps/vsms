@@ -401,6 +401,12 @@ jobs:
       - run: cargo xtask parity
       - run: cargo xtask sdk-schema-check
 
+      # Every path a workflow names must exist. `release` runs only on
+      # push to main and on v*.*.* tags, so no PR ever executes it — #271's
+      # restructure left five stale Dockerfile paths there and main built
+      # no images at all for four merges before anyone looked.
+      - run: cargo xtask workflow-paths
+
   diagrams:
     name: mermaid diagrams parse
     runs-on: ubuntu-latest
