@@ -111,6 +111,15 @@ services:
   # runs, just pulled from GHCR instead of built from source.
   migrate:
     image: ghcr.io/vymalo/vsms-migrate:${VSMS_IMAGE_TAG:-v0.1.0}
+    # release.yml's build-and-push matrix publishes one architecture
+    # (whatever the ubuntu-latest runner is, amd64) with no multi-arch
+    # manifest — pin every vsms image to it explicitly so this file
+    # behaves the same on an Apple Silicon/ARM host as on amd64,
+    # through Docker Desktop's own emulation, rather than failing
+    # with a confusing "no matching manifest" the first time someone
+    # without an amd64 host tries this file — reproduced for real
+    # before adding this, not assumed.
+    platform: linux/amd64
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
     depends_on:
@@ -125,6 +134,7 @@ services:
   # expected to serve traffic.
   seed-signing-key:
     image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    platform: linux/amd64
     command: ['rotate-signing-key']
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
@@ -138,15 +148,28 @@ services:
   # refuses to route anything without a matching, enabled `Route` pointing
   # at it (#62's routing engine — see docs/runbooks/getting-started.md's
   # own step 5 for the full "why", and app/sms-gateway/src/main.rs's
-  # `SeedDispatch` doc comment for the fix-forward history). Independent of
-  # `seed-signing-key` above — both only need `migrate` to have finished.
+  # `SeedDispatch` doc comment for the fix-forward history).
+  #
+  # Depends on `seed-signing-key`, not just `migrate`, even though the two
+  # write disjoint tables — found live, reproduced twice: a *fresh*
+  # database's first concurrent touch from two separate connections can
+  # race on Postgres's own `pg_type` catalog (`duplicate key value
+  # violates unique constraint "pg_type_typname_nsp_index"`), the identical
+  # class of race `crates/sms-test-support`'s own per-binary mutex exists
+  # to serialize within one process — see AGENTS.md's "ca653a1" note. That
+  # mutex can't reach across separate one-shot *containers*, so every
+  # seed/provision step against this fresh database is chained
+  # sequentially instead, all the way through `provision-client` below,
+  # trading a few seconds of startup time for never hitting this race
+  # instead of hoping not to.
   seed-dispatch:
     image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    platform: linux/amd64
     command: ['seed-dispatch']
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
     depends_on:
-      migrate:
+      seed-signing-key:
         condition: service_completed_successfully
     restart: 'no'
 
@@ -161,6 +184,7 @@ services:
   # explicitly demo-only and not part of any production bootstrap sequence.
   seed-demo-app:
     image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    platform: linux/amd64
     command: ['seed-demo-app']
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
@@ -191,8 +215,15 @@ services:
   # the result readable by `admin`'s own non-root uid (10001) afterward.
   # `--key-out`'s own `0600` mode is unaffected either way — this only
   # changes who *owns* the resulting file, not how permissive its mode is.
+  # (Chained after `seed-demo-app`, and both console-only steps below chain
+  # after *this* — see `seed-dispatch`'s own comment on why every seed/
+  # provision step against this fresh database runs sequentially rather
+  # than in parallel. `provision-client` itself stays independent of
+  # anything `profiles: [console]`-gated, so it still runs to completion in
+  # backend-only mode.)
   provision-client:
     image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    platform: linux/amd64
     user: '0:0'
     command:
       - provision-client
@@ -289,8 +320,14 @@ services:
   # character for character (RFC 6749 §3.1.2) — `localhost`, matching
   # `admin`'s own `ADMIN_BASE_URL` below and the host port this file
   # publishes `admin` on.
+  #
+  # Depends on `provision-client`, not just `migrate` — see `seed-dispatch`'s
+  # own comment: every seed/provision step against this fresh database
+  # chains sequentially, console-only steps included, rather than racing a
+  # sibling container's first touch of the same catalog.
   seed-console-client:
     image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    platform: linux/amd64
     command:
       - seed-console-client
       - --client-id
@@ -300,7 +337,7 @@ services:
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
     depends_on:
-      migrate:
+      provision-client:
         condition: service_completed_successfully
     restart: 'no'
     profiles: [console]
@@ -312,8 +349,13 @@ services:
   # read it back after `up` finishes:
   #
   #   docker compose -f compose.demo.yaml logs provision-user
+  #
+  # Depends on `seed-console-client`, not just `migrate` — same reasoning
+  # as that service's own comment, chaining the last of the seed/provision
+  # one-shots.
   provision-user:
     image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    platform: linux/amd64
     command:
       - provision-user
       - --email
@@ -325,7 +367,7 @@ services:
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
     depends_on:
-      migrate:
+      seed-console-client:
         condition: service_completed_successfully
     restart: 'no'
     profiles: [console]
@@ -342,6 +384,7 @@ services:
   # `VSMS_IMAGE_TAG` with the other four images above.
   sms-fake-orange:
     image: ghcr.io/vymalo/vsms-sms-fake-orange:${VSMS_FAKE_ORANGE_IMAGE_TAG:?see this file's own header comment on VSMS_FAKE_ORANGE_IMAGE_TAG}
+    platform: linux/amd64
     restart: unless-stopped
     command:
       - --bind-addr
@@ -353,6 +396,7 @@ services:
 
   sms-gateway:
     image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    platform: linux/amd64
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
@@ -411,6 +455,7 @@ services:
 
   sms-worker:
     image: ghcr.io/vymalo/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.1.0}
+    platform: linux/amd64
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
@@ -442,6 +487,7 @@ services:
   # (`docker compose -f compose.demo.yaml up -d`, no `--profile console`).
   admin:
     image: ghcr.io/vymalo/vsms-admin:${VSMS_IMAGE_TAG:-v0.1.0}
+    platform: linux/amd64
     restart: unless-stopped
     profiles: [console]
     # This image's own `output: "standalone"` server.js hardcodes
@@ -469,6 +515,45 @@ services:
     # image run in its own intended mode instead — out of scope for a
     # one-command, clone-and-run showcase; tracked as follow-up work, not
     # silently worked around.
+    #
+    # **A second, more serious finding, found live and reproduced twice —
+    # not something this file can work around at all, only document.**
+    # Every mutating (POST) tRPC call through this console — the
+    # Composer's own "Send message" included — is rejected with
+    # `cross-origin request rejected: Origin "http://localhost:<port>"
+    # does not match "http://0.0.0.0:8080"` by
+    # `packages/api/src/context.ts`'s `assertSameOriginForMutations`. The
+    # "expected" side of that check is `new URL(req.url).origin`, and for
+    # this image's compiled `next.config.ts` (`experimental.trustHostHeader:
+    # false`, confirmed by reading the literal compiled config out of
+    # `server.js`, not assumed), that resolves from the server's own bind
+    # `HOSTNAME`/`PORT` — which must be `0.0.0.0:8080` for Docker's own
+    # port-publishing to reach it at all — never from the incoming
+    # `Host`/`X-Forwarded-Host` header. A browser's `Origin` can never
+    # equal that string through any normal navigation (typing `localhost`
+    # or `127.0.0.1`, the only things a browser reliably treats as
+    # connectable), and no reverse proxy in front changes this either,
+    # since the check never reads anything a proxy could set. Confirmed by
+    # elimination, not just read off the source: navigating a second,
+    # differently-configured instance of this exact image straight to
+    # `http://0.0.0.0:<its own port>` (published on the host with the same
+    # internal/external port number, the one condition under which the
+    # strings could ever match) still failed — one step earlier, on cookie
+    # persistence for that literal hostname, before the origin check was
+    # even reached. **This is not specific to this showcase or to
+    # `compose.demo.yaml`'s own design** — it is a property of the
+    # packaged `admin` image itself (`output: "standalone"` plus the
+    # `next.config.ts` default), so `deploy/docker-compose.yml`'s own
+    # Caddy-fronted production stack is very likely affected identically;
+    # nothing about a proxy in front changes which header this check
+    # reads. `admin/next.config.ts` and `packages/api/src/context.ts` are
+    # both out of scope for this PR (see its own description), so this is
+    # reported rather than fixed here. `docs/runbooks/showcase.md`
+    # documents the workaround this PR's own verification used — a real
+    # `private_key_jwt` HTTP call with `provision-client`'s own credential
+    # — to still prove a message reaching `delivered`, confirmed in this
+    # same console's read-only Messages screen (GETs are unaffected; the
+    # check only runs `if (req.method !== "POST") return;`).
     environment:
       SMS_API_URL: http://sms-gateway:8080
       SMS_AUTH_ISSUER: http://sms-gateway:8080
