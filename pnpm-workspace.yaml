@@ -1,6 +1,7 @@
 packages:
   - "admin"
   - "packages/*"
+  - "sdks/node/*"
 
 # pnpm 11 blocks dependency postinstall scripts unless explicitly allowed here.
 # This is not optional polish: `pnpm run <script>` performs a deps-status check

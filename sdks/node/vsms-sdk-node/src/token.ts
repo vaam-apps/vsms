@@ -53,7 +53,14 @@ export class PrivateKeyJwtTokenStore implements TokenStore {
     this.#issuer = options.issuer.replace(/\/+$/, "");
     this.#tokenEndpoint = `${this.#issuer}/token`;
     this.#clientId = options.clientId;
-    this.#scope = options.scope ?? "sms:send sms:read";
+    const rawScope = options.scope ?? "sms:send sms:read";
+    const trimmedScope = rawScope.trim();
+    if (trimmedScope.length === 0) {
+      throw new SdkError(
+        "scope cannot be empty (must request explicit permissions, e.g. 'sms:send sms:read')",
+      );
+    }
+    this.#scope = trimmedScope;
     this.#audience = options.audience ?? "token_endpoint";
 
     this.#signingKeyPromise = (async () => {

@@ -130,7 +130,7 @@ Worth knowing so it isn't rebuilt. None of this appears complete in the mileston
 - **Backup and restore** — `deploy/backup.sh`, `restore.sh`, and a real `restore-drill.sh` (#69, the one M6 story already closed).
 - **A working demo** — `just demo` brings up Postgres, a signing key, a provisioned client, a fake Orange, the gateway, the worker and the console, and a message reaches `delivered`.
 - **A GHCR-only showcase** — `compose.demo.yaml` runs the same shape of demo from published images alone (no `cargo build`, no host binaries), with a `console` Compose profile keeping the admin console optional per R4. See that file's own header for how it differs from `compose.yml` and `deploy/docker-compose.yml`.
-- **Integration surface** — `sdks/rust/vsms-sdk-rust`, a generated TypeScript client, and runnable Rust/Node examples including a webhook receiver.
+- **Integration surface** — `sdks/rust/vsms-sdk-rust`, `@vsms/sdk` (`sdks/node/vsms-sdk-node`), a generated TypeScript client, and runnable Rust/Node examples including a webhook receiver.
 - **CI that actually gates** — the live-Postgres suites run on every PR (they were silently skipped until #118), plus `cargo deny`, R1/R2 rule checks, three-machine state-machine parity, and browserless mermaid parsing.
 
 ---
