@@ -1,14 +1,18 @@
 # §9.2's deployment shape: Docker Compose on one VM, Caddy terminating TLS
 # in front of sms-gateway and admin, Postgres as the only coordination
-# mechanism, sms-worker running the singleton + scale-to-N roles. Run from
-# this directory: `docker compose --env-file .env up -d --build`.
+# mechanism, sms-worker running the singleton + scale-to-N roles.
 #
-# Not built here, deliberately (see the brief this PR was scoped against):
-# a `provision-client` step to mint the admin console's own OAuth client
-# and private key, and a `fake-orange` profile for a demo without real
-# Orange credentials. Both are landing in parallel elsewhere — see
-# docs/runbooks/deployment.md's own "known seams" section for where they
-# plug in.
+# `docker compose --env-file .env up -d --build` brings up the backend
+# only: postgres, migrate, sms-gateway, sms-worker (plus backup and
+# prometheus, both unconditional — R4: a backend-only deployment must
+# stay observable). `admin` and `caddy` both carry `profiles: [console]`
+# (CONTRIBUTING.md's R4 — "the admin console is optional, the backend
+# must run without it") — add `--profile console` (or
+# `COMPOSE_PROFILES=console`) to bring them up too. See
+# docs/runbooks/deployment.md's own "Backend-only deployment" section for
+# what a console-off run looks like end to end, and `admin`'s/`caddy`'s
+# own comments below for exactly what each needs only once that profile
+# is active.
 #
 # postgres's own port is intentionally never published to the host: every
 # other service reaches it over this compose network's internal DNS
@@ -188,38 +192,66 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # R4 (CONTRIBUTING.md): the admin console is optional, and a bare
+  # `docker compose up` must bring up a working gateway + worker + migrate
+  # with it switched off — not started-then-idle, not present-but-
+  # unconfigured. `profiles: [console]` below is what actually gates it;
+  # `docker compose --env-file .env --profile console up -d` (or
+  # `COMPOSE_PROFILES=console`) is what turns it back on. See
+  # docs/runbooks/deployment.md's own "Backend-only deployment" section.
+  #
+  # Every console-only var below moved from `:?` (hard required) to `:-`
+  # (optional, defaults to empty) for a reason that isn't obvious from a
+  # profile alone: Compose interpolates every service's `environment:`
+  # block up front, while parsing the file, before it ever decides which
+  # services the active profile set actually includes — confirmed live,
+  # not assumed (`docker compose config` with `admin` still on `:?` and no
+  # `--profile console` failed on `ADMIN_BASE_URL` even though `admin`
+  # would never have been started). A `:?` here would fail *every*
+  # `docker compose up`, console on or off, the moment the var is unset —
+  # exactly the violation this PR closes. The application itself still
+  # fails loudly on a genuine misconfiguration once it actually starts:
+  # `@vsms/env`'s own zod validation refuses to boot without a real
+  # `ADMIN_BASE_URL`/`SMS_CONSOLE_SESSION_SECRET`/`SMS_CONSOLE_CLIENT_ID`,
+  # so the fail-loud property survives, just moved from "at `docker
+  # compose up` for the whole stack" to "at container start for this one
+  # service" — the correct scope once the service itself is opt-in.
   admin:
     build:
       context: ..
       dockerfile: admin/Dockerfile
     restart: unless-stopped
+    profiles: [console]
     environment:
       # #194 replaced the DASHBOARD_AUTH Basic gate with a real
       # authorization_code + PKCE login. It was a hard cutover, not a
       # parallel path, so those three vars are gone entirely rather than
-      # optional — and these three are required in their place, with no
-      # defaults in @vsms/env. ADMIN_BASE_URL must be the public origin a
-      # browser actually reaches this console at: the redirect_uri
-      # registered by `sms-gateway seed-console-client` is compared as a
-      # whole string (RFC 6749 3.1.2), not by prefix, so an internal or
-      # loopback address here silently breaks every login.
-      ADMIN_BASE_URL: ${ADMIN_BASE_URL:?set to the public console origin, e.g. https://console.example.com}
+      # optional. ADMIN_BASE_URL must be the public origin a browser
+      # actually reaches this console at: the redirect_uri registered by
+      # `sms-gateway seed-console-client` is compared as a whole string
+      # (RFC 6749 3.1.2), not by prefix, so an internal or loopback
+      # address here silently breaks every login.
+      ADMIN_BASE_URL: ${ADMIN_BASE_URL:-}
       SMS_CONSOLE_OIDC_CLIENT_ID: ${SMS_CONSOLE_OIDC_CLIENT_ID:-sms-console}
-      SMS_CONSOLE_SESSION_SECRET: ${SMS_CONSOLE_SESSION_SECRET:?32+ chars of real entropy — openssl rand -hex 32}
+      SMS_CONSOLE_SESSION_SECRET: ${SMS_CONSOLE_SESSION_SECRET:-}
       # Plain http: the gateway is reached over this compose network's own
       # internal DNS, never the public internet — Caddy is the only thing
       # that terminates TLS (§9.2). @vsms/env's own cross-field rule
       # would otherwise demand the three mTLS cert paths below for an
       # https:// upstream, which don't exist in this deployment.
       SMS_API_URL: http://sms-gateway:8080
+      # SMS_OIDC_ISSUER is not console-only — sms-gateway itself requires
+      # it unconditionally (see that service's own `:?` above), so this
+      # reference is always safe to interpolate even though it's read a
+      # second time here.
       SMS_AUTH_ISSUER: ${SMS_OIDC_ISSUER:?}
-      # Provisioning seam: no `provisionAppClient` CLI path exists yet in
-      # this repo (landing in parallel — see this file's own header), so
-      # these two have no automated way to be filled in today. Fill them
-      # in by hand after a manual provisioning call — see
-      # docs/runbooks/deployment.md — and mount the resulting private key
-      # read-only rather than passing it as a plain env var.
-      SMS_CONSOLE_CLIENT_ID: ${SMS_CONSOLE_CLIENT_ID:?}
+      # `sms-gateway provision-client` (not a stub — see
+      # app/sms-gateway/src/main.rs's `Command::ProvisionClient`) mints
+      # this pair: `--client-id-out`/`--key-out` write the values these
+      # two vars need. See docs/runbooks/deployment.md's own console
+      # section for the exact invocation — the private key is mounted
+      # read-only below rather than passed through a plain env var.
+      SMS_CONSOLE_CLIENT_ID: ${SMS_CONSOLE_CLIENT_ID:-}
       SMS_CONSOLE_PRIVATE_KEY_PATH: /secrets/console-private-key.pem
       SMS_CONSOLE_SCOPE: ${SMS_CONSOLE_SCOPE:-sms:send sms:read job:read job:enqueue worker:read}
       MESSAGE_STREAM_POLL_MS: ${MESSAGE_STREAM_POLL_MS:-2000}
@@ -269,21 +301,49 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # R4: gated behind the same `console` profile as `admin`, not because
+  # this edge is console-specific in what it fronts (it also terminates
+  # TLS for sms-gateway's own domain) but because `deploy/Caddyfile` is
+  # one file with two unconditional site blocks — `{$SMS_GATEWAY_DOMAIN}`
+  # and `{$SMS_ADMIN_DOMAIN}` — and neither is owned by this PR (see its
+  # own header for why: it's a third-party-module build, out of scope
+  # here). There is no way to make only the second block optional without
+  # editing that file, and gating this whole service is the only change
+  # available that is both correct and doesn't touch it. A backend-only
+  # compose deployment therefore gets no bundled TLS edge for sms-gateway
+  # either — front it with your own reverse proxy/ingress, the same "BYO"
+  # posture deploy/charts/vsms/values.yaml already takes for
+  # `ingress.gateway` (disabled by default, operator's own opinion) — or
+  # enable this profile anyway and simply never start `admin` itself
+  # (`docker compose --profile console up -d sms-gateway sms-worker
+  # migrate caddy`), accepting `SMS_ADMIN_DOMAIN` as a real DNS record
+  # this deployment happens not to use.
+  #
+  # Not stock caddy:2-alpine — the Caddyfile uses `rate_limit` (#156),
+  # a third-party module absent from the official image, so Caddy would
+  # fail to parse its own config at startup and the edge would never come
+  # up. deploy/caddy.Dockerfile is an xcaddy build adding it, pinned to a
+  # specific upstream commit (no tagged release carries the `ipv6_prefix`
+  # option this config needs).
   caddy:
-    # Not stock caddy:2-alpine — the Caddyfile uses `rate_limit` (#156),
-    # a third-party module absent from the official image, so Caddy would
-    # fail to parse its own config at startup and the edge would never come
-    # up. deploy/caddy.Dockerfile is an xcaddy build adding it, pinned to a
-    # specific upstream commit (no tagged release carries the `ipv6_prefix`
-    # option this config needs).
     build:
       context: ..
       dockerfile: deploy/caddy.Dockerfile
     restart: unless-stopped
+    profiles: [console]
     environment:
-      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:?}
-      SMS_GATEWAY_DOMAIN: ${SMS_GATEWAY_DOMAIN:?}
-      SMS_ADMIN_DOMAIN: ${SMS_ADMIN_DOMAIN:?}
+      # Not console-only in what they configure, but only interpolated
+      # (and only load-bearing) when this service actually runs — see
+      # this service's own comment above for why they can't be `:?`
+      # regardless (Compose interpolates every service's environment
+      # up front, independent of the active profile set; a required var
+      # here would fail a bare `docker compose up` even with `caddy`
+      # never started). Caddy itself still fails loudly on an empty site
+      # address the moment `--profile console` is actually used without
+      # them set.
+      CADDY_ACME_EMAIL: ${CADDY_ACME_EMAIL:-}
+      SMS_GATEWAY_DOMAIN: ${SMS_GATEWAY_DOMAIN:-}
+      SMS_ADMIN_DOMAIN: ${SMS_ADMIN_DOMAIN:-}
     ports:
       # Not hardcoded 80/443: this machine may already have something
       # bound to those. Set to 80/443 in .env for a real deploy with a

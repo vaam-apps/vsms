@@ -12,20 +12,34 @@ under Law No. 2024/017) blocks that decision, not this runbook.
 
 ## Known seams — read this before you start
 
-Two things this deploy tree deliberately does not build, because they were
-landing in parallel elsewhere at the time this runbook was written:
+Both gaps this section used to name are closed, and this file was left
+saying otherwise for longer than it should have — the same "documentation
+asserts something the code does not do" shape `AGENTS.md` keeps
+rediscovering, found here while writing the backend-only section below:
 
-- **No `provision-client` CLI subcommand exists yet.** Nothing today can
-  mint an OAuth client + `private_key_jwt` keypair for the admin console
-  to authenticate with. Step 6 below works around that by hand, the same
-  way `crates/sms-api/examples/send_test_message.rs` already works around
-  the equivalent gap for a test `App`/`AppClient`.
-- **No `fake-orange` demo profile exists yet.** Every step below assumes
-  real Orange Cameroon `client_credentials` and a real, contracted sender
-  ID. There is no way to run this stack against a fake provider today.
-
-Both are expected to land as their own PRs; re-check this file's git log
-before repeating either workaround if you're reading this later.
+- **`sms-gateway provision-client` exists** (`app/sms-gateway/src/main.rs`,
+  `Command::ProvisionClient`) and mints a real, HTTP-usable
+  `private_key_jwt` client — step 6 below uses it directly rather than
+  hand-rolling a keypair and registering it against the schema. There is
+  still no CLI path to create the very first `App` a real production
+  deployment sends through: `App.create`'s own `@@allow` is
+  `hasRole('owner') || hasRole('admin')`, and nothing this deployment can
+  mint over HTTP carries either role until a human has logged into the
+  console at least once (#194) — a chicken-and-egg step §9.2 doesn't
+  automate, and `seed-demo-app` (below) is explicitly not a substitute
+  (see its own `--help` text: "demo-only... not part of any production
+  bootstrap sequence"). Track this the same way this file already tracks
+  the rate-limiting and secrets gaps below, rather than treating it as
+  solved.
+- **`app/sms-fake-orange` exists** as a real binary/image, and
+  `compose.demo.yaml` (repo root, not this file's own
+  `deploy/docker-compose.yml`) wires it in for a GHCR-only showcase — see
+  that file's own header for how it differs from this runbook's
+  production-shaped stack. `deploy/docker-compose.yml` itself still has no
+  `fake-orange` profile; every step below still assumes real Orange
+  Cameroon `client_credentials`, except the backend-only verification
+  section, which points `ORANGE_CM_BASE_URL` at a manually-run
+  `sms-fake-orange` container instead — see that section for exactly how.
 
 ## Prerequisites
 
@@ -242,31 +256,34 @@ check). Give both `--start-period` a few seconds before checking status.
 the signing key from step 3 and the `Provider` row from step 4 already
 exist, so neither startup dependency is missing this time.
 
-## 6. Provision the admin console's OAuth client (manual, until #139's seam lands)
+## 6. Provision the admin console's OAuth client
 
-No `provisionAppClient` CLI or admin-console flow exists yet. Generate a
-keypair by hand and register it the same way `provisionAppClient` would —
-directly against the schema, under a `system` context, matching the
-pattern `send_test_message.rs` already uses for its own fixtures:
+`sms-gateway provision-client` mints a real, HTTP-usable `private_key_jwt`
+client through the real `provisionAppClient` procedure — no more manual
+keypair/JWK hand-rolling. It needs an `App` for the console's client to
+act on behalf of; a real deployment's first `App` is a business decision
+(quota, IP allowlist, a `SenderId` actually approved by a real provider
+account) this runbook cannot make for you — create it once you have a way
+to (the console itself, once you can log into it with the account from
+step 4b, or a direct `psql`/generated-CRUD write under a bootstrapped
+`owner` context) and pass its id below as `--app-id`:
 
 ```bash
-mkdir -p secrets && chmod 700 secrets
-openssl genrsa -out secrets/console-private-key.pem 2048
-openssl rsa -in secrets/console-private-key.pem -pubout -out /tmp/console-public-key.pem
-chmod 600 secrets/console-private-key.pem
+docker compose --env-file .env run --rm sms-gateway provision-client \
+  --app-id <the App id> \
+  --label "admin console" \
+  --scope sms:send --scope sms:read \
+  --scope job:read --scope job:enqueue --scope worker:read \
+  --scope provider:read --scope route:read --scope dashboard:read \
+  --key-out secrets/console-private-key.pem \
+  --client-id-out /tmp/console-client-id
 ```
 
-Registering the resulting public key as an `OauthClient` with
-`tokenEndpointAuthMethod = 'private_key_jwt'` needs a JWK, not a PEM —
-building that by hand is exactly the kind of step `provisionAppClient`
-(#111) exists to automate on the machine-caller side, and the admin
-console's own provisioning flow is M4. Until either lands, this is a real
-manual gap: track it, don't paper over it with a shortcut that skips
-`private_key_jwt` (there is no shared-secret fallback in this schema on
-purpose — see `AGENTS.md` on `tokenEndpointAuthMethod` having no
-`@default`).
-
-Set `SMS_CONSOLE_CLIENT_ID` in `.env` once the client is registered.
+`--key-out` writes the private key exactly once, `0600`, and refuses to
+overwrite an existing file (`ProvisionClientResult::privateKeyPem` is
+returned exactly once and never stored anywhere else — #23/#111). Set
+`SMS_CONSOLE_CLIENT_ID` in `.env` to the value `--client-id-out` wrote
+(or that the command printed as `provisioned client: <id>`).
 
 ## 7. Bring up admin and Caddy
 
@@ -291,17 +308,15 @@ admin domains have to stay two separate origins rather than one
 path-routed domain (the OIDC discovery document's URLs are only
 well-defined at an origin root).
 
-**As of #156, `deploy/Caddyfile` uses `rate_limit`, a third-party module
-the stock `caddy:2-alpine` image does not carry** — `deploy/docker-compose.yml`'s
-`caddy` service still points `image:` at that stock image (that edit was
-deliberately left out of #156 — see `deploy/caddy.Dockerfile`'s own
-header for why and for the exact one-line change it needs). Until
-`docker-compose.yml` is updated to `build:` from `deploy/caddy.Dockerfile`
-instead, `docker compose up -d --build admin caddy` brings up a `caddy`
-that fails to start (`Caddyfile:NN - Error during parsing: unrecognized
-directive: rate_limit`, since the stock binary has no `http.handlers.rate_limit`
-module) rather than silently running unlimited — a fail-loud gap, not a
-silent one, but real until that compose edit lands.
+**`deploy/Caddyfile` uses `rate_limit`, a third-party module the stock
+`caddy:2-alpine` image does not carry** — `deploy/docker-compose.yml`'s
+`caddy` service `build`s from `deploy/caddy.Dockerfile` (an xcaddy build
+adding it) for exactly that reason, not the stock image. An earlier
+revision of this paragraph said the compose edit to pick that Dockerfile
+up was still outstanding; that edit landed and this paragraph was simply
+never corrected to match — found while writing this file's own
+"Backend-only deployment" section below, the same "documentation asserts
+something the code does not do" shape `AGENTS.md` keeps rediscovering.
 
 ## 8. Verify
 
@@ -317,6 +332,155 @@ five containers, real health checks, a real Caddy TLS hop in front of
 both origins — was run end to end against a throwaway config while
 building this PR, using `tls internal` in place of real DNS; see the PR
 description for what specifically was and wasn't verified.
+
+## Backend-only deployment (R4, `CONTRIBUTING.md`)
+
+**"Some deployments will ship the backends only, with no admin surface at
+all. That is a supported configuration, not a degraded one."** Both
+`admin` and `caddy` carry `profiles: [console]` in
+`deploy/docker-compose.yml` — a bare `docker compose --env-file .env up
+-d` brings up `postgres`, `migrate`, `sms-gateway`, `sms-worker`, `backup`
+and `prometheus` (the last two unconditional: R4's own fourth clause,
+"a backend-only deployment must still be observable and operable," and
+neither is console-specific) and nothing console-shaped at all — not
+`admin`, not the bundled Caddy edge. Add `--profile console` (or
+`COMPOSE_PROFILES=console`) to bring both back.
+
+**Why `caddy` is gated too, not just `admin`.** `deploy/Caddyfile` is one
+file with two unconditional site blocks, `{$SMS_GATEWAY_DOMAIN}` and
+`{$SMS_ADMIN_DOMAIN}` — see that file's own header for the reason two
+domains exist at all (an OIDC issuer's discovery document is only
+well-defined at an origin root, so path-routing one domain to both
+services isn't an option). There is no way to make only the second block
+optional without editing that file, which is a third-party-module build
+out of scope here. A backend-only compose deployment therefore has no
+bundled TLS edge for `sms-gateway` either — front it with your own
+reverse proxy/ingress, the same "operator's own opinion" posture
+`deploy/charts/vsms/values.yaml` already takes for `ingress.gateway`
+(disabled by default), or enable `--profile console` anyway and simply
+never start `admin` itself.
+
+**A `:?`-required env var interpolates for every service in the file,
+independent of which profile is active or which services you actually
+ask to start** — confirmed live, not assumed (`docker compose config`
+failed on `ADMIN_BASE_URL` with `admin` excluded by every measure
+available: no `--profile console`, not named on the command line). Every
+console-only var in `admin`'s and `caddy`'s own `environment:` blocks
+moved from `:?` to `:-` for exactly this reason; the fail-loud property
+survives at the point that actually matters instead — `@vsms/env`'s zod
+validation refuses to boot `admin` without a real `ADMIN_BASE_URL` etc.,
+and Caddy refuses to serve an empty site address once `--profile console`
+is actually used without `SMS_GATEWAY_DOMAIN`/`SMS_ADMIN_DOMAIN` set.
+
+### What was actually run, not just rendered
+
+`helm template --set admin.enabled=false` (with every other value the
+chart requires unconditionally, and *no* console-only value) renders
+exactly `Service vsms-gateway`, `Deployment vsms-gateway`/`vsms-worker`,
+and the three bootstrap `Job`s — no `admin` `Deployment`/`Service`
+anywhere. `admin.enabled=true` with the same input set fails immediately,
+naming `admin.baseUrl is required`. Both confirmed by rendering, not
+inferred from the chart's own logic.
+
+The compose half was run against a real stack — a fresh `deploy/.env`
+with every var this file marks required *except* every console-only one
+(`ADMIN_BASE_URL`, `SMS_CONSOLE_SESSION_SECRET`, `SMS_CONSOLE_CLIENT_ID`,
+`CADDY_ACME_EMAIL`, `SMS_GATEWAY_DOMAIN`, `SMS_ADMIN_DOMAIN` all absent),
+`ORANGE_CM_BASE_URL` pointed at a manually-run `sms-fake-orange` container
+on the compose network (no `fake-orange` profile exists in this file yet
+— see "Known seams" above) rather than a real Orange account, since this
+section's job is proving R4, not re-proving `36-handset-gate.md`:
+
+```
+$ docker compose --env-file .env config --services
+postgres
+migrate
+backup
+sms-worker
+sms-gateway
+prometheus
+```
+
+No `admin`, no `caddy` — and this rendered with `ADMIN_BASE_URL` etc. all
+unset, which is the property that matters (a `:?` anywhere in the file
+would have failed this same command). `postgres`, `migrate`,
+`sms-gateway`, `sms-worker` were then brought up for real
+(`docker compose up -d`, plus the one-shot `rotate-signing-key` and
+`seed-dispatch` steps 3/4 above already cover) — both reported `healthy`.
+
+Provisioning and sending went entirely through `sms-gateway`'s own CLI and
+the real HTTP API, never a browser:
+
+```
+$ docker compose run --rm sms-gateway seed-demo-app
+created App c0860e5f0ec7a547a3b7877 (slug="vsms-demo")
+created SenderId "VSMS" (cd1271a3eada748335198b4)
+registered SenderId "VSMS" as approved (provider=c7f86a470ccbb1767495d66)
+activated SenderId "VSMS"
+demo App/SenderId fixtures ready (slug="vsms-demo", sender="VSMS")
+
+$ docker compose run --rm sms-gateway provision-client \
+    --app-slug vsms-demo --label "backend-only R4 proof" \
+    --scope sms:send --scope sms:read \
+    --key-out secrets/backend-only-client-key.pem \
+    --client-id-out secrets/backend-only-client-id
+provisioned client: appc_b2604bf02dab4e729a7ee4e7a08e2571
+private key written to: secrets/backend-only-client-key.pem
+client id written to: secrets/backend-only-client-id
+
+$ examples/rust/sms-send --issuer http://sms-gateway:8080 \
+    --client-id appc_b2604bf02dab4e729a7ee4e7a08e2571 \
+    --private-key-path secrets/backend-only-client-key.pem \
+    --scope "sms:send sms:read" \
+    --to +237677123456 --sender-id VSMS \
+    --body "R4 backend-only proof: no console anywhere"
+
+sent: messageId=c0d35cb260e5732220b99bc state=accepted encoding=gsm7 segments=1 operator=mtn estimatedCostXaf=0
+read back: id=c0d35cb260e5732220b99bc state=accepted providerMessageRef=None
+```
+
+`examples/rust/sms-send` does the real `private_key_jwt` token exchange
+(RFC 7523 §3) and the real `sendMessage` call over HTTP — the same code
+path a genuine third-party backend integration uses, not an in-process
+shortcut. The message reached `delivered` a few seconds later, confirmed
+three independent ways rather than trusted off one:
+
+```
+$ docker exec vsms-postgres-1 psql -U vsms -d vsms -tAc \
+    "select id, state, operator, provider_message_ref from messages where id='c0d35cb260e5732220b99bc';"
+c0d35cb260e5732220b99bc|delivered|mtn|res-c0d35cb260e5732220b99bc
+
+$ docker logs sms-fake-orange | grep c0d35cb260e5732220b99bc
+... fake orange: submit received reference="c0d35cb260e5732220b99bc" outcome=Accepted ...
+... fake orange: DLR posted endpoint="http://sms-gateway:8080/dlr/orange_cm" reference="c0d35cb260e5732220b99bc" status=DeliveredToTerminal http_status=202
+
+$ docker logs vsms-sms-gateway-1 | grep c0d35cb260e5732220b99bc
+... message accepted message_id=c0d35cb260e5732220b99bc app_id=c0860e5f0ec7a547a3b7877 ... state=accepted
+... DLR applied message_id=c0d35cb260e5732220b99bc from_state=submitted to_state=delivered provider_ref=c0d35cb260e5732220b99bc
+```
+
+`docker ps` at the end of this run showed exactly `vsms-postgres-1`,
+`vsms-sms-gateway-1`, `vsms-sms-worker-1`, and the manually-run
+`sms-fake-orange` stand-in — no `admin`, no `caddy`, anywhere on the
+host.
+
+**Every operator action this proof needed had a CLI subcommand — nothing
+required a browser.** `rotate-signing-key`, `seed-dispatch`,
+`seed-demo-app`, `provision-client`: all four are plain `sms-gateway`
+subcommands. The one real gap, not hit by this proof but worth recording
+here rather than only in "Known seams" above: **a real production
+deployment's first `App` still has no CLI path.** `seed-demo-app` (used
+above) is explicitly demo-only by its own `--help` text; the only other
+route to `App.create` is a human token from a console login (#194), which
+a genuinely backend-only deployment has no console to obtain from. Either
+this needs a real `create-app`-shaped subcommand, or the very first `App`
+has to be written by hand (`psql`, or the generated REST route under a
+manually-bootstrapped `owner` context) the same way the very first `owner`
+`User` already is (step 4b above). Filing this precisely rather than
+declaring R4 fully closed: the *deployment* layer's own gap (#233) is
+closed by this PR; this is a distinct, narrower gap one layer up, in
+what a backend-only *operator* can bootstrap without ever touching a
+browser.
 
 ## Rate limiting (#156) — what was actually proven, against a real stack
 
