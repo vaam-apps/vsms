@@ -49,6 +49,12 @@ export class VsmsClient {
     this.#tokenStore = options.tokenStore;
   }
 
+  /**
+   * Convenience factory: constructs a VsmsClient using private_key_jwt authentication.
+   *
+   * Note: in this deployment, the OP issuer and API origin are the same host (sms-gateway
+   * mounts both /token and the REST router on the same listener), so baseUrl defaults to issuer.
+   */
   static privateKeyJwt(options: PrivateKeyJwtClientOptions): VsmsClient {
     const tokenStore = new PrivateKeyJwtTokenStore(
       {
@@ -69,6 +75,17 @@ export class VsmsClient {
     return this.#tokenStore;
   }
 
+  #parseJsonOrThrow<T>(text: string, status: number, method: string): T {
+    try {
+      return JSON.parse(text) as T;
+    } catch (err) {
+      throw new SdkError(`failed to parse ${method} response as JSON: ${text}`, {
+        cause: err,
+        httpStatus: status,
+      });
+    }
+  }
+
   /**
    * Helper that calls an authenticated endpoint, with automatic bounded 401 retry.
    */
@@ -82,10 +99,14 @@ export class VsmsClient {
       if (!headers.has("accept")) {
         headers.set("accept", "application/json");
       }
-      return await fetch(url, {
-        ...init,
-        headers,
-      });
+      try {
+        return await fetch(url, {
+          ...init,
+          headers,
+        });
+      } catch (err) {
+        throw new SdkError(`request to ${url} failed: network error`, { cause: err });
+      }
     };
 
     let res = await makeRequest();
@@ -142,15 +163,7 @@ export class VsmsClient {
       );
     }
 
-    let result: SendMessageResult;
-    try {
-      result = JSON.parse(text) as SendMessageResult;
-    } catch (err) {
-      throw new SdkError("failed to parse sendMessage response as JSON", {
-        cause: err,
-        httpStatus: response.status,
-      });
-    }
+    const result = this.#parseJsonOrThrow<SendMessageResult>(text, response.status, "sendMessage");
 
     return {
       result,
@@ -188,7 +201,7 @@ export class VsmsClient {
       );
     }
 
-    return JSON.parse(text) as PreviewResult;
+    return this.#parseJsonOrThrow<PreviewResult>(text, response.status, "previewMessage");
   }
 
   /**
@@ -219,6 +232,6 @@ export class VsmsClient {
       );
     }
 
-    return JSON.parse(text) as Message;
+    return this.#parseJsonOrThrow<Message>(text, response.status, `GET /messages/${id}`);
   }
 }

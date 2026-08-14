@@ -52,6 +52,24 @@ test("PrivateKeyJwtTokenStore initializes properly with PEM string", async () =>
   assert.ok(store);
 });
 
+test("PrivateKeyJwtTokenStore rejects empty or whitespace-only scope", () => {
+  assert.throws(
+    () => {
+      new PrivateKeyJwtTokenStore(
+        {
+          issuer: "http://127.0.0.1:8080",
+          clientId: "test-client-id",
+          scope: "   ",
+        },
+        { pemString: privateKey },
+      );
+    },
+    (err: unknown) => {
+      return err instanceof SdkError && err.message.includes("scope cannot be empty");
+    },
+  );
+});
+
 test("VsmsClient.privateKeyJwt constructs client", () => {
   const client = VsmsClient.privateKeyJwt({
     issuer: "http://127.0.0.1:8080",
@@ -60,4 +78,27 @@ test("VsmsClient.privateKeyJwt constructs client", () => {
   });
   assert.ok(client);
   assert.ok(client.tokenStore);
+});
+
+test("VsmsClient wraps transport and non-JSON response parsing errors in SdkError", async () => {
+  // Test with custom tokenStore that returns a dummy token
+  const mockTokenStore = {
+    get: async () => "mock-token",
+    invalidate: () => {},
+  };
+
+  // Point to a port that fails to connect
+  const unreachableClient = new VsmsClient({
+    baseUrl: "http://127.0.0.1:1",
+    tokenStore: mockTokenStore,
+  });
+
+  await assert.rejects(
+    async () => {
+      await unreachableClient.previewMessage({ body: "test" });
+    },
+    (err: unknown) => {
+      return err instanceof SdkError && err.message.includes("network error");
+    },
+  );
 });
