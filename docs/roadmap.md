@@ -127,7 +127,7 @@ Three earlier decisions are settled and recorded: [#3](https://github.com/vymalo
 Worth knowing so it isn't rebuilt. None of this appears complete in the milestone counts, because it was infrastructure rather than a numbered story:
 
 - **Deployment** — `deploy/` carries a Caddy-edge compose stack, a Helm chart, musl/distroless images for both binaries, an advisory-lock-guarded migrate job (`app/sms-migrate`), and a GHCR release workflow.
-- **Backup and restore** — `deploy/backup.sh`, `restore.sh`, and a real `restore-drill.sh` (#69, the one M6 story already closed).
+- **Backup and restore** — `deploy/backup-tool` (`vsms-backup backup`/`restore`/`restore-drill`, a Rust rewrite of the original shell scripts) and a real restore drill (#69, the one M6 story already closed).
 - **A working demo** — `just demo` brings up Postgres, a signing key, a provisioned client, a fake Orange, the gateway, the worker and the console, and a message reaches `delivered`.
 - **A GHCR-only showcase** — `compose.demo.yaml` runs the same shape of demo from published images alone (no `cargo build`, no host binaries), with a `console` Compose profile keeping the admin console optional per R4. See that file's own header for how it differs from `compose.yml` and `deploy/docker-compose.yml`.
 - **Integration surface** — `sdks/rust/vsms-sdk-rust`, `@vsms/sdk` (`sdks/node/vsms-sdk-node`), a generated TypeScript client, and runnable Rust/Node examples including a webhook receiver.

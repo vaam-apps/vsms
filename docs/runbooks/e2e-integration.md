@@ -6,50 +6,57 @@ console's own composer reaches `delivered`, and
 [#149](https://github.com/vymalo/vsms/issues/149) proved a third-party Rust backend can
 complete a `private_key_jwt` exchange over real HTTP and send. Neither proved the thing a
 customer actually cares about: **an external client sends, and an operator sees that exact
-message in the dashboard reaching `delivered`.** This runbook is that observation, and
-`scripts/e2e-integration.sh` is the one command that reproduces it.
+message in the dashboard reaching `delivered`.** This runbook is that observation.
 
 ```bash
 just e2e-integration
-# or directly:
-./scripts/e2e-integration.sh
 ```
 
-It is self-contained and safely rerunnable — it tears down and rebuilds the demo stack
-itself (`scripts/demo.sh down` then `up`) before every run, so running it twice in a row
-with no manual cleanup in between is the normal way to use it, not a special "cold reset"
-mode. It exits non-zero at the first broken link, naming the step.
+**Rewritten as part of the `containerize-tooling` PR** — `scripts/e2e-integration.sh` (bash,
+`openssl dgst -sign`, `curl`, `jq`) is gone, replaced by [`ci/e2e-integration`](../../ci/e2e-integration),
+a small Rust binary reusing `vsms-sdk-rust`'s own `private_key_jwt` token exchange rather
+than hand-signing RFC 7523 assertions in shell a second time. `just e2e-integration` is
+self-contained and safely rerunnable — it brings up `compose.dev.yaml` fresh (`just demo`,
+which itself wipes and recreates every named volume) before every run, so running it twice
+in a row with no manual cleanup in between is the normal way to use it, not a special
+"cold reset" mode. It exits non-zero at the first broken link, naming the step.
 
 ## What it does
 
-1. **Brings the stack up** via `scripts/demo.sh` (reused, not reimplemented) — a scratch
-   Postgres, `sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs`), `sms-fake-orange`,
-   and the admin console, plus one `App` and a "demo console" `AppClient`.
+1. **Brings the stack up** via `just demo` — every service as a container built from this
+   checkout's own source (`compose.dev.yaml`), including a scratch Postgres,
+   `sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs`), `sms-fake-orange`, and the
+   admin console, plus one `App` (`vsms-demo`) and a "demo console" `AppClient`.
 2. **Provisions a SECOND, independent `AppClient`** — "external integrator" — against
-   that same `App`, via `sms-gateway provision-client`. Two real credentials: different
-   `clientId`, different RSA keypair, each provisioned separately. See "Why the same
-   `App`" below for why this is the right design, not a shortcut.
-3. **Sends as the integrator, over real HTTP**, via `examples/rust/sms-send` — its own
-   `private_key_jwt` exchange at `POST /token`, then `POST /$procs/sendMessage` with the
-   resulting Bearer token. A `--client-ref` unique to the run is attached so the later
-   assertion matches *the* message, not *a* message (#160's own acceptance criterion 5).
-4. **Mints a third, independent access token** — the console's own credential, read
-   straight from `admin/.env.local` (`SMS_CONSOLE_CLIENT_ID` /
-   `SMS_CONSOLE_PRIVATE_KEY_PATH`), the exact identity the admin console's Next.js server
-   holds. The script hand-signs the RFC 7523 assertion with `openssl dgst -sign` rather
-   than pulling in a JWT library — this repo's shell scripts are bash-only by convention,
-   and the scheme is a direct, field-for-field mirror of
-   `packages/gateway/src/token.ts`'s own `mintAssertion` (same claims, same 60s TTL).
+   that same `App`, via `docker compose run --rm sms-gateway provision-client`. Two real
+   credentials: different `clientId`, different RSA keypair, each provisioned separately.
+   See "Why the same `App`" below for why this is the right design, not a shortcut.
+3. **Sends as the integrator, over real HTTP**, via `ci/e2e-integration` — its own
+   `private_key_jwt` exchange at `POST /token` (through `vsms-sdk-rust`'s
+   `PrivateKeyJwtTokenStore`), then `POST /$procs/sendMessage` with the resulting Bearer
+   token. A `--client-ref` unique to the run is attached so the later assertion matches
+   *the* message, not *a* message (#160's own acceptance criterion 5). Runs *inside*
+   `compose.dev.yaml`'s own Compose network, reaching `sms-gateway` at its internal DNS
+   name — see that tool's own module doc for why it can't run as a bare host process
+   against this specific stack (a real, live-verified limitation, not an assumption:
+   `sms-gateway`'s configured OIDC issuer has to be the internal Compose DNS name for the
+   admin console's own login flow to work at all, and a `private_key_jwt` client assertion's
+   audience has to match that exact issuer — a host process can only ever *connect* to the
+   host-published port, and `vsms-sdk-rust`'s `base_url`/`issuer` split turned out not to
+   decouple those two the way its own doc comment claims; see the tool's module doc for the
+   live 401 that proved it).
+4. **Builds a second, independent client** — the console's own credential, extracted from
+   the same Compose stack via `docker compose cp` (its long-lived `provision-client`
+   container, still present after `up`, unlike the integrator's `run --rm` one) — the exact
+   identity the admin console's Next.js server holds.
 5. **Polls `GET /messages/{id}` as the console**, once a second, until that exact id
    reaches `delivered` (or a terminal non-delivered state, or a 60s timeout — either
-   fails the script loudly). This is the same route
+   fails the tool loudly). This is the same route
    `packages/gateway/src/messages.ts`'s `getMessageById` calls — not a database query.
    Every poll also asserts the returned `appId` matches the App both clients share.
 
-The script prints the exact message id, the App id, both client ids, the observed state
-progression, and a direct browser link
-(`http://127.0.0.1:3100/messages?clientRef=<the run's clientRef>`) for manual/visual
-confirmation.
+The tool prints the exact message id, the App id, both client ids, and the observed state
+progression.
 
 ## Why the same `App` for both clients, not two
 
@@ -102,46 +109,38 @@ readiness**. [`36-handset-gate.md`](36-handset-gate.md) — a real Orange accoun
 real phone, run by a human — remains the actual carrier gate and is untouched by this
 runbook.
 
-## Evidence — two full runs, both clean, both from `scripts/e2e-integration.sh`'s own
-teardown-then-rebuild (no manual cleanup between them)
+## Evidence — the `containerize-tooling` rewrite
 
-**Run 1** — message id `c0a36ef1418ecda823639f5`, `clientRef=e2e-1786259725-aa11c2a6`:
+**The bash-era evidence this section used to report is superseded, not repeated** — the
+mechanism changed (a Rust tool running in-network instead of a shell script hand-signing
+JWTs), so it needed re-proving, not just re-describing. Two full runs, both clean, both via
+`just e2e-integration` (which itself tears down and rebuilds `compose.dev.yaml` before each):
 
-```
-    [09:15:26] state=accepted
-    [09:15:27] state=queued
-    [09:15:28] state=submitted
-    [09:15:30] state=delivered
-```
-
-Confirmed in a real browser (Chrome, via the console at
-`http://127.0.0.1:3100/messages?clientRef=e2e-1786259725-aa11c2a6`) — the rendered table
-showed exactly one row: status **Delivered**, recipient `+237 6 77 00 02 22` (MTN), client
-ref `e2e-1786259725-aa11c2a6`, sender `VYMALO`, id `c0a36ef` (the `IdDisplay` component's
-first-7-chars table view — matches the full id's own prefix). Screenshot captured during
-this session.
-
-**Run 2** (immediately after Run 1, no manual `demo.sh down` run by hand — the script's
-own `down` did it) — message id `c0aefd45f57b147545eb4d8`,
-`clientRef=e2e-1786259847-95a08151`:
+**Run 1** — message id `c49cd97618d8af7447270ef`, `clientRef=e2e-1786719471`:
 
 ```
-    [09:17:28] state=queued
-    [09:17:29] state=submitted
-    [09:17:31] state=delivered
+    [14:57:51] state=accepted
+    [14:57:52] state=queued
+    [14:57:53] state=submitted
+    [14:57:55] state=delivered
 ```
 
-(`accepted` was already past by the first poll this run — the claim/dispatch loop had
-already advanced it in the ~1s between the read-back inside `sms-send` and this script's
-first poll; the state machine invariant this script actually asserts, "no terminal
-non-`delivered` state, no timeout," held regardless.) Also confirmed in a real browser at
-`http://127.0.0.1:3100/messages?clientRef=e2e-1786259847-95a08151` — one row, status
-**Delivered**, id `c0aefd4`, matching the full id's prefix.
+**Run 2** (immediately after Run 1, `just e2e-integration`'s own `just demo` prerequisite
+did the teardown-and-rebuild, no manual cleanup) — message id `cfae30185525385c9e40056`,
+`clientRef=e2e-1786719791`:
+
+```
+    [15:03:11] state=accepted
+    [15:03:12] state=queued
+    [15:03:13] state=submitted
+    [15:03:15] state=delivered
+```
 
 Both runs: `appId` on every poll response matched the App both the console and integrator
 clients were provisioned against, and neither run ever saw a `404` from
 `GET /messages/{id}` under the console's credential — i.e., same-tenant, cross-client
-visibility held in both passes, not just once.
+visibility held in both passes, not just once. Both ended `PASSED`, printing the full
+`accepted -> queued -> submitted -> delivered` progression.
 
 ## What was not verified
 
@@ -149,6 +148,11 @@ visibility held in both passes, not just once.
   — [`36-handset-gate.md`](36-handset-gate.md)'s own scope, unaffected by this work.
 - Cross-`App` (cross-tenant) visibility under a genuine human-login role — that role does
   not exist in this deployment yet (see "Why the same `App`" above).
-- Concurrent runs of this script on one machine — like `scripts/demo.sh` itself, the
-  Postgres container name and ports are fixed and global; don't run two copies of this
-  scenario against each other on the same host.
+- Concurrent runs of `just e2e-integration` on one machine — like `just demo` itself, the
+  Compose project name and ports are fixed; don't run two copies of this scenario against
+  each other on the same host.
+- A real browser confirmation via the console UI (the bash-era version of this doc reported
+  one) — not re-run this time, since the underlying claim (`GET /messages/{id}` returning
+  the right row under the console's credential) is exactly what `ci/e2e-integration`'s own
+  poll loop already asserts programmatically on every run; the console UI reads the same
+  route.

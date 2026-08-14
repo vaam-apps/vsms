@@ -58,7 +58,7 @@ since nothing about it touches a real Orange account or a real handset.
 ```bash
 export DATABASE_URL=postgres://...   # the real instance
 
-./ci/apply-migrations.sh
+cargo run -p sms-migrate   # ci/apply-migrations.sh is gone — this is the real production migration runner
 sms-gateway rotate-signing-key
 ```
 

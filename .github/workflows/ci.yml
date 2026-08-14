@@ -29,19 +29,25 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      # Needed for the "Bootstrap SQL matches the design doc" step below —
-      # `cargo xtask bootstrap-sql-check` replaced the old
-      # `python3 ci/gen-bootstrap-sql.py ... && diff -u ...` pair (the
-      # maintainer's standing "no bash/Python scripts — xtask + Docker"
-      # direction). This job otherwise never needed a Rust toolchain.
+      # Needed for two steps below: "Apply migrations" (`cargo run -p
+      # sms-migrate`, replacing the deleted `ci/apply-migrations.sh` —
+      # containerize-tooling PR, the maintainer's standing "no bash
+      # scripts — xtask + Docker" direction reaching this job too) and
+      # "Bootstrap SQL matches the design doc" (`cargo xtask
+      # bootstrap-sql-check`, which replaced the old
+      # `python3 ci/gen-bootstrap-sql.py ... && diff -u ...` pair earlier).
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Install psql
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
-      # Milestone 0's gate: a fresh database, every migration in order, no errors.
+      # Milestone 0's gate: a fresh database, every migration in order, no
+      # errors. `app/sms-migrate` is the real production migration
+      # runner, not a CI-only stand-in — this job now proves the actual
+      # binary a deployment runs, not a parallel shell-script path that
+      # could silently drift from it.
       - name: Apply migrations
-        run: ./ci/apply-migrations.sh
+        run: cargo run -p sms-migrate
 
       # Legal transitions accepted, illegal ones raise SM001, terminal states
       # have no exits, timestamps auto-stamp, ids satisfy the Cuid guard,
@@ -181,9 +187,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      # sms-test-support shells out to `psql` to apply migrations (the same
-      # tool ci/apply-migrations.sh already uses) — not preinstalled on
-      # ubuntu-latest runners, same as the `migrations` job above.
+      # sms-test-support shells out to `psql` to apply migrations — not
+      # preinstalled on ubuntu-latest runners, same as the `migrations`
+      # job above (which no longer needs it for this specific purpose:
+      # its own "Apply migrations" step now runs `app/sms-migrate`
+      # directly — see that job's own comment — but still needs `psql`
+      # for the state-machine assertions step right after it).
       - name: Install psql
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 

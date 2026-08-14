@@ -1,9 +1,12 @@
 /target
-# `/target` above only anchors to the repo root — examples/rust/ and
-# sdks/rust/ are their own separate Cargo workspaces (see each one's own
-# Cargo.toml), so their build output needs its own entry.
+# `/target` above only anchors to the repo root — examples/rust/,
+# sdks/rust/, deploy/backup-tool/, and ci/e2e-integration/ are their own
+# separate Cargo workspaces (see each one's own Cargo.toml), so their
+# build output needs its own entry.
 /examples/rust/target
 /sdks/rust/target
+/deploy/backup-tool/target
+/ci/e2e-integration/target
 sdks/node/*/dist/
 **/*.rs.bk
 # Cargo.lock is committed. This workspace ships binaries (sms-api, sms-worker)
@@ -26,9 +29,12 @@ node_modules/
 /pgdata
 .next/
 .turbo/
-# scripts/demo.sh's own scratch state — pepper, provisioned key, pidfiles,
-# process logs. Never committed; regenerated fresh on every `just demo`.
-/.demo/
+# `just e2e-integration`'s own scratch state — the second, "external
+# integrator" client's private key/id, extracted from `compose.dev.yaml`'s
+# named secrets volume onto the host so `ci/e2e-integration` (running
+# in-network) and this recipe's own `docker compose cp` have somewhere to
+# put them. Never committed; regenerated fresh on every run.
+/.e2e/
 admin/public/sw*.js
 *.tsbuildinfo
 

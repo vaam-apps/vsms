@@ -110,10 +110,18 @@ migrations-current:
 routes:
 	{{_cargo}} run -p sms-gateway -- routes
 
-# Apply migrations to a scratch database, run the state-machine assertions, drop it
+# Apply migrations to a scratch database, run the state-machine assertions,
+# drop it. `ci/apply-migrations.sh` is gone (containerize-tooling PR) —
+# `app/sms-migrate` (already a real workspace member) is its direct Rust
+# replacement, run here the same way `cargo xtask migrations-current`
+# already runs other workspace tools directly rather than through a shell
+# wrapper. `createdb`/`dropdb`/`psql` themselves stay host-native CLI
+# calls against a reachable Postgres (`compose.yml`'s own, or a local
+# install) — a pre-existing pattern this recipe already used, not one of
+# the seven scripts that PR converted.
 schema-check:
 	createdb vsms_check
-	DATABASE_URL=postgres://localhost/vsms_check ./ci/apply-migrations.sh
+	DATABASE_URL=postgres://localhost/vsms_check {{_cargo}} run -q -p sms-migrate
 	psql postgres://localhost/vsms_check -v ON_ERROR_STOP=1 -f ci/test-state-machine.sql
 	dropdb vsms_check
 
@@ -155,34 +163,89 @@ client-check: client-gen
 	{{_cargo}} build -p sms-gateway
 	node ci/assert-client-routes-match-server.mjs
 
-# Bring up the full demo chain — scratch Postgres, sms-gateway, sms-worker
-# (dispatch,scheduler,jobs), sms-fake-orange, and the admin console, wired
-# together with a provisioned client — and leave it running in the
-# background. NOT for production: sms-fake-orange impersonates Orange
-# Cameroon's API and sends no real SMS. See scripts/demo.sh and
-# docs/runbooks/getting-started.md §5-8 for what this automates.
+# Bring up the full demo chain — scratch Postgres, both migrations, an OP
+# signing key, an `App`+`Provider`+`Route`+`SenderId`, a machine client,
+# the `sms-console` OIDC client, a human operator account, sms-fake-orange,
+# sms-gateway, sms-worker (dispatch,scheduler,jobs), and the admin console
+# — as containers, built from this checkout's own source
+# (`compose.dev.yaml`; see that file's own header for the full design and
+# why it doesn't reuse `compose.yml`). NOT for production: sms-fake-orange
+# impersonates Orange Cameroon's API and sends no real SMS. See
+# docs/runbooks/local-development.md for what this brings up and why.
+#
+# `down -v` first, every time — not just on request: `provision-client`
+# (inside `compose.dev.yaml`) refuses to overwrite an existing private
+# key, so a second `up` against the same named volumes would otherwise
+# fail loudly on that step rather than silently reusing stale credentials.
+# This is the compose-native equivalent of `scripts/demo.sh`'s own former
+# "reset the database on every up" behaviour — a full volume wipe rather
+# than a targeted `DROP DATABASE`/`CREATE DATABASE`.
+#
+# `COMPOSE_PARALLEL_LIMIT=1` on the build specifically — found live, not
+# assumed: every `app/*/Dockerfile` builder stage deliberately shares one
+# BuildKit cache-mount id (`cargo-registry-musl`) across sms-gateway/
+# sms-worker/sms-fake-orange/sms-migrate, "so building any one warms the
+# cache for the other three" (their own comment). That's true for
+# *sequential* builds; building all of them for the first time in one
+# `docker compose build` invocation races several `cargo` processes
+# extracting into the *same* registry cache directory concurrently, and
+# reproduced a real failure twice in a row (`failed to unpack package
+# ...: File exists (os error 17)`) before this line was added — gone
+# entirely once builds were forced sequential. A cache already warmed by
+# a previous `just demo` doesn't hit this (nothing new to extract), so
+# this mainly costs time on the very first run.
 demo:
-	./scripts/demo.sh up
+	docker compose -f compose.dev.yaml --profile console down -v --remove-orphans
+	COMPOSE_PARALLEL_LIMIT=1 docker compose -f compose.dev.yaml --profile console build
+	docker compose -f compose.dev.yaml --profile console up -d --wait
 
-# Stop everything `just demo` started and remove its scratch Postgres
-# container (by exact name only — never touches anything else).
+# Stop everything `just demo` started and remove its volumes (scratch
+# Postgres data, provisioned secrets) — by exact Compose project name
+# (`vsms-dev`) only, never touching `compose.yml`'s own `vsms` project or
+# anything unrelated on the machine.
 demo-down:
-	./scripts/demo.sh down
+	docker compose -f compose.dev.yaml --profile console down -v --remove-orphans
 
 # What's currently running from `just demo`.
 demo-status:
-	./scripts/demo.sh status
+	docker compose -f compose.dev.yaml --profile console ps
 
-# #160: the joined integration story — brings up `just demo`'s stack (via
-# scripts/demo.sh, reused not reimplemented), provisions a SECOND client
-# against the same App ("external integrator"), sends through
-# examples/rust/sms-send authenticated as that integrator over real HTTP,
-# then polls GET /messages/{id} AS THE CONSOLE's own credential — the
-# same route packages/gateway/src/messages.ts's getMessageById calls —
+# The generated password `just demo` provisioned for `demo@vsms.local` —
+# printed once, to `provision-user`'s own container log, never stored
+# anywhere (see app/sms-gateway/src/main.rs's own `ProvisionUser` doc).
+demo-login:
+	docker compose -f compose.dev.yaml logs provision-user
+
+# #160: the joined integration story — brings up `just demo`'s stack,
+# provisions a SECOND client against the same App ("external integrator"),
+# then runs `ci/e2e-integration` (a small Rust tool, not a bash script —
+# see its own module doc for why it has to run *inside* the Compose
+# network rather than as a host process) to send as that integrator over
+# real HTTP and poll GET /messages/{id} AS THE CONSOLE's own credential —
+# the same route packages/gateway/src/messages.ts's getMessageById calls —
 # until that exact message id reaches `delivered`. Fails loudly (non-zero
-# exit, a named step) if any link in the chain breaks. See
-# docs/runbooks/e2e-integration.md for what this proves, what it fakes
-# (Orange, via sms-fake-orange — #36's handset gate is unaffected), and
-# why both clients share one App.
-e2e-integration:
-	./scripts/e2e-integration.sh
+# exit) if any link in the chain breaks. See docs/runbooks/e2e-integration.md
+# for what this proves, what it fakes (Orange, via sms-fake-orange — #36's
+# handset gate is unaffected), and why both clients share one App.
+#
+# `.e2e/` (gitignored) is where the integrator's own key/id land on the
+# host — `docker compose run --rm` removes its container immediately, so
+# there is no `docker compose cp` source for it the way `provision-client`'s
+# own long-lived container (from `up`, still present) is for the console's
+# credential two lines below.
+e2e-integration: demo
+	mkdir -p .e2e
+	rm -f .e2e/integrator-key.pem .e2e/integrator-client-id
+	docker compose -f compose.dev.yaml run --rm -v "{{justfile_directory()}}/.e2e:/out" sms-gateway \
+		provision-client --app-slug vsms-demo --label "external integrator (e2e-integration)" \
+		--scope sms:send --scope sms:read \
+		--key-out /out/integrator-key.pem --client-id-out /out/integrator-client-id
+	docker compose -f compose.dev.yaml cp provision-client:/secrets/console-client-key.pem .e2e/console-client-key.pem
+	docker compose -f compose.dev.yaml cp provision-client:/secrets/console-client-id .e2e/console-client-id
+	docker build -f ci/e2e-integration/Dockerfile -t vsms-e2e-integration:local .
+	docker run --rm --network vsms-dev_default -v "{{justfile_directory()}}/.e2e:/secrets:ro" vsms-e2e-integration:local \
+		--gateway-url http://sms-gateway:8080 \
+		--integrator-client-id "$(cat .e2e/integrator-client-id)" \
+		--integrator-key-path /secrets/integrator-key.pem \
+		--console-client-id "$(cat .e2e/console-client-id)" \
+		--console-key-path /secrets/console-client-key.pem

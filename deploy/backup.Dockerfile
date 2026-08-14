@@ -1,35 +1,65 @@
 # syntax=docker/dockerfile:1
 #
-# #69's backup mechanism: postgres:16-alpine gives the exact `pg_dump` /
-# `pg_restore` for this stack's own server major version — same reasoning
-# deploy/migrate.Dockerfile already uses for `psql`, so the tool taking
-# the dump and the tool that will one day restore it are never a version
-# guess. `rclone` is added for the object-storage upload and is
-# deliberately provider-agnostic: AWS S3, Backblaze B2, GCS, Azure Blob,
-# MinIO, or a bare local path all work behind the same `rclone
-# copyto`/`rclone delete` calls in backup.sh — "the bucket is the
-# operator's choice" (docs/runbooks/backup-restore.md) shouldn't mean
-# picking a cloud vendor for them.
+# #69's backup mechanism, rewritten in Rust (`deploy/backup-tool`) —
+# replacing `deploy/{backup,restore,restore-drill,backup-entrypoint}.sh`
+# entirely, a hard cutover, not a parallel path. Same reasoning
+# `app/sms-migrate/Dockerfile` already used for the old
+# `deploy/migrate.Dockerfile`: a small, compiled binary embeds its own
+# orchestration logic instead of shelling `psql`/hand-rolled JSON out of
+# a shell script — the difference here is that `pg_dump`/`pg_restore`
+# themselves are a real binary dump/restore protocol nobody reimplements
+# (`deploy/backup-tool/src/main.rs`'s own module doc has the full
+# reasoning for what stays external and what doesn't), so this Dockerfile
+# still ends on `postgres:16-alpine`, never distroless.
 #
-# Scheduling uses Alpine's own busybox `crond`, already in the base image
-# — no extra scheduler daemon (supercronic, etc.) to install, trust, or
-# keep patched for a job this simple.
+# The runtime image no longer needs `bash` or `openssl` — the restore-drill
+# fallback pepper (`SMS_HASH_PEPPER:=$(openssl rand -base64 48)`) is real
+# Rust now (`rand`, `deploy/backup-tool/src/drill.rs`), and there is no
+# shell script left anywhere in this image for `bash` to interpret.
+# `rclone` is still installed for the same reason it always was: the
+# object-storage upload/download layer, deliberately provider-agnostic,
+# is not something this Dockerfile reimplements either.
 #
 # Build context is the repository root, same as every other Dockerfile
 # under app/ — build with `docker build -f deploy/backup.Dockerfile .`.
-FROM postgres:16-alpine
 
-# openssl is needed only by restore-drill.sh's own fallback
-# (`SMS_HASH_PEPPER:=$(openssl rand ...)`) for an ad-hoc drill run with no
-# pepper supplied — the scheduled `backup` service always gets a real one
-# from $SMS_HASH_PEPPER (required, no default) and never exercises this
-# path.
-RUN apk add --no-cache rclone bash openssl
+# --- builder -----------------------------------------------------------
+# Same base and reasoning as app/sms-gateway/Dockerfile: Alpine's own
+# libc is musl, so a plain `cargo build` here produces a static musl
+# binary natively, no cross-compilation, no cross-linker.
+#
+# `deploy/backup-tool` is its own, separate Cargo workspace (see its own
+# `Cargo.toml` header) — not part of the root workspace's `Cargo.lock` —
+# so this build stage's `WORKDIR`/`COPY` scope only that directory, not
+# the whole repository the way `app/*/Dockerfile` copies the root
+# workspace. `--locked` still applies against this crate's own committed
+# `Cargo.lock`.
+FROM rust:1.95-alpine3.22 AS builder
 
-COPY deploy/backup.sh /backup.sh
-COPY deploy/restore.sh /restore.sh
-COPY deploy/restore-drill.sh /restore-drill.sh
-COPY deploy/backup-entrypoint.sh /entrypoint.sh
-RUN chmod +x /backup.sh /restore.sh /restore-drill.sh /entrypoint.sh
+RUN apk add --no-cache musl-dev build-base
 
-ENTRYPOINT ["/entrypoint.sh"]
+WORKDIR /app
+COPY deploy/backup-tool/ .
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-backup-tool \
+    --mount=type=cache,target=/app/target,id=cargo-target-backup-tool \
+    cargo build --release --locked \
+    && cp target/release/vsms-backup /tmp/vsms-backup
+
+# --- runtime -------------------------------------------------------------
+FROM postgres:16-alpine AS runtime
+
+RUN apk add --no-cache rclone
+
+COPY --from=builder /tmp/vsms-backup /usr/local/bin/vsms-backup
+
+# `schedule` is the long-running entrypoint (an initial backup unless
+# `BACKUP_RUN_ON_START=false`, then one per `BACKUP_CRON_SCHEDULE` tick,
+# forever, until SIGTERM/SIGINT — see `schedule.rs`'s own module doc,
+# including the PID-1-signal-disposition trap this replaces `crond`
+# without reintroducing). `backup`/`restore`/`restore-drill` are run
+# ad hoc against this same image, e.g.:
+#   docker run --rm <this image> vsms-backup restore-drill \
+#     --yes-i-understand-this-destroys-the-target-database
+ENTRYPOINT ["/usr/local/bin/vsms-backup"]
+CMD ["schedule"]
