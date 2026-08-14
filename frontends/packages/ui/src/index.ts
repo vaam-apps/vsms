@@ -21,9 +21,12 @@ export * from "./components/primitives/command-menu";
 export * from "./components/primitives/dialog";
 export * from "./components/primitives/drawer";
 export * from "./components/primitives/dropdown-menu";
+export * from "./components/primitives/inline-confirm";
 export * from "./components/primitives/input";
 export * from "./components/primitives/label";
 export * from "./components/primitives/popover";
+export * from "./components/primitives/screen-header";
+export * from "./components/primitives/screen-shell";
 export * from "./components/primitives/select";
 export * from "./components/primitives/separator";
 export * from "./components/primitives/side-nav";
@@ -42,3 +45,4 @@ export * from "./components/status/status-tokens";
 
 // Utilities
 export { cn } from "./lib/cn";
+export * from "./lib/message-classes";

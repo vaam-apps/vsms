@@ -40,6 +40,17 @@ export const env = createEnv({
     // less real keyspace than the cookie's own encryption implies.
     SMS_CONSOLE_SESSION_SECRET: z.string().min(32),
     MESSAGE_STREAM_POLL_MS: z.coerce.number().int().min(500).default(2000),
+    // R6 (AGENTS.md): a plain tuning value, same shape as
+    // MESSAGE_STREAM_POLL_MS above — `webhooks-screen.tsx`'s delivery-
+    // attempts `refetchInterval` used to be a hardcoded
+    // `const REFETCH_INTERVAL_MS = 5000` (a `"use client"` screen, so it's
+    // read here server-side and handed down as a prop by `page.tsx`,
+    // matching `MESSAGE_STREAM_POLL_MS`'s own precedent). `jobs-screen.tsx`
+    // and `workers-screen.tsx` carry the identical hardcoded `5000` today
+    // and are not owned by this change — expect this entry to also close
+    // their copies once whoever owns those files picks it up, rather than
+    // adding two more near-duplicate env vars.
+    ADMIN_POLL_INTERVAL_MS: z.coerce.number().int().min(500).default(5000),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   client: {
@@ -59,6 +70,7 @@ export const env = createEnv({
     SMS_CONSOLE_OIDC_CLIENT_ID: process.env.SMS_CONSOLE_OIDC_CLIENT_ID,
     SMS_CONSOLE_SESSION_SECRET: process.env.SMS_CONSOLE_SESSION_SECRET,
     MESSAGE_STREAM_POLL_MS: process.env.MESSAGE_STREAM_POLL_MS,
+    ADMIN_POLL_INTERVAL_MS: process.env.ADMIN_POLL_INTERVAL_MS,
     NODE_ENV: process.env.NODE_ENV,
     // Client
     NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
