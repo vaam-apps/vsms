@@ -8,7 +8,8 @@
 // of those two roles specifically. See `providers-screen.tsx`'s own module
 // doc for the mechanism (`resolveUpstreamAccessToken`,
 // `packages/gateway/src/request-credential.ts`) — identical here, just a
-// narrower Layer 1 gate.
+// narrower Layer 1 gate. A denial surfaces verbatim in whichever drawer's
+// own error banner triggered it — never swallowed.
 //
 // # The zero-routes state gets its own, unmissable banner
 //
@@ -17,7 +18,18 @@
 // signal `crates/sms-worker/src/routing.rs::explain_no_route` puts in a
 // rejected `Message.stateReason` — surfaced here too, not just discoverable
 // after the fact on a rejected message.
+//
+// # Quick vs. more detail (console-redesign.md §3/D14)
+//
+// A row click opens `QuickDetailDrawer` (priority/weight/predicates/
+// provider — everything already on the list row) with an "Edit" action
+// that upgrades to `MoreDetailDrawer`, which owns `?panel=<id>` (or
+// `?panel=new` for creation) and holds the real form. Delete is a
+// destructive action with real, irreversible consequences (§1.7) — it
+// stays a centered `Dialog`, opened from inside the more-detail drawer,
+// never a drawer of either weight itself.
 
+import { zodResolver } from "@hookform/resolvers/zod";
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@vsms/api";
 import { trpc } from "@vsms/hooks";
@@ -33,6 +45,8 @@ import {
   InlineEmptyState,
   Input,
   Label,
+  MoreDetailDrawer,
+  QuickDetailDrawer,
   Select,
   SelectContent,
   SelectItem,
@@ -48,7 +62,10 @@ import {
   TimestampDisplay,
   toast,
 } from "@vsms/ui";
-import { useState } from "react";
+import { parseAsString, useQueryState } from "nuqs";
+import { useEffect, useState } from "react";
+import { Controller, useForm } from "react-hook-form";
+import { z } from "zod";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type RouteListItem = RouterOutputs["routes"]["list"][number];
@@ -57,31 +74,9 @@ const OPERATOR_CODES = ["mtn", "orange", "camtel", "nexttel", "unknown"] as cons
 const MESSAGE_CLASSES = ["otp", "transactional", "notification", "marketing"] as const;
 const ANY = "__any";
 
-interface RouteFormState {
-  name: string;
-  priority: string;
-  weight: string;
-  enabled: boolean;
-  matchOperator: string;
-  matchClass: string;
-  matchAppId: string;
-  matchPrefix: string;
-  providerId: string;
-}
-
-const EMPTY_FORM: RouteFormState = {
-  name: "",
-  priority: "0",
-  weight: "1",
-  enabled: true,
-  matchOperator: ANY,
-  matchClass: ANY,
-  matchAppId: "",
-  matchPrefix: "",
-  providerId: "",
-};
-
-function predicateSummary(route: RouteListItem): string {
+function predicateSummary(
+  route: Pick<RouteListItem, "matchOperator" | "matchClass" | "matchAppId" | "matchPrefix">,
+): string {
   const parts: string[] = [];
   if (route.matchOperator !== undefined) parts.push(`operator=${route.matchOperator}`);
   if (route.matchClass !== undefined) parts.push(`class=${route.matchClass}`);
@@ -90,26 +85,91 @@ function predicateSummary(route: RouteListItem): string {
   return parts.length === 0 ? "matches anything" : parts.join(", ");
 }
 
+const routeSchema = z.object({
+  name: z.string().trim().min(1, "Name is required"),
+  priority: z
+    .string()
+    .trim()
+    .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 1000, {
+      message: "0–1000",
+    }),
+  weight: z
+    .string()
+    .trim()
+    .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 0 && Number(v) <= 1000, {
+      message: "0–1000",
+    }),
+  enabled: z.enum(["enabled", "disabled"]),
+  matchOperator: z.string(),
+  matchClass: z.string(),
+  matchAppId: z.string(),
+  matchPrefix: z.string(),
+  providerId: z.string().min(1, "Select a provider"),
+});
+type RouteFormValues = z.infer<typeof routeSchema>;
+
+const EMPTY_VALUES: RouteFormValues = {
+  name: "",
+  priority: "0",
+  weight: "1",
+  enabled: "enabled",
+  matchOperator: ANY,
+  matchClass: ANY,
+  matchAppId: "",
+  matchPrefix: "",
+  providerId: "",
+};
+
 export function RoutesScreen() {
   const listQuery = trpc.routes.list.useQuery();
   const providersQuery = trpc.providers.list.useQuery();
   const utils = trpc.useUtils();
 
-  const [editTarget, setEditTarget] = useState<RouteListItem | "new" | null>(null);
-  const [form, setForm] = useState<RouteFormState>(EMPTY_FORM);
-  const [deleteTarget, setDeleteTarget] = useState<RouteListItem | null>(null);
+  const [quickId, setQuickId] = useState<string | null>(null);
+  const quickDetail = listQuery.data?.find((r) => r.id === quickId);
+
+  // More detail owns `?panel=<id>` (edit) or `?panel=new` (create).
+  const [panelId, setPanelId] = useQueryState("panel", parseAsString);
+  const isCreate = panelId === "new";
+  const editTarget = !isCreate ? listQuery.data?.find((r) => r.id === panelId) : undefined;
+
+  const form = useForm<RouteFormValues>({
+    resolver: zodResolver(routeSchema),
+    defaultValues: EMPTY_VALUES,
+  });
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `form` is stable and `isCreate` derives from `panelId` (already a dep) — only re-seed when the target route id or panel mode changes.
+  useEffect(() => {
+    if (panelId === null) return;
+    if (isCreate) {
+      form.reset(EMPTY_VALUES);
+      return;
+    }
+    if (editTarget === undefined) return;
+    form.reset({
+      name: editTarget.name,
+      priority: String(editTarget.priority),
+      weight: String(editTarget.weight),
+      enabled: editTarget.enabled ? "enabled" : "disabled",
+      matchOperator: editTarget.matchOperator ?? ANY,
+      matchClass: editTarget.matchClass ?? ANY,
+      matchAppId: editTarget.matchAppId ?? "",
+      matchPrefix: editTarget.matchPrefix ?? "",
+      providerId: editTarget.providerId,
+    });
+  }, [panelId, editTarget]);
 
   const createMutation = trpc.routes.create.useMutation({
     onSuccess: () => {
       toast({ title: "Route created", variant: "success" });
-      setEditTarget(null);
+      void setPanelId(null);
       void utils.routes.list.invalidate();
     },
   });
   const updateMutation = trpc.routes.update.useMutation({
     onSuccess: () => {
       toast({ title: "Route saved", variant: "success" });
-      setEditTarget(null);
+      void setPanelId(null);
       void utils.routes.list.invalidate();
     },
   });
@@ -117,118 +177,58 @@ export function RoutesScreen() {
     onSuccess: () => {
       toast({ title: "Route deleted", variant: "success" });
       setDeleteTarget(null);
+      void setPanelId(null);
       void utils.routes.list.invalidate();
     },
   });
+  const [deleteTarget, setDeleteTarget] = useState<RouteListItem | null>(null);
 
-  function openCreate() {
-    setForm(EMPTY_FORM);
+  const pendingMutation = isCreate ? createMutation : updateMutation;
+
+  function closeMore() {
+    void setPanelId(null);
     createMutation.reset();
-    setEditTarget("new");
-  }
-
-  function openEdit(route: RouteListItem) {
-    setForm({
-      name: route.name,
-      priority: String(route.priority),
-      weight: String(route.weight),
-      enabled: route.enabled,
-      matchOperator: route.matchOperator ?? ANY,
-      matchClass: route.matchClass ?? ANY,
-      matchAppId: route.matchAppId ?? "",
-      matchPrefix: route.matchPrefix ?? "",
-      providerId: route.providerId,
-    });
     updateMutation.reset();
-    setEditTarget(route);
   }
 
-  function closeDialog() {
-    setEditTarget(null);
-  }
-
-  function submit() {
+  function onSubmit(values: RouteFormValues) {
     const fields = {
-      name: form.name,
-      priority: Number(form.priority),
-      weight: Number(form.weight),
-      enabled: form.enabled,
-      ...(form.matchOperator !== ANY
-        ? { matchOperator: form.matchOperator as (typeof OPERATOR_CODES)[number] }
+      name: values.name,
+      priority: Number(values.priority),
+      weight: Number(values.weight),
+      enabled: values.enabled === "enabled",
+      ...(values.matchOperator !== ANY
+        ? { matchOperator: values.matchOperator as (typeof OPERATOR_CODES)[number] }
         : {}),
-      ...(form.matchClass !== ANY
-        ? { matchClass: form.matchClass as (typeof MESSAGE_CLASSES)[number] }
+      ...(values.matchClass !== ANY
+        ? { matchClass: values.matchClass as (typeof MESSAGE_CLASSES)[number] }
         : {}),
-      ...(form.matchAppId !== "" ? { matchAppId: form.matchAppId } : {}),
-      ...(form.matchPrefix !== "" ? { matchPrefix: form.matchPrefix } : {}),
-      providerId: form.providerId,
+      ...(values.matchAppId !== "" ? { matchAppId: values.matchAppId } : {}),
+      ...(values.matchPrefix !== "" ? { matchPrefix: values.matchPrefix } : {}),
+      providerId: values.providerId,
     };
 
-    if (editTarget === "new") {
+    if (isCreate) {
       createMutation.mutate(fields);
-    } else if (editTarget !== null) {
+    } else if (editTarget !== undefined) {
       // Synthesized, not fetched fresh: `RouteListItem.version` already
       // carries what this operator last observed, and the server's own
-      // `ETag` is exactly `"<version>"` (`rest.ts`'s own doc). Building it
-      // from the list row is correct, not a shortcut — a stale list means a
-      // stale `If-Match`, which is precisely what should 412, the same
-      // outcome a fresh `GET` immediately before this `PATCH` would produce.
+      // `ETag` is exactly `"<version>"`. A stale list means a stale
+      // `If-Match`, which is precisely what should 412.
       updateMutation.mutate({ id: editTarget.id, etag: `"${editTarget.version}"`, ...fields });
     }
   }
 
-  const pendingMutation = editTarget === "new" ? createMutation : updateMutation;
-
   return (
-    <main className="mx-auto flex max-w-[1400px] flex-col gap-6 px-6 py-10">
-      <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
-        <div>
-          <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-            vsms admin console
-          </p>
-          <h1 className="mt-1 font-medium text-foreground text-title">Routes</h1>
-          <p className="mt-1 max-w-xl text-body text-muted-foreground">
-            Priority, weight, and match predicates — sorted by priority, highest first.
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <a
-            href="/dashboard"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Dashboard
-          </a>
-          <a
-            href="/providers"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Providers
-          </a>
-          <a
-            href="/simulator"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Route simulator
-          </a>
-          <a
-            href="/"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Composer
-          </a>
-          <a
-            href="/sender-ids"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Sender IDs
-          </a>
-          <a
-            href="/webhooks"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Webhooks
-          </a>
-        </div>
+    <main className="mx-auto flex max-w-[1400px] flex-col gap-6 px-4 py-6 sm:px-6 sm:py-10">
+      <header className="flex flex-col gap-1 border-edge border-b pb-6">
+        <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
+          vsms admin console
+        </p>
+        <h1 className="font-medium text-foreground text-title">Routes</h1>
+        <p className="max-w-xl text-body text-muted-foreground">
+          Priority, weight, and match predicates — sorted by priority, highest first.
+        </p>
       </header>
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
@@ -252,7 +252,7 @@ export function RoutesScreen() {
       )}
 
       <div>
-        <Button type="button" onClick={openCreate}>
+        <Button type="button" onClick={() => void setPanelId("new")}>
           New route
         </Button>
       </div>
@@ -261,13 +261,16 @@ export function RoutesScreen() {
         <TableHeader>
           <TableRow>
             <TableHead align="end">Priority</TableHead>
-            <TableHead align="end">Weight</TableHead>
-            <TableHead>Enabled</TableHead>
+            <TableHead align="end" className="hidden sm:table-cell">
+              Weight
+            </TableHead>
+            <TableHead>Status</TableHead>
             <TableHead>Name</TableHead>
-            <TableHead>Predicates</TableHead>
-            <TableHead>Provider</TableHead>
-            <TableHead align="end">Updated</TableHead>
-            <TableHead align="end">Actions</TableHead>
+            <TableHead className="hidden md:table-cell">Predicates</TableHead>
+            <TableHead className="hidden lg:table-cell">Provider</TableHead>
+            <TableHead align="end" className="hidden md:table-cell">
+              Updated
+            </TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -275,7 +278,7 @@ export function RoutesScreen() {
             Array.from({ length: 4 }).map((_, i) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton rows, never reordered or diffed
               <TableRow key={i}>
-                <TableCell colSpan={8}>
+                <TableCell colSpan={7}>
                   <Skeleton className="h-4 w-full" />
                 </TableCell>
               </TableRow>
@@ -283,18 +286,22 @@ export function RoutesScreen() {
 
           {!listQuery.isLoading && (listQuery.data?.length ?? 0) === 0 && (
             <tr>
-              <td colSpan={8}>
+              <td colSpan={7}>
                 <InlineEmptyState message="No routes configured." />
               </td>
             </tr>
           )}
 
           {listQuery.data?.map((route: RouteListItem) => (
-            <TableRow key={route.id}>
+            <TableRow
+              key={route.id}
+              className="cursor-pointer"
+              onClick={() => setQuickId(route.id)}
+            >
               <TableCell align="end" mono>
                 {route.priority}
               </TableCell>
-              <TableCell align="end" mono>
+              <TableCell align="end" mono className="hidden sm:table-cell">
                 {route.weight}
               </TableCell>
               <TableCell>
@@ -309,212 +316,286 @@ export function RoutesScreen() {
                 )}
               </TableCell>
               <TableCell>{route.name}</TableCell>
-              <TableCell className="text-caption text-muted-foreground">
+              <TableCell className="hidden text-caption text-muted-foreground md:table-cell">
                 {predicateSummary(route)}
               </TableCell>
-              <TableCell>
+              <TableCell className="hidden lg:table-cell">
                 <IdDisplay value={route.providerId} />
               </TableCell>
-              <TableCell align="end">
+              <TableCell align="end" className="hidden md:table-cell">
                 <TimestampDisplay value={route.updatedAt} />
-              </TableCell>
-              <TableCell align="end">
-                <div className="flex justify-end gap-2">
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => openEdit(route)}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setDeleteTarget(route)}
-                  >
-                    Delete
-                  </Button>
-                </div>
               </TableCell>
             </TableRow>
           ))}
         </TableBody>
       </Table>
 
-      <Dialog open={editTarget !== null} onOpenChange={(open) => !open && closeDialog()}>
-        <DialogContent className="max-w-[560px]">
-          <DialogHeader>
-            <DialogTitle>{editTarget === "new" ? "New route" : "Edit route"}</DialogTitle>
-            <DialogDescription>
-              {editTarget !== null && editTarget !== "new" && (
-                <IdDisplay value={editTarget.id} variant="full" />
-              )}
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="route-name">Name</Label>
-              <Input
-                id="route-name"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="route-priority">Priority (0–1000, higher wins)</Label>
-                <Input
-                  id="route-priority"
-                  type="number"
-                  min="0"
-                  max="1000"
-                  step="1"
-                  value={form.priority}
-                  onChange={(e) => setForm({ ...form, priority: e.target.value })}
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="route-weight">Weight (0–1000, within a priority band)</Label>
-                <Input
-                  id="route-weight"
-                  type="number"
-                  min="0"
-                  max="1000"
-                  step="1"
-                  value={form.weight}
-                  onChange={(e) => setForm({ ...form, weight: e.target.value })}
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="route-enabled">Status</Label>
-              <Select
-                value={form.enabled ? "enabled" : "disabled"}
-                onValueChange={(value) => setForm({ ...form, enabled: value === "enabled" })}
-              >
-                <SelectTrigger id="route-enabled">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="enabled">Enabled</SelectItem>
-                  <SelectItem value="disabled">Disabled</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="route-provider">Provider</Label>
-              <Select
-                value={form.providerId}
-                onValueChange={(value) => setForm({ ...form, providerId: value })}
-              >
-                <SelectTrigger id="route-provider">
-                  <SelectValue placeholder="Select a provider" />
-                </SelectTrigger>
-                <SelectContent>
-                  {providersQuery.data?.map((provider) => (
-                    <SelectItem key={provider.id} value={provider.id}>
-                      {provider.displayName} ({provider.key})
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <p className="text-caption text-muted-foreground">
-              Match predicates below — each left as "any" matches every candidate for that field
-              (§6.3: `NULL` on a `match*` column is a wildcard, never "matches nothing").
-            </p>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="route-match-operator">Operator</Label>
-                <Select
-                  value={form.matchOperator}
-                  onValueChange={(value) => setForm({ ...form, matchOperator: value })}
-                >
-                  <SelectTrigger id="route-match-operator">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ANY}>Any</SelectItem>
-                    {OPERATOR_CODES.map((code) => (
-                      <SelectItem key={code} value={code}>
-                        {code}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="route-match-class">Message class</Label>
-                <Select
-                  value={form.matchClass}
-                  onValueChange={(value) => setForm({ ...form, matchClass: value })}
-                >
-                  <SelectTrigger id="route-match-class">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ANY}>Any</SelectItem>
-                    {MESSAGE_CLASSES.map((cls) => (
-                      <SelectItem key={cls} value={cls}>
-                        {cls}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="route-match-app-id">App id</Label>
-                <Input
-                  id="route-match-app-id"
-                  placeholder="any"
-                  value={form.matchAppId}
-                  onChange={(e) => setForm({ ...form, matchAppId: e.target.value })}
-                />
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="route-match-prefix">National prefix</Label>
-                <Input
-                  id="route-match-prefix"
-                  placeholder="e.g. 677"
-                  value={form.matchPrefix}
-                  onChange={(e) => setForm({ ...form, matchPrefix: e.target.value })}
-                />
-              </div>
-            </div>
-
-            {pendingMutation.isError && (
-              <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-                Save failed: {pendingMutation.error.message}
-              </div>
-            )}
-          </div>
-
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={closeDialog}>
-              Cancel
+      {/* Quick detail — a peek, no route, closes back to exactly where the
+          list was. */}
+      <QuickDetailDrawer
+        open={quickId !== null}
+        onOpenChange={(open) => !open && setQuickId(null)}
+        title={quickDetail?.name ?? "Route"}
+        description={
+          quickDetail !== undefined && <IdDisplay value={quickDetail.id} variant="full" />
+        }
+        footer={
+          <>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setQuickId(null)}>
+              Close
             </Button>
             <Button
               type="button"
-              disabled={pendingMutation.isPending || form.providerId === ""}
-              onClick={submit}
+              size="sm"
+              onClick={() => {
+                if (quickDetail === undefined) return;
+                void setPanelId(quickDetail.id);
+                setQuickId(null);
+              }}
             >
-              {pendingMutation.isPending ? "Saving…" : editTarget === "new" ? "Create" : "Save"}
+              Edit
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          </>
+        }
+      >
+        {quickDetail !== undefined && (
+          <dl className="flex flex-col gap-3 text-body">
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Status</dt>
+              <dd>{quickDetail.enabled ? "enabled" : "disabled"}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Priority</dt>
+              <dd className="font-mono">{quickDetail.priority}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Weight</dt>
+              <dd className="font-mono">{quickDetail.weight}</dd>
+            </div>
+            <div className="flex flex-col gap-1">
+              <dt className="text-muted-foreground">Predicates</dt>
+              <dd className="text-caption">{predicateSummary(quickDetail)}</dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Provider</dt>
+              <dd>
+                <IdDisplay value={quickDetail.providerId} variant="full" />
+              </dd>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <dt className="text-muted-foreground">Updated</dt>
+              <dd>
+                <TimestampDisplay value={quickDetail.updatedAt} />
+              </dd>
+            </div>
+          </dl>
+        )}
+      </QuickDetailDrawer>
 
+      {/* More detail — create or edit, owns `?panel=<id>|new` (D14). */}
+      <MoreDetailDrawer
+        open={panelId !== null}
+        onOpenChange={(open) => !open && closeMore()}
+        title={isCreate ? "New route" : (editTarget?.name ?? "Route")}
+        description={
+          !isCreate &&
+          editTarget !== undefined && <IdDisplay value={editTarget.id} variant="full" />
+        }
+        footer={
+          <>
+            {!isCreate && editTarget !== undefined && (
+              <Button
+                type="button"
+                variant="destructive"
+                size="sm"
+                className="mr-auto"
+                onClick={() => setDeleteTarget(editTarget)}
+              >
+                Delete
+              </Button>
+            )}
+            <Button type="button" variant="ghost" onClick={closeMore}>
+              Cancel
+            </Button>
+            <Button type="submit" form="route-edit-form" disabled={pendingMutation.isPending}>
+              {pendingMutation.isPending ? "Saving…" : isCreate ? "Create" : "Save"}
+            </Button>
+          </>
+        }
+      >
+        <form
+          id="route-edit-form"
+          onSubmit={form.handleSubmit(onSubmit)}
+          className="flex flex-col gap-4"
+        >
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="route-name">Name</Label>
+            <Input
+              id="route-name"
+              aria-invalid={form.formState.errors.name != null}
+              {...form.register("name")}
+            />
+            {form.formState.errors.name != null && (
+              <p className="text-caption text-state-danger-fg">
+                {form.formState.errors.name.message}
+              </p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="route-priority">Priority (0–1000, higher wins)</Label>
+              <Input
+                id="route-priority"
+                inputMode="numeric"
+                aria-invalid={form.formState.errors.priority != null}
+                {...form.register("priority")}
+              />
+              {form.formState.errors.priority != null && (
+                <p className="text-caption text-state-danger-fg">
+                  {form.formState.errors.priority.message}
+                </p>
+              )}
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="route-weight">Weight (within a priority band)</Label>
+              <Input
+                id="route-weight"
+                inputMode="numeric"
+                aria-invalid={form.formState.errors.weight != null}
+                {...form.register("weight")}
+              />
+              {form.formState.errors.weight != null && (
+                <p className="text-caption text-state-danger-fg">
+                  {form.formState.errors.weight.message}
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="route-enabled">Status</Label>
+            <Controller
+              control={form.control}
+              name="enabled"
+              render={({ field }) => (
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <SelectTrigger id="route-enabled">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="enabled">Enabled</SelectItem>
+                    <SelectItem value="disabled">Disabled</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+            />
+          </div>
+
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="route-provider">Provider</Label>
+            <Controller
+              control={form.control}
+              name="providerId"
+              render={({ field }) => (
+                <Select value={field.value} onValueChange={field.onChange}>
+                  <SelectTrigger id="route-provider">
+                    <SelectValue placeholder="Select a provider" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {providersQuery.data?.map((provider) => (
+                      <SelectItem key={provider.id} value={provider.id}>
+                        {provider.displayName} ({provider.key})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+            {form.formState.errors.providerId != null && (
+              <p className="text-caption text-state-danger-fg">
+                {form.formState.errors.providerId.message}
+              </p>
+            )}
+          </div>
+
+          <p className="text-caption text-muted-foreground">
+            Match predicates below — each left as "any" matches every candidate for that field
+            (§6.3: `NULL` on a `match*` column is a wildcard, never "matches nothing").
+          </p>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="route-match-operator">Operator</Label>
+              <Controller
+                control={form.control}
+                name="matchOperator"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger id="route-match-operator">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ANY}>Any</SelectItem>
+                      {OPERATOR_CODES.map((code) => (
+                        <SelectItem key={code} value={code}>
+                          {code}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="route-match-class">Message class</Label>
+              <Controller
+                control={form.control}
+                name="matchClass"
+                render={({ field }) => (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <SelectTrigger id="route-match-class">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ANY}>Any</SelectItem>
+                      {MESSAGE_CLASSES.map((cls) => (
+                        <SelectItem key={cls} value={cls}>
+                          {cls}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="route-match-app-id">App id</Label>
+              <Input id="route-match-app-id" placeholder="any" {...form.register("matchAppId")} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="route-match-prefix">National prefix</Label>
+              <Input
+                id="route-match-prefix"
+                placeholder="e.g. 677"
+                {...form.register("matchPrefix")}
+              />
+            </div>
+          </div>
+
+          {pendingMutation.isError && (
+            <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
+              Save failed: {pendingMutation.error.message}
+            </div>
+          )}
+        </form>
+      </MoreDetailDrawer>
+
+      {/* Delete confirm — destructive, always a centered Dialog (§1.7/§3),
+          never a drawer, opened from inside the more-detail drawer. */}
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <DialogContent>
           <DialogHeader>
