@@ -14,9 +14,9 @@ Owns the `private_key_jwt` credential lifecycle, so a caller writes `client.send
 ## Installation
 
 ```bash
-npm install @vsms/sdk jose
+npm install @vsms/sdk
 # or
-pnpm add @vsms/sdk jose
+pnpm add @vsms/sdk
 ```
 
 ## Quickstart

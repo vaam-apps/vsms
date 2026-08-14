@@ -18,4 +18,52 @@ global:
 {{- end -}}
 {{- $_ := mergeOverwrite .Values (include "vsms.hardcodedValues" . | fromYaml) -}}
 
+{{/*
+R4 (CONTRIBUTING.md): the admin console is optional, and installing this
+chart with it switched off must not require a single console-only value.
+`admin.enabled` is the toggle — applied here, not in values.yaml itself,
+because values.yaml is loaded as plain data and is never templated as a
+whole (only the specific field classes that file's own header documents
+go through common's selective `tpl` pass — `env` values,
+`image.{repository,tag,digest}`, `persistence.*.name`, `ingress.*.hosts`
+— and a controller's own `enabled` flag is deliberately not one of them,
+confirmed against common's own
+templates/lib/controller/_enabled_controllers.tpl). This template *is*
+a real Go-template pass, so it can mutate the merged values before
+`generate` ever runs, the same trick already used above for
+`global.nameOverride`.
+
+`controllers.admin.enabled` and `service.admin.enabled` have to flip
+together, not just the controller: common's own service validate step
+(templates/lib/service/_validate.tpl) hard-`fail`s with "No enabled
+controller found with this identifier" the instant a Service references
+a controller that doesn't exist, so leaving `service.admin` on with its
+controller off would break the render instead of quietly omitting it.
+`ingress.admin` is forced off too, defensively — it already defaults to
+`false` (deploy/charts/vsms/values.yaml's own "operator has an opinion
+about their own ingress" section), but common's own ingress validate
+does not check that its target Service is actually enabled, so an
+operator who had separately turned it on would otherwise render a
+dangling Ingress pointing at nothing.
+
+`persistence.console-private-key` has to flip too, and not for the
+reason first assumed while writing this: it is only *mounted* while
+building the admin controller's own pod spec
+(templates/lib/pod/fields/_volumes.tpl resolves `advancedMounts` per
+controller identifier, so a disabled controller's mounts are simply
+never visited) — but common's own global chart validate
+(templates/lib/chart/_validate.tpl) walks every *enabled* persistence
+item's `advancedMounts` unconditionally, independent of controller
+rendering, and `fail`s "No enabled controller found with this
+identifier" the moment one names a controller that isn't enabled.
+Verified live, not assumed: `helm template --set admin.enabled=false`
+hit exactly that error before this line was added.
+*/}}
+{{- if not .Values.admin.enabled }}
+{{- $_ := set .Values.controllers.admin "enabled" false -}}
+{{- $_ := set .Values.service.admin "enabled" false -}}
+{{- $_ := set .Values.ingress.admin "enabled" false -}}
+{{- $_ := set (index .Values.persistence "console-private-key") "enabled" false -}}
+{{- end -}}
+
 {{ include "bjw-s.common.loader.generate" . }}

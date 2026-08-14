@@ -1,5 +1,6 @@
 "use client";
 
+import { cva } from "class-variance-authority";
 import { useSyncExternalStore } from "react";
 import { cn } from "../../lib/cn";
 
@@ -59,11 +60,29 @@ export function toast(item: Omit<ToastItem, "id">): string {
   return id;
 }
 
-const VARIANT_CLASSES: Record<ToastVariant, string> = {
-  default: "border-edge bg-surface-2 text-foreground",
-  success: "border-state-success-fg/30 bg-surface-2 text-foreground",
-  danger: "border-state-danger-border bg-state-danger-bg text-state-danger-fg",
-};
+// D11: `cva()` replaces the previous `Record<ToastVariant, string>` lookup,
+// same three class strings per variant, keyed identically. One deliberate
+// D8 diff lives in the base string below, not here: the shared "toast card"
+// classes move off `rounded-sm` (`--radius-field`, 12px) onto `rounded-box`
+// (`--radius-box`, 20px) — a toast shares `--shadow-popover` with
+// dialog/popover/dropdown/drawer (see `theme.css`'s own "only floating
+// layers... get one [shadow]" comment), i.e. it's the same family of
+// floating panel those get, not a field-scale control, and D14's own
+// drawer sketch (§6.4) already uses `rounded-t-box` for exactly that
+// family. `variant` classes themselves are untouched.
+const toastVariants = cva(
+  "pointer-events-auto rounded-box border p-3 text-body shadow-[var(--shadow-popover)]",
+  {
+    variants: {
+      variant: {
+        default: "border-edge bg-surface-2 text-foreground",
+        success: "border-state-success-fg/30 bg-surface-2 text-foreground",
+        danger: "border-state-danger-border bg-state-danger-bg text-state-danger-fg",
+      },
+    },
+    defaultVariants: { variant: "default" },
+  },
+);
 
 /** Mount once, near the app root. Renders the live toast stack. */
 export function Toaster() {
@@ -76,13 +95,7 @@ export function Toaster() {
       className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-80 flex-col gap-2"
     >
       {items.map((item) => (
-        <div
-          key={item.id}
-          className={cn(
-            "pointer-events-auto rounded-sm border p-3 text-body shadow-[var(--shadow-popover)]",
-            VARIANT_CLASSES[item.variant ?? "default"],
-          )}
-        >
+        <div key={item.id} className={cn(toastVariants({ variant: item.variant ?? "default" }))}>
           <div className="flex items-start justify-between gap-2">
             <p className="font-medium">{item.title}</p>
             <button

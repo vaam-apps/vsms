@@ -129,6 +129,16 @@ worker:
   roles: dispatch,drain,scheduler,hooks,jobs
 
 admin:
+  # R4 (CONTRIBUTING.md): the admin console is optional, and this chart
+  # must install and run a working gateway+worker with it switched off.
+  # Default true so an existing install's behaviour is unchanged by this
+  # field's own addition. Setting this false skips the admin Deployment
+  # and Service entirely (not started-then-idle, not present-but-
+  # unconfigured — see templates/common.yaml's own comment for the
+  # mechanism) and every value below stops being required. `helm template
+  # --set admin.enabled=false` with none of them set is the acceptance
+  # bar this field exists to satisfy.
+  enabled: true
   # The public origin a browser reaches the console at. Required — see the
   # ADMIN_BASE_URL comment on the container's env block for why an
   # in-cluster address does not work here.
