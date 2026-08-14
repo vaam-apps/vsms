@@ -630,12 +630,21 @@ function OverlaysGallery() {
 //     with a provider" (inside its first `MoreDetailDrawer`) and
 //     "Resubmit this registration?" (inside its second, stacked
 //     `MoreDetailDrawer`).
-//   - Not affected: `webhooks-screen.tsx`'s "Replay this delivery?" —
-//     opened from inside a `QuickDetailDrawer`, not a `MoreDetailDrawer`;
-//     `QuickDetailDrawer` is `dimmed={false}` from the start, so vaul's
-//     `modal` is `false` and Radix's `FocusScope` is never `trapped`
-//     there — the mechanism above needs `trapped: true` to fire at all.
-//     Also not affected: every screen's own top-level "New X" create
+//   - ALSO affected, corrected after review: `webhooks-screen.tsx`'s
+//     "Replay this delivery?". An earlier revision of this comment claimed
+//     it was immune because it opens from a `QuickDetailDrawer`, whose
+//     `dimmed={false}` was assumed to make vaul's `modal` false and leave
+//     Radix's `FocusScope` un-`trapped`. That is wrong, and `drawer.tsx`'s
+//     own module comment already said so: **vaul never forwards its
+//     `modal` prop down to `@radix-ui/react-dialog`'s `Root`**, which
+//     keeps its own default of `true` regardless — so the focus trap and
+//     `aria-modal` are unconditional, and `dimmed` changes only the
+//     overlay and background pointer-events. Re-verified three ways
+//     (vaul@1.1.2 compiled source, a jsdom listener check, and a real
+//     browser harness importing the unmodified primitives): the identical
+//     stuck-invisible symptom reproduces inside a `QuickDetailDrawer`.
+//     Six confirmations are broken, not five.
+//     Not affected: every screen's own top-level "New X" create
 //     dialog (`webhooks-screen.tsx`, `sender-ids-screen.tsx`) — triggered
 //     from a toolbar button reachable only when no drawer is open.
 //   - `providers-screen.tsx` uses no `Dialog` at all — no nested
