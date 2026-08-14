@@ -64,6 +64,20 @@ import { trpc } from "@vsms/hooks";
 import { Card, CardBody, CardHeader, Skeleton } from "@vsms/ui";
 import { HourlyBars } from "./hourly-bars";
 
+// Console-redesign Phase 2: this screen used to hand-roll its own <header>
+// nav strip (links to every other route in the console) and its own
+// <main max-w-[1400px] px-6 py-10> wrapper — both pre-date `ConsoleShell`
+// (Phase 0), which now mounts once from `admin/app/layout.tsx` and already
+// gives every route a persistent sidebar (`SideNav`, all eighteen routes,
+// grouped) plus a shared <main> with its own max-width and padding. Left
+// as-is, this screen would render a <main> nested inside `ConsoleShell`'s
+// own <main> (invalid HTML, double padding) *and* a second, fully
+// redundant copy of the sidebar's own links. Per
+// docs/design/console-redesign.md §7's own build order ("no screen should
+// still hand-roll a <header> nav after Phase 2"), that block is gone
+// below; the screen now renders only its own content, inside a plain
+// wrapper, and lets `ConsoleShell` own the chrome around it.
+
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type DashboardSummary = RouterOutputs["dashboard"]["summary"];
 type OperatorStat = DashboardSummary["operatorStats"][number];
@@ -150,110 +164,16 @@ export function DashboardScreen() {
   const allOperatorsQuiet = data != null && operatorRows.length === 0;
 
   return (
-    <main className="mx-auto flex max-w-[1400px] flex-col gap-6 px-6 py-10">
-      <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
-        <div>
-          <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-            vsms admin console
-          </p>
-          <h1 className="mt-1 font-medium text-foreground text-title">Dashboard</h1>
-          <p className="mt-1 max-w-xl text-body text-muted-foreground">
-            Throughput, delivery, and backlog at a glance. Refreshes every{" "}
-            {Math.round(REFETCH_INTERVAL_MS / 1000)}s.
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <a
-            href="/"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Composer
-          </a>
-          <a
-            href="/messages"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Messages
-          </a>
-          <a
-            href="/jobs"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Jobs
-          </a>
-          <a
-            href="/workers"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Workers
-          </a>
-          <a
-            href="/providers"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Providers
-          </a>
-          <a
-            href="/routes"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Routes
-          </a>
-          <a
-            href="/simulator"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Simulator
-          </a>
-          {/* #52/#58: these five screens don't otherwise appear in any
-              other screen's own nav block — see `console-nav.tsx`'s own
-              doc for why they share a small component among themselves
-              rather than each pre-existing screen's header being edited
-              too. Added here so they're reachable by click from the
-              console's own hub, not only by typing a URL. */}
-          <a
-            href="/apps"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Apps
-          </a>
-          <a
-            href="/users"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Users
-          </a>
-          <a
-            href="/opt-outs"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Opt-outs
-          </a>
-          <a
-            href="/audit-log"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Audit log
-          </a>
-          <a
-            href="/settings"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Settings
-          </a>
-          <a
-            href="/sender-ids"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Sender IDs
-          </a>
-          <a
-            href="/webhooks"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Webhooks
-          </a>
-        </div>
+    <div className="flex flex-col gap-6">
+      <header className="flex flex-col gap-1 border-edge border-b pb-6">
+        <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
+          vsms admin console
+        </p>
+        <h1 className="font-medium text-foreground text-title">Dashboard</h1>
+        <p className="max-w-xl text-body text-muted-foreground">
+          Throughput, delivery, and backlog at a glance. Refreshes every{" "}
+          {Math.round(REFETCH_INTERVAL_MS / 1000)}s.
+        </p>
       </header>
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
@@ -416,17 +336,17 @@ export function DashboardScreen() {
               {operatorRows.map((row) => {
                 const ratio = row.delivered / row.terminalTotal;
                 return (
-                  <div key={row.operator} className="flex items-center gap-3">
-                    <span className="w-20 shrink-0 text-caption text-foreground">
+                  <div key={row.operator} className="flex items-center gap-2 sm:gap-3">
+                    <span className="w-14 shrink-0 text-caption text-foreground sm:w-20">
                       {OPERATOR_LABELS[row.operator]}
                     </span>
-                    <div className="h-2 flex-1 overflow-hidden rounded-full bg-surface-3">
+                    <div className="h-2 min-w-8 flex-1 overflow-hidden rounded-full bg-surface-3">
                       <div
                         className="h-full rounded-full bg-state-success-fg"
                         style={{ width: `${Math.round(ratio * 100)}%` }}
                       />
                     </div>
-                    <span className="w-32 shrink-0 text-right font-mono text-caption text-muted-foreground">
+                    <span className="w-20 shrink-0 text-right font-mono text-caption text-muted-foreground sm:w-32">
                       {formatPercent(ratio)} ({formatCount(row.delivered)}/
                       {formatCount(row.terminalTotal)})
                     </span>
@@ -462,6 +382,6 @@ export function DashboardScreen() {
         count of <span className="font-mono text-foreground">WebhookAttempt</span> rows, a different
         table from the framework's own internal event outbox those alerts describe.
       </p>
-    </main>
+    </div>
   );
 }
