@@ -1,7 +1,7 @@
-# Shared build context for every Dockerfile in this repo (app/sms-gateway,
-# app/sms-worker, admin) — all three build from the repo root, because
+# Shared build context for every Dockerfile in this repo (backends/apps/sms-gateway,
+# backends/apps/sms-worker, admin) — all three build from the repo root, because
 # include_server_schema! needs schema/ and the pnpm workspace needs
-# packages/. This file keeps that root context small; without it, `target/`
+# frontends/packages/. This file keeps that root context small; without it, `target/`
 # and `node_modules/` alone turn a multi-second `docker build` context
 # upload into a multi-minute one.
 
@@ -16,9 +16,9 @@ node_modules/
 **/.next/
 **/dist/
 # generated at build time inside the image, never from the host — see
-# packages/sms-client/GENERATING.md
-packages/sms-client/src/
-packages/sms-client/dist/
+# frontends/packages/sms-client/GENERATING.md
+frontends/packages/sms-client/src/
+frontends/packages/sms-client/dist/
 
 # VCS / editor / OS
 .git/

@@ -2,7 +2,7 @@
 
 Runnable, copy-pasteable examples of the thing nothing else in this repo
 demonstrates: **a third-party backend calling vsms over real HTTP.**
-`crates/sms-api/examples/send_test_message.rs` calls
+`backends/crates/sms-api/examples/send_test_message.rs` calls
 `Procedures::send_message` in-process — useful for seeding fixtures, but it
 never proves the `private_key_jwt` token exchange or the REST surface an
 actual integrator uses. These do. See
@@ -18,7 +18,7 @@ Both examples do the identical, real thing, end to end:
 5. Read the message back with `GET {issuer}/messages/{id}` and print its
    state.
 
-Both mirror `packages/gateway/src/token.ts` — the admin console's own
+Both mirror `frontends/packages/gateway/src/token.ts` — the admin console's own
 token acquisition — for steps 1-3, rather than inventing a second
 interpretation of the same exchange.
 
@@ -60,9 +60,9 @@ Both are genuinely separate from the product's own workspaces:
   root's `/target` pattern is anchored to the repo root only.
 - **Node:** `examples/pnpm-workspace.yaml` (packages: `node/*`) is a
   workspace root of its own, separate from the repo root's
-  `pnpm-workspace.yaml` (`admin`, `packages/*`). `pnpm install` run from
+  `pnpm-workspace.yaml` (`admin`, `frontends/packages/*`). `pnpm install` run from
   `examples/` produces its own `pnpm-lock.yaml` here and never touches
-  `admin/`'s or `packages/*`'s.
+  `frontends/apps/admin/`'s or `frontends/packages/*`'s.
 
 ## Running either example
 
@@ -153,8 +153,8 @@ prove.
 `examples/rust/sms-send/src/main.rs` used to hand-roll RFC 7523 assertion
 signing, the `/token` exchange, and token caching itself (~230 lines of
 it) — the exact duplication [#171](https://github.com/vymalo/vsms/issues/171)
-was filed to stop, since `packages/gateway/src/token.ts` and
-`app/sms-gateway/tests/provision_client_cli_live_postgres.rs` each
+was filed to stop, since `frontends/packages/gateway/src/token.ts` and
+`backends/apps/sms-gateway/tests/provision_client_cli_live_postgres.rs` each
 implemented the identical dance separately. It now depends on
 `sdks/rust/vsms-sdk-rust` (a path dependency here — a real integrator
 outside this monorepo would depend on the published crates.io version
@@ -187,14 +187,14 @@ testing prior to registry publication; a third-party integrator should install
 request header). **An earlier revision of this section said it wasn't
 wired into this deployment — that was true when this section was written,
 and is no longer true.** [#153](https://github.com/vymalo/vsms/issues/153)
-mounted it in `crates/sms-api/src/router.rs`; sending an `Idempotency-Key`
+mounted it in `backends/crates/sms-api/src/router.rs`; sending an `Idempotency-Key`
 header now does exactly what §4.5 always said it would.
 
 Both examples demonstrate both mechanisms, and they protect against
 different failures:
 
 - **`--client-ref`** (`sendMessage`'s own `clientRef` field,
-  `crates/sms-api/src/procedures.rs`) doubles as `idempotencyKey` at the
+  `backends/crates/sms-api/src/procedures.rs`) doubles as `idempotencyKey` at the
   database layer, backed by the real `messages_app_idem_key` unique index,
   scoped per `App`. Two `sendMessage` calls under the same `App` with the
   same `clientRef` result in exactly one `Message` row — the second
@@ -222,8 +222,8 @@ that fires.
 ### `aud` on the client assertion
 
 Both examples set `aud` to the token endpoint URL (`{issuer}/token`),
-matching `packages/gateway/src/token.ts` exactly. `authkestra` 0.3.2+ also
-accepts the bare issuer — the live test suites in `app/sms-gateway/tests/`
+matching `frontends/packages/gateway/src/token.ts` exactly. `authkestra` 0.3.2+ also
+accepts the bare issuer — the live test suites in `backends/apps/sms-gateway/tests/`
 use that form — but matching the canonical reference removes one axis of
 divergence to debug if the exchange ever starts failing.
 

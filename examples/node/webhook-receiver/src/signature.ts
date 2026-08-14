@@ -12,11 +12,11 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
  * names the MAC primitive. HMAC-SHA256 was this file's own reading of
  * that shape — a guess, even if an obvious one.
  *
- * #41 shipped `crates/sms-webhook`, the real Rust implementation, and it
+ * #41 shipped `backends/crates/sms-webhook`, the real Rust implementation, and it
  * is HMAC-SHA256 — this file's guess was correct. That is no longer
  * something this comment merely asserts: `cross-language-vectors.test.ts`
  * in this same directory loads
- * `crates/sms-webhook/tests/fixtures/cross_language_vectors.json` — a
+ * `backends/crates/sms-webhook/tests/fixtures/cross_language_vectors.json` — a
  * fixture whose `signatureHeader` values were computed by neither this
  * file's code nor the Rust crate's, but independently, with `openssl dgst
  * -sha256 -hmac` — and asserts `verifySignature` below agrees with every
@@ -37,7 +37,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
  * "Two `v1=` values during rotation, oldest last; receivers accept if any
  * verifies, which makes rotation a non-event for them." — during a
  * rotation, `key` is `.prevSecret` for the older of the two values.
- * `rotateWebhookSecret` (`crates/sms-api/src/procedures.rs`, #41) moves
+ * `rotateWebhookSecret` (`backends/crates/sms-api/src/procedures.rs`, #41) moves
  * `secret` → `prevSecret` and generates a fresh `secret`
  * (`sms_webhook::generate_secret()`, `whsec_<64 hex chars>`). §4.4 also
  * says "a job clears `prevSecret` after 24 hours" — that job
@@ -107,7 +107,7 @@ export function computeSignature(
 const HEX_DIGEST = /^[0-9a-f]+$/i;
 
 /** Constant-time compare of two hex digests, mirroring the pattern in
- *  `admin/middleware.ts`'s `digestsMatch` — that one hand-rolls XOR because
+ *  `frontends/apps/admin/middleware.ts`'s `digestsMatch` — that one hand-rolls XOR because
  *  it runs on the Edge runtime with no `Buffer`; this one has full Node and
  *  uses `crypto.timingSafeEqual` directly. */
 function digestsMatch(candidateHex: string, expectedHex: string): boolean {

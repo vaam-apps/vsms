@@ -8,8 +8,8 @@ import { verifySignature } from "./signature.ts";
 /**
  * #41's cross-language proof, the Node half.
  *
- * `crates/sms-webhook/tests/fixtures/cross_language_vectors.json` is a
- * fixture shared with `crates/sms-webhook/tests/cross_language_fixtures.rs`
+ * `backends/crates/sms-webhook/tests/fixtures/cross_language_vectors.json` is a
+ * fixture shared with `backends/crates/sms-webhook/tests/cross_language_fixtures.rs`
  * (the Rust side of the same proof — see that file's own module doc).
  * Every `signatureHeader` value in it was computed with neither this
  * file's code nor the Rust crate's — a third, independent tool
@@ -34,6 +34,7 @@ const fixturePath = join(
   "..",
   "..",
   "..",
+  "backends",
   "crates",
   "sms-webhook",
   "tests",

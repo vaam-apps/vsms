@@ -18,7 +18,7 @@ importers:
         specifier: 2.10.9
         version: 2.10.9
 
-  admin:
+  frontends/apps/admin:
     dependencies:
       '@hookform/resolvers':
         specifier: 5.7.1
@@ -28,19 +28,19 @@ importers:
         version: 11.18.0(typescript@5.9.3)
       '@vsms/api':
         specifier: workspace:*
-        version: link:../packages/api
+        version: link:../../packages/api
       '@vsms/env':
         specifier: workspace:*
-        version: link:../packages/env
+        version: link:../../packages/env
       '@vsms/gateway':
         specifier: workspace:*
-        version: link:../packages/gateway
+        version: link:../../packages/gateway
       '@vsms/hooks':
         specifier: workspace:*
-        version: link:../packages/hooks
+        version: link:../../packages/hooks
       '@vsms/ui':
         specifier: workspace:*
-        version: link:../packages/ui
+        version: link:../../packages/ui
       jose:
         specifier: 6.2.8
         version: 6.2.8
@@ -91,7 +91,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)
 
-  packages/api:
+  frontends/packages/api:
     dependencies:
       '@trpc/server':
         specifier: 11.18.0
@@ -122,7 +122,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)
 
-  packages/env:
+  frontends/packages/env:
     dependencies:
       '@t3-oss/env-nextjs':
         specifier: 0.13.11
@@ -138,7 +138,7 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
-  packages/gateway:
+  frontends/packages/gateway:
     dependencies:
       '@vsms/env':
         specifier: workspace:*
@@ -163,7 +163,7 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)
 
-  packages/hooks:
+  frontends/packages/hooks:
     dependencies:
       '@tanstack/react-query':
         specifier: 5.101.4
@@ -200,7 +200,7 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
-  packages/sms-client:
+  frontends/packages/sms-client:
     dependencies:
       decimal.js:
         specifier: ^10.6.0
@@ -213,7 +213,7 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
-  packages/ui:
+  frontends/packages/ui:
     dependencies:
       '@headlessui/react':
         specifier: ^2.2.10
@@ -1416,8 +1416,8 @@ packages:
     resolution: {integrity: sha512-b6Ilus+c3RrdDk+JhLKUAQfzzgLEPy6wcXqS7f/xe1EETvsDP6GORG7SFuOs6cID5YkqchW/LXZbX5bc8j7ZcQ==}
     engines: {node: '>=8'}
 
-  caniuse-lite@1.0.30001807:
-    resolution: {integrity: sha512-daRXJ9EB/rdRgu7kV+TTl1YUKtlsMWblPl2sLnpg9DZae16QCegol6A1SmCE31Lm9mXC1sRWGt/krouH+/dl7Q==}
+  caniuse-lite@1.0.30001809:
+    resolution: {integrity: sha512-xxWVywk6a6Arlk+hymeycyn/VgqEfLDxupvhH/xiY5SJ/18kmi9o6MiO320DCUzypORHLtvh0I4i04tUhCNHNQ==}
 
   chai@5.3.3:
     resolution: {integrity: sha512-4zNhdJD/iOjSH0A05ea+Ke6MU5mmpQcbQsSOkgdaUMJ9zTlDTD/GYlwohmIE2u0gaxHYiVHEn1Fw9mZ/ktJWgw==}
@@ -2728,7 +2728,7 @@ snapshots:
 
   cac@6.7.14: {}
 
-  caniuse-lite@1.0.30001807: {}
+  caniuse-lite@1.0.30001809: {}
 
   chai@5.3.3:
     dependencies:
@@ -2910,7 +2910,7 @@ snapshots:
     dependencies:
       '@next/env': 15.5.23
       '@swc/helpers': 0.5.15
-      caniuse-lite: 1.0.30001807
+      caniuse-lite: 1.0.30001809
       postcss: 8.4.31
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)

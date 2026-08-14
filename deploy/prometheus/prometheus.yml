@@ -1,7 +1,7 @@
 # #70/#71: scrape config for the `prometheus` service in
 # deploy/docker-compose.yml. Two targets, both reached over the compose
 # network's own internal DNS — neither is published to the host or fronted
-# by Caddy (see crates/sms-api/src/metrics.rs's own module doc for why
+# by Caddy (see backends/crates/sms-api/src/metrics.rs's own module doc for why
 # `/metrics` deliberately lives on a second port Caddy's blanket
 # `reverse_proxy sms-gateway:8080` never reaches).
 global:

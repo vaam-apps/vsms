@@ -48,7 +48,7 @@ Runnable: [`examples/rust/sms-send`](../examples/rust/sms-send).
 
 ### Node — the example
 
-[`examples/node/sms-send-example`](../examples/node/sms-send-example/src/index.mjs) is one file doing the assertion, the exchange, and the send. Copy it; it mirrors the admin console's own [`packages/gateway/src/token.ts`](../packages/gateway/src/token.ts) rather than inventing a second reading of the same spec.
+[`examples/node/sms-send-example`](../examples/node/sms-send-example/src/index.mjs) is one file doing the assertion, the exchange, and the send. Copy it; it mirrors the admin console's own [`frontends/packages/gateway/src/token.ts`](../frontends/packages/gateway/src/token.ts) rather than inventing a second reading of the same spec.
 
 ### Any language — raw HTTP
 
@@ -61,7 +61,7 @@ Runnable: [`examples/rust/sms-send`](../examples/rust/sms-send).
 
 ## 3. Request and response
 
-`SendMessageInput` ([`schema.cstack`](../schema/schema.cstack)):
+`SendMessageInput` ([`schema.cstack`](../schemas/vsms.cstack)):
 
 | Field | Type | Notes |
 |---|---|---|
@@ -88,7 +88,7 @@ Runnable: [`examples/rust/sms-send`](../examples/rust/sms-send).
 
 `state` is always `accepted` on a successful send — delivery is asynchronous. Do not treat a 200 as delivery.
 
-**`encoding` and `segments` are worth reading on every response.** A single character outside GSM 03.38 flips the whole body to UCS-2 and roughly halves the per-segment capacity — an accented capital (`È`, `Ù`) or an emoji is enough. `previewMessage` computes this without sending, if you want to check before committing. See [`crates/sms-encoding`](../crates/sms-encoding).
+**`encoding` and `segments` are worth reading on every response.** A single character outside GSM 03.38 flips the whole body to UCS-2 and roughly halves the per-segment capacity — an accented capital (`È`, `Ù`) or an emoji is enough. `previewMessage` computes this without sending, if you want to check before committing. See [`backends/crates/sms-encoding`](../backends/crates/sms-encoding).
 
 ### `class` changes what is allowed, not just how it routes
 

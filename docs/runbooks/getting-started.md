@@ -114,7 +114,7 @@ ORANGE_CM_SENDER_NUMBER=+2370000 \
     cargo run --bin sms-worker
 ```
 
-`cargo run --bin sms-worker`, not `-p sms-worker` — the package is named `sms-worker-bin` (the *library* crate `crates/sms-worker` already owns the plain name), but the `[[bin]]` it produces is still called `sms-worker`, and `--bin` resolves by binary name across the whole workspace regardless of which package declares it.
+`cargo run --bin sms-worker`, not `-p sms-worker` — the package is named `sms-worker-bin` (the *library* crate `backends/crates/sms-worker` already owns the plain name), but the `[[bin]]` it produces is still called `sms-worker`, and `--bin` resolves by binary name across the whole workspace regardless of which package declares it.
 
 Placeholder Orange credentials are enough to prove the whole pipeline moves the message you already sent through `accepted → queued → routed`: routing only needs an `active` `Provider` row and a matching, enabled `Route` (since [#62](https://github.com/vymalo/vsms/issues/62); `send_test_message` seeds both), not a real Orange account. `routed` is where dispatch actually attempts a submission — with placeholder credentials that attempt fails outright (a real `401` from Orange's own OAuth endpoint, since `ORANGE_CM_BASE_URL` defaults to the real `https://api.orange.com`), landing the message in `failed` with the rejection reason attached, never reaching `submitted`. That's expected, and exactly the boundary [docs/runbooks/36-handset-gate.md](36-handset-gate.md) exists to cross with real credentials. Watch it with the `psql` command `send_test_message` printed:
 
@@ -127,12 +127,12 @@ Placeholder Orange credentials are enough to prove the whole pipeline moves the 
 ## 6. See it reach `delivered` without a real Orange account
 
 Everything above proves routing; it can't prove delivery, because `routed` is exactly
-where a placeholder credential dies. `app/sms-fake-orange` closes that gap for a demo or
+where a placeholder credential dies. `backends/apps/sms-fake-orange` closes that gap for a demo or
 local run — it's a standalone process that impersonates Orange's token and submit
 endpoints and independently POSTs a `delivered` DLR back, so `sms-worker`/`sms-gateway`
 need no code change to talk to it, only `ORANGE_CM_BASE_URL` pointed elsewhere. **It is a
 development/demo tool, not a real provider — never point a production deployment at it**
-(see the binary's own module doc, `app/sms-fake-orange/src/main.rs`).
+(see the binary's own module doc, `backends/apps/sms-fake-orange/src/main.rs`).
 
 ```bash
 # terminal 3 — the fake, bound on its own port
@@ -146,9 +146,9 @@ Then start terminals 1 and 2 exactly as in step 5, but with
 `ORANGE_CM_BASE_URL=http://127.0.0.1:8090` added to both (still with placeholder
 `ORANGE_CM_CLIENT_ID`/`ORANGE_CM_CLIENT_SECRET` — the fake accepts any credentials by
 default) and send a fresh message. Watch the same `psql` query this time land on
-`delivered`, and `app/sms-fake-orange`'s own log show the submit it received and the DLR
+`delivered`, and `backends/apps/sms-fake-orange`'s own log show the submit it received and the DLR
 it posted back. `--fault-mode seeded --seed <n>` drives the same weighted failure mix
-`crates/sms-worker`'s chaos suite uses, for demoing the interesting paths instead of the
+`backends/crates/sms-worker`'s chaos suite uses, for demoing the interesting paths instead of the
 happy one.
 
 This still doesn't close [`36-handset-gate.md`](36-handset-gate.md) — nothing here proves
@@ -182,7 +182,7 @@ paste into the console (or any other machine caller)'s environment:
   SMS_CONSOLE_PRIVATE_KEY_PATH=./console-client-key.pem
 ```
 
-Those two lines are exactly `.env.example`'s `SMS_CONSOLE_CLIENT_ID` / `SMS_CONSOLE_PRIVATE_KEY_PATH` — paste them (plus `SMS_AUTH_ISSUER` matching whatever `--issuer` `serve` was started with, and a `SMS_CONSOLE_SCOPE` drawn from `--scope` above) straight into the admin console's own environment. `app/sms-gateway/tests/provision_client_cli_live_postgres.rs` is this command's own live acceptance test: it runs the real binary against a real Postgres, then spawns a genuinely separate `sms-gateway serve` process and proves the key file it wrote completes a real `private_key_jwt` exchange at `/token` and an authenticated `sendMessage` call — the exact thing `crates/sms-api/examples/send_test_message.rs` does *not* prove, since the `AppClient` row it writes directly has no `OauthClient.jwks` and could never complete that exchange.
+Those two lines are exactly `.env.example`'s `SMS_CONSOLE_CLIENT_ID` / `SMS_CONSOLE_PRIVATE_KEY_PATH` — paste them (plus `SMS_AUTH_ISSUER` matching whatever `--issuer` `serve` was started with, and a `SMS_CONSOLE_SCOPE` drawn from `--scope` above) straight into the admin console's own environment. `backends/apps/sms-gateway/tests/provision_client_cli_live_postgres.rs` is this command's own live acceptance test: it runs the real binary against a real Postgres, then spawns a genuinely separate `sms-gateway serve` process and proves the key file it wrote completes a real `private_key_jwt` exchange at `/token` and an authenticated `sendMessage` call — the exact thing `backends/crates/sms-api/examples/send_test_message.rs` does *not* prove, since the `AppClient` row it writes directly has no `OauthClient.jwks` and could never complete that exchange.
 
 ## 8. Run the admin console against it
 
@@ -194,13 +194,13 @@ Prerequisites: **Node >= 22** and **pnpm 11** (`packageManager` in the root `pac
 pins the exact version; `corepack enable` will resolve it automatically).
 
 ```bash
-# from the repo root — this is a pnpm workspace, not just admin/
+# from the repo root — this is a pnpm workspace, not just frontends/apps/admin/
 pnpm install
 ```
 
-Then create `admin/.env.local` (gitignored — `.env.example` at the repo root is the
+Then create `frontends/apps/admin/.env.local` (gitignored — `.env.example` at the repo root is the
 template, but the console's own required keys are the ones listed in
-`packages/env/src/index.ts`) with the values `provision-client` printed above:
+`frontends/packages/env/src/index.ts`) with the values `provision-client` printed above:
 
 ```text
 SMS_API_URL=http://127.0.0.1:8080
@@ -225,7 +225,7 @@ NODE_ENV=development
 ```
 
 `SMS_CONSOLE_PRIVATE_KEY_PATH` must be an absolute path (or resolve correctly relative to
-`admin/`, wherever Next actually runs from) — `provision-client --key-out` above accepts a
+`frontends/apps/admin/`, wherever Next actually runs from) — `provision-client --key-out` above accepts a
 relative path, but the console reads the file at request time from its own working
 directory, not the shell's.
 

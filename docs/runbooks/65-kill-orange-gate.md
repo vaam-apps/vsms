@@ -16,7 +16,7 @@ that needs a real staging deployment and a real Orange/aggregator account is
 this runbook.** Which is which is stated plainly in both places, and neither
 substitutes for the other.
 
-`crates/sms-worker/tests/kill_orange_gate_live_postgres.rs` is the automated
+`backends/crates/sms-worker/tests/kill_orange_gate_live_postgres.rs` is the automated
 half — one live-Postgres test, `orange_outage_fails_over_mtn_stays_up_
 nothing_double_sends_and_the_breaker_reopens`, that walks a single realistic
 timeline (Orange healthy → killed → revived) against **real** adapter code:
@@ -96,7 +96,7 @@ not the whole network:
    suite's connection-refused scenario** (`TryNextRoute`, not
    `OpenCircuitAndTryNextRoute` — see `dispatch.rs`'s own table). Failover
    still happens, but the circuit breaker never opens this way (`Permanent`
-   never opens it, by design — `crates/sms-provider/src/error.rs`'s own
+   never opens it, by design — `backends/crates/sms-provider/src/error.rs`'s own
    `permanent_never_opens_the_circuit_breaker`). **This mechanism alone
    cannot prove clause 4** (the breaker reopening) — pair it with one of the
    two below, or run this one for clauses 1–3 and a different one for 4.

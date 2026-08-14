@@ -90,7 +90,7 @@ struct Cli {
 
     /// Sent as the `Idempotency-Key` request header on the `sendMessage`
     /// call — vsms's own `IdempotencyLayer` (#153,
-    /// `crates/sms-api/src/router.rs`). Optional — but pass the *same*
+    /// `backends/crates/sms-api/src/router.rs`). Optional — but pass the *same*
     /// value across two runs within the TTL window (24h by default) and
     /// the second call never re-executes `sendMessage` at all: it replays
     /// the exact first response, `Idempotency-Replayed: true`, with no

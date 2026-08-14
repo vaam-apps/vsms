@@ -2,7 +2,7 @@
 #
 # The maintainer's standing direction is Docker Compose over hand-built
 # `docker run` invocations, for full portability — this file, plus
-# `crates/sms-test-support`'s conversion to drive it via `docker compose`
+# `backends/crates/sms-test-support`'s conversion to drive it via `docker compose`
 # instead of raw `docker run`, is the first step.
 #
 # **Correction, containerize-tooling PR:** an earlier revision of this
@@ -28,7 +28,7 @@
 # `psql` prompt — without pulling in anything else.
 #
 # Default project name is `vsms` (a bare `docker compose up` uses it).
-# `crates/sms-test-support` overrides it with `-p vsms-test-harness` and
+# `backends/crates/sms-test-support` overrides it with `-p vsms-test-harness` and
 # `VSMS_POSTGRES_PORT=55432`, so the two can never collide on a container,
 # network, volume, or host port — Compose scopes every resource it creates
 # to the project name that created it (`com.docker.compose.project`, a real
@@ -48,7 +48,7 @@ services:
       POSTGRES_PASSWORD: vsms
       POSTGRES_DB: vsms
     # Loopback only, never `0.0.0.0` — matches the `docker run` design this
-    # replaces (`crates/sms-test-support`'s own module doc). Compose's
+    # replaces (`backends/crates/sms-test-support`'s own module doc). Compose's
     # default `<port>:<container-port>` shorthand binds every interface;
     # that was caught live, not assumed, running this exact mapping and
     # seeing `0.0.0.0:55432->5432/tcp` in `docker ps` before this line was
@@ -60,7 +60,7 @@ services:
     # accepts TCP connections briefly during its own internal
     # restart-after-initdb before it is actually ready to serve queries,
     # and a bare port check races that window (this bit
-    # `crates/sms-test-support` once already; see its own module doc).
+    # `backends/crates/sms-test-support` once already; see its own module doc).
     # `docker compose up --wait` blocks on this reporting `healthy`.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U vsms -d vsms"]

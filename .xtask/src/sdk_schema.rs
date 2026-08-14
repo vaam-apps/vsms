@@ -1,10 +1,10 @@
-//! The Rust SDK's vendored copy of `schema/schema.cstack`.
+//! The Rust SDK's vendored copy of `schemas/vsms.cstack`.
 //!
 //! Port of the deleted `ci/assert-sdk-schema-current.sh` (the drift check)
 //! and `sdks/rust/vsms-sdk-rust/vendor-schema.sh` (the refresh). Both stay
 //! together in one module because they are two views of one fact: whether
 //! `sdks/rust/vsms-sdk-rust/schema.cstack` is a plain, byte-for-byte copy of
-//! `schema/schema.cstack`.
+//! `schemas/vsms.cstack`.
 //!
 //! # Why a copy exists at all
 //!
@@ -12,7 +12,7 @@
 //! against the invoking crate's own `CARGO_MANIFEST_DIR`, and bakes an
 //! absolute `include_str!(...)` of that resolved path into the macro
 //! expansion. That path is real at this monorepo's own build time — a
-//! relative `../../../schema/schema.cstack` would resolve fine — but
+//! relative `../../../schemas/vsms.cstack` would resolve fine — but
 //! `vsms-sdk-rust` is meant to be published to crates.io and built from an
 //! integrator's own cargo registry cache, where nothing above the crate's
 //! own directory exists. So the schema this crate expands against has to
@@ -21,7 +21,7 @@
 use std::fs;
 use std::path::Path;
 
-const CANONICAL: &str = "schema/schema.cstack";
+const CANONICAL: &str = "schemas/vsms.cstack";
 const VENDORED: &str = "sdks/rust/vsms-sdk-rust/schema.cstack";
 
 /// `assert-sdk-schema-current.sh`: fail if the vendored copy has drifted.

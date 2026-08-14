@@ -5,7 +5,7 @@ epic [#66](https://github.com/vymalo/vsms/issues/66), plus two more from
 [#64](https://github.com/vymalo/vsms/issues/64) (grey-route detection,
 epic [#60](https://github.com/vymalo/vsms/issues/60)). §9.1 of
 [the design doc](../architecture.md#91-observability) is the spec #70/#71
-implement; [`crates/sms-metrics/src/lib.rs`](../../crates/sms-metrics/src/lib.rs)'s
+implement; [`backends/crates/sms-metrics/src/lib.rs`](../../backends/crates/sms-metrics/src/lib.rs)'s
 own module doc is the authoritative reference for what each metric
 measures and why it's shaped the way it is. This file is the operator-
 facing half: what fires, and what to do about it.
@@ -31,7 +31,7 @@ The other half of #71 — before getting into the five alerts, since this is
 what makes any of them actionable rather than just a number on a graph.
 Three log lines, three different processes, joined by one value:
 
-1. **`sms-gateway`**, inside `sendMessage` (`crates/sms-api/src/
+1. **`sms-gateway`**, inside `sendMessage` (`backends/crates/sms-api/src/
    procedures.rs::send`): `info!(message_id, app_id, client_ref,
    cratestack_request_id, state, "message accepted")`. The framework's own
    generated `cratestack_procedure`/`cratestack_request_id`-carrying log
@@ -39,15 +39,15 @@ Three log lines, three different processes, joined by one value:
    one in the same request — `cratestack_request_id` ties every log line
    for *this one HTTP request* together, whether that request came in with
    its own `X-Request-Id` header (honoured verbatim — see
-   `crates/sms-api/src/auth.rs::request_id_from`) or got a freshly minted
+   `backends/crates/sms-api/src/auth.rs::request_id_from`) or got a freshly minted
    one.
 2. **`sms-worker`**, inside `dispatch::submit_one`
-   (`crates/sms-worker/src/dispatch.rs`): `info!(message_id, provider,
+   (`backends/crates/sms-worker/src/dispatch.rs`): `info!(message_id, provider,
    provider_ref, "message submitted")`. No `cratestack_request_id` here —
    this loop runs under an internal `system` context this crate mints
    itself, never derived from the HTTP request that originally created the
    message, so there is nothing request-scoped to carry forward.
-3. **`sms-gateway`** again, inside DLR ingestion (`crates/sms-api/src/
+3. **`sms-gateway`** again, inside DLR ingestion (`backends/crates/sms-api/src/
    dlr.rs::ingest_one`): `info!(message_id, from_state, to_state,
    provider_ref, "DLR applied")`. Also no `cratestack_request_id` — a DLR
    arrives on its own unauthenticated HTTP connection with no bearer token
@@ -82,7 +82,7 @@ backstop, not a control path"). If this fires:
 1. Read the alert's own `entity`/`from_state`/`to_state` labels — they name
    exactly which guard trigger rejected which edge
    (`messages_guard_transition`/`jobs_guard_transition`/
-   `attempts_guard_transition`, `schema/migrations/postgres/
+   `attempts_guard_transition`, `backends/migrations/postgres/
    0002_bootstrap/up.sql`).
 2. Grep both `sms-gateway` and `sms-worker` logs for `cratestack_error` /
    `illegal ... transition ... on <id>` around the alert's firing time —
@@ -111,7 +111,7 @@ the exact expressions. All three follow the same shape: `sum(...) == 0`
    deployment that dropped the role from every instance's configuration
    entirely, not a crash.
 2. If the role is configured somewhere, check that process's logs for
-   `RoleLease`/`run_singleton` errors (`crates/sms-worker/src/lease.rs`) —
+   `RoleLease`/`run_singleton` errors (`backends/crates/sms-worker/src/lease.rs`) —
    a connection failure attempting `pg_try_advisory_lock` is the "actually
    broken," not "someone else has it," case §7.2/`lease.rs`'s own doc
    names as the one worth alerting on.
@@ -125,7 +125,7 @@ the exact expressions. All three follow the same shape: `sum(...) == 0`
 
 **`SMSConcurrentDispatchSubmits`** — `sum(sms_dispatch_in_flight_submits) > 1`
 sustained for a minute. `dispatch` is a singleton role and submits
-sequentially within one process (`crates/sms-worker/src/dispatch.rs::tick`'s
+sequentially within one process (`backends/crates/sms-worker/src/dispatch.rs::tick`'s
 own `for` loop, never spawned) — a sustained fleet-wide sum above `1` means
 the advisory-lock exclusion itself has been defeated, not routine
 concurrency.
@@ -136,7 +136,7 @@ concurrency.
    with `dispatch` when only one should be.
 2. Check Postgres's own `pg_locks` for the `dispatch` advisory lock
    (`SELECT * FROM pg_locks WHERE locktype = 'advisory'` —
-   `crates/sms-worker/src/lease.rs`'s `NS`/`advisory_lock_key` constants
+   `backends/crates/sms-worker/src/lease.rs`'s `NS`/`advisory_lock_key` constants
    give the exact `(classid, objid)` pair to look for) — more than one
    session holding it is the smoking gun; if only one session holds it but
    the metric still shows concurrency, the more likely explanation is a
@@ -152,7 +152,7 @@ concurrency.
 
 **`SMSWebhookOutboxStalled`** — the oldest still-undelivered
 `cratestack_event_outbox` row has been waiting past `drain`'s own 2-minute
-stalled threshold (`crates/sms-worker/src/drain.rs::STALLED_THRESHOLD`), or
+stalled threshold (`backends/crates/sms-worker/src/drain.rs::STALLED_THRESHOLD`), or
 the metric is absent entirely (which means `drain` is unheld — see the
 `SMSDrainSingletonUnheld` alert, which will also be firing).
 
@@ -171,7 +171,7 @@ the metric is absent entirely (which means `drain` is unheld — see the
 ### Poison event-outbox rows {#poison-rows}
 
 **`SMSEventOutboxPoisonRows`** — `sum(sms_event_outbox_poison_rows) > 0`.
-Reuses `crates/sms-worker/src/jobs/reap_outbox.rs`'s own
+Reuses `backends/crates/sms-worker/src/jobs/reap_outbox.rs`'s own
 `POISON_ATTEMPTS_THRESHOLD` (5) — any non-zero value here already means a
 row has retried past that threshold with no successful delivery.
 
@@ -193,7 +193,7 @@ row has retried past that threshold with no successful delivery.
 
 **`SMSRouteDeliveryDivergence`** — `sum(sms_route_delivery_divergence_flagged) > 0`,
 debounced 5m. Set by `crate::jobs::grey_route_watch`'s daily run (see
-`crates/sms-worker/src/jobs/grey_route_watch.rs`'s own module doc for the
+`backends/crates/sms-worker/src/jobs/grey_route_watch.rs`'s own module doc for the
 full mechanism): a route's own delivery rate, over the last 7 days, is both
 statistically implausible (a two-proportion z-test past a conservative
 threshold) and practically meaningful (at least a 15-point gap) worse than

@@ -96,7 +96,7 @@ parity:
 no-raw-sqlx:
 	{{_cargo}} xtask no-raw-sqlx
 
-# The Rust SDK's vendored schema.cstack must match schema/schema.cstack
+# The Rust SDK's vendored schema.cstack must match schemas/vsms.cstack
 sdk-schema-check:
 	{{_cargo}} xtask sdk-schema-check
 
@@ -127,25 +127,25 @@ schema-check:
 
 # Regenerate 0002_bootstrap from §2.10 of the design doc
 bootstrap-sql:
-	{{_cargo}} xtask bootstrap-sql schema/migrations/postgres/0002_bootstrap/up.sql
+	{{_cargo}} xtask bootstrap-sql backends/migrations/postgres/0002_bootstrap/up.sql
 
-# Regenerate packages/sms-client from schema/schema.cstack (T3). Per the
+# Regenerate frontends/packages/sms-client from schemas/vsms.cstack (T3). Per the
 # owner's standing rule, generated code is never committed — this package
 # is gitignored except `package.json` (see the .gitignore comment there
-# and packages/sms-client/GENERATING.md) and must be regenerated after
+# and frontends/packages/sms-client/GENERATING.md) and must be regenerated after
 # every `pnpm install`, before anything (`tsc`, `turbo`, `pnpm run build`)
 # consumes it. `--base-path ''` is load-bearing — the server serves routes
 # at `/`, not the generator's `/api` default. Also applies the DO-NOT-EDIT
 # README banner (see ci/postprocess-sms-client-readme.mjs) as a
 # deterministic, reproducible post-processing step, not a one-off hand-edit.
 client-gen:
-	{{cratestack_bin}} generate-typescript --schema schema/schema.cstack \
-		--out packages/sms-client --package-name @vsms/sms-client --base-path ''
-	node ci/postprocess-sms-client-readme.mjs packages/sms-client/README.md
+	{{cratestack_bin}} generate-typescript --schema schemas/vsms.cstack \
+		--out frontends/packages/sms-client --package-name @vsms/sms-client --base-path ''
+	node ci/postprocess-sms-client-readme.mjs frontends/packages/sms-client/README.md
 
-# The drift gate over packages/sms-client that still means something once
+# The drift gate over frontends/packages/sms-client that still means something once
 # nothing is committed (T3). There used to be a second gate here —
-# "does the committed client match schema/schema.cstack?" — but with no
+# "does the committed client match schemas/vsms.cstack?" — but with no
 # committed client there is nothing for it to diff against; it would
 # assert nothing, so it was removed rather than kept as decoration.
 #
@@ -212,7 +212,7 @@ demo-status:
 
 # The generated password `just demo` provisioned for `demo@vsms.local` —
 # printed once, to `provision-user`'s own container log, never stored
-# anywhere (see app/sms-gateway/src/main.rs's own `ProvisionUser` doc).
+# anywhere (see backends/apps/sms-gateway/src/main.rs's own `ProvisionUser` doc).
 demo-login:
 	docker compose -f compose.dev.yaml logs provision-user
 
@@ -222,7 +222,7 @@ demo-login:
 # see its own module doc for why it has to run *inside* the Compose
 # network rather than as a host process) to send as that integrator over
 # real HTTP and poll GET /messages/{id} AS THE CONSOLE's own credential —
-# the same route packages/gateway/src/messages.ts's getMessageById calls —
+# the same route frontends/packages/gateway/src/messages.ts's getMessageById calls —
 # until that exact message id reaches `delivered`. Fails loudly (non-zero
 # exit) if any link in the chain breaks. See docs/runbooks/e2e-integration.md
 # for what this proves, what it fakes (Orange, via sms-fake-orange — #36's

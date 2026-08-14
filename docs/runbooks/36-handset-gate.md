@@ -16,7 +16,7 @@ below for what that covers and, more importantly, does not.
 Test 2's mechanic — a real OS `kill -9` against the real `sms-worker` binary,
 against a wiremock-delayed stand-in for Orange — is now also a permanent,
 rerunnable regression test, not just a one-off manual dry run:
-`app/sms-worker/tests/kill9_reclaim_live.rs`. It proves the same thing Test 2
+`backends/apps/sms-worker/tests/kill9_reclaim_live.rs`. It proves the same thing Test 2
 below asks a human to reproduce by hand — crash mid-submit leaves the row
 `routed` and unlost, a second process reclaims and resubmits, and the
 resubmit is a genuinely new outbound call (double-send included, on
@@ -63,7 +63,7 @@ sms-gateway rotate-signing-key
 ```
 
 `rotate-signing-key` needs `max_connections >= 2` internally (fixed — see
-`app/sms-gateway/src/main.rs`'s own comment on `Command::RotateSigningKey` for
+`backends/apps/sms-gateway/src/main.rs`'s own comment on `Command::RotateSigningKey` for
 why); nothing to configure here, just run it once against a fresh database.
 
 ## Running both binaries
@@ -93,7 +93,7 @@ around it.
 
 ## Sending the test message
 
-`crates/sms-api/examples/send_test_message.rs` is the trigger for both tests —
+`backends/crates/sms-api/examples/send_test_message.rs` is the trigger for both tests —
 built specifically for this runbook, not a general-purpose tool. It seeds the
 minimal fixtures `sendMessage` needs (idempotently — safe to run repeatedly)
 and calls the real procedure:
@@ -144,11 +144,11 @@ state.
   - Orange's real `deliveryInfoNotification` doesn't carry `callbackData` at
     all, or carries it somewhere other than the top level this repo assumed
     from the public `OneAPI` reference docs (never Orange's own — see
-    `crates/sms-provider-orange-cm/src/dlr.rs`'s module doc).
+    `backends/crates/sms-provider-orange-cm/src/dlr.rs`'s module doc).
   - `receiptRequest` on the submit request isn't honoured the way the public
     `OneAPI` docs describe for Orange's specific product.
   Capture the raw payload (log it, or temporarily curl the same shape by
-  hand) and fix `crates/sms-provider-orange-cm/src/dlr.rs`'s `parse()` to
+  hand) and fix `backends/crates/sms-provider-orange-cm/src/dlr.rs`'s `parse()` to
   match reality — this is expected to be the first real test of that code's
   own long-standing "not verified against a live sandbox" caveat.
 - **No DLR arrives at all.** The webhook likely isn't reaching `sms-gateway`
@@ -245,7 +245,7 @@ Orange's HTTP API — was run end to end. It proved:
   → `delivered`, with a real `DeliveryReceipt` row.
 - `rotate-signing-key` genuinely works against a live database (a real bug
   in its connection pool sizing was found and fixed this way — see
-  `app/sms-gateway/src/main.rs`).
+  `backends/apps/sms-gateway/src/main.rs`).
 - The `kill -9` mechanic works exactly as designed: a crash mid-submit
   leaves the message in `routed` with a live lease; once that lease
   expires, a (possibly different) `sms-worker` instance reclaims and

@@ -24,7 +24,7 @@
       "outputs": []
     },
     // typecheck must not run ahead of (or concurrently with) this package's
-    // own build: admin/tsconfig.json's `include` lists
+    // own build: frontends/apps/admin/tsconfig.json's `include` lists
     // `.next/types/**/*.ts`, which `next build` generates partway through
     // its own run. This dependency was added in #133, then silently lost
     // during #135's merge (its turbo.json diff shows the line removed with
@@ -44,13 +44,13 @@
       "dependsOn": ["build"],
       "outputs": []
     },
-    // packages/sms-client (T3) is generated at build time and gitignored
+    // frontends/packages/sms-client (T3) is generated at build time and gitignored
     // (see .gitignore's comment there and GENERATING.md) — everything
     // except its package.json. Turbo's default task hashing only looks at
     // git-tracked (and untracked-but-not-ignored) files, so a regenerated
     // src/ that happens to be gitignored is INVISIBLE to it by default:
     // confirmed live — mutating a gitignored file under
-    // packages/sms-client/src and rerunning `turbo run build` served a
+    // frontends/packages/sms-client/src and rerunning `turbo run build` served a
     // stale `cache hit` with the old output, no rebuild at all. Declaring
     // `inputs` explicitly overrides that default and forces turbo to hash
     // these globs regardless of .gitignore, which is exactly what's

@@ -54,7 +54,7 @@
 # it and deny that real client service. This edge cannot key on client_id
 # at all, for a real, checked-not-assumed reason: `client_id` on `/token`
 # arrives only in the `application/x-www-form-urlencoded` POST body (see
-# `packages/gateway/src/token.ts`'s and `examples/rust/sms-send`'s own
+# `frontends/packages/gateway/src/token.ts`'s and `examples/rust/sms-send`'s own
 # request construction — no header, no query string, no Basic auth carries
 # it under `private_key_jwt`), and every way this edge could read a
 # specific form field out of that body was checked and rejected:
@@ -85,8 +85,8 @@
 # NAT gateway or shared egress, not for a dedicated service-account
 # caller) could still exhaust that shared IP bucket. Tracked as a real,
 # not cosmetic, gap — filed as #168. **Closed, not by this file**:
-# `app/sms-gateway/src/token_rate_limit.rs` is a second, defense-in-depth
-# limiter mounted on `/token` itself (in `app/sms-gateway/src/op.rs`,
+# `backends/apps/sms-gateway/src/token_rate_limit.rs` is a second, defense-in-depth
+# limiter mounted on `/token` itself (in `backends/apps/sms-gateway/src/op.rs`,
 # which already owns route assembly for this path — not `sms-auth`, and
 # not a first-party Caddy module, both weighed and rejected in #168's own
 # issue), keyed on the real `client_id` it reads from the already-buffered
@@ -101,7 +101,7 @@
 # can't attribute blame to one caller the way a real composite key would.
 #
 # `/dlr/{providerKey}` does not have this problem: `providerKey` is a URL
-# *path* segment (`app/sms-gateway/src/dlr.rs` mounts
+# *path* segment (`backends/apps/sms-gateway/src/dlr.rs` mounts
 # `POST /dlr/{providerKey}`), not a body field, so it is one of Caddy's
 # most ordinary placeholders (`{http.request.uri.path}`) — no body
 # parsing, no third-party risk. `dlr_per_source` below keys on IP *and*
@@ -149,7 +149,7 @@
 
 	rate_limit {
 		# Per-IP budget on /token. Sized against real caller behaviour,
-		# not a round number: `packages/gateway/src/token.ts` and
+		# not a round number: `frontends/packages/gateway/src/token.ts` and
 		# `examples/rust/sms-send` both cache the access token until
 		# `exp - 60s` off a 15-minute default TTL, i.e. one legitimate
 		# `/token` call roughly every 14 minutes per running client
@@ -248,7 +248,7 @@
 	# listener is a second, separate port (9090, default
 	# SMS_METRICS_LISTEN_ADDR) this block never names, not a route on
 	# 8080 — so there is nothing below for an attacker to even request
-	# through this domain. See crates/sms-api/src/metrics.rs's own module
+	# through this domain. See backends/crates/sms-api/src/metrics.rs's own module
 	# doc for the full reasoning (the same "must not become a DoS
 	# amplifier"/reconnaissance-value question `/readyz`'s R1 exception
 	# already answers for a different route).

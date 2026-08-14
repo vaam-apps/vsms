@@ -1,5 +1,5 @@
 //! `0001_init` matches what `cratestack migrate diff` actually produces
-//! from the current `schema/schema.cstack`.
+//! from the current `schemas/vsms.cstack`.
 //!
 //! Port of the deleted `ci/assert-migrations-current.sh` (#204). Migrations
 //! here are regenerated *wholesale* — there is no committed
@@ -21,8 +21,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const SCHEMA: &str = "schema/schema.cstack";
-const COMMITTED_DIR: &str = "schema/migrations/postgres/0001_init";
+const SCHEMA: &str = "schemas/vsms.cstack";
+const COMMITTED_DIR: &str = "backends/migrations/postgres/0001_init";
 
 /// Removes its temp directory on drop, on every exit path — success,
 /// error-return, or an early `?` — matching the bash version's own
@@ -137,9 +137,9 @@ pub fn run(root: &Path) -> Result<(), String> {
         "\nmigrations-current: {COMMITTED_DIR}/{{up,down}}.sql has drifted from what \
          `cratestack migrate diff` produces from the current {SCHEMA} (diff above).\n\
          Regenerate it (see AGENTS.md's 'Regenerating migrations' section):\n  \
-         cratestack migrate diff --schema {SCHEMA} --out-dir schema/migrations --backend postgres --name init\n  \
+         cratestack migrate diff --schema {SCHEMA} --out-dir backends/migrations --backend postgres --name init\n  \
          # then copy the output over {COMMITTED_DIR}/{{up,down}}.sql\n  \
-         rm -f schema/migrations/postgres/schema.snapshot.json   # this repo does not commit it"
+         rm -f backends/migrations/postgres/schema.snapshot.json   # this repo does not commit it"
     );
     Err(msg)
 }

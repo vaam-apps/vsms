@@ -1,0 +1,23 @@
+[package]
+name = "sms-routing"
+description = "The pure route-selection engine (#62, §6.3): priority/weight/predicate matching over a caller-supplied Route set. No I/O, no cratestack, no RNG — deterministic and explainable, so an admin simulator (#54) or a failover retry (#63) can replay a decision exactly by supplying the same inputs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# Pure crates only — matching sms-encoding/sms-msisdn/sms-provider's shape,
+# not the framework. This crate never touches cratestack, the schema, or a
+# database: the caller (backends/crates/sms-worker/src/routing.rs) fetches Route/
+# Provider rows and converts the schema's own enums onto this crate's
+# mirrored ones, the same pattern dispatch.rs's decode_encoding already
+# uses for Encoding -> sms_encoding::SmsEncoding.
+
+[dev-dependencies]
+
+[lints]
+workspace = true

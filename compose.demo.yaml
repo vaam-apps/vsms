@@ -40,7 +40,7 @@
 #
 # `down -v` (not a bare `down`) is the documented reset: `provision-client`
 # refuses to overwrite an existing private key (a real, intentional safety
-# property — see app/sms-gateway/src/main.rs's own doc on `--key-out`), so a
+# property — see backends/apps/sms-gateway/src/main.rs's own doc on `--key-out`), so a
 # second `up` against the *same* named volumes fails loudly rather than
 # silently reusing stale credentials. `-v` drops this file's own named
 # volumes (never a bind mount onto the host, and never anything from
@@ -53,7 +53,7 @@ name: vsms-demo
 
 # The one thing an evaluator should ever need to change: bump
 # VSMS_IMAGE_TAG (below, wherever it's interpolated) to showcase a newer
-# release. gateway/worker/admin/migrate are published together by
+# release. gateway/worker/frontends/apps/admin/migrate are published together by
 # .github/workflows/release.yml's `v*.*.*` trigger and always share one
 # tag. (A YAML anchor was tried first and rejected: `*anchor` only
 # resolves as a whole scalar node, never embedded inside a larger string
@@ -83,7 +83,7 @@ name: vsms-demo
 # `Command::SeedDemoApp`) into its own binary and its own image,
 # `ghcr.io/vymalo/vsms/demo`, so that no demo-only fixture-seeding code
 # ships inside the production gateway image any more. See that binary's
-# own module doc (`app/vsms-demo-seed/src/main.rs`) for the full
+  # own module doc (`backends/apps/vsms-demo-seed/src/main.rs`) for the full
 # reasoning. It's versioned independently via `VSMS_DEMO_IMAGE_TAG`
 # (required, no default — same `:?` shape `VSMS_FAKE_ORANGE_IMAGE_TAG`
 # already uses below, for the identical reason: this image has never been
@@ -116,8 +116,8 @@ services:
     volumes:
       - vsms_demo_pgdata:/var/lib/postgresql/data
 
-  # One-shot: applies schema/migrations/postgres/{0001_init,0002_bootstrap}
-  # exactly once each. See app/sms-migrate/src/main.rs's own module doc —
+  # One-shot: applies backends/migrations/postgres/{0001_init,0002_bootstrap}
+  # exactly once each. See backends/apps/sms-migrate/src/main.rs's own module doc —
   # this is the same image `deploy/docker-compose.yml`'s `migrate` service
   # runs, just pulled from GHCR instead of built from source.
   migrate:
@@ -158,7 +158,7 @@ services:
   # `Provider` row keyed `orange_cm`, and `sms-worker`'s `dispatch` role
   # refuses to route anything without a matching, enabled `Route` pointing
   # at it (#62's routing engine — see docs/runbooks/getting-started.md's
-  # own step 5 for the full "why", and app/sms-gateway/src/main.rs's
+  # own step 5 for the full "why", and backends/apps/sms-gateway/src/main.rs's
   # `SeedDispatch` doc comment for the fix-forward history).
   #
   # Depends on `seed-signing-key`, not just `migrate`, even though the two
@@ -166,7 +166,7 @@ services:
   # database's first concurrent touch from two separate connections can
   # race on Postgres's own `pg_type` catalog (`duplicate key value
   # violates unique constraint "pg_type_typname_nsp_index"`), the identical
-  # class of race `crates/sms-test-support`'s own per-binary mutex exists
+  # class of race `backends/crates/sms-test-support`'s own per-binary mutex exists
   # to serialize within one process — see AGENTS.md's "ca653a1" note. That
   # mutex can't reach across separate one-shot *containers*, so every
   # seed/provision step against this fresh database is chained
@@ -186,10 +186,10 @@ services:
 
   # The real gap a GHCR-only showcase has that `scripts/demo.sh` doesn't:
   # that script seeds its demo `App`+`SenderId` via `cargo run --example
-  # send_test_message` (crates/sms-api/examples/), which is never published
+  # send_test_message` (backends/crates/sms-api/examples/), which is never published
   # as a GHCR image — a `build:`-free compose file has no way to invoke it.
-  # `vsms-demo-seed` (`app/vsms-demo-seed/`, its own crate and its own
-  # image — see that binary's own module doc for why it isn't a
+  # `vsms-demo-seed` (`backends/apps/vsms-demo-seed/`, its own crate and its
+  # own image — see that binary's own module doc for why it isn't a
   # `sms-gateway` subcommand any more, and why it can't be a plain shell
   # script either) is the GHCR-only equivalent: the one `App` + approved
   # `SenderId` every message this showcase sends needs to exist before
@@ -210,7 +210,7 @@ services:
   # console` — a working machine credential is exactly what a backend-only
   # deployment should be able to prove it has). `provisionAppClient`
   # generates `clientId` itself (a random `appc_<uuid>`, never
-  # caller-chosen — crates/sms-api/src/procedures.rs), so nothing in this
+  # caller-chosen — backends/crates/sms-api/src/procedures.rs), so nothing in this
   # compose file can know it in advance the way every other value here is
   # known up front. `--app-slug` (added to `ProvisionClient` alongside
   # `--client-id-out`, same PR as `seed-demo-app`) resolves the id
@@ -304,11 +304,11 @@ services:
     restart: 'no'
 
   # The other half of the `provision-client`/`admin` handoff: `--key-out`'s
-  # own `0600` mode (app/sms-gateway/src/main.rs, unchanged and correct —
+  # own `0600` mode (backends/apps/sms-gateway/src/main.rs, unchanged and correct —
   # "never store this anywhere else" is still the right default) means the
   # file is readable only by the uid that created it (root, per
   # `provision-client`'s own `user: "0:0"` override above), and `admin`
-  # runs as its own baked-in non-root uid (10001, `admin/Dockerfile`'s
+  # runs as its own baked-in non-root uid (10001, `frontends/apps/admin/Dockerfile`'s
   # `useradd --uid 10001`). Loosening the mode to `0644` — readable inside
   # this compose project's own internal Docker volume, never exposed to the
   # host or the network — is the trade this showcase makes so `admin` can
@@ -386,7 +386,7 @@ services:
     profiles: [console]
 
   # A development/demo impersonation of Orange Cameroon's SMS API — see
-  # app/sms-fake-orange/src/main.rs's own module doc. No production
+  # backends/apps/sms-fake-orange/src/main.rs's own module doc. No production
   # deployment references this image; it exists only so this showcase can
   # move a message all the way to `delivered` without a real Orange
   # account. Stateless and DB-free, so it needs no `depends_on` of its own.
@@ -519,13 +519,13 @@ services:
     # so there is no environment variable this file can set that makes the
     # packaged image believe it is running in development. That, in turn,
     # unconditionally trips two of @vsms/env's own deploy-time rules
-    # (packages/env/src/index.ts's `enforceDeploymentRules` block):
+    # (frontends/packages/env/src/index.ts's `enforceDeploymentRules` block):
     # `ADMIN_BASE_URL` and `SMS_API_URL` must both be `https://` whenever
     # `NODE_ENV === "production"`. A showcase reachable at `http://
     # localhost:...` with no TLS anywhere in this file is exactly the case
     # that rule exists to refuse — by design, for a real deployment.
     # `SKIP_ENV_VALIDATION=1` is the same escape hatch
-    # `admin/Dockerfile`'s own build stage already uses for the identical
+    # `frontends/apps/admin/Dockerfile`'s own build stage already uses for the identical
     # reason at build time (its own comment: "next build sets
     # NODE_ENV=production, which would otherwise trip @vsms/env's deploy-
     # time rules... that only make sense at runtime, not compile time") —
@@ -545,7 +545,7 @@ services:
     # Composer's own "Send message" included — is rejected with
     # `cross-origin request rejected: Origin "http://localhost:<port>"
     # does not match "http://0.0.0.0:8080"` by
-    # `packages/api/src/context.ts`'s `assertSameOriginForMutations`. The
+    # `frontends/packages/api/src/context.ts`'s `assertSameOriginForMutations`. The
     # "expected" side of that check is `new URL(req.url).origin`, and for
     # this image's compiled `next.config.ts` (`experimental.trustHostHeader:
     # false`, confirmed by reading the literal compiled config out of
@@ -569,7 +569,7 @@ services:
     # `next.config.ts` default), so `deploy/docker-compose.yml`'s own
     # Caddy-fronted production stack is very likely affected identically;
     # nothing about a proxy in front changes which header this check
-    # reads. `admin/next.config.ts` and `packages/api/src/context.ts` are
+    # reads. `frontends/apps/admin/next.config.ts` and `frontends/packages/api/src/context.ts` are
     # both out of scope for this PR (see its own description), so this is
     # reported rather than fixed here. `docs/runbooks/showcase.md`
     # documents the workaround this PR's own verification used — a real
@@ -598,8 +598,8 @@ services:
     # cannot know it in advance (see that service's own comment). This
     # entrypoint override reads the value `--client-id-out` wrote to the
     # shared volume and exports it into the *same* shell that then execs
-    # the image's own real entrypoint (`node admin/server.js`, per
-    # `admin/Dockerfile`) — the only place in this file that overrides an
+    # the image's own real entrypoint (`node frontends/apps/admin/server.js`, per
+    # `frontends/apps/admin/Dockerfile`) — the only place in this file that overrides an
     # image's entrypoint, and only because Compose has no declarative way
     # to feed one container's computed output into a sibling container's
     # environment. `node:22-bookworm-slim` (this image's runtime base,
@@ -607,7 +607,7 @@ services:
     # `/bin/sh` to run this with — confirmed directly, not assumed.
     entrypoint: ['/bin/sh', '-c']
     command:
-      - export SMS_CONSOLE_CLIENT_ID="$(cat /secrets/console-client-id)" && exec node admin/server.js
+      - export SMS_CONSOLE_CLIENT_ID="$(cat /secrets/console-client-id)" && exec node frontends/apps/admin/server.js
     depends_on:
       sms-gateway:
         condition: service_healthy

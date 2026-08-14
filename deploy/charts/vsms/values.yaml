@@ -1,7 +1,7 @@
 # deploy/charts/vsms/values.yaml — every key below traces to a real
-# `#[arg(long, env = "...")]` in app/sms-gateway/src/main.rs or
-# app/sms-worker/src/main.rs, a docker-compose.yml service block, or an
-# admin/ env var — the same "nothing speculative" convention
+# `#[arg(long, env = "...")]` in backends/apps/sms-gateway/src/main.rs or
+# backends/apps/sms-worker/src/main.rs, a docker-compose.yml service block, or an
+# frontends/apps/admin/ env var — the same "nothing speculative" convention
 # deploy/.env.example documents for the compose path. Read
 # docs/runbooks/deployment.md's "Kubernetes (Helm)" section alongside this
 # file before a real install.
@@ -78,7 +78,7 @@ existingSecrets:
     name: ""
     key: ORANGE_CM_CLIENT_SECRET
   # 32+ characters of real entropy — it encrypts the console's session
-  # cookie (AES-256-GCM, admin/lib/oidc.ts). Generate with
+  # cookie (AES-256-GCM, frontends/apps/admin/lib/oidc.ts). Generate with
   # `openssl rand -hex 32`. A secret rather than a value for the obvious
   # reason: anything holding it can mint a session for any account.
   consoleSessionSecret:
@@ -114,7 +114,7 @@ orange:
   # receiptRequest.notifyURL on every submit (#95) — optional, only the
   # dispatch role (sms-worker) uses it. Leave empty unless a real Orange
   # sandbox requires an explicit notifyURL rather than relying on
-  # callbackData alone — see app/sms-worker/src/main.rs's own doc comment.
+  # callbackData alone — see backends/apps/sms-worker/src/main.rs's own doc comment.
   dlrNotifyUrl: ""
 
 worker:
@@ -123,7 +123,7 @@ worker:
   # default: one node running every role, the compose stack's shape.
   # Splitting into a second, scale-to-N-only controller (--roles hooks,jobs)
   # is a day-2 step, not something this chart's default topology needs —
-  # see #145's own note on crates/sms-worker/src/lease.rs's Cardinality:
+  # see #145's own note on backends/crates/sms-worker/src/lease.rs's Cardinality:
   # dispatch/drain/scheduler are Singleton (RoleLease-guarded — extra
   # replicas idle on standby, never double-run), hooks/jobs are ScaleToN.
   roles: dispatch,drain,scheduler,hooks,jobs
@@ -166,8 +166,8 @@ admin:
 # Pods are ever scheduled.
 # ---------------------------------------------------------------------------
 controllers:
-  # Applies schema/migrations/postgres/{0001_init,0002_bootstrap} — see
-  # app/sms-migrate/src/main.rs's own module doc for why this is safe to
+  # Applies backends/migrations/postgres/{0001_init,0002_bootstrap} — see
+  # backends/apps/sms-migrate/src/main.rs's own module doc for why this is safe to
   # run concurrently or repeatedly (a session advisory lock plus a
   # `schema_migrations` tracking table this deploy path owns; the runner
   # itself is a small Rust binary — the schema SQL is embedded via
@@ -205,7 +205,7 @@ controllers:
 
   # `sms-gateway seed-dispatch` (renamed from `seed-provider` in #62) —
   # creates (or reactivates) the `active` `Provider` row keyed `orange_cm`
-  # that `resolve_provider_row_id` (app/sms-gateway/src/main.rs) resolves
+  # that `resolve_provider_row_id` (backends/apps/sms-gateway/src/main.rs) resolves
   # at startup, **and** a catch-all `Route` pointing at it. #148: nothing
   # seeded the `Provider` row before this hook existed, and — the same
   # startup-ordering trap rotateSigningKey below already documents for the
@@ -262,7 +262,7 @@ controllers:
           tag: '{{ .Values.image.tag }}'
           pullPolicy: IfNotPresent
         # The image ENTRYPOINT is already the binary (see
-        # app/sms-gateway/Dockerfile) — only the subcommand goes here.
+        # backends/apps/sms-gateway/Dockerfile) — only the subcommand goes here.
         # No --key/--kind/etc. overrides: the subcommand's own defaults
         # (key=orange_cm, kind=orange_cm_http) already match the only
         # adapter Serve/dispatch actually wire up (see .Values.orange
@@ -321,7 +321,7 @@ controllers:
           tag: '{{ .Values.image.tag }}'
           pullPolicy: IfNotPresent
         # The image ENTRYPOINT is already the binary (see
-        # app/sms-gateway/Dockerfile) — only the subcommand goes here,
+        # backends/apps/sms-gateway/Dockerfile) — only the subcommand goes here,
         # the same "run --rm sms-gateway rotate-signing-key" shape
         # docs/runbooks/deployment.md's compose step 3 already documents.
         args: ['rotate-signing-key']
@@ -346,7 +346,7 @@ controllers:
           # main.rs's own default (127.0.0.1:8080) is a bare-metal-deploy
           # default only — inside a Pod, loopback is this container's own
           # netns, unreachable from the Service. See
-          # app/sms-gateway/Dockerfile's own ENV for the same override.
+          # backends/apps/sms-gateway/Dockerfile's own ENV for the same override.
           SMS_LISTEN_ADDR:
             value: '0.0.0.0:8080'
           DATABASE_URL:
@@ -378,7 +378,7 @@ controllers:
             value: 'sms_gateway=info,sms_api=info,cratestack=info'
         probes:
           # #157: /healthz stays liveness-only by design
-          # (app/sms-gateway/src/health.rs's own doc: "It does not touch the
+          # (backends/apps/sms-gateway/src/health.rs's own doc: "It does not touch the
           # database") — a DB outage should surface as failed requests, not
           # as an orchestrator killing a container it cannot fix by
           # restarting it. /readyz is the new, separate route that *does*
@@ -452,7 +452,7 @@ controllers:
   worker:
     type: deployment
     # Safe above 1 even though several roles are Cardinality::Singleton:
-    # crates/sms-worker/src/lease.rs's RoleLease means only one replica
+    # backends/crates/sms-worker/src/lease.rs's RoleLease means only one replica
     # ever actually holds dispatch/drain/scheduler at a time, the rest
     # idle on standby — see AGENTS.md's #28 section for the verified
     # kill -9 failover behaviour this relies on. Defaults to 1 anyway,
@@ -462,8 +462,8 @@ controllers:
     # ScaleToN roles here, and they're a small fraction of the work).
     replicas: 1
     pod:
-      # RoleLease release on SIGTERM (crates/sms-worker/src/lib.rs's
-      # run_singleton) plus SHUTDOWN_GRACE (app/sms-worker/src/main.rs,
+      # RoleLease release on SIGTERM (backends/crates/sms-worker/src/lib.rs's
+      # run_singleton) plus SHUTDOWN_GRACE (backends/apps/sms-worker/src/main.rs,
       # 10s) needs real headroom beyond Kubernetes' own 30s default only
       # if a lease's Postgres round-trip is slow; kept modestly above the
       # binary's own grace constant rather than equal to it.
@@ -514,10 +514,10 @@ controllers:
           # not done here: expose containerPort 9091 and a Service/
           # ServiceMonitor once a Prometheus Operator install is actually
           # part of this chart's own scope.
-          # `app/sms-worker/Dockerfile`'s runtime image is distroless
+          # `backends/apps/sms-worker/Dockerfile`'s runtime image is distroless
           # `static`, which has no `/bin/sh`/`test`/`stat` for the old
           # shell one-liner to run at all — `sms-worker healthcheck`
-          # (app/sms-worker/src/main.rs) reproduces the identical check
+          # (backends/apps/sms-worker/src/main.rs) reproduces the identical check
           # (same file, same 90s staleness threshold) in std-only Rust,
           # invoked directly rather than through a shell.
           liveness:
@@ -599,7 +599,7 @@ controllers:
           NODE_ENV:
             value: production
         probes:
-          # admin/app/api/health is unauthenticated on purpose (#139 —
+          # frontends/apps/admin/app/api/health is unauthenticated on purpose (#139 —
           # middleware.ts's matcher excludes it explicitly) and touches
           # no external dependency, so liveness and readiness share it
           # the same way the gateway's /healthz does.

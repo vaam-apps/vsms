@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Prepends a DO-NOT-EDIT banner to packages/sms-client/README.md.
+// Prepends a DO-NOT-EDIT banner to frontends/packages/sms-client/README.md.
 //
 // Why this exists rather than a one-off hand-edit: `cratestack generate-typescript
 // --check` does a strict, no-exceptions, whole-directory comparison against the
@@ -19,7 +19,7 @@ const BANNER_END = "<!-- DO-NOT-EDIT-BANNER:END -->";
 
 const banner = `${BANNER_START}
 > **GENERATED CODE — DO NOT EDIT.** Everything in this package is emitted by
-> \`cratestack generate-typescript\` from \`schema/schema.cstack\`. Hand edits are
+> \`cratestack generate-typescript\` from \`schemas/vsms.cstack\`. Hand edits are
 > silently discarded (and diverge from CI's drift gate) the next time someone
 > regenerates. To change this package, change the schema instead, then run:
 >
@@ -30,8 +30,8 @@ const banner = `${BANNER_START}
 > which wraps:
 >
 > \`\`\`
-> cratestack generate-typescript --schema schema/schema.cstack \\
->   --out packages/sms-client --package-name @vsms/sms-client --base-path ''
+> cratestack generate-typescript --schema schemas/vsms.cstack \\
+>   --out frontends/packages/sms-client --package-name @vsms/sms-client --base-path ''
 > \`\`\`
 >
 > CI enforces this with \`just client-check\`, which runs two independent gates:

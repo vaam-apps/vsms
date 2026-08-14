@@ -12,7 +12,7 @@
 # Build context is the repository root, matching every other Dockerfile
 # under this tree — `docker build -f deploy/caddy.Dockerfile .` — even
 # though this one doesn't COPY anything from the repo; consistency with
-# `app/sms-gateway/Dockerfile` et al. matters more than the one-line
+# `backends/apps/sms-gateway/Dockerfile` et al. matters more than the one-line
 # savings from scoping the context to `deploy/`.
 #
 # **This file is not wired into `deploy/docker-compose.yml` — that edit

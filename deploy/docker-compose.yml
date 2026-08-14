@@ -38,9 +38,9 @@ services:
       timeout: 5s
       retries: 10
 
-  # One-shot: applies schema/migrations/postgres/{0001_init,0002_bootstrap}
+  # One-shot: applies backends/migrations/postgres/{0001_init,0002_bootstrap}
   # exactly once each (tracked in a `schema_migrations` table this deploy
-  # path owns — see app/sms-migrate/src/main.rs's own module doc), guarded
+  # path owns — see backends/apps/sms-migrate/src/main.rs's own module doc), guarded
   # by a Postgres advisory lock so a redeploy that starts this alongside a
   # still-running previous instance can't apply the same migration twice
   # concurrently. Exits 0 and stops; sms-gateway and sms-worker both wait
@@ -48,7 +48,7 @@ services:
   migrate:
     build:
       context: ..
-      dockerfile: app/sms-migrate/Dockerfile
+      dockerfile: backends/apps/sms-migrate/Dockerfile
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
     depends_on:
@@ -59,7 +59,7 @@ services:
   sms-gateway:
     build:
       context: ..
-      dockerfile: app/sms-gateway/Dockerfile
+      dockerfile: backends/apps/sms-gateway/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
@@ -94,7 +94,7 @@ services:
       SMS_SOURCE_RATE_LIMIT_BURST: ${SMS_SOURCE_RATE_LIMIT_BURST:-1200}
       SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND:-10.0}
       # #168: the /token client_id-keyed defence-in-depth limiter — see
-      # app/sms-gateway/src/token_rate_limit.rs's own module doc for why
+      # backends/apps/sms-gateway/src/token_rate_limit.rs's own module doc for why
       # this exists alongside, not instead of, deploy/Caddyfile's edge
       # zones.
       SMS_TOKEN_RATE_LIMIT_BURST: ${SMS_TOKEN_RATE_LIMIT_BURST:-10}
@@ -106,9 +106,9 @@ services:
       migrate:
         condition: service_completed_successfully
     # #157: overrides the image's own baked-in `HEALTHCHECK`
-    # (app/sms-gateway/Dockerfile), which is deliberately liveness-only
+    # (backends/apps/sms-gateway/Dockerfile), which is deliberately liveness-only
     # (`sms-gateway healthcheck` against /healthz — see
-    # app/sms-gateway/src/health.rs's module doc for why that route never
+    # backends/apps/sms-gateway/src/health.rs's module doc for why that route never
     # touches the database). Compose has only
     # one health-check concept, and it drives two things: the container's
     # own reported status, and every `depends_on: condition: service_healthy`
@@ -133,10 +133,10 @@ services:
     # `--start-period`, since /readyz can't return anything meaningful
     # before the process has even bound its listener.
     #
-    # Exec-form (a JSON array, not `CMD-SHELL`): app/sms-gateway/Dockerfile's
+    # Exec-form (a JSON array, not `CMD-SHELL`): backends/apps/sms-gateway/Dockerfile's
     # runtime image is distroless `static`, which has no `/bin/sh` for
     # `CMD-SHELL` to invoke and no `curl` for it to run even if it could.
-    # `sms-gateway healthcheck --path /readyz` (app/sms-gateway/src/main.rs)
+    # `sms-gateway healthcheck --path /readyz` (backends/apps/sms-gateway/src/main.rs)
     # is the same plain HTTP/1.1-over-a-raw-socket check the old `curl`
     # command ran, reproduced in `std`-only Rust.
     healthcheck:
@@ -146,7 +146,7 @@ services:
       retries: 3
       start_period: 10s
     # sms-gateway needs an active OP signing key to start AT ALL — found
-    # live (#139): `Command::Serve` in app/sms-gateway/src/main.rs loads
+    # live (#139): `Command::Serve` in backends/apps/sms-gateway/src/main.rs loads
     # signing keys before binding the listener, so a fresh database makes
     # this container crash-loop, not just fail its first /token request
     # (AGENTS.md's own M1 prose describes the latter; it's stale). Run
@@ -170,7 +170,7 @@ services:
   sms-worker:
     build:
       context: ..
-      dockerfile: app/sms-worker/Dockerfile
+      dockerfile: backends/apps/sms-worker/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
@@ -219,7 +219,7 @@ services:
   admin:
     build:
       context: ..
-      dockerfile: admin/Dockerfile
+      dockerfile: frontends/apps/admin/Dockerfile
     restart: unless-stopped
     profiles: [console]
     environment:
@@ -365,7 +365,7 @@ services:
   # conditions #70's own issue names. Optional in the sense that nothing
   # else in this stack depends on it (sms-gateway/sms-worker already expose
   # their own /metrics regardless of whether anything scrapes them — see
-  # crates/sms-api/src/metrics.rs's own doc), but stood up unconditionally
+  # backends/crates/sms-api/src/metrics.rs's own doc), but stood up unconditionally
   # here rather than behind a compose profile: this repository's own
   # delivery convention is to build a thing and make it live, not ship it
   # dormant behind a flag. No Alertmanager alongside it — this repo cannot
