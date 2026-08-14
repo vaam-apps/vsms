@@ -65,6 +65,7 @@ import {
   DropdownMenuTrigger,
   EncodingPreview,
   IdDisplay,
+  InlineConfirm,
   InlineEmptyState,
   Input,
   JOB_STATES,
@@ -577,15 +578,19 @@ function OverlaysGallery() {
 // for both — resize the browser pane to check the phone/desktop split
 // (base = bottom sheet, `md`+ = right panel) and confirm quick details
 // never dims while more details does.
-// **Known, unresolved bug — reproduces 100% of the time, do not remove
-// this demo without also fixing the underlying issue.** Nesting a
-// centered `Dialog` (Headless UI) inside an open `MoreDetailDrawer`
-// (vaul, modal=true) leaves the confirmation permanently invisible:
-// `opacity: 0`, its enter transition never settles, and keyboard focus
-// snaps straight back to whatever triggered it. This is *not* the drawer
-// dismissing itself — both `open` states stay `true` forever — it's that
-// the confirmation becomes a stuck, non-interactive ghost behind an
-// opaque drawer that never actually goes anywhere.
+//
+// **RESOLVED — was a known, 100%-reproducing bug; kept here as a
+// regression demo, per this repo's own "record the finding, don't delete
+// it" convention.** The investigation and everything that didn't work are
+// preserved below verbatim; only the verdict and the demo itself changed.
+//
+// The bug, as found: nesting a centered `Dialog` (Headless UI) inside an
+// open `MoreDetailDrawer` (vaul, `modal=true`) left the confirmation
+// permanently invisible — `opacity: 0`, its enter transition never
+// settled, and keyboard focus snapped straight back to whatever triggered
+// it. Not the drawer dismissing itself — both `open` states stayed `true`
+// forever — the confirmation became a stuck, non-interactive ghost behind
+// an opaque drawer that never actually went anywhere.
 //
 // Root cause, confirmed by live DOM/focus instrumentation, not guessed:
 // `MoreDetailDrawer`'s `modal={true}` routes vaul's `Content` through
@@ -598,8 +603,8 @@ function OverlaysGallery() {
 // outer `Portal` is wrapped in `ForcePortalRoot force={true}`,
 // specifically blocking `Portal.Group` redirection — there is no
 // supported way to make it portal *into* vaul's own container instead).
-// So the moment the confirmation tries to move focus into itself, Radix
-// yanks it straight back, permanently stalling Headless UI's own CSS
+// So the moment the confirmation tried to move focus into itself, Radix
+// yanked it straight back, permanently stalling Headless UI's own CSS
 // enter transition mid-flight.
 //
 // Four independent primitive-level fixes were tried and all four still
@@ -613,16 +618,17 @@ function OverlaysGallery() {
 // independent bug in `vaul@1.1.2`'s own `Overlay` component — it calls
 // `useCallback` *after* an `if (!modal) return null` early return in its
 // render body, so changing `modal` on an already-mounted `Overlay`
-// crashes the whole app with "Rendered fewer hooks than expected."
+// crashed the whole app with "Rendered fewer hooks than expected."
 //
-// Verdict: no reliable fix exists confined to `drawer.tsx`/`dialog.tsx`
-// given `vaul@1.1.2` + `@radix-ui/react-dialog@1.1.23` +
-// `@headlessui/react@2.2.10` as pinned. `console-redesign.md` §3/§1.7's
-// "centered Dialog opened from inside MoreDetailDrawer" pattern is not
-// safely buildable as written. The bug requires the nested `Dialog` to
-// open while a `MoreDetailDrawer` (`dimmed`, i.e. vaul `modal=true`) is
-// genuinely still open behind it — checked against every `Dialog` trigger
-// in all four merged Delivery screens, not assumed:
+// No reliable fix exists confined to `drawer.tsx`/`dialog.tsx` given
+// `vaul@1.1.2` + `@radix-ui/react-dialog@1.1.23` +
+// `@headlessui/react@2.2.10` as pinned — `console-redesign.md`'s original
+// §3/§1.7 "centered Dialog opened from inside MoreDetailDrawer" pattern
+// was not safely buildable as written (both sections are now corrected to
+// say so). The bug required the nested `Dialog` to open while a
+// `MoreDetailDrawer` (`dimmed`, i.e. vaul `modal=true`) was genuinely
+// still open behind it — checked against every `Dialog` trigger in all
+// four merged Delivery screens, not assumed:
 //   - Affected: `routes-screen.tsx`'s "Delete this route?" (footer Delete
 //     inside its `MoreDetailDrawer`); `webhooks-screen.tsx`'s "Delete this
 //     endpoint?" and "Rotate this endpoint's secret?" (both inside its
@@ -642,77 +648,92 @@ function OverlaysGallery() {
 //     overlay and background pointer-events. Re-verified three ways
 //     (vaul@1.1.2 compiled source, a jsdom listener check, and a real
 //     browser harness importing the unmodified primitives): the identical
-//     stuck-invisible symptom reproduces inside a `QuickDetailDrawer`.
-//     Six confirmations are broken, not five.
+//     stuck-invisible symptom reproduced inside a `QuickDetailDrawer`.
+//     Six confirmations were broken, not five.
 //     Not affected: every screen's own top-level "New X" create
 //     dialog (`webhooks-screen.tsx`, `sender-ids-screen.tsx`) — triggered
 //     from a toolbar button reachable only when no drawer is open.
 //   - `providers-screen.tsx` uses no `Dialog` at all — no nested
-//     confirmation exists there to be affected.
-// The recommended fix is a *screen-level* pattern change — render
-// destructive confirmations inline within the drawer instead of as a
-// nested portaled `Dialog` — not a primitive-level one.
+//     confirmation existed there to be affected.
 //
 // A live trial of the theoretical alternative (a real `@radix-ui/react-
 // dialog` `Dialog.Root` nested inside vaul's own Radix-based `Content`,
 // confirmed to share the exact same `@radix-ui/react-dismissable-layer`/
 // `@radix-ui/react-focus-scope` module instances as vaul itself, not a
-// second copy) does **not** reproduce the stuck-invisible symptom — the
-// nested Radix dialog renders and opens correctly. But it is not a clean
-// drop-in either: confirming inside it also closed the outer drawer in
-// that trial, a different, apparently DismissableLayer-outside-click-
+// second copy) did **not** reproduce the stuck-invisible symptom — the
+// nested Radix dialog rendered and opened correctly. But it was not a
+// clean drop-in either: confirming inside it also closed the outer drawer
+// in that trial, a different, apparently DismissableLayer-outside-click-
 // related side effect, and Radix's own `useCallback`/`FocusScope` chatter
 // (repeated `focusin` back to the trigger) still showed up even though
-// the dialog itself stayed visible throughout. One trial only — treat
-// "Radix nests without the stuck-invisible bug" as reasonably solid
-// (matches the `focusScopesStack` mechanism read directly from source)
-// and "Radix nests cleanly, full stop" as unverified.
-function NestedDialogInDrawerKnownBug() {
+// the dialog itself stayed visible throughout. Not pursued further, for
+// the same reason the fix below wasn't a primitive-level one: the actual
+// fix is a *screen-level* pattern change, not a smarter nested overlay.
+//
+// **The fix, shipped:** `@vsms/ui`'s `InlineConfirm`
+// (`components/primitives/inline-confirm.tsx`) renders the confirmation
+// **inline, inside the drawer's own DOM subtree** — no portal, no second
+// `FocusScope`, nothing for vaul's own trap to fight. The caller swaps the
+// drawer's `children` (and drops its `footer` prop, since `InlineConfirm`
+// supplies its own Cancel/Confirm row) instead of layering a second
+// overlay on top. `routes-screen.tsx`, `webhooks-screen.tsx`, and
+// `sender-ids-screen.tsx` all converted their six broken confirmations to
+// this pattern in the same change that added this regression demo.
+function NestedDialogInDrawerRegression() {
   const [drawerOpen, setDrawerOpen] = useState(false);
-  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmArmed, setConfirmArmed] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
 
   return (
     <Section
-      title="Known bug: nested Dialog inside an open MoreDetailDrawer"
-      description="Open the drawer, then click Delete — the confirmation never becomes visible or interactive. See this function's own comment for the full root-cause writeup and every fix attempted."
+      title="Regression: inline confirmation inside an open MoreDetailDrawer"
+      description="Open the drawer, then click Delete — the confirmation renders inline, is visible, and is interactive. See this function's own comment for the full root-cause writeup, every fix attempted, and the fix that shipped."
     >
-      <Button variant="secondary" onClick={() => setDrawerOpen(true)}>
+      <Button
+        variant="secondary"
+        onClick={() => {
+          setDrawerOpen(true);
+          setConfirmArmed(false);
+          setConfirmed(false);
+        }}
+      >
         Open more details
       </Button>
 
       <MoreDetailDrawer
         open={drawerOpen}
-        onOpenChange={setDrawerOpen}
+        onOpenChange={(open) => {
+          setDrawerOpen(open);
+          if (!open) setConfirmArmed(false);
+        }}
         title="Webhook endpoint"
         description="A stand-in for webhooks-screen.tsx's own delete-endpoint drawer."
+        footer={
+          confirmArmed ? undefined : (
+            <Button variant="destructive" size="sm" onClick={() => setConfirmArmed(true)}>
+              Delete
+            </Button>
+          )
+        }
       >
-        <div className="flex flex-col gap-4 text-body">
-          <p className="text-muted-foreground">
-            Clicking Delete opens a centered `Dialog`, exactly like `webhooks-screen.tsx` does — it
-            will not appear.
+        {confirmArmed ? (
+          <InlineConfirm
+            title="Delete this endpoint?"
+            description="This action cannot be undone."
+            confirmLabel="Delete"
+            onConfirm={() => {
+              setConfirmed(true);
+              setConfirmArmed(false);
+            }}
+            onCancel={() => setConfirmArmed(false)}
+          />
+        ) : (
+          <p className="text-body text-muted-foreground">
+            Clicking Delete swaps this body to an inline `InlineConfirm` — no nested `Dialog`, no
+            second focus trap. {confirmed && "Confirmed on the last run."}
           </p>
-          <Button variant="destructive" size="sm" onClick={() => setConfirmOpen(true)}>
-            Delete
-          </Button>
-        </div>
+        )}
       </MoreDetailDrawer>
-
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Delete this endpoint?</DialogTitle>
-            <DialogDescription>This action cannot be undone.</DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="ghost" size="sm" onClick={() => setConfirmOpen(false)}>
-              Cancel
-            </Button>
-            <Button variant="destructive" size="sm" onClick={() => setConfirmOpen(false)}>
-              Confirm
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </Section>
   );
 }
@@ -1061,7 +1082,7 @@ export default function GalleryPage() {
       <Separator />
       <DetailDrawerGallery />
       <Separator />
-      <NestedDialogInDrawerKnownBug />
+      <NestedDialogInDrawerRegression />
       <Separator />
       <PayloadInspectorGallery />
       <Separator />
