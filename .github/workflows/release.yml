@@ -88,24 +88,24 @@ jobs:
           # the Helm chart, and `deploy/`, so renaming them is a separate
           # decision with real blast radius nobody has made yet.
           - image: sms-gateway
-            dockerfile: app/sms-gateway/Dockerfile
+            dockerfile: backends/apps/sms-gateway/Dockerfile
             repo: vsms-sms-gateway
           - image: sms-worker
-            dockerfile: app/sms-worker/Dockerfile
+            dockerfile: backends/apps/sms-worker/Dockerfile
             repo: vsms-sms-worker
           - image: admin
-            dockerfile: admin/Dockerfile
+            dockerfile: frontends/apps/admin/Dockerfile
             repo: vsms-admin
           # #145: deploy/charts/vsms's migrate Job (a pre-install/
           # pre-upgrade Helm hook — see that chart's own values.yaml)
           # needs a prebuilt image to pull from a registry; Kubernetes has
           # no `build:` context the way docker-compose.yml does. This
           # image already existed (deploy/migrate.Dockerfile, from #143;
-          # rebuilt as the small Rust binary app/sms-migrate later — see
+          # rebuilt as the small Rust binary backends/apps/sms-migrate later — see
           # AGENTS.md) but was never published anywhere before #145 — the
           # compose path always builds it locally from source.
           - image: migrate
-            dockerfile: app/sms-migrate/Dockerfile
+            dockerfile: backends/apps/sms-migrate/Dockerfile
             repo: vsms-migrate
           # Two non-production images, both nested under `vsms/<name>`
           # (`repo:`, not `vsms-<name>`) — the convention this workflow now
@@ -117,12 +117,12 @@ jobs:
           # including the provider fake that gets a message past `routed`
           # to a visible `delivered` — see that file's own header comment.
           # This image is a development/demo tool, never a production
-          # artifact (app/sms-fake-orange/src/main.rs's own module doc,
+          # artifact (backends/apps/sms-fake-orange/src/main.rs's own module doc,
           # repeated at WARN on every start), but it needs a real published
           # image the same as the four production images above the moment
           # any compose stack stops building from source.
           - image: sms-fake-orange
-            dockerfile: app/sms-fake-orange/Dockerfile
+            dockerfile: backends/apps/sms-fake-orange/Dockerfile
             repo: vsms/sms-fake-orange
           # Demo-only fixture-seeding logic (App/SenderId) that used to be
           # compiled into the production sms-gateway image

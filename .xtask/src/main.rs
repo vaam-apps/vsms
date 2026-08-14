@@ -24,6 +24,7 @@ mod migrations_current;
 mod parity;
 mod raw_sqlx;
 mod sdk_schema;
+mod workflow_paths;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,7 @@ fn main() -> ExitCode {
     let result = match cmd.as_str() {
         "no-raw-sqlx" => raw_sqlx::run(&root),
         "parity" => parity::run(&root),
+        "workflow-paths" => workflow_paths::run(&root),
         "bootstrap-sql" => {
             let Some(out) = args.next() else {
                 eprintln!("usage: cargo xtask bootstrap-sql <output-path>");
@@ -84,7 +86,8 @@ fn help_text() -> &'static str {
      sdk-schema-check      fail if the vendored SDK schema has drifted\n  \
      sdk-schema-vendor     refresh the vendored SDK schema copy\n  \
      cratestack-pin         print the pinned cratestack version from Cargo.toml\n  \
-     migrations-current    fail if 0001_init has drifted from `cratestack migrate diff`"
+     migrations-current    fail if 0001_init has drifted from `cratestack migrate diff`\n  \
+     workflow-paths        fail if a workflow names a path that does not exist"
 }
 
 /// The directory containing this crate's own `Cargo.toml`'s parent — i.e.
