@@ -10,9 +10,9 @@ importers:
 
   node/sms-send-example:
     dependencies:
-      jose:
-        specifier: ^5.9.6
-        version: 5.10.0
+      '@vsms/sdk':
+        specifier: file:../../../sdks/node/vsms-sdk-node
+        version: file:../sdks/node/vsms-sdk-node
 
   node/webhook-receiver:
     dependencies:
@@ -121,6 +121,10 @@ packages:
 
   '@types/serve-static@2.2.0':
     resolution: {integrity: sha512-8mam4H1NHLtu7nmtalF7eyBH14QyOASmcxHhSfEoRyr0nP/YdoesEtU+uSRvMe96TW/HPTtkoKqQLl53N7UXMQ==}
+
+  '@vsms/sdk@file:../sdks/node/vsms-sdk-node':
+    resolution: {directory: ../sdks/node/vsms-sdk-node, type: directory}
+    engines: {node: '>=20'}
 
   accepts@2.0.0:
     resolution: {integrity: sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng==}
@@ -468,6 +472,10 @@ snapshots:
     dependencies:
       '@types/http-errors': 2.0.5
       '@types/node': 24.13.3
+
+  '@vsms/sdk@file:../sdks/node/vsms-sdk-node':
+    dependencies:
+      jose: 5.10.0
 
   accepts@2.0.0:
     dependencies:

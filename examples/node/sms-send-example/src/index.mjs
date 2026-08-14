@@ -1,25 +1,13 @@
 #!/usr/bin/env node
-// vsms integration example (Node.js): the full HTTP path a third-party
-// backend uses to send one message through vsms — no admin-console code
-// imported, no @vsms/sms-client, nothing this file could not also do
-// copied into a different repository entirely (see examples/README.md
-// for why that's the deliberate choice here).
+// vsms integration example (Node.js): send one message through vsms
+// using the official @vsms/sdk.
 //
-// 1. Read the PEM `sms-gateway provision-client` wrote.
-// 2. Sign an RFC 7523 §3 `private_key_jwt` client assertion.
-// 3. Exchange it at `POST {issuer}/token` for a `client_credentials`
-//    access token.
-// 4. Call `POST {issuer}/$procs/sendMessage` with that Bearer token.
-// 5. Read the message back with `GET {issuer}/messages/{id}` and print
-//    its state — proving the write actually landed, not just that the
-//    mutation's own response claimed success.
-//
-// This mirrors packages/gateway/src/token.ts — the vsms admin console's
-// own token acquisition — deliberately, rather than inventing a second
-// interpretation of the same exchange. The three load-bearing details
-// documented there apply here unchanged: `scope` is mandatory on the
-// token request, `jti` is never reused, and the access token is cached
-// until `exp - 60s`, not `exp`.
+// The SDK handles:
+// 1. Reading the private key PEM.
+// 2. Signing the RFC 7523 private_key_jwt assertion.
+// 3. Exchanging it at POST {issuer}/token and caching the access token.
+// 4. Calling POST {issuer}/$procs/sendMessage with Bearer auth and Idempotency-Key.
+// 5. Bounded 401 retry on mid-flight key/token rotation.
 //
 // Usage:
 //   node src/index.mjs \
@@ -31,26 +19,10 @@
 //     --body "Hello from the vsms Node example"
 //
 // Every flag also reads from an env var (VSMS_ISSUER, VSMS_CLIENT_ID,
-// VSMS_PRIVATE_KEY_PATH, VSMS_SCOPE) so a real integration never has to
-// hardcode a credential path in argv.
+// VSMS_PRIVATE_KEY_PATH, VSMS_SCOPE).
 
-import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { importPKCS8, SignJWT } from "jose";
-
-const CLIENT_ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
-// RFC 7523 client assertions are meant to be short-lived — long enough to
-// reach /token, never long enough to be useful if intercepted in
-// transit. Matches token.ts's own ASSERTION_TTL_SECONDS.
-const ASSERTION_TTL_SECONDS = 60;
-// Mint a fresh access token this many seconds before the cached one
-// actually expires, so a request never starts with a token that dies
-// mid-flight. Matches token.ts's own EXPIRY_SAFETY_MARGIN_SECONDS exactly.
-const EXPIRY_SAFETY_MARGIN_SECONDS = 60;
-// Used when the token response omits expires_in (optional in the OAuth2
-// response shape). Matches token.ts's own fallback.
-const DEFAULT_TOKEN_TTL_SECONDS = 15 * 60;
+import { SdkError, VsmsClient } from "@vsms/sdk";
 
 function parseCli() {
   const { values } = parseArgs({
@@ -93,199 +65,70 @@ function parseCli() {
   };
 }
 
-/**
- * Mints and caches an access token, re-minting only once the cached one
- * is within EXPIRY_SAFETY_MARGIN_SECONDS of expiry. A single run of this
- * example only ever makes two authenticated calls (the send, then the
- * read-back), so caching barely matters here in isolation — but this is
- * the shape a real integration wants for the hundredth call, not just
- * the second, and it is a direct port of token.ts's own
- * getAccessToken/requestToken pair.
- */
-class TokenCache {
-  #tokenEndpoint;
-  #clientId;
-  #signingKeyPromise;
-  #scope;
-  #cached;
+async function main() {
+  const cli = parseCli();
 
-  constructor(issuer, clientId, privateKeyPem, scope) {
-    this.#tokenEndpoint = `${issuer}/token`;
-    this.#clientId = clientId;
-    this.#signingKeyPromise = importPKCS8(privateKeyPem, "RS256");
-    this.#scope = scope;
-    this.#cached = null;
-  }
-
-  /**
-   * A fresh RFC 7523 §3 client assertion, signed with the caller's own
-   * private key.
-   *
-   * `kid` is the client id, matching token.ts exactly — `authkestra_op`'s
-   * own `select_key` treats a single-key JWKS (which is all
-   * `provisionAppClient` ever produces — see the main repo's AGENTS.md)
-   * as unambiguous even without a `kid`, but setting it costs nothing.
-   *
-   * `aud` is the token endpoint URL, matching token.ts and per authkestra
-   * 0.3.2+, which also accepts the bare issuer.
-   *
-   * `jti` is a fresh UUID on every call, never reused: `ClientAssertion`
-   * is an insert-only table that replay-protects on this value at the
-   * database (a 23505 unique-constraint violation on `record_jti`), so
-   * resending the same assertion on a retry would collide with the
-   * original attempt rather than repeating it.
-   */
-  async #mintAssertion() {
-    const key = await this.#signingKeyPromise;
-    const now = Math.floor(Date.now() / 1000);
-    return new SignJWT({})
-      .setProtectedHeader({ alg: "RS256", kid: this.#clientId })
-      .setIssuer(this.#clientId)
-      .setSubject(this.#clientId)
-      .setAudience(this.#tokenEndpoint)
-      .setJti(randomUUID())
-      .setIssuedAt(now)
-      .setExpirationTime(now + ASSERTION_TTL_SECONDS)
-      .sign(key);
-  }
-
-  async #requestToken() {
-    const assertion = await this.#mintAssertion();
-    const body = new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: this.#clientId,
-      client_assertion_type: CLIENT_ASSERTION_TYPE,
-      client_assertion: assertion,
-      // Mandatory, not optional: omitting `scope` does not fall back to
-      // the client's registered scopes, it mints a token with
-      // `scope: null`, and this deployment's Layer-2 RBAC treats a
-      // missing scope as denial. Same footgun token.ts's own module doc
-      // calls out.
-      scope: this.#scope,
-    });
-
-    const response = await fetch(this.#tokenEndpoint, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-    });
-
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(
-        `token request to ${this.#tokenEndpoint} failed (${response.status}): ${text}`,
-      );
-    }
-
-    const parsed = JSON.parse(text);
-    console.log(
-      `minted access token (scope=${parsed.scope ?? "null"}, expires in ${parsed.expires_in ?? DEFAULT_TOKEN_TTL_SECONDS}s)`,
-    );
-    const ttlSeconds = parsed.expires_in ?? DEFAULT_TOKEN_TTL_SECONDS;
-    return {
-      accessToken: parsed.access_token,
-      expiresAtMs: Date.now() + Math.max(ttlSeconds - EXPIRY_SAFETY_MARGIN_SECONDS, 0) * 1000,
-    };
-  }
-
-  async get() {
-    if (this.#cached != null && this.#cached.expiresAtMs > Date.now()) {
-      return this.#cached.accessToken;
-    }
-    this.#cached = await this.#requestToken();
-    return this.#cached.accessToken;
-  }
-}
-
-// `idempotencyKey`, when passed, is sent as the `Idempotency-Key` request
-// header — vsms's own `IdempotencyLayer` (#153,
-// crates/sms-api/src/router.rs). Pass the *same* value across two calls
-// within the TTL window (24h by default) and the second never re-executes
-// sendMessage: it replays the first response verbatim
-// (`Idempotency-Replayed: true`), no second SMS, no second Message row.
-// This is distinct from `clientRef`'s database-level dedupe — see this
-// package's README for how the two differ and why both exist.
-async function sendMessage(issuer, accessToken, { to, body, senderId, clientRef, idempotencyKey }) {
-  const args = { to, body, senderId };
-  if (clientRef) {
-    args.clientRef = clientRef;
-  }
-
-  const headers = {
-    authorization: `Bearer ${accessToken}`,
-    "content-type": "application/json",
-    accept: "application/json",
-  };
-  if (idempotencyKey) {
-    headers["idempotency-key"] = idempotencyKey;
-  }
-
-  const response = await fetch(`${issuer}/$procs/sendMessage`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ args }),
+  const client = VsmsClient.privateKeyJwt({
+    issuer: cli.issuer,
+    clientId: cli.clientId,
+    keyPath: cli.privateKeyPath,
+    scope: cli.scope,
   });
 
-  const text = await response.text();
-  if (response.status === 409) {
-    console.log(
-      "sendMessage returned 409 Conflict — if --client-ref was passed, that clientRef was " +
-        "already used on a prior send. This is clientRef's database-level dedupe doing " +
-        `exactly its job, not a bug to retry around: ${text}`,
+  let outcome;
+  try {
+    outcome = await client.sendMessage(
+      {
+        to: cli.to,
+        senderId: cli.senderId,
+        body: cli.body,
+        clientRef: cli.clientRef,
+      },
+      {
+        idempotencyKey: cli.idempotencyKey,
+      },
     );
-    return null;
+  } catch (err) {
+    if (err instanceof SdkError) {
+      if (err.isIdempotencyInFlight()) {
+        console.log(
+          "sendMessage returned 409 Conflict — another request with this --idempotency-key is still in flight.",
+        );
+        return;
+      }
+      if (err.isIdempotencyKeyConflict()) {
+        console.log(
+          "sendMessage returned 422 — this --idempotency-key was already used with a *different* request body.",
+        );
+        return;
+      }
+      if (err.isConflict()) {
+        console.log(
+          "sendMessage returned 409 Conflict — if --client-ref was passed, that clientRef was " +
+            "already used on a prior send. This is clientRef's database-level dedupe doing " +
+            `its job: ${err.message}`,
+        );
+        return;
+      }
+    }
+    throw err;
   }
-  if (response.status === 422) {
-    console.log(
-      "sendMessage returned 422 — if --idempotency-key was passed, that key was already used " +
-        `with a *different* request body. This is IdempotencyLayer's own conflict check: ${text}`,
-    );
-    return null;
-  }
-  if (!response.ok) {
-    throw new Error(`sendMessage failed (${response.status}): ${text}`);
-  }
-  if (response.headers.get("idempotency-replayed") === "true") {
+
+  if (outcome.idempotencyReplayed) {
     console.log(
       "Idempotency-Replayed: true — this is the cached response from the first call under " +
         "this --idempotency-key, not a new send",
     );
   }
-  return JSON.parse(text);
-}
 
-async function getMessage(issuer, accessToken, messageId) {
-  const response = await fetch(`${issuer}/messages/${messageId}`, {
-    headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" },
-  });
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`GET /messages/${messageId} failed (${response.status}): ${text}`);
-  }
-  return JSON.parse(text);
-}
-
-async function main() {
-  const cli = parseCli();
-  const privateKeyPem = readFileSync(cli.privateKeyPath, "utf8");
-  const tokens = new TokenCache(cli.issuer, cli.clientId, privateKeyPem, cli.scope);
-
-  const accessToken = await tokens.get();
-
-  const sent = await sendMessage(cli.issuer, accessToken, cli);
-  if (sent == null) {
-    return;
-  }
-  console.log();
+  const sent = outcome.result;
   console.log(
     `sent: messageId=${sent.messageId} state=${sent.state} encoding=${sent.encoding} ` +
       `segments=${sent.segments} operator=${sent.operator} estimatedCostXaf=${sent.estimatedCostXaf}`,
   );
 
-  // Prove the write actually landed — read it back through the REST
-  // surface rather than trusting the mutation's own echoed response.
-  const readBackToken = await tokens.get();
-  const message = await getMessage(cli.issuer, readBackToken, sent.messageId);
+  // Prove the write actually landed — read it back through the REST surface
+  const message = await client.getMessage(sent.messageId);
   console.log(
     `read back: id=${message.id} state=${message.state} providerMessageRef=${message.providerMessageRef}`,
   );
