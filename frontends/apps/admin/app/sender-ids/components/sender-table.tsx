@@ -31,9 +31,9 @@ export function SenderTable({
         <TableRow>
           <TableHead>Active</TableHead>
           <TableHead>Value</TableHead>
-          <TableHead className="hidden sm:table-cell">Kind</TableHead>
-          <TableHead className="hidden md:table-cell">Registrations</TableHead>
-          <TableHead align="end" className="hidden md:table-cell">
+          <TableHead hideBelow="sm">Kind</TableHead>
+          <TableHead hideBelow="md">Registrations</TableHead>
+          <TableHead align="end" hideBelow="md">
             Updated
           </TableHead>
         </TableRow>
@@ -71,13 +71,13 @@ export function SenderTable({
               )}
             </TableCell>
             <TableCell mono>{senderId.value}</TableCell>
-            <TableCell mono className="hidden sm:table-cell">
+            <TableCell mono hideBelow="sm">
               {senderId.kind}
             </TableCell>
-            <TableCell className="hidden md:table-cell">
+            <TableCell hideBelow="md">
               <span className="text-caption text-muted-foreground">{summaryFor(senderId.id)}</span>
             </TableCell>
-            <TableCell align="end" className="hidden md:table-cell">
+            <TableCell align="end" hideBelow="md">
               <TimestampDisplay value={senderId.updatedAt} />
             </TableCell>
           </TableRow>

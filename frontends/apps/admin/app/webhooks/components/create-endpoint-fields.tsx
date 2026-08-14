@@ -1,4 +1,4 @@
-import { Input, Label } from "@vsms/ui";
+import { FormField, InlineBanner, Input } from "@vsms/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import type { CreateEndpointFormValues, EventType } from "../webhook-domain";
 import { EventTypeToggles } from "./event-type-toggles";
@@ -23,33 +23,41 @@ export function CreateEndpointFields({
 
   return (
     <form id={formId} onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="new-endpoint-app-id">App ID</Label>
+      <FormField
+        label="App ID"
+        htmlFor="new-endpoint-app-id"
+        error={formState.errors.appId?.message}
+      >
         <Input
           id="new-endpoint-app-id"
           placeholder="the App this endpoint belongs to"
           aria-invalid={formState.errors.appId != null}
           {...register("appId")}
         />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="new-endpoint-url">URL</Label>
+      </FormField>
+      <FormField label="URL" htmlFor="new-endpoint-url" error={formState.errors.url?.message}>
         <Input
           id="new-endpoint-url"
           placeholder="https://example.com/webhooks/vsms"
           aria-invalid={formState.errors.url != null}
           {...register("url")}
         />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label>Event types</Label>
+      </FormField>
+      {/* Not a `FormField`: `EventTypeToggles` is a group of toggle buttons,
+          not one labelable control, so there is no single `id` for a
+          `htmlFor` to name. A `<fieldset>`/`<legend>` instead of an
+          orphaned `<label>` with no `for` — the same accessibility gap
+          `FormField`'s own `htmlFor` requirement exists to catch, fixed the
+          correct way for a group rather than forced through a primitive
+          shaped for one control. */}
+      <fieldset className="flex flex-col gap-1.5">
+        <legend className="font-medium text-body text-foreground">Event types</legend>
         <EventTypeToggles selected={eventTypes} onChange={onEventTypesChange} />
-      </div>
+      </fieldset>
       <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="new-endpoint-max-attempts">Max attempts</Label>
+        <FormField label="Max attempts" htmlFor="new-endpoint-max-attempts">
           <Input id="new-endpoint-max-attempts" inputMode="numeric" {...register("maxAttempts")} />
-        </div>
+        </FormField>
         <div className="flex flex-col justify-end pb-2">
           <Controller
             control={control}
@@ -69,9 +77,7 @@ export function CreateEndpointFields({
         </div>
       </div>
       {createErrorMessage != null && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          Create failed: {createErrorMessage}
-        </div>
+        <InlineBanner variant="danger">Create failed: {createErrorMessage}</InlineBanner>
       )}
     </form>
   );

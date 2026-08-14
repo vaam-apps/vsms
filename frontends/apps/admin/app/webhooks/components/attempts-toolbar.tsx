@@ -2,7 +2,8 @@ import {
   ATTEMPT_STATES,
   type AttemptState,
   Button,
-  Label,
+  FormField,
+  InlineBanner,
   Select,
   SelectContent,
   SelectItem,
@@ -45,8 +46,7 @@ export function AttemptsToolbar({
       </div>
 
       <div className="flex flex-wrap items-end gap-4">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="attempts-endpoint">Endpoint</Label>
+        <FormField label="Endpoint" htmlFor="attempts-endpoint">
           <Select
             value={endpointId ?? "__all"}
             onValueChange={(value) => onEndpointIdChange(value === "__all" ? null : value)}
@@ -63,9 +63,8 @@ export function AttemptsToolbar({
               ))}
             </SelectContent>
           </Select>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="attempts-state">State</Label>
+        </FormField>
+        <FormField label="State" htmlFor="attempts-state">
           <Select
             value={state ?? "__all"}
             onValueChange={(value) =>
@@ -84,7 +83,7 @@ export function AttemptsToolbar({
               ))}
             </SelectContent>
           </Select>
-        </div>
+        </FormField>
         {(endpointId !== null || state !== null) && (
           <Button type="button" variant="ghost" size="sm" onClick={onClearFilters}>
             Clear filters
@@ -99,9 +98,7 @@ export function AttemptsToolbar({
       )}
 
       {errorMessage != null && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          Could not read attempts: {errorMessage}
-        </div>
+        <InlineBanner variant="danger">Could not read attempts: {errorMessage}</InlineBanner>
       )}
     </>
   );

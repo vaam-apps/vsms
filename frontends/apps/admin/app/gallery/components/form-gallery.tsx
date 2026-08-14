@@ -4,8 +4,8 @@
 
 import {
   Badge,
+  FormField,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectGroup,
@@ -21,12 +21,10 @@ export function FormGallery() {
   return (
     <Section title="Inputs, textarea, select, label, badge, separator">
       <div className="grid max-w-xl grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="gallery-input">Sender ID</Label>
+        <FormField label="Sender ID" htmlFor="gallery-input">
           <Input id="gallery-input" placeholder="VSMS-OTP" />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="gallery-select">Environment</Label>
+        </FormField>
+        <FormField label="Environment" htmlFor="gallery-select">
           {/* SelectGroup: no visual treatment of its own (Radix's own
               SelectGroup didn't have one either) — mounted here purely so
               this gallery doesn't silently skip an export. */}
@@ -41,11 +39,14 @@ export function FormGallery() {
               </SelectGroup>
             </SelectContent>
           </Select>
-        </div>
-        <div className="col-span-1 flex flex-col gap-1.5 sm:col-span-2">
-          <Label htmlFor="gallery-textarea">Message body</Label>
+        </FormField>
+        <FormField
+          label="Message body"
+          htmlFor="gallery-textarea"
+          className="col-span-1 sm:col-span-2"
+        >
           <Textarea id="gallery-textarea" rows={3} placeholder="Votre code est 482913." />
-        </div>
+        </FormField>
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Badge>orange-cm</Badge>

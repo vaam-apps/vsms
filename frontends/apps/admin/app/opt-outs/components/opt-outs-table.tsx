@@ -36,9 +36,9 @@ export function OptOutsTable({ items, isLoading, onRowClick, onRemoveClick }: Op
         <TableRow>
           <TableHead>MSISDN</TableHead>
           <TableHead>Source</TableHead>
-          <TableHead className="hidden md:table-cell">Scope</TableHead>
-          <TableHead className="hidden lg:table-cell">Reason</TableHead>
-          <TableHead align="end" className="hidden sm:table-cell">
+          <TableHead hideBelow="md">Scope</TableHead>
+          <TableHead hideBelow="lg">Reason</TableHead>
+          <TableHead align="end" hideBelow="sm">
             Opted out
           </TableHead>
           <TableHead align="end">Actions</TableHead>
@@ -78,13 +78,16 @@ export function OptOutsTable({ items, isLoading, onRowClick, onRemoveClick }: Op
               <MsisdnDisplay value={row.msisdn} />
             </TableCell>
             <TableCell mono>{row.source}</TableCell>
-            <TableCell mono className="hidden md:table-cell">
+            <TableCell mono hideBelow="md">
               {row.scope}
             </TableCell>
-            <TableCell className="hidden max-w-[240px] truncate text-caption text-muted-foreground lg:table-cell">
+            <TableCell
+              hideBelow="lg"
+              className="max-w-[240px] truncate text-caption text-muted-foreground"
+            >
               {row.reason ?? "—"}
             </TableCell>
-            <TableCell align="end" className="hidden sm:table-cell">
+            <TableCell align="end" hideBelow="sm">
               <TimestampDisplay value={row.optedOutAt} />
             </TableCell>
             <TableCell align="end">

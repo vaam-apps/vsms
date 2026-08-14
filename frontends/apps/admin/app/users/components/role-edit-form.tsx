@@ -1,6 +1,6 @@
 // Dumb view: the role-edit form fields.
 
-import { Input, Label, Textarea } from "@vsms/ui";
+import { FormField, Input, Textarea } from "@vsms/ui";
 import type { UseFormReturn } from "react-hook-form";
 import { KNOWN_PERMISSIONS, type RoleEditValues } from "../role-forms";
 import { ErrorBanner } from "./error-banner";
@@ -25,19 +25,18 @@ export function RoleEditForm({
       onSubmit={form.handleSubmit(onSubmit)}
       className="flex flex-col gap-4"
     >
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="role-edit-label">Label</Label>
+      <FormField
+        label="Label"
+        htmlFor="role-edit-label"
+        error={form.formState.errors.label?.message}
+      >
         <Input
           id="role-edit-label"
           aria-invalid={form.formState.errors.label != null}
           {...form.register("label")}
         />
-        {form.formState.errors.label != null && (
-          <p className="text-caption text-state-danger-fg">{form.formState.errors.label.message}</p>
-        )}
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="role-edit-permissions">Permissions (space-separated)</Label>
+      </FormField>
+      <FormField label="Permissions (space-separated)" htmlFor="role-edit-permissions">
         <Textarea
           id="role-edit-permissions"
           rows={3}
@@ -47,7 +46,7 @@ export function RoleEditForm({
         <p className="text-caption text-subtle-foreground">
           Known literals: {KNOWN_PERMISSIONS.join(", ")}
         </p>
-      </div>
+      </FormField>
 
       {isStale && <StaleWriteBanner onReload={onReload} />}
       {generalError != null && <ErrorBanner>Save failed: {generalError}</ErrorBanner>}

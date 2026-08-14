@@ -12,6 +12,7 @@ export * from "./components/bespoke/screen-layout";
 export * from "./components/bespoke/state-timeline";
 // Data-display (design doc §7): consistency is the deliverable, so these
 // are components, not ad hoc per-screen formatting.
+export * from "./components/data/code";
 export * from "./components/data/id-display";
 export * from "./components/data/msisdn-display";
 export * from "./components/data/timestamp-display";
@@ -23,6 +24,7 @@ export * from "./components/primitives/command-menu";
 export * from "./components/primitives/dialog";
 export * from "./components/primitives/drawer";
 export * from "./components/primitives/dropdown-menu";
+export * from "./components/primitives/form-field";
 export * from "./components/primitives/inline-confirm";
 export * from "./components/primitives/input";
 export * from "./components/primitives/label";

@@ -29,14 +29,14 @@ export function RouteTable({
       <TableHeader>
         <TableRow>
           <TableHead align="end">Priority</TableHead>
-          <TableHead align="end" className="hidden sm:table-cell">
+          <TableHead align="end" hideBelow="sm">
             Weight
           </TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Name</TableHead>
-          <TableHead className="hidden md:table-cell">Predicates</TableHead>
-          <TableHead className="hidden lg:table-cell">Provider</TableHead>
-          <TableHead align="end" className="hidden md:table-cell">
+          <TableHead hideBelow="md">Predicates</TableHead>
+          <TableHead hideBelow="lg">Provider</TableHead>
+          <TableHead align="end" hideBelow="md">
             Updated
           </TableHead>
         </TableRow>
@@ -65,7 +65,7 @@ export function RouteTable({
             <TableCell align="end" mono>
               {route.priority}
             </TableCell>
-            <TableCell align="end" mono className="hidden sm:table-cell">
+            <TableCell align="end" mono hideBelow="sm">
               {route.weight}
             </TableCell>
             <TableCell>
@@ -80,13 +80,13 @@ export function RouteTable({
               )}
             </TableCell>
             <TableCell>{route.name}</TableCell>
-            <TableCell className="hidden text-caption text-muted-foreground md:table-cell">
+            <TableCell hideBelow="md" className="text-caption text-muted-foreground">
               {predicateSummary(route)}
             </TableCell>
-            <TableCell className="hidden lg:table-cell">
+            <TableCell hideBelow="lg">
               <IdDisplay value={route.providerId} />
             </TableCell>
-            <TableCell align="end" className="hidden md:table-cell">
+            <TableCell align="end" hideBelow="md">
               <TimestampDisplay value={route.updatedAt} />
             </TableCell>
           </TableRow>

@@ -1,4 +1,4 @@
-import { Input, Label } from "@vsms/ui";
+import { FormField, InlineBanner, Input } from "@vsms/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import type { EndpointFormValues, EventType } from "../webhook-domain";
 import { EventTypeToggles } from "./event-type-toggles";
@@ -26,34 +26,31 @@ export function EndpointEditFields({
 
   return (
     <form id={formId} onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="endpoint-url">URL</Label>
+      <FormField label="URL" htmlFor="endpoint-url" error={formState.errors.url?.message}>
         <Input id="endpoint-url" aria-invalid={formState.errors.url != null} {...register("url")} />
-        {formState.errors.url != null && (
-          <p className="text-caption text-state-danger-fg">{formState.errors.url.message}</p>
-        )}
-      </div>
+      </FormField>
 
-      <div className="flex flex-col gap-1.5">
-        <Label>Event types</Label>
+      {/* Not a `FormField` — see `create-endpoint-fields.tsx`'s identical
+          comment: `EventTypeToggles` is a group of toggle buttons with no
+          single `id` a `htmlFor` could name. */}
+      <fieldset className="flex flex-col gap-1.5">
+        <legend className="font-medium text-body text-foreground">Event types</legend>
         <EventTypeToggles selected={eventTypes} onChange={onEventTypesChange} />
-      </div>
+      </fieldset>
 
       <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="endpoint-max-attempts">Max attempts</Label>
+        <FormField
+          label="Max attempts"
+          htmlFor="endpoint-max-attempts"
+          error={formState.errors.maxAttempts?.message}
+        >
           <Input
             id="endpoint-max-attempts"
             inputMode="numeric"
             aria-invalid={formState.errors.maxAttempts != null}
             {...register("maxAttempts")}
           />
-          {formState.errors.maxAttempts != null && (
-            <p className="text-caption text-state-danger-fg">
-              {formState.errors.maxAttempts.message}
-            </p>
-          )}
-        </div>
+        </FormField>
         <div className="flex flex-col justify-end gap-2 pb-2">
           <Controller
             control={control}
@@ -89,9 +86,7 @@ export function EndpointEditFields({
       </div>
 
       {saveErrorMessage != null && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          Save failed: {saveErrorMessage}
-        </div>
+        <InlineBanner variant="danger">Save failed: {saveErrorMessage}</InlineBanner>
       )}
     </form>
   );

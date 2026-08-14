@@ -4,14 +4,16 @@
 
 import {
   Button,
+  Code,
   Dialog,
   DialogContent,
   DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  FormField,
+  InlineBanner,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -68,35 +70,30 @@ export function ProvisionUserDialogView({
             onSubmit={form.handleSubmit(onSubmit)}
             className="flex flex-col gap-4"
           >
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="user-email">Email</Label>
+            <FormField
+              label="Email"
+              htmlFor="user-email"
+              error={form.formState.errors.email?.message}
+            >
               <Input
                 id="user-email"
                 type="email"
                 aria-invalid={form.formState.errors.email != null}
                 {...form.register("email")}
               />
-              {form.formState.errors.email != null && (
-                <p className="text-caption text-state-danger-fg">
-                  {form.formState.errors.email.message}
-                </p>
-              )}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="user-display-name">Display name</Label>
+            </FormField>
+            <FormField
+              label="Display name"
+              htmlFor="user-display-name"
+              error={form.formState.errors.displayName?.message}
+            >
               <Input
                 id="user-display-name"
                 aria-invalid={form.formState.errors.displayName != null}
                 {...form.register("displayName")}
               />
-              {form.formState.errors.displayName != null && (
-                <p className="text-caption text-state-danger-fg">
-                  {form.formState.errors.displayName.message}
-                </p>
-              )}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="user-role">Role</Label>
+            </FormField>
+            <FormField label="Role" htmlFor="user-role">
               <Controller
                 control={form.control}
                 name="roleKey"
@@ -115,21 +112,24 @@ export function ProvisionUserDialogView({
                   </Select>
                 )}
               />
-            </div>
+            </FormField>
             {isError && <ErrorBanner>{errorMessage}</ErrorBanner>}
           </form>
         )}
 
         {result !== undefined && (
           <div className="flex flex-col gap-3">
-            <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-              {result.email} — role{" "}
-              <span className="font-mono text-foreground">{result.roleKey}</span>
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label>One-time password — save this now</Label>
+            <InlineBanner variant="neutral">
+              {result.email} — role <Code>{result.roleKey}</Code>
+            </InlineBanner>
+            <FormField label="One-time password — save this now" htmlFor="provisioned-password">
               <div className="flex items-center gap-2">
-                <Input readOnly className="font-mono" value={result.password} />
+                <Input
+                  id="provisioned-password"
+                  readOnly
+                  className="font-mono"
+                  value={result.password}
+                />
                 <Button
                   type="button"
                   variant="secondary"
@@ -145,7 +145,7 @@ export function ProvisionUserDialogView({
               <p className="text-caption text-subtle-foreground">
                 Share this over a channel the recipient controls, not this screen&apos;s own log.
               </p>
-            </div>
+            </FormField>
           </div>
         )}
 

@@ -3,7 +3,7 @@
 // not business logic — kept beside the markup that uses it, the same way
 // `providers-screen.tsx`'s `StatePill` keeps its own state labels.
 
-import { Card, CardBody, CardHeader } from "@vsms/ui";
+import { Card, CardBody, CardHeader, InlineBanner } from "@vsms/ui";
 import { formatCount, formatPercent } from "../format";
 
 export type Operator = "mtn" | "orange" | "camtel" | "nexttel" | "unknown";
@@ -69,11 +69,11 @@ export function DeliveryRateCard({
             })}
           </div>
         )}
-        <p className="mt-3 text-caption text-subtle-foreground">
+        <InlineBanner variant="plain" className="mt-3">
           Excludes {formatCount(stuckMessages)} stuck message
           {stuckMessages === 1 ? "" : "s"} (uncertain/undelivered) — see the tile above. Counting
           those as failed would overstate failure; counting them as delivered would be a lie.
-        </p>
+        </InlineBanner>
       </CardBody>
     </Card>
   );

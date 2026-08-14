@@ -38,9 +38,9 @@ export function MessagesTable({ rows, isLoading, hasFilters, onClearFilters }: M
         <TableRow>
           <TableHead>Status</TableHead>
           <TableHead>Recipient</TableHead>
-          <TableHead className="hidden md:table-cell">Client ref</TableHead>
-          <TableHead className="hidden sm:table-cell">Sender</TableHead>
-          <TableHead className="hidden lg:table-cell">Encoding</TableHead>
+          <TableHead hideBelow="md">Client ref</TableHead>
+          <TableHead hideBelow="sm">Sender</TableHead>
+          <TableHead hideBelow="lg">Encoding</TableHead>
           <TableHead>Id</TableHead>
           <TableHead align="end">Time</TableHead>
         </TableRow>
@@ -103,13 +103,13 @@ export function MessagesTable({ rows, isLoading, hasFilters, onClearFilters }: M
                 )}
               </div>
             </TableCell>
-            <TableCell className="hidden md:table-cell" mono>
+            <TableCell hideBelow="md" mono>
               {row.clientRef ?? "—"}
             </TableCell>
-            <TableCell className="hidden sm:table-cell" mono>
+            <TableCell hideBelow="sm" mono>
               {row.senderIdValue}
             </TableCell>
-            <TableCell className="hidden lg:table-cell" mono>
+            <TableCell hideBelow="lg" mono>
               {row.encoding.toUpperCase()} · {row.segments}
             </TableCell>
             <TableCell>

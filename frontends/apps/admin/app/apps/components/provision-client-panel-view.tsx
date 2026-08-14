@@ -3,7 +3,7 @@
 // the live-verified reason (a nested Headless UI `Dialog` inside an
 // already-open `MoreDetailDrawer` self-dismisses the whole drawer).
 
-import { Button, Input, Label, Textarea, toast } from "@vsms/ui";
+import { Button, Code, FormField, Input, Textarea, toast } from "@vsms/ui";
 import type { UseFormReturn } from "react-hook-form";
 import type { ProvisionClientValues } from "../app-forms";
 import { ErrorBanner } from "./error-banner";
@@ -54,37 +54,34 @@ export function ProvisionClientPanelView({
           onSubmit={form.handleSubmit(onSubmit)}
           className="flex flex-col gap-4"
         >
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="client-label">Label</Label>
+          <FormField
+            label="Label"
+            htmlFor="client-label"
+            error={form.formState.errors.label?.message}
+          >
             <Input
               id="client-label"
               placeholder="e.g. billing-service"
               aria-invalid={form.formState.errors.label != null}
               {...form.register("label")}
             />
-            {form.formState.errors.label != null && (
-              <p className="text-caption text-state-danger-fg">
-                {form.formState.errors.label.message}
-              </p>
-            )}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="client-scopes">Scopes (space-separated)</Label>
+          </FormField>
+          <FormField
+            label="Scopes (space-separated)"
+            htmlFor="client-scopes"
+            error={form.formState.errors.scopes?.message}
+          >
             <Input
               id="client-scopes"
               aria-invalid={form.formState.errors.scopes != null}
               {...form.register("scopes")}
             />
-            {form.formState.errors.scopes != null ? (
-              <p className="text-caption text-state-danger-fg">
-                {form.formState.errors.scopes.message}
-              </p>
-            ) : (
+            {form.formState.errors.scopes == null && (
               <p className="text-caption text-subtle-foreground">
                 e.g. <span className="font-mono">sms:send sms:read</span>
               </p>
             )}
-          </div>
+          </FormField>
           {isError && <ErrorBanner>{errorMessage}</ErrorBanner>}
 
           <div className="flex items-center justify-end gap-2">
@@ -101,11 +98,14 @@ export function ProvisionClientPanelView({
       {result !== undefined && (
         <div className="flex flex-col gap-3">
           <div className="rounded-sm border border-edge bg-surface-1 px-3 py-2 text-caption text-muted-foreground">
-            Client id: <span className="font-mono text-foreground">{result.clientId}</span>
+            Client id: <Code>{result.clientId}</Code>
           </div>
-          <div className="flex flex-col gap-1.5">
-            <Label>Private key (PKCS#8 PEM) — save this now</Label>
+          <FormField
+            label="Private key (PKCS#8 PEM) — save this now"
+            htmlFor="provisioned-private-key"
+          >
             <Textarea
+              id="provisioned-private-key"
               readOnly
               rows={10}
               className="font-mono text-caption"
@@ -124,7 +124,7 @@ export function ProvisionClientPanelView({
                 Copy key
               </Button>
             </div>
-          </div>
+          </FormField>
           <div className="flex justify-end">
             <Button type="button" onClick={onDone}>
               I&apos;ve saved this key — close

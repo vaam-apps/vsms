@@ -8,8 +8,8 @@ import {
   Card,
   CardBody,
   CardHeader,
+  FormField,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -44,12 +44,10 @@ export function CandidateForm({
       <CardHeader title="Candidate" meta="Nothing below sends a real message" />
       <CardBody>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="sim-msisdn">Recipient (E.164)</Label>
+          <FormField label="Recipient (E.164)" htmlFor="sim-msisdn">
             <Input id="sim-msisdn" placeholder="+237677123456" {...register("msisdn")} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="sim-class">Message class</Label>
+          </FormField>
+          <FormField label="Message class" htmlFor="sim-class">
             <Controller
               control={control}
               name="messageClass"
@@ -68,23 +66,21 @@ export function CandidateForm({
                 </Select>
               )}
             />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="sim-app-id">App id</Label>
+          </FormField>
+          <FormField label="App id" htmlFor="sim-app-id">
             <Input
               id="sim-app-id"
               placeholder="the App this message would be sent from"
               {...register("appId")}
             />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="sim-draw">Draw (0–1, optional — a tie-break replay value)</Label>
+          </FormField>
+          <FormField label="Draw (0–1, optional — a tie-break replay value)" htmlFor="sim-draw">
             <Input
               id="sim-draw"
               placeholder="leave empty for a fresh random draw"
               {...register("draw")}
             />
-          </div>
+          </FormField>
         </div>
 
         <div className="mt-4 flex items-center gap-2">

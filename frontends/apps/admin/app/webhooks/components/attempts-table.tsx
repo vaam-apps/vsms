@@ -31,13 +31,13 @@ export function AttemptsTable({
       <TableHeader>
         <TableRow>
           <TableHead>State</TableHead>
-          <TableHead className="hidden md:table-cell">Event</TableHead>
-          <TableHead className="hidden lg:table-cell">Endpoint</TableHead>
-          <TableHead align="end" className="hidden sm:table-cell">
+          <TableHead hideBelow="md">Event</TableHead>
+          <TableHead hideBelow="lg">Endpoint</TableHead>
+          <TableHead align="end" hideBelow="sm">
             Attempts
           </TableHead>
-          <TableHead className="hidden sm:table-cell">Status</TableHead>
-          <TableHead className="hidden md:table-cell">Last attempt</TableHead>
+          <TableHead hideBelow="sm">Status</TableHead>
+          <TableHead hideBelow="md">Last attempt</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -64,10 +64,10 @@ export function AttemptsTable({
             <TableCell>
               <AttemptStatusPill state={attempt.state} />
             </TableCell>
-            <TableCell mono className="hidden md:table-cell">
+            <TableCell mono hideBelow="md">
               {attempt.eventType}
             </TableCell>
-            <TableCell mono className="hidden lg:table-cell">
+            <TableCell mono hideBelow="lg">
               <span
                 className="line-clamp-1 max-w-[220px]"
                 title={endpointUrlFor(attempt.endpointId)}
@@ -75,13 +75,13 @@ export function AttemptsTable({
                 {endpointUrlFor(attempt.endpointId)}
               </span>
             </TableCell>
-            <TableCell mono align="end" className="hidden sm:table-cell">
+            <TableCell mono align="end" hideBelow="sm">
               {attempt.attempts}
             </TableCell>
-            <TableCell mono className="hidden sm:table-cell">
+            <TableCell mono hideBelow="sm">
               {attempt.lastStatusCode ?? "—"}
             </TableCell>
-            <TableCell className="hidden md:table-cell">
+            <TableCell hideBelow="md">
               {attempt.lastAttemptAt != null ? (
                 <TimestampDisplay value={attempt.lastAttemptAt} />
               ) : (

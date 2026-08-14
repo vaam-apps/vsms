@@ -7,9 +7,10 @@
 
 import {
   Button,
+  FormField,
   IdDisplay,
+  InlineBanner,
   Input,
-  Label,
   MoreDetailDrawer,
   Select,
   SelectContent,
@@ -102,20 +103,19 @@ export function ProviderEditDrawer({
             </div>
           </div>
 
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="provider-display-name">Display name</Label>
+          <FormField
+            label="Display name"
+            htmlFor="provider-display-name"
+            error={errors.displayName?.message}
+          >
             <Input
               id="provider-display-name"
               aria-invalid={errors.displayName != null}
               {...register("displayName")}
             />
-            {errors.displayName != null && (
-              <p className="text-caption text-state-danger-fg">{errors.displayName.message}</p>
-            )}
-          </div>
+          </FormField>
 
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="provider-state">State</Label>
+          <FormField label="State" htmlFor="provider-state">
             <Controller
               control={control}
               name="state"
@@ -134,55 +134,45 @@ export function ProviderEditDrawer({
                 </Select>
               )}
             />
-          </div>
+          </FormField>
 
           <div className="grid grid-cols-2 gap-3">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="provider-max-tps">Max TPS</Label>
+            <FormField label="Max TPS" htmlFor="provider-max-tps" error={errors.maxTps?.message}>
               <Input
                 id="provider-max-tps"
                 inputMode="decimal"
                 aria-invalid={errors.maxTps != null}
                 {...register("maxTps")}
               />
-              {errors.maxTps != null && (
-                <p className="text-caption text-state-danger-fg">{errors.maxTps.message}</p>
-              )}
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="provider-max-daily">Max daily submissions</Label>
+            </FormField>
+            <FormField
+              label="Max daily submissions"
+              htmlFor="provider-max-daily"
+              error={errors.maxDailySubmissions?.message}
+            >
               <Input
                 id="provider-max-daily"
                 inputMode="numeric"
                 aria-invalid={errors.maxDailySubmissions != null}
                 {...register("maxDailySubmissions")}
               />
-              {errors.maxDailySubmissions != null && (
-                <p className="text-caption text-state-danger-fg">
-                  {errors.maxDailySubmissions.message}
-                </p>
-              )}
-            </div>
+            </FormField>
           </div>
 
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="provider-cost">Cost per segment (XAF)</Label>
+          <FormField
+            label="Cost per segment (XAF)"
+            htmlFor="provider-cost"
+            error={errors.costPerSegmentXaf?.message}
+          >
             <Input
               id="provider-cost"
               aria-invalid={errors.costPerSegmentXaf != null}
               {...register("costPerSegmentXaf")}
             />
-            {errors.costPerSegmentXaf != null && (
-              <p className="text-caption text-state-danger-fg">
-                {errors.costPerSegmentXaf.message}
-              </p>
-            )}
-          </div>
+          </FormField>
 
           {saveError != null && (
-            <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-              Save failed: {saveError}
-            </div>
+            <InlineBanner variant="danger">Save failed: {saveError}</InlineBanner>
           )}
         </form>
       )}

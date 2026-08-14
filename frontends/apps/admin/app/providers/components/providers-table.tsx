@@ -42,15 +42,15 @@ export function ProvidersTable({ rows, isLoading, onRowClick }: ProvidersTablePr
         <TableRow>
           <TableHead>State</TableHead>
           <TableHead>Provider</TableHead>
-          <TableHead className="hidden md:table-cell">Kind</TableHead>
-          <TableHead className="hidden sm:table-cell">Healthy</TableHead>
-          <TableHead align="end" className="hidden sm:table-cell">
+          <TableHead hideBelow="md">Kind</TableHead>
+          <TableHead hideBelow="sm">Healthy</TableHead>
+          <TableHead align="end" hideBelow="sm">
             Max TPS
           </TableHead>
-          <TableHead align="end" className="hidden lg:table-cell">
+          <TableHead align="end" hideBelow="lg">
             Cost/segment (XAF)
           </TableHead>
-          <TableHead align="end" className="hidden md:table-cell">
+          <TableHead align="end" hideBelow="md">
             Updated
           </TableHead>
         </TableRow>
@@ -91,23 +91,23 @@ export function ProvidersTable({ rows, isLoading, onRowClick }: ProvidersTablePr
                 </span>
               </div>
             </TableCell>
-            <TableCell mono className="hidden md:table-cell">
+            <TableCell mono hideBelow="md">
               {provider.kind}
             </TableCell>
-            <TableCell className="hidden sm:table-cell">
+            <TableCell hideBelow="sm">
               {provider.healthy ? (
                 <span className="text-state-success-fg">yes</span>
               ) : (
                 <span className="text-muted-foreground">no probe yet</span>
               )}
             </TableCell>
-            <TableCell align="end" mono className="hidden sm:table-cell">
+            <TableCell align="end" mono hideBelow="sm">
               {provider.maxTps}
             </TableCell>
-            <TableCell align="end" mono className="hidden lg:table-cell">
+            <TableCell align="end" mono hideBelow="lg">
               {provider.costPerSegmentXaf}
             </TableCell>
-            <TableCell align="end" className="hidden md:table-cell">
+            <TableCell align="end" hideBelow="md">
               <TimestampDisplay value={provider.updatedAt} />
             </TableCell>
           </TableRow>

@@ -75,16 +75,52 @@ export function TableRow({ className, selected = false, ...props }: TableRowProp
   );
 }
 
+/**
+ * Responsive column visibility. `hideBelow="md"` hides the cell on
+ * viewports narrower than `md` and shows it from `md` up.
+ *
+ * This exists because the class it replaces was the single
+ * most-duplicated string in the console: `"hidden sm:table-cell"`,
+ * `"hidden md:table-cell"` and `"hidden lg:table-cell"` appeared **90
+ * times** as inline literals across the route-local table components.
+ *
+ * Worth recording how they got there, because it is a lesson about the
+ * rule and not just about tables. R6's own text names
+ * `const COL_ID = "hidden lg:table-cell"` in `jobs-screen.tsx` — four
+ * hoisted consts — as the motivating example of a class const that must
+ * not live in a view. The R6 sweep removed those four consts and, in
+ * moving the markup into dumb components, re-expressed the same decision
+ * as 90 inline literals. The letter of the rule was satisfied (no classes
+ * in a *view* file); the thing the rule exists to prevent — one decision
+ * written in many places — got 22× worse.
+ *
+ * A mapping table rather than an interpolated `` `hidden ${bp}:table-cell` ``
+ * because Tailwind scans source text statically: a template literal
+ * produces no class at all in the built CSS. The full strings must appear
+ * verbatim somewhere Tailwind can see them, and this is that place.
+ */
+const HIDE_BELOW: Record<Breakpoint, string> = {
+  sm: "hidden sm:table-cell",
+  md: "hidden md:table-cell",
+  lg: "hidden lg:table-cell",
+  xl: "hidden xl:table-cell",
+};
+
+export type Breakpoint = "sm" | "md" | "lg" | "xl";
+
 export interface TableHeadProps extends Omit<ThHTMLAttributes<HTMLTableCellElement>, "align"> {
   align?: "start" | "end";
+  /** Hide this column below the given breakpoint. See `HIDE_BELOW`. */
+  hideBelow?: Breakpoint | undefined;
 }
 
-export function TableHead({ className, align = "start", ...props }: TableHeadProps) {
+export function TableHead({ className, align = "start", hideBelow, ...props }: TableHeadProps) {
   return (
     <th
       className={cn(
         "h-8 whitespace-nowrap px-3 font-medium text-micro text-muted-foreground tracking-[0.03em]",
         align === "end" ? "text-right" : "text-left",
+        hideBelow && HIDE_BELOW[hideBelow],
         className,
       )}
       {...props}
@@ -95,15 +131,24 @@ export function TableHead({ className, align = "start", ...props }: TableHeadPro
 export interface TableCellProps extends Omit<TdHTMLAttributes<HTMLTableCellElement>, "align"> {
   align?: "start" | "end";
   mono?: boolean;
+  /** Hide this column below the given breakpoint. See `HIDE_BELOW`. */
+  hideBelow?: Breakpoint | undefined;
 }
 
-export function TableCell({ className, align = "start", mono = false, ...props }: TableCellProps) {
+export function TableCell({
+  className,
+  align = "start",
+  mono = false,
+  hideBelow,
+  ...props
+}: TableCellProps) {
   return (
     <td
       className={cn(
         "px-3 py-2 text-body",
         align === "end" ? "text-right" : "text-left",
         mono && "font-mono tabular-nums",
+        hideBelow && HIDE_BELOW[hideBelow],
         className,
       )}
       {...props}

@@ -28,12 +28,12 @@ export function AppsTable({
         <TableRow>
           <TableHead>Active</TableHead>
           <TableHead>Name</TableHead>
-          <TableHead className="hidden sm:table-cell">Slug</TableHead>
-          <TableHead align="end" className="hidden md:table-cell">
+          <TableHead hideBelow="sm">Slug</TableHead>
+          <TableHead align="end" hideBelow="md">
             Monthly quota
           </TableHead>
-          <TableHead className="hidden lg:table-cell">Transliterate to GSM-7</TableHead>
-          <TableHead align="end" className="hidden md:table-cell">
+          <TableHead hideBelow="lg">Transliterate to GSM-7</TableHead>
+          <TableHead align="end" hideBelow="md">
             Updated
           </TableHead>
         </TableRow>
@@ -67,16 +67,14 @@ export function AppsTable({
               )}
             </TableCell>
             <TableCell>{app.name}</TableCell>
-            <TableCell mono className="hidden sm:table-cell">
+            <TableCell mono hideBelow="sm">
               {app.slug}
             </TableCell>
-            <TableCell align="end" mono className="hidden md:table-cell">
+            <TableCell align="end" mono hideBelow="md">
               {app.monthlyQuota.toLocaleString()}
             </TableCell>
-            <TableCell className="hidden lg:table-cell">
-              {app.transliterateToGsm7 ? "on" : "off"}
-            </TableCell>
-            <TableCell align="end" className="hidden md:table-cell">
+            <TableCell hideBelow="lg">{app.transliterateToGsm7 ? "on" : "off"}</TableCell>
+            <TableCell align="end" hideBelow="md">
               <TimestampDisplay value={app.updatedAt} />
             </TableCell>
           </TableRow>

@@ -7,8 +7,8 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  FormField,
   Input,
-  Label,
   Textarea,
 } from "@vsms/ui";
 import type { UseFormReturn } from "react-hook-form";
@@ -41,35 +41,26 @@ export function CreateRoleDialogView({
           onSubmit={form.handleSubmit(onSubmit)}
           className="flex flex-col gap-4"
         >
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="role-key">Key</Label>
+          <FormField label="Key" htmlFor="role-key" error={form.formState.errors.key?.message}>
             <Input
               id="role-key"
               placeholder="lowercase_with_underscores"
               aria-invalid={form.formState.errors.key != null}
               {...form.register("key")}
             />
-            {form.formState.errors.key != null && (
-              <p className="text-caption text-state-danger-fg">
-                {form.formState.errors.key.message}
-              </p>
-            )}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="role-label">Label</Label>
+          </FormField>
+          <FormField
+            label="Label"
+            htmlFor="role-label"
+            error={form.formState.errors.label?.message}
+          >
             <Input
               id="role-label"
               aria-invalid={form.formState.errors.label != null}
               {...form.register("label")}
             />
-            {form.formState.errors.label != null && (
-              <p className="text-caption text-state-danger-fg">
-                {form.formState.errors.label.message}
-              </p>
-            )}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="role-permissions">Permissions (space-separated)</Label>
+          </FormField>
+          <FormField label="Permissions (space-separated)" htmlFor="role-permissions">
             <Textarea
               id="role-permissions"
               rows={3}
@@ -79,7 +70,7 @@ export function CreateRoleDialogView({
             <p className="text-caption text-subtle-foreground">
               Known literals: {KNOWN_PERMISSIONS.join(", ")}
             </p>
-          </div>
+          </FormField>
           {generalError != null && <ErrorBanner>{generalError}</ErrorBanner>}
         </form>
         <DialogFooter>

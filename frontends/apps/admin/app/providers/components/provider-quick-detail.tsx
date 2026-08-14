@@ -6,6 +6,7 @@
 
 import { Button, IdDisplay, QuickDetailDrawer, TimestampDisplay } from "@vsms/ui";
 import type { ProviderState } from "../provider-types";
+import { DetailList, DetailRow } from "./detail-row";
 import { StatePill } from "./state-pill";
 
 export interface QuickDetail {
@@ -53,46 +54,33 @@ export function ProviderQuickDetail({ open, detail, onClose, onEdit }: ProviderQ
       }
     >
       {detail !== undefined && (
-        <dl className="flex flex-col gap-3 text-body">
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-muted-foreground">State</dt>
-            <dd>
-              <StatePill state={detail.state} />
-            </dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-muted-foreground">Key</dt>
-            <dd className="font-mono text-caption">{detail.key}</dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-muted-foreground">Kind</dt>
-            <dd className="font-mono text-caption">{detail.kind}</dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-muted-foreground">Healthy</dt>
-            <dd>
-              {detail.healthy ? (
-                <span className="text-state-success-fg">yes</span>
-              ) : (
-                <span className="text-muted-foreground">no probe yet</span>
-              )}
-            </dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-muted-foreground">Max TPS</dt>
-            <dd className="font-mono">{detail.maxTps}</dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-muted-foreground">Cost/segment (XAF)</dt>
-            <dd className="font-mono">{detail.costPerSegmentXaf}</dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt className="text-muted-foreground">Updated</dt>
-            <dd>
-              <TimestampDisplay value={detail.updatedAt} />
-            </dd>
-          </div>
-        </dl>
+        <DetailList>
+          <DetailRow label="State">
+            <StatePill state={detail.state} />
+          </DetailRow>
+          <DetailRow label="Key">
+            <span className="font-mono text-caption">{detail.key}</span>
+          </DetailRow>
+          <DetailRow label="Kind">
+            <span className="font-mono text-caption">{detail.kind}</span>
+          </DetailRow>
+          <DetailRow label="Healthy">
+            {detail.healthy ? (
+              <span className="text-state-success-fg">yes</span>
+            ) : (
+              <span className="text-muted-foreground">no probe yet</span>
+            )}
+          </DetailRow>
+          <DetailRow label="Max TPS">
+            <span className="font-mono">{detail.maxTps}</span>
+          </DetailRow>
+          <DetailRow label="Cost/segment (XAF)">
+            <span className="font-mono">{detail.costPerSegmentXaf}</span>
+          </DetailRow>
+          <DetailRow label="Updated">
+            <TimestampDisplay value={detail.updatedAt} />
+          </DetailRow>
+        </DetailList>
       )}
     </QuickDetailDrawer>
   );

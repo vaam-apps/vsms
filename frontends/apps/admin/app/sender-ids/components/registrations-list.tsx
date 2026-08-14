@@ -1,4 +1,4 @@
-import { Button, InlineEmptyState } from "@vsms/ui";
+import { Button, FieldError, InlineEmptyState } from "@vsms/ui";
 import type { ProviderListItem, RegistrationListItem } from "../sender-id-domain";
 import { RegistrationStatusBadge } from "./registration-status-badge";
 
@@ -51,9 +51,7 @@ export function RegistrationsList({
                   <RegistrationStatusBadge status={registration.status} />
                 </div>
                 {registration.rejectionReason != null && (
-                  <p className="text-caption text-state-danger-fg">
-                    {registration.rejectionReason}
-                  </p>
+                  <FieldError>{registration.rejectionReason}</FieldError>
                 )}
               </div>
               <Button
