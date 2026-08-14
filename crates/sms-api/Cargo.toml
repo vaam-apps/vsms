@@ -9,6 +9,33 @@ repository.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+# cratestack 0.7.16 bump: `cratestack::include_server_schema!` (crates/sms-api/
+# src/lib.rs) generates a `pub mod procedures` with one `invoke_with_db`
+# function per procedure, each carrying an illustrative doc comment example
+# (cratestack#512's own doc). That example is deliberately non-compiling
+# prose, not a real call site — it references `reconcile_accounts`, a
+# procedure that does not exist in this schema, and names
+# `db`/`registry`/`SystemContext` as though already in scope at the crate
+# root, which they are not — correctly fenced ```` ```ignore ```` upstream,
+# so a plain `cargo test` genuinely skips it (`18 ignored`, not a failure).
+# The break is `cargo test -- --ignored`'s own separate, unrelated meaning:
+# rustdoc reuses the identical "ignored" bucket for both "a real test,
+# temporarily skipped" (what `--ignored` is meant to force-run) and "a doc
+# example marked non-compiling on purpose" (which `--ignored` then also
+# force-compiles, with nothing to distinguish the two). `cargo test
+# --workspace -- --ignored` (no `--tests`, the exact command CI runs) hits
+# this for all 18 generated procedures — reproduced locally
+# (`cannot find module or crate 'procedures'`/`cannot find value 'db'`/
+# etc.), not assumed from the CI log alone. Filed upstream:
+# https://github.com/cratestack/cratestack/issues/611. Checked before
+# disabling, not assumed: `crates/sms-api/src/` has exactly one fenced code
+# block in its own hand-written source (`procedures.rs`, a ` ```text `
+# block, never compiled as a doctest regardless), so this crate has zero
+# genuine hand-written doctests to lose — disabling costs nothing real. See
+# `AGENTS.md`'s 0.7.16 bump section for the full writeup.
+[lib]
+doctest = false
+
 [dependencies]
 cratestack.workspace = true
 cratestack-codec-json.workspace = true
