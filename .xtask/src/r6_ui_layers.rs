@@ -164,6 +164,28 @@ struct Violation {
     rule: &'static str,
 }
 
+/// The four compiled regexes, built once. Grouped into a struct so
+/// `scan_file` takes one parameter instead of four — `clippy::pedantic` is
+/// on workspace-wide here and counts both function length and argument
+/// count.
+struct Patterns {
+    class: Regex,
+    class_literal: Regex,
+    markup: Regex,
+    use_state: Regex,
+}
+
+impl Patterns {
+    fn new() -> Self {
+        Self {
+            class: class_pattern(),
+            class_literal: class_literal_pattern(),
+            markup: markup_pattern(),
+            use_state: use_state_pattern(),
+        }
+    }
+}
+
 pub fn run(root: &Path) -> Result<(), String> {
     let scan_root = root.join(ROOT);
     if !scan_root.is_dir() {
@@ -171,10 +193,7 @@ pub fn run(root: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    let class_re = class_pattern();
-    let literal_re = class_literal_pattern();
-    let markup_re = markup_pattern();
-    let use_state_re = use_state_pattern();
+    let patterns = Patterns::new();
 
     let mut violations: Vec<Violation> = Vec::new();
     let mut views = 0usize;
@@ -194,71 +213,94 @@ pub fn run(root: &Path) -> Result<(), String> {
         };
         views += 1;
 
-        let mut saw_use_state = false;
-        for (index, line) in text.lines().enumerate() {
-            // A `//`-prefixed line is documentation. This repo's convention
-            // is long explanatory comments in exactly these files (the
-            // drawer bug writeup in `gallery/page.tsx` runs ~95 lines and
-            // quotes class names), and failing on prose would make the
-            // guard hostile to the thing that makes this codebase legible.
-            if line.trim_start().starts_with("//") || line.trim_start().starts_with('*') {
-                continue;
-            }
-            let lineno = index + 1;
-            if class_re.is_match(line) {
-                violations.push(Violation {
-                    file: rel.clone(),
-                    line: lineno,
-                    text: line.trim().to_owned(),
-                    rule: "CSS classes in a view file",
-                });
-            }
-            if literal_re.is_match(line) {
-                violations.push(Violation {
-                    file: rel.clone(),
-                    line: lineno,
-                    text: line.trim().to_owned(),
-                    rule: "class string literal in a view file",
-                });
-            }
-            if layer == Layer::Smart && markup_re.is_match(line) {
-                violations.push(Violation {
-                    file: rel.clone(),
-                    line: lineno,
-                    text: line.trim().to_owned(),
-                    rule: "raw HTML markup in a smart component",
-                });
-            }
-            if use_state_re.is_match(line) {
-                saw_use_state = true;
-            }
-        }
-        if saw_use_state {
+        if scan_file(&patterns, &rel, layer, &text, &mut violations) {
             use_state_files.push(format!("{rel} ({})", layer.label()));
         }
     }
 
-    if !use_state_files.is_empty() {
-        println!(
-            "R6 note — useState in {} view file(s):",
-            use_state_files.len()
-        );
-        for file in &use_state_files {
-            println!("  {file}");
-        }
-        println!(
-            "  Not a failure. R6 permits ephemeral single-value presentational state;\n  \
-             anything else needs a sentence in the PR saying why nuqs / react-query /\n  \
-             react-hook-form / useRef / useReducer did not fit."
-        );
-        println!();
-    }
+    report_use_state(&use_state_files);
 
     if violations.is_empty() {
         println!("R6 OK ({views} view files scanned under {ROOT})");
         return Ok(());
     }
 
+    report_violations(&violations, views)
+}
+
+/// Scans one file. Returns whether it contains a `useState` call — reported
+/// separately because it is informational, never a failure (module doc).
+fn scan_file(
+    patterns: &Patterns,
+    rel: &str,
+    layer: Layer,
+    text: &str,
+    violations: &mut Vec<Violation>,
+) -> bool {
+    let mut saw_use_state = false;
+    let push = |line: usize, text: &str, rule: &'static str, out: &mut Vec<Violation>| {
+        out.push(Violation {
+            file: rel.to_owned(),
+            line,
+            text: text.trim().to_owned(),
+            rule,
+        });
+    };
+
+    for (index, line) in text.lines().enumerate() {
+        // A `//`-prefixed line is documentation. This repo's convention is
+        // long explanatory comments in exactly these files (the drawer-bug
+        // writeup in `gallery/page.tsx` runs ~95 lines and quotes class
+        // names), and failing on prose would make the guard hostile to the
+        // thing that makes this codebase legible.
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("//") || trimmed.starts_with('*') {
+            continue;
+        }
+        let lineno = index + 1;
+        if patterns.class.is_match(line) {
+            push(lineno, line, "CSS classes in a view file", violations);
+        }
+        if patterns.class_literal.is_match(line) {
+            push(
+                lineno,
+                line,
+                "class string literal in a view file",
+                violations,
+            );
+        }
+        if layer == Layer::Smart && patterns.markup.is_match(line) {
+            push(
+                lineno,
+                line,
+                "raw HTML markup in a smart component",
+                violations,
+            );
+        }
+        if patterns.use_state.is_match(line) {
+            saw_use_state = true;
+        }
+    }
+    saw_use_state
+}
+
+fn report_use_state(files: &[String]) {
+    if files.is_empty() {
+        return;
+    }
+    println!("R6 note — useState in {} view file(s):", files.len());
+    for file in files {
+        println!("  {file}");
+    }
+    println!(
+        "  Not a failure. R6 permits ephemeral single-value presentational state;\n  \
+         anything else needs a sentence in the PR saying why nuqs / react-query /\n  \
+         react-hook-form / useRef / useReducer did not fit."
+    );
+    println!();
+}
+
+fn report_violations(violations: &[Violation], views: usize) -> Result<(), String> {
     // Two numbers, because one alone misleads. A single line can break more
     // than one rule (`<div className="…">` is both raw markup in a smart
     // component and a class in a view file), so the finding count runs well
@@ -281,7 +323,7 @@ pub fn run(root: &Path) -> Result<(), String> {
         files.len()
     );
     eprintln!();
-    for v in &violations {
+    for v in violations {
         eprintln!("{}:{}: {}", v.file, v.line, v.rule);
         eprintln!("    {}", truncate(&v.text, 100));
     }
