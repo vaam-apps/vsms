@@ -22,6 +22,7 @@ mod cratestack_pin;
 mod diff;
 mod migrations_current;
 mod parity;
+mod r6_ui_layers;
 mod raw_sqlx;
 mod sdk_schema;
 mod workflow_paths;
@@ -39,6 +40,7 @@ fn main() -> ExitCode {
         "no-raw-sqlx" => raw_sqlx::run(&root),
         "parity" => parity::run(&root),
         "workflow-paths" => workflow_paths::run(&root),
+        "r6" => r6_ui_layers::run(&root),
         "bootstrap-sql" => {
             let Some(out) = args.next() else {
                 eprintln!("usage: cargo xtask bootstrap-sql <output-path>");
@@ -81,6 +83,7 @@ fn help_text() -> &'static str {
      commands:\n  \
      no-raw-sqlx          R1 — no raw sqlx outside the named exceptions\n  \
      parity                R2 — state diagrams and transition tables agree\n  \
+     r6                    R6 — no CSS classes or raw markup in view files\n  \
      bootstrap-sql <out>   regenerate 0002_bootstrap/up.sql from docs/architecture.md §2.10\n  \
      bootstrap-sql-check   fail if 0002_bootstrap/up.sql has drifted from the design doc\n  \
      sdk-schema-check      fail if the vendored SDK schema has drifted\n  \

@@ -383,7 +383,7 @@ jobs:
         working-directory: sdks/node/vsms-sdk-node
 
   rules:
-    name: R1 and R2 — engineering rules
+    name: R1, R2 and R6 — engineering rules
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -406,6 +406,12 @@ jobs:
       # restructure left five stale Dockerfile paths there and main built
       # no images at all for four merges before anyone looked.
       - run: cargo xtask workflow-paths
+      # R6: pages compose, smart components decide, dumb components style.
+      # Prose alone does not hold — the `hasRole('system')` gap was found
+      # seven times before it got a golden test, and seven more after. This
+      # is R6's equivalent, and it is why the rule landed with a check
+      # rather than after the first repeat.
+      - run: cargo xtask r6
 
   diagrams:
     name: mermaid diagrams parse

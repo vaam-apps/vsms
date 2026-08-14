@@ -130,6 +130,8 @@ The stack exists to make this cheap: Tailwind supplies atoms, DaisyUI factorises
 
 **Avoid `useState`.** URL/filter state belongs in `nuqs` (keeping tables shareable), server data in tRPC/react-query (never mirrored into local state), forms in `react-hook-form` + `zod`, non-rendering values in `useRef`, and grouped transitions in `useReducer`. `useState` is fine for an ephemeral toggle inside a dumb component; anything else needs a sentence in the PR explaining which of the above was considered.
 
+**Enforced by `cargo xtask r6`** (`just r6`, and a step in CI's engineering-rules job). It hard-fails on the three unambiguous cases — a `className`/`cn(` in a view, a Tailwind-variant string literal in a view, raw HTML markup in a `*-screen.tsx` — and *reports without failing* on `useState`, because R6 permits it for ephemeral presentational state and asks for a sentence in the PR instead. It cannot see a dumb component that fetches its own data, and it classifies views by filename. Read the module doc in `.xtask/src/r6_ui_layers.rs` before assuming a passing run means R6 is satisfied.
+
 Full statement, with the layer table and the reasoning, is in `AGENTS.md`'s own R6 section.
 
 ---
