@@ -1,6 +1,6 @@
 [package]
 name = "sms-test-support"
-description = "Shared harness for this workspace's *_live_postgres.rs / *_live.rs suites — starts (or reuses) one Postgres 16 container and hands back a fully migrated connection URL. Test-only: no crate or app depends on this outside [dev-dependencies]."
+description = "Shared harness for this workspace's *_live_postgres.rs / *_live.rs suites — brings up (or reuses) the root compose.yml's postgres service via Docker Compose and hands back a fully migrated connection URL. Test-only: no crate or app depends on this outside [dev-dependencies]."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

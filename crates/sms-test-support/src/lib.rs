@@ -3,6 +3,28 @@
 //! old convention of a human running `docker run ... postgres:16` and
 //! `./ci/apply-migrations.sh` by hand before `cargo test -- --ignored`.
 //!
+//! # Docker Compose, not raw `docker run`
+//!
+//! This module drives the root `compose.yml`'s `postgres` service via
+//! `docker compose`, not a hand-built `docker run` argument list — the
+//! maintainer's standing direction ("Compose over raw `docker run`, for
+//! full portability") applied to the one place in this workspace that was
+//! still shelling out to `docker run` directly. It runs under its own,
+//! reserved Compose **project name** ([`COMPOSE_PROJECT`],
+//! `vsms-test-harness`) rather than whatever project name a developer's own
+//! `docker compose up` against the same file would use (`compose.yml`'s
+//! own default, `vsms`) — Compose scopes every container, network, and
+//! volume it creates to the project name that created it
+//! (`com.docker.compose.project`, a label Compose itself applies and
+//! enforces, not a convention this crate has to maintain), so this
+//! harness's own teardown ([`ensure_running`]'s sweep, and
+//! `just test-live-clean`) structurally cannot reach a container started
+//! under a different project — including a developer's own plain
+//! `docker compose up` against this exact same file. See this module's
+//! "why Compose changes (and doesn't change) each property" section, near
+//! the bottom of this doc, for the previous `docker run`-based design's own
+//! five load-bearing properties and what happened to each one.
+//!
 //! # Why not `testcontainers`' usual `ContainerAsync` + `static` pattern
 //!
 //! An earlier attempt at this harness cached a `testcontainers::ContainerAsync`
@@ -19,47 +41,54 @@
 //!
 //! This module never puts a container handle in a `static` at all, and never
 //! relies on any Rust destructor running at process exit. Instead it manages
-//! exactly one container by talking to the `docker` CLI directly, keyed by a
-//! **fixed, deterministic name** ([`CONTAINER_NAME`]) carrying a **distinctive
-//! label** ([`LABEL`]):
+//! exactly one container by talking to the `docker compose` CLI directly,
+//! keyed by a **fixed project + service name** ([`COMPOSE_PROJECT`] /
+//! [`COMPOSE_SERVICE`]), which Compose in turn maps to a **fixed,
+//! deterministic container name** (`vsms-test-harness-postgres-1`, observed
+//! live — see the naming section below):
 //!
 //! - The first caller in a session (any process, any test binary) that finds
-//!   no container with that name running starts one, after first
-//!   force-removing anything already carrying [`LABEL`] — self-healing
-//!   across a crashed or stale prior run, and a hard guarantee that a bulk
-//!   sweep can never touch a container it did not create, no matter what
-//!   else is running on the machine.
+//!   the service not running starts it via `docker compose up -d --wait` —
+//!   self-healing across a crashed or stopped prior run the same way any
+//!   `docker compose up` is, since Compose revives rather than errors on an
+//!   existing, non-running container with matching config.
 //! - Every later caller — the next test in this binary, or the next test
 //!   *binary* entirely, since `cargo test --workspace` runs them one OS
-//!   process at a time — finds the fixed name already running and reuses it.
+//!   process at a time — finds the service already running and reuses it.
 //!
 //! Net effect: at most one `sms-test-support`-managed container exists at
 //! any moment, its count does not grow across repeated `cargo test` runs
-//! (the fixed name makes a rerun replace, or simply reuse, rather than add),
-//! and nothing depends on `Drop`, a `static`'s destructor, or an
+//! (the fixed project+service name makes a rerun reuse or revive, never
+//! add), and nothing depends on `Drop`, a `static`'s destructor, or an
 //! out-of-process reaper to keep that true. The container is deliberately
 //! left running after a test run finishes — for the same reason a developer
 //! used to leave their manual `docker run` running between local test
 //! invocations, so the next run doesn't pay Postgres's startup cost again —
-//! but never grows: `just test-live-clean` (or a plain
-//! `docker rm -f vsms-test-harness-postgres`) removes it by name when it is
-//! genuinely no longer wanted.
+//! but never grows: `just test-live-clean` (`docker compose -p
+//! vsms-test-harness -f compose.yml down --volumes --remove-orphans`)
+//! removes it, its network, and its named volume when it is genuinely no
+//! longer wanted.
 //!
 //! # Concurrent processes racing to create the container
 //!
 //! `cargo test --workspace` does not trigger this — binaries run
 //! sequentially. If a developer instead runs two separate
 //! `cargo test -p <crate> --test <name> -- --ignored` invocations
-//! concurrently, both may observe "not running" and both attempt to create
-//! it; `docker run --name` makes container-name reservation atomic, so at
-//! most one `docker run` actually succeeds and the loser falls back to
-//! reusing what the winner created (see [`ensure_running`]). The narrower
-//! race — both processes independently deciding to *sweep* at nearly the
-//! same instant, with one sweeping away a container the other just created
-//! — is a known, accepted limitation of this simpler design: it can
-//! produce wasted container churn under genuinely concurrent invocations,
-//! but never an unbounded leak, since a sweep only ever removes containers
-//! carrying [`LABEL`] and a fresh one is always created right behind it.
+//! concurrently, both may observe "not running" and both attempt
+//! `docker compose up -d --wait`. This is genuinely simpler than the old
+//! `docker run --name` design, not just differently shaped: `docker run
+//! --name` fails outright with a distinguishable `"Conflict"` on a losing
+//! race, which the old code had to detect by matching that string in
+//! `stderr` and fall back to reuse; `docker compose up` is designed to be
+//! idempotent against its own project state, so there is no equivalent
+//! string to match on a losing race — [`ensure_running`] instead just
+//! re-checks whether the service ended up running after a failed `up` and
+//! only treats it as a real failure if it didn't. The narrower race — two
+//! processes each deciding at nearly the same instant that the *old,
+//! pre-Compose* container (see the migration note below) needs removing —
+//! is the same accepted-churn shape the previous design already lived with,
+//! scoped even more narrowly now (an exact container name, not a label
+//! filter matching however many containers carry it).
 //!
 //! # What this does *not* solve, on purpose
 //!
@@ -75,6 +104,94 @@
 //! `ca653a1` left them — tests within one binary still share that binary's
 //! own database (see the next section), so the same race `ca653a1` fixed is
 //! still possible within it.
+//!
+//! # Migrating from the old `docker run` design, and the five properties it
+//! # had to preserve
+//!
+//! A machine that last ran the pre-Compose version of this module may still
+//! have a container named [`LEGACY_CONTAINER_NAME`] — that design's own
+//! fixed `docker run --name` — sitting on [`HOST_PORT`], which would make
+//! Compose's own `up` fail to bind that port for its differently-named
+//! container. [`ensure_running`] removes it first, by its exact, literal
+//! name only, before ever calling `docker compose up` — a one-time
+//! migration step, not a recurring sweep, and it can never reach anything
+//! this crate did not itself create under the old design, the same
+//! guarantee the old label-based sweep gave for a different reason (see
+//! below).
+//!
+//! The task this conversion was built against named five properties the old
+//! design had each learned by something breaking, and required each to
+//! either survive intact or have its replacement justified in the open.
+//! Restated here, against what actually changed:
+//!
+//! 1. **Nothing may depend on a destructor running at process exit.**
+//!    Unchanged — this module still never puts a container handle in a
+//!    `static`, Compose or not; see above.
+//! 2. **Cleanup must be scoped so it can never touch an unrelated
+//!    container.** Changed, and arguably strengthened: the old design's
+//!    custom label (`dev.vsms.test-harness=true`) is gone. In its place, every cleanup path
+//!    ([`ensure_running`]'s own sweep, and `just test-live-clean`) scopes by
+//!    [`COMPOSE_PROJECT`] — a name Docker Compose itself stamps onto every
+//!    resource it creates and that every `docker compose down`/`ps`
+//!    invocation is scoped by construction, not by a filter this crate
+//!    chooses to apply consistently. A hand-applied label can be (and, if
+//!    this workspace's history is any guide, eventually would be) copied
+//!    onto an unrelated container by a future edit that doesn't understand
+//!    why it's there; a Compose project name cannot be attached to a
+//!    container this crate didn't create except by another process
+//!    deliberately reusing the same reserved name. Proven live, not just
+//!    argued: a genuinely unrelated `postgres:16-alpine` container was
+//!    started by hand under an unrelated name, this crate's own
+//!    `docker compose -p vsms-test-harness -f compose.yml down --volumes
+//!    --remove-orphans` was run, and the unrelated container was confirmed
+//!    still running afterward — see the PR description for the captured
+//!    output. **Never `docker prune` in any form, under any flag** — that
+//!    rule doesn't change just because the scoping mechanism did.
+//! 3. **One database per test binary, not one shared database.** Unchanged
+//!    — this property lives entirely in [`ensure_binary_database`], below,
+//!    which knows nothing about how the container it connects to was
+//!    started.
+//! 4. **The migration check fingerprints migration content, not merely
+//!    whether a table exists.** Unchanged, same reason as above — this is
+//!    [`migrations_fingerprint`]'s job, unrelated to container mechanics.
+//! 5. **The container name is fixed and global, so two concurrent `cargo
+//!    test` invocations on one machine corrupt each other's runs.** Still
+//!    true, and deliberately not fixed here: Compose derives the actual
+//!    container name (`vsms-test-harness-postgres-1`, observed live) from
+//!    [`COMPOSE_PROJECT`] + [`COMPOSE_SERVICE`], but that derivation is
+//!    itself fixed and global — Docker container names are unique
+//!    cluster-wide regardless of which Compose project "owns" one, so two
+//!    concurrent invocations still race over the same name the same way
+//!    they did before. Compose's own idempotency (see "Concurrent processes
+//!    racing" above) makes the failure mode *milder* — a losing `docker run
+//!    --name` used to hard-fail with `"Conflict"`, where a losing `docker
+//!    compose up` is more often harmless — but it does not
+//!    make concurrent invocations *safe* in the sense of each getting its
+//!    own isolated Postgres. Scoping the project name per-invocation (e.g.
+//!    a PID or random suffix) would fix this properly and was deliberately
+//!    not done: it's a bigger change than this conversion's own scope, and
+//!    the limitation is exactly as documented as it was before, not newly
+//!    introduced.
+//!
+//! One more thing found live while building this, not anticipated going
+//! in: `compose.yml`'s port-mapping shorthand (`"<port>:5432"`, no host
+//! part) binds every interface, not loopback-only — confirmed by running
+//! it and seeing `0.0.0.0:55432->5432/tcp` in `docker ps`. The old `docker
+//! run -p 127.0.0.1:{HOST_PORT}:5432` was loopback-only on purpose (this
+//! module's own doc on [`HOST_PORT`] says so), so `compose.yml`'s mapping
+//! is `"127.0.0.1:${VSMS_POSTGRES_PORT:-5432}:5432"` explicitly, not the
+//! shorthand, with a comment at the call site recording why.
+//!
+//! Also worth naming: `docker compose up -d` is idempotent in a way `docker
+//! run --name` never was, which simplified the sweep-then-create structure
+//! down to a single call — see "Concurrent processes racing" above for the
+//! detail. And the named volume (`vsms_pgdata`, `compose.yml`) is new:
+//! the old design never created one (Postgres's data lived in the
+//! container's own writable layer, gone the instant `docker rm -f` ran), so
+//! `just test-live-clean` now passes `--volumes` to actually match that
+//! same "fully reset" behaviour — a plain `docker compose down` without it
+//! would remove the container but silently leave the volume (and every row
+//! in it) behind as orphaned state the old design never had to worry about.
 //!
 //! # One database per test binary
 //!
@@ -212,29 +329,40 @@ use cratestack::sqlx::{query, query_scalar};
 use tokio::process::Command;
 use tokio::sync::OnceCell;
 
-/// Fixed, deterministic name — the whole self-healing/no-accumulation
-/// strategy in this module's own doc depends on every process agreeing on
-/// this one name rather than generating a fresh one per run.
-const CONTAINER_NAME: &str = "vsms-test-harness-postgres";
+/// The Compose project name this module reserves for itself — passed as
+/// `docker compose -p` on every invocation, never the root `compose.yml`'s
+/// own default project name (`vsms`), so a developer's own plain
+/// `docker compose up` against that same file can never collide with, or be
+/// torn down by, this harness. See this module's own "Migrating from the
+/// old `docker run` design" doc section for the full reasoning.
+const COMPOSE_PROJECT: &str = "vsms-test-harness";
 
-/// Label every container this module ever creates carries, and the *only*
-/// thing any cleanup here is ever scoped by. Never remove a container by
-/// image name or a bare name pattern — see the top-level task brief this
-/// crate was built against: a bare-name or image-based sweep on a
-/// developer's machine can destroy containers this workspace did not
-/// create.
-const LABEL_KEY: &str = "dev.vsms.test-harness";
-const LABEL: &str = "dev.vsms.test-harness=true";
+/// The one service in the root `compose.yml` this module ever starts.
+const COMPOSE_SERVICE: &str = "postgres";
+
+/// The exact, literal container name the pre-Compose version of this module
+/// gave its container (`docker run --name vsms-test-harness-postgres ...`).
+/// Kept only as a one-time migration target — see [`ensure_running`] — and
+/// never widened into a pattern or a label filter: a container carrying
+/// this exact name can only be a leftover from that specific old design,
+/// never something a developer or another tool created.
+const LEGACY_CONTAINER_NAME: &str = "vsms-test-harness-postgres";
 
 /// Bound to loopback only — never `0.0.0.0` — so this is never reachable
-/// from outside the machine running the tests. Deliberately not `5432`:
-/// this workspace's own module docs (e.g. `crates/sms-worker/tests/
-/// live_postgres.rs`) tell a human to run their own `docker run -p 5432:5432
-/// postgres:16` for ad hoc use, and this harness must never collide with
-/// that or with a developer's own local Postgres.
+/// from outside the machine running the tests. `compose.yml`'s own port
+/// mapping spells out `127.0.0.1:` explicitly for this reason; see the
+/// comment at that call site. Deliberately not `5432`: this workspace's own
+/// module docs (e.g. `crates/sms-worker/tests/live_postgres.rs`) tell a
+/// human to run their own `docker run -p 5432:5432 postgres:16` for ad hoc
+/// use, and `compose.yml`'s own default (also `5432`, for a bare
+/// `docker compose up`) is a second reason this harness must never collide
+/// with either.
 const HOST_PORT: u16 = 55432;
 
-const IMAGE: &str = "postgres:16";
+/// `compose.yml`'s own hardcoded Postgres credentials — dev/test-only, not
+/// secret, matching the file itself.
+const DB_USER: &str = "vsms";
+const DB_PASSWORD: &str = "vsms";
 
 /// `(classid, objid)` for the advisory lock guarding the whole
 /// ensure-template-migrated / drop-and-recreate-this-binary's-database
@@ -335,87 +463,116 @@ async fn ensure_postgres() -> String {
 }
 
 fn container_url() -> String {
-    format!("postgres://postgres:postgres@127.0.0.1:{HOST_PORT}/vsms")
+    format!("postgres://{DB_USER}:{DB_PASSWORD}@127.0.0.1:{HOST_PORT}/vsms")
 }
 
-/// Makes sure [`CONTAINER_NAME`] exists and is running, starting a fresh one
-/// (after sweeping any stale, [`LABEL`]-carrying leftovers) if not.
+/// Absolute path to the root `compose.yml`, resolved relative to this
+/// crate's own manifest directory rather than the current working directory
+/// — the same reasoning [`migrations_root`] already documents for the
+/// analogous migrations path, and for the same reason: this crate is
+/// workspace-internal, and `cargo test` may be invoked from any directory.
+fn compose_file_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../compose.yml")
+        .canonicalize()
+        .expect(
+            "compose.yml must exist at the repository root, two levels up from \
+             crates/sms-test-support — has the workspace layout changed?",
+        )
+}
+
+/// Builds a `docker compose -p COMPOSE_PROJECT -f <compose.yml>` command,
+/// the common prefix every invocation below shares.
+fn compose_command() -> Command {
+    let mut cmd = Command::new("docker");
+    cmd.arg("compose")
+        .arg("-p")
+        .arg(COMPOSE_PROJECT)
+        .arg("-f")
+        .arg(compose_file_path());
+    cmd
+}
+
+/// Makes sure [`COMPOSE_SERVICE`] is running under [`COMPOSE_PROJECT`],
+/// starting (or reviving) it via `docker compose up -d --wait` if not.
+///
+/// No sweep-before-create the old `docker run`-based design needed: Compose
+/// itself revives a stopped container with matching config, or recreates
+/// one whose config drifted, rather than erroring the way `docker run
+/// --name` did against any existing container regardless of its state. The
+/// one sweep this still performs is a one-time migration step, scoped to
+/// [`LEGACY_CONTAINER_NAME`] by its exact name — see this module's own
+/// "Migrating from the old `docker run` design" doc section.
 async fn ensure_running() {
-    if container_running().await {
+    if compose_service_running().await {
         return;
     }
 
-    sweep_labelled_containers().await;
+    remove_legacy_container().await;
 
-    let output = Command::new("docker")
+    let output = compose_command()
         .args([
-            "run",
+            "up",
             "-d",
-            "--name",
-            CONTAINER_NAME,
-            "--label",
-            LABEL,
-            "-p",
-            &format!("127.0.0.1:{HOST_PORT}:5432"),
-            "-e",
-            "POSTGRES_PASSWORD=postgres",
-            "-e",
-            "POSTGRES_DB=vsms",
-            IMAGE,
+            "--wait",
+            "--wait-timeout",
+            "30",
+            COMPOSE_SERVICE,
         ])
+        .env("VSMS_POSTGRES_PORT", HOST_PORT.to_string())
         .output()
         .await
-        .expect("spawning `docker run` — is Docker installed and on PATH?");
+        .expect("spawning `docker compose up` — is Docker installed and on PATH?");
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        // Another process running the exact same `cargo test --workspace`
-        // sweep won the race to create the container between our own
-        // `container_running` check and this `docker run` — not our
-        // problem to fix, just to notice and fall back to reusing what it
-        // made. Anything else is a real failure.
+        // Unlike the old `docker run --name`, `docker compose up` gives no
+        // single distinguishable error string for "another process won the
+        // race to start this same service" — it's designed to be
+        // idempotent, so a losing race is more often silent than an error
+        // at all. The reliable way to tell "we lost a race, and the winner
+        // succeeded" from "this genuinely failed" is to check the outcome
+        // rather than parse `stderr`.
         assert!(
-            stderr.contains("Conflict") || stderr.contains("already in use"),
-            "docker run failed to start {IMAGE} as {CONTAINER_NAME}: {stderr}"
+            compose_service_running().await,
+            "docker compose up failed to start {COMPOSE_SERVICE} under project {COMPOSE_PROJECT}: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }
 
-async fn container_running() -> bool {
-    let output = Command::new("docker")
-        .args(["inspect", "-f", "{{.State.Running}}", CONTAINER_NAME])
+/// `true` iff [`COMPOSE_SERVICE`] has a container currently in the
+/// `running` state under [`COMPOSE_PROJECT`] — scoped to that project by
+/// construction (`docker compose ps` only ever reports containers it
+/// created under the `-p` project it was given), never by a label filter
+/// that would need to be kept in sync with what actually gets created.
+async fn compose_service_running() -> bool {
+    let output = compose_command()
+        .args(["ps", "-q", "--status", "running", COMPOSE_SERVICE])
         .output()
         .await;
     match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim() == "true",
+        Ok(o) if o.status.success() => !String::from_utf8_lossy(&o.stdout).trim().is_empty(),
         _ => false,
     }
 }
 
-/// Force-removes every container carrying [`LABEL`] — and only those.
-/// Scoped by label, never by image or a bare name pattern: this is the one
-/// piece of this module that must never be loosened, since a sweep filtered
-/// by `ancestor=postgres:16` or a name substring would just as happily
-/// remove a developer's own, completely unrelated Postgres container.
-async fn sweep_labelled_containers() {
-    let list = Command::new("docker")
-        .args(["ps", "-aq", "--filter", &format!("label={LABEL_KEY}")])
+/// Force-removes a container named exactly [`LEGACY_CONTAINER_NAME`], if
+/// one exists — the pre-Compose version of this module's own fixed `docker
+/// run --name`, which would otherwise still be holding [`HOST_PORT`] and
+/// block Compose's own, differently-named container from binding it.
+///
+/// Scoped by exact literal name, never a pattern or a label filter: this is
+/// the one piece of this migration step that must never be loosened, the
+/// same reasoning the old design's own label-based sweep was built on — a
+/// name-substring or image-based sweep on a developer's machine can destroy
+/// containers this workspace did not create. Best-effort: `rm -f` on a name
+/// that doesn't exist (the common case, once every machine has migrated)
+/// exits non-zero, which is never a reason to fail a test.
+async fn remove_legacy_container() {
+    let _ = Command::new("docker")
+        .args(["rm", "-f", LEGACY_CONTAINER_NAME])
         .output()
-        .await
-        .expect("spawning `docker ps` to sweep stale test-harness containers");
-    let ids: Vec<&str> = std::str::from_utf8(&list.stdout)
-        .expect("docker ps output is valid UTF-8")
-        .split_whitespace()
-        .collect();
-    if ids.is_empty() {
-        return;
-    }
-    let mut cmd = Command::new("docker");
-    cmd.arg("rm").arg("-f").args(&ids);
-    // Best-effort: if a listed container vanished between `ps` and `rm`
-    // (e.g. another process's sweep beat us to it), that is exactly the
-    // outcome we wanted anyway.
-    let _ = cmd.output().await;
+        .await;
 }
 
 /// Retries a real connection attempt rather than just polling the TCP port
@@ -433,7 +590,7 @@ async fn wait_until_reachable(url: &str) {
             Err(source) => {
                 assert!(
                     tokio::time::Instant::now() < deadline,
-                    "Postgres in {CONTAINER_NAME} never became reachable within 30s: {source}"
+                    "Postgres at {url} never became reachable within 30s: {source}"
                 );
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
