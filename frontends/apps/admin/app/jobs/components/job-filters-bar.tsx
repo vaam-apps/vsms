@@ -4,11 +4,11 @@
 
 import {
   Button,
+  FormField,
   Input,
   JOB_STATES,
   JOB_STATUS_META,
   type JobState,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -35,8 +35,7 @@ export function JobFiltersBar({
 }: JobFiltersBarProps) {
   return (
     <div className="flex flex-wrap items-end gap-4">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="filter-state">State</Label>
+      <FormField label="State" htmlFor="filter-state">
         <Select
           value={state ?? "__all"}
           onValueChange={(value) => onStateChange(value === "__all" ? null : (value as JobState))}
@@ -53,10 +52,9 @@ export function JobFiltersBar({
             ))}
           </SelectContent>
         </Select>
-      </div>
+      </FormField>
 
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="filter-kind">Kind</Label>
+      <FormField label="Kind" htmlFor="filter-kind">
         <Input
           id="filter-kind"
           placeholder="e.g. expire_stale"
@@ -64,7 +62,7 @@ export function JobFiltersBar({
           value={kind}
           onChange={(e) => onKindChange(e.target.value)}
         />
-      </div>
+      </FormField>
 
       {hasFilters && (
         <Button type="button" variant="ghost" size="sm" onClick={onClear}>

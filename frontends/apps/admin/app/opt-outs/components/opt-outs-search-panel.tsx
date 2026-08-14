@@ -6,7 +6,7 @@
 
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@vsms/api";
-import { Button, Input, Label, Skeleton, TimestampDisplay } from "@vsms/ui";
+import { Button, FieldError, FormField, Input, Skeleton, TimestampDisplay } from "@vsms/ui";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 export type OptOutSearchResult = RouterOutputs["optOuts"]["search"];
@@ -37,15 +37,14 @@ export function OptOutsSearchPanel({
   return (
     <div className="flex flex-col gap-3 rounded-sm border border-edge bg-surface-2 p-4">
       <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end">
-        <div className="flex flex-1 flex-col gap-1.5">
-          <Label htmlFor="opt-out-search">Search by MSISDN</Label>
+        <FormField label="Search by MSISDN" htmlFor="opt-out-search" className="flex-1">
           <Input
             id="opt-out-search"
             placeholder="+237677123456"
             value={msisdn}
             onChange={(e) => onMsisdnChange(e.target.value)}
           />
-        </div>
+        </FormField>
         <Button type="button" disabled={!canSearch} onClick={onSearch}>
           Search
         </Button>
@@ -54,7 +53,7 @@ export function OptOutsSearchPanel({
       {searchedFor !== null && (
         <div className="rounded-sm border border-edge bg-surface-1 p-3">
           {isLoading && <Skeleton className="h-6 w-full" />}
-          {isError && <p className="text-caption text-state-danger-fg">{errorMessage}</p>}
+          {isError && <FieldError>{errorMessage}</FieldError>}
           {result !== undefined && result.optOut !== undefined && (
             <div className="flex flex-col gap-1 text-caption">
               <p className="text-state-danger-fg">
