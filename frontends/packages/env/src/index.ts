@@ -40,6 +40,15 @@ export const env = createEnv({
     // less real keyspace than the cookie's own encryption implies.
     SMS_CONSOLE_SESSION_SECRET: z.string().min(32),
     MESSAGE_STREAM_POLL_MS: z.coerce.number().int().min(500).default(2000),
+    // Dashboard screen (#49). Same "operational tuning value, not
+    // protocol/security" reasoning AGENTS.md's R6 already gives for
+    // `MESSAGE_STREAM_POLL_MS` — a hoisted `REFETCH_INTERVAL_MS` in the
+    // screen file itself was the R6 violation; this is the fix, not a
+    // shared constant, since `jobs-screen.tsx`/`workers-screen.tsx`/
+    // `webhooks-screen.tsx` each own their own independent 5000ms copy of
+    // the same *kind* of decision, not this same value — merging the four
+    // into one env var is a separate call for whoever owns those screens.
+    DASHBOARD_REFETCH_INTERVAL_MS: z.coerce.number().int().min(1000).default(15_000),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   client: {
@@ -59,6 +68,7 @@ export const env = createEnv({
     SMS_CONSOLE_OIDC_CLIENT_ID: process.env.SMS_CONSOLE_OIDC_CLIENT_ID,
     SMS_CONSOLE_SESSION_SECRET: process.env.SMS_CONSOLE_SESSION_SECRET,
     MESSAGE_STREAM_POLL_MS: process.env.MESSAGE_STREAM_POLL_MS,
+    DASHBOARD_REFETCH_INTERVAL_MS: process.env.DASHBOARD_REFETCH_INTERVAL_MS,
     NODE_ENV: process.env.NODE_ENV,
     // Client
     NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
