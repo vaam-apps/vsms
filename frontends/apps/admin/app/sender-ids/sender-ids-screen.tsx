@@ -70,7 +70,7 @@ import {
   MoreDetailDrawer,
   QuickDetailDrawer,
   ScreenHeader,
-  ScreenShell,
+  ScreenStack,
   toast,
 } from "@vsms/ui";
 import { parseAsString, useQueryState } from "nuqs";
@@ -301,7 +301,7 @@ export function SenderIdsScreen() {
   }
 
   return (
-    <ScreenShell>
+    <ScreenStack>
       <ScreenHeader
         title="Sender IDs"
         description={
@@ -459,6 +459,6 @@ export function SenderIdsScreen() {
         pending={createSenderMutation.isPending}
         errorMessage={createSenderMutation.error?.message}
       />
-    </ScreenShell>
+    </ScreenStack>
   );
 }

@@ -78,7 +78,7 @@ import {
   PayloadInspector,
   QuickDetailDrawer,
   ScreenHeader,
-  ScreenShell,
+  ScreenStack,
   toast,
 } from "@vsms/ui";
 import { parseAsString, parseAsStringEnum, useQueryState, useQueryStates } from "nuqs";
@@ -274,7 +274,7 @@ export function WebhooksScreen({
   }
 
   return (
-    <ScreenShell>
+    <ScreenStack>
       <ScreenHeader
         title="Webhooks"
         description="Endpoints, delivery attempts, and secret rotation."
@@ -486,6 +486,6 @@ export function WebhooksScreen({
           />
         )}
       </MoreDetailDrawer>
-    </ScreenShell>
+    </ScreenStack>
   );
 }

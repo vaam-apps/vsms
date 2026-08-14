@@ -42,14 +42,15 @@ export const env = createEnv({
     MESSAGE_STREAM_POLL_MS: z.coerce.number().int().min(500).default(2000),
     // R6 (AGENTS.md): a tuning value, same shape as `MESSAGE_STREAM_POLL_MS`
     // above — one place, validated at boot, instead of a `REFETCH_INTERVAL_MS
-    // = 5000` const copy-pasted per screen. This entry is the Jobs (#56) and
-    // Workers (#57) screens' shared poll cadence; `webhooks-screen.tsx` polls
-    // the same 5000ms today and should converge on this same env var rather
-    // than keep its own copy — not done here because that screen belongs to
-    // a different route group. `dashboard-screen.tsx`'s 15_000ms is a
-    // materially different cadence (an overview, not a diagnostics table)
-    // and deliberately gets no entry here — it needs its own, sized for what
-    // it actually polls.
+    // = 5000` const copy-pasted per screen. This is the Jobs (#56), Workers
+    // (#57), and Webhooks (#55) screens' shared diagnostics-poll cadence —
+    // the R6 sweep landed the Webhooks screen with its own second env var
+    // carrying this identical 5000ms value under a different name; the two
+    // were reconciled onto this one entry (R6-reconcile) per this comment's
+    // own original anticipation of exactly that convergence.
+    // `dashboard-screen.tsx`'s 15_000ms is a materially different cadence
+    // (an overview, not a diagnostics table) and deliberately gets no entry
+    // here — it needs its own, sized for what it actually polls.
     DIAGNOSTICS_POLL_MS: z.coerce.number().int().min(500).default(5000),
     // R6 (Administration group, `audit-log-screen.tsx`): a page size is an
     // operational tuning value, not a protocol constant — the same test
@@ -61,22 +62,10 @@ export const env = createEnv({
     // protocol/security" reasoning AGENTS.md's R6 already gives for
     // `MESSAGE_STREAM_POLL_MS` — a hoisted `REFETCH_INTERVAL_MS` in the
     // screen file itself was the R6 violation; this is the fix, not a
-    // shared constant, since `jobs-screen.tsx`/`workers-screen.tsx`/
-    // `webhooks-screen.tsx` each own their own independent 5000ms copy of
-    // the same *kind* of decision, not this same value — merging the four
-    // into one env var is a separate call for whoever owns those screens.
+    // shared constant, since the dashboard's own 15_000ms overview cadence
+    // is materially different from `DIAGNOSTICS_POLL_MS`'s diagnostics-table
+    // cadence above, not merely a fourth independent copy of the same value.
     DASHBOARD_REFETCH_INTERVAL_MS: z.coerce.number().int().min(1000).default(15_000),
-    // R6 (AGENTS.md): a plain tuning value, same shape as
-    // MESSAGE_STREAM_POLL_MS above — `webhooks-screen.tsx`'s delivery-
-    // attempts `refetchInterval` used to be a hardcoded
-    // `const REFETCH_INTERVAL_MS = 5000` (a `"use client"` screen, so it's
-    // read here server-side and handed down as a prop by `page.tsx`,
-    // matching `MESSAGE_STREAM_POLL_MS`'s own precedent). `jobs-screen.tsx`
-    // and `workers-screen.tsx` carry the identical hardcoded `5000` today
-    // and are not owned by this change — expect this entry to also close
-    // their copies once whoever owns those files picks it up, rather than
-    // adding two more near-duplicate env vars.
-    ADMIN_POLL_INTERVAL_MS: z.coerce.number().int().min(500).default(5000),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   client: {
@@ -99,7 +88,6 @@ export const env = createEnv({
     DIAGNOSTICS_POLL_MS: process.env.DIAGNOSTICS_POLL_MS,
     AUDIT_LOG_PAGE_SIZE: process.env.AUDIT_LOG_PAGE_SIZE,
     DASHBOARD_REFETCH_INTERVAL_MS: process.env.DASHBOARD_REFETCH_INTERVAL_MS,
-    ADMIN_POLL_INTERVAL_MS: process.env.ADMIN_POLL_INTERVAL_MS,
     NODE_ENV: process.env.NODE_ENV,
     // Client
     NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,

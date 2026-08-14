@@ -50,7 +50,7 @@ import {
   MoreDetailDrawer,
   QuickDetailDrawer,
   ScreenHeader,
-  ScreenShell,
+  ScreenStack,
   toast,
 } from "@vsms/ui";
 import { parseAsString, useQueryState } from "nuqs";
@@ -175,7 +175,7 @@ export function RoutesScreen() {
   }
 
   return (
-    <ScreenShell>
+    <ScreenStack>
       <ScreenHeader
         title="Routes"
         description="Priority, weight, and match predicates — sorted by priority, highest first."
@@ -266,6 +266,6 @@ export function RoutesScreen() {
           />
         )}
       </MoreDetailDrawer>
-    </ScreenShell>
+    </ScreenStack>
   );
 }
