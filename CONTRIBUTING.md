@@ -1,6 +1,6 @@
 # Contributing to vsms
 
-Four rules constrain everything else. Each is a default with named exceptions, and the exceptions are the interesting part. The full reasoning is in [docs/architecture.md](docs/architecture.md); this file is the version you should have in your head during review.
+Five rules constrain everything else. Each is a default with named exceptions, and the exceptions are the interesting part. The full reasoning is in [docs/architecture.md](docs/architecture.md); this file is the version you should have in your head during review.
 
 ---
 
@@ -96,6 +96,23 @@ Concretely, for any change:
 The test to apply when reviewing: *if the console were deleted from this repository entirely, would this change still work?* If the answer is no, the change is wrong, not the rule.
 
 **Known violation as of 2026-08-14, tracked separately:** `deploy/charts/vsms/values.yaml` hard-`required`s `admin.baseUrl` and `admin.consoleClientId`, so a console-less Helm install fails at template time, and `deploy/docker-compose.yml` starts `admin` unconditionally with no profile. The code layer already satisfies this rule; the deployment layer does not yet.
+
+---
+
+## R5 — Helm charts are built on `bjw-s` common ≥ v4, as one umbrella chart.
+
+Kubernetes packaging goes through the [`bjw-s` common library chart](https://bjw-s-labs.github.io/helm-charts), version **4 or newer**, and vsms ships as **one umbrella chart** containing several controllers — not a chart per service.
+
+Both halves are load-bearing:
+
+- **`bjw-s` common ≥ v4, not hand-written manifests.** A `Deployment`, `Service`, `Ingress`, `ServiceAccount` and probe set written by hand is a few hundred lines of YAML per service that nobody reviews carefully and every service copies from the last one. The library chart makes a controller a values entry. Version 4 is the floor because its `controllers`/`route` schema is what this chart is written against; v3 and earlier use an incompatible shape, so "upgrade the dependency" is not a mechanical bump.
+- **One umbrella chart, not one chart per service.** `sms-gateway`, `sms-worker`, `admin` and the migrate/seed jobs are a single deployable unit with one shared database, one migration ordering, and one set of secrets. Splitting them into separate charts means a released version number that cannot express "these four things go together", and an operator installing four releases that must agree on `DATABASE_URL`, the hash pepper and the OP issuer. One release, several controllers — the same shape the compose stack already has.
+
+Do not add a second chart. Do not hand-roll a manifest that the library chart can express. If the library cannot express something, say so in the PR with the specific limitation, rather than quietly forking into raw YAML.
+
+`deploy/charts/vsms/Chart.yaml` currently pins `common` at `4.6.2`. Note it is a **classic HTTP repository dependency, not an OCI one** — no OCI reference for the library chart exists, verified against the GHCR API and bjw-s-labs' own release workflow rather than assumed. That is recorded in the chart's own comments; don't "modernise" it to `oci://` without checking that again.
+
+R4 applies here too: whatever this chart grows, installing it with the console switched off must remain possible.
 
 ---
 
