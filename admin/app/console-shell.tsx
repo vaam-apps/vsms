@@ -14,43 +14,28 @@
 // Phase 2's job (per §7's own build order: "no screen should still
 // hand-roll a <header> nav after Phase 2"), not this shell-only PR's.
 
-import type { SideNavProps } from "@vsms/ui";
+import { SideNav } from "@vsms/ui";
 import { Menu } from "lucide-react";
-import dynamic from "next/dynamic";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { NAV_FOOTER, NAV_GROUPS, NAV_TOP } from "./nav-groups";
 
 const CONSOLE_NAV_TOGGLE_ID = "console-nav";
 
-// Found live (a real 500, not a lint/typecheck finding — `pnpm build` and
-// `tsc` both stay green through this): `@vsms/ui`'s `SideNav` calls
-// `@uidotdev/usehooks`' `useMediaQuery` (D12), and that hook's own
-// `getServerSnapshot` is a hard `throw new Error("useMediaQuery is a
-// client-only hook")` — read directly from
-// `@uidotdev/usehooks/index.js`, not inferred. `SideNav` still renders
-// during SSR by default (a `"use client"` component is not exempt from
-// the server render pass, only from server-only APIs), so every full page
-// load under this shell 500'd until this was found. `next/dynamic` with
-// `ssr: false` is the fix, not a workaround: it's the one thing that
-// stops React from ever invoking the hook's `getServerSnapshot` in the
-// first place, on either the server render or the initial client
-// hydration pass (so no hydration mismatch either) — a plain conditional
-// render (e.g. gating on `@uidotdev/usehooks`' own `useIsClient()`) can't
-// help here, since the crash happens the instant `useMediaQuery` is
-// *called*, regardless of how its return value is used afterward. This
-// has to live here, in `admin/`, not inside `@vsms/ui` itself —
-// `next/dynamic` is a Next.js API and `packages/ui` has no dependency on
-// Next (by design, so it stays framework-agnostic beyond React). Any
-// other Phase 1/2 component reaching for `useMediaQuery` (D12 also names
-// it for `LiveRow`'s reduced-motion check) needs the identical treatment
-// if it can be part of an initial server-rendered page.
-const SideNav = dynamic<SideNavProps>(() => import("@vsms/ui").then((mod) => mod.SideNav), {
-  ssr: false,
-  loading: () => (
-    <div className="min-h-dvh w-[260px] border-edge border-r bg-base-200 lg:w-[64px] xl:w-[260px]" />
-  ),
-});
+// A prior revision of this file wrapped `SideNav` in
+// `next/dynamic({ ssr: false })`, working around a real bug (`@vsms/ui`'s
+// `SideNav` used to call `@uidotdev/usehooks`' `useMediaQuery` (D12), and
+// that hook's own `getServerSnapshot` is a hard
+// `throw new Error("useMediaQuery is a client-only hook")` — every full
+// page load under this shell 500'd) by never server-rendering the nav at
+// all — paid for with an empty sidebar slab on every first paint,
+// hydrating in afterward. Reworked instead: `side-nav.tsx` no longer reads
+// the viewport in JS anywhere — the three breakpoint bands are plain
+// Tailwind `lg:`/`xl:` responsive classes, so `SideNav` is an ordinary
+// import again and renders in the initial server-rendered HTML like
+// everything else in this shell. See `side-nav.tsx`'s own module doc for
+// the full mechanism, and its `NavLink`/`GroupSection` doc comments for
+// why a JS breakpoint read isn't needed here in the first place.
 
 export function ConsoleShell({
   children,

@@ -224,7 +224,7 @@ choice is recorded so nobody re-litigates it from scratch.
 | D9 | Dark-only theming: **delete** the `"light"` `@plugin "daisyui/theme"` block and its paired `[data-theme="light"]` CSS block from `theme.css` entirely; delete `theme-toggle.tsx`; remove every `<ThemeToggle />` usage; `admin/app/layout.tsx` keeps `<html data-theme="dark">` (harmless, avoids any `[data-theme]`-selector edge case in DaisyUI internals, and documents intent) even though only one theme exists | Keep both themes defined but simply never expose a toggle in the UI | Constraint 2 says "no light theme" — leaving dead light-theme tokens in the codebase is exactly the kind of dormant code the project's own delivery-style rule forbids ("never implement something and leave it dormant"); a maintained second theme nobody can reach is a liability, not a convenience | Constraint 2, project CLAUDE.md "Delivery style" |
 | D10 | English-only: **`labelFr`/`tooltipFr` are deleted outright** from `status-tokens.ts`, and the `locale` **prop is removed** from every UI component's public API (`StatusPill`, `StateTimeline`, transitively `JobStatusPill`/`AttemptStatusPill`). Every call site renders English, unconditionally | Keep the French data as unused fields, on the theory a future CSV export or compliance report might want them | **Settled by the maintainer, 2026-08-14: delete them.** This document originally inferred "keep the data, drop the switch" and flagged the question; the answer is the stronger reading of the constraint. Retaining localisation data that nothing renders is the same "claims a capability that does not exist" smell this repo has repeatedly found and fixed (an unenforced permission literal, an event type nothing could emit) — and a future consumer that genuinely needs French can add it deliberately, against a real requirement, rather than inheriting a half-maintained table nothing exercises. **Deleting the fields is what makes the removal verifiable**: with them gone, any surviving reader is a compile error rather than silently-dead code. **Not an abandonment of localisation** — [#231](https://github.com/vymalo/vsms/issues/231), filed after this decision, tracks a real `react-i18next` layer for the console, still English-only by default with additional languages opted into via env-var config; that is the actual mechanism this decision defers to, not two ad hoc string fields on a domain-semantics table | Constraint 1 |
 | D11 | `cva()` replaces the existing hand-written `Record<Variant, string>` variant maps (`Button`'s `VARIANT_CLASSES`/`SIZE_CLASSES`, `Badge`'s inline ternaries) | Keep the `Record`-based maps, since `clsx`+`tailwind-merge` already work today | Constraint 8 names CVA specifically, not just "some variant mechanism" — and `cva` gives `compoundVariants` for states the `Record` approach can't express cleanly (e.g. a future `loading` + `size=icon` combination). Migration is mechanical and must preserve byte-identical class output, verified before merge (see §6, §7) | Constraint 8 |
-| D12 | `@uidotdev/usehooks` replaces genuinely generic hand-rolled hooks: the `prefers-reduced-motion` check in `LiveRow` (`useMediaQuery`), the scroll-position listener in `messages-screen.tsx` (`useWindowScroll`), and any new breakpoint-detection needed for the responsive sidebar (`useMediaQuery`) | Leave all hand-rolled `useEffect`+listener hooks as-is | Constraint 9 is explicit; these three are textbook generic-hook territory with no domain logic in them | Constraint 9 |
+| D12 | **Corrected during Phase 0, found live.** `@uidotdev/usehooks` replaces genuinely generic hand-rolled hooks — but **breakpoints are CSS-first, not `useMediaQuery`-first.** The sidebar's three bands (§6.1) are plain Tailwind `lg:`/`xl:` responsive classes (`side-nav.tsx`'s own `NavLink`/`GroupSection` doc comments have the full mechanism) — no hook, no client-only render boundary. `@uidotdev/usehooks`' `useMediaQuery` is reserved for a value that must genuinely be *read in JS* and cannot be expressed as a style; `messages-screen.tsx`'s scroll-position listener (`useWindowScroll`) still fits — it's `useState`+`useLayoutEffect` internally, no `getServerSnapshot`, no SSR trap. **`LiveRow`'s `prefers-reduced-motion` check is the one confirmed legitimate JS-read case**: it feeds a numeric `setTimeout` duration (`holdMs`), which a CSS query can't drive — but whoever migrates it to `@uidotdev/usehooks` per this row's own original text must not swap in `useMediaQuery` naively. That hook's `getServerSnapshot` is a hard `throw new Error("useMediaQuery is a client-only hook")` (read directly from `@uidotdev/usehooks/index.js`, the only hook in the whole package built this way — confirmed by grepping every `getServerSnapshot` in the library) — the exact bug this row's own history already found once, live, in `SideNav`. `LiveRow`'s *existing* hand-rolled check (`typeof window !== "undefined" && window.matchMedia(...).matches`, evaluated at render time, not stored in state) is already SSR-safe by accident of its own shape — it defaults to "motion allowed" on the server and re-evaluates identically on the client's first render, with no visible mismatch today because `washing` starts `false` regardless. A Phase 1 migration to `useMediaQuery` needs to either keep that same SSR-safe default shape explicitly, or accept the same `ssr: false` cost `SideNav` no longer pays — don't reintroduce this trap by treating "use `usehooks`" as license to skip the SSR question | Leave all hand-rolled `useEffect`+listener hooks as-is | Constraint 9 is explicit; these three are textbook generic-hook territory with no domain logic in them | Constraint 9 |
 | D13 | **Not** replaced by `usehooks`, and must not be: `TimestampDisplay`'s shared 30-second-tick external store (a deliberate single-timer-for-N-instances optimization, not a generic hook), and `messages-screen.tsx`'s self-scheduling long-poll loop (`utils.client.messages.onStateChange.query(...)` inside a manually-managed `while` loop) — both encode product-specific correctness properties, not generic hook patterns | Force everything hook-shaped through `usehooks` for consistency | `usehooks` has no long-poll-with-backpressure primitive and no shared-timer-across-instances primitive; forcing these onto a generic hook would either lose the "one timer, N subscribers" property or reintroduce the exact `refetchInterval`-stalls-after-two-calls bug already found and fixed live (see AGENTS.md's M3 messages-screen section) | AGENTS.md (messages-screen module doc), §7 (risk) |
 | D14 | The drawer-vs-quick-detail distinction (constraint 5) is resolved as: **"quick details"** = narrow (`max-w-[420px]`–`480px`) `vaul` drawer, undimmed/lightly-dimmed background, opens from a table row, shows a summary subset + 1–2 actions, no route change, no deep-link; **"more details"** = wide (`max-w-[640px]`–`720px`) `vaul` drawer, dimmed background, owns a shallow route (`?panel=<id>`) so it's linkable and survives refresh, holds the full record plus an edit form and destructive actions | A single drawer component with a `size` prop and no other distinction | The maintainer explicitly asked for the difference to be *precise*, not a size tweak — dimming, route ownership, and content depth all correlate with "is this a peek or a destination," and conflating them (e.g. a wide undimmed drawer, or a narrow deep-linkable one) would produce exactly the "two drawer usages that feel the same" failure named in the task | Constraint 5, §1.4, §1.5, §3 |
 | D15 | Message detail (`/messages/[id]`) **stays a full page route**, not a drawer of either kind | Fold it into a "more details" drawer, since it is a per-record detail view like every other one | It already exceeds even a wide drawer's comfortable depth (full state timeline, raw payload inspector with per-exchange tabs, delivery-receipt list) and is the console's primary investigative destination, not a peek from a list — the rule that falls out of this (§3) is "if closing it should feel like leaving a page, it's a page" | §1.4 (Mercury contrast), existing `message-detail-screen.tsx` |
@@ -344,8 +344,10 @@ accordion list, matching desktop.
 
 **Icon-only rail, 1024–1279px:** sidebar renders with labels hidden, tooltips
 via D5's DaisyUI `.tooltip` on hover/focus, matching the Linear-derived
-density note in §1.3 — full labels return at ≥1280px. This is a `usehooks`
-`useMediaQuery` breakpoint switch (D12), not a second component.
+density note in §1.3 — full labels return at ≥1280px. **Corrected during
+Phase 0 (D12):** this is a plain `lg:`/`xl:` Tailwind responsive-class
+switch, not a `usehooks` `useMediaQuery` read — see D12's own updated entry
+for why a JS breakpoint read was tried first and found to break SSR.
 
 **Correction, found landing Phase 0:** the two paragraphs above used to say
 "Mobile (<768px)" / "Tablet (768–1024px)", which contradicts §6.1's own
@@ -465,10 +467,11 @@ export function ConsoleShell({ children }: { children: React.ReactNode }) {
 ```
 
 `SideNav` itself owns the collapsible-group-on-mobile behavior (Headless UI
-`Disclosure`, §4) and the icon-only-rail-at-`lg` behavior (`usehooks`'
-`useMediaQuery`, D12) — kept out of `ConsoleShell` so the shell stays a pure
-layout container, matching constraint 3's "main container holds the business
-logic" (i.e., the shell holds none).
+`Disclosure`, §4) and the icon-only-rail-at-`lg` behavior (**corrected
+during Phase 0**: plain `lg:`/`xl:` Tailwind responsive classes, not
+`usehooks`' `useMediaQuery` — D12) — kept out of `ConsoleShell` so the shell
+stays a pure layout container, matching constraint 3's "main container
+holds the business logic" (i.e., the shell holds none).
 
 ### 6.3 One CVA variant sketch — `buttonVariants`
 
@@ -519,6 +522,21 @@ Button.displayName = "Button";
 Locks D14 as code, not just prose — direction, width, and dimming are baked into
 two named exports so a call site cannot produce a drawer that's ambiguously
 in-between.
+
+**Flagged for whoever builds Bucket C (Phase 1), not fixed here — out of
+Phase 0's own scope, but the mechanism is now known and worth checking
+before this sketch is trusted verbatim.** The `useMediaQuery` call below has
+the identical shape that broke `SideNav`'s SSR pass during Phase 0 (D12's
+own updated entry has the full finding: `@uidotdev/usehooks`' `useMediaQuery`
+hard-`throw`s in `getServerSnapshot`). A drawer's content usually never
+renders during SSR — it's normally gated behind an `open` state that starts
+`false` — but D14's own "more details" drawer is explicitly deep-linkable
+(`?panel=<recordId>`, so it "survives refresh"), which means a page *can*
+load with `open` already `true` on the very first server render. Whoever
+implements this sketch for real should either confirm that path never
+actually reaches this component during SSR, or apply the same fix `side-nav.tsx`
+now uses (CSS-driven, not a JS breakpoint read) rather than assuming the
+sketch's own `useMediaQuery` call is safe as written.
 
 ```tsx
 // packages/ui/src/components/primitives/drawer.tsx
