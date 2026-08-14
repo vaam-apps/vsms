@@ -7,6 +7,7 @@ If you are integrating an application rather than running or operating vsms, [`.
 | Runbook | For |
 |---|---|
 | [Local development](local-development.md) | Daily development: `just demo` brings the whole stack up against a fake carrier, with no Orange or MTN account and no real SMS. Credentials per developer, fault injection, and troubleshooting. |
+| [Showcase](showcase.md) | The fastest way to see vsms working with no source build: `compose.demo.yaml` pulls every image from GHCR and brings up a console you can sign into, with a message reaching a terminal state. Not for development — see `compose.demo.yaml`'s own header for how it differs from `just demo` and from [Deployment](deployment.md). |
 | [Getting started](getting-started.md) | First-time setup, the long way: clone, build, apply migrations, run both binaries by hand, send a real message through the whole pipeline against a scratch database. Read this when something in `just demo` fails and you need to know which link broke. |
 | [Deployment](deployment.md) | Running it for real: the compose stack, the Caddy edge, the one-shot migration job, image builds and the GHCR release path. |
 | [Backup and restore](backup-restore.md) | The backup job, and the restore drill that proves a backup is actually restorable. |

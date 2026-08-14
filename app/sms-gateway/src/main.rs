@@ -16,10 +16,12 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::FilterExpr;
 use sms_api::schema::procedures::{provision_app_client, ProcedureRegistry};
 use sms_api::schema::{
-    provider as provider_filter, route as route_filter, ClientAuthMethod, Cratestack,
-    CreateOauthClientInput, CreateProviderInput, CreateRouteInput, CreateUserCredentialInput,
-    CreateUserInput, ProviderKind, ProviderState, ProvisionClientInput, UpdateProviderInput,
-    UpdateRouteInput,
+    app as app_filter, provider as provider_filter, route as route_filter,
+    sender_id as sender_id_filter, sender_id_registration as sender_id_registration_filter,
+    ClientAuthMethod, Cratestack, CreateAppInput, CreateOauthClientInput, CreateProviderInput,
+    CreateRouteInput, CreateSenderIdInput, CreateSenderIdRegistrationInput,
+    CreateUserCredentialInput, CreateUserInput, ProviderKind, ProviderState, ProvisionClientInput,
+    UpdateProviderInput, UpdateRouteInput, UpdateSenderIdInput,
 };
 use sms_api::{GatewayAuth, Principal, PrincipalKind, Procedures};
 use sms_provider::SmsProvider;
@@ -228,9 +230,23 @@ enum Command {
 
         /// The `App.id` this client acts on behalf of. Must already exist
         /// and be active — `provision_client` checks both and refuses
-        /// otherwise.
-        #[arg(long)]
-        app_id: String,
+        /// otherwise. Exactly one of `--app-id`/`--app-slug` is required.
+        #[arg(
+            long,
+            required_unless_present = "app_slug",
+            conflicts_with = "app_slug"
+        )]
+        app_id: Option<String>,
+
+        /// The `App.slug` this client acts on behalf of, resolved to its
+        /// id before provisioning — the compose-only equivalent of passing
+        /// `--app-id` by hand off a `psql` query (`getting-started.md`'s
+        /// own step 7). Added so `compose.demo.yaml`'s `provision-client`
+        /// one-shot never has to shuttle an id computed by an earlier
+        /// one-shot (`seed-demo-app`) between two separate containers —
+        /// both commands agree on the same well-known slug instead.
+        #[arg(long, required_unless_present = "app_id", conflicts_with = "app_id")]
+        app_slug: Option<String>,
 
         /// A human-readable label for the resulting `AppClient`, e.g.
         /// `"admin console"` or `"otp sender"`.
@@ -257,6 +273,24 @@ enum Command {
         /// someone may still be using.
         #[arg(long)]
         key_out: PathBuf,
+
+        /// Optional: also write the plain-text `clientId` to this path —
+        /// `provisionAppClient` generates it server-side (a random
+        /// `appc_<uuid>`, never caller-chosen), so there is otherwise no
+        /// way for a second, separate container to learn the value this
+        /// specific run produced without re-parsing stdout. Not sensitive
+        /// the way `--key-out`'s contents are (it's the public half of the
+        /// credential — every `/token` request already sends it in the
+        /// clear as the assertion's own `sub`/`iss`), so this is written
+        /// with ordinary create-or-truncate semantics and no restrictive
+        /// mode, unlike `--key-out`. `compose.demo.yaml`'s own
+        /// `provision-client` step is the intended caller: it feeds the
+        /// admin container's `SMS_CONSOLE_CLIENT_ID` env var from this
+        /// file's contents, since compose has no other way to pass one
+        /// container's computed output into a sibling container's
+        /// environment.
+        #[arg(long)]
+        client_id_out: Option<PathBuf>,
 
         /// #134: `Procedures::new` now requires a `HashPepper` unconditionally,
         /// even though `provision_app_client` itself never hashes anything —
@@ -368,6 +402,61 @@ enum Command {
         /// call under. Same choice, same reasoning as `ProvisionClient`'s
         /// own `--role`: `owner` is the default because every existing
         /// live Provider fixture in this repo already writes under it.
+        #[arg(long, default_value = "owner")]
+        role: String,
+    },
+    /// Seeds the one `App` + approved `SenderId` a GHCR-only showcase
+    /// compose stack (`compose.demo.yaml`) needs before `ProvisionClient`
+    /// can run at all — an operator action, not a generated-CRUD route,
+    /// for the same reason `SeedDispatch` above is one: `App`'s and
+    /// `SenderId`'s own `@@allow` on create both admit only
+    /// `hasRole('owner') || hasRole('admin')`, and `GatewayAuth::authenticate`
+    /// never mints either for a real token before a human logs in (#194).
+    ///
+    /// **Demo-only — deliberately not part of any production bootstrap
+    /// sequence.** A real deployment's first `App` is a business decision
+    /// (quota, IP allowlist, a `SenderId` actually approved by a real
+    /// provider account) this command cannot make on an operator's behalf;
+    /// every production runbook creates it by hand or through the console,
+    /// once one exists (#52/#58's App CRUD screen). The fixed defaults
+    /// below — an auto-approved `SenderIdRegistration` with no real
+    /// provider approval behind it — exist only to unblock the showcase.
+    /// This is the GHCR-only equivalent of
+    /// `crates/sms-api/examples/send_test_message.rs`'s own fixture-seeding
+    /// half; that binary is a `cargo run --example`, never published as a
+    /// GHCR image, so a `build:`-free compose stack has no way to invoke
+    /// it.
+    ///
+    /// Idempotent, the same look-up-by-unique-key-then-reuse shape
+    /// [`create_or_find_provider`] already uses: safe to run on every
+    /// `docker compose up`. Requires the `Provider` row named by
+    /// `--provider-key` to already exist (i.e. `seed-dispatch` has already
+    /// run) — `SenderIdRegistration.providerId` is a real foreign key.
+    SeedDemoApp {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+
+        #[arg(long, default_value = "vsms demo app")]
+        name: String,
+
+        /// `App.slug`'s own `@regex` — lowercase alphanumeric and `-` only.
+        #[arg(long, default_value = "vsms-demo")]
+        slug: String,
+
+        /// The `SenderId.value` this demo sends under — not a real,
+        /// Orange-approved sender name (see this variant's own doc): the
+        /// registration this command writes is approved in this database
+        /// only, never checked against any real provider.
+        #[arg(long, default_value = "VSMS")]
+        sender_id: String,
+
+        /// Must already exist — the `Provider.key` `seed-dispatch` seeded.
+        #[arg(long, default_value = "orange_cm")]
+        provider_key: String,
+
+        /// Which of `App`/`SenderId`'s create-admitted roles to run this
+        /// call under. Same choice, same reasoning as `SeedDispatch`'s own
+        /// `--role`.
         #[arg(long, default_value = "owner")]
         role: String,
     },
@@ -650,6 +739,8 @@ async fn main() -> Result<()> {
         command @ Command::ProvisionClient { .. } => provision_client_command(command).await,
 
         command @ Command::SeedDispatch { .. } => seed_dispatch_command(command).await,
+
+        command @ Command::SeedDemoApp { .. } => seed_demo_app_command(command).await,
 
         command @ Command::SeedConsoleClient { .. } => seed_console_client_command(command).await,
 
@@ -1056,10 +1147,12 @@ async fn provision_client_command(command: Command) -> Result<()> {
     let Command::ProvisionClient {
         database_url,
         app_id,
+        app_slug,
         label,
         scopes,
         role,
         key_out,
+        client_id_out,
         hash_pepper,
     } = command
     else {
@@ -1112,6 +1205,30 @@ async fn provision_client_command(command: Command) -> Result<()> {
     }
     .into_context();
 
+    // `clap`'s `required_unless_present`/`conflicts_with` on the two
+    // `Command::ProvisionClient` fields already guarantee exactly one of
+    // `app_id`/`app_slug` is `Some` by the time this runs — this resolves
+    // the slug case to the id `provisionAppClient` actually takes, so
+    // `compose.demo.yaml`'s own `provision-client` one-shot never has to
+    // learn an id `seed-demo-app` computed in a separate container.
+    let app_id = if let Some(app_id) = app_id {
+        app_id
+    } else {
+        let slug = app_slug
+            .expect("clap's required_unless_present/conflicts_with guarantees app_id xor app_slug");
+        db.app()
+            .find_many()
+            .where_expr(FilterExpr::from(app_filter::slug().eq(slug.clone())))
+            .limit(1)
+            .run(&ctx)
+            .await
+            .context("resolving --app-slug to an App id")?
+            .into_iter()
+            .next()
+            .with_context(|| format!("no App with slug {slug:?} exists"))?
+            .id
+    };
+
     let procedures = Procedures::new(pepper);
     let provisioned = procedures
         .provision_app_client(
@@ -1137,8 +1254,16 @@ async fn provision_client_command(command: Command) -> Result<()> {
 
     write_private_key_pem(&key_out, &private_key_pem)?;
 
+    if let Some(client_id_out) = &client_id_out {
+        std::fs::write(client_id_out, &client_id)
+            .with_context(|| format!("writing the client id to {}", client_id_out.display()))?;
+    }
+
     println!("provisioned client: {client_id}");
     println!("private key written to: {}", key_out.display());
+    if let Some(client_id_out) = &client_id_out {
+        println!("client id written to: {}", client_id_out.display());
+    }
     println!();
     println!("paste into the console (or any other machine caller)'s environment:");
     println!("  SMS_CONSOLE_CLIENT_ID={client_id}");
@@ -1425,6 +1550,231 @@ async fn seed_dispatch_command(command: Command) -> Result<()> {
     }
 
     ensure_catch_all_route(&db, &ctx, &provider_id).await
+}
+
+/// `create` the `App` row, or resolve the id of the one that already
+/// exists — the `App` half of [`seed_demo_app_command`], pulled out for the
+/// same `clippy::too_many_lines` reason [`create_or_find_provider`] was.
+/// Same create-then-catch-`23505` shape: `App.slug` is `@unique`.
+async fn create_or_find_demo_app(
+    db: &Cratestack,
+    ctx: &cratestack::CoolContext,
+    name: &str,
+    slug: &str,
+) -> Result<String> {
+    match db
+        .app()
+        .create(CreateAppInput {
+            name: name.to_owned(),
+            slug: slug.to_owned(),
+            description: Some(
+                "seeded by sms-gateway seed-demo-app for compose.demo.yaml".to_owned(),
+            ),
+            defaultSenderIdId: None,
+            monthlyQuota: 1000,
+            // A packed-string field with sentinel separators (§2.0) — the
+            // empty-list encoding, matching `send_test_message.rs`'s own
+            // literal `" "`. An unfiltered demo has no IP allowlist to
+            // enforce.
+            ipAllowlist: " ".to_owned(),
+            transliterateToGsm7: false,
+            deletedAt: None,
+        })
+        .run(ctx)
+        .await
+    {
+        Ok(created) => {
+            println!("created App {} (slug={slug:?})", created.id);
+            Ok(created.id)
+        }
+        Err(e) if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION) => {
+            let existing = db
+                .app()
+                .find_many()
+                .where_expr(FilterExpr::from(app_filter::slug().eq(slug.to_owned())))
+                .limit(1)
+                .run(ctx)
+                .await
+                .context("looking up the existing App row after a duplicate-slug create")?;
+            let row = existing.into_iter().next().with_context(|| {
+                format!("App row with slug {slug:?} reported as a duplicate on create but not found on lookup")
+            })?;
+            println!("App {} (slug={slug:?}) already exists", row.id);
+            Ok(row.id)
+        }
+        Err(e) => Err(e).context("creating the App row"),
+    }
+}
+
+/// Ensure an `active` `SenderId` with an `approved` `SenderIdRegistration`
+/// against `provider_id` exists — the `SenderId` half of
+/// [`seed_demo_app_command`]. `Procedures::resolve_sender_id`
+/// (`crates/sms-api/src/procedures.rs`) is the real reader this satisfies:
+/// it requires both, not just one or the other, matching
+/// `send_test_message.rs`'s own `ensure_sender_ready`.
+async fn ensure_demo_sender_id(
+    db: &Cratestack,
+    ctx: &cratestack::CoolContext,
+    value: &str,
+    provider_id: &str,
+) -> Result<()> {
+    let existing = db
+        .sender_id()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            sender_id_filter::value().eq(value.to_owned()),
+        ))
+        .limit(1)
+        .run(ctx)
+        .await
+        .context("looking up an existing SenderId")?;
+
+    let (sender_id_row_id, sender_id_version, already_active) =
+        if let Some(row) = existing.into_iter().next() {
+            println!("reusing existing SenderId {value:?} ({})", row.id);
+            (row.id, row.version, row.active)
+        } else {
+            let created = db
+                .sender_id()
+                .create(CreateSenderIdInput {
+                    value: value.to_owned(),
+                    kind: if value.chars().all(|c| c.is_ascii_digit()) {
+                        "shortcode".to_owned()
+                    } else {
+                        "alphanumeric".to_owned()
+                    },
+                    notes: Some(
+                        "seeded by sms-gateway seed-demo-app for compose.demo.yaml — not a \
+                         real, provider-approved sender"
+                            .to_owned(),
+                    ),
+                })
+                .run(ctx)
+                .await
+                .context("creating the SenderId row")?;
+            println!("created SenderId {value:?} ({})", created.id);
+            (created.id, created.version, false)
+        };
+
+    let has_approved_registration = !db
+        .sender_id_registration()
+        .find_many()
+        .where_expr(
+            FilterExpr::from(
+                sender_id_registration_filter::senderIdId().eq(sender_id_row_id.clone()),
+            )
+            .and(sender_id_registration_filter::status().eq("approved".to_owned())),
+        )
+        .limit(1)
+        .run(ctx)
+        .await
+        .context("checking for an existing approved SenderIdRegistration")?
+        .is_empty();
+
+    if has_approved_registration {
+        println!("SenderId {value:?} already has an approved registration");
+    } else {
+        db.sender_id_registration()
+            .create(CreateSenderIdRegistrationInput {
+                senderIdId: sender_id_row_id.clone(),
+                providerId: provider_id.to_owned(),
+                status: "approved".to_owned(),
+                submittedAt: None,
+                approvedAt: None,
+                reference: None,
+                rejectionReason: None,
+            })
+            .run(ctx)
+            .await
+            .context("creating the SenderIdRegistration row")?;
+        println!("registered SenderId {value:?} as approved (provider={provider_id})");
+    }
+
+    if already_active {
+        println!("SenderId {value:?} already active");
+    } else {
+        db.sender_id()
+            .update(sender_id_row_id.clone())
+            .set(UpdateSenderIdInput {
+                active: Some(true),
+                ..Default::default()
+            })
+            .if_match(sender_id_version)
+            .run(ctx)
+            .await
+            .context("activating the SenderId row")?;
+        println!("activated SenderId {value:?}");
+    }
+
+    Ok(())
+}
+
+/// `Command::SeedDemoApp`'s body — see that variant's own doc comment for
+/// what this does, why it exists only for `compose.demo.yaml`, and why it
+/// is not part of any production bootstrap sequence. Idempotent, the same
+/// discipline every other seed/provision command in this file follows.
+async fn seed_demo_app_command(command: Command) -> Result<()> {
+    let Command::SeedDemoApp {
+        database_url,
+        name,
+        slug,
+        sender_id,
+        provider_key,
+        role,
+    } = command
+    else {
+        unreachable!("only ever called with Command::SeedDemoApp")
+    };
+
+    if role != "owner" && role != "admin" {
+        bail!(
+            "--role must be \"owner\" or \"admin\" — App's/SenderId's own @allow admit nothing \
+             else on create, got {role:?}"
+        );
+    }
+
+    // Same conservative pool size as SeedDispatch/ProvisionClient, and for
+    // the same reason: this is a one-shot CLI command writing a handful of
+    // @@audit-backed rows (App, SenderId, SenderIdRegistration).
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .context("connecting to Postgres")?;
+    let db = Cratestack::builder(pool).build();
+
+    let ctx = Principal {
+        sub: format!("sms-gateway:seed-demo-app:{role}"),
+        kind: PrincipalKind::User,
+        role: role.clone(),
+        app_id: String::new(),
+    }
+    .into_context();
+
+    let provider_row = db
+        .provider()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            provider_filter::key().eq(provider_key.clone()),
+        ))
+        .limit(1)
+        .run(&ctx)
+        .await
+        .context("looking up the Provider row seed-demo-app's SenderIdRegistration references")?
+        .into_iter()
+        .next()
+        .with_context(|| {
+            format!(
+                "no Provider with key {provider_key:?} exists yet — run `sms-gateway \
+                 seed-dispatch` first"
+            )
+        })?;
+
+    create_or_find_demo_app(&db, &ctx, &name, &slug).await?;
+    ensure_demo_sender_id(&db, &ctx, &sender_id, &provider_row.id).await?;
+
+    println!("demo App/SenderId fixtures ready (slug={slug:?}, sender={sender_id:?})");
+    Ok(())
 }
 
 /// `Command::SeedConsoleClient`'s body (#194) — see that variant's own doc
