@@ -1,61 +1,36 @@
 name: release
 
-# Separate from ci.yml on purpose: ci.yml gates every push/PR against
-# main and must stay fast and cheap to run repeatedly; this workflow does
-# the expensive thing (four multi-stage image builds, one of them
-# compiling the Rust workspace twice over, plus a Helm chart publish) on
-# the two triggers that actually warrant a published artifact.
+# Builds, packages, and publishes deployment artifacts (Docker images,
+# Helm chart) and client SDKs (Rust on crates.io, Node.js on npm).
 #
-# #139: before this workflow, nothing in .github/workflows/ built or
-# published any artifact at all. #145: extended (not rewritten) to also
-# publish on every push to main, and to publish deploy/charts/vsms as an
-# OCI Helm chart — until this PR, `v*.*.*` had never actually been pushed,
-# so the whole GHCR path was untested code in the release path.
-#
-# Three tag shapes on the same four images (see the `version` job below
-# for the one place all three are computed):
-#   push to main       -> :main (mutable, moves every push) and
-#                          :sha-<12 hex> (immutable, one commit)
-#   push v*.*.*        -> :<tag> (e.g. v0.4.0) and :latest — unchanged
-#                          from what this workflow did before this PR
-#   workflow_dispatch  -> :branch-<slug> and :sha-<12 hex> — a manual
-#                          smoke-test run from any other ref; see the
-#                          `on.workflow_dispatch` comment below for why
-#                          this exists and why it can never touch :main
-# The Helm chart gets an analogous split: a real semver on a version tag
-# (the tag verbatim, minus its leading "v" — Chart.yaml requires strict
-# semver, and v*.*.* already guarantees one), and a "0.0.0-main.<sha>" /
-# "0.0.0-dev.<sha>" prerelease version on the other two triggers (also
-# strict semver: a numeric prerelease identifier is legal per semver.org,
-# and "0.0.0" sorts below every real release so neither is ever mistaken
-# for older by `helm search`).
+# Release Triggers:
+#   - push v*.*.*        -> Production release:
+#                           • Docker images: :<tag> and :latest
+#                           • Helm chart: OCI semver <tag#v>
+#                           • Rust SDK: cargo publish to crates.io
+#                           • Node.js SDK: pnpm publish with provenance to npm
+#   - push to main       -> Staging/Continuous delivery:
+#                           • Docker images: :main and :sha-<12 hex>
+#                           • Helm chart: 0.0.0-main.<sha>
+#   - workflow_dispatch  -> Manual smoke test:
+#                           • Docker images: :branch-<slug> and :sha-<12 hex>
+#                           • Helm chart: 0.0.0-dev.<sha>
+#                           • SDK dry runs on non-tag triggers
 
 on:
   push:
     branches: [main]
     tags:
       - 'v*.*.*'
-  # Manual dispatch exists for exactly one reason: proving this pipeline
-  # actually works end to end (#145's own acceptance note — "untested
-  # code in the release path... fails the first time it matters") without
-  # waiting for a merge to main or cutting a real version tag. The
-  # `version` job below treats a dispatch from anything other than main
-  # as its own branch-scoped tag shape specifically so a smoke-test run
-  # from a feature branch can never overwrite the real, moving `:main`/
-  # `:latest` tags a production deploy might already be pinned to.
   workflow_dispatch: {}
 
 permissions:
   contents: read
   packages: write
+  id-token: write # required for npm provenance publishing
 
 jobs:
-  # One computation, reused by every image build and by the chart publish
-  # job below — AGENTS.md's own recorded lesson about duplicated
-  # hardcoded logic (there: a file list; here: the tag-derivation branch)
-  # silently drifting when only one copy gets updated is exactly what this
-  # job exists to avoid. Every other job in this workflow reads its
-  # outputs rather than re-deriving them.
+  # One computation, reused by every image build and artifact publish job
   version:
     name: derive this trigger's tags and chart version
     runs-on: ubuntu-latest
@@ -64,6 +39,7 @@ jobs:
       tag_secondary: ${{ steps.v.outputs.tag_secondary }}
       chart_version: ${{ steps.v.outputs.chart_version }}
       app_version: ${{ steps.v.outputs.app_version }}
+      is_tag: ${{ steps.v.outputs.is_tag }}
     steps:
       - id: v
         run: |
@@ -75,6 +51,7 @@ jobs:
               echo "tag_secondary=latest"
               echo "chart_version=${TAG#v}"
               echo "app_version=${TAG#v}"
+              echo "is_tag=true"
             } >> "$GITHUB_OUTPUT"
           elif [[ "${GITHUB_REF}" == "refs/heads/main" ]]; then
             {
@@ -82,24 +59,16 @@ jobs:
               echo "tag_secondary=sha-${SHA_SHORT}"
               echo "chart_version=0.0.0-main.${SHA_SHORT}"
               echo "app_version=main-${SHA_SHORT}"
+              echo "is_tag=false"
             } >> "$GITHUB_OUTPUT"
           else
-            # workflow_dispatch from anything other than main (a smoke
-            # test of this pipeline itself — see the `on.workflow_dispatch`
-            # comment above). Never :main/:latest, and a chart_version
-            # namespace ("dev", not "main") that can't collide with a
-            # real main-triggered publish's own "0.0.0-main.<sha>".
-            # printf, not echo: `tr -c` rewrites echo's own trailing
-            # newline into a '-' as well, which is why this workflow's very
-            # first run really did publish images tagged
-            # `branch-claude-145-release-and-helm-chart-`. Cosmetic, but not
-            # a tag anyone would type by hand.
             BRANCH_SLUG="$(printf '%s' "${GITHUB_REF#refs/heads/}" | tr -c 'a-zA-Z0-9' '-' | tr '[:upper:]' '[:lower:]')"
             {
               echo "tag_primary=branch-${BRANCH_SLUG}"
               echo "tag_secondary=sha-${SHA_SHORT}"
               echo "chart_version=0.0.0-dev.${SHA_SHORT}"
               echo "app_version=dev-${SHA_SHORT}"
+              echo "is_tag=false"
             } >> "$GITHUB_OUTPUT"
           fi
 
@@ -108,9 +77,6 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     strategy:
-      # Independent images, independent failure domains: a broken admin
-      # build should not block the other three from publishing, and vice
-      # versa.
       fail-fast: false
       matrix:
         include:
@@ -202,18 +168,9 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.version=${{ needs.version.outputs.app_version }}
-          # Scoped per image: the four Dockerfiles share almost their
-          # entire Rust dependency graph, but a single unscoped gha cache
-          # would still serialise around one cache key across a matrix
-          # that otherwise runs in parallel. Each image gets its own slot.
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
-  # #145: deploy/charts/vsms, published as an OCI artifact alongside the
-  # images every install of it references by tag. Runs after
-  # build-and-push (not in parallel with it) so a chart never publishes
-  # pointing at an image tag whose push might still be in flight or might
-  # have failed.
   publish-chart:
     name: package and push the vsms Helm chart
     needs: [version, build-and-push]
@@ -225,24 +182,6 @@ jobs:
         with:
           version: v3.16.4
 
-      # deploy/charts/vsms/Chart.yaml declares `common` as a dependency by
-      # its classic repository URL, not an OCI reference — see that
-      # Chart.yaml's own comment for why: bjw-s-labs/helm-charts publishes
-      # library charts (common is one) to https://bjw-s-labs.github.io/
-      # helm-charts only, never to GHCR as OCI (confirmed against that
-      # repo's own charts-release.yaml: `publishToOciRegistry: false` for
-      # `release-library-charts`).
-      #
-      # `helm dependency build` does **not** resolve that URL on its own:
-      # for a classic (index.yaml) repository it looks the dependency up in
-      # the runner's local repo list and fails with "no repository
-      # definition for ..." when it isn't registered. An earlier revision
-      # of this step assumed otherwise and this job failed on exactly that,
-      # having passed on a developer machine only because that machine
-      # already had the repo added — the class of difference only a real
-      # run surfaces. `helm repo add` is idempotent, so re-running is safe.
-      # An OCI dependency would need no registration at all; this one
-      # cannot be OCI, per the Chart.yaml note above.
       - name: Build chart dependencies
         run: |
           helm repo add bjw-s-labs https://bjw-s-labs.github.io/helm-charts
@@ -256,11 +195,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The version committed in Chart.yaml (0.0.0-dev) is a placeholder
-      # so `helm lint`/`helm template` run cleanly against an unpublished
-      # checkout — see that file's own comment. This is the one place
-      # that placeholder gets overwritten with the real version for this
-      # trigger, from the `version` job's single computation.
       - name: Package the chart
         run: |
           helm package deploy/charts/vsms \
@@ -271,3 +205,65 @@ jobs:
       - name: Push to GHCR as an OCI artifact
         run: |
           helm push dist/vsms-*.tgz "oci://ghcr.io/${{ github.repository_owner }}/charts"
+
+  publish-rust-sdk:
+    name: publish vsms-sdk-rust to crates.io
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify vendored schema is up to date
+        run: cargo xtask sdk-schema-check
+
+      - name: Cargo publish dry-run
+        working-directory: sdks/rust/vsms-sdk-rust
+        run: cargo publish --dry-run
+
+      - name: Publish to crates.io
+        if: needs.version.outputs.is_tag == 'true'
+        working-directory: sdks/rust/vsms-sdk-rust
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish
+
+  publish-node-sdk:
+    name: publish @vsms/sdk to npm
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Enable corepack (pins pnpm)
+        run: corepack enable
+
+      - name: Install dependencies
+        working-directory: sdks/node/vsms-sdk-node
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and typecheck SDK
+        working-directory: sdks/node/vsms-sdk-node
+        run: |
+          pnpm run build
+          pnpm run typecheck
+          pnpm run test
+
+      - name: Package pack validation
+        working-directory: sdks/node/vsms-sdk-node
+        run: pnpm pack --dry-run
+
+      - name: Publish dry-run
+        working-directory: sdks/node/vsms-sdk-node
+        run: pnpm publish --dry-run --no-git-checks
+
+      - name: Publish to npm
+        if: needs.version.outputs.is_tag == 'true'
+        working-directory: sdks/node/vsms-sdk-node
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm publish --access public --provenance --no-git-checks

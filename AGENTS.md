@@ -948,6 +948,7 @@ cargo xtask no-raw-sqlx
 ## Conventions
 
 - Commits: imperative subject, body explaining *why*. Record framework surprises in the commit body and in §2.0 — that table is the most valuable thing here for whoever comes next.
+- **PRs follow [`.github/pull_request_template.md`](.github/pull_request_template.md), which GitHub prefills.** It is a **convention, not a gate** — say so plainly rather than implying otherwise. There is no `governance-check` job in `.github/workflows/`, and there never has been; a review of #245 found that claim being repeated in agent briefings with nothing in this repository behind it. If enforcement is ever wanted it has to be built; until then a reviewer noticing a missing Verification section is the whole mechanism. The template's own Verification section carries the part that actually matters here — break the guard, show it fail, restore it — for the reason `#87` documents at length.
 - Schema changes ship with their migration and a design-doc note if a decision changed.
 - New R1 exceptions need reasoning in the PR, not just an allowlist edit.
 - **Every PR checks [`docs/roadmap.md`](docs/roadmap.md) and updates it when the PR changes the sequencing picture.** The check is mandatory; the edit usually is not — most PRs change nothing there, and saying so in the PR is a complete answer. Update it when the PR:

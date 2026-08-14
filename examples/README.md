@@ -175,6 +175,11 @@ the example no longer directly depends on `jose` or hand-rolls token caching,
 relying on `@vsms/sdk`'s built-in credential lifecycle, automatic bounded 401
 refresh, and typed procedures.
 
+*(Note: In this monorepo, `examples/node/sms-send-example` references `@vsms/sdk`
+via a local `file:../../../sdks/node/vsms-sdk-node` dependency for local integration
+testing prior to registry publication; a third-party integrator should install
+`@vsms/sdk` directly from npm.)*
+
 ### Idempotency: two independent mechanisms, both live as of #153
 
 `docs/architecture.md` §4.5 documents an HTTP-level `IdempotencyLayer`
