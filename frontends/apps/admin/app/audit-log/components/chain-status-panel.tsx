@@ -37,17 +37,8 @@ export function ChainStatusPanel(props: ChainStatusPanelProps) {
 
   const broken = props.kind === "broken";
 
-  // Not `<InlineBanner>` here: the "ok" branch needs a success treatment
-  // (`state-success-*`), and `InlineBanner` only has `neutral`/`danger`/
-  // `plain` variants — see this PR's own report.
   return (
-    <div
-      className={
-        broken
-          ? "rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg"
-          : "rounded-sm border border-state-success-border bg-state-success-bg px-3 py-2 text-caption text-state-success-fg"
-      }
-    >
+    <InlineBanner variant={broken ? "danger" : "success"}>
       {props.kind === "broken" ? (
         <>
           Chain verification found a problem — possible tampering.{" "}
@@ -70,6 +61,6 @@ export function ChainStatusPanel(props: ChainStatusPanelProps) {
         (Cannot detect deletion of the single newest anchor before anything else references it — see
         OPEN_QUESTIONS.md §3.3.)
       </span>
-    </div>
+    </InlineBanner>
   );
 }

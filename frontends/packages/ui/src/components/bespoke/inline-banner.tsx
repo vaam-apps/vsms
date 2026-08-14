@@ -16,10 +16,21 @@ import { cn } from "../../lib/cn";
 // an error above/around content that *is* showing.
 
 export interface InlineBannerProps {
-  /** `'neutral'` — a standing notice (scope, caveat). `'danger'` — an error.
-   * `'plain'` — a caption-only note with no border or fill, for something
-   * that doesn't need the weight of a bordered box. */
-  variant?: "neutral" | "danger" | "plain";
+  /** `'neutral'` — a standing notice (scope, caveat). `'danger'` — an
+   * error. `'warning'` — recoverable, needs attention (a stale write).
+   * `'success'` — a positive confirmation (a verified audit chain).
+   * `'uncertain'` — degraded or unknown, neither failure nor success (a
+   * stalled live feed, a UCS-2 volume spike). `'plain'` — a caption-only
+   * note with no border or fill, for something that doesn't need the
+   * weight of a bordered box.
+   *
+   * The last three were added after the R6 factorization, not with it:
+   * four route groups had hand-rolled boxes in exactly these tones because
+   * the variant they needed did not exist, and the agents doing the
+   * factorization were deliberately barred from editing this package. Two
+   * of them flagged the gap rather than inventing a competing component,
+   * which is the behaviour the constraint was for. */
+  variant?: "neutral" | "danger" | "warning" | "success" | "uncertain" | "plain";
   children: ReactNode;
   className?: string;
 }
@@ -33,6 +44,12 @@ export function InlineBanner({ variant = "neutral", children, className }: Inlin
           "rounded-sm border border-edge bg-surface-2 px-3 py-2 text-muted-foreground",
         variant === "danger" &&
           "rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-state-danger-fg",
+        variant === "warning" &&
+          "rounded-sm border border-state-warning-border bg-state-warning-bg px-3 py-2 text-state-warning-fg",
+        variant === "success" &&
+          "rounded-sm border border-state-success-border bg-state-success-bg px-3 py-2 text-state-success-fg",
+        variant === "uncertain" &&
+          "rounded-sm border border-state-uncertain-border bg-state-uncertain-bg px-3 py-2 text-state-uncertain-fg",
         variant === "plain" && "text-subtle-foreground",
         className,
       )}

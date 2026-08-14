@@ -1,4 +1,4 @@
-import { Button, TimestampDisplay } from "@vsms/ui";
+import { Button, InlineBanner, TimestampDisplay } from "@vsms/ui";
 import type { ReactNode } from "react";
 import type { EndpointListItem } from "../webhook-domain";
 import { SecretField } from "./secret-field";
@@ -13,11 +13,7 @@ import { SecretField } from "./secret-field";
 // border-state-uncertain-border ...` blocks below, one for create and one
 // for rotate).
 function SecretRevealNotice({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-sm border border-state-uncertain-border bg-state-uncertain-bg px-3 py-2 text-caption text-state-uncertain-fg">
-      {children}
-    </div>
-  );
+  return <InlineBanner variant="uncertain">{children}</InlineBanner>;
 }
 
 // Dumb (R6): the current/previous secret display plus "Rotate secret" —
