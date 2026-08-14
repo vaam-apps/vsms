@@ -17,6 +17,7 @@ packages:
 # esbuild is a transitive dependency of vitest (frontends/packages/gateway's test
 # runner, T10) and needs its own native binary build the same way.
 allowBuilds:
+  '@swc/core': true
   esbuild: true
   sharp: true
 
