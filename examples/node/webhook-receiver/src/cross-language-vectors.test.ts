@@ -34,6 +34,7 @@ const fixturePath = join(
   "..",
   "..",
   "..",
+  "backends",
   "crates",
   "sms-webhook",
   "tests",
