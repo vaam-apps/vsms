@@ -20,10 +20,10 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
-/// The two source roots. Both must be scanned — `crates/` is libraries,
-/// `app/` is binaries — or the other stays free to reach past the
+/// The two source roots. Both must be scanned — `backends/crates/` is libraries,
+/// `backends/apps/` is binaries — or the other stays free to reach past the
 /// delegates.
-const ROOTS: [&str; 2] = ["crates", "app"];
+const ROOTS: [&str; 2] = ["backends/crates", "backends/apps"];
 
 /// Every exception, by the suffix of its path relative to the repo root.
 /// Matched with `ends_with`, mirroring the original script's `grep -vE`
@@ -64,7 +64,7 @@ pub fn run(root: &Path) -> Result<(), String> {
         .collect();
 
     if roots.is_empty() {
-        println!("no crates/ or app/ yet — R1 lint vacuously passes");
+        println!("no backends/crates/ or backends/apps/ yet — R1 lint vacuously passes");
         return Ok(());
     }
 
@@ -107,9 +107,9 @@ pub fn run(root: &Path) -> Result<(), String> {
 }
 
 /// Every `*.rs` file under `dir`, recursively — a plain walk is sufficient
-/// here: neither `crates/` nor `app/` has a nested `target/` directory in
-/// this workspace (a single shared `target/` sits at the repo root), so
-/// there is nothing to exclude that `grep -r` would not also have scanned.
+/// here: neither `backends/crates/` nor `backends/apps/` has a nested `target/`
+/// directory in this workspace (a single shared `target/` sits at the repo root),
+/// so there is nothing to exclude that `grep -r` would not also have scanned.
 fn rust_sources(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(dir) else {
