@@ -66,7 +66,7 @@ import {
   TooltipTrigger,
   toast,
 } from "@vsms/ui";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useState } from "react";
 
 const QUIET_STATES = MESSAGE_STATES.filter((s) =>
   ["accepted", "queued", "routed", "submitted", "delivered", "cancelled"].includes(s),
@@ -74,27 +74,6 @@ const QUIET_STATES = MESSAGE_STATES.filter((s) =>
 const LOUD_STATES = MESSAGE_STATES.filter((s) =>
   ["uncertain", "undelivered", "failed", "expired", "rejected"].includes(s),
 );
-
-function ThemeToggle() {
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-
-  useEffect(() => {
-    const current = document.documentElement.getAttribute("data-theme");
-    if (current === "light" || current === "dark") setTheme(current);
-  }, []);
-
-  function flip() {
-    const next = theme === "dark" ? "light" : "dark";
-    document.documentElement.setAttribute("data-theme", next);
-    setTheme(next);
-  }
-
-  return (
-    <Button variant="secondary" size="sm" onClick={flip}>
-      {theme === "dark" ? "Switch to light" : "Switch to dark"}
-    </Button>
-  );
-}
 
 function Section({
   title,
@@ -511,11 +490,10 @@ export default function GalleryPage() {
             <h1 className="mt-1 font-medium text-foreground text-title">Component gallery</h1>
             <p className="mt-1 max-w-2xl text-body text-muted-foreground">
               An honest rendering of the status system and every primitive — not a fake dashboard.
-              This page's only job is to prove the design tokens, daisyUI theming, and Radix
-              behaviour actually work, in both themes.
+              This page's only job is to prove the design tokens, daisyUI theming, and behaviour
+              actually work. Dark-only (D9) — there is no second theme to switch to.
             </p>
           </div>
-          <ThemeToggle />
         </header>
 
         <StatusPillGallery />

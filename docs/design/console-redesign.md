@@ -220,9 +220,9 @@ choice is recorded so nobody re-litigates it from scratch.
 | D5 | `@radix-ui/react-tooltip` is replaced by DaisyUI's native `.tooltip`/`data-tip` CSS component | Hand-roll a Headless-UI-adjacent tooltip (e.g. via `@floating-ui/react`) | Headless UI ships no Tooltip. Introducing a new dependency to replace one Radix package with another behavior library contradicts constraints 6–7; DaisyUI's CSS-only tooltip is hover/focus-`title`-driven, no portal, no JS — accepted limitation: no rich/interactive tooltip content anywhere in this console (nothing currently needs one — richer content already renders inline, e.g. `PayloadInspector`, `StateTimeline` annotations) | §5, §7 (risk) |
 | D6 | `@radix-ui/react-separator` is deleted outright, replaced by a 3-line plain `<div role="separator">` styled with a DaisyUI-token border color | Keep Radix Separator | It is already a near-trivial wrapper (`SeparatorPrimitive.Root` renders a styled div); zero behavior is lost by dropping it | §5 |
 | D7 | Sidebar responsive collapse uses **DaisyUI's own `.drawer` CSS component** (checkbox-driven off-canvas container, no JS state) for the mobile/tablet nav, kept semantically and *nominally* distinct from `vaul`'s `Drawer` (used only for record detail panels) | Reuse `vaul` for the off-canvas sidebar too, since "drawer" is already the vocabulary | These are two different concerns with an unfortunate name collision: `vaul`'s `Drawer` is a JS-driven, swipeable, portal-rendered overlay for *content* (detail panels); DaisyUI's `.drawer` is a pure-CSS, checkbox-driven, non-portal off-canvas *layout* container purpose-built for exactly "sidebar that becomes an overlay below a breakpoint." Using `vaul` for navigation chrome would add JS overhead and swipe-gesture behavior nothing asks for, and using DaisyUI's `.drawer` for record detail would fight `vaul`'s own portal/animation model. The new nav component is named `ConsoleShell`/`SideNav`, never "Drawer," specifically so later agents don't reach for the wrong one by name association | §4, §6 |
-| D8 | Radius scale is **rewritten from the existing near-square 2px system to a visibly rounded one**: `--radius-selector: 6px`, `--radius-field: 8px`, `--radius-box: 12px`; Tailwind's own `--radius-sm`/`--radius-md` aliases move from `2px`/`4px` to `8px`/`12px` to match; `--radius-full` (9999px) stays available for true pills | Keep the existing 2px "sharp, restrained, data-forward" system, which was a deliberate, well-reasoned choice under an earlier brief | Constraint 6 ("rounded shapes") is new, explicit, and non-negotiable — it directly supersedes the earlier system's own §3.5 rule. The values are not arbitrary: LottieFiles' active-nav pill and search field, and Column's selected-row fill, both read as a soft rounded rectangle (roughly 6–10px at their screen's rendered size), not a full pill — this locks the same register rather than drifting to a bubbly, fully-pill "consumer app" look, which would undercut the console's operator/diagnostic seriousness. **Risk, not free**: this is a visual identity change to an already-shipped, carefully argued token system — flagged again in §7 | §1.1, §1.2, §2 (theme.css) |
+| D8 | Radius scale is **rewritten from the existing near-square 2px system to a confidently rounded one**: `--radius-selector: 8px`, `--radius-field: 12px`, `--radius-box: 20px`; Tailwind's own `--radius-sm`/`--radius-md` aliases move from `2px`/`4px` to `12px`/`20px` to match; `--radius-full` (9999px) stays available for true pills | A moderate register (an earlier draft of this document picked `6/8/12px` specifically to stay close to the outgoing 2px system) | Judged on the reference lock alone, not against what shipped before: LottieFiles' filled-rounded-rectangle active nav row, Column's selected-row fill, and Polar's drawer/card corners (§1.1, §1.2, §1.5) all read as genuinely, confidently rounded — not a restrained nudge off square. This project's own standing convention is a hard cutover, not a cautious half-step, when replacing something ("we're breaking what exists" — maintainer, on this exact decision): "it was already built carefully" is not a reason to hedge the replacement. The one thing the register still respects is the reference lock's own ceiling, not the old system's: §1.1 is explicit that even LottieFiles' own active row is "not fully pill-shaped", and a data table's chrome would look novelty-bubbly at true pill radius — so this stays short of `--radius-full`, but at the confident end of what's short of it, not the cautious end | §1.1, §1.2, §1.5, §2 (theme.css) |
 | D9 | Dark-only theming: **delete** the `"light"` `@plugin "daisyui/theme"` block and its paired `[data-theme="light"]` CSS block from `theme.css` entirely; delete `theme-toggle.tsx`; remove every `<ThemeToggle />` usage; `admin/app/layout.tsx` keeps `<html data-theme="dark">` (harmless, avoids any `[data-theme]`-selector edge case in DaisyUI internals, and documents intent) even though only one theme exists | Keep both themes defined but simply never expose a toggle in the UI | Constraint 2 says "no light theme" — leaving dead light-theme tokens in the codebase is exactly the kind of dormant code the project's own delivery-style rule forbids ("never implement something and leave it dormant"); a maintained second theme nobody can reach is a liability, not a convenience | Constraint 2, project CLAUDE.md "Delivery style" |
-| D10 | English-only: **`labelFr`/`tooltipFr` are deleted outright** from `status-tokens.ts`, and the `locale` **prop is removed** from every UI component's public API (`StatusPill`, `StateTimeline`, transitively `JobStatusPill`/`AttemptStatusPill`). Every call site renders English, unconditionally | Keep the French data as unused fields, on the theory a future CSV export or compliance report might want them | **Settled by the maintainer, 2026-08-14: delete them.** This document originally inferred "keep the data, drop the switch" and flagged the question; the answer is the stronger reading of the constraint. Retaining localisation data that nothing renders is the same "claims a capability that does not exist" smell this repo has repeatedly found and fixed (an unenforced permission literal, an event type nothing could emit) — and a future consumer that genuinely needs French can add it deliberately, against a real requirement, rather than inheriting a half-maintained table nothing exercises. **Deleting the fields is what makes the removal verifiable**: with them gone, any surviving reader is a compile error rather than silently-dead code | Constraint 1 |
+| D10 | English-only: **`labelFr`/`tooltipFr` are deleted outright** from `status-tokens.ts`, and the `locale` **prop is removed** from every UI component's public API (`StatusPill`, `StateTimeline`, transitively `JobStatusPill`/`AttemptStatusPill`). Every call site renders English, unconditionally | Keep the French data as unused fields, on the theory a future CSV export or compliance report might want them | **Settled by the maintainer, 2026-08-14: delete them.** This document originally inferred "keep the data, drop the switch" and flagged the question; the answer is the stronger reading of the constraint. Retaining localisation data that nothing renders is the same "claims a capability that does not exist" smell this repo has repeatedly found and fixed (an unenforced permission literal, an event type nothing could emit) — and a future consumer that genuinely needs French can add it deliberately, against a real requirement, rather than inheriting a half-maintained table nothing exercises. **Deleting the fields is what makes the removal verifiable**: with them gone, any surviving reader is a compile error rather than silently-dead code. **Not an abandonment of localisation** — [#231](https://github.com/vymalo/vsms/issues/231), filed after this decision, tracks a real `react-i18next` layer for the console, still English-only by default with additional languages opted into via env-var config; that is the actual mechanism this decision defers to, not two ad hoc string fields on a domain-semantics table | Constraint 1 |
 | D11 | `cva()` replaces the existing hand-written `Record<Variant, string>` variant maps (`Button`'s `VARIANT_CLASSES`/`SIZE_CLASSES`, `Badge`'s inline ternaries) | Keep the `Record`-based maps, since `clsx`+`tailwind-merge` already work today | Constraint 8 names CVA specifically, not just "some variant mechanism" — and `cva` gives `compoundVariants` for states the `Record` approach can't express cleanly (e.g. a future `loading` + `size=icon` combination). Migration is mechanical and must preserve byte-identical class output, verified before merge (see §6, §7) | Constraint 8 |
 | D12 | `@uidotdev/usehooks` replaces genuinely generic hand-rolled hooks: the `prefers-reduced-motion` check in `LiveRow` (`useMediaQuery`), the scroll-position listener in `messages-screen.tsx` (`useWindowScroll`), and any new breakpoint-detection needed for the responsive sidebar (`useMediaQuery`) | Leave all hand-rolled `useEffect`+listener hooks as-is | Constraint 9 is explicit; these three are textbook generic-hook territory with no domain logic in them | Constraint 9 |
 | D13 | **Not** replaced by `usehooks`, and must not be: `TimestampDisplay`'s shared 30-second-tick external store (a deliberate single-timer-for-N-instances optimization, not a generic hook), and `messages-screen.tsx`'s self-scheduling long-poll loop (`utils.client.messages.onStateChange.query(...)` inside a manually-managed `while` loop) — both encode product-specific correctness properties, not generic hook patterns | Force everything hook-shaped through `usehooks` for consistency | `usehooks` has no long-poll-with-backpressure primitive and no shared-timer-across-instances primitive; forcing these onto a generic hook would either lose the "one timer, N subscribers" property or reintroduce the exact `refetchInterval`-stalls-after-two-calls bug already found and fixed live (see AGENTS.md's M3 messages-screen section) | AGENTS.md (messages-screen module doc), §7 (risk) |
@@ -333,18 +333,28 @@ the worker/job/opt-out machinery that keeps the system healthy; "ADMIN" is
 account/access/compliance surface. Four groups matches LottieFiles' own count
 (workspace/projects/collections/footer) closely enough to trust the density.
 
-**Mobile (<768px, off-canvas via D7):** the same four groups render as
-DaisyUI-native accordions inside the off-canvas panel — only the group containing
-the current route starts expanded; the other three start collapsed, so a phone
-user seees roughly 6–8 tappable rows on open, not 18. Tapping a group header
-toggles it (no animation budget spent beyond DaisyUI's own collapse transition);
-tapping a route closes the off-canvas panel and navigates. The footer zone
-(gallery + account) stays pinned below the accordion list, matching desktop.
+**Off-canvas, <1024px (D7) — phone and tablet alike:** the same four groups
+render as DaisyUI-native accordions inside the off-canvas panel — only the
+group containing the current route starts expanded; the other three start
+collapsed, so a phone user sees roughly 6–8 tappable rows on open, not 18.
+Tapping a group header toggles it (no animation budget spent beyond DaisyUI's
+own collapse transition); tapping a route closes the off-canvas panel and
+navigates. The footer zone (gallery + account) stays pinned below the
+accordion list, matching desktop.
 
-**Tablet (768–1024px):** sidebar renders in an icon-only rail (labels hidden,
-tooltips via D5's DaisyUI `.tooltip` on hover/focus), matching the Linear-derived
-density note in §1.3 — full labels return at ≥1024px. This is a `usehooks`
+**Icon-only rail, 1024–1279px:** sidebar renders with labels hidden, tooltips
+via D5's DaisyUI `.tooltip` on hover/focus, matching the Linear-derived
+density note in §1.3 — full labels return at ≥1280px. This is a `usehooks`
 `useMediaQuery` breakpoint switch (D12), not a second component.
+
+**Correction, found landing Phase 0:** the two paragraphs above used to say
+"Mobile (<768px)" / "Tablet (768–1024px)", which contradicts §6.1's own
+breakpoint table below (off-canvas through `md`, i.e. through 1023px; the
+icon rail is `lg`, 1024–1279px) — §6.1 is the later, more carefully reasoned
+version (it states its own reason: "a 768px-wide iPad-mini-class viewport is
+still too narrow for a persistent rail"), and is the one this build actually
+implements. The numbers above are corrected to match it rather than treated
+as two independently-true breakpoint schemes.
 
 ---
 
@@ -593,8 +603,16 @@ Phase 1 starts):**
 - `packages/ui/src/styles/theme.css` — delete the light theme (D9), rewrite the
   radius scale (D8).
 - `packages/ui/src/components/primitives/theme-toggle.tsx` — delete.
-- `packages/ui/package.json` — swap Radix packages for `@headlessui/react`, add
-  `cva`, add `@uidotdev/usehooks` (D3–D6, D11, D12).
+- `packages/ui/package.json` — **add** `@headlessui/react`, `class-variance-authority`
+  (`cva`), `@uidotdev/usehooks` (D3–D6, D11, D12). **Correction, found landing
+  Phase 0: do not remove the `@radix-ui/*` packages here.** The line below this
+  one originally said "swap Radix packages for `@headlessui/react`" — that's
+  wrong for this phase specifically: nine primitives still `import` from
+  `@radix-ui/*` and aren't ported until Phase 1 (Bucket A), so removing the
+  dependencies now breaks `pnpm --filter @vsms/ui typecheck` for Phase 0 itself,
+  which is exactly the gate this phase has to pass before Phase 1 can start.
+  Every `@radix-ui/*` entry stays in `package.json` through Phase 0; Phase 1's
+  Bucket A removes each one as it ports the primitive that uses it (D3–D6).
 - New: `admin/app/console-shell.tsx`, `admin/app/nav-groups.ts` (§4 as data),
   `packages/ui/src/components/primitives/side-nav.tsx` (§6.2).
 - `admin/app/layout.tsx` — wrap in `ConsoleShell`.
@@ -690,14 +708,14 @@ redesign can silently regress if a screen gets rewritten instead of re-skinned:*
 
 **What could plausibly break if not handled deliberately:**
 
-- **The D8 radius change is a genuine visual-identity change to an
-  already-shipped, carefully-reasoned system**, not a mechanical port. The prior
-  2px system was chosen specifically for a "restrained, data-forward, mono-is-
-  the-voice-of-data" feel; rounding everything risks reading as a generic
-  consumer SaaS product on an operator diagnostic tool. §2's D8 entry locks a
-  specific, moderate register (6/8/12px) precisely to avoid this, but Phase 3's
-  manual QA pass must check it against the reference lock (§1.1/§1.2), not just
-  "does it look rounded."
+- **The D8 radius change is a deliberate, intended visual break from what
+  shipped before, not a risk to be managed.** It replaces the prior 2px
+  "restrained, data-forward" register outright, on this project's own
+  standing hard-cutover convention. Phase 3's manual QA pass still checks it
+  against the reference lock (§1.1/§1.2/§1.5) — the bar is "does this match
+  what LottieFiles/Column/Polar actually show", not "does it look rounded"
+  in the abstract — but the check is about fidelity to the reference, not
+  about how far the number moved from 2px.
 - **D10's `locale` removal touches four components' public API**
   (`StatusPill`, `StateTimeline`, and transitively `JobStatusPill`/
   `AttemptStatusPill`) — this is a breaking change to `@vsms/ui`'s exports.

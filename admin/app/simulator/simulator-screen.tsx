@@ -61,7 +61,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  ThemeToggle,
 } from "@vsms/ui";
 import { useState } from "react";
 
@@ -187,7 +186,6 @@ export function SimulatorScreen() {
           >
             Webhooks
           </a>
-          <ThemeToggle />
         </div>
       </header>
 

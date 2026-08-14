@@ -14,8 +14,6 @@
 // console's own hub) separately gained links to these five so they're
 // reachable by click, not only by typing a URL.
 
-import { ThemeToggle } from "@vsms/ui";
-
 const LINKS: { href: string; label: string }[] = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/apps", label: "Apps" },
@@ -38,7 +36,6 @@ export function ConsoleNav({ current }: { current: string }) {
           {link.label}
         </a>
       ))}
-      <ThemeToggle />
     </div>
   );
 }

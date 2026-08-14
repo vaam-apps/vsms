@@ -28,7 +28,6 @@ import {
   SelectTrigger,
   SelectValue,
   StatusPill,
-  ThemeToggle,
 } from "@vsms/ui";
 import { useEffect, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
@@ -277,7 +276,6 @@ export default function ComposerPage() {
           >
             Webhooks
           </a>
-          <ThemeToggle />
         </div>
       </header>
 

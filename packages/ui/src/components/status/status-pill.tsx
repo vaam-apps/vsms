@@ -43,9 +43,8 @@ export interface StatusPillProps {
   /** Default `'auto'`: resolved from the design doc's attention ladder (§4.5). */
   variant?: "auto" | "quiet" | "loud";
   size?: "sm" | "md";
-  /** Render the mono enum literal beside the localised label. True in detail views, false in tables. */
+  /** Render the mono enum literal beside the label. True in detail views, false in tables. */
   showLiteral?: boolean;
-  locale?: "en" | "fr";
   /** Short mono qualifier, e.g. `failed · 4xx`. */
   detail?: ReactNode;
   /** Optimistic-transition case: dimmed + dashed, held until the server confirms (design doc §5.3). */
@@ -65,7 +64,6 @@ export function StatusPill({
   variant = "auto",
   size = "sm",
   showLiteral = false,
-  locale = "en",
   detail,
   pending = false,
   interactive = false,
@@ -76,7 +74,6 @@ export function StatusPill({
   const resolvedVariant = variant === "auto" ? meta.attention : variant;
   const loud = resolvedVariant === "loud";
   const hue = HUE_CLASSES[meta.hue];
-  const label = locale === "fr" ? meta.labelFr : meta.labelEn;
   const markSize = size === "md" ? 16 : 14;
 
   const Comp = interactive ? "button" : "span";
@@ -85,8 +82,8 @@ export function StatusPill({
     <Comp
       type={interactive ? "button" : undefined}
       onClick={interactive ? onClick : undefined}
-      title={meta.tooltipEn}
-      aria-label={`${state} — ${label}`}
+      title={meta.tooltip}
+      aria-label={`${state} — ${meta.label}`}
       className={cn(
         "inline-flex items-center gap-[5px] whitespace-nowrap align-middle",
         "text-caption",
@@ -98,7 +95,7 @@ export function StatusPill({
       )}
     >
       <StateMark state={state} size={markSize} className={hue.fg} />
-      <span className={loud ? hue.fg : "text-muted-foreground"}>{label}</span>
+      <span className={loud ? hue.fg : "text-muted-foreground"}>{meta.label}</span>
       {showLiteral && <span className="font-mono text-subtle-foreground text-[11px]">{state}</span>}
       {detail != null && <span className="font-mono text-subtle-foreground">{detail}</span>}
     </Comp>
