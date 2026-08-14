@@ -4,8 +4,8 @@
 
 import {
   Button,
+  FormField,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -43,8 +43,7 @@ export function AuditFilters({
 }) {
   return (
     <div className="flex flex-wrap items-end gap-3">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="audit-filter-model">Model</Label>
+      <FormField label="Model" htmlFor="audit-filter-model">
         <Input
           id="audit-filter-model"
           placeholder="App, User, Provider…"
@@ -52,9 +51,8 @@ export function AuditFilters({
           onChange={(e) => onModelChange(e.target.value)}
           className="w-44"
         />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="audit-filter-operation">Operation</Label>
+      </FormField>
+      <FormField label="Operation" htmlFor="audit-filter-operation">
         <Select
           value={operation ?? "any"}
           onValueChange={(value) =>
@@ -73,34 +71,31 @@ export function AuditFilters({
             ))}
           </SelectContent>
         </Select>
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="audit-filter-actor">Actor id</Label>
+      </FormField>
+      <FormField label="Actor id" htmlFor="audit-filter-actor">
         <Input
           id="audit-filter-actor"
           value={actorId}
           onChange={(e) => onActorIdChange(e.target.value)}
           className="w-44"
         />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="audit-filter-since">Since</Label>
+      </FormField>
+      <FormField label="Since" htmlFor="audit-filter-since">
         <Input
           id="audit-filter-since"
           type="date"
           value={since}
           onChange={(e) => onSinceChange(e.target.value)}
         />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="audit-filter-until">Until</Label>
+      </FormField>
+      <FormField label="Until" htmlFor="audit-filter-until">
         <Input
           id="audit-filter-until"
           type="date"
           value={until}
           onChange={(e) => onUntilChange(e.target.value)}
         />
-      </div>
+      </FormField>
       {hasFilters && (
         <Button type="button" variant="ghost" size="sm" onClick={onClear}>
           Clear filters

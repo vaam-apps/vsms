@@ -53,9 +53,9 @@ export function WorkersTable({ locks, isLoading, onRowClick }: WorkersTableProps
         <TableRow>
           <TableHead>Role</TableHead>
           <TableHead>Status</TableHead>
-          <TableHead className="hidden md:table-cell">Node</TableHead>
-          <TableHead className="hidden lg:table-cell">Pid</TableHead>
-          <TableHead align="end" className="hidden sm:table-cell">
+          <TableHead hideBelow="md">Node</TableHead>
+          <TableHead hideBelow="lg">Pid</TableHead>
+          <TableHead align="end" hideBelow="sm">
             Held since
           </TableHead>
           <TableHead align="end" className="w-8" />
@@ -99,13 +99,13 @@ export function WorkersTable({ locks, isLoading, onRowClick }: WorkersTableProps
             <TableCell>
               <StatusIndicator lock={lock} />
             </TableCell>
-            <TableCell mono className="hidden max-w-[200px] truncate md:table-cell">
+            <TableCell mono hideBelow="md" className="max-w-[200px] truncate">
               {lock.workerId ?? "—"}
             </TableCell>
-            <TableCell mono className="hidden lg:table-cell">
+            <TableCell mono hideBelow="lg">
               {lock.pid ?? "—"}
             </TableCell>
-            <TableCell align="end" className="hidden sm:table-cell">
+            <TableCell align="end" hideBelow="sm">
               {lock.heldSince != null ? <TimestampDisplay value={lock.heldSince} /> : "—"}
             </TableCell>
             <TableCell align="end">

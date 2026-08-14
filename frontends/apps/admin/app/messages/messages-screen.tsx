@@ -77,7 +77,7 @@
 //    on; a `recovered` frame flips it off.
 
 import { trpc } from "@vsms/hooks";
-import { MESSAGE_STATES, type MessageState } from "@vsms/ui";
+import { MESSAGE_STATES, type MessageState, ScreenStack } from "@vsms/ui";
 import { parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { CrossAppScopeBanner } from "./components/cross-app-scope-banner";
@@ -85,7 +85,6 @@ import { DegradedBanner } from "./components/degraded-banner";
 import { ListErrorBanner } from "./components/list-error-banner";
 import { MessagesFilters } from "./components/messages-filters";
 import { MessagesHeader } from "./components/messages-header";
-import { MessagesLayout } from "./components/messages-layout";
 import { MessagesListPanel } from "./components/messages-list-panel";
 import { MessagesTable } from "./components/messages-table";
 import { PendingMessagesPill } from "./components/pending-messages-pill";
@@ -240,7 +239,7 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
     filters.to !== null;
 
   return (
-    <MessagesLayout>
+    <ScreenStack>
       <MessagesHeader pollMs={pollMs} />
       <CrossAppScopeBanner />
       {degraded && <DegradedBanner />}
@@ -273,6 +272,6 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
           onClearFilters={clearFilters}
         />
       </MessagesListPanel>
-    </MessagesLayout>
+    </ScreenStack>
   );
 }

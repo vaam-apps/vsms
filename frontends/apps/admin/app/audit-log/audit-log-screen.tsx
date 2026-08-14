@@ -61,12 +61,12 @@
 // in `page.tsx` and passed down as `pageSize`.
 
 import { trpc } from "@vsms/hooks";
+import { ScreenStack } from "@vsms/ui";
 import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
 import { useEffect, useState } from "react";
 import { AuditEntryDrawer } from "./components/audit-entry-drawer";
 import { AuditFilters } from "./components/audit-filters";
 import { AuditLogHeader } from "./components/audit-log-header";
-import { AuditLogLayout } from "./components/audit-log-layout";
 import { AuditLogPagination } from "./components/audit-log-pagination";
 import { AuditLogTable } from "./components/audit-log-table";
 import { ChainStatusPanel, type ChainStatusPanelProps } from "./components/chain-status-panel";
@@ -154,7 +154,7 @@ export function AuditLogScreen({ pageSize }: { pageSize: number }) {
   }
 
   return (
-    <AuditLogLayout>
+    <ScreenStack>
       <AuditLogHeader />
 
       <ChainStatusBanner />
@@ -209,6 +209,6 @@ export function AuditLogScreen({ pageSize }: { pageSize: number }) {
         open={selectedEntryId !== null}
         onClose={() => setSelectedEntryId(null)}
       />
-    </AuditLogLayout>
+    </ScreenStack>
   );
 }

@@ -10,8 +10,9 @@ import {
   Button,
   EncodingPreview,
   type EncodingPreviewResult,
+  FormField,
+  InlineBanner,
   Input,
-  Label,
   MESSAGE_CLASSES,
   Select,
   SelectContent,
@@ -51,34 +52,31 @@ export function ComposerForm({
 }: ComposerFormProps) {
   return (
     <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-6">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="composer-to">Recipient</Label>
+      <FormField label="Recipient" htmlFor="composer-to" error={form.formState.errors.to?.message}>
         <Input
           id="composer-to"
           placeholder="+237 677 123 456"
           aria-invalid={form.formState.errors.to != null}
           {...form.register("to")}
         />
-        {form.formState.errors.to != null ? (
-          <p className="text-caption text-state-danger-fg">{form.formState.errors.to.message}</p>
-        ) : (
-          showRecipientStatus &&
-          normalizedTo != null && (
-            <p className="text-caption text-muted-foreground">
-              Normalises to <span className="font-mono text-foreground">{normalizedTo}</span>
-              {recipientOperator != null && recipientOperator !== "unknown" && (
-                <>
-                  {" "}
-                  · <span className="font-mono uppercase">{recipientOperator}</span>
-                </>
-              )}
-            </p>
-          )
+        {form.formState.errors.to == null && showRecipientStatus && normalizedTo != null && (
+          <p className="text-caption text-muted-foreground">
+            Normalises to <span className="font-mono text-foreground">{normalizedTo}</span>
+            {recipientOperator != null && recipientOperator !== "unknown" && (
+              <>
+                {" "}
+                · <span className="font-mono uppercase">{recipientOperator}</span>
+              </>
+            )}
+          </p>
         )}
-      </div>
+      </FormField>
 
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="composer-body">Message</Label>
+      <FormField
+        label="Message"
+        htmlFor="composer-body"
+        error={form.formState.errors.body?.message}
+      >
         <Controller
           control={form.control}
           name="body"
@@ -97,29 +95,23 @@ export function ComposerForm({
             />
           )}
         />
-        {form.formState.errors.body != null && (
-          <p className="text-caption text-state-danger-fg">{form.formState.errors.body.message}</p>
-        )}
-      </div>
+      </FormField>
 
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="composer-sender-id">Sender id</Label>
+        <FormField
+          label="Sender id"
+          htmlFor="composer-sender-id"
+          error={form.formState.errors.senderId?.message}
+        >
           <Input
             id="composer-sender-id"
             placeholder="Default for this app"
             aria-invalid={form.formState.errors.senderId != null}
             {...form.register("senderId")}
           />
-          {form.formState.errors.senderId != null && (
-            <p className="text-caption text-state-danger-fg">
-              {form.formState.errors.senderId.message}
-            </p>
-          )}
-        </div>
+        </FormField>
 
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="composer-class">Class</Label>
+        <FormField label="Class" htmlFor="composer-class">
           <Controller
             control={form.control}
             name="class"
@@ -138,37 +130,37 @@ export function ComposerForm({
               </Select>
             )}
           />
-        </div>
+        </FormField>
       </div>
 
       <details className="rounded-sm border border-edge">
         <summary className="cursor-pointer px-3 py-2 text-body text-foreground">Advanced</summary>
         <div className="flex flex-col gap-4 border-edge border-t p-3">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="composer-client-ref">Client reference</Label>
+          <FormField
+            label="Client reference"
+            htmlFor="composer-client-ref"
+            error={form.formState.errors.clientRef?.message}
+          >
             <Input
               id="composer-client-ref"
               placeholder="Your own idempotency / correlation id"
               {...form.register("clientRef")}
             />
-            {form.formState.errors.clientRef != null && (
-              <p className="text-caption text-state-danger-fg">
-                {form.formState.errors.clientRef.message}
-              </p>
-            )}
-          </div>
+          </FormField>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="composer-scheduled-at">Scheduled at</Label>
+            <FormField label="Scheduled at" htmlFor="composer-scheduled-at">
               <Input
                 id="composer-scheduled-at"
                 type="datetime-local"
                 {...form.register("scheduledAt")}
               />
-            </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="composer-validity">Validity (minutes)</Label>
+            </FormField>
+            <FormField
+              label="Validity (minutes)"
+              htmlFor="composer-validity"
+              error={form.formState.errors.validityMinutes?.message}
+            >
               <Input
                 id="composer-validity"
                 inputMode="numeric"
@@ -176,21 +168,12 @@ export function ComposerForm({
                 aria-invalid={form.formState.errors.validityMinutes != null}
                 {...form.register("validityMinutes")}
               />
-              {form.formState.errors.validityMinutes != null && (
-                <p className="text-caption text-state-danger-fg">
-                  {form.formState.errors.validityMinutes.message}
-                </p>
-              )}
-            </div>
+            </FormField>
           </div>
         </div>
       </details>
 
-      {generalError != null && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          {generalError}
-        </div>
-      )}
+      {generalError != null && <InlineBanner variant="danger">{generalError}</InlineBanner>}
 
       <div className="flex items-center gap-3">
         <Button type="submit" disabled={isSending}>

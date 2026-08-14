@@ -6,8 +6,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  FormField,
+  InlineBanner,
   Input,
-  Label,
 } from "@vsms/ui";
 import type { UseFormReturn } from "react-hook-form";
 import type { CreateSenderIdFormValues } from "../sender-id-domain";
@@ -47,29 +48,25 @@ export function CreateSenderDialog({
           onSubmit={handleSubmit(onSubmit)}
           className="flex flex-col gap-4"
         >
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="new-sender-value">Value (3–11 characters)</Label>
+          <FormField
+            label="Value (3–11 characters)"
+            htmlFor="new-sender-value"
+            error={formState.errors.value?.message}
+          >
             <Input
               id="new-sender-value"
               aria-invalid={formState.errors.value != null}
               {...register("value")}
             />
-            {formState.errors.value != null && (
-              <p className="text-caption text-state-danger-fg">{formState.errors.value.message}</p>
-            )}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="new-sender-kind">Kind</Label>
+          </FormField>
+          <FormField label="Kind" htmlFor="new-sender-kind">
             <Input id="new-sender-kind" placeholder="e.g. alphanumeric" {...register("kind")} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="new-sender-notes">Notes (optional)</Label>
+          </FormField>
+          <FormField label="Notes (optional)" htmlFor="new-sender-notes">
             <Input id="new-sender-notes" {...register("notes")} />
-          </div>
+          </FormField>
           {errorMessage != null && (
-            <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-              Create failed: {errorMessage}
-            </div>
+            <InlineBanner variant="danger">Create failed: {errorMessage}</InlineBanner>
           )}
         </form>
         <DialogFooter>

@@ -22,8 +22,9 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  FormField,
+  InlineBanner,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -57,22 +58,19 @@ export function RecordOptOutDialog({
           <DialogTitle>Record an opt-out</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="record-msisdn">MSISDN</Label>
+          <FormField
+            label="MSISDN"
+            htmlFor="record-msisdn"
+            error={form.formState.errors.msisdn?.message}
+          >
             <Input
               id="record-msisdn"
               placeholder="+237677123456"
               aria-invalid={form.formState.errors.msisdn != null}
               {...form.register("msisdn")}
             />
-            {form.formState.errors.msisdn != null && (
-              <p className="text-caption text-state-danger-fg">
-                {form.formState.errors.msisdn.message}
-              </p>
-            )}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="record-source">Source</Label>
+          </FormField>
+          <FormField label="Source" htmlFor="record-source">
             <Controller
               control={form.control}
               name="source"
@@ -91,29 +89,22 @@ export function RecordOptOutDialog({
                 </Select>
               )}
             />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="record-scope">Scope</Label>
+          </FormField>
+          <FormField
+            label="Scope"
+            htmlFor="record-scope"
+            error={form.formState.errors.scope?.message}
+          >
             <Input
               id="record-scope"
               aria-invalid={form.formState.errors.scope != null}
               {...form.register("scope")}
             />
-            {form.formState.errors.scope != null && (
-              <p className="text-caption text-state-danger-fg">
-                {form.formState.errors.scope.message}
-              </p>
-            )}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="record-reason">Reason (optional)</Label>
+          </FormField>
+          <FormField label="Reason (optional)" htmlFor="record-reason">
             <Input id="record-reason" {...form.register("reason")} />
-          </div>
-          {errorMessage != null && (
-            <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-              {errorMessage}
-            </div>
-          )}
+          </FormField>
+          {errorMessage != null && <InlineBanner variant="danger">{errorMessage}</InlineBanner>}
         </div>
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>

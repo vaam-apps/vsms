@@ -25,15 +25,14 @@ import { ChevronRight } from "lucide-react";
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 export type JobListItem = RouterOutputs["jobs"]["list"]["items"][number];
 
-/** Column visibility shared between `TableHead` and `TableCell` so a
- * breakpoint hides both halves of a column together — misaligning them
- * would shift every cell after it. Mobile keeps State/Kind/Updated/Action
- * (the 3–4 columns an operator needs to triage at a glance); everything
- * else is one tap away in the quick-detail drawer. */
-const COL_ATTEMPTS = "hidden sm:table-cell";
-const COL_RUN_AT = "hidden md:table-cell";
-const COL_LAST_ERROR = "hidden lg:table-cell";
-const COL_ID = "hidden lg:table-cell";
+// Column visibility: Attempts hides below `sm`, Run at below `md`, Last
+// error/Id below `lg` — via `TableHead`/`TableCell`'s own `hideBelow` prop
+// (`@vsms/ui`'s `primitives/table.tsx`), so head and cell share one
+// breakpoint decision per column instead of two copies of the same class
+// string that could silently drift apart. Mobile keeps
+// State/Kind/Updated/Action (the 3–4 columns an operator needs to triage
+// at a glance); everything else is one tap away in the quick-detail
+// drawer.
 
 export interface JobsTableProps {
   items: JobListItem[];
@@ -60,10 +59,10 @@ export function JobsTable({
         <TableRow>
           <TableHead>State</TableHead>
           <TableHead>Kind</TableHead>
-          <TableHead className={COL_ATTEMPTS}>Attempts</TableHead>
-          <TableHead className={COL_LAST_ERROR}>Last error</TableHead>
-          <TableHead className={COL_RUN_AT}>Run at</TableHead>
-          <TableHead className={COL_ID}>Id</TableHead>
+          <TableHead hideBelow="sm">Attempts</TableHead>
+          <TableHead hideBelow="lg">Last error</TableHead>
+          <TableHead hideBelow="md">Run at</TableHead>
+          <TableHead hideBelow="lg">Id</TableHead>
           <TableHead align="end">Updated</TableHead>
           <TableHead align="end">Action</TableHead>
         </TableRow>
@@ -115,10 +114,10 @@ export function JobsTable({
             <TableCell mono className="max-w-[160px] truncate">
               {job.kind}
             </TableCell>
-            <TableCell mono className={COL_ATTEMPTS}>
+            <TableCell mono hideBelow="sm">
               {job.attempts}/{job.maxAttempts}
             </TableCell>
-            <TableCell className={COL_LAST_ERROR}>
+            <TableCell hideBelow="lg">
               {job.lastError != null ? (
                 <span
                   className="line-clamp-1 max-w-[320px] text-caption text-muted-foreground"
@@ -130,10 +129,10 @@ export function JobsTable({
                 <span className="text-muted-foreground">—</span>
               )}
             </TableCell>
-            <TableCell className={COL_RUN_AT}>
+            <TableCell hideBelow="md">
               <TimestampDisplay value={job.runAt} />
             </TableCell>
-            <TableCell className={COL_ID}>
+            <TableCell hideBelow="lg">
               <IdDisplay value={job.id} />
             </TableCell>
             <TableCell align="end">

@@ -99,7 +99,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { trpc } from "@vsms/hooks";
-import { toast } from "@vsms/ui";
+import { ScreenStack, toast } from "@vsms/ui";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -116,7 +116,6 @@ import {
 import { AppClientsPanelView } from "./components/app-clients-panel-view";
 import { AppDetailDrawerView } from "./components/app-detail-drawer-view";
 import { AppsHeader } from "./components/apps-header";
-import { AppsLayout } from "./components/apps-layout";
 import { AppsTable } from "./components/apps-table";
 import { CreateAppDialogView } from "./components/create-app-dialog-view";
 import { ErrorBanner } from "./components/error-banner";
@@ -463,7 +462,7 @@ export function AppsScreen() {
   }, [panelId]);
 
   return (
-    <AppsLayout>
+    <ScreenStack>
       <AppsHeader onCreateClick={() => setCreateOpen(true)} />
 
       {listQuery.isError && (
@@ -483,6 +482,6 @@ export function AppsScreen() {
         open={panelId !== null}
         onClose={() => void setPanelId(null)}
       />
-    </AppsLayout>
+    </ScreenStack>
   );
 }

@@ -28,9 +28,9 @@ export function UsersTable({
         <TableRow>
           <TableHead>Active</TableHead>
           <TableHead>Email</TableHead>
-          <TableHead className="hidden sm:table-cell">Display name</TableHead>
+          <TableHead hideBelow="sm">Display name</TableHead>
           <TableHead>Role</TableHead>
-          <TableHead align="end" className="hidden md:table-cell">
+          <TableHead align="end" hideBelow="md">
             Last login
           </TableHead>
         </TableRow>
@@ -60,9 +60,9 @@ export function UsersTable({
               )}
             </TableCell>
             <TableCell>{user.email}</TableCell>
-            <TableCell className="hidden sm:table-cell">{user.displayName}</TableCell>
+            <TableCell hideBelow="sm">{user.displayName}</TableCell>
             <TableCell mono>{user.roleKey}</TableCell>
-            <TableCell align="end" className="hidden md:table-cell">
+            <TableCell align="end" hideBelow="md">
               {user.lastLoginAt !== undefined ? (
                 <TimestampDisplay value={user.lastLoginAt} />
               ) : (

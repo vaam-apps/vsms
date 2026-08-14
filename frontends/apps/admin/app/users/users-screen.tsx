@@ -86,7 +86,7 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { trpc } from "@vsms/hooks";
-import { toast } from "@vsms/ui";
+import { ScreenHeader, ScreenStack, toast } from "@vsms/ui";
 import { parseAsStringEnum, useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -99,8 +99,6 @@ import {
 import { RoleDetailDrawerView } from "./components/role-detail-drawer-view";
 import { RolesTabView } from "./components/roles-tab-view";
 import { UserDetailDrawerView } from "./components/user-detail-drawer-view";
-import { UsersLayout } from "./components/users-layout";
-import { UsersScreenHeader } from "./components/users-screen-header";
 import { UsersTabView } from "./components/users-tab-view";
 import { UsersTabs } from "./components/users-tabs";
 import {
@@ -520,8 +518,11 @@ export function UsersScreen() {
   }
 
   return (
-    <UsersLayout>
-      <UsersScreenHeader />
+    <ScreenStack>
+      <ScreenHeader
+        title="Users & roles"
+        description="Console accounts and the permission sets their roles carry."
+      />
 
       <UsersTabs
         tab={tab}
@@ -544,6 +545,6 @@ export function UsersScreen() {
           />
         }
       />
-    </UsersLayout>
+    </ScreenStack>
   );
 }

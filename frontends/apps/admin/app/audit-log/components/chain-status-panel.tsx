@@ -3,7 +3,7 @@
 // collapses it into one of the five states below; this component only
 // renders whichever one it is handed.
 
-import { Skeleton, TimestampDisplay } from "@vsms/ui";
+import { InlineBanner, Skeleton, TimestampDisplay } from "@vsms/ui";
 
 export type ChainStatusPanelProps =
   | { kind: "loading" }
@@ -19,24 +19,27 @@ export function ChainStatusPanel(props: ChainStatusPanelProps) {
 
   if (props.kind === "error") {
     return (
-      <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
+      <InlineBanner variant="danger">
         Could not read the audit chain status: {props.message}
-      </div>
+      </InlineBanner>
     );
   }
 
   if (props.kind === "no-anchor") {
     return (
-      <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
+      <InlineBanner variant="neutral">
         No audit anchor has been written yet — the <span className="font-mono">anchor_audit</span>{" "}
         job (§7.5) runs hourly once a worker with the <span className="font-mono">jobs</span> role
         is up.
-      </div>
+      </InlineBanner>
     );
   }
 
   const broken = props.kind === "broken";
 
+  // Not `<InlineBanner>` here: the "ok" branch needs a success treatment
+  // (`state-success-*`), and `InlineBanner` only has `neutral`/`danger`/
+  // `plain` variants — see this PR's own report.
   return (
     <div
       className={

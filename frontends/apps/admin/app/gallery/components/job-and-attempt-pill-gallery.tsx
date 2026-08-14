@@ -3,6 +3,7 @@
 // Route-local (R6): moved verbatim out of `page.tsx`.
 
 import { ATTEMPT_STATES, AttemptStatusPill, JOB_STATES, JobStatusPill } from "@vsms/ui";
+import { GallerySwatch } from "./gallery-swatch";
 import { Section } from "./section";
 
 /**
@@ -21,26 +22,20 @@ export function JobAndAttemptPillGallery() {
       description="Six job states, five attempt states — same glyph/hue system as StatusPill, driven by JOB_STATUS_META / ATTEMPT_STATUS_META instead of MESSAGE_STATUS_META. Note failed here is retryable (unresolved/uncertain hue), not the terminal danger hue a message's own failed carries."
     >
       <div className="flex flex-col gap-4">
-        <div>
-          <p className="mb-2 text-micro text-subtle-foreground tracking-[0.03em]">
-            Job — pending / running / succeeded / failed (retrying) / dead / cancelled
-          </p>
+        <GallerySwatch label="Job — pending / running / succeeded / failed (retrying) / dead / cancelled">
           <div className="flex flex-wrap gap-3">
             {JOB_STATES.map((s) => (
               <JobStatusPill key={s} state={s} showLiteral />
             ))}
           </div>
-        </div>
-        <div>
-          <p className="mb-2 text-micro text-subtle-foreground tracking-[0.03em]">
-            Webhook attempt — pending / delivering / succeeded / failed (retrying) / dead
-          </p>
+        </GallerySwatch>
+        <GallerySwatch label="Webhook attempt — pending / delivering / succeeded / failed (retrying) / dead">
           <div className="flex flex-wrap gap-3">
             {ATTEMPT_STATES.map((s) => (
               <AttemptStatusPill key={s} state={s} showLiteral />
             ))}
           </div>
-        </div>
+        </GallerySwatch>
       </div>
     </Section>
   );

@@ -4,6 +4,7 @@
 
 import { MESSAGE_STATES, StatusPill, toast } from "@vsms/ui";
 import { useState } from "react";
+import { GallerySwatch } from "./gallery-swatch";
 import { Section } from "./section";
 
 const QUIET_STATES = MESSAGE_STATES.filter((s) =>
@@ -32,31 +33,21 @@ export function StatusPillGallery() {
       </label>
       <div className={grayscale ? "grayscale" : undefined}>
         <div className="flex flex-col gap-4">
-          <div>
-            <p className="mb-2 text-micro text-subtle-foreground tracking-[0.03em]">
-              Quiet — on track / uneventful terminal
-            </p>
+          <GallerySwatch label="Quiet — on track / uneventful terminal">
             <div className="flex flex-wrap gap-3">
               {QUIET_STATES.map((s) => (
                 <StatusPill key={s} state={s} showLiteral />
               ))}
             </div>
-          </div>
-          <div>
-            <p className="mb-2 text-micro text-subtle-foreground tracking-[0.03em]">
-              Loud — needs a human
-            </p>
+          </GallerySwatch>
+          <GallerySwatch label="Loud — needs a human">
             <div className="flex flex-wrap gap-3">
               {LOUD_STATES.map((s) => (
                 <StatusPill key={s} state={s} showLiteral />
               ))}
             </div>
-          </div>
-          <div>
-            <p className="mb-2 text-micro text-subtle-foreground tracking-[0.03em]">
-              Other `StatusPill` states: pending (optimistic, unconfirmed) and interactive
-              (clickable)
-            </p>
+          </GallerySwatch>
+          <GallerySwatch label="Other `StatusPill` states: pending (optimistic, unconfirmed) and interactive (clickable)">
             <div className="flex flex-wrap items-center gap-3">
               <StatusPill state="queued" pending showLiteral detail="optimistic" />
               <StatusPill
@@ -67,7 +58,7 @@ export function StatusPillGallery() {
                 onClick={() => toast({ title: "StatusPill clicked", variant: "default" })}
               />
             </div>
-          </div>
+          </GallerySwatch>
         </div>
       </div>
     </Section>

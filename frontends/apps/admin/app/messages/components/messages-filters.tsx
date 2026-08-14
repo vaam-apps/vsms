@@ -5,8 +5,8 @@
 
 import {
   Button,
+  FormField,
   Input,
-  Label,
   MESSAGE_STATES,
   MESSAGE_STATUS_META,
   type MessageState,
@@ -50,8 +50,7 @@ export function MessagesFilters({
 }: MessagesFiltersProps) {
   return (
     <div className="flex flex-col flex-wrap gap-4 sm:flex-row sm:items-end">
-      <div className="flex flex-col gap-1.5 sm:w-[180px]">
-        <Label htmlFor="filter-state">State</Label>
+      <FormField label="State" htmlFor="filter-state" className="sm:w-[180px]">
         <Select
           value={state ?? "__all"}
           onValueChange={(value) =>
@@ -70,21 +69,19 @@ export function MessagesFilters({
             ))}
           </SelectContent>
         </Select>
-      </div>
+      </FormField>
 
-      <div className="flex flex-col gap-1.5 sm:w-[200px]">
-        <Label htmlFor="filter-client-ref">Client reference</Label>
+      <FormField label="Client reference" htmlFor="filter-client-ref" className="sm:w-[200px]">
         <Input
           id="filter-client-ref"
           placeholder="exact match"
           value={clientRef}
           onChange={(e) => onClientRefChange(e.target.value)}
         />
-      </div>
+      </FormField>
 
       <div className="flex gap-4">
-        <div className="flex flex-1 flex-col gap-1.5 sm:w-[160px] sm:flex-none">
-          <Label htmlFor="filter-from">From</Label>
+        <FormField label="From" htmlFor="filter-from" className="flex-1 sm:w-[160px] sm:flex-none">
           <Input
             id="filter-from"
             type="date"
@@ -92,9 +89,8 @@ export function MessagesFilters({
             max={to || undefined}
             onChange={(e) => onFromChange(e.target.value)}
           />
-        </div>
-        <div className="flex flex-1 flex-col gap-1.5 sm:w-[160px] sm:flex-none">
-          <Label htmlFor="filter-to">To</Label>
+        </FormField>
+        <FormField label="To" htmlFor="filter-to" className="flex-1 sm:w-[160px] sm:flex-none">
           <Input
             id="filter-to"
             type="date"
@@ -102,7 +98,7 @@ export function MessagesFilters({
             min={from || undefined}
             onChange={(e) => onToChange(e.target.value)}
           />
-        </div>
+        </FormField>
       </div>
 
       <div className="flex flex-wrap items-center gap-2 sm:pb-0.5">

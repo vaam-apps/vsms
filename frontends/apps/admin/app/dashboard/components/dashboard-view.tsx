@@ -4,10 +4,10 @@
 // Composes the smaller dumb components in this directory; owns no data
 // fetching or business rules of its own, only where things sit.
 
+import { InlineBanner } from "@vsms/ui";
 import { BalanceCard } from "./balance-card";
 import { DashboardHeader } from "./dashboard-header";
 import { DeliveryRateCard, type OperatorRow } from "./delivery-rate-card";
-import { ErrorBanner } from "./error-banner";
 import { OutboxFootnote } from "./outbox-footnote";
 import { ScopeBanner } from "./scope-banner";
 import { StatTiles } from "./stat-tiles";
@@ -58,7 +58,7 @@ export function DashboardView({
       <ScopeBanner appScoped={appScoped} />
 
       {errorMessage != null && (
-        <ErrorBanner message={`Couldn't load the dashboard: ${errorMessage}`} />
+        <InlineBanner variant="danger">{`Couldn't load the dashboard: ${errorMessage}`}</InlineBanner>
       )}
 
       <StatTiles

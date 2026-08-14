@@ -1,5 +1,6 @@
 import { Button, InlineEmptyState } from "@vsms/ui";
 import type { ProviderListItem, RegistrationListItem, SenderIdListItem } from "../sender-id-domain";
+import { DetailList, DetailRow } from "./detail-row";
 import { RegistrationStatusBadge } from "./registration-status-badge";
 
 // Dumb (R6): the `QuickDetailDrawer`'s summary for one sender id — its own
@@ -17,22 +18,17 @@ export function SenderQuickDetailBody({
 }) {
   return (
     <div className="flex flex-col gap-4">
-      <dl className="flex flex-col gap-3 text-body">
-        <div className="flex items-center justify-between gap-3">
-          <dt className="text-muted-foreground">Active</dt>
-          <dd>{senderId.active ? "yes" : "no"}</dd>
-        </div>
-        <div className="flex items-center justify-between gap-3">
-          <dt className="text-muted-foreground">Kind</dt>
-          <dd className="font-mono text-caption">{senderId.kind}</dd>
-        </div>
+      <DetailList>
+        <DetailRow label="Active">{senderId.active ? "yes" : "no"}</DetailRow>
+        <DetailRow label="Kind">
+          <span className="font-mono text-caption">{senderId.kind}</span>
+        </DetailRow>
         {senderId.notes != null && senderId.notes !== "" && (
-          <div className="flex flex-col gap-1">
-            <dt className="text-muted-foreground">Notes</dt>
-            <dd className="text-caption">{senderId.notes}</dd>
-          </div>
+          <DetailRow label="Notes" stacked>
+            {senderId.notes}
+          </DetailRow>
         )}
-      </dl>
+      </DetailList>
 
       <div className="flex flex-col gap-2 border-edge border-t pt-3">
         <p className="text-caption text-subtle-foreground">Registrations</p>

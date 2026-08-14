@@ -12,6 +12,7 @@
 // this screen just hadn't received the same cleanup yet. Fixed here to a
 // plain `<div>`, matching `DashboardView`'s own wrapper.
 
+import { ScreenStack } from "@vsms/ui";
 import type { ReactNode } from "react";
 import { ErrorBanner } from "./error-banner";
 import { ProvidersHeader } from "./providers-header";
@@ -31,7 +32,7 @@ export function ProvidersView({
   editDrawer,
 }: ProvidersViewProps) {
   return (
-    <div className="flex flex-col gap-6">
+    <ScreenStack>
       <ProvidersHeader />
       <ScopeBanner />
       {errorMessage != null && (
@@ -40,6 +41,6 @@ export function ProvidersView({
       {table}
       {quickDetail}
       {editDrawer}
-    </div>
+    </ScreenStack>
   );
 }

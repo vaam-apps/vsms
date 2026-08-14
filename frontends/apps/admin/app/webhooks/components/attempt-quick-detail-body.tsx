@@ -1,5 +1,6 @@
-import { AttemptStatusPill, TimestampDisplay } from "@vsms/ui";
+import { AttemptStatusPill, FieldError, TimestampDisplay } from "@vsms/ui";
 import type { AttemptListItem } from "../webhook-domain";
+import { DetailList, DetailRow } from "./detail-row";
 
 // Dumb (R6): the `QuickDetailDrawer`'s summary `dl` for one delivery
 // attempt.
@@ -11,41 +12,31 @@ export function AttemptQuickDetailBody({
   endpointUrl: string;
 }) {
   return (
-    <dl className="flex flex-col gap-3 text-body">
-      <div className="flex items-center justify-between gap-3">
-        <dt className="text-muted-foreground">State</dt>
-        <dd>
-          <AttemptStatusPill state={attempt.state} showLiteral />
-        </dd>
-      </div>
-      <div className="flex items-center justify-between gap-3">
-        <dt className="text-muted-foreground">Endpoint</dt>
-        <dd className="max-w-[240px] truncate font-mono text-caption">{endpointUrl}</dd>
-      </div>
-      <div className="flex items-center justify-between gap-3">
-        <dt className="text-muted-foreground">Attempts</dt>
-        <dd className="font-mono">{attempt.attempts}</dd>
-      </div>
-      <div className="flex items-center justify-between gap-3">
-        <dt className="text-muted-foreground">Last status code</dt>
-        <dd className="font-mono">{attempt.lastStatusCode ?? "—"}</dd>
-      </div>
+    <DetailList>
+      <DetailRow label="State">
+        <AttemptStatusPill state={attempt.state} showLiteral />
+      </DetailRow>
+      <DetailRow label="Endpoint">
+        <span className="max-w-[240px] truncate font-mono text-caption">{endpointUrl}</span>
+      </DetailRow>
+      <DetailRow label="Attempts">
+        <span className="font-mono">{attempt.attempts}</span>
+      </DetailRow>
+      <DetailRow label="Last status code">
+        <span className="font-mono">{attempt.lastStatusCode ?? "—"}</span>
+      </DetailRow>
       {attempt.lastError != null && (
-        <div className="flex flex-col gap-1">
-          <dt className="text-muted-foreground">Last error</dt>
-          <dd className="text-caption text-state-danger-fg">{attempt.lastError}</dd>
-        </div>
+        <DetailRow label="Last error" stacked>
+          <FieldError>{attempt.lastError}</FieldError>
+        </DetailRow>
       )}
-      <div className="flex items-center justify-between gap-3">
-        <dt className="text-muted-foreground">Last attempt</dt>
-        <dd>
-          {attempt.lastAttemptAt != null ? (
-            <TimestampDisplay value={attempt.lastAttemptAt} />
-          ) : (
-            <span className="text-muted-foreground">never</span>
-          )}
-        </dd>
-      </div>
-    </dl>
+      <DetailRow label="Last attempt">
+        {attempt.lastAttemptAt != null ? (
+          <TimestampDisplay value={attempt.lastAttemptAt} />
+        ) : (
+          <span className="text-muted-foreground">never</span>
+        )}
+      </DetailRow>
+    </DetailList>
   );
 }

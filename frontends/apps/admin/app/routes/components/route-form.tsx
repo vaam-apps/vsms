@@ -1,6 +1,7 @@
 import {
+  FormField,
+  InlineBanner,
   Input,
-  Label,
   MESSAGE_CLASSES,
   Select,
   SelectContent,
@@ -36,43 +37,38 @@ export function RouteForm({
 
   return (
     <form id={formId} onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="route-name">Name</Label>
+      <FormField label="Name" htmlFor="route-name" error={formState.errors.name?.message}>
         <Input id="route-name" aria-invalid={formState.errors.name != null} {...register("name")} />
-        {formState.errors.name != null && (
-          <p className="text-caption text-state-danger-fg">{formState.errors.name.message}</p>
-        )}
-      </div>
+      </FormField>
 
       <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="route-priority">Priority (0–1000, higher wins)</Label>
+        <FormField
+          label="Priority (0–1000, higher wins)"
+          htmlFor="route-priority"
+          error={formState.errors.priority?.message}
+        >
           <Input
             id="route-priority"
             inputMode="numeric"
             aria-invalid={formState.errors.priority != null}
             {...register("priority")}
           />
-          {formState.errors.priority != null && (
-            <p className="text-caption text-state-danger-fg">{formState.errors.priority.message}</p>
-          )}
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="route-weight">Weight (within a priority band)</Label>
+        </FormField>
+        <FormField
+          label="Weight (within a priority band)"
+          htmlFor="route-weight"
+          error={formState.errors.weight?.message}
+        >
           <Input
             id="route-weight"
             inputMode="numeric"
             aria-invalid={formState.errors.weight != null}
             {...register("weight")}
           />
-          {formState.errors.weight != null && (
-            <p className="text-caption text-state-danger-fg">{formState.errors.weight.message}</p>
-          )}
-        </div>
+        </FormField>
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="route-enabled">Status</Label>
+      <FormField label="Status" htmlFor="route-enabled">
         <Controller
           control={control}
           name="enabled"
@@ -88,10 +84,13 @@ export function RouteForm({
             </Select>
           )}
         />
-      </div>
+      </FormField>
 
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="route-provider">Provider</Label>
+      <FormField
+        label="Provider"
+        htmlFor="route-provider"
+        error={formState.errors.providerId?.message}
+      >
         <Controller
           control={control}
           name="providerId"
@@ -110,10 +109,7 @@ export function RouteForm({
             </Select>
           )}
         />
-        {formState.errors.providerId != null && (
-          <p className="text-caption text-state-danger-fg">{formState.errors.providerId.message}</p>
-        )}
-      </div>
+      </FormField>
 
       <p className="text-caption text-muted-foreground">
         Match predicates below — each left as "any" matches every candidate for that field (§6.3:
@@ -121,8 +117,7 @@ export function RouteForm({
       </p>
 
       <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="route-match-operator">Operator</Label>
+        <FormField label="Operator" htmlFor="route-match-operator">
           <Controller
             control={control}
             name="matchOperator"
@@ -142,9 +137,8 @@ export function RouteForm({
               </Select>
             )}
           />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="route-match-class">Message class</Label>
+        </FormField>
+        <FormField label="Message class" htmlFor="route-match-class">
           <Controller
             control={control}
             name="matchClass"
@@ -164,24 +158,20 @@ export function RouteForm({
               </Select>
             )}
           />
-        </div>
+        </FormField>
       </div>
 
       <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="route-match-app-id">App id</Label>
+        <FormField label="App id" htmlFor="route-match-app-id">
           <Input id="route-match-app-id" placeholder="any" {...register("matchAppId")} />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="route-match-prefix">National prefix</Label>
+        </FormField>
+        <FormField label="National prefix" htmlFor="route-match-prefix">
           <Input id="route-match-prefix" placeholder="e.g. 677" {...register("matchPrefix")} />
-        </div>
+        </FormField>
       </div>
 
       {saveErrorMessage != null && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          Save failed: {saveErrorMessage}
-        </div>
+        <InlineBanner variant="danger">Save failed: {saveErrorMessage}</InlineBanner>
       )}
     </form>
   );

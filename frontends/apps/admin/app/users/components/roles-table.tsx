@@ -28,8 +28,8 @@ export function RolesTable({
         <TableRow>
           <TableHead>Key</TableHead>
           <TableHead>Label</TableHead>
-          <TableHead className="hidden sm:table-cell">Built-in</TableHead>
-          <TableHead className="hidden md:table-cell">Permissions</TableHead>
+          <TableHead hideBelow="sm">Built-in</TableHead>
+          <TableHead hideBelow="md">Permissions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -51,10 +51,10 @@ export function RolesTable({
           <TableRow key={role.id} className="cursor-pointer" onClick={() => onRowClick(role)}>
             <TableCell mono>{role.key}</TableCell>
             <TableCell>{role.label}</TableCell>
-            <TableCell className="hidden sm:table-cell">
+            <TableCell hideBelow="sm">
               {role.builtin ? <Badge variant="outline">built-in</Badge> : "no"}
             </TableCell>
-            <TableCell className="hidden max-w-[420px] truncate text-caption md:table-cell">
+            <TableCell hideBelow="md" className="max-w-[420px] truncate text-caption">
               {role.permissions.trim()}
             </TableCell>
           </TableRow>
