@@ -40,6 +40,32 @@ export const env = createEnv({
     // less real keyspace than the cookie's own encryption implies.
     SMS_CONSOLE_SESSION_SECRET: z.string().min(32),
     MESSAGE_STREAM_POLL_MS: z.coerce.number().int().min(500).default(2000),
+    // R6 (AGENTS.md): a tuning value, same shape as `MESSAGE_STREAM_POLL_MS`
+    // above — one place, validated at boot, instead of a `REFETCH_INTERVAL_MS
+    // = 5000` const copy-pasted per screen. This is the Jobs (#56), Workers
+    // (#57), and Webhooks (#55) screens' shared diagnostics-poll cadence —
+    // the R6 sweep landed the Webhooks screen with its own second env var
+    // carrying this identical 5000ms value under a different name; the two
+    // were reconciled onto this one entry (R6-reconcile) per this comment's
+    // own original anticipation of exactly that convergence.
+    // `dashboard-screen.tsx`'s 15_000ms is a materially different cadence
+    // (an overview, not a diagnostics table) and deliberately gets no entry
+    // here — it needs its own, sized for what it actually polls.
+    DIAGNOSTICS_POLL_MS: z.coerce.number().int().min(500).default(5000),
+    // R6 (Administration group, `audit-log-screen.tsx`): a page size is an
+    // operational tuning value, not a protocol constant — the same test
+    // `MESSAGE_STREAM_POLL_MS` already sets a precedent for. Read
+    // server-side in `audit-log/page.tsx` and handed down as a prop, the
+    // identical shape that file already uses.
+    AUDIT_LOG_PAGE_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+    // Dashboard screen (#49). Same "operational tuning value, not
+    // protocol/security" reasoning AGENTS.md's R6 already gives for
+    // `MESSAGE_STREAM_POLL_MS` — a hoisted `REFETCH_INTERVAL_MS` in the
+    // screen file itself was the R6 violation; this is the fix, not a
+    // shared constant, since the dashboard's own 15_000ms overview cadence
+    // is materially different from `DIAGNOSTICS_POLL_MS`'s diagnostics-table
+    // cadence above, not merely a fourth independent copy of the same value.
+    DASHBOARD_REFETCH_INTERVAL_MS: z.coerce.number().int().min(1000).default(15_000),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   client: {
@@ -59,6 +85,9 @@ export const env = createEnv({
     SMS_CONSOLE_OIDC_CLIENT_ID: process.env.SMS_CONSOLE_OIDC_CLIENT_ID,
     SMS_CONSOLE_SESSION_SECRET: process.env.SMS_CONSOLE_SESSION_SECRET,
     MESSAGE_STREAM_POLL_MS: process.env.MESSAGE_STREAM_POLL_MS,
+    DIAGNOSTICS_POLL_MS: process.env.DIAGNOSTICS_POLL_MS,
+    AUDIT_LOG_PAGE_SIZE: process.env.AUDIT_LOG_PAGE_SIZE,
+    DASHBOARD_REFETCH_INTERVAL_MS: process.env.DASHBOARD_REFETCH_INTERVAL_MS,
     NODE_ENV: process.env.NODE_ENV,
     // Client
     NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,

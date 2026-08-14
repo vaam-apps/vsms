@@ -409,3 +409,15 @@ export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = {
 export function isTerminalAttemptState(state: AttemptState): boolean {
   return ATTEMPT_STATUS_META[state].family === "terminal";
 }
+
+/**
+ * `Message.class`'s four values (`schema.cstack`'s `MessageClass` enum),
+ * verbatim. Hoisted here (R6, AGENTS.md) because it was duplicated
+ * byte-for-byte in three screens independently (`app/page.tsx`'s composer,
+ * `app/simulator/simulator-screen.tsx`, `app/routes/routes-screen.tsx`) —
+ * the domain vocabulary belongs beside the rest of the status/domain
+ * tables in this file, not copy-pasted per screen.
+ */
+export const MESSAGE_CLASSES = ["otp", "transactional", "notification", "marketing"] as const;
+
+export type MessageClass = (typeof MESSAGE_CLASSES)[number];

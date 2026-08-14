@@ -40,27 +40,28 @@
 // console's own machine credential's app can appear in the initial list,
 // but will never receive a live state-change update from the stream — it
 // sits on screen until the next full refetch. Accepted, not silently
-// shipped: the banner below states the list's own scope so an operator
-// doesn't misread a frozen out-of-scope row as a bug, and #211's own PR
-// description names this as a known, deliberate consequence of keeping
-// the stream on the machine credential rather than a defect.
+// shipped: `CrossAppScopeBanner` states the list's own scope so an
+// operator doesn't misread a frozen out-of-scope row as a bug.
 //
 // # Live reconciliation, briefly
 //
-// `rows` holds what's on screen, seeded fresh from `messages.list`
-// whenever the query key (i.e. the filters) changes. `messages.
-// onStateChange` is polled continuously (its own bounded long-poll on the
-// server keeps each individual call short) and DELIBERATELY subscribes to
-// **every** state, not just whatever this screen's own state filter
-// currently shows — narrowing it would mean a message transitioning OUT
-// of the filtered state (e.g. `queued` → `routed` while filtered to
-// `queued`) would never arrive, and the row would sit frozen on screen
-// showing a state it no longer has. Filtering happens here, in
-// `applyEvent`, against the *current* filter, on every incoming event.
+// `state.rows` (below) holds what's on screen, seeded fresh from
+// `messages.list` whenever the query key (i.e. the filters) changes.
+// `messages.onStateChange` is polled continuously (its own bounded
+// long-poll on the server keeps each individual call short) and
+// DELIBERATELY subscribes to **every** state, not just whatever this
+// screen's own state filter currently shows — narrowing it would mean a
+// message transitioning OUT of the filtered state (e.g. `queued` →
+// `routed` while filtered to `queued`) would never arrive, and the row
+// would sit frozen on screen showing a state it no longer has. Filtering
+// happens in `apply-event.ts`'s `applyEvent`, against the *current*
+// filter, on every incoming event.
 //
-// Design doc §6.5's live-list rules, as implemented:
+// Design doc §6.5's live-list rules, as implemented — the merge mechanics
+// themselves live in `apply-event.ts` (extracted, tested there per R6);
+// this file only wires them up:
 // 1. The list never auto-scrolls — inserting a buffered row scrolls
-//    `window` explicitly, only on a click.
+//    `window` explicitly, only on a click (`insertPending` below).
 // 2. At scroll-top (`window.scrollY <= 8`), new rows insert directly with
 //    a wash; scrolled away, they buffer behind the "N new" pill.
 // 3. In-place status change never moves a row — `applyEvent` always
@@ -69,158 +70,28 @@
 //    row, so this is always safe (this screen offers no status-sort
 //    control, so rule 3's "switch to fully-buffered mode" branch doesn't
 //    apply here).
-// 6. Row identity is the message id — `key={row.id}` throughout, `LiveRow`
-//    itself requires a stable identity to wash correctly.
-// 8. Connection loss is visible — a `degraded` frame flips an inline bar
+// 6. Row identity is the message id — `key={row.id}` throughout
+//    (`MessagesTable`), `LiveRow` itself requires a stable identity to
+//    wash correctly.
+// 8. Connection loss is visible — a `degraded` frame flips `DegradedBanner`
 //    on; a `recovered` frame flips it off.
 
-import type { inferRouterOutputs } from "@trpc/server";
-// Type-only — see this file's own note below. `admin` already depends on
-// `@vsms/api` for its route handler
-// (`app/api/trpc/[trpc]/route.ts`); this is a second, purely type-level
-// use of that same dependency, erased at build time
-// (`verbatimModuleSyntax`), not a new runtime import of the server router.
-import type { AppRouter } from "@vsms/api";
 import { trpc } from "@vsms/hooks";
-import {
-  Button,
-  IdDisplay,
-  InlineEmptyState,
-  Input,
-  Label,
-  LiveRow,
-  MESSAGE_STATES,
-  MESSAGE_STATUS_META,
-  type MessageState,
-  MsisdnDisplay,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Skeleton,
-  StatusPill,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-  TimestampDisplay,
-} from "@vsms/ui";
+import { MESSAGE_STATES, type MessageState } from "@vsms/ui";
 import { parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
-import { useEffect, useMemo, useRef, useState } from "react";
-
-// --- Types mirroring the tRPC procedures' own inferred shapes. ----------
-// (Not imported from `@vsms/gateway` directly — this component only ever
-// needs what the router itself infers, via `@trpc/server`'s
-// `inferRouterOutputs`, type-only throughout.)
-
-type RouterOutputs = inferRouterOutputs<AppRouter>;
-type MessageListItem = RouterOutputs["messages"]["list"]["items"][number];
-type StreamFrame = RouterOutputs["messages"]["onStateChange"]["frames"][number];
-
-const STATE_LABELS: Record<MessageState, string> = Object.fromEntries(
-  MESSAGE_STATES.map((state) => [state, MESSAGE_STATUS_META[state].label]),
-) as Record<MessageState, string>;
-
-function todayIsoDate(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function daysAgoIsoDate(days: number): string {
-  const date = new Date();
-  date.setUTCDate(date.getUTCDate() - days);
-  return date.toISOString().slice(0, 10);
-}
-
-/** `to` in `messages.list`'s input is exclusive (`@vsms/gateway/
- * messages.ts`'s own doc) — a date-only picker selecting "2026-08-08"
- * should include the whole day, so this steps one day past it. */
-function nextDayIso(dateOnly: string): string {
-  const date = new Date(`${dateOnly}T00:00:00.000Z`);
-  date.setUTCDate(date.getUTCDate() + 1);
-  return date.toISOString();
-}
-
-interface ReconcileState {
-  rows: MessageListItem[];
-  pending: MessageListItem[];
-}
-
-/** Merges one live state-change event into the current view — see this
- * file's own module doc for the reconciliation rules. `null` `stateFilter`
- * means "no state filter active," matching every event. */
-function applyEvent(
-  prev: ReconcileState,
-  event: Extract<StreamFrame, { type: "message" }>,
-  stateFilter: MessageState | null,
-  scrolledAway: boolean,
-): ReconcileState {
-  const matchesFilter = stateFilter === null || event.state === stateFilter;
-  const inRows = prev.rows.some((row) => row.id === event.id);
-  const inPending = prev.pending.some((row) => row.id === event.id);
-
-  function merge(row: MessageListItem): MessageListItem {
-    return {
-      ...row,
-      state: event.state,
-      stateReason: event.stateReason ?? undefined,
-      providerMessageRef: event.providerMessageRef ?? undefined,
-      version: event.version,
-      updatedAt: event.occurredAt,
-    };
-  }
-
-  if (!matchesFilter) {
-    // No longer belongs in this filtered view — drop it if it was here.
-    if (!inRows && !inPending) return prev;
-    return {
-      rows: prev.rows.filter((row) => row.id !== event.id),
-      pending: prev.pending.filter((row) => row.id !== event.id),
-    };
-  }
-
-  if (inRows) {
-    return { ...prev, rows: prev.rows.map((row) => (row.id === event.id ? merge(row) : row)) };
-  }
-  if (inPending) {
-    return {
-      ...prev,
-      pending: prev.pending.map((row) => (row.id === event.id ? merge(row) : row)),
-    };
-  }
-
-  // A genuinely new row for this view. `MessageListItem` doesn't carry
-  // every field a stream event lacks (msisdn, clientRef, senderIdValue,
-  // encoding) — those are populated as best-effort empty/placeholder
-  // values until the next full `messages.list` refetch (a filter change)
-  // fills them in properly. `createdAt` is approximated from the event's
-  // own timestamp since the stream doesn't carry it either; harmless here
-  // because the default sort is insertion-order (new rows always join at
-  // the top), never re-derived from this value.
-  const placeholder: MessageListItem = {
-    id: event.id,
-    appId: event.appId,
-    msisdn: "",
-    operator: event.operator,
-    senderIdValue: "",
-    class: "transactional",
-    state: event.state,
-    stateReason: event.stateReason ?? undefined,
-    encoding: "gsm7",
-    segments: event.segments,
-    providerMessageRef: event.providerMessageRef ?? undefined,
-    version: event.version,
-    createdAt: event.occurredAt,
-    updatedAt: event.occurredAt,
-  };
-
-  if (scrolledAway) {
-    return { ...prev, pending: [placeholder, ...prev.pending] };
-  }
-  return { ...prev, rows: [placeholder, ...prev.rows] };
-}
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { CrossAppScopeBanner } from "./components/cross-app-scope-banner";
+import { DegradedBanner } from "./components/degraded-banner";
+import { ListErrorBanner } from "./components/list-error-banner";
+import { MessagesFilters } from "./components/messages-filters";
+import { MessagesHeader } from "./components/messages-header";
+import { MessagesLayout } from "./components/messages-layout";
+import { MessagesListPanel } from "./components/messages-list-panel";
+import { MessagesTable } from "./components/messages-table";
+import { PendingMessagesPill } from "./components/pending-messages-pill";
+import { TruncatedNotice } from "./components/truncated-notice";
+import { daysAgoIsoDate, nextDayIso, todayIsoDate } from "./date-range";
+import { INITIAL_RECONCILE_STATE, reconcileReducer } from "./reconcile-reducer";
 
 export interface MessagesScreenProps {
   /** `MESSAGE_STREAM_POLL_MS`, read server-side (`page.tsx`) so the
@@ -255,38 +126,39 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
   const listQuery = trpc.messages.list.useQuery(listInput);
   const utils = trpc.useUtils();
 
-  const [rows, setRows] = useState<MessageListItem[]>([]);
-  const [pending, setPending] = useState<MessageListItem[]>([]);
+  const [state, dispatch] = useReducer(reconcileReducer, INITIAL_RECONCILE_STATE);
+  // `degraded` toggles a banner, so it has to trigger a render — none of
+  // the usual `useState` replacements fit it (it's neither URL state, nor
+  // server data from a query, nor form state, nor several values changing
+  // together), so it stays `useState` deliberately, the one case R6 itself
+  // carves out an exception for.
   const [degraded, setDegraded] = useState(false);
-  const [scrolledAway, setScrolledAway] = useState(false);
 
   // Read inside the stream-reconciliation effect below via `.current`
   // rather than as effect dependencies — that effect must run exactly
-  // once per incoming batch of stream frames (`streamQuery.data`
-  // changing), never re-run just because scroll position or the pending
-  // buffer changed in between, while still always seeing their *current*
-  // value rather than a stale one captured at the last time the effect
-  // itself re-ran. Kept in sync on every render (no effect needed for a
-  // synchronous ref assignment).
-  const pendingRef = useRef(pending);
-  pendingRef.current = pending;
+  // once per incoming batch of stream frames (`messages.onStateChange`
+  // resolving), never re-run just because the filter or scroll position
+  // changed in between, while still always seeing their *current* value
+  // rather than a stale one captured at the last time the effect itself
+  // re-ran.
   const stateFilterRef = useRef(filters.state);
   stateFilterRef.current = filters.state;
-  const scrolledAwayRef = useRef(scrolledAway);
-  scrolledAwayRef.current = scrolledAway;
+  // Never read by JSX — only by the imperative loop below — so this is a
+  // plain ref, not `useState`: a scroll event that only updates a ref must
+  // not trigger a render.
+  const scrolledAwayRef = useRef(false);
 
   // Seed (or reseed, on a filter change) fresh from the authoritative list
   // fetch. Live events layer on top from here.
   useEffect(() => {
     if (listQuery.data !== undefined) {
-      setRows(listQuery.data.items);
-      setPending([]);
+      dispatch({ type: "reset", items: listQuery.data.items });
     }
   }, [listQuery.data]);
 
   useEffect(() => {
     function onScroll() {
-      setScrolledAway(window.scrollY > 8);
+      scrolledAwayRef.current = window.scrollY > 8;
     }
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
@@ -296,18 +168,18 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
   // `useQuery({ refetchInterval })`. Each call is already a bounded
   // server-side long-poll (up to `pollMs`) — chaining `refetchInterval`
   // on top of that ties the poll loop's liveness to React Query's observer
-  // lifecycle (which this component's own frequent re-renders, from
-  // `setRows`/`setPending`/`setDegraded`, churn constantly), and that
-  // combination was found live to stall the loop after its first one or
-  // two calls rather than continuing indefinitely — every individual
-  // request still resolved correctly (confirmed with a raw `fetch()` and
-  // by calling the procedure directly), but no *further* request was ever
-  // issued. `utils.client.messages.onStateChange.query(...)` is the raw
-  // vanilla client: a plain imperative call with no cache subscription and
-  // nothing tying its next invocation to a render. This self-schedules its
-  // own next call only after the current one settles, which is exactly
-  // "one poll in flight at a time" without depending on React Query's own
-  // scheduler to get that right for a long-poll shaped procedure.
+  // lifecycle (which this component's own frequent re-renders churn
+  // constantly), and that combination was found live to stall the loop
+  // after its first one or two calls rather than continuing indefinitely
+  // — every individual request still resolved correctly (confirmed with a
+  // raw `fetch()` and by calling the procedure directly), but no *further*
+  // request was ever issued. `utils.client.messages.onStateChange.query(...)`
+  // is the raw vanilla client: a plain imperative call with no cache
+  // subscription and nothing tying its next invocation to a render. This
+  // self-schedules its own next call only after the current one settles,
+  // which is exactly "one poll in flight at a time" without depending on
+  // React Query's own scheduler to get that right for a long-poll shaped
+  // procedure.
   //
   // Mount-once by design (`trpc.useUtils()` is stable across renders): the
   // loop reads current filter/scroll state via the refs above, not via
@@ -325,20 +197,14 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
           for (const frame of result.frames) {
             if (frame.type === "degraded") setDegraded(true);
             else if (frame.type === "recovered") setDegraded(false);
-          }
-
-          const messageEvents = result.frames.filter(
-            (frame): frame is Extract<StreamFrame, { type: "message" }> => frame.type === "message",
-          );
-          if (messageEvents.length > 0) {
-            setRows((prevRows) => {
-              let state: ReconcileState = { rows: prevRows, pending: pendingRef.current };
-              for (const event of messageEvents) {
-                state = applyEvent(state, event, stateFilterRef.current, scrolledAwayRef.current);
-              }
-              if (state.pending !== pendingRef.current) setPending(state.pending);
-              return state.rows;
-            });
+            else if (frame.type === "message") {
+              dispatch({
+                type: "event",
+                event: frame,
+                stateFilter: stateFilterRef.current,
+                scrolledAway: scrolledAwayRef.current,
+              });
+            }
           }
         } catch {
           // A failure reaching this console's OWN Next.js server (not
@@ -359,8 +225,7 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
   }, []);
 
   function insertPending() {
-    setRows((prev) => [...pending, ...prev]);
-    setPending([]);
+    dispatch({ type: "insertPending" });
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -375,259 +240,39 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
     filters.to !== null;
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1 border-edge border-b pb-6">
-        <h1 className="font-medium text-foreground text-title">Messages</h1>
-        <p className="max-w-xl text-body text-muted-foreground">
-          Live status of every message this app has sent — polled every ~{Math.round(pollMs / 1000)}
-          s, not pushed. New rows while you're scrolled down buffer behind a pill rather than
-          jumping the list.
-        </p>
-      </header>
+    <MessagesLayout>
+      <MessagesHeader pollMs={pollMs} />
+      <CrossAppScopeBanner />
+      {degraded && <DegradedBanner />}
+      {listQuery.isError && <ListErrorBanner message={listQuery.error.message} />}
 
-      <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-        This list spans <span className="font-mono text-foreground">every app</span> in this
-        deployment — you're reading it as yourself, not as a single app's service account. Live
-        updates are narrower: they only arrive for this console's own app, so a row belonging to
-        another app won't update on screen until you refresh. Not a filter and not a bug; see this
-        file's own module doc.
-      </div>
+      <MessagesFilters
+        state={filters.state}
+        clientRef={filters.clientRef ?? ""}
+        from={filters.from ?? ""}
+        to={filters.to ?? ""}
+        hasFilters={hasFilters}
+        onStateChange={(next) => void setFilters({ state: next })}
+        onClientRefChange={(value) => void setFilters({ clientRef: value === "" ? null : value })}
+        onFromChange={(value) => void setFilters({ from: value === "" ? null : value })}
+        onToChange={(value) => void setFilters({ to: value === "" ? null : value })}
+        onSelectToday={() => void setFilters({ from: todayIsoDate(), to: todayIsoDate() })}
+        onSelectLast7Days={() => void setFilters({ from: daysAgoIsoDate(7), to: todayIsoDate() })}
+        onSelectLast30Days={() => void setFilters({ from: daysAgoIsoDate(30), to: todayIsoDate() })}
+        onClear={clearFilters}
+      />
 
-      {degraded && (
-        <div className="rounded-sm border border-state-uncertain-border bg-state-uncertain-bg px-3 py-2 text-caption text-state-uncertain-fg">
-          Live updates paused — reconnecting.
-        </div>
-      )}
+      {listQuery.data?.truncated && <TruncatedNotice />}
 
-      {listQuery.isError && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          Couldn't load messages: {listQuery.error.message}
-        </div>
-      )}
-
-      <div className="flex flex-col flex-wrap gap-4 sm:flex-row sm:items-end">
-        <div className="flex flex-col gap-1.5 sm:w-[180px]">
-          <Label htmlFor="filter-state">State</Label>
-          <Select
-            value={filters.state ?? "__all"}
-            onValueChange={(value) =>
-              void setFilters({ state: value === "__all" ? null : (value as MessageState) })
-            }
-          >
-            <SelectTrigger id="filter-state">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all">All states</SelectItem>
-              {MESSAGE_STATES.map((state) => (
-                <SelectItem key={state} value={state}>
-                  {STATE_LABELS[state]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-
-        <div className="flex flex-col gap-1.5 sm:w-[200px]">
-          <Label htmlFor="filter-client-ref">Client reference</Label>
-          <Input
-            id="filter-client-ref"
-            placeholder="exact match"
-            value={filters.clientRef ?? ""}
-            onChange={(e) =>
-              void setFilters({ clientRef: e.target.value === "" ? null : e.target.value })
-            }
-          />
-        </div>
-
-        <div className="flex gap-4">
-          <div className="flex flex-1 flex-col gap-1.5 sm:w-[160px] sm:flex-none">
-            <Label htmlFor="filter-from">From</Label>
-            <Input
-              id="filter-from"
-              type="date"
-              value={filters.from ?? ""}
-              max={filters.to ?? undefined}
-              onChange={(e) =>
-                void setFilters({ from: e.target.value === "" ? null : e.target.value })
-              }
-            />
-          </div>
-          <div className="flex flex-1 flex-col gap-1.5 sm:w-[160px] sm:flex-none">
-            <Label htmlFor="filter-to">To</Label>
-            <Input
-              id="filter-to"
-              type="date"
-              value={filters.to ?? ""}
-              min={filters.from ?? undefined}
-              onChange={(e) =>
-                void setFilters({ to: e.target.value === "" ? null : e.target.value })
-              }
-            />
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2 sm:pb-0.5">
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => void setFilters({ from: todayIsoDate(), to: todayIsoDate() })}
-          >
-            Today
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => void setFilters({ from: daysAgoIsoDate(7), to: todayIsoDate() })}
-          >
-            Last 7 days
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            onClick={() => void setFilters({ from: daysAgoIsoDate(30), to: todayIsoDate() })}
-          >
-            Last 30 days
-          </Button>
-          {hasFilters && (
-            <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
-              Clear filters
-            </Button>
-          )}
-        </div>
-      </div>
-
-      {listQuery.data?.truncated && (
-        <p className="text-caption text-subtle-foreground">
-          Showing the most recent 1000 messages for this app — sms-api's `GET /messages` has no
-          server-side filter for state or date range (see `@vsms/gateway/messages.ts`'s module doc),
-          so filtering happens over that window. Older matches outside it won't appear.
-        </p>
-      )}
-
-      <div className="relative">
-        {pending.length > 0 && (
-          <div className="-translate-x-1/2 sticky top-2 left-1/2 z-20 flex w-fit justify-center">
-            <button
-              type="button"
-              onClick={insertPending}
-              className="rounded-full border border-edge bg-surface-2 px-3 py-1 text-caption text-foreground shadow-[var(--shadow-popover)] duration-[var(--dur-enter)] ease-out"
-            >
-              {pending.length} new message{pending.length === 1 ? "" : "s"}
-            </button>
-          </div>
-        )}
-
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Status</TableHead>
-              <TableHead>Recipient</TableHead>
-              <TableHead className="hidden md:table-cell">Client ref</TableHead>
-              <TableHead className="hidden sm:table-cell">Sender</TableHead>
-              <TableHead className="hidden lg:table-cell">Encoding</TableHead>
-              <TableHead>Id</TableHead>
-              <TableHead align="end">Time</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {listQuery.isLoading &&
-              Array.from({ length: 8 }).map((_, i) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton rows, never reordered or diffed
-                <TableRow key={i}>
-                  <TableCell colSpan={7}>
-                    <Skeleton className="h-4 w-full" />
-                  </TableCell>
-                </TableRow>
-              ))}
-
-            {!listQuery.isLoading && rows.length === 0 && (
-              <tr>
-                <td colSpan={7}>
-                  <InlineEmptyState
-                    message={
-                      hasFilters
-                        ? "No messages match the current filters."
-                        : "No messages yet for this app."
-                    }
-                    {...(hasFilters
-                      ? { action: { label: "Clear filters", onClick: clearFilters } }
-                      : {})}
-                  />
-                </td>
-              </tr>
-            )}
-
-            {rows.map((row) => (
-              <LiveRow
-                key={row.id}
-                washTrigger={row.version}
-                washHue={MESSAGE_STATUS_META[row.state].hue}
-              >
-                <TableCell>
-                  <StatusPill state={row.state} />
-                </TableCell>
-                <TableCell>
-                  <MsisdnDisplay value={row.msisdn} operator={row.operator} />
-                  {/* Below `md`, the Client ref/Sender/Encoding columns are
-                   * hidden outright rather than horizontally scrolled to —
-                   * this compact line keeps that same information reachable
-                   * at a glance instead of losing it, matching the brief's
-                   * "dense tables that work on a phone" over a bare
-                   * scroll-and-hope. Hidden again once those columns return
-                   * at `md`, so nothing renders twice. */}
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] text-subtle-foreground md:hidden">
-                    <span>{row.senderIdValue}</span>
-                    <span aria-hidden="true">·</span>
-                    <span>
-                      {row.encoding.toUpperCase()} {row.segments}
-                    </span>
-                    {row.clientRef != null && row.clientRef !== "" && (
-                      <>
-                        <span aria-hidden="true">·</span>
-                        <span className="max-w-[160px] truncate">{row.clientRef}</span>
-                      </>
-                    )}
-                  </div>
-                </TableCell>
-                <TableCell className="hidden md:table-cell" mono>
-                  {row.clientRef ?? "—"}
-                </TableCell>
-                <TableCell className="hidden sm:table-cell" mono>
-                  {row.senderIdValue}
-                </TableCell>
-                <TableCell className="hidden lg:table-cell" mono>
-                  {row.encoding.toUpperCase()} · {row.segments}
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-2">
-                    <IdDisplay value={row.id} />
-                    {/* #50: the detail route. A plain `<a>`, matching the
-                     * rest of this console's internal navigation — not
-                     * `next/link`'s `Link`. Separate from `IdDisplay` itself
-                     * rather than wrapping it: `IdDisplay`'s own copy
-                     * button doesn't stop propagation, so wrapping it in
-                     * an `<a>` would fire a navigation on every copy
-                     * click. */}
-                    <a
-                      href={`/messages/${row.id}`}
-                      className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-                    >
-                      View
-                    </a>
-                  </div>
-                </TableCell>
-                <TableCell align="end">
-                  <TimestampDisplay value={row.createdAt} />
-                </TableCell>
-              </LiveRow>
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-    </div>
+      <MessagesListPanel>
+        <PendingMessagesPill count={state.pending.length} onClick={insertPending} />
+        <MessagesTable
+          rows={state.rows}
+          isLoading={listQuery.isLoading}
+          hasFilters={hasFilters}
+          onClearFilters={clearFilters}
+        />
+      </MessagesListPanel>
+    </MessagesLayout>
   );
 }

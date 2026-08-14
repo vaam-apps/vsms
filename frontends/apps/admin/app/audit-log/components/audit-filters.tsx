@@ -1,0 +1,111 @@
+// Dumb view: the audit log's filter row. Receives the current filter
+// values and change callbacks; owns none of the `nuqs` URL-state wiring
+// itself.
+
+import {
+  Button,
+  Input,
+  Label,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@vsms/ui";
+import { type AuditOperation, OPERATIONS } from "../types";
+
+export function AuditFilters({
+  model,
+  operation,
+  actorId,
+  since,
+  until,
+  hasFilters,
+  onModelChange,
+  onOperationChange,
+  onActorIdChange,
+  onSinceChange,
+  onUntilChange,
+  onClear,
+}: {
+  model: string;
+  operation: AuditOperation | null;
+  actorId: string;
+  since: string;
+  until: string;
+  hasFilters: boolean;
+  onModelChange: (value: string) => void;
+  onOperationChange: (value: AuditOperation | null) => void;
+  onActorIdChange: (value: string) => void;
+  onSinceChange: (value: string) => void;
+  onUntilChange: (value: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="audit-filter-model">Model</Label>
+        <Input
+          id="audit-filter-model"
+          placeholder="App, User, Provider…"
+          value={model}
+          onChange={(e) => onModelChange(e.target.value)}
+          className="w-44"
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="audit-filter-operation">Operation</Label>
+        <Select
+          value={operation ?? "any"}
+          onValueChange={(value) =>
+            onOperationChange(value === "any" ? null : (value as AuditOperation))
+          }
+        >
+          <SelectTrigger id="audit-filter-operation" className="w-36">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Any</SelectItem>
+            {OPERATIONS.map((op) => (
+              <SelectItem key={op} value={op}>
+                {op}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="audit-filter-actor">Actor id</Label>
+        <Input
+          id="audit-filter-actor"
+          value={actorId}
+          onChange={(e) => onActorIdChange(e.target.value)}
+          className="w-44"
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="audit-filter-since">Since</Label>
+        <Input
+          id="audit-filter-since"
+          type="date"
+          value={since}
+          onChange={(e) => onSinceChange(e.target.value)}
+        />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="audit-filter-until">Until</Label>
+        <Input
+          id="audit-filter-until"
+          type="date"
+          value={until}
+          onChange={(e) => onUntilChange(e.target.value)}
+        />
+      </div>
+      {hasFilters && (
+        <Button type="button" variant="ghost" size="sm" onClick={onClear}>
+          Clear filters
+        </Button>
+      )}
+    </div>
+  );
+}

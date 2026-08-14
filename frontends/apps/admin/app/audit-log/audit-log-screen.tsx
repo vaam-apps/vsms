@@ -38,186 +38,70 @@
 // says so rather than leaving "why is there no edit button" to be
 // inferred, and the row drawer below is read-only for the identical
 // reason — a peek at evidence, never an editor for it.
+//
+// # R6 — layer split, and one fix made while doing it
+//
+// All markup and classes now live in `./components/*`; this file is data
+// fetching, URL state, and derived values only. One real bug fixed along
+// the way, not just moved: the previous version held the *entire* selected
+// `AuditLogEntry` object in local `useState` — exactly the `detailRow`
+// anti-pattern R6 names explicitly ("a copy of a server object... a second
+// source of truth"). It only avoided a stale-fallback expression because
+// audit entries are immutable, but it was still two sources of truth for
+// the same row. Fixed by keeping only the row's own `eventId` in state and
+// deriving the entry from `listQuery.data` — the same "id in, look it up"
+// shape R6 recommends for the URL-state case, applied here to plain local
+// state since this particular drawer deliberately isn't URL-backed (see
+// the note above). The row stays resolvable because it can only ever be
+// selected from the page that's currently loaded.
+//
+// `LIMIT` (the page size) moved to `@vsms/env`'s `AUDIT_LOG_PAGE_SIZE` —
+// an operational tuning value, not a protocol constant, the same test
+// `MESSAGE_STREAM_POLL_MS` already sets a precedent for — read server-side
+// in `page.tsx` and passed down as `pageSize`.
 
-import type { inferRouterOutputs } from "@trpc/server";
-import type { AppRouter } from "@vsms/api";
 import { trpc } from "@vsms/hooks";
-import {
-  Button,
-  InlineEmptyState,
-  Input,
-  Label,
-  QuickDetailDrawer,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Skeleton,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-  TimestampDisplay,
-} from "@vsms/ui";
 import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
 import { useEffect, useState } from "react";
-
-type RouterOutputs = inferRouterOutputs<AppRouter>;
-type AuditLogEntry = RouterOutputs["auditLog"]["list"]["entries"][number];
-
-const OPERATIONS = ["create", "update", "delete"] as const;
-const LIMIT = 50;
+import { AuditEntryDrawer } from "./components/audit-entry-drawer";
+import { AuditFilters } from "./components/audit-filters";
+import { AuditLogHeader } from "./components/audit-log-header";
+import { AuditLogLayout } from "./components/audit-log-layout";
+import { AuditLogPagination } from "./components/audit-log-pagination";
+import { AuditLogTable } from "./components/audit-log-table";
+import { ChainStatusPanel, type ChainStatusPanelProps } from "./components/chain-status-panel";
+import { type AuditOperation, OPERATIONS } from "./types";
 
 function ChainStatusBanner() {
   const statusQuery = trpc.auditLog.chainStatus.useQuery();
 
+  let props: ChainStatusPanelProps;
   if (statusQuery.isLoading) {
-    return <Skeleton className="h-10 w-full" />;
-  }
-  if (statusQuery.isError) {
-    return (
-      <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-        Could not read the audit chain status: {statusQuery.error.message}
-      </div>
-    );
-  }
-  const status = statusQuery.data;
-  if (status === undefined) return null;
-
-  if (status.latestAnchorId === undefined) {
-    return (
-      <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-        No audit anchor has been written yet — the <span className="font-mono">anchor_audit</span>{" "}
-        job (§7.5) runs hourly once a worker with the <span className="font-mono">jobs</span> role
-        is up.
-      </div>
-    );
+    props = { kind: "loading" };
+  } else if (statusQuery.isError) {
+    props = { kind: "error", message: statusQuery.error.message };
+  } else if (statusQuery.data === undefined || statusQuery.data.latestAnchorId === undefined) {
+    props = { kind: "no-anchor" };
+  } else {
+    const status = statusQuery.data;
+    const broken = status.linkageBreaks.length > 0 || status.latestContentVerified === false;
+    props = broken
+      ? {
+          kind: "broken",
+          linkageBreakCount: status.linkageBreaks.length,
+          contentVerified: status.latestContentVerified,
+        }
+      : { kind: "ok", rowCount: status.latestRowCount ?? 0, periodEnd: status.latestPeriodEnd };
   }
 
-  const broken = status.linkageBreaks.length > 0 || status.latestContentVerified === false;
-
-  return (
-    <div
-      className={
-        broken
-          ? "rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg"
-          : "rounded-sm border border-state-success-border bg-state-success-bg px-3 py-2 text-caption text-state-success-fg"
-      }
-    >
-      {broken ? (
-        <>
-          Chain verification found a problem — possible tampering.{" "}
-          {status.linkageBreaks.length > 0 && <>{status.linkageBreaks.length} linkage break(s). </>}
-          {status.latestContentVerified === false && (
-            <>The latest anchor's own content no longer matches.</>
-          )}
-        </>
-      ) : (
-        <>
-          The audit chain verifies. Latest anchor covers {status.latestRowCount ?? 0} row(s) through{" "}
-          {status.latestPeriodEnd !== undefined && (
-            <TimestampDisplay value={status.latestPeriodEnd} />
-          )}
-          .
-        </>
-      )}
-      <span className="ml-2 text-micro text-subtle-foreground">
-        (Cannot detect deletion of the single newest anchor before anything else references it — see
-        OPEN_QUESTIONS.md §3.3.)
-      </span>
-    </div>
-  );
+  return <ChainStatusPanel {...props} />;
 }
 
-/** Every entry's `primaryKey`/`actor`/`before`/`after` is JSON-encoded
- * text, not parsed further by `@vsms/gateway` (that module's own doc: "the
- * same convention `Provider.config`/`Route.config` already use for a
- * JSON-shaped `String` column"). Pretty-prints when it parses; falls back
- * to the raw string otherwise rather than hiding a value this screen can't
- * make sense of — an audit trail should never quietly drop something it
- * couldn't format. */
-function prettyJson(raw: string | undefined): string | undefined {
-  if (raw === undefined) return undefined;
-  try {
-    return JSON.stringify(JSON.parse(raw), null, 2);
-  } catch {
-    return raw;
-  }
-}
-
-function JsonBlock({ label, value }: { label: string; value: string | undefined }) {
-  if (value === undefined) return null;
-  return (
-    <div className="flex flex-col gap-1.5">
-      <p className="font-medium text-caption text-muted-foreground">{label}</p>
-      <pre className="max-h-64 overflow-auto rounded-sm bg-base-100 p-3 font-mono text-[12px] text-foreground">
-        {value}
-      </pre>
-    </div>
-  );
-}
-
-// `entry`/`open` are separate, and this is always mounted (never
-// conditionally rendered) for the identical reason `apps-screen.tsx`'s
-// `AppDetailDrawer` doc gives — `vaul`'s close transition needs the
-// drawer still in the DOM for at least one frame after `open` flips
-// `false`. `entry` is nullable so this can render (closed) before any row
-// has ever been clicked.
-function AuditEntryDrawer({
-  entry,
-  open,
-  onClose,
-}: {
-  entry: AuditLogEntry | null;
-  open: boolean;
-  onClose: () => void;
-}) {
-  return (
-    <QuickDetailDrawer
-      open={open}
-      onOpenChange={(next) => !next && onClose()}
-      title={entry !== null ? `${entry.model} · ${entry.operation}` : "Audit entry"}
-      description={entry !== null && <TimestampDisplay value={entry.occurredAt} />}
-    >
-      {entry !== null && (
-        <div className="flex flex-col gap-4">
-          <dl className="flex flex-col gap-2 text-body">
-            <div className="flex justify-between gap-4">
-              <dt className="text-muted-foreground">Event id</dt>
-              <dd className="truncate font-mono text-caption text-foreground">{entry.eventId}</dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-muted-foreground">Request id</dt>
-              <dd className="truncate font-mono text-caption text-foreground">
-                {entry.requestId ?? <span className="text-subtle-foreground">none</span>}
-              </dd>
-            </div>
-            <div className="flex justify-between gap-4">
-              <dt className="text-muted-foreground">Tenant</dt>
-              <dd className="truncate font-mono text-caption text-foreground">
-                {entry.tenant ?? <span className="text-subtle-foreground">none</span>}
-              </dd>
-            </div>
-          </dl>
-
-          <JsonBlock label="Primary key" value={prettyJson(entry.primaryKey)} />
-          <JsonBlock label="Actor" value={prettyJson(entry.actor)} />
-          <JsonBlock label="Before" value={prettyJson(entry.before)} />
-          <JsonBlock label="After" value={prettyJson(entry.after)} />
-        </div>
-      )}
-    </QuickDetailDrawer>
-  );
-}
-
-export function AuditLogScreen() {
+export function AuditLogScreen({ pageSize }: { pageSize: number }) {
   const [filters, setFilters] = useQueryStates(
     {
       model: parseAsString,
-      operation: parseAsStringEnum<(typeof OPERATIONS)[number]>([...OPERATIONS]),
+      operation: parseAsStringEnum<AuditOperation>([...OPERATIONS]),
       actorId: parseAsString,
       since: parseAsString,
       until: parseAsString,
@@ -230,14 +114,16 @@ export function AuditLogScreen() {
     { offset: parseAsInteger.withDefault(0) },
     { history: "replace" },
   );
-  const [selectedEntry, setSelectedEntry] = useState<AuditLogEntry | null>(null);
+
+  // Only the id is kept in state — see this file's own module doc for why
+  // that replaces the earlier full-object `useState`.
+  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
   // See `apps-screen.tsx`'s own `stickyPanelId` doc — the drawer stays
-  // mounted below so its `vaul` close transition can play; this keeps its
-  // content from blanking out mid-transition.
-  const [stickyEntry, setStickyEntry] = useState<AuditLogEntry | null>(null);
+  // mounted below so its `vaul` close transition can play.
+  const [stickyEntryId, setStickyEntryId] = useState<string | null>(null);
   useEffect(() => {
-    if (selectedEntry !== null) setStickyEntry(selectedEntry);
-  }, [selectedEntry]);
+    if (selectedEntryId !== null) setStickyEntryId(selectedEntryId);
+  }, [selectedEntryId]);
 
   const listQuery = trpc.auditLog.list.useQuery({
     model: filters.model ?? undefined,
@@ -245,9 +131,11 @@ export function AuditLogScreen() {
     actorId: filters.actorId ?? undefined,
     since: filters.since ? `${filters.since}T00:00:00.000Z` : undefined,
     until: filters.until ? `${filters.until}T23:59:59.999Z` : undefined,
-    limit: LIMIT,
+    limit: pageSize,
     offset: offset.offset,
   });
+  const entries = listQuery.data?.entries ?? [];
+  const stickyEntry = entries.find((entry) => entry.eventId === stickyEntryId) ?? null;
 
   const hasFilters =
     (filters.model ?? "") !== "" ||
@@ -261,189 +149,66 @@ export function AuditLogScreen() {
     void setOffset({ offset: 0 });
   }
 
+  function resetToFirstPage() {
+    void setOffset({ offset: 0 });
+  }
+
   return (
-    <div className="flex flex-col gap-6">
-      <div className="border-edge border-b pb-6">
-        <h1 className="font-medium text-foreground text-title">Audit log</h1>
-        <p className="mt-1 max-w-xl text-body text-muted-foreground">
-          Every audited write in this system, and whether the tamper-evidence chain over it still
-          verifies. Read-only — see this screen&apos;s own note below.
-        </p>
-      </div>
+    <AuditLogLayout>
+      <AuditLogHeader />
 
       <ChainStatusBanner />
 
-      <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-        This view is genuinely read-only, not just missing an edit button — no role, including{" "}
-        <span className="font-mono text-foreground">system</span>, can write an audit anchor through
-        any path this codebase exposes.
-      </div>
+      <AuditFilters
+        model={filters.model ?? ""}
+        operation={filters.operation}
+        actorId={filters.actorId ?? ""}
+        since={filters.since ?? ""}
+        until={filters.until ?? ""}
+        hasFilters={hasFilters}
+        onModelChange={(value) => {
+          void setFilters({ model: value === "" ? null : value });
+          resetToFirstPage();
+        }}
+        onOperationChange={(value) => {
+          void setFilters({ operation: value });
+          resetToFirstPage();
+        }}
+        onActorIdChange={(value) => {
+          void setFilters({ actorId: value === "" ? null : value });
+          resetToFirstPage();
+        }}
+        onSinceChange={(value) => {
+          void setFilters({ since: value === "" ? null : value });
+          resetToFirstPage();
+        }}
+        onUntilChange={(value) => {
+          void setFilters({ until: value === "" ? null : value });
+          resetToFirstPage();
+        }}
+        onClear={clearFilters}
+      />
 
-      <div className="flex flex-wrap items-end gap-3">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="audit-filter-model">Model</Label>
-          <Input
-            id="audit-filter-model"
-            placeholder="App, User, Provider…"
-            value={filters.model ?? ""}
-            onChange={(e) => {
-              void setFilters({ model: e.target.value === "" ? null : e.target.value });
-              void setOffset({ offset: 0 });
-            }}
-            className="w-44"
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="audit-filter-operation">Operation</Label>
-          <Select
-            value={filters.operation ?? "any"}
-            onValueChange={(value) => {
-              void setFilters({
-                operation: value === "any" ? null : (value as (typeof OPERATIONS)[number]),
-              });
-              void setOffset({ offset: 0 });
-            }}
-          >
-            <SelectTrigger id="audit-filter-operation" className="w-36">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="any">Any</SelectItem>
-              {OPERATIONS.map((op) => (
-                <SelectItem key={op} value={op}>
-                  {op}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="audit-filter-actor">Actor id</Label>
-          <Input
-            id="audit-filter-actor"
-            value={filters.actorId ?? ""}
-            onChange={(e) => {
-              void setFilters({ actorId: e.target.value === "" ? null : e.target.value });
-              void setOffset({ offset: 0 });
-            }}
-            className="w-44"
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="audit-filter-since">Since</Label>
-          <Input
-            id="audit-filter-since"
-            type="date"
-            value={filters.since ?? ""}
-            onChange={(e) => {
-              void setFilters({ since: e.target.value === "" ? null : e.target.value });
-              void setOffset({ offset: 0 });
-            }}
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="audit-filter-until">Until</Label>
-          <Input
-            id="audit-filter-until"
-            type="date"
-            value={filters.until ?? ""}
-            onChange={(e) => {
-              void setFilters({ until: e.target.value === "" ? null : e.target.value });
-              void setOffset({ offset: 0 });
-            }}
-          />
-        </div>
-        {hasFilters && (
-          <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
-            Clear filters
-          </Button>
-        )}
-      </div>
+      <AuditLogTable
+        entries={entries}
+        isLoading={listQuery.isLoading}
+        errorMessage={listQuery.isError ? listQuery.error.message : null}
+        onRowClick={(entry) => setSelectedEntryId(entry.eventId)}
+      />
 
-      {listQuery.isError && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          Could not read the audit log: {listQuery.error.message}
-        </div>
-      )}
-
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead align="end">When</TableHead>
-            <TableHead>Model</TableHead>
-            <TableHead>Operation</TableHead>
-            <TableHead className="hidden md:table-cell">Primary key</TableHead>
-            <TableHead className="hidden sm:table-cell">Actor</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {listQuery.isLoading && (
-            <TableRow>
-              <TableCell colSpan={5}>
-                <Skeleton className="h-4 w-full" />
-              </TableCell>
-            </TableRow>
-          )}
-          {!listQuery.isLoading && (listQuery.data?.entries.length ?? 0) === 0 && (
-            <TableRow>
-              <TableCell colSpan={5}>
-                <InlineEmptyState message="No matching audit entries." />
-              </TableCell>
-            </TableRow>
-          )}
-          {listQuery.data?.entries.map((entry: AuditLogEntry) => (
-            <TableRow
-              key={entry.eventId}
-              className="cursor-pointer"
-              onClick={() => setSelectedEntry(entry)}
-            >
-              <TableCell align="end">
-                <TimestampDisplay value={entry.occurredAt} />
-              </TableCell>
-              <TableCell mono>{entry.model}</TableCell>
-              <TableCell mono>{entry.operation}</TableCell>
-              <TableCell className="hidden max-w-[220px] truncate font-mono text-caption md:table-cell">
-                {entry.primaryKey}
-              </TableCell>
-              <TableCell className="hidden max-w-[260px] truncate font-mono text-caption sm:table-cell">
-                {entry.actor}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-
-      <div className="flex items-center justify-between">
-        <span className="text-caption text-subtle-foreground">
-          Showing {listQuery.data?.entries.length ?? 0} entries starting at offset {offset.offset}
-        </span>
-        <div className="flex gap-2">
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={offset.offset === 0}
-            onClick={() => void setOffset({ offset: Math.max(0, offset.offset - LIMIT) })}
-          >
-            Previous
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            disabled={listQuery.data?.hasMore !== true}
-            onClick={() => void setOffset({ offset: offset.offset + LIMIT })}
-          >
-            Next
-          </Button>
-        </div>
-      </div>
+      <AuditLogPagination
+        shownCount={entries.length}
+        offset={offset.offset}
+        hasMore={listQuery.data?.hasMore === true}
+        onPrevious={() => void setOffset({ offset: Math.max(0, offset.offset - pageSize) })}
+        onNext={() => void setOffset({ offset: offset.offset + pageSize })}
+      />
 
       <AuditEntryDrawer
         entry={stickyEntry}
-        open={selectedEntry !== null}
-        onClose={() => setSelectedEntry(null)}
+        open={selectedEntryId !== null}
+        onClose={() => setSelectedEntryId(null)}
       />
-    </div>
+    </AuditLogLayout>
   );
 }

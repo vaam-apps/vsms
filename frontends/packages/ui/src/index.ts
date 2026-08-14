@@ -4,9 +4,11 @@
 
 export * from "./components/bespoke/encoding-preview";
 // Bespoke
+export * from "./components/bespoke/inline-banner";
 export * from "./components/bespoke/inline-empty-state";
 export * from "./components/bespoke/live-row";
 export * from "./components/bespoke/payload-inspector";
+export * from "./components/bespoke/screen-layout";
 export * from "./components/bespoke/state-timeline";
 // Data-display (design doc §7): consistency is the deliverable, so these
 // are components, not ad hoc per-screen formatting.
@@ -21,6 +23,7 @@ export * from "./components/primitives/command-menu";
 export * from "./components/primitives/dialog";
 export * from "./components/primitives/drawer";
 export * from "./components/primitives/dropdown-menu";
+export * from "./components/primitives/inline-confirm";
 export * from "./components/primitives/input";
 export * from "./components/primitives/label";
 export * from "./components/primitives/popover";

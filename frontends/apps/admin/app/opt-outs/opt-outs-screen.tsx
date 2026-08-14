@@ -11,9 +11,9 @@
 // away rather than needing every column visible on a phone; `Remove`
 // lives in both the table row (fast path for an operator already scanning
 // the list) and the drawer footer (reachable from the peek too), both
-// driving the same confirm `Dialog`.
+// driving the same confirm dialog.
 //
-// Record-opt-out stays a `Dialog`, not a drawer: four fields, no
+// Record-opt-out stays a dialog, not a drawer: four fields, no
 // sub-navigation, no nested history — exactly §3's own "short
 // single-purpose forms with no sub-navigation (rename, confirm-requeue)"
 // bucket, not "the full record plus an edit form" a `MoreDetailDrawer` is
@@ -37,48 +37,86 @@
 // not only when a result comes back empty (an operator reading a *found*
 // result also needs to know the flip side could exist unseen for a
 // *different* number).
+//
+// R6 (AGENTS.md): this file is the smart component. Markup and classes
+// moved verbatim into `components/opt-outs-search-panel.tsx`,
+// `components/opt-outs-table.tsx`, `components/opt-out-detail-fields.tsx`,
+// `components/opt-outs-toolbar.tsx`, `components/record-opt-out-
+// dialog.tsx` and `components/remove-confirm-dialog.tsx`.
+//
+// Two real fixes, not just a move:
+//
+// 1. **`SearchPanel` (now `OptOutsSearchPanel`) called `trpc.optOuts.
+//    search.useQuery` itself.** A dumb component fetching its own data is
+//    an R6 violation independent of where its classes live. The query now
+//    lives here; the dumb component only renders whatever `result` it's
+//    handed. The same was true of the old `RecordDialog`'s own `trpc.
+//    optOuts.record.useMutation` call — fixed the same way, moved to this
+//    file, mutation-success handling (toast, form reset, closing the
+//    dialog, invalidating the list) included.
+// 2. **`recordOpen`/`deleteConfirmId`/`detailRow` were three separate
+//    `useState` calls** — R6's own worked "wrong example" is this exact
+//    trio, verbatim. `detailRow` was the worse of the two "holds a
+//    server-row copy" cases in this route group (`jobs-screen.tsx`'s
+//    `detailJob`/`confirmTarget` being the other): it needed its own `??
+//    detailRow` staleness fallback. All three now live in the URL
+//    (`nuqs`, `history: "replace"` — opening a dialog while browsing
+//    shouldn't grow the back-button trail), and `detail` holds only the
+//    row's **id** — `detailRow` is derived fresh from `listQuery.data` on
+//    every render, so there is no copy left to go stale and the fallback
+//    is gone.
+//
+// One thing that deliberately did NOT move to the URL: the search box's
+// own `msisdn`/`searchedFor` text. An MSISDN is exactly the kind of value
+// this screen's own banner warns is sensitive (`msisdnHash` is a peppered
+// HMAC precisely because a raw MSISDN is personal data) — putting it in a
+// URL query string means browser history, server access logs and a
+// pasted/shared link would all carry it in the clear, which R6's own
+// "when it is genuinely unclear, leave it in code with a comment saying
+// why" calls the safer default. Kept as plain `useState`, which R6's
+// "avoid useState" section explicitly allows for "genuinely ephemeral,
+// single-value presentational state."
 
-import type { inferRouterOutputs } from "@trpc/server";
-import type { AppRouter } from "@vsms/api";
+import { zodResolver } from "@hookform/resolvers/zod";
 import { trpc } from "@vsms/hooks";
 import {
   Button,
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  IdDisplay,
-  InlineEmptyState,
-  Input,
-  Label,
-  MsisdnDisplay,
+  InlineBanner,
   QuickDetailDrawer,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Skeleton,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-  TimestampDisplay,
+  ScreenHeader,
+  ScreenStack,
   toast,
 } from "@vsms/ui";
-import { ChevronRight } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { parseAsBoolean, parseAsString, useQueryStates } from "nuqs";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { OptOutDetailFields } from "./components/opt-out-detail-fields";
+import { OptOutsSearchPanel } from "./components/opt-outs-search-panel";
+import { type OptOutListItem, OptOutsTable } from "./components/opt-outs-table";
+import { OptOutsToolbar } from "./components/opt-outs-toolbar";
+import { RecordOptOutDialog } from "./components/record-opt-out-dialog";
+import { RemoveConfirmDialog } from "./components/remove-confirm-dialog";
+import {
+  RECORD_OPT_OUT_DEFAULTS,
+  type RecordOptOutFormValues,
+  recordOptOutSchema,
+} from "./record-opt-out-schema";
 
-type RouterOutputs = inferRouterOutputs<AppRouter>;
-type OptOutListItem = RouterOutputs["optOuts"]["list"][number];
-
-const SOURCES = ["inbound_stop", "admin", "import", "operator"] as const;
-
-function SearchPanel() {
+export function OptOutsScreen() {
+  const listQuery = trpc.optOuts.list.useQuery({});
   const utils = trpc.useUtils();
+
+  const [urlState, setUrlState] = useQueryStates(
+    {
+      record: parseAsBoolean.withDefault(false),
+      remove: parseAsString,
+      detail: parseAsString,
+    },
+    { history: "replace" },
+  );
+
+  // Ephemeral, single-value, and deliberately not URL state — see this
+  // file's own module doc.
   const [msisdn, setMsisdn] = useState("");
   const [searchedFor, setSearchedFor] = useState<string | null>(null);
   const searchQuery = trpc.optOuts.search.useQuery(
@@ -86,385 +124,145 @@ function SearchPanel() {
     { enabled: searchedFor !== null },
   );
 
-  return (
-    <div className="flex flex-col gap-3 rounded-sm border border-edge bg-surface-2 p-4">
-      <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end">
-        <div className="flex flex-1 flex-col gap-1.5">
-          <Label htmlFor="opt-out-search">Search by MSISDN</Label>
-          <Input
-            id="opt-out-search"
-            placeholder="+237677123456"
-            value={msisdn}
-            onChange={(e) => setMsisdn(e.target.value)}
-          />
-        </div>
-        <Button
-          type="button"
-          disabled={msisdn.trim().length === 0}
-          onClick={() => {
-            setSearchedFor(msisdn.trim());
-            void utils.optOuts.search.invalidate();
-          }}
-        >
-          Search
-        </Button>
-      </div>
-
-      {searchedFor !== null && (
-        <div className="rounded-sm border border-edge bg-surface-1 p-3">
-          {searchQuery.isLoading && <Skeleton className="h-6 w-full" />}
-          {searchQuery.isError && (
-            <p className="text-caption text-state-danger-fg">{searchQuery.error.message}</p>
-          )}
-          {searchQuery.data !== undefined && searchQuery.data.optOut !== undefined && (
-            <div className="flex flex-col gap-1 text-caption">
-              <p className="text-state-danger-fg">
-                Opted out — source{" "}
-                <span className="font-mono">{searchQuery.data.optOut.source}</span>, scope{" "}
-                <span className="font-mono">{searchQuery.data.optOut.scope}</span>
-              </p>
-              <p className="text-muted-foreground">
-                <TimestampDisplay value={searchQuery.data.optOut.optedOutAt} />
-                {searchQuery.data.optOut.reason !== undefined && (
-                  <> — {searchQuery.data.optOut.reason}</>
-                )}
-              </p>
-            </div>
-          )}
-          {searchQuery.data !== undefined && searchQuery.data.optOut === undefined && (
-            <p className="text-caption text-state-success-fg">No opt-out found for that number.</p>
-          )}
-          <p className="mt-2 text-micro text-subtle-foreground">
-            This can never distinguish &quot;never opted out&quot; from &quot;opted out before the
-            hash pepper was last rotated&quot; — a rotation orphans older hashes silently and
-            permanently. Treat a &quot;not found&quot; result as inconclusive for a number with any
-            history predating a known rotation, not as proof.
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function RecordDialog({
-  open,
-  onOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const utils = trpc.useUtils();
-  const [msisdn, setMsisdn] = useState("");
-  const [source, setSource] = useState<(typeof SOURCES)[number]>("admin");
-  const [scope, setScope] = useState("all");
-  const [reason, setReason] = useState("");
+  const form = useForm<RecordOptOutFormValues>({
+    resolver: zodResolver(recordOptOutSchema),
+    defaultValues: RECORD_OPT_OUT_DEFAULTS,
+  });
 
   const recordMutation = trpc.optOuts.record.useMutation({
     onSuccess: () => {
       toast({ title: "Opt-out recorded", variant: "success" });
-      setMsisdn("");
-      setReason("");
-      onOpenChange(false);
+      form.reset({ ...form.getValues(), msisdn: "", reason: "" });
+      void setUrlState({ record: false });
       void utils.optOuts.list.invalidate();
     },
   });
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[480px]">
-        <DialogHeader>
-          <DialogTitle>Record an opt-out</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="record-msisdn">MSISDN</Label>
-            <Input
-              id="record-msisdn"
-              placeholder="+237677123456"
-              value={msisdn}
-              onChange={(e) => setMsisdn(e.target.value)}
-            />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="record-source">Source</Label>
-            <Select value={source} onValueChange={(v) => setSource(v as (typeof SOURCES)[number])}>
-              <SelectTrigger id="record-source">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {SOURCES.map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="record-scope">Scope</Label>
-            <Input id="record-scope" value={scope} onChange={(e) => setScope(e.target.value)} />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="record-reason">Reason (optional)</Label>
-            <Input id="record-reason" value={reason} onChange={(e) => setReason(e.target.value)} />
-          </div>
-          {recordMutation.isError && (
-            <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-              {recordMutation.error.message}
-            </div>
-          )}
-        </div>
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button
-            type="button"
-            disabled={
-              msisdn.trim().length === 0 || scope.trim().length === 0 || recordMutation.isPending
-            }
-            onClick={() =>
-              recordMutation.mutate({
-                msisdn: msisdn.trim(),
-                source,
-                scope: scope.trim(),
-                reason: reason.trim().length > 0 ? reason.trim() : undefined,
-              })
-            }
-          >
-            {recordMutation.isPending ? "Recording…" : "Record"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function OptOutDetailField({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-0.5 border-edge-subtle border-b py-2 last:border-b-0">
-      <dt className="text-caption text-subtle-foreground">{label}</dt>
-      <dd className="text-body text-foreground">{value}</dd>
-    </div>
-  );
-}
-
-export function OptOutsScreen() {
-  const listQuery = trpc.optOuts.list.useQuery({});
-  const utils = trpc.useUtils();
-  const [recordOpen, setRecordOpen] = useState(false);
-  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
-  const [detailRow, setDetailRow] = useState<OptOutListItem | null>(null);
 
   const deleteMutation = trpc.optOuts.delete.useMutation({
     onSuccess: () => {
       toast({ title: "Opt-out removed", variant: "success" });
-      setDeleteConfirmId(null);
-      setDetailRow(null);
+      void setUrlState({ remove: null, detail: null });
       void utils.optOuts.list.invalidate();
     },
   });
 
-  const liveDetailRow =
-    detailRow === null
-      ? null
-      : (listQuery.data?.find((row) => row.id === detailRow.id) ?? detailRow);
+  const items: OptOutListItem[] = listQuery.data ?? [];
+  const detailRow =
+    urlState.detail === null ? null : (items.find((row) => row.id === urlState.detail) ?? null);
+
+  function openRecord() {
+    void setUrlState({ record: true });
+  }
+
+  function closeRecord(open: boolean) {
+    if (!open) void setUrlState({ record: false });
+  }
+
+  function openRemoveConfirm(id: string) {
+    void setUrlState({ remove: id });
+  }
+
+  function closeRemoveConfirm() {
+    void setUrlState({ remove: null });
+  }
+
+  function openDetail(row: OptOutListItem) {
+    void setUrlState({ detail: row.id });
+  }
+
+  function closeDetail() {
+    void setUrlState({ detail: null });
+  }
+
+  function runSearch() {
+    setSearchedFor(msisdn.trim());
+    void utils.optOuts.search.invalidate();
+  }
+
+  function submitRecord(values: RecordOptOutFormValues) {
+    recordMutation.mutate({
+      msisdn: values.msisdn,
+      source: values.source,
+      scope: values.scope,
+      reason: values.reason.length > 0 ? values.reason : undefined,
+    });
+  }
+
+  function confirmRemove() {
+    if (urlState.remove === null) return;
+    deleteMutation.mutate({ id: urlState.remove });
+  }
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="font-medium text-foreground text-title">Opt-outs</h1>
-        <p className="max-w-xl text-body text-muted-foreground">
-          Search by MSISDN, record a new opt-out, or browse recent activity.
-        </p>
-      </header>
+    <ScreenStack>
+      <ScreenHeader
+        title="Opt-outs"
+        description="Search by MSISDN, record a new opt-out, or browse recent activity."
+      />
 
-      <SearchPanel />
+      <OptOutsSearchPanel
+        msisdn={msisdn}
+        onMsisdnChange={setMsisdn}
+        canSearch={msisdn.trim().length > 0}
+        onSearch={runSearch}
+        searchedFor={searchedFor}
+        isLoading={searchQuery.isLoading}
+        isError={searchQuery.isError}
+        errorMessage={searchQuery.error?.message}
+        result={searchQuery.data}
+      />
 
-      <div className="flex items-center justify-between">
-        <h2 className="font-medium text-body text-foreground">Recent</h2>
-        <Button type="button" onClick={() => setRecordOpen(true)}>
-          Record opt-out
-        </Button>
-      </div>
+      <OptOutsToolbar onRecordClick={openRecord} />
 
       {listQuery.isError && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
+        <InlineBanner variant="danger">
           Could not read opt-outs: {listQuery.error.message}
-        </div>
+        </InlineBanner>
       )}
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>MSISDN</TableHead>
-            <TableHead>Source</TableHead>
-            <TableHead className="hidden md:table-cell">Scope</TableHead>
-            <TableHead className="hidden lg:table-cell">Reason</TableHead>
-            <TableHead align="end" className="hidden sm:table-cell">
-              Opted out
-            </TableHead>
-            <TableHead align="end">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {listQuery.isLoading && (
-            <TableRow>
-              <TableCell colSpan={6}>
-                <Skeleton className="h-4 w-full" />
-              </TableCell>
-            </TableRow>
-          )}
-          {!listQuery.isLoading && (listQuery.data?.length ?? 0) === 0 && (
-            <tr>
-              <td colSpan={6}>
-                <InlineEmptyState message="No opt-outs recorded yet." />
-              </td>
-            </tr>
-          )}
-          {listQuery.data?.map((row: OptOutListItem) => (
-            <TableRow
-              key={row.id}
-              tabIndex={0}
-              role="button"
-              aria-label={`View details for opt-out ${row.msisdn}`}
-              className="cursor-pointer"
-              onClick={() => setDetailRow(row)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setDetailRow(row);
-                }
-              }}
-            >
-              <TableCell>
-                <MsisdnDisplay value={row.msisdn} />
-              </TableCell>
-              <TableCell mono>{row.source}</TableCell>
-              <TableCell mono className="hidden md:table-cell">
-                {row.scope}
-              </TableCell>
-              <TableCell className="hidden max-w-[240px] truncate text-caption text-muted-foreground lg:table-cell">
-                {row.reason ?? "—"}
-              </TableCell>
-              <TableCell align="end" className="hidden sm:table-cell">
-                <TimestampDisplay value={row.optedOutAt} />
-              </TableCell>
-              <TableCell align="end">
-                <div className="flex items-center justify-end gap-1.5">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setDeleteConfirmId(row.id);
-                    }}
-                  >
-                    Remove
-                  </Button>
-                  <ChevronRight
-                    size={14}
-                    strokeWidth={1.5}
-                    aria-hidden="true"
-                    className="text-subtle-foreground"
-                  />
-                </div>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+      <OptOutsTable
+        items={items}
+        isLoading={listQuery.isLoading}
+        onRowClick={openDetail}
+        onRemoveClick={(row) => openRemoveConfirm(row.id)}
+      />
 
-      <RecordDialog open={recordOpen} onOpenChange={setRecordOpen} />
+      <RecordOptOutDialog
+        open={urlState.record}
+        onOpenChange={closeRecord}
+        form={form}
+        onSubmit={submitRecord}
+        isPending={recordMutation.isPending}
+        errorMessage={recordMutation.error?.message}
+      />
 
       <QuickDetailDrawer
-        open={liveDetailRow !== null}
-        onOpenChange={(open) => !open && setDetailRow(null)}
-        title={liveDetailRow != null ? liveDetailRow.msisdn : "Opt-out"}
-        description={liveDetailRow != null ? `Opt-out ${liveDetailRow.id}` : undefined}
+        open={detailRow !== null}
+        onOpenChange={(open) => !open && closeDetail()}
+        title={detailRow != null ? detailRow.msisdn : "Opt-out"}
+        description={detailRow != null ? `Opt-out ${detailRow.id}` : undefined}
         footer={
-          liveDetailRow != null ? (
+          detailRow != null ? (
             <Button
               type="button"
               variant="destructive"
               size="sm"
-              onClick={() => setDeleteConfirmId(liveDetailRow.id)}
+              onClick={() => openRemoveConfirm(detailRow.id)}
             >
               Remove
             </Button>
           ) : undefined
         }
       >
-        {liveDetailRow != null && (
-          <dl className="flex flex-col">
-            <OptOutDetailField
-              label="MSISDN"
-              value={<MsisdnDisplay value={liveDetailRow.msisdn} />}
-            />
-            <OptOutDetailField
-              label="MSISDN hash"
-              value={<IdDisplay value={liveDetailRow.msisdnHash} variant="full" />}
-            />
-            <OptOutDetailField
-              label="Source"
-              value={<span className="font-mono">{liveDetailRow.source}</span>}
-            />
-            <OptOutDetailField
-              label="Scope"
-              value={<span className="font-mono">{liveDetailRow.scope}</span>}
-            />
-            <OptOutDetailField
-              label="Reason"
-              value={
-                liveDetailRow.reason != null ? (
-                  <span className="whitespace-pre-wrap break-words">{liveDetailRow.reason}</span>
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <OptOutDetailField
-              label="Opted out at"
-              value={<TimestampDisplay value={liveDetailRow.optedOutAt} />}
-            />
-            <OptOutDetailField
-              label="Recorded at"
-              value={<TimestampDisplay value={liveDetailRow.createdAt} />}
-            />
-            <OptOutDetailField
-              label="Id"
-              value={<IdDisplay value={liveDetailRow.id} variant="full" />}
-            />
-          </dl>
-        )}
+        {detailRow != null && <OptOutDetailFields row={detailRow} />}
       </QuickDetailDrawer>
 
-      <Dialog
-        open={deleteConfirmId !== null}
-        onOpenChange={(open) => !open && setDeleteConfirmId(null)}
-      >
-        <DialogContent className="max-w-[440px]">
-          <DialogHeader>
-            <DialogTitle>Remove this opt-out?</DialogTitle>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setDeleteConfirmId(null)}>
-              Cancel
-            </Button>
-            <Button
-              type="button"
-              variant="destructive"
-              disabled={deleteMutation.isPending}
-              onClick={() =>
-                deleteConfirmId !== null && deleteMutation.mutate({ id: deleteConfirmId })
-              }
-            >
-              {deleteMutation.isPending ? "Removing…" : "Remove"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+      <RemoveConfirmDialog
+        open={urlState.remove !== null}
+        pending={deleteMutation.isPending}
+        onOpenChange={(open) => !open && closeRemoveConfirm()}
+        onConfirm={confirmRemove}
+      />
+    </ScreenStack>
   );
 }

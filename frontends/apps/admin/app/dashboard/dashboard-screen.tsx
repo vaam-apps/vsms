@@ -57,87 +57,44 @@
 // balance anywhere in this system yet. A tile showing a fabricated "0
 // XAF" would be actively misleading; the card below says exactly that
 // instead.
+//
+// # R6
+//
+// This file holds data fetching and derived values only (AGENTS.md's R6:
+// "pages compose, smart components decide, dumb components style") — every
+// class and every piece of markup lives in `./components/*`, composed by
+// `DashboardView`.
 
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@vsms/api";
 import { trpc } from "@vsms/hooks";
-import { Card, CardBody, CardHeader, Skeleton } from "@vsms/ui";
-import { HourlyBars } from "./hourly-bars";
+import { DashboardView } from "./components/dashboard-view";
+import { formatCount } from "./format";
 
 // Console-redesign Phase 2: this screen used to hand-roll its own <header>
 // nav strip (links to every other route in the console) and its own
 // <main max-w-[1400px] px-6 py-10> wrapper — both pre-date `ConsoleShell`
 // (Phase 0), which now mounts once from `admin/app/layout.tsx` and already
 // gives every route a persistent sidebar (`SideNav`, all eighteen routes,
-// grouped) plus a shared <main> with its own max-width and padding. Left
-// as-is, this screen would render a <main> nested inside `ConsoleShell`'s
-// own <main> (invalid HTML, double padding) *and* a second, fully
-// redundant copy of the sidebar's own links. Per
-// docs/design/console-redesign.md §7's own build order ("no screen should
-// still hand-roll a <header> nav after Phase 2"), that block is gone
-// below; the screen now renders only its own content, inside a plain
-// wrapper, and lets `ConsoleShell` own the chrome around it.
+// grouped) plus a shared <main> with its own max-width and padding. That
+// block is gone; `DashboardView` renders only this screen's own content.
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type DashboardSummary = RouterOutputs["dashboard"]["summary"];
-type OperatorStat = DashboardSummary["operatorStats"][number];
 
-const REFETCH_INTERVAL_MS = 15_000;
-
-const OPERATOR_LABELS: Record<OperatorStat["operator"], string> = {
-  mtn: "MTN",
-  orange: "Orange",
-  camtel: "Camtel",
-  nexttel: "Nexttel",
-  unknown: "Unknown",
-};
-
-const numberFormat = new Intl.NumberFormat("en-US");
-
-function formatCount(n: number): string {
-  return numberFormat.format(n);
+export interface DashboardScreenProps {
+  /** `env.DASHBOARD_REFETCH_INTERVAL_MS`, read server-side (`page.tsx`) so
+   * the value comes from `@vsms/env` in exactly one place — see that
+   * file's own comment. */
+  refetchIntervalMs: number;
 }
 
-function formatPercent(ratio: number): string {
-  return `${(ratio * 100).toFixed(ratio >= 0.1 ? 0 : 1)}%`;
-}
-
-function StatCard({
-  title,
-  value,
-  caption,
-  accent,
-}: {
-  title: string;
-  value: string;
-  caption: string;
-  accent?: "uncertain" | undefined;
-}) {
-  return (
-    <Card>
-      <CardHeader title={title} />
-      <CardBody>
-        <p
-          className={
-            accent === "uncertain"
-              ? "font-medium text-title tracking-tight text-state-uncertain-fg"
-              : "font-medium text-title tracking-tight text-foreground"
-          }
-        >
-          {value}
-        </p>
-        <p className="mt-1 text-caption text-muted-foreground">{caption}</p>
-      </CardBody>
-    </Card>
-  );
-}
-
-export function DashboardScreen() {
+export function DashboardScreen({ refetchIntervalMs }: DashboardScreenProps) {
   const summaryQuery = trpc.dashboard.summary.useQuery(undefined, {
-    refetchInterval: REFETCH_INTERVAL_MS,
+    refetchInterval: refetchIntervalMs,
   });
 
-  const data = summaryQuery.data;
+  const data: DashboardSummary | undefined = summaryQuery.data;
   const buckets = data?.hourlyBuckets ?? [];
   const currentHour = buckets[buckets.length - 1];
   const previousHour = buckets[buckets.length - 2];
@@ -162,226 +119,26 @@ export function DashboardScreen() {
 
   const operatorRows = (data?.operatorStats ?? []).filter((row) => row.terminalTotal > 0);
   const allOperatorsQuiet = data != null && operatorRows.length === 0;
+  const stuckMessagesCount = data?.stuckMessages ?? 0;
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1 border-edge border-b pb-6">
-        <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-          vsms admin console
-        </p>
-        <h1 className="font-medium text-foreground text-title">Dashboard</h1>
-        <p className="max-w-xl text-body text-muted-foreground">
-          Throughput, delivery, and backlog at a glance. Refreshes every{" "}
-          {Math.round(REFETCH_INTERVAL_MS / 1000)}s.
-        </p>
-      </header>
-
-      <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-        {data?.appId === undefined ? (
-          <>
-            You're reading this as yourself — message- and webhook-based tiles below cover{" "}
-            <span className="font-mono text-foreground">every app</span> in this deployment, not
-            one.{" "}
-          </>
-        ) : (
-          <>
-            Message- and webhook-based tiles below are scoped to{" "}
-            <span className="font-mono text-foreground">this app only</span> — the console's own
-            service-account token can only read the one app it belongs to.{" "}
-          </>
-        )}
-        <span className="font-mono text-foreground">Job backlog</span> is always system-wide,
-        because <span className="font-mono text-foreground">Job</span> has no app boundary to scope
-        by. Neither is a filter, and neither is a bug.
-      </div>
-
-      {summaryQuery.isError && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          Couldn't load the dashboard: {summaryQuery.error.message}
-        </div>
-      )}
-
-      {summaryQuery.isLoading ? (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          {Array.from({ length: 4 }).map((_, i) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton tiles, never reordered
-            <Card key={i}>
-              <CardBody className="pt-4">
-                <Skeleton className="h-8 w-20" />
-                <Skeleton className="mt-2 h-3 w-32" />
-              </CardBody>
-            </Card>
-          ))}
-        </div>
-      ) : (
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-          <StatCard
-            title="Queue depth"
-            value={formatCount(data?.queueDepth ?? 0)}
-            caption="accepted + queued + routed, right now"
-          />
-          <StatCard
-            title="Job backlog"
-            value={formatCount(data?.jobBacklog ?? 0)}
-            caption="pending + running, system-wide"
-          />
-          <StatCard
-            title="Outbox depth"
-            value={formatCount(data?.outboxDepth ?? 0)}
-            caption="webhook attempts pending or in flight"
-          />
-          <StatCard
-            title="Stuck messages"
-            value={formatCount(data?.stuckMessages ?? 0)}
-            caption="uncertain + undelivered — never confirmed either way"
-            accent={(data?.stuckMessages ?? 0) > 0 ? "uncertain" : undefined}
-          />
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader title="Throughput" meta="last 6 hours, oldest first" />
-          <CardBody>
-            {buckets.length > 0 ? (
-              <>
-                <HourlyBars
-                  bars={buckets.map((bucket) => ({
-                    value: bucket.totalCount,
-                    label: `${new Date(bucket.bucketStart).toLocaleTimeString([], {
-                      hour: "2-digit",
-                    })}: ${formatCount(bucket.totalCount)} messages`,
-                  }))}
-                  colorClassName="bg-state-neutral-fg"
-                />
-                <p className="mt-3 text-body text-foreground">
-                  {formatCount(currentHour?.totalCount ?? 0)}{" "}
-                  <span className="text-caption text-muted-foreground">this hour</span>
-                </p>
-                <p className="text-caption text-muted-foreground">
-                  {throughputDelta == null
-                    ? "no prior hour to compare yet"
-                    : throughputDelta === 0
-                      ? "flat vs. the previous hour"
-                      : `${throughputDelta > 0 ? "+" : ""}${formatCount(throughputDelta)} vs. the previous hour`}
-                </p>
-              </>
-            ) : (
-              <p className="text-caption text-muted-foreground">Loading…</p>
-            )}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader
-            title="UCS-2 ratio"
-            meta="last 6 hours, oldest first"
-            action={
-              ucs2Jumped ? (
-                <span className="rounded-sm border border-state-uncertain-border bg-state-uncertain-bg px-2 py-0.5 text-caption text-state-uncertain-fg">
-                  jumped
-                </span>
-              ) : undefined
-            }
-          />
-          <CardBody>
-            {buckets.length > 0 ? (
-              <>
-                <HourlyBars
-                  bars={buckets.map((bucket) => ({
-                    value: bucket.totalCount > 0 ? bucket.ucs2Count / bucket.totalCount : null,
-                    label:
-                      bucket.totalCount > 0
-                        ? `${new Date(bucket.bucketStart).toLocaleTimeString([], {
-                            hour: "2-digit",
-                          })}: ${formatPercent(bucket.ucs2Count / bucket.totalCount)} UCS-2 (${bucket.ucs2Count}/${bucket.totalCount})`
-                        : `${new Date(bucket.bucketStart).toLocaleTimeString([], {
-                            hour: "2-digit",
-                          })}: no messages`,
-                  }))}
-                  colorClassName="bg-state-uncertain-fg"
-                />
-                <p className="mt-3 text-body text-foreground">
-                  {currentRatio == null ? "—" : formatPercent(currentRatio)}{" "}
-                  <span className="text-caption text-muted-foreground">this hour</span>
-                </p>
-                <p className="text-caption text-muted-foreground">
-                  {previousRatio == null
-                    ? "no prior hour to compare yet"
-                    : `previous hour: ${formatPercent(previousRatio)}`}
-                  {ucs2Jumped &&
-                    " — a template change or a smart apostrophe/accent is a common cause"}
-                </p>
-              </>
-            ) : (
-              <p className="text-caption text-muted-foreground">Loading…</p>
-            )}
-          </CardBody>
-        </Card>
-      </div>
-
-      <Card>
-        <CardHeader
-          title="Delivery rate by operator"
-          meta="trailing 24 hours, terminal messages only"
-        />
-        <CardBody>
-          {allOperatorsQuiet && (
-            <p className="text-caption text-muted-foreground">
-              No terminal messages in the last 24 hours for this app.
-            </p>
-          )}
-          {operatorRows.length > 0 && (
-            <div className="flex flex-col gap-3">
-              {operatorRows.map((row) => {
-                const ratio = row.delivered / row.terminalTotal;
-                return (
-                  <div key={row.operator} className="flex items-center gap-2 sm:gap-3">
-                    <span className="w-14 shrink-0 text-caption text-foreground sm:w-20">
-                      {OPERATOR_LABELS[row.operator]}
-                    </span>
-                    <div className="h-2 min-w-8 flex-1 overflow-hidden rounded-full bg-surface-3">
-                      <div
-                        className="h-full rounded-full bg-state-success-fg"
-                        style={{ width: `${Math.round(ratio * 100)}%` }}
-                      />
-                    </div>
-                    <span className="w-20 shrink-0 text-right font-mono text-caption text-muted-foreground sm:w-32">
-                      {formatPercent(ratio)} ({formatCount(row.delivered)}/
-                      {formatCount(row.terminalTotal)})
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          <p className="mt-3 text-caption text-subtle-foreground">
-            Excludes {formatCount(data?.stuckMessages ?? 0)} stuck message
-            {(data?.stuckMessages ?? 0) === 1 ? "" : "s"} (uncertain/undelivered) — see the tile
-            above. Counting those as failed would overstate failure; counting them as delivered
-            would be a lie.
-          </p>
-        </CardBody>
-      </Card>
-
-      <Card>
-        <CardHeader title="Provider balance" />
-        <CardBody>
-          <p className="text-caption text-muted-foreground">
-            Not available. <span className="font-mono text-foreground">poll_balance</span> (§7.5)
-            was never built — there is no source of truth for provider balance anywhere in this
-            system yet. This card intentionally shows no number rather than a fabricated one.
-          </p>
-        </CardBody>
-      </Card>
-
-      <p className="text-caption text-subtle-foreground">
-        Outbox age and poison-row alerting live in Prometheus, not here — see{" "}
-        <span className="font-mono">deploy/prometheus/alerts.yml</span>. This screen's{" "}
-        <span className="font-mono text-foreground">Outbox depth</span> tile is a genuine current
-        count of <span className="font-mono text-foreground">WebhookAttempt</span> rows, a different
-        table from the framework's own internal event outbox those alerts describe.
-      </p>
-    </div>
+    <DashboardView
+      refetchIntervalMs={refetchIntervalMs}
+      appScoped={data?.appId !== undefined}
+      errorMessage={summaryQuery.isError ? summaryQuery.error.message : null}
+      isLoading={summaryQuery.isLoading}
+      queueDepth={formatCount(data?.queueDepth ?? 0)}
+      jobBacklog={formatCount(data?.jobBacklog ?? 0)}
+      outboxDepth={formatCount(data?.outboxDepth ?? 0)}
+      stuckMessages={formatCount(stuckMessagesCount)}
+      stuckMessagesCount={stuckMessagesCount}
+      buckets={buckets}
+      throughputDelta={throughputDelta}
+      currentRatio={currentRatio}
+      previousRatio={previousRatio}
+      ucs2Jumped={ucs2Jumped}
+      operatorRows={operatorRows}
+      allOperatorsQuiet={allOperatorsQuiet}
+    />
   );
 }

@@ -197,10 +197,34 @@ Taken: a **centered dialog**, not a drawer, for anything irreversible or scary �
 warning copy above the fold, an optional typed-confirmation field for the
 highest-stakes actions, two right-aligned buttons (`Cancel` neutral, the
 destructive action in the danger hue, never the primary/accent hue). This is the
-concrete precedent locking "destructive confirmation = centered `Dialog`, never a
-drawer" into §3's drawer-vs-dialog-vs-page rule, and it matches this console's
-existing webhook-secret-rotation and route-simulator confirm patterns already in
-production — no change needed there beyond the Headless UI port (§2).
+concrete precedent locking "destructive confirmation = centered `Dialog`" into
+§3's drawer-vs-dialog-vs-page rule.
+
+**Correction, found live while building the Routes/Webhooks/Sender IDs screens:
+a centered `Dialog` opened from *inside* an already-open drawer does not work
+with this stack, at all.** The reference screens above (Jace AI, Gladia,
+Cursor) all show the confirmation as a *page-level* action — there is no
+enclosing drawer in any of them. This document's original text extrapolated
+that pattern to "confirmations nested inside `MoreDetailDrawer`" (§3's own
+"secret rotation's own confirmation step inside that flow stays a nested
+`Dialog`" line) without checking whether the primitives actually support it.
+They don't: `MoreDetailDrawer`/`QuickDetailDrawer` (`vaul`) always mount a
+trapped, document-level `@radix-ui/react-focus-scope` `FocusScope` — regardless
+of `dimmed`, since `vaul` never forwards its own `modal` prop down to
+`@radix-ui/react-dialog`'s `Root` — and Headless UI's `Dialog` always portals to
+a *sibling* `#headlessui-portal-root`, outside that trap's own container. The
+trap force-refocuses back into the drawer the instant the nested `Dialog` tries
+to move focus into itself, permanently stalling its enter transition: the
+confirmation becomes a stuck, invisible, non-interactive ghost. See
+`frontends/apps/admin/app/gallery/page.tsx`'s
+`NestedDialogInDrawerRegression` for the full investigation (four
+primitive-level fixes tried, all reproduced the bug; one hit a second, real
+`vaul@1.1.2` bug of its own) and §3 below for the corrected rule. A destructive
+confirmation triggered from a screen with **no** enclosing drawer open at the
+time — the route-simulator's own confirm, and anything else that is a
+page-level action rather than a step inside a drawer flow — is unaffected and
+stays a real, centered `Dialog`; the bug is specific to nesting one inside an
+already-open `vaul` drawer.
 
 ---
 
@@ -241,10 +265,22 @@ for it explicitly), stated as one rule so every future screen answers it the sam
 way:
 
 > **Dialog** (centered, modal, Headless UI `Dialog`) — an action that needs a yes/no
-> answer before anything else can happen: destructive confirmations (delete,
-> revoke, rotate-with-consequence), and short single-purpose forms with no
-> sub-navigation (rename, confirm-requeue). Always dims the background. Never
-> scrolls the page behind it. §1.7.
+> answer before anything else can happen, triggered from a screen with **no
+> drawer already open**: destructive confirmations (delete, revoke,
+> rotate-with-consequence), and short single-purpose forms with no
+> sub-navigation (rename, confirm-requeue, "New X" from a toolbar). Always dims
+> the background. Never scrolls the page behind it. §1.7.
+>
+> **Inline confirmation** (`@vsms/ui`'s `InlineConfirm`, rendered as the
+> drawer's own body/footer, no portal) — the *same* two shapes as `Dialog`
+> above (yes/no confirm, or a short form with one or two fields), but
+> triggered from *inside* an already-open `QuickDetailDrawer`/
+> `MoreDetailDrawer`. **Never a nested `Dialog` for this case** — see §1.7's
+> own correction: a centered `Dialog` opened while a `vaul` drawer is open
+> never becomes visible, a real bug in this exact library combination, not a
+> style preference. The caller swaps the drawer's body (and its `footer`
+> prop, since `InlineConfirm` supplies its own Cancel/Confirm row) rather
+> than layering a second overlay on top.
 >
 > **Quick details** (narrow `vaul` drawer, `direction="right"` desktop /
 > `"bottom"` mobile, `max-w-420px`–`480px`) — a peek at one row's state without
@@ -275,8 +311,10 @@ Concretely, per screen (§4's groups):
   existing `providers-screen.tsx` edit `Dialog` (§1.7's territory is
   confirmations, not multi-field edit forms) becomes a **more-details drawer**,
   matching D14/D18's reasoning; secret rotation's own confirmation step inside
-  that flow stays a nested `Dialog` (a form can open a confirmation without
-  contradicting the rule above).
+  that flow is an **inline confirmation** (see the rule above), not a nested
+  `Dialog` — corrected from this document's original text, which specified a
+  nested `Dialog` here without having checked it against the actual
+  primitives; see §1.7's own correction note for what was found and fixed.
 - **Page**: Messages list + Message detail (existing), Dashboard, Simulator,
   Audit log (a page-scale table, not a record of something else), Settings.
 
