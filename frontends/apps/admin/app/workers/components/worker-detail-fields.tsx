@@ -1,19 +1,9 @@
 // Dumb component (R6): the quick-detail drawer's field list, moved verbatim
 // out of `workers-screen.tsx` (`WorkerDetailField` included).
 
-import { TimestampDisplay } from "@vsms/ui";
-import type { ReactNode } from "react";
+import { DetailList, DetailRow, TimestampDisplay } from "@vsms/ui";
 import { roleLabel } from "../role-labels";
 import { StatusIndicator, type WorkerLockInfo } from "./workers-table";
-
-function WorkerDetailField({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-0.5 border-edge-subtle border-b py-2 last:border-b-0">
-      <dt className="text-caption text-subtle-foreground">{label}</dt>
-      <dd className="text-body text-foreground">{value}</dd>
-    </div>
-  );
-}
 
 export interface WorkerDetailFieldsProps {
   lock: WorkerLockInfo;
@@ -21,28 +11,26 @@ export interface WorkerDetailFieldsProps {
 
 export function WorkerDetailFields({ lock }: WorkerDetailFieldsProps) {
   return (
-    <dl className="flex flex-col">
-      <WorkerDetailField label="Role" value={<span className="font-mono">{lock.role}</span>} />
-      <WorkerDetailField label="Status" value={<StatusIndicator lock={lock} />} />
-      <WorkerDetailField
-        label="Cardinality"
-        value={lock.singleton ? "Singleton (one lease at a time)" : "Scale-to-N (no lease)"}
-      />
-      <WorkerDetailField
-        label="Worker id"
-        value={
-          lock.workerId != null ? <span className="break-all font-mono">{lock.workerId}</span> : "—"
-        }
-      />
-      <WorkerDetailField
-        label="Postgres pid"
-        value={lock.pid != null ? <span className="font-mono">{lock.pid}</span> : "—"}
-      />
-      <WorkerDetailField
-        label="Held since"
-        value={lock.heldSince != null ? <TimestampDisplay value={lock.heldSince} /> : "—"}
-      />
-    </dl>
+    <DetailList variant="divided">
+      <DetailRow variant="divided" label="Role">
+        {<span className="font-mono">{lock.role}</span>}
+      </DetailRow>
+      <DetailRow variant="divided" label="Status">
+        {<StatusIndicator lock={lock} />}
+      </DetailRow>
+      <DetailRow variant="divided" label="Cardinality">
+        {lock.singleton ? "Singleton (one lease at a time)" : "Scale-to-N (no lease)"}
+      </DetailRow>
+      <DetailRow variant="divided" label="Worker id">
+        {lock.workerId != null ? <span className="break-all font-mono">{lock.workerId}</span> : "—"}
+      </DetailRow>
+      <DetailRow variant="divided" label="Postgres pid">
+        {lock.pid != null ? <span className="font-mono">{lock.pid}</span> : "—"}
+      </DetailRow>
+      <DetailRow variant="divided" label="Held since">
+        {lock.heldSince != null ? <TimestampDisplay value={lock.heldSince} /> : "—"}
+      </DetailRow>
+    </DetailList>
   );
 }
 

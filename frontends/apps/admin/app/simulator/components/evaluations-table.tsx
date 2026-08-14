@@ -4,7 +4,7 @@
 // beside the markup that uses it — the same convention
 // `dashboard/components/delivery-rate-card.tsx`'s `OPERATOR_LABELS` follows.
 
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@vsms/ui";
+import { StateChip, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@vsms/ui";
 import { type OutcomeKind, OutcomePill } from "./outcome-pill";
 
 export type PredicateKind = "operator" | "class" | "app_id" | "prefix";
@@ -62,9 +62,9 @@ export function EvaluationsTable({ rows, winnerRouteId }: EvaluationsTableProps)
             <TableCell>
               {evaluation.routeName}
               {evaluation.routeId === winnerRouteId && (
-                <span className="ml-2 rounded-sm border border-state-success-border bg-state-success-bg px-1.5 py-0.5 text-caption text-state-success-fg">
+                <StateChip tone="success" className="ml-2">
                   winner
-                </span>
+                </StateChip>
               )}
             </TableCell>
             <TableCell>

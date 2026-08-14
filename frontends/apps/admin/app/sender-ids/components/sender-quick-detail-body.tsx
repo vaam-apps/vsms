@@ -1,6 +1,5 @@
-import { Button, InlineEmptyState } from "@vsms/ui";
+import { Button, DetailList, DetailRow, InlineEmptyState } from "@vsms/ui";
 import type { ProviderListItem, RegistrationListItem, SenderIdListItem } from "../sender-id-domain";
-import { DetailList, DetailRow } from "./detail-row";
 import { RegistrationStatusBadge } from "./registration-status-badge";
 
 // Dumb (R6): the `QuickDetailDrawer`'s summary for one sender id — its own
@@ -24,7 +23,7 @@ export function SenderQuickDetailBody({
           <span className="font-mono text-caption">{senderId.kind}</span>
         </DetailRow>
         {senderId.notes != null && senderId.notes !== "" && (
-          <DetailRow label="Notes" stacked>
+          <DetailRow label="Notes" variant="stacked">
             {senderId.notes}
           </DetailRow>
         )}

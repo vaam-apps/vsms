@@ -9,10 +9,12 @@ export * from "./components/bespoke/inline-empty-state";
 export * from "./components/bespoke/live-row";
 export * from "./components/bespoke/payload-inspector";
 export * from "./components/bespoke/screen-layout";
+export * from "./components/bespoke/stale-write-banner";
 export * from "./components/bespoke/state-timeline";
 // Data-display (design doc §7): consistency is the deliverable, so these
 // are components, not ad hoc per-screen formatting.
 export * from "./components/data/code";
+export * from "./components/data/detail-row";
 export * from "./components/data/id-display";
 export * from "./components/data/msisdn-display";
 export * from "./components/data/timestamp-display";
@@ -40,6 +42,7 @@ export * from "./components/primitives/toast";
 export * from "./components/primitives/tooltip";
 export * from "./components/status/attempt-status-pill";
 export * from "./components/status/job-status-pill";
+export * from "./components/status/state-chip";
 export * from "./components/status/state-mark";
 export * from "./components/status/status-pill";
 // Status system — the most-reused thing in the product. Build/read this first.

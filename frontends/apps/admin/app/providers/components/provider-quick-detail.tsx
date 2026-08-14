@@ -4,9 +4,15 @@
 // route (D14) — that decision, and the state backing it, stays in the
 // smart component.
 
-import { Button, IdDisplay, QuickDetailDrawer, TimestampDisplay } from "@vsms/ui";
+import {
+  Button,
+  DetailList,
+  DetailRow,
+  IdDisplay,
+  QuickDetailDrawer,
+  TimestampDisplay,
+} from "@vsms/ui";
 import type { ProviderState } from "../provider-types";
-import { DetailList, DetailRow } from "./detail-row";
 import { StatePill } from "./state-pill";
 
 export interface QuickDetail {

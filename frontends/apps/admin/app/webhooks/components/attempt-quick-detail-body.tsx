@@ -1,6 +1,5 @@
-import { AttemptStatusPill, FieldError, TimestampDisplay } from "@vsms/ui";
+import { AttemptStatusPill, DetailList, DetailRow, FieldError, TimestampDisplay } from "@vsms/ui";
 import type { AttemptListItem } from "../webhook-domain";
-import { DetailList, DetailRow } from "./detail-row";
 
 // Dumb (R6): the `QuickDetailDrawer`'s summary `dl` for one delivery
 // attempt.
@@ -26,7 +25,7 @@ export function AttemptQuickDetailBody({
         <span className="font-mono">{attempt.lastStatusCode ?? "—"}</span>
       </DetailRow>
       {attempt.lastError != null && (
-        <DetailRow label="Last error" stacked>
+        <DetailRow label="Last error" variant="stacked">
           <FieldError>{attempt.lastError}</FieldError>
         </DetailRow>
       )}

@@ -2,6 +2,7 @@ import {
   IdDisplay,
   InlineEmptyState,
   Skeleton,
+  StateChip,
   Table,
   TableBody,
   TableCell,
@@ -70,13 +71,9 @@ export function RouteTable({
             </TableCell>
             <TableCell>
               {route.enabled ? (
-                <span className="rounded-sm border border-state-success-border bg-state-success-bg px-1.5 py-0.5 text-caption text-state-success-fg">
-                  enabled
-                </span>
+                <StateChip tone="success">enabled</StateChip>
               ) : (
-                <span className="rounded-sm border border-state-danger-border bg-state-danger-bg px-1.5 py-0.5 text-caption text-state-danger-fg">
-                  disabled
-                </span>
+                <StateChip tone="danger">disabled</StateChip>
               )}
             </TableCell>
             <TableCell>{route.name}</TableCell>

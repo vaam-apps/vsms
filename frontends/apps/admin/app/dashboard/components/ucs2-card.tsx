@@ -5,7 +5,7 @@
 // `jumped` is a business decision (the 25-point threshold) computed by the
 // smart component; this component only renders what it's told.
 
-import { Card, CardBody, CardHeader } from "@vsms/ui";
+import { Card, CardBody, CardHeader, StateChip } from "@vsms/ui";
 import { formatPercent } from "../format";
 import { HourlyBars } from "./hourly-bars";
 
@@ -29,13 +29,7 @@ export function Ucs2Card({ buckets, currentRatio, previousRatio, jumped }: Ucs2C
       <CardHeader
         title="UCS-2 ratio"
         meta="last 6 hours, oldest first"
-        action={
-          jumped ? (
-            <span className="rounded-sm border border-state-uncertain-border bg-state-uncertain-bg px-2 py-0.5 text-caption text-state-uncertain-fg">
-              jumped
-            </span>
-          ) : undefined
-        }
+        action={jumped ? <StateChip tone="uncertain">jumped</StateChip> : undefined}
       />
       <CardBody>
         {buckets.length > 0 ? (

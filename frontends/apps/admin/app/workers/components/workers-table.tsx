@@ -8,6 +8,7 @@ import {
   Badge,
   InlineEmptyState,
   Skeleton,
+  StateChip,
   Table,
   TableBody,
   TableCell,
@@ -27,17 +28,9 @@ function StatusIndicator({ lock }: { lock: WorkerLockInfo }) {
     return <Badge variant="outline">scale-to-N — no lock</Badge>;
   }
   if (lock.held) {
-    return (
-      <span className="rounded-sm border border-state-success-border bg-state-success-bg px-1.5 py-0.5 text-caption text-state-success-fg">
-        held
-      </span>
-    );
+    return <StateChip tone="success">held</StateChip>;
   }
-  return (
-    <span className="rounded-sm border border-state-danger-border bg-state-danger-bg px-1.5 py-0.5 text-caption text-state-danger-fg">
-      unheld
-    </span>
-  );
+  return <StateChip tone="danger">unheld</StateChip>;
 }
 
 export interface WorkersTableProps {

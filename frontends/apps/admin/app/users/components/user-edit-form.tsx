@@ -8,12 +8,12 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
+  StaleWriteBanner,
 } from "@vsms/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import type { RoleRecord } from "../types";
 import type { UserEditValues } from "../user-forms";
 import { ErrorBanner } from "./error-banner";
-import { StaleWriteBanner } from "./stale-write-banner";
 
 export function UserEditForm({
   form,
