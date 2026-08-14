@@ -114,12 +114,22 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Four production images. `repo` is flat (`vsms-<image>`) — these
+          # published under that shape at `v0.1.0`, and an image-hygiene PR
+          # that later introduced a nested `vsms/<name>` convention for
+          # non-production images (below) deliberately left these four
+          # unrenamed: they're already referenced by `compose.demo.yaml`,
+          # the Helm chart, and `deploy/`, so renaming them is a separate
+          # decision with real blast radius nobody has made yet.
           - image: sms-gateway
             dockerfile: app/sms-gateway/Dockerfile
+            repo: vsms-sms-gateway
           - image: sms-worker
             dockerfile: app/sms-worker/Dockerfile
+            repo: vsms-sms-worker
           - image: admin
             dockerfile: admin/Dockerfile
+            repo: vsms-admin
           # #145: deploy/charts/vsms's migrate Job (a pre-install/
           # pre-upgrade Helm hook — see that chart's own values.yaml)
           # needs a prebuilt image to pull from a registry; Kubernetes has
@@ -130,17 +140,34 @@ jobs:
           # compose path always builds it locally from source.
           - image: migrate
             dockerfile: app/sms-migrate/Dockerfile
-          # compose-demo-ghcr: the GHCR-only showcase stack
-          # (compose.demo.yaml) has no `build:` stanza for anything,
+            repo: vsms-migrate
+          # Two non-production images, both nested under `vsms/<name>`
+          # (`repo:`, not `vsms-<name>`) — the convention this workflow now
+          # follows for anything that isn't a real production artifact, so
+          # a future fake MTN (or any other dev/demo tool) lands under the
+          # same `vsms/` namespace rather than growing a fifth flat
+          # `vsms-<name>` repo. compose-demo-ghcr: the GHCR-only showcase
+          # stack (compose.demo.yaml) has no `build:` stanza for anything,
           # including the provider fake that gets a message past `routed`
           # to a visible `delivered` — see that file's own header comment.
           # This image is a development/demo tool, never a production
           # artifact (app/sms-fake-orange/src/main.rs's own module doc,
           # repeated at WARN on every start), but it needs a real published
-          # image the same as the other four the moment any compose stack
-          # stops building from source.
+          # image the same as the four production images above the moment
+          # any compose stack stops building from source.
           - image: sms-fake-orange
             dockerfile: app/sms-fake-orange/Dockerfile
+            repo: vsms/sms-fake-orange
+          # Demo-only fixture-seeding logic (App/SenderId) that used to be
+          # compiled into the production sms-gateway image
+          # (`Command::SeedDemoApp`) — moved into its own binary/crate/image
+          # by the same image-hygiene PR that introduced this nested
+          # naming convention, so no demo-only code ships inside a
+          # production image. See app/vsms-demo-seed/src/main.rs's own
+          # module doc.
+          - image: demo
+            dockerfile: app/vsms-demo-seed/Dockerfile
+            repo: vsms/demo
 
     steps:
       - uses: actions/checkout@v4
@@ -154,7 +181,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build context is the repo root for all four images — see each
+      # Build context is the repo root for every image — see each
       # Dockerfile's own header comment for why (schema/ for
       # include_server_schema!/migrate's own copy of schema/migrations,
       # the pnpm workspace for admin).
@@ -164,9 +191,13 @@ jobs:
           context: .
           file: ${{ matrix.dockerfile }}
           push: true
+          # `matrix.repo`, not a hardcoded `vsms-${{ matrix.image }}` — see
+          # the matrix's own comments above for which images are flat
+          # (production, `vsms-<name>`) vs nested (dev/demo,
+          # `vsms/<name>`).
           tags: |
-            ghcr.io/${{ github.repository_owner }}/vsms-${{ matrix.image }}:${{ needs.version.outputs.tag_primary }}
-            ghcr.io/${{ github.repository_owner }}/vsms-${{ matrix.image }}:${{ needs.version.outputs.tag_secondary }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.repo }}:${{ needs.version.outputs.tag_primary }}
+            ghcr.io/${{ github.repository_owner }}/${{ matrix.repo }}:${{ needs.version.outputs.tag_secondary }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
