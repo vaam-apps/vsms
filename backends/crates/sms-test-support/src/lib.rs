@@ -473,10 +473,10 @@ fn container_url() -> String {
 /// workspace-internal, and `cargo test` may be invoked from any directory.
 fn compose_file_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../compose.yml")
+        .join("../../../compose.yml")
         .canonicalize()
         .expect(
-            "compose.yml must exist at the repository root, two levels up from \
+            "compose.yml must exist at the repository root, three levels up from \
              backends/crates/sms-test-support — has the workspace layout changed?",
         )
 }
@@ -929,7 +929,7 @@ fn migration_dirs() -> Vec<PathBuf> {
 /// directory `cargo test` happens to be invoked from.
 fn migrations_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../backends/migrations/postgres")
+        .join("../../migrations/postgres")
         .canonicalize()
         .expect(
             "backends/migrations/postgres must exist two levels up from \
