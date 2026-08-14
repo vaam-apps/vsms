@@ -1,5 +1,5 @@
 {
-  "name": "@vsms/sdk",
+  "name": "@vymalo/vsms-node",
   "version": "0.1.0",
   "description": "Official Node.js SDK for vsms: owns the private_key_jwt credential lifecycle so integrators stop hand-rolling token acquisition.",
   "license": "MIT",
@@ -26,7 +26,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "swc src -d dist --strip-leading-paths && tsc -p tsconfig.json --emitDeclarationOnly",
     "typecheck": "tsc --noEmit",
     "test": "node --test"
   },
@@ -34,6 +34,8 @@
     "jose": "^5.9.6"
   },
   "devDependencies": {
+    "@swc/cli": "^0.6.0",
+    "@swc/core": "^1.11.0",
     "@types/node": "^24.0.0",
     "typescript": "5.9.3"
   },

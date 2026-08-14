@@ -271,6 +271,9 @@ jobs:
   js:
     name: pnpm biome, typecheck, build, test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write  # npm publish --provenance needs an OIDC token
 
     # The TypeScript half had NO automated gate at all until this job existed:
     # six PRs of real application code (the workspace, @vsms/env, @vsms/ui, the
@@ -359,12 +362,24 @@ jobs:
         run: pnpm install --ignore-workspace --frozen-lockfile && node --test
         working-directory: examples/node/webhook-receiver
 
-      - name: Official Node SDK (@vsms/sdk) — test and typecheck
+      # NOT `--ignore-workspace`, unlike the webhook-receiver step above.
+      # That example is deliberately outside `pnpm-workspace.yaml` so an
+      # integrator can copy it out and run it standalone; this SDK is a real
+      # workspace member (`sdks/node/*`), already installed by the root
+      # install at the top of this job.
+      #
+      # The distinction is load-bearing, not cosmetic: `--ignore-workspace`
+      # also ignores the root `pnpm-workspace.yaml`'s `allowBuilds`, so
+      # `@swc/core`'s native build stays blocked and the whole step dies with
+      # `ERR_PNPM_IGNORED_BUILDS` before running a single test. A local
+      # `pnpm-workspace.yaml` beside the package does not help either — the
+      # flag ignores that too. Verified both, rather than reasoned about.
+      - name: Official Node SDK (@vymalo/vsms-node) — test, typecheck and dry-run publish
         run: |
-          pnpm install --ignore-workspace --frozen-lockfile
-          pnpm run build
-          pnpm run typecheck
+          pnpm --filter @vymalo/vsms-node run build
+          pnpm --filter @vymalo/vsms-node run typecheck
           node --test
+          npm publish --provenance --dry-run
         working-directory: sdks/node/vsms-sdk-node
 
   rules:

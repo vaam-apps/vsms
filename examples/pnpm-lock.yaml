@@ -10,7 +10,7 @@ importers:
 
   node/sms-send-example:
     dependencies:
-      '@vsms/sdk':
+      '@vymalo/vsms-node':
         specifier: file:../../../sdks/node/vsms-sdk-node
         version: file:../sdks/node/vsms-sdk-node
 
@@ -122,7 +122,7 @@ packages:
   '@types/serve-static@2.2.0':
     resolution: {integrity: sha512-8mam4H1NHLtu7nmtalF7eyBH14QyOASmcxHhSfEoRyr0nP/YdoesEtU+uSRvMe96TW/HPTtkoKqQLl53N7UXMQ==}
 
-  '@vsms/sdk@file:../sdks/node/vsms-sdk-node':
+  '@vymalo/vsms-node@file:../sdks/node/vsms-sdk-node':
     resolution: {directory: ../sdks/node/vsms-sdk-node, type: directory}
     engines: {node: '>=20'}
 
@@ -473,7 +473,7 @@ snapshots:
       '@types/http-errors': 2.0.5
       '@types/node': 24.13.3
 
-  '@vsms/sdk@file:../sdks/node/vsms-sdk-node':
+  '@vymalo/vsms-node@file:../sdks/node/vsms-sdk-node':
     dependencies:
       jose: 5.10.0
 
