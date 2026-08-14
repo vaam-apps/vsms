@@ -1,0 +1,502 @@
+# A one-command showcase of the whole system, pulling every vsms image from
+# GHCR — no `build:` stanza anywhere. This is a *third*, distinct compose
+# file, alongside two that already exist for different purposes:
+#
+#   - `compose.yml` (repo root) — Postgres alone, for `cargo run`/a live test
+#     suite/`psql` on a developer's own machine. No application binaries.
+#   - `deploy/docker-compose.yml` — the production-shaped stack: a Caddy edge
+#     terminating real TLS, every image built from source (`build: context:
+#     ..`), a required `.env` of real secrets (`ORANGE_CM_CLIENT_SECRET`, a
+#     real `SMS_OIDC_ISSUER`, ...), backups, Prometheus. Meant to be cloned
+#     onto a VM an operator controls and configures for real traffic.
+#   - `compose.demo.yaml` (this file) — a *showcase*: clone the repo, run one
+#     command, sign into a working console, and watch a message reach a
+#     terminal state, with no source build, no real Orange account, and no
+#     secret an evaluator has to go find. Every application image is pulled
+#     from GHCR, pinned to an explicit tag (never `:latest` — a showcase that
+#     silently changes under the person demoing it is worse than one that is
+#     a version behind). This file will never grow TLS, backups, or
+#     Prometheus; that's what the other two are for.
+#
+# Usage — see docs/runbooks/showcase.md for the full walkthrough, including
+# what to expect at each step and how to sign into the console:
+#
+#   docker compose -f compose.demo.yaml --profile console up -d
+#   docker compose -f compose.demo.yaml --profile console down -v   # reset
+#
+# Backend-only (R4 — CONTRIBUTING.md: "the admin console is optional, the
+# backend must run without it"): omit `--profile console` entirely. Every
+# service the console needs (`admin`, `seed-console-client`, `provision-
+# user`, and the tiny permission-fix step between `provision-client` and
+# `admin`) carries `profiles: [console]` and is skipped outright — not
+# started-then-idle, not present-but-unconfigured. `sms-gateway` and
+# `sms-worker` come up healthy either way, and `provision-client` (a real,
+# HTTP-usable client credential) is *not* gated behind the profile, since a
+# working machine credential is exactly what a backend-only deployment
+# needs to prove it's alive:
+#
+#   docker compose -f compose.demo.yaml up -d
+#   docker compose -f compose.demo.yaml down -v
+#
+# `down -v` (not a bare `down`) is the documented reset: `provision-client`
+# refuses to overwrite an existing private key (a real, intentional safety
+# property — see app/sms-gateway/src/main.rs's own doc on `--key-out`), so a
+# second `up` against the *same* named volumes fails loudly rather than
+# silently reusing stale credentials. `-v` drops this file's own named
+# volumes (never a bind mount onto the host, and never anything from
+# `compose.yml`/`deploy/docker-compose.yml` — Compose scopes volumes to the
+# project name below) so every `up` after a `down -v` starts genuinely
+# fresh, the same guarantee `scripts/demo.sh down` gives by removing its own
+# Postgres container outright.
+
+name: vsms-demo
+
+# The one thing an evaluator should ever need to change: bump
+# VSMS_IMAGE_TAG (below, wherever it's interpolated) to showcase a newer
+# release. gateway/worker/admin/migrate are published together by
+# .github/workflows/release.yml's `v*.*.*` trigger and always share one
+# tag. (A YAML anchor was tried first and rejected: `*anchor` only
+# resolves as a whole scalar node, never embedded inside a larger string
+# like `image:-tag`, so `ghcr.io/...:*anchor` is parsed as the literal
+# eight characters `*anchor` — confirmed with `docker compose config`,
+# not assumed. Compose's own `${VAR:-default}` interpolation has no such
+# restriction.)
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: vsms
+      POSTGRES_PASSWORD: vsms-demo-only
+      POSTGRES_DB: vsms
+    # NEVER publish this port. Every other service in this file reaches
+    # Postgres over the compose network's own internal DNS (`postgres:5432`)
+    # — nothing here needs it reachable from the host, and this machine may
+    # already have an unrelated Postgres bound to 5432. If you're reading
+    # this because you added a `ports:` block back in to debug something by
+    # hand: use `docker compose -f compose.demo.yaml exec postgres psql -U
+    # vsms` instead — it reaches the same database without ever putting it
+    # on the host network, which is the property this comment exists to
+    # protect. (`deploy/docker-compose.yml`'s own `postgres` service carries
+    # the identical rule, for the identical reason.)
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U vsms -d vsms']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - vsms_demo_pgdata:/var/lib/postgresql/data
+
+  # One-shot: applies schema/migrations/postgres/{0001_init,0002_bootstrap}
+  # exactly once each. See app/sms-migrate/src/main.rs's own module doc —
+  # this is the same image `deploy/docker-compose.yml`'s `migrate` service
+  # runs, just pulled from GHCR instead of built from source.
+  migrate:
+    image: ghcr.io/vymalo/vsms-migrate:${VSMS_IMAGE_TAG:-v0.1.0}
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  # sms-gateway refuses to bind its listener at all without an active OP
+  # signing key (AGENTS.md's own M1 section — found live in #139: it fails
+  # at process start, not lazily on the first /token request), so this has
+  # to complete before `sms-gateway` is ever started, not just before it's
+  # expected to serve traffic.
+  seed-signing-key:
+    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    command: ['rotate-signing-key']
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: 'no'
+
+  # sms-gateway also refuses to bind its listener without an `active`
+  # `Provider` row keyed `orange_cm`, and `sms-worker`'s `dispatch` role
+  # refuses to route anything without a matching, enabled `Route` pointing
+  # at it (#62's routing engine — see docs/runbooks/getting-started.md's
+  # own step 5 for the full "why", and app/sms-gateway/src/main.rs's
+  # `SeedDispatch` doc comment for the fix-forward history). Independent of
+  # `seed-signing-key` above — both only need `migrate` to have finished.
+  seed-dispatch:
+    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    command: ['seed-dispatch']
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: 'no'
+
+  # The real gap a GHCR-only showcase has that `scripts/demo.sh` doesn't:
+  # that script seeds its demo `App`+`SenderId` via `cargo run --example
+  # send_test_message` (crates/sms-api/examples/), which is never published
+  # as a GHCR image — a `build:`-free compose file has no way to invoke it.
+  # `seed-demo-app` (added to app/sms-gateway/src/main.rs alongside this
+  # file) is the GHCR-only equivalent: the one `App` + approved `SenderId`
+  # every message this showcase sends needs to exist before `sendMessage`
+  # will accept anything. See that command's own doc comment for why it's
+  # explicitly demo-only and not part of any production bootstrap sequence.
+  seed-demo-app:
+    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    command: ['seed-demo-app']
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
+    depends_on:
+      seed-dispatch:
+        condition: service_completed_successfully
+    restart: 'no'
+
+  # Backend-only demo credential (R4: never gated behind `--profile
+  # console` — a working machine credential is exactly what a backend-only
+  # deployment should be able to prove it has). `provisionAppClient`
+  # generates `clientId` itself (a random `appc_<uuid>`, never
+  # caller-chosen — crates/sms-api/src/procedures.rs), so nothing in this
+  # compose file can know it in advance the way every other value here is
+  # known up front. `--app-slug` (added to `ProvisionClient` alongside
+  # `--client-id-out`, same PR as `seed-demo-app`) resolves the id
+  # `seed-demo-app` created without shuttling it out of that container by
+  # hand; `--client-id-out` writes the *result* — the one thing this
+  # container computes that a sibling container (`admin`, if the console
+  # profile is active) needs — to the shared `vsms_demo_secrets` volume,
+  # since Compose has no other way to feed one service's computed output
+  # into another service's environment.
+  #
+  # `user: "0:0"` overrides the image's own distroless-nonroot uid (65532)
+  # deliberately: a fresh named volume is created root-owned, and this is
+  # the only container that ever *creates* files in it — `secrets-fix-
+  # perms` below (root by default, a stock `busybox` image) is what makes
+  # the result readable by `admin`'s own non-root uid (10001) afterward.
+  # `--key-out`'s own `0600` mode is unaffected either way — this only
+  # changes who *owns* the resulting file, not how permissive its mode is.
+  provision-client:
+    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    user: '0:0'
+    command:
+      - provision-client
+      - --app-slug
+      - vsms-demo
+      - --label
+      - demo console (compose.demo.yaml)
+      - --scope
+      - sms:send
+      - --scope
+      - sms:read
+      - --scope
+      - job:read
+      - --scope
+      - job:enqueue
+      - --scope
+      - worker:read
+      - --scope
+      - provider:read
+      - --scope
+      - route:read
+      - --scope
+      - dashboard:read
+      - --key-out
+      - /secrets/console-client-key.pem
+      - --client-id-out
+      - /secrets/console-client-id
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
+      # #134: real secret material in production, minimum 32 bytes,
+      # validated before anything else runs. This is an *obviously* demo
+      # value — never reuse it anywhere real. See `sms-gateway`'s own
+      # environment block below for the one place it's actually load-
+      # bearing (Message.msisdnHash/bodyHash); provision-client only needs
+      # it because `Procedures::new` takes a `HashPepper` unconditionally,
+      # not because provisioning a client hashes anything itself.
+      SMS_HASH_PEPPER: vsms-demo-hash-pepper-DO-NOT-USE-IN-PRODUCTION-1234567890
+    volumes:
+      - vsms_demo_secrets:/secrets
+    depends_on:
+      seed-demo-app:
+        condition: service_completed_successfully
+      secrets-init:
+        condition: service_completed_successfully
+    restart: 'no'
+
+  # `chmod 0777` on a *fresh* named volume before `provision-client` (which
+  # runs as uid 0, see above) ever writes to it — Compose creates a new
+  # named volume root-owned at 0755, which blocks a write from any other
+  # uid, and `provision-client` running as root sidesteps the read half of
+  # that but this still has to exist so the directory itself is writable in
+  # the first place. `busybox` (Docker Hub, not GHCR): the one non-GHCR
+  # image in this file, alongside `postgres` above and `secrets-fix-perms`
+  # below — small, stock, official infrastructure glue, not a vsms
+  # application image. "Only pre-built images from GHCR, no `build:`
+  # stanza" (this PR's own brief) is about never compiling vsms source
+  # inside this file, not about refusing an off-the-shelf image for a
+  # two-line permissions fixup, the same reading `deploy/docker-compose.yml`
+  # already relies on for its own `postgres:16-alpine`.
+  secrets-init:
+    image: busybox:1.36
+    command: ['sh', '-c', 'mkdir -p /secrets && chmod 0777 /secrets']
+    volumes:
+      - vsms_demo_secrets:/secrets
+    restart: 'no'
+
+  # The other half of the `provision-client`/`admin` handoff: `--key-out`'s
+  # own `0600` mode (app/sms-gateway/src/main.rs, unchanged and correct —
+  # "never store this anywhere else" is still the right default) means the
+  # file is readable only by the uid that created it (root, per
+  # `provision-client`'s own `user: "0:0"` override above), and `admin`
+  # runs as its own baked-in non-root uid (10001, `admin/Dockerfile`'s
+  # `useradd --uid 10001`). Loosening the mode to `0644` — readable inside
+  # this compose project's own internal Docker volume, never exposed to the
+  # host or the network — is the trade this showcase makes so `admin` can
+  # read a key it legitimately needs (to sign every `private_key_jwt`
+  # assertion it sends to `sms-gateway`) without running as root itself or
+  # `sms-gateway`'s own image gaining a chmod-capable shell it doesn't
+  # otherwise need. `profiles: [console]` — nothing but `admin` ever reads
+  # these files, so a backend-only run skips this step outright.
+  secrets-fix-perms:
+    image: busybox:1.36
+    command: ['sh', '-c', 'chmod 0644 /secrets/console-client-key.pem /secrets/console-client-id']
+    volumes:
+      - vsms_demo_secrets:/secrets
+    depends_on:
+      provision-client:
+        condition: service_completed_successfully
+    restart: 'no'
+    profiles: [console]
+
+  # Registers the `sms-console` OauthClient row #194's human login flow
+  # needs. `--redirect-uri` must equal `${ADMIN_BASE_URL}/api/auth/callback`
+  # character for character (RFC 6749 §3.1.2) — `localhost`, matching
+  # `admin`'s own `ADMIN_BASE_URL` below and the host port this file
+  # publishes `admin` on.
+  seed-console-client:
+    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    command:
+      - seed-console-client
+      - --client-id
+      - sms-console
+      - --redirect-uri
+      - http://localhost:${VSMS_DEMO_CONSOLE_PORT:-3200}/api/auth/callback
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: 'no'
+    profiles: [console]
+
+  # The human account to actually sign in with. `provision-user` generates
+  # a random password and prints it exactly once, to this container's own
+  # log — it is never stored anywhere and this file cannot know it in
+  # advance any more than it can know `provision-client`'s clientId, so
+  # read it back after `up` finishes:
+  #
+  #   docker compose -f compose.demo.yaml logs provision-user
+  provision-user:
+    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    command:
+      - provision-user
+      - --email
+      - demo@vsms.local
+      - --display-name
+      - Demo Operator
+      - --role-key
+      - owner
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: 'no'
+    profiles: [console]
+
+  # A development/demo impersonation of Orange Cameroon's SMS API — see
+  # app/sms-fake-orange/src/main.rs's own module doc. No production
+  # deployment references this image; it exists only so this showcase can
+  # move a message all the way to `delivered` without a real Orange
+  # account. Stateless and DB-free, so it needs no `depends_on` of its own
+  # — the image itself is new as of this PR (`app/sms-fake-orange/
+  # Dockerfile`, added to `.github/workflows/release.yml`'s own
+  # `build-and-push` matrix); see this repo's PR description for exactly
+  # which published tag this points at and why it can't yet share
+  # `VSMS_IMAGE_TAG` with the other four images above.
+  sms-fake-orange:
+    image: ghcr.io/vymalo/vsms-sms-fake-orange:${VSMS_FAKE_ORANGE_IMAGE_TAG:?see this file's own header comment on VSMS_FAKE_ORANGE_IMAGE_TAG}
+    restart: unless-stopped
+    command:
+      - --bind-addr
+      - 0.0.0.0:8090
+      - --dlr-endpoint
+      - http://sms-gateway:8080/dlr/orange_cm
+      - --sender-number
+      - '+2370000'
+
+  sms-gateway:
+    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
+      # Internal DNS, never the host-published port below — `admin` (when
+      # the console profile is active) fetches JWKS/exchanges `/token`
+      # against exactly this value, server-side, over the compose network;
+      # the browser never talks to sms-gateway directly (see #194's own
+      # "POST /login... the browser never talks to sms-gateway directly"
+      # note). Every token this OP mints carries this as `iss`, so this
+      # must be the *same* string `admin`'s own `SMS_AUTH_ISSUER` uses
+      # below, not merely an equivalent one.
+      SMS_OIDC_ISSUER: http://sms-gateway:8080
+      # No real Orange account exists for this showcase — every submit
+      # goes to sms-fake-orange instead (ORANGE_CM_BASE_URL below), which
+      # accepts any credentials by default (see that image's own
+      # `--reject-tokens` flag for the one mode where it doesn't).
+      ORANGE_CM_CLIENT_ID: placeholder
+      ORANGE_CM_CLIENT_SECRET: placeholder
+      ORANGE_CM_SENDER_NUMBER: '+2370000'
+      ORANGE_CM_BASE_URL: http://sms-fake-orange:8090
+      # #134: obviously-demo value, 32+ bytes, never reused anywhere real
+      # — see `provision-client`'s own environment block above for the
+      # identical value and why it must match exactly (a hash computed
+      # under one pepper never equals one computed under another, and
+      # nothing detects the mismatch).
+      SMS_HASH_PEPPER: vsms-demo-hash-pepper-DO-NOT-USE-IN-PRODUCTION-1234567890
+      SMS_CONSOLE_OIDC_CLIENT_ID: sms-console
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed-signing-key:
+        condition: service_completed_successfully
+      seed-dispatch:
+        condition: service_completed_successfully
+    # Overrides the image's own baked-in liveness-only HEALTHCHECK with a
+    # readiness check (`/readyz`, a real `SELECT 1` against the pool) —
+    # identical override, identical reasoning, to
+    # `deploy/docker-compose.yml`'s own `sms-gateway` service: `admin`
+    # should not start routing to a gateway that's up but can't reach its
+    # database.
+    healthcheck:
+      test: ['CMD', '/usr/local/bin/sms-gateway', 'healthcheck', '--path', '/readyz']
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    ports:
+      # Loopback only. Not required for anything in this file to function
+      # (admin reaches sms-gateway over the internal network exclusively —
+      # see SMS_OIDC_ISSUER's own comment above) — published purely so an
+      # evaluator can `curl http://127.0.0.1:.../healthz` or exercise the
+      # REST API directly without a browser.
+      - 127.0.0.1:${VSMS_DEMO_GATEWAY_PORT:-8280}:8080
+
+  sms-worker:
+    image: ghcr.io/vymalo/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.1.0}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
+      # dispatch (submits/reroutes), scheduler (due recurring jobs), jobs
+      # (expire_stale/reap_outbox/purge_retention/grey_route_watch) — the
+      # same three roles `scripts/demo.sh` runs. drain/hooks are omitted:
+      # this showcase seeds no `WebhookEndpoint`, so there is nothing for
+      # either role to drive.
+      SMS_WORKER_ROLES: dispatch,scheduler,jobs
+      ORANGE_CM_CLIENT_ID: placeholder
+      ORANGE_CM_CLIENT_SECRET: placeholder
+      ORANGE_CM_SENDER_NUMBER: '+2370000'
+      ORANGE_CM_BASE_URL: http://sms-fake-orange:8090
+      ORANGE_CM_DLR_NOTIFY_URL: http://sms-gateway:8080/dlr/orange_cm
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      seed-dispatch:
+        condition: service_completed_successfully
+      seed-demo-app:
+        condition: service_completed_successfully
+      sms-fake-orange:
+        condition: service_started
+
+  # R4: everything above this line is the whole backend, and it is
+  # healthy with this service never started at all
+  # (`docker compose -f compose.demo.yaml up -d`, no `--profile console`).
+  admin:
+    image: ghcr.io/vymalo/vsms-admin:${VSMS_IMAGE_TAG:-v0.1.0}
+    restart: unless-stopped
+    profiles: [console]
+    # This image's own `output: "standalone"` server.js hardcodes
+    # `process.env.NODE_ENV = 'production'` as its second line — verified
+    # directly (`docker run --entrypoint sh ... server.js`), not assumed —
+    # so there is no environment variable this file can set that makes the
+    # packaged image believe it is running in development. That, in turn,
+    # unconditionally trips two of @vsms/env's own deploy-time rules
+    # (packages/env/src/index.ts's `enforceDeploymentRules` block):
+    # `ADMIN_BASE_URL` and `SMS_API_URL` must both be `https://` whenever
+    # `NODE_ENV === "production"`. A showcase reachable at `http://
+    # localhost:...` with no TLS anywhere in this file is exactly the case
+    # that rule exists to refuse — by design, for a real deployment.
+    # `SKIP_ENV_VALIDATION=1` is the same escape hatch
+    # `admin/Dockerfile`'s own build stage already uses for the identical
+    # reason at build time (its own comment: "next build sets
+    # NODE_ENV=production, which would otherwise trip @vsms/env's deploy-
+    # time rules... that only make sense at runtime, not compile time") —
+    # here it's the runtime instance of the same problem. This is a real,
+    # load-bearing trade this showcase makes, not a convenience default:
+    # it disables *all* of @vsms/env's zod validation, not just the two
+    # https checks, so a genuine misconfiguration here fails as a confusing
+    # runtime error deep in the app rather than a clear startup message.
+    # Fronting this with a real (even self-signed) TLS edge would let this
+    # image run in its own intended mode instead — out of scope for a
+    # one-command, clone-and-run showcase; tracked as follow-up work, not
+    # silently worked around.
+    environment:
+      SMS_API_URL: http://sms-gateway:8080
+      SMS_AUTH_ISSUER: http://sms-gateway:8080
+      SMS_CONSOLE_PRIVATE_KEY_PATH: /secrets/console-client-key.pem
+      SMS_CONSOLE_SCOPE: sms:send sms:read job:read job:enqueue worker:read provider:read route:read dashboard:read
+      ADMIN_BASE_URL: http://localhost:${VSMS_DEMO_CONSOLE_PORT:-3200}
+      SMS_CONSOLE_OIDC_CLIENT_ID: sms-console
+      # 32+ chars, obviously a demo value — see @t3-oss/env-nextjs's own
+      # `.min(32)` check on this field (real entropy in production; this
+      # showcase has no real session to protect).
+      SMS_CONSOLE_SESSION_SECRET: vsms-demo-session-secret-DO-NOT-USE-IN-PRODUCTION-abcdefgh
+      MESSAGE_STREAM_POLL_MS: '2000'
+      NEXT_PUBLIC_APP_NAME: vsms Admin Console (showcase)
+      SKIP_ENV_VALIDATION: '1'
+    volumes:
+      - vsms_demo_secrets:/secrets:ro
+    # SMS_CONSOLE_CLIENT_ID is deliberately absent from `environment:`
+    # above — `provision-client` generates it server-side and this file
+    # cannot know it in advance (see that service's own comment). This
+    # entrypoint override reads the value `--client-id-out` wrote to the
+    # shared volume and exports it into the *same* shell that then execs
+    # the image's own real entrypoint (`node admin/server.js`, per
+    # `admin/Dockerfile`) — the only place in this file that overrides an
+    # image's entrypoint, and only because Compose has no declarative way
+    # to feed one container's computed output into a sibling container's
+    # environment. `node:22-bookworm-slim` (this image's runtime base,
+    # unlike the distroless gateway/worker/fake-orange images) has a real
+    # `/bin/sh` to run this with — confirmed directly, not assumed.
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - export SMS_CONSOLE_CLIENT_ID="$(cat /secrets/console-client-id)" && exec node admin/server.js
+    depends_on:
+      sms-gateway:
+        condition: service_healthy
+      provision-client:
+        condition: service_completed_successfully
+      secrets-fix-perms:
+        condition: service_completed_successfully
+      seed-console-client:
+        condition: service_completed_successfully
+      provision-user:
+        condition: service_completed_successfully
+    ports:
+      - 127.0.0.1:${VSMS_DEMO_CONSOLE_PORT:-3200}:8080
+
+volumes:
+  vsms_demo_pgdata:
+  vsms_demo_secrets:

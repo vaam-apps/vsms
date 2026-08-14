@@ -130,6 +130,17 @@ jobs:
           # compose path always builds it locally from source.
           - image: migrate
             dockerfile: app/sms-migrate/Dockerfile
+          # compose-demo-ghcr: the GHCR-only showcase stack
+          # (compose.demo.yaml) has no `build:` stanza for anything,
+          # including the provider fake that gets a message past `routed`
+          # to a visible `delivered` — see that file's own header comment.
+          # This image is a development/demo tool, never a production
+          # artifact (app/sms-fake-orange/src/main.rs's own module doc,
+          # repeated at WARN on every start), but it needs a real published
+          # image the same as the other four the moment any compose stack
+          # stops building from source.
+          - image: sms-fake-orange
+            dockerfile: app/sms-fake-orange/Dockerfile
 
     steps:
       - uses: actions/checkout@v4
