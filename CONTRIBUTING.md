@@ -1,6 +1,6 @@
 # Contributing to vsms
 
-Three rules constrain everything else. Each is a default with named exceptions, and the exceptions are the interesting part. The full reasoning is in [docs/architecture.md](docs/architecture.md); this file is the version you should have in your head during review.
+Four rules constrain everything else. Each is a default with named exceptions, and the exceptions are the interesting part. The full reasoning is in [docs/architecture.md](docs/architecture.md); this file is the version you should have in your head during review.
 
 ---
 
@@ -79,6 +79,23 @@ Terminal states are simply rows with no outgoing edges, so terminality is data r
 Field secrecy comes from model-level `@@allow`, or from keeping the secret out of this database entirely. `Provider.credentialRef` is a *pointer* (`vault://...`), not a credential, which is why it is safe as a plain column. When the framework won't let you hide a field, arrange for the field not to be worth hiding.
 
 Related, and easy to get wrong: **`@pii` and `@sensitive` redact audit snapshots only.** They add no serde attribute, so a `@sensitive` field is still returned by `GET /messages/{id}`. They are not confidentiality controls.
+
+---
+
+## R4 — The admin console is optional. The backend must run without it.
+
+**Some deployments will ship the backends only, with no admin surface at all.** That is a supported configuration, not a degraded one, and it is a hard rule rather than a preference: a client integrating vsms as a delivery backend behind their own product has no use for this console, and may have a policy reason not to expose one.
+
+Concretely, for any change:
+
+- **No server-side code may depend on the console existing.** `crates/` and `app/` reference `admin/` only in comments today, and that is the invariant — a Rust file that needs a value only the console produces is a violation. `sms-gateway serve` must start, serve, and pass its health checks with no console deployed anywhere.
+- **Every operator action must be reachable without a browser.** This is what makes the rule survivable rather than aspirational. `provision-client`, `provision-user`, `seed-console-client`, `seed-dispatch`, `rotate-signing-key` and `record-route-validation` exist as `sms-gateway` subcommands for exactly this reason. If you add a console screen that performs an action no CLI subcommand can perform, you have made the console load-bearing — add the subcommand in the same change.
+- **Deployment must be able to omit it.** The Helm chart and the compose stack must both bring up a working gateway + worker + migrate with the console switched off, and nothing console-specific may be a hard-`required` value in that configuration. `sms-console`'s `OauthClient`, `ADMIN_BASE_URL`, `SMS_CONSOLE_*` and the OIDC session secret are all console-only concerns; a backend-only install must not need any of them.
+- **A backend-only deployment must still be observable and operable.** Metrics, alerting, the DLR endpoint, webhooks and the audit trail are backend concerns and must not degrade. The console is a *view* onto this system, never a component of it.
+
+The test to apply when reviewing: *if the console were deleted from this repository entirely, would this change still work?* If the answer is no, the change is wrong, not the rule.
+
+**Known violation as of 2026-08-14, tracked separately:** `deploy/charts/vsms/values.yaml` hard-`required`s `admin.baseUrl` and `admin.consoleClientId`, so a console-less Helm install fails at template time, and `deploy/docker-compose.yml` starts `admin` unconditionally with no profile. The code layer already satisfies this rule; the deployment layer does not yet.
 
 ---
 
