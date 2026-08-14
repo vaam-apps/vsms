@@ -63,21 +63,32 @@ name: vsms-demo
 # restriction.)
 #
 # **Known bootstrap gap, called out rather than hidden: `v0.1.0` (this
-# file's own default) predates this PR.** `seed-demo-app` and
-# `provision-client`'s `--app-slug`/`--client-id-out` flags — both added
-# alongside this file, both load-bearing for the bootstrap sequence below
-# — don't exist in `v0.1.0`. This file cannot make a version tag exist
-# before a maintainer cuts one; until the first `v*.*.*` release that
-# includes these commands ships, `VSMS_IMAGE_TAG` must be overridden (this
-# PR's own verification used the `sha-`-tagged image its own
-# `workflow_dispatch` smoke-test run published — see the PR description
-# for that exact tag) for this file to actually work. `v0.1.0` is kept as
-# the default anyway, rather than `main` (perpetually moving, exactly the
-# "silently changes under you" failure this header already argues
-# against) or a `sha-`/`branch-`-tagged smoke-test image (an artifact of
-# proving this PR, not a real release) — bump it once a compatible
-# version exists, and until then treat "the default doesn't work yet" as
-# accurate, not a bug in this file.
+# file's own default) predates this PR.** `provision-client`'s
+# `--app-slug`/`--client-id-out` flags — both added alongside this file,
+# both load-bearing for the bootstrap sequence below — don't exist in
+# `v0.1.0`. This file cannot make a version tag exist before a maintainer
+# cuts one; until the first `v*.*.*` release that includes these commands
+# ships, `VSMS_IMAGE_TAG` must be overridden (this PR's own verification
+# used the `sha-`-tagged image its own `workflow_dispatch` smoke-test run
+# published — see the PR description for that exact tag) for this file to
+# actually work. `v0.1.0` is kept as the default anyway, rather than `main`
+# (perpetually moving, exactly the "silently changes under you" failure
+# this header already argues against) or a `sha-`/`branch-`-tagged
+# smoke-test image (an artifact of proving this PR, not a real release) —
+# bump it once a compatible version exists, and until then treat "the
+# default doesn't work yet" as accurate, not a bug in this file.
+#
+# `seed-demo-app` (below) no longer shares `VSMS_IMAGE_TAG` at all — an
+# image-hygiene PR moved its logic out of `sms-gateway` (it used to be
+# `Command::SeedDemoApp`) into its own binary and its own image,
+# `ghcr.io/vymalo/vsms/demo`, so that no demo-only fixture-seeding code
+# ships inside the production gateway image any more. See that binary's
+# own module doc (`app/vsms-demo-seed/src/main.rs`) for the full
+# reasoning. It's versioned independently via `VSMS_DEMO_IMAGE_TAG`
+# (required, no default — same `:?` shape `VSMS_FAKE_ORANGE_IMAGE_TAG`
+# already uses below, for the identical reason: this image has never been
+# published under a `v*.*.*` tag, only under `main`/`sha-`/`branch-`
+# tags, so there is no version-tagged default that could actually work).
 
 services:
   postgres:
@@ -177,15 +188,17 @@ services:
   # that script seeds its demo `App`+`SenderId` via `cargo run --example
   # send_test_message` (crates/sms-api/examples/), which is never published
   # as a GHCR image — a `build:`-free compose file has no way to invoke it.
-  # `seed-demo-app` (added to app/sms-gateway/src/main.rs alongside this
-  # file) is the GHCR-only equivalent: the one `App` + approved `SenderId`
-  # every message this showcase sends needs to exist before `sendMessage`
-  # will accept anything. See that command's own doc comment for why it's
-  # explicitly demo-only and not part of any production bootstrap sequence.
+  # `vsms-demo-seed` (`app/vsms-demo-seed/`, its own crate and its own
+  # image — see that binary's own module doc for why it isn't a
+  # `sms-gateway` subcommand any more, and why it can't be a plain shell
+  # script either) is the GHCR-only equivalent: the one `App` + approved
+  # `SenderId` every message this showcase sends needs to exist before
+  # `sendMessage` will accept anything. Every flag has a default matching
+  # what the old `sms-gateway seed-demo-app` command used, so no `command:`
+  # override is needed here — only `DATABASE_URL`.
   seed-demo-app:
-    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    image: ghcr.io/vymalo/vsms/demo:${VSMS_DEMO_IMAGE_TAG:?see this file's own header comment on VSMS_DEMO_IMAGE_TAG}
     platform: linux/amd64
-    command: ['seed-demo-app']
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
     depends_on:
@@ -376,14 +389,24 @@ services:
   # app/sms-fake-orange/src/main.rs's own module doc. No production
   # deployment references this image; it exists only so this showcase can
   # move a message all the way to `delivered` without a real Orange
-  # account. Stateless and DB-free, so it needs no `depends_on` of its own
-  # — the image itself is new as of this PR (`app/sms-fake-orange/
-  # Dockerfile`, added to `.github/workflows/release.yml`'s own
-  # `build-and-push` matrix); see this repo's PR description for exactly
-  # which published tag this points at and why it can't yet share
-  # `VSMS_IMAGE_TAG` with the other four images above.
+  # account. Stateless and DB-free, so it needs no `depends_on` of its own.
+  # See this repo's PR description for exactly which published tag this
+  # points at and why it can't yet share `VSMS_IMAGE_TAG` with the four
+  # production images above. **Nested repository path** (`vsms/
+  # sms-fake-orange`, not the flat `vsms-sms-fake-orange` this image
+  # published under before the image-hygiene PR that renamed it): every
+  # non-production image (this one, and `vsms-demo-seed` above) now lives
+  # under `ghcr.io/vymalo/vsms/<name>`, so a glance at the registry
+  # namespace tells you whether an image is a real release artifact
+  # (`ghcr.io/vymalo/vsms-<name>`, flat) or a dev/demo tool (`ghcr.io/
+  # vymalo/vsms/<name>`, nested) — the four production images
+  # (`sms-gateway`/`sms-worker`/`admin`/`migrate`) were deliberately left
+  # on the flat naming, unrenamed: they published at `v0.1.0` before this
+  # convention existed and are already referenced by `compose.demo.yaml`
+  # (below), the Helm chart, and `deploy/`, so renaming them is a separate
+  # decision with real blast radius the maintainer hasn't made yet.
   sms-fake-orange:
-    image: ghcr.io/vymalo/vsms-sms-fake-orange:${VSMS_FAKE_ORANGE_IMAGE_TAG:?see this file's own header comment on VSMS_FAKE_ORANGE_IMAGE_TAG}
+    image: ghcr.io/vymalo/vsms/sms-fake-orange:${VSMS_FAKE_ORANGE_IMAGE_TAG:?see this file's own header comment on VSMS_FAKE_ORANGE_IMAGE_TAG}
     platform: linux/amd64
     restart: unless-stopped
     command:

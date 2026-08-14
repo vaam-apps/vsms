@@ -53,15 +53,17 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-musl \
 
 # --- runtime -------------------------------------------------------------
 # distroless `static`/`nonroot` — same reasoning as the other two runtime
-# binaries. No shell, no `curl`; this image also has no HEALTHCHECK for the
-# same practical reason it never grew a `healthcheck` subcommand of its own
-# (unlike sms-gateway/sms-worker): nothing in this stack needs to gate on
-# its readiness before starting — dispatch only calls out to it lazily, at
-# the first submit, not at any other service's own startup — so a compose
-# file depending on this service only ever needs `service_started`, not
-# `service_healthy`. See compose.demo.yaml's own comment on the
-# `sms-fake-orange` service for that reasoning at the call site.
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+# binaries, including the `debian13` bump (see app/sms-gateway/Dockerfile's
+# own comment for that evidence). No shell, no `curl`; this image also has
+# no HEALTHCHECK for the same practical reason it never grew a
+# `healthcheck` subcommand of its own (unlike sms-gateway/sms-worker):
+# nothing in this stack needs to gate on its readiness before starting —
+# dispatch only calls out to it lazily, at the first submit, not at any
+# other service's own startup — so a compose file depending on this
+# service only ever needs `service_started`, not `service_healthy`. See
+# compose.demo.yaml's own comment on the `sms-fake-orange` service for that
+# reasoning at the call site.
+FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 
 COPY --from=builder /tmp/sms-fake-orange /usr/local/bin/sms-fake-orange
 

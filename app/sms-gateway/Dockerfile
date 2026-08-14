@@ -65,14 +65,29 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-musl \
 # nothing about it is Go-specific). `:nonroot` runs as uid/gid 65532
 # without a `useradd`/`USER` line — there is no shell or `useradd` binary
 # in this image to run one with. Confirmed by inspecting the image's own
-# layers (`docker save` + `tar -tzv`, not assumed from documentation
-# alone): it ships `/etc/passwd`, `/etc/group`, `/etc/nsswitch.conf`, a
-# current `/etc/ssl/certs/ca-certificates.crt` (so outbound TLS to Orange's
-# API needs no separate `ca-certificates` package the way the old
-# `debian:bookworm-slim` runtime did), and `/tmp` at mode `1777` — this
-# binary doesn't write to `/tmp`, but the sibling `app/sms-worker/
-# Dockerfile` does, and the same base image is confirmed to support it.
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+# layers (`docker save`/`docker export` + `tar -tzv`, not assumed from
+# documentation alone): it ships `/etc/passwd`, `/etc/group`,
+# `/etc/nsswitch.conf`, a current `/etc/ssl/certs/ca-certificates.crt` (so
+# outbound TLS to Orange's API needs no separate `ca-certificates` package
+# the way the old `debian:bookworm-slim` runtime did), and `/tmp` at mode
+# `1777` — this binary doesn't write to `/tmp`, but the sibling
+# `app/sms-worker/Dockerfile` does, and the same base image is confirmed to
+# support it.
+#
+# `debian13`, not `debian12` (bumped in the image-hygiene PR that added
+# `app/vsms-demo-seed`): the distroless project (github.com/
+# GoogleContainerTools/distroless) now publishes `static-debian13` as its
+# current default — confirmed by pulling the real `gcr.io/distroless/
+# static-debian13:nonroot` manifest and image, not assumed from memory or
+# from the project's docs alone — and a `docker export` + `tar -tvf` of it
+# reproduces every property this comment already lists for debian12
+# byte-for-byte: uid/gid 65532 `nonroot` in `/etc/passwd`/`/etc/group`, the
+# same three `/etc/passwd`/`/etc/group`/`/etc/nsswitch.conf` files, a
+# current CA bundle, and `/tmp` (and `/var/tmp`) at mode `1777`
+# (`drwxrwxrwt`). Debian 13 (trixie) is stable and the distroless project's
+# own README now describes it as the current default rather than a
+# preview, so this isn't an early adoption of an unreleased base.
+FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 
 COPY --from=builder /tmp/sms-gateway /usr/local/bin/sms-gateway
 

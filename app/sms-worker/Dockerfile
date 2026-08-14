@@ -45,8 +45,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-musl \
 # comment for what this image does and doesn't ship (no shell, current CA
 # certs, and a `1777` `/tmp` this binary's own heartbeat file below
 # actually depends on — confirmed by inspecting the image's layers
-# directly, not assumed).
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+# directly, not assumed) and for the `debian13` bump's own evidence (same
+# uid, same `/tmp` mode, verified against the real published image before
+# switching).
+FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 
 COPY --from=builder /tmp/sms-worker /usr/local/bin/sms-worker
 

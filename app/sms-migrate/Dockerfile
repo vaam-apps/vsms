@@ -31,14 +31,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-musl \
 # --- runtime -------------------------------------------------------------
 # distroless `static`/`nonroot` — see app/sms-gateway/Dockerfile's own
 # comment for what this image ships and why `:nonroot` needs no
-# `useradd`/`USER` line. This binary makes no outbound HTTPS calls (only a
-# Postgres connection, TLS or otherwise, via `cratestack-sqlx`'s bundled
-# webpki roots — see that crate's own feature selection in the root
-# `Cargo.toml`'s comments), so unlike sms-gateway/sms-worker it never
-# actually needs the image's own `/etc/ssl/certs/ca-certificates.crt` —
-# harmless that it's there regardless, not something this Dockerfile
-# depends on.
-FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+# `useradd`/`USER` line, and for the `debian13` bump's own evidence. This
+# binary makes no outbound HTTPS calls (only a Postgres connection, TLS or
+# otherwise, via `cratestack-sqlx`'s bundled webpki roots — see that
+# crate's own feature selection in the root `Cargo.toml`'s comments), so
+# unlike sms-gateway/sms-worker it never actually needs the image's own
+# `/etc/ssl/certs/ca-certificates.crt` — harmless that it's there
+# regardless, not something this Dockerfile depends on.
+FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 
 COPY --from=builder /tmp/sms-migrate /usr/local/bin/sms-migrate
 
