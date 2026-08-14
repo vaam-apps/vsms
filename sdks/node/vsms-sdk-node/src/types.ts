@@ -3,7 +3,7 @@
  *
  * DESIGN DECISION: These types are deliberately hand-written rather than
  * generated via `cratestack generate-typescript`.
- * 
+ *
  * The full schema is large (23 models, 13 enums, 7 procedures), mostly
  * concerning admin console operations and internal routing state. This SDK
  * is focused purely on the integrator experience: sending messages, checking
