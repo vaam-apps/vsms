@@ -146,12 +146,20 @@ jobs:
         run: cargo metadata --locked --format-version 1 > /dev/null
 
       # The Rust SDK is a standalone package intended for crates.io publishing
-      - name: Rust SDK (vsms-sdk-rust) — cargo check, test, and dry-run
+      - name: Rust SDK (vsms-sdk-rust) — cargo check, clippy, test, and dry-run
         run: |
-          cargo check
+          cargo check --all-targets
+          cargo clippy --all-targets -- -D warnings
           cargo test
+          if cargo tree -i aws-lc-rs; then exit 1; fi
           cargo publish --dry-run
         working-directory: sdks/rust/vsms-sdk-rust
+
+      - name: Examples (Rust) — cargo check and clippy
+        run: |
+          cargo check --all-targets
+          cargo clippy --all-targets -- -D warnings
+        working-directory: examples/rust
 
   deny:
     name: cargo deny (advisories, bans, licenses, sources)
@@ -170,6 +178,12 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
+          
+      - name: cargo deny on vsms-sdk-rust
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --manifest-path sdks/rust/vsms-sdk-rust/Cargo.toml
 
   live:
     name: live-Postgres suites (sms-test-support)
