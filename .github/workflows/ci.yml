@@ -178,12 +178,23 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
-          
+
+      # The Rust SDK is workspace-`exclude`d (#234), so the check above never
+      # reaches it — and it is a *published* crate, which arguably raises the
+      # bar rather than lowering it: an advisory there ships to external
+      # integrators, not just this deployment.
+      #
+      # Uses the action's own `manifest-path` input, NOT `arguments:
+      # --manifest-path ...`. The action always passes that flag itself, so
+      # supplying it a second time through `arguments` makes cargo-deny exit
+      # with `the argument '--manifest-path <MANIFEST_PATH>' cannot be used
+      # multiple times` before running a single check — green-looking job
+      # config, immediate hard failure.
       - name: cargo deny on vsms-sdk-rust
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
-          arguments: --manifest-path sdks/rust/vsms-sdk-rust/Cargo.toml
+          manifest-path: sdks/rust/vsms-sdk-rust/Cargo.toml
 
   live:
     name: live-Postgres suites (sms-test-support)
