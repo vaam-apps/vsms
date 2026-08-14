@@ -137,62 +137,19 @@ export function SimulatorScreen() {
   const winnerRouteId = result?.winner?.routeId;
 
   return (
-    <main className="mx-auto flex max-w-[1100px] flex-col gap-6 px-6 py-10">
-      <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
-        <div>
-          <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-            vsms admin console
-          </p>
-          <h1 className="mt-1 font-medium text-foreground text-title">Route simulator</h1>
-          <p className="mt-1 max-w-xl text-body text-muted-foreground">
-            Given a recipient, message class, and app, which route wins and why — without sending
-            anything. Renders the real routing engine's own decision.
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <a
-            href="/dashboard"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Dashboard
-          </a>
-          <a
-            href="/providers"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Providers
-          </a>
-          <a
-            href="/routes"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Routes
-          </a>
-          <a
-            href="/"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Composer
-          </a>
-          <a
-            href="/sender-ids"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Sender IDs
-          </a>
-          <a
-            href="/webhooks"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Webhooks
-          </a>
-        </div>
+    <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-6">
+      <header className="flex flex-col gap-1 border-edge border-b pb-6">
+        <h1 className="font-medium text-foreground text-title">Route simulator</h1>
+        <p className="max-w-xl text-body text-muted-foreground">
+          Given a recipient, message class, and app, which route wins and why — without sending
+          anything. Renders the real routing engine's own decision.
+        </p>
       </header>
 
       <Card>
         <CardHeader title="Candidate" meta="Nothing below sends a real message" />
         <CardBody>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="sim-msisdn">Recipient (E.164)</Label>
               <Input
@@ -342,20 +299,24 @@ export function SimulatorScreen() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead align="end">Priority</TableHead>
-                <TableHead align="end">Weight</TableHead>
+                <TableHead align="end" className="hidden sm:table-cell">
+                  Priority
+                </TableHead>
+                <TableHead align="end" className="hidden sm:table-cell">
+                  Weight
+                </TableHead>
                 <TableHead>Route</TableHead>
                 <TableHead>Outcome</TableHead>
-                <TableHead>Detail</TableHead>
+                <TableHead className="hidden md:table-cell">Detail</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {result.evaluations.map((evaluation) => (
                 <TableRow key={evaluation.routeId} selected={evaluation.routeId === winnerRouteId}>
-                  <TableCell align="end" mono>
+                  <TableCell align="end" className="hidden sm:table-cell" mono>
                     {evaluation.priority}
                   </TableCell>
-                  <TableCell align="end" mono>
+                  <TableCell align="end" className="hidden sm:table-cell" mono>
                     {evaluation.weight}
                   </TableCell>
                   <TableCell>
@@ -369,7 +330,7 @@ export function SimulatorScreen() {
                   <TableCell>
                     <OutcomePill outcome={evaluation.outcome} />
                   </TableCell>
-                  <TableCell className="text-caption text-muted-foreground">
+                  <TableCell className="hidden text-caption text-muted-foreground md:table-cell">
                     {evaluation.outcome === "predicate_failed" &&
                       evaluation.predicateKind !== undefined && (
                         <>
@@ -397,6 +358,6 @@ export function SimulatorScreen() {
           </Table>
         </>
       )}
-    </main>
+    </div>
   );
 }

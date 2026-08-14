@@ -375,69 +375,14 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
     filters.to !== null;
 
   return (
-    <main className="mx-auto flex max-w-[1400px] flex-col gap-6 px-6 py-10">
-      <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
-        <div>
-          <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-            vsms admin console
-          </p>
-          <h1 className="mt-1 font-medium text-foreground text-title">Messages</h1>
-          <p className="mt-1 max-w-xl text-body text-muted-foreground">
-            Live status of every message this app has sent — polled every ~
-            {Math.round(pollMs / 1000)}s, not pushed. New rows while you're scrolled down buffer
-            behind a pill rather than jumping the list.
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <a
-            href="/dashboard"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Dashboard
-          </a>
-          <a
-            href="/"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Composer
-          </a>
-          <a
-            href="/jobs"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Jobs
-          </a>
-          <a
-            href="/workers"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Workers
-          </a>
-          <a
-            href="/simulator"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Simulator
-          </a>
-          <a
-            href="/gallery"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Component gallery
-          </a>
-          <a
-            href="/sender-ids"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Sender IDs
-          </a>
-          <a
-            href="/webhooks"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Webhooks
-          </a>
-        </div>
+    <div className="flex flex-col gap-6">
+      <header className="flex flex-col gap-1 border-edge border-b pb-6">
+        <h1 className="font-medium text-foreground text-title">Messages</h1>
+        <p className="max-w-xl text-body text-muted-foreground">
+          Live status of every message this app has sent — polled every ~{Math.round(pollMs / 1000)}
+          s, not pushed. New rows while you're scrolled down buffer behind a pill rather than
+          jumping the list.
+        </p>
       </header>
 
       <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
@@ -454,8 +399,14 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
         </div>
       )}
 
-      <div className="flex flex-wrap items-end gap-4">
-        <div className="flex flex-col gap-1.5">
+      {listQuery.isError && (
+        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
+          Couldn't load messages: {listQuery.error.message}
+        </div>
+      )}
+
+      <div className="flex flex-col flex-wrap gap-4 sm:flex-row sm:items-end">
+        <div className="flex flex-col gap-1.5 sm:w-[180px]">
           <Label htmlFor="filter-state">State</Label>
           <Select
             value={filters.state ?? "__all"}
@@ -463,7 +414,7 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
               void setFilters({ state: value === "__all" ? null : (value as MessageState) })
             }
           >
-            <SelectTrigger id="filter-state" className="w-[180px]">
+            <SelectTrigger id="filter-state">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -477,12 +428,11 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
           </Select>
         </div>
 
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5 sm:w-[200px]">
           <Label htmlFor="filter-client-ref">Client reference</Label>
           <Input
             id="filter-client-ref"
             placeholder="exact match"
-            className="w-[200px]"
             value={filters.clientRef ?? ""}
             onChange={(e) =>
               void setFilters({ clientRef: e.target.value === "" ? null : e.target.value })
@@ -490,32 +440,34 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
           />
         </div>
 
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="filter-from">From</Label>
-          <Input
-            id="filter-from"
-            type="date"
-            className="w-[160px]"
-            value={filters.from ?? ""}
-            max={filters.to ?? undefined}
-            onChange={(e) =>
-              void setFilters({ from: e.target.value === "" ? null : e.target.value })
-            }
-          />
-        </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="filter-to">To</Label>
-          <Input
-            id="filter-to"
-            type="date"
-            className="w-[160px]"
-            value={filters.to ?? ""}
-            min={filters.from ?? undefined}
-            onChange={(e) => void setFilters({ to: e.target.value === "" ? null : e.target.value })}
-          />
+        <div className="flex gap-4">
+          <div className="flex flex-1 flex-col gap-1.5 sm:w-[160px] sm:flex-none">
+            <Label htmlFor="filter-from">From</Label>
+            <Input
+              id="filter-from"
+              type="date"
+              value={filters.from ?? ""}
+              max={filters.to ?? undefined}
+              onChange={(e) =>
+                void setFilters({ from: e.target.value === "" ? null : e.target.value })
+              }
+            />
+          </div>
+          <div className="flex flex-1 flex-col gap-1.5 sm:w-[160px] sm:flex-none">
+            <Label htmlFor="filter-to">To</Label>
+            <Input
+              id="filter-to"
+              type="date"
+              value={filters.to ?? ""}
+              min={filters.from ?? undefined}
+              onChange={(e) =>
+                void setFilters({ to: e.target.value === "" ? null : e.target.value })
+              }
+            />
+          </div>
         </div>
 
-        <div className="flex items-center gap-2 pb-0.5">
+        <div className="flex flex-wrap items-center gap-2 sm:pb-0.5">
           <Button
             type="button"
             variant="secondary"
@@ -574,9 +526,9 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
             <TableRow>
               <TableHead>Status</TableHead>
               <TableHead>Recipient</TableHead>
-              <TableHead>Client ref</TableHead>
-              <TableHead>Sender</TableHead>
-              <TableHead>Encoding</TableHead>
+              <TableHead className="hidden md:table-cell">Client ref</TableHead>
+              <TableHead className="hidden sm:table-cell">Sender</TableHead>
+              <TableHead className="hidden lg:table-cell">Encoding</TableHead>
               <TableHead>Id</TableHead>
               <TableHead align="end">Time</TableHead>
             </TableRow>
@@ -620,19 +572,42 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
                 </TableCell>
                 <TableCell>
                   <MsisdnDisplay value={row.msisdn} operator={row.operator} />
+                  {/* Below `md`, the Client ref/Sender/Encoding columns are
+                   * hidden outright rather than horizontally scrolled to —
+                   * this compact line keeps that same information reachable
+                   * at a glance instead of losing it, matching the brief's
+                   * "dense tables that work on a phone" over a bare
+                   * scroll-and-hope. Hidden again once those columns return
+                   * at `md`, so nothing renders twice. */}
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] text-subtle-foreground md:hidden">
+                    <span>{row.senderIdValue}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>
+                      {row.encoding.toUpperCase()} {row.segments}
+                    </span>
+                    {row.clientRef != null && row.clientRef !== "" && (
+                      <>
+                        <span aria-hidden="true">·</span>
+                        <span className="max-w-[160px] truncate">{row.clientRef}</span>
+                      </>
+                    )}
+                  </div>
                 </TableCell>
-                <TableCell mono>{row.clientRef ?? "—"}</TableCell>
-                <TableCell mono>{row.senderIdValue}</TableCell>
-                <TableCell mono>
+                <TableCell className="hidden md:table-cell" mono>
+                  {row.clientRef ?? "—"}
+                </TableCell>
+                <TableCell className="hidden sm:table-cell" mono>
+                  {row.senderIdValue}
+                </TableCell>
+                <TableCell className="hidden lg:table-cell" mono>
                   {row.encoding.toUpperCase()} · {row.segments}
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">
                     <IdDisplay value={row.id} />
-                    {/* #50: the detail route. A plain `<a>`, matching every
-                     * other internal nav link on this screen (Composer/
-                     * Jobs/Workers/Gallery, in the header) — not `next/
-                     * link`'s `Link`. Separate from `IdDisplay` itself
+                    {/* #50: the detail route. A plain `<a>`, matching the
+                     * rest of this console's internal navigation — not
+                     * `next/link`'s `Link`. Separate from `IdDisplay` itself
                      * rather than wrapping it: `IdDisplay`'s own copy
                      * button doesn't stop propagation, so wrapping it in
                      * an `<a>` would fire a navigation on every copy
@@ -653,6 +628,6 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
           </TableBody>
         </Table>
       </div>
-    </main>
+    </div>
   );
 }

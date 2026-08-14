@@ -203,80 +203,13 @@ export default function ComposerPage() {
   const generalError = sendMutation.isError && !hasFieldErrors ? sendMutation.error.message : null;
 
   return (
-    <main className="mx-auto flex max-w-[720px] flex-col gap-8 px-6 py-10">
-      <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
-        <div>
-          <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-            vsms admin console
-          </p>
-          <h1 className="mt-1 font-medium text-foreground text-title">Composer</h1>
-          <p className="mt-1 max-w-md text-body text-muted-foreground">
-            See exactly what a message will cost before you send it — GSM-7 vs UCS-2, segment count,
-            and every character that would force the more expensive encoding.
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <a
-            href="/dashboard"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Dashboard
-          </a>
-          <a
-            href="/messages"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Messages
-          </a>
-          <a
-            href="/jobs"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Jobs
-          </a>
-          <a
-            href="/workers"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Workers
-          </a>
-          <a
-            href="/providers"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Providers
-          </a>
-          <a
-            href="/routes"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Routes
-          </a>
-          <a
-            href="/simulator"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Simulator
-          </a>
-          <a
-            href="/gallery"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Component gallery
-          </a>
-          <a
-            href="/sender-ids"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Sender IDs
-          </a>
-          <a
-            href="/webhooks"
-            className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-          >
-            Webhooks
-          </a>
-        </div>
+    <div className="mx-auto flex w-full max-w-[720px] flex-col gap-8">
+      <header className="flex flex-col gap-1 border-edge border-b pb-6">
+        <h1 className="font-medium text-foreground text-title">Composer</h1>
+        <p className="max-w-md text-body text-muted-foreground">
+          See exactly what a message will cost before you send it — GSM-7 vs UCS-2, segment count,
+          and every character that would force the more expensive encoding.
+        </p>
       </header>
 
       <form onSubmit={form.handleSubmit(onSubmit)} className="flex flex-col gap-6">
@@ -334,7 +267,7 @@ export default function ComposerPage() {
           )}
         </div>
 
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="composer-sender-id">Sender id</Label>
             <Input
@@ -390,7 +323,7 @@ export default function ComposerPage() {
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor="composer-scheduled-at">Scheduled at</Label>
                 <Input
@@ -450,6 +383,6 @@ export default function ComposerPage() {
           </CardBody>
         </Card>
       )}
-    </main>
+    </div>
   );
 }
