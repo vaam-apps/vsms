@@ -1,6 +1,6 @@
 # Contributing to vsms
 
-Five rules constrain everything else. Each is a default with named exceptions, and the exceptions are the interesting part. The full reasoning is in [docs/architecture.md](docs/architecture.md); this file is the version you should have in your head during review.
+Six rules constrain everything else. Each is a default with named exceptions, and the exceptions are the interesting part. The full reasoning is in [docs/architecture.md](docs/architecture.md); this file is the version you should have in your head during review.
 
 ---
 
@@ -113,6 +113,24 @@ Do not add a second chart. Do not hand-roll a manifest that the library chart ca
 `deploy/charts/vsms/Chart.yaml` currently pins `common` at `4.6.2`. Note it is a **classic HTTP repository dependency, not an OCI one** — no OCI reference for the library chart exists, verified against the GHCR API and bjw-s-labs' own release workflow rather than assumed. That is recorded in the chart's own comments; don't "modernise" it to `oci://` without checking that again.
 
 R4 applies here too: whatever this chart grows, installing it with the console switched off must remain possible.
+
+---
+
+## R6 — UI architecture: pages compose, smart components decide, dumb components style.
+
+A view file contains **no CSS classes**. Not a `className`, not a `cn(...)`, not a hoisted `const COL_ID = "hidden lg:table-cell"` (four exist today in `admin/app/jobs/jobs-screen.tsx`), not a `styles.ts` module of class strings. Classes live in dumb components and nowhere else.
+
+- **Pages** (`admin/app/<route>/page.tsx`) compose smart and dumb components. No markup, no classes, no fetching.
+- **Smart components** (`<name>-screen.tsx`) hold data fetching, mutations, permissions, URL state and handlers — and render dumb components. No markup, no classes.
+- **Dumb components** (`packages/ui/**` when shared, `admin/app/<route>/components/**` when route-local) own markup, classes, CVA variants and iteration — and know nothing about where their data came from.
+
+The stack exists to make this cheap: Tailwind supplies atoms, DaisyUI factorises them into semantic component classes, CVA turns variants into a typed table, and `clsx` + `tailwind-merge` compose the rest. A long class string means a DaisyUI component class or a CVA variant is missing, not that more atoms are needed.
+
+**No hardcoded configuration in a component.** A tuning value is configuration: `REFETCH_INTERVAL_MS = 5000` is currently duplicated across three screens and cannot be changed without a rebuild. `MESSAGE_STREAM_POLL_MS` in `@vsms/env` is the pattern to follow — validated at boot, defaulted in one place.
+
+**Avoid `useState`.** URL/filter state belongs in `nuqs` (keeping tables shareable), server data in tRPC/react-query (never mirrored into local state), forms in `react-hook-form` + `zod`, non-rendering values in `useRef`, and grouped transitions in `useReducer`. `useState` is fine for an ephemeral toggle inside a dumb component; anything else needs a sentence in the PR explaining which of the above was considered.
+
+Full statement, with the layer table and the reasoning, is in `AGENTS.md`'s own R6 section.
 
 ---
 

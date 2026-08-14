@@ -831,6 +831,7 @@ Full reasoning in [CONTRIBUTING.md](CONTRIBUTING.md). In short:
 - **R3 — nothing that must be written can be `@server_only`.** It excludes a field from create *and* update, so such a field can never be populated.
 - **R4 — the admin console is optional; the backend must run without it.** Some deployments ship the backends only, with no admin surface — a supported configuration, not a degraded one. No server-side code may depend on the console existing; every operator action needs a `sms-gateway` subcommand, not only a screen; and both the Helm chart and the compose stack must be able to omit the console without a console-only value becoming a hard requirement. Review test: *if `frontends/apps/frontends/apps/admin/` were deleted from this repo entirely, would this change still work?* Currently satisfied by the code layer and **violated by the deployment layer** — see `CONTRIBUTING.md` R4 for the specifics.
 - **R5 — Helm charts are built on `bjw-s` common ≥ v4, as one umbrella chart.** Not hand-written manifests, and not a chart per service: `sms-gateway`, `sms-worker`, `admin` and the migrate/seed jobs are one deployable unit sharing a database, a migration ordering and a secret set, so they ship as one release with several controllers. v4 is the floor because the `controllers`/`route` schema this chart is written against is v4's; earlier majors are an incompatible shape, not a bump. Currently pinned at `4.6.2`, via a **classic HTTP repo dependency — no OCI reference for the library chart exists** (verified against the GHCR API and bjw-s-labs' own release workflow, not assumed).
+- **R6 — UI architecture: pages compose, smart components decide, dumb components style.** A view file contains **no CSS classes** — not a `className`, not a `cn(...)`, not a hoisted `const COL_ID = "..."`, not a `styles.ts` of class strings. Classes live in dumb components only. Pages compose; smart components (`<name>-screen.tsx`) hold data fetching, permissions, URL state and handlers but no markup or classes; dumb components (`packages/ui/**` shared, `admin/app/<route>/components/**` route-local) own markup, classes and iteration but know nothing about where the data came from. Also: **avoid `useState`** — URL state belongs in `nuqs`, server data in tRPC/react-query, forms in `react-hook-form`, non-rendering values in `useRef`, and grouped transitions in `useReducer`. Full statement, including the layer table and the reasoning, in the R6 section above.
 
 ## Framework constraints that are not in any documentation
 
@@ -956,6 +957,96 @@ cargo xtask no-raw-sqlx
 `cratestack migrate diff` has **no `--check` or dry-run mode**; its only flags are `--schema`, `--out-dir`, `--backend`, `--name`, `--allow-destructive`.
 
 **"Parses" is not "compiles."** `cratestack-parser` and `cratestack-migrate` both accept schemas that `include_server_schema!` refuses. Once `crates/` exists, `cargo check -p sms-api` is the real gate. Expanding all 16 models is memory-hungry — budget for it.
+
+## R6 — UI architecture: pages compose, smart components decide, dumb components style
+
+**A view file must contain no CSS classes.** Not a `className` on a `<div>`, not a `cn(...)` call, not a `const COL_ID = "hidden lg:table-cell"` hoisted to the top of the file (four of these exist today in `admin/app/jobs/jobs-screen.tsx` — this clause is corrective, not hypothetical), not a `styles.ts` utility module full of class strings. Classes live in **dumb components** and nowhere else.
+
+The stack is already built to make this cheap, and each layer has one job:
+
+- **Tailwind** produces the atoms. On its own it puts dozens of them on every element, which is exactly the mess this rule exists to contain.
+- **DaisyUI** factorises the common cases into semantic component classes (`btn`, `card`, `table`, `drawer`) so the atom count collapses.
+- **CVA** turns "which classes for which variant" into a typed, declarative table instead of ternaries in JSX.
+- **`clsx` + `tailwind-merge`** compose the remaining conditional cases without duplicate-utility bugs.
+
+If a component needs a long class string, that is a signal DaisyUI already has a component class for it, or that a CVA variant is missing — not a reason to inline more atoms.
+
+### The three layers, and what each may contain
+
+| Layer | Lives in | May contain | Must not contain |
+|---|---|---|---|
+| **Page** | `admin/app/<route>/page.tsx` | Composition of smart and dumb components. Route params, metadata. | Any `className`. Any markup beyond composing components. Any data fetching. |
+| **Smart component** | `admin/app/<route>/<name>-screen.tsx` | Data fetching, mutations, permissions, URL state, event handlers, derived values. Renders dumb components and passes them data. | Any `className`. Any raw `<div>`/`<span>`/`<table>` markup. |
+| **Dumb component** | `packages/ui/src/components/**` (shared) or `admin/app/<route>/components/**` (route-local) | Markup, classes, CVA variants, iteration over the data it is handed, presentational state. | Data fetching. tRPC/gateway calls. Business rules. Knowledge of *why* it is rendering. |
+
+**No hardcoded configuration in a component either.** A tuning value is configuration, not code: `const REFETCH_INTERVAL_MS = 5000` currently appears independently in `jobs-screen.tsx`, `workers-screen.tsx` and `webhooks-screen.tsx` — three copies of one decision, none of which an operator can change without a rebuild. The precedent already exists and should be followed: `MESSAGE_STREAM_POLL_MS` is a real `@vsms/env` entry (`z.coerce.number().int().min(500).default(2000)`), validated at boot, with a default in one place. Poll intervals, page sizes, timeouts and thresholds belong there, not in a view.
+
+A dumb component is allowed to iterate and to branch on the props it is given — "dumb" means it does not know where the data came from or what happens next, not that it is trivial.
+
+**Route-local vs shared** is a judgement call with one test: if a second route would plausibly use it, it belongs in `packages/ui`. If it encodes this screen's own shape, it belongs in `admin/app/<route>/components/`. Do not push a one-screen component into the shared library to feel tidy; do not copy the same component into three routes to avoid the move.
+
+### A view file contains no helpers either
+
+The rule is not only about classes. A screen file must not carry the supporting cast that has accumulated in these files — every one of these is real, in `main`, today:
+
+| Kind | Example, verbatim | Where it belongs |
+|---|---|---|
+| Class-holding const | `const COL_ID = "hidden lg:table-cell"` (×4, `jobs-screen.tsx`) | a dumb component's own variants |
+| Hardcoded config | `const REFETCH_INTERVAL_MS = 5000` (×3 screens, independently) | `@vsms/env`, like `MESSAGE_STREAM_POLL_MS` |
+| Mapping object | `const STATE_LABELS = Object.fromEntries(...)` (`messages-screen.tsx`) | a module beside the data it maps |
+| Date helpers | `todayIsoDate()`, `daysAgoIsoDate()`, `nextDayIso()` (`messages-screen.tsx`) | a pure module, with tests |
+| Domain reducer | `applyEvent(...)` (`messages-screen.tsx`) | a pure module, with tests |
+
+**That table is illustrative, not a checklist.** It records the instances someone happened to have time to write down; it is not the set of things that are wrong. Treat R6 as a description of the intended architecture and apply it to every file, including kinds of violation nobody has enumerated yet. A PR that fixes exactly the five rows above and leaves the same shape of problem next to them has missed the point.
+
+A screen file should read as: fetch, permissions, handlers, and a tree of components. If something in it could be unit-tested without React, it does not belong there.
+
+**Where extracted logic lives:** `admin/app/<route>/<name>.ts` when it is route-local, a shared package when a second route would use it. `admin/app/messages/[id]/timeline.ts` is already the shape to copy.
+
+**Extracted pure modules carry tests.** This answers a fair question — why does `timeline.ts` have `timeline.test.ts` when nothing else does? Because it is the only pure module that was ever extracted; everything comparable is still inlined in a screen where it cannot be tested without mounting React. Extraction is what makes a test possible, so the policy is: a pure module gets a test in the same directory. `applyEvent` in particular has real merge rules — in-place update never moves a row, buffering is scroll-gated — that are worth asserting directly rather than only through a running browser.
+
+**Move logic verbatim.** When extracting, move it unchanged and test it where it lands. `applyEvent` especially: it backs the live-poll loop that was found to stall under `refetchInterval`, and a rewrite during a file move is how that returns.
+
+### Pages validate their inputs
+
+A dynamic route must not pass an unvalidated param straight into a screen:
+
+```tsx
+// wrong — an unknown id renders a broken screen instead of a 404
+const { id } = await params;
+return <MessageDetailScreen messageId={id} />;
+```
+
+Validate the shape, and let a missing record reach `notFound()` rather than rendering a screen around nothing. `Cuid` is format-guarded `[a-z0-9]{2,32}` — a malformed id is a 400/404 question, answerable before any component renders.
+
+### Grouped URL state uses `useQueryStates`
+
+Several related `useState` calls describing one screen's UI position are one piece of state, and it belongs in the URL:
+
+```tsx
+// wrong — three sources of truth, none of them shareable or refresh-surviving
+const [recordOpen, setRecordOpen] = useState(false);
+const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+const [detailRow, setDetailRow] = useState<OptOutListItem | null>(null);
+```
+
+`nuqs`'s `useQueryStates` replaces all three. Note the third is worse than the other two: `detailRow` holds a **copy of a server object**, which is a second source of truth — the reason `jobs-screen.tsx` needs a `liveDetailJob` expression with a `?? detailJob` staleness fallback at all. Keep the **id** in the URL and look the row up in query data; the fallback disappears with the copy.
+
+### Avoid `useState`
+
+Most local state in this console is state that already has a better home, and reaching for `useState` usually means picking the wrong one:
+
+- **URL/filter/pagination state → `nuqs`.** It is already a dependency. This keeps a filtered table shareable and bookmarkable, which `useState` silently destroys.
+- **Server data → tRPC/react-query.** Never mirror a query result into local state; that is how two sources of truth appear.
+- **Form state → `react-hook-form` + `zod`.** Already dependencies, already used correctly by the composer.
+- **Values that must not trigger a render → `useRef`.**
+- **Several values that change together → `useReducer`**, so the transitions are named rather than implied by call order.
+
+`useState` is acceptable for genuinely ephemeral, single-value presentational state — an open/closed toggle inside a dumb component. Anything else needs a sentence in the PR saying which of the above was considered and why it did not fit.
+
+### Why this is a rule and not a preference
+
+Inline classes in a view make three problems at once: the same treatment drifts across screens because nothing shares it, a visual change means editing every screen that copied it, and a reviewer cannot tell business logic from styling in the same file. This repository has already paid for the third one — the console's most expensive bugs this year (a `type="button"` that silently never submitted, a double-mounted `Toaster`, a hydration mismatch from an inline `Date`) all lived in files where markup, classes and logic were interleaved and each looked plausible in isolation.
 
 ## Conventions
 
