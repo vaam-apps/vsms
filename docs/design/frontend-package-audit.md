@@ -656,11 +656,12 @@ Collected here so this investigation doesn't get redone in three months:
 Two GitHub issues, both scoped to one person, both stating the must-survive
 properties explicitly in the issue body:
 
-- **Adopt `react-hook-form` + `zod` for the admin console's hand-rolled
-  create/edit forms** (providers, routes, webhooks, sender IDs, users, apps,
-  opt-outs — ~10 forms across 7 screens).
-- **Adopt `nuqs` for `audit-log-screen.tsx`'s filter/pagination state**,
-  matching the pattern already in messages/jobs/webhooks screens.
+- [**#236 — Adopt `react-hook-form` + `zod` for hand-rolled admin console
+  forms**](https://github.com/vymalo/vsms/issues/236) (providers, routes,
+  webhooks, sender IDs, users, apps, opt-outs — ~10 forms across 7 screens).
+- [**#237 — Adopt `nuqs` for `audit-log-screen.tsx`'s filter/pagination
+  state**](https://github.com/vymalo/vsms/issues/237), matching the pattern
+  already in messages/jobs/webhooks screens.
 
 No issue filed for the internal gateway fetch-shell dedup (not a library
 adoption — see the gateway section) or for the `GENERATING.md`/
