@@ -67,7 +67,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  ThemeToggle,
   TimestampDisplay,
   toast,
 } from "@vsms/ui";
@@ -343,7 +342,6 @@ export function WebhooksScreen() {
           >
             Composer
           </a>
-          <ThemeToggle />
         </div>
       </header>
 

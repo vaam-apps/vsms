@@ -73,7 +73,6 @@ import {
   TableHeader,
   TableRow,
   Textarea,
-  ThemeToggle,
   TimestampDisplay,
   toast,
 } from "@vsms/ui";
@@ -318,7 +317,6 @@ export function SenderIdsScreen() {
           >
             Composer
           </a>
-          <ThemeToggle />
         </div>
       </header>
 

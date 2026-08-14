@@ -67,7 +67,6 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  ThemeToggle,
   TimestampDisplay,
 } from "@vsms/ui";
 import { parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
@@ -186,7 +185,6 @@ export function JobsScreen() {
           >
             Webhooks
           </a>
-          <ThemeToggle />
         </div>
       </header>
 
