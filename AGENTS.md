@@ -981,6 +981,8 @@ If a component needs a long class string, that is a signal DaisyUI already has a
 
 **No hardcoded configuration in a component either.** A tuning value is configuration, not code: `const REFETCH_INTERVAL_MS = 5000` currently appears independently in `jobs-screen.tsx`, `workers-screen.tsx` and `webhooks-screen.tsx` — three copies of one decision, none of which an operator can change without a rebuild. The precedent already exists and should be followed: `MESSAGE_STREAM_POLL_MS` is a real `@vsms/env` entry (`z.coerce.number().int().min(500).default(2000)`), validated at boot, with a default in one place. Poll intervals, page sizes, timeouts and thresholds belong there, not in a view.
 
+**This clause is about *operational tuning values*, not protocol or security constants.** `frontends/apps/admin/lib/oidc.ts`'s `TXN_TTL_SECONDS` (the PKCE transaction window) and `SESSION_TTL_SECONDS` are **not** in scope and must not be hoisted into `@vsms/env`: a replay window an operator can widen from a deployment variable is a security decision, not a knob. The test is whether a wrong value is *inconvenient* (tuning) or *unsafe* (protocol). When it is genuinely unclear, leave it in code with a comment saying why — that is the safer default.
+
 A dumb component is allowed to iterate and to branch on the props it is given — "dumb" means it does not know where the data came from or what happens next, not that it is trivial.
 
 **Route-local vs shared** is a judgement call with one test: if a second route would plausibly use it, it belongs in `frontends/packages/ui`. If it encodes this screen's own shape, it belongs in `frontends/apps/admin/app/<route>/components/`. Do not push a one-screen component into the shared library to feel tidy; do not copy the same component into three routes to avoid the move.
@@ -992,7 +994,7 @@ The rule is not only about classes. A screen file must not carry the supporting 
 | Kind | Example, verbatim | Where it belongs |
 |---|---|---|
 | Class-holding const | `const COL_ID = "hidden lg:table-cell"` (×4, `jobs-screen.tsx`) | a dumb component's own variants |
-| Hardcoded config | `const REFETCH_INTERVAL_MS = 5000` (×3 screens, independently) | `@vsms/env`, like `MESSAGE_STREAM_POLL_MS` |
+| Hardcoded config | `const REFETCH_INTERVAL_MS` (×4 screens, independently — `5000` in jobs/workers/webhooks, `15_000` in dashboard) | `@vsms/env`, like `MESSAGE_STREAM_POLL_MS` |
 | Mapping object | `const STATE_LABELS = Object.fromEntries(...)` (`messages-screen.tsx`) | a module beside the data it maps |
 | Date helpers | `todayIsoDate()`, `daysAgoIsoDate()`, `nextDayIso()` (`messages-screen.tsx`) | a pure module, with tests |
 | Domain reducer | `applyEvent(...)` (`messages-screen.tsx`) | a pure module, with tests |
