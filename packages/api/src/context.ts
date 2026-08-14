@@ -77,8 +77,28 @@ const ACTOR_HEADER = "x-vsms-actor";
  * trust `X-Forwarded-*` anyway — `deploy/docker-compose.yml` has two
  * internal callers of the gateway, not one, so there is no single trusted
  * hop to pin.
+ *
+ * **Computed lazily, not at module scope.** The first version of this
+ * evaluated `new URL(env.ADMIN_BASE_URL)` as a module-level `const` and
+ * broke `next build` with `TypeError: Invalid URL` while collecting page
+ * data for `/api/trpc/[trpc]`: CI builds with `SKIP_ENV_VALIDATION=true`
+ * (there is no real upstream to point at during a build), so
+ * `ADMIN_BASE_URL` is `undefined` there and `new URL(undefined)` throws.
+ * It passed locally only because the developer's shell happened to have
+ * the variable set. Next's build-time page-data collection imports this
+ * module without ever serving a request, so anything evaluated at module
+ * scope must hold for a build with no runtime configuration at all.
+ * Deferring to first use keeps the failure where it belongs: on a real
+ * request, in a real deployment, where the value is genuinely required.
  */
-const EXPECTED_ORIGIN = new URL(env.ADMIN_BASE_URL).origin;
+let expectedOrigin: string | undefined;
+
+function expectedConsoleOrigin(): string {
+  if (expectedOrigin === undefined) {
+    expectedOrigin = new URL(env.ADMIN_BASE_URL).origin;
+  }
+  return expectedOrigin;
+}
 
 export interface Context {
   /** Display-only local actor name — see module doc. Never sent upstream. */
@@ -101,10 +121,11 @@ function assertSameOriginForMutations(req: Request): void {
     });
   }
 
-  if (origin !== EXPECTED_ORIGIN) {
+  const expected = expectedConsoleOrigin();
+  if (origin !== expected) {
     throw new TRPCError({
       code: "FORBIDDEN",
-      message: `cross-origin request rejected: Origin "${origin}" does not match "${EXPECTED_ORIGIN}"`,
+      message: `cross-origin request rejected: Origin "${origin}" does not match "${expected}"`,
     });
   }
 }
