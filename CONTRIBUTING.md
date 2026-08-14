@@ -118,11 +118,11 @@ R4 applies here too: whatever this chart grows, installing it with the console s
 
 ## R6 — UI architecture: pages compose, smart components decide, dumb components style.
 
-A view file contains **no CSS classes**. Not a `className`, not a `cn(...)`, not a hoisted `const COL_ID = "hidden lg:table-cell"` (four exist today in `admin/app/jobs/jobs-screen.tsx`), not a `styles.ts` module of class strings. Classes live in dumb components and nowhere else.
+A view file contains **no CSS classes**. Not a `className`, not a `cn(...)`, not a hoisted `const COL_ID = "hidden lg:table-cell"` (four exist today in `frontends/apps/admin/app/jobs/jobs-screen.tsx`), not a `styles.ts` module of class strings. Classes live in dumb components and nowhere else.
 
-- **Pages** (`admin/app/<route>/page.tsx`) compose smart and dumb components. No markup, no classes, no fetching.
+- **Pages** (`frontends/apps/admin/app/<route>/page.tsx`) compose smart and dumb components. No markup, no classes, no fetching.
 - **Smart components** (`<name>-screen.tsx`) hold data fetching, mutations, permissions, URL state and handlers — and render dumb components. No markup, no classes.
-- **Dumb components** (`packages/ui/**` when shared, `admin/app/<route>/components/**` when route-local) own markup, classes, CVA variants and iteration — and know nothing about where their data came from.
+- **Dumb components** (`frontends/packages/ui/**` when shared, `frontends/apps/admin/app/<route>/components/**` when route-local) own markup, classes, CVA variants and iteration — and know nothing about where their data came from.
 
 The stack exists to make this cheap: Tailwind supplies atoms, DaisyUI factorises them into semantic component classes, CVA turns variants into a typed table, and `clsx` + `tailwind-merge` compose the rest. A long class string means a DaisyUI component class or a CVA variant is missing, not that more atoms are needed.
 
