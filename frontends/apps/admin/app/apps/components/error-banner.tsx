@@ -1,15 +1,12 @@
-// Dumb view: an inline error banner. Route-local rather than shared —
-// several other routes carry their own copy of this exact shape too; see
-// this PR's own report for why it was kept local rather than lifted into
-// `@vsms/ui` (avoiding a shared-file edit while several other routes are
-// migrating in parallel).
+// Dumb view: an inline error banner. Route-local wrapper so call sites in
+// this route group say `<ErrorBanner>`, not `<InlineBanner variant="danger">`
+// — but the box itself is `@vsms/ui`'s own `InlineBanner`, not a second copy
+// of its class string. See `apps-screen.tsx`'s report note: several other
+// routes carry an identically-named wrapper for the same reason.
 
+import { InlineBanner } from "@vsms/ui";
 import type { ReactNode } from "react";
 
 export function ErrorBanner({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-      {children}
-    </div>
-  );
+  return <InlineBanner variant="danger">{children}</InlineBanner>;
 }

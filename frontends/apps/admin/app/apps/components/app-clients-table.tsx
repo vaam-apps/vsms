@@ -35,8 +35,8 @@ export function AppClientsTable({
         <TableHeader>
           <TableRow>
             <TableHead>Label</TableHead>
-            <TableHead className="hidden sm:table-cell">Client id</TableHead>
-            <TableHead className="hidden md:table-cell">Scopes</TableHead>
+            <TableHead hideBelow="sm">Client id</TableHead>
+            <TableHead hideBelow="md">Scopes</TableHead>
             <TableHead>Active</TableHead>
             <TableHead align="end">Actions</TableHead>
           </TableRow>
@@ -59,10 +59,10 @@ export function AppClientsTable({
           {clients.map((client) => (
             <TableRow key={client.id}>
               <TableCell>{client.label}</TableCell>
-              <TableCell mono className="hidden sm:table-cell">
+              <TableCell mono hideBelow="sm">
                 <IdDisplay value={client.clientId} />
               </TableCell>
-              <TableCell mono className="hidden text-caption md:table-cell">
+              <TableCell mono hideBelow="md" className="text-caption">
                 {client.scopes.trim()}
               </TableCell>
               <TableCell>

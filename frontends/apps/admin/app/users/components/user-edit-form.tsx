@@ -1,8 +1,8 @@
 // Dumb view: the user-edit form fields.
 
 import {
+  FormField,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -36,21 +36,18 @@ export function UserEditForm({
       onSubmit={form.handleSubmit(onSubmit)}
       className="flex flex-col gap-4"
     >
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="user-edit-name">Display name</Label>
+      <FormField
+        label="Display name"
+        htmlFor="user-edit-name"
+        error={form.formState.errors.displayName?.message}
+      >
         <Input
           id="user-edit-name"
           aria-invalid={form.formState.errors.displayName != null}
           {...form.register("displayName")}
         />
-        {form.formState.errors.displayName != null && (
-          <p className="text-caption text-state-danger-fg">
-            {form.formState.errors.displayName.message}
-          </p>
-        )}
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="user-edit-role">Role</Label>
+      </FormField>
+      <FormField label="Role" htmlFor="user-edit-role">
         <Controller
           control={form.control}
           name="roleKey"
@@ -69,7 +66,7 @@ export function UserEditForm({
             </Select>
           )}
         />
-      </div>
+      </FormField>
       <label className="flex items-center gap-2 text-caption text-foreground">
         <input type="checkbox" className="checkbox checkbox-sm" {...form.register("active")} />
         Active

@@ -2,6 +2,7 @@
 // click callback are the only "logic" here — pure rendering of props.
 
 import {
+  InlineBanner,
   InlineEmptyState,
   Skeleton,
   Table,
@@ -28,9 +29,7 @@ export function AuditLogTable({
   return (
     <div className="flex flex-col gap-3">
       {errorMessage !== null && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          Could not read the audit log: {errorMessage}
-        </div>
+        <InlineBanner variant="danger">Could not read the audit log: {errorMessage}</InlineBanner>
       )}
 
       <Table>
@@ -39,8 +38,8 @@ export function AuditLogTable({
             <TableHead align="end">When</TableHead>
             <TableHead>Model</TableHead>
             <TableHead>Operation</TableHead>
-            <TableHead className="hidden md:table-cell">Primary key</TableHead>
-            <TableHead className="hidden sm:table-cell">Actor</TableHead>
+            <TableHead hideBelow="md">Primary key</TableHead>
+            <TableHead hideBelow="sm">Actor</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -69,10 +68,10 @@ export function AuditLogTable({
               </TableCell>
               <TableCell mono>{entry.model}</TableCell>
               <TableCell mono>{entry.operation}</TableCell>
-              <TableCell className="hidden max-w-[220px] truncate font-mono text-caption md:table-cell">
+              <TableCell mono hideBelow="md" className="max-w-[220px] truncate text-caption">
                 {entry.primaryKey}
               </TableCell>
-              <TableCell className="hidden max-w-[260px] truncate font-mono text-caption sm:table-cell">
+              <TableCell mono hideBelow="sm" className="max-w-[260px] truncate text-caption">
                 {entry.actor}
               </TableCell>
             </TableRow>

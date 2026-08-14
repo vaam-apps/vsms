@@ -1,9 +1,10 @@
 // Dumb view: the "Roles" tab body — permission note, "New role" button,
 // and table.
 
-import { Button } from "@vsms/ui";
+import { Button, InlineBanner } from "@vsms/ui";
 import type { ReactNode } from "react";
 import type { RoleRecord } from "../types";
+import { Code } from "./code";
 import { ErrorBanner } from "./error-banner";
 import { RolesTable } from "./roles-table";
 
@@ -25,11 +26,10 @@ export function RolesTabView({
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-          Creating, editing, and deleting roles all require{" "}
-          <span className="font-mono text-foreground">owner</span> — the narrowest write action in
-          this console.
-        </div>
+        <InlineBanner variant="neutral">
+          Creating, editing, and deleting roles all require <Code>owner</Code> — the narrowest write
+          action in this console.
+        </InlineBanner>
         <Button type="button" onClick={onCreateClick}>
           New role
         </Button>
