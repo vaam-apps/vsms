@@ -7,6 +7,7 @@
 /sdks/rust/target
 /deploy/backup-tool/target
 /ci/e2e-integration/target
+sdks/node/*/dist/
 **/*.rs.bk
 # Cargo.lock is committed. This workspace ships binaries (sms-api, sms-worker)
 # against a pre-1.0 framework pinned to =0.4.16; a floating lock file would

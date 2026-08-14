@@ -35,10 +35,12 @@ import {
   LiveRow,
   MESSAGE_STATES,
   type MessageState,
+  MoreDetailDrawer,
   PayloadInspector,
   Popover,
   PopoverContent,
   PopoverTrigger,
+  QuickDetailDrawer,
   Select,
   SelectContent,
   SelectItem,
@@ -54,16 +56,15 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
+  // D18: `Tabs` was rebuilt as `ValueTabs` (Headless UI `TabGroup` behind a
+  // value-based adapter) — aliased on import so the JSX below is untouched.
+  ValueTabs as Tabs,
+  ValueTabsContent as TabsContent,
+  ValueTabsList as TabsList,
+  ValueTabsTrigger as TabsTrigger,
   Textarea,
   Toaster,
   Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
   toast,
 } from "@vsms/ui";
 import { type ReactNode, useState } from "react";
@@ -283,12 +284,12 @@ function OverlaysGallery() {
   return (
     <Section
       title="Dialog, dropdown menu, tooltip, popover, drawer, command menu, toast"
-      description="Radix behaviour (focus trap, keyboard nav, ARIA) under daisyUI styling."
+      description="Headless UI behaviour (focus trap, keyboard nav, ARIA) under daisyUI styling."
     >
       <div className="flex flex-wrap items-center gap-3">
         <Dialog>
-          <DialogTrigger asChild>
-            <Button variant="secondary">Open dialog</Button>
+          <DialogTrigger as={Button} variant="secondary">
+            Open dialog
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
@@ -306,8 +307,8 @@ function OverlaysGallery() {
         </Dialog>
 
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="secondary">Row actions</Button>
+          <DropdownMenuTrigger as={Button} variant="secondary">
+            Row actions
           </DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuLabel>cs_msg_001</DropdownMenuLabel>
@@ -317,18 +318,13 @@ function OverlaysGallery() {
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="secondary">Hover me</Button>
-            </TooltipTrigger>
-            <TooltipContent>Inferred from prefix — not authoritative.</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <Tooltip label="Inferred from prefix — not authoritative.">
+          <Button variant="secondary">Hover me</Button>
+        </Tooltip>
 
         <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="secondary">Open popover</Button>
+          <PopoverTrigger as={Button} variant="secondary">
+            Open popover
           </PopoverTrigger>
           <PopoverContent>
             <p className="text-body text-foreground">ç — LATIN SMALL LETTER C WITH CEDILLA</p>
@@ -378,6 +374,85 @@ function OverlaysGallery() {
           </CommandMenuGroup>
         </CommandMenuList>
       </CommandMenu>
+    </Section>
+  );
+}
+
+// console-redesign.md §3/D14: the two baked-direction, baked-dim drawer
+// variants Phase 2's "Delivery" agent will build every Provider/Route/
+// Sender ID/Webhook quick-vs-more pair on top of. This is the QA surface
+// for both — resize the browser pane to check the phone/desktop split
+// (base = bottom sheet, `md`+ = right panel) and confirm quick details
+// never dims while more details does.
+function DetailDrawerGallery() {
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  return (
+    <Section
+      title="Quick details vs. more details"
+      description="Narrow/undimmed peek (§1.4, Mercury) vs. wide/dimmed destination (§1.5, Polar) — same vaul primitive, direction/width/dim baked in per variant so a call site can't blur the two."
+    >
+      <div className="flex flex-wrap items-center gap-3">
+        <Button variant="secondary" onClick={() => setQuickOpen(true)}>
+          Open quick details
+        </Button>
+        <Button variant="secondary" onClick={() => setMoreOpen(true)}>
+          Open more details
+        </Button>
+      </div>
+
+      <QuickDetailDrawer
+        open={quickOpen}
+        onOpenChange={setQuickOpen}
+        title="cs_msg_001"
+        description="Quick details — a peek, not a destination."
+        footer={
+          <Button variant="ghost" size="sm" onClick={() => setQuickOpen(false)}>
+            View full details
+          </Button>
+        }
+      >
+        <dl className="flex flex-col gap-3 text-body">
+          <div className="flex justify-between gap-4">
+            <dt className="text-muted-foreground">State</dt>
+            <dd className="text-foreground">delivered</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-muted-foreground">Operator</dt>
+            <dd className="text-foreground">mtn</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-muted-foreground">Segments</dt>
+            <dd className="text-foreground">1</dd>
+          </div>
+        </dl>
+      </QuickDetailDrawer>
+
+      <MoreDetailDrawer
+        open={moreOpen}
+        onOpenChange={setMoreOpen}
+        title="Provider: orange_cm"
+        description="More details — the full record, edit form, destructive actions."
+        footer={
+          <>
+            <Button variant="ghost" size="sm" onClick={() => setMoreOpen(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" onClick={() => setMoreOpen(false)}>
+              Save
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4 text-body">
+          <p className="text-muted-foreground">
+            A wide, dimmed drawer wide enough for a real edit form — this gallery entry stands in
+            for what `providers-screen.tsx` will build in Phase 2.
+          </p>
+          <Input defaultValue="Orange Cameroon" aria-label="Display name" />
+        </div>
+      </MoreDetailDrawer>
     </Section>
   );
 }
@@ -479,8 +554,10 @@ function EncodingPreviewGallery() {
 }
 
 export default function GalleryPage() {
+  // D5: DaisyUI's `.tooltip`/`data-tip` needs no provider — no wrapping
+  // component here any more (Headless UI has no Tooltip of its own either).
   return (
-    <TooltipProvider>
+    <>
       <main className="mx-auto flex max-w-5xl flex-col gap-10 px-6 py-10">
         <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
           <div>
@@ -508,6 +585,8 @@ export default function GalleryPage() {
         <Separator />
         <OverlaysGallery />
         <Separator />
+        <DetailDrawerGallery />
+        <Separator />
         <PayloadInspectorGallery />
         <Separator />
         <StateTimelineGallery />
@@ -515,6 +594,6 @@ export default function GalleryPage() {
         <EncodingPreviewGallery />
       </main>
       <Toaster />
-    </TooltipProvider>
+    </>
   );
 }

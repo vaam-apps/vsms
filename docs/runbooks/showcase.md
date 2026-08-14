@@ -29,8 +29,10 @@ This runs, in order, entirely sequentially — Postgres, `migrate` (applies
 both migrations), `seed-signing-key` (an active OP signing key —
 `sms-gateway` refuses to bind its listener without one), `seed-dispatch`
 (a `Provider` + `Route`, same reason), `seed-demo-app` (an `App` +
-approved `SenderId` — see that command's own doc for why this step exists
-only for this showcase), `provision-client` (a real, HTTP-usable machine
+approved `SenderId`, seeded by the dedicated `vsms-demo-seed` binary/image
+— see `app/vsms-demo-seed/src/main.rs`'s own doc for why this step exists
+only for this showcase and isn't compiled into the production
+`sms-gateway` image), `provision-client` (a real, HTTP-usable machine
 credential), and, because `--profile console` is present,
 `seed-console-client` and `provision-user` (the account you'll sign in
 with) — before finally starting `sms-gateway`, `sms-worker`,
@@ -160,9 +162,14 @@ VSMS_IMAGE_TAG=v0.2.0 docker compose -f compose.demo.yaml --profile console up -
 
 `sms-gateway`/`sms-worker`/`admin`/`migrate` are published together on
 every `v*.*.*` tag; `VSMS_IMAGE_TAG` is the one thing this file expects you
-to change. `sms-fake-orange` (`VSMS_FAKE_ORANGE_IMAGE_TAG`) is not yet
-published on the same cadence — see `compose.demo.yaml`'s own comment on
-that service for the current state and why.
+to change. `sms-fake-orange` (`VSMS_FAKE_ORANGE_IMAGE_TAG`) and the demo
+seeder (`VSMS_DEMO_IMAGE_TAG`) are both non-production images, versioned
+independently — neither is yet published on the `v*.*.*` cadence, so both
+env vars are required (no default) rather than silently falling back to
+something that doesn't exist. See `compose.demo.yaml`'s own comments on
+those two services for the current state and why, and this repo's PR
+description for exactly which published tags this runbook was verified
+against.
 
 ## No Postgres port, on purpose
 

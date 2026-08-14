@@ -1,0 +1,31 @@
+[package]
+name = "vsms-demo-seed"
+description = "Demo-only: seeds the App/SenderId fixtures compose.demo.yaml needs. Never a production binary — see src/main.rs's own module doc."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The whole reason this is a real Rust binary and not a shell script: App/
+# SenderId/SenderIdRegistration creation has to go through CrateStack's own
+# generated delegates (R1) to get real `@@allow` policy enforcement and
+# `@@audit` rows, and the only crate that exposes those delegates is
+# sms-api's own `include_server_schema!` expansion — see main.rs's own
+# module doc for the full reasoning on why this couldn't be a `psql`/HTTP
+# script instead.
+sms-api.workspace = true
+
+anyhow.workspace = true
+clap = { workspace = true, features = ["derive", "env"] }
+cratestack.workspace = true
+dotenvy.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -22,6 +22,11 @@ members = [
   "app/sms-worker",
   "app/sms-fake-orange",
   "app/sms-migrate",
+  # Demo-only: seeds the App/SenderId fixtures compose.demo.yaml needs.
+  # Moved out of app/sms-gateway (formerly `Command::SeedDemoApp`) so no
+  # demo-seeding logic is compiled into the production sms-gateway image —
+  # see app/vsms-demo-seed/src/main.rs's own module doc.
+  "app/vsms-demo-seed",
   # Repo automation ("no bash scripts — xtask + Docker" is the standing
   # direction): a dot-directory at the repo root, invoked via the
   # `[alias] xtask` in .cargo/config.toml, mirroring the sibling vpay

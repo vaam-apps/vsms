@@ -2,7 +2,15 @@
 
 import { useState } from "react";
 import { cn } from "../../lib/cn";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../primitives/tabs";
+// D18: `Tabs` was rebuilt as `ValueTabs` (Headless UI `TabGroup` behind a
+// value-based adapter) — aliased on import so nothing below this line
+// changes; see tabs.tsx's own module doc for the full mechanism.
+import {
+  ValueTabs as Tabs,
+  ValueTabsContent as TabsContent,
+  ValueTabsList as TabsList,
+  ValueTabsTrigger as TabsTrigger,
+} from "../primitives/tabs";
 
 export interface PayloadExchange {
   direction: "request" | "response" | "callback";

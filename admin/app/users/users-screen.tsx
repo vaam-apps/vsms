@@ -60,10 +60,12 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
+  // D18: `Tabs` was rebuilt as `ValueTabs` (Headless UI `TabGroup` behind a
+  // value-based adapter) — aliased on import so the JSX below is untouched.
+  ValueTabs as Tabs,
+  ValueTabsContent as TabsContent,
+  ValueTabsList as TabsList,
+  ValueTabsTrigger as TabsTrigger,
   Textarea,
   TimestampDisplay,
   toast,
