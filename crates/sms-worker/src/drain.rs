@@ -55,7 +55,7 @@
 //! same reason `/readyz`'s exception exists: there is no row-level policy
 //! to bypass (the table isn't part of this schema), no audit trail to
 //! skip (a `SELECT` isn't a mutation), and no `@version`/soft-delete
-//! concern (it isn't a model at all). `ci/assert-no-raw-sqlx.sh` and
+//! concern (it isn't a model at all). `cargo xtask no-raw-sqlx` and
 //! `CONTRIBUTING.md`'s own R1 exceptions table both name this file.
 
 use std::time::Duration as StdDuration;

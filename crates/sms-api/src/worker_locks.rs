@@ -13,7 +13,7 @@
 //! row-level policy (there is no row-level policy on a system catalog),
 //! skips an audit trail (a `SELECT` writes no audit row regardless), or
 //! sidesteps `@version`/soft-delete (neither concept applies to a catalog
-//! view). `ci/assert-no-raw-sqlx.sh` and `CONTRIBUTING.md`'s exceptions
+//! view). `cargo xtask no-raw-sqlx` and `CONTRIBUTING.md`'s exceptions
 //! table both name this file.
 //!
 //! # What `pg_locks` actually reports for a session advisory lock —
@@ -60,8 +60,8 @@
 use chrono::{DateTime, Utc};
 // `cratestack::sqlx` the module, not individual items — matches
 // `app/sms-migrate/src/main.rs` and `crates/sms-worker/src/jobs/
-// reap_outbox.rs`'s own convention: `ci/assert-no-raw-sqlx.sh`'s grep looks
-// for the literal substring `sqlx::query`, so the raw call stays visible at
+// reap_outbox.rs`'s own convention: `cargo xtask no-raw-sqlx`'s pattern
+// matches the literal substring `sqlx::query`, so the raw call stays visible at
 // the call site rather than hidden behind a braced `use`.
 use cratestack::sqlx;
 use cratestack::CoolError;

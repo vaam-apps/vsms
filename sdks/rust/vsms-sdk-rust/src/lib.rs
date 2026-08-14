@@ -40,11 +40,19 @@
 //! downstream integrator's own `~/.cargo/registry/src/.../vsms-sdk-rust-*/`
 //! checkout, where nothing above that directory exists. So `schema.cstack`
 //! lives inside this crate's own directory — a plain vendored copy of
-//! `schema/schema.cstack`, refreshed by `vendor-schema.sh` and committed in
-//! the same change as any schema edit this SDK's surface should track.
-//! There is no drift-detection gate over that copy yet (unlike
-//! `packages/sms-client`'s `client-check`); this crate's own module doc is
-//! the only warning of that gap until one is written.
+//! `schema/schema.cstack`, refreshed by `cargo xtask sdk-schema-vendor`
+//! (`sdks/rust/vsms-sdk-rust/vendor-schema.sh` before the maintainer's
+//! "no bash scripts" cutover) and committed in the same change as any
+//! schema edit this SDK's surface should track. **Correction: this module
+//! doc used to say there was no drift-detection gate over that copy —
+//! wrong even before the sentence above, and stale regardless of it.**
+//! `cargo xtask sdk-schema-check` (`ci/assert-sdk-schema-current.sh`
+//! before the same cutover) has been the main repo's `rules` CI job's own
+//! gate for this since before this correction was written; the true gap
+//! is narrower than the original sentence claimed — that gate is real and
+//! wired into CI, it just doesn't run as part of *this* crate's own
+//! `cargo test`, the way `packages/sms-client`'s `client-check` is wired
+//! into the `js` CI job.
 //!
 //! # Measured build cost
 //!

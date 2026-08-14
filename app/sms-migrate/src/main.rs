@@ -48,7 +48,7 @@
 //!
 //! # R1
 //!
-//! Raw `sqlx` calls, not a `CrateStack` delegate — `ci/assert-no-raw-sqlx.sh`
+//! Raw `sqlx` calls, not a `CrateStack` delegate — `cargo xtask no-raw-sqlx`
 //! allowlists this file by path. This is not a new exception: "migrations"
 //! was already one of R1's four named exceptions
 //! (`CONTRIBUTING.md`) before this binary existed; `deploy/migrate.sql`

@@ -9,7 +9,7 @@ import "server-only";
 //
 // `Job` shares `GET /messages`'s REST list mechanics exactly — both are
 // `@@paged` models served through the same generated router, `Accept:
-// application/json`, and the same query grammar (`ci/assert-no-raw-sqlx.sh`
+// application/json`, and the same query grammar (`cargo xtask no-raw-sqlx`
 // aside, this is generated code, not model-specific behaviour). Three
 // findings `messages.ts`'s own module doc verified live are inherited here
 // without a second live probe, since they're properties of the grammar, not

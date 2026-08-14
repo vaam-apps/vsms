@@ -58,7 +58,7 @@
 //! models — no delegate exists to read it, so there is no row-level policy
 //! to bypass, no audit trail to skip (a `SELECT` isn't a mutation, and this
 //! *is* the audit table besides), no `@version`/soft-delete concern.
-//! `ci/assert-no-raw-sqlx.sh` and `CONTRIBUTING.md`'s own exceptions table
+//! `cargo xtask no-raw-sqlx` and `CONTRIBUTING.md`'s own exceptions table
 //! both name this file now, in place of `anchor_audit.rs`.
 //!
 //! # #58: the console's own read surface
@@ -98,7 +98,7 @@
 
 use chrono::{DateTime, Utc};
 // `cratestack::sqlx` the module, not individual items — see `worker_locks.rs`'s
-// identical comment: `ci/assert-no-raw-sqlx.sh`'s grep looks for the literal
+// identical comment: `cargo xtask no-raw-sqlx`'s pattern matches the literal
 // substring `sqlx::query`, so the raw call stays visible at the call site.
 use cratestack::sqlx;
 use cratestack::CoolError;

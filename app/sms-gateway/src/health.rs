@@ -37,7 +37,7 @@
 //!   already generates continuously. That is also why this file joins
 //!   R1's three existing named exceptions (DDL/migrations, advisory
 //!   locks, `LISTEN`/`NOTIFY`) as a fourth — both in
-//!   `ci/assert-no-raw-sqlx.sh`'s allowlist and in `CONTRIBUTING.md`'s own
+//!   `cargo xtask no-raw-sqlx`'s allowlist and in `CONTRIBUTING.md`'s own
 //!   exceptions table — rather than routing through a delegate: there is
 //!   no model this check is about, so there is nothing for R1's
 //!   policy/audit/outbox/version guarantees to apply to.
@@ -91,7 +91,7 @@ pub fn router(db: Cratestack) -> Router {
 async fn readyz(State(state): State<ReadyState>) -> (StatusCode, &'static str) {
     // R1 exception — see this module's own doc for why a raw query is
     // correct here rather than a CrateStack delegate call.
-    // `ci/assert-no-raw-sqlx.sh` allowlists this file by path.
+    // `cargo xtask no-raw-sqlx` allowlists this file by path.
     let probe = cratestack::sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(state.db.pool());
 
     match tokio::time::timeout(READINESS_TIMEOUT, probe).await {

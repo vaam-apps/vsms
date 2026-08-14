@@ -7,7 +7,8 @@ First-time setup, in order. Each step proves something works before the next one
 - **Rust**, stable, edition 2021 toolchain (`rustup default stable`).
 - **PostgreSQL 16** reachable somehow — a local install, or Docker (`docker run --rm -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16`). Nothing here needs a specific host; every command below assumes `psql`/`createdb` are on `PATH` and `DATABASE_URL` points at a reachable server.
 - **[`just`](https://github.com/casey/just)** — the task runner this repo's own commands go through (`cargo install just`, or your package manager).
-- **Python 3** — only for `ci/gen-bootstrap-sql.py` and the R2 parity check; nothing exotic.
+
+Nothing else: every repo-owned check (the R1 lint, the R2 parity check, bootstrap-SQL/migration-drift gates) is `cargo xtask <check>` — see `.xtask/` and `AGENTS.md`'s own "Repo automation moved to `xtask`" section — so there is no separate Python or shell interpreter to install for any of them.
 
 ## 1. Clone and build
 

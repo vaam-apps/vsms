@@ -179,7 +179,7 @@ fn every_enforced_permission_is_granted_to_some_role() {
         "these permissions are enforced but granted to no seeded role, so every human \
          hitting them is denied regardless of their role: {ungranted:?}\n\n\
          Either add them to the appropriate roles in docs/architecture.md §2.10 (then \
-         regenerate 0002_bootstrap with ci/gen-bootstrap-sql.py), or stop checking them.\n\
+         regenerate 0002_bootstrap with `cargo xtask bootstrap-sql`), or stop checking them.\n\
          Enforced: {enforced:?}\nGranted:  {granted:?}"
     );
 }

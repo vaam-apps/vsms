@@ -29,6 +29,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      # Needed for the "Bootstrap SQL matches the design doc" step below —
+      # `cargo xtask bootstrap-sql-check` replaced the old
+      # `python3 ci/gen-bootstrap-sql.py ... && diff -u ...` pair (the
+      # maintainer's standing "no bash/Python scripts — xtask + Docker"
+      # direction). This job otherwise never needed a Rust toolchain.
+      - uses: dtolnay/rust-toolchain@stable
 
       - name: Install psql
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
@@ -46,10 +52,7 @@ jobs:
       # 0002_bootstrap is generated from section 2.10 of the design doc.
       # If they have drifted, the document and the SQL disagree.
       - name: Bootstrap SQL matches the design doc
-        run: |
-          python3 ci/gen-bootstrap-sql.py /tmp/regenerated.sql
-          diff -u schema/migrations/postgres/0002_bootstrap/up.sql /tmp/regenerated.sql \
-            || { echo "::error::0002_bootstrap/up.sql is stale — regenerate it from docs/architecture.md §2.10"; exit 1; }
+        run: cargo xtask bootstrap-sql-check
 
   schema-drift:
     name: 0001_init matches `cratestack migrate diff`
@@ -61,7 +64,7 @@ jobs:
     # schema/schema.cstack — the `migrations` job above only proves the
     # committed SQL is *valid* (a migration missing a column still applies
     # fine), and neither `rust`'s `cargo check` nor
-    # `ci/assert-sdk-schema-current.sh` ever touches generated SQL at all.
+    # `cargo xtask sdk-schema-check` ever touches generated SQL at all.
     # Migrations here are regenerated wholesale (no committed
     # schema.snapshot.json baseline — AGENTS.md's "Regenerating migrations"
     # section), so two PRs each regenerating 0001_init from a different
@@ -74,19 +77,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       # Matched to the pin in root Cargo.toml, read through
-      # ci/cratestack-pin.sh — the single place that parses Cargo.toml for
-      # this value — rather than hardcoded, or even re-derived with a
-      # second copy of the same sed expression, here. The `js` job below
-      # calls the identical script for the identical reason: AGENTS.md's
-      # release-engineering notes warn about a duplicated hardcoded
-      # *value* drifting when only one copy is updated; a duplicated
-      # *extraction* of that value is the same smell one step removed —
-      # three regexes to keep in lockstep instead of one script three
-      # callers share. ci/assert-migrations-current.sh calls the same
-      # script too, so all three sites can never silently disagree.
+      # `cargo xtask cratestack-pin` — the single place that parses
+      # Cargo.toml for this value — rather than hardcoded, or even
+      # re-derived with a second copy of the same parsing logic, here. The
+      # `js` job below calls the identical subcommand for the identical
+      # reason: AGENTS.md's release-engineering notes warn about a
+      # duplicated hardcoded *value* drifting when only one copy is
+      # updated; a duplicated *extraction* of that value is the same smell
+      # one step removed — three parsers to keep in lockstep instead of one
+      # `xtask` module three callers share. `cargo xtask migrations-current`
+      # below calls the same function in-process too, so all three sites
+      # can never silently disagree.
       - name: Read the pinned cratestack version from Cargo.toml
         id: pin
-        run: echo "version=$(./ci/cratestack-pin.sh)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(cargo xtask cratestack-pin)" >> "$GITHUB_OUTPUT"
 
       # A CLI newer (or older) than the pinned library emits DDL the
       # compiled library never produces — AGENTS.md records this biting
@@ -99,7 +103,7 @@ jobs:
         run: cargo install cratestack-cli --version "${{ steps.pin.outputs.version }}" --locked
 
       - name: Regenerate 0001_init and diff it against the committed migration
-        run: ./ci/assert-migrations-current.sh
+        run: cargo xtask migrations-current
 
   rust:
     name: cargo fmt, clippy, test
@@ -262,18 +266,22 @@ jobs:
       # calling routes the compiled server does not serve, which is what the
       # route gate below exists to catch.
       #
-      # Read through ci/cratestack-pin.sh rather than hardcoded here — this
-      # step used to be the only place in this workflow with a literal
-      # `--version 0.7.10`; #204's own `schema-drift` job needed the
-      # identical install and, on the first cut, read the pin with its own
-      # copy of the same sed expression rather than a hardcoded literal —
-      # closing the value-drift risk but leaving the *extraction*
-      # triplicated across this step, that job's matching step, and
-      # ci/assert-migrations-current.sh. ci/cratestack-pin.sh is now the
-      # one place that parses Cargo.toml for this; all three call it.
+      # Read through `cargo xtask cratestack-pin` rather than hardcoded
+      # here — this step used to be the only place in this workflow with a
+      # literal `--version 0.7.10`; #204's own `schema-drift` job needed
+      # the identical install and, on the first cut, read the pin with its
+      # own copy of the same sed expression rather than a hardcoded
+      # literal — closing the value-drift risk but leaving the
+      # *extraction* triplicated across this step, that job's matching
+      # step, and the old `ci/assert-migrations-current.sh`.
+      # `cargo xtask cratestack-pin` is now the one place that parses
+      # Cargo.toml for this; both remaining call sites use it. This step
+      # needed no new `dtolnay/rust-toolchain@stable` — this job's own next
+      # step already assumed `cargo` is on `PATH` for `cargo install
+      # cratestack-cli`, on GitHub's own ubuntu-latest runner default.
       - name: Read the pinned cratestack version from Cargo.toml
         id: pin
-        run: echo "version=$(./ci/cratestack-pin.sh)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(cargo xtask cratestack-pin)" >> "$GITHUB_OUTPUT"
       - name: Install cratestack CLI (matched to the library pin)
         run: cargo install cratestack-cli --version "${{ steps.pin.outputs.version }}" --locked
       # `just` is not preinstalled on GitHub runners, and no other job in this
@@ -314,15 +322,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # This job called plain bash/Python scripts before the `xtask` PR and
+      # needed no Rust toolchain at all — now every check here is
+      # `cargo xtask <check>`, so this step is new.
+      - uses: dtolnay/rust-toolchain@stable
 
       # R1: all data access goes through CrateStack delegates.
-      - run: ./ci/assert-no-raw-sqlx.sh
+      - run: cargo xtask no-raw-sqlx
 
       # R2: the diagram everyone reads and the transition table the trigger
       # enforces must agree. Drift shows up in production as an SM001 on an
       # edge that looks legal in the documentation.
-      - run: python3 ci/assert-state-machine-parity.py
-      - run: ./ci/assert-sdk-schema-current.sh
+      - run: cargo xtask parity
+      - run: cargo xtask sdk-schema-check
 
   diagrams:
     name: mermaid diagrams parse

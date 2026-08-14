@@ -93,7 +93,7 @@ backstop, not a control path"). If this fires:
    `message_state_transitions`/`job_state_transitions`/
    `attempt_state_transitions` (§2.10 of the design doc) and the
    corresponding `stateDiagram-v2` block (§7.4/§8.5) — one of the two has
-   drifted from the other, and `ci/assert-state-machine-parity.py` should
+   drifted from the other, and `cargo xtask parity` should
    have caught it before merge if the drift is in the diagram/table pair
    itself; a drift in application code proposing a state neither models
    won't be caught by that check.
