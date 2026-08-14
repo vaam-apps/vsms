@@ -56,16 +56,15 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
+  // D18: `Tabs` was rebuilt as `ValueTabs` (Headless UI `TabGroup` behind a
+  // value-based adapter) — aliased on import so the JSX below is untouched.
+  ValueTabs as Tabs,
+  ValueTabsContent as TabsContent,
+  ValueTabsList as TabsList,
+  ValueTabsTrigger as TabsTrigger,
   Textarea,
   Toaster,
   Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
   toast,
 } from "@vsms/ui";
 import { type ReactNode, useState } from "react";
@@ -285,12 +284,12 @@ function OverlaysGallery() {
   return (
     <Section
       title="Dialog, dropdown menu, tooltip, popover, drawer, command menu, toast"
-      description="Radix behaviour (focus trap, keyboard nav, ARIA) under daisyUI styling."
+      description="Headless UI behaviour (focus trap, keyboard nav, ARIA) under daisyUI styling."
     >
       <div className="flex flex-wrap items-center gap-3">
         <Dialog>
-          <DialogTrigger asChild>
-            <Button variant="secondary">Open dialog</Button>
+          <DialogTrigger as={Button} variant="secondary">
+            Open dialog
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
@@ -308,8 +307,8 @@ function OverlaysGallery() {
         </Dialog>
 
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="secondary">Row actions</Button>
+          <DropdownMenuTrigger as={Button} variant="secondary">
+            Row actions
           </DropdownMenuTrigger>
           <DropdownMenuContent>
             <DropdownMenuLabel>cs_msg_001</DropdownMenuLabel>
@@ -319,18 +318,13 @@ function OverlaysGallery() {
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button variant="secondary">Hover me</Button>
-            </TooltipTrigger>
-            <TooltipContent>Inferred from prefix — not authoritative.</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
+        <Tooltip label="Inferred from prefix — not authoritative.">
+          <Button variant="secondary">Hover me</Button>
+        </Tooltip>
 
         <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="secondary">Open popover</Button>
+          <PopoverTrigger as={Button} variant="secondary">
+            Open popover
           </PopoverTrigger>
           <PopoverContent>
             <p className="text-body text-foreground">ç — LATIN SMALL LETTER C WITH CEDILLA</p>
@@ -560,8 +554,10 @@ function EncodingPreviewGallery() {
 }
 
 export default function GalleryPage() {
+  // D5: DaisyUI's `.tooltip`/`data-tip` needs no provider — no wrapping
+  // component here any more (Headless UI has no Tooltip of its own either).
   return (
-    <TooltipProvider>
+    <>
       <main className="mx-auto flex max-w-5xl flex-col gap-10 px-6 py-10">
         <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
           <div>
@@ -598,6 +594,6 @@ export default function GalleryPage() {
         <EncodingPreviewGallery />
       </main>
       <Toaster />
-    </TooltipProvider>
+    </>
   );
 }
