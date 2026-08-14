@@ -1,5 +1,5 @@
 packages:
-  - "admin"
+  - "frontends/apps/admin"
   - "frontends/packages/*"
   - "sdks/node/*"
 

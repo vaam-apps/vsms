@@ -18,7 +18,7 @@ const config: NextConfig = {
   // breaks `collect-build-traces` with a `MODULE_NOT_FOUND` on
   // `next/dist/server/route-modules/app-page/module.compiled` — found by
   // actually running `next build`, not from the warning text alone.
-  outputFileTracingRoot: fileURLToPath(new URL("..", import.meta.url)),
+  outputFileTracingRoot: fileURLToPath(new URL("../../..", import.meta.url)),
 };
 
 export default config;
