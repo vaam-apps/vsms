@@ -7,12 +7,20 @@ export type CardProps = HTMLAttributes<HTMLDivElement>;
 // a 1px border. daisyUI's own `card` class would add `shadow-xl` under
 // some presets — explicitly opted out here rather than stripped after the
 // fact, since this is a hand-built component, not a generated one.
+//
+// D8: the previous `rounded-sm` override is dropped, not swapped for
+// `rounded-box` — daisyUI's own `.card` rule already sets
+// `border-radius: var(--radius-box)` (confirmed by reading
+// `daisyui/components/card.css` directly), so an explicit override was
+// fighting the component's own class at equal specificity for no reason.
+// This *is* the deliberate D8 value change §5's inventory calls for
+// ("new radius (`--radius-box`)") — the previous `rounded-sm` resolved to
+// `--radius-field` (12px) once Phase 0 rewrote the alias, one tier tighter
+// than the box-tier corners the reference lock (§1.1/§1.2/§1.5) shows for
+// card/drawer/panel chrome.
 export function Card({ className, ...props }: CardProps) {
   return (
-    <div
-      className={cn("card rounded-sm border border-edge bg-base-300 shadow-none", className)}
-      {...props}
-    />
+    <div className={cn("card border border-edge bg-base-300 shadow-none", className)} {...props} />
   );
 }
 

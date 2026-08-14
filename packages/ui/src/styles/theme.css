@@ -197,6 +197,25 @@
   --color-background: var(--color-base-100);
   --color-foreground: var(--color-base-content);
 
+  /* Found live while verifying Phase 1 Bucket B's `table.tsx`/`toast.tsx`
+     (console-redesign.md §7): `bg-surface-1`/`bg-surface-2` are used across
+     dozens of files in this package and in `admin/` — every dialog,
+     popover, tooltip, dropdown-menu, select, drawer, command-menu, this
+     file's own `TableHeader`, and most screens' inline info panels — but
+     neither alias was ever registered here, going all the way back to the
+     original T6 PR (#128; confirmed via `git show` on that commit's own
+     `theme.css`). Tailwind's `@theme inline` only generates a utility for a
+     token it knows about, so every one of those `bg-surface-1`/
+     `bg-surface-2` classes has silently resolved to no background at all
+     (`rgba(0,0,0,0)`, confirmed live via `getComputedStyle` against a real
+     render) since the component library was first built — easy to miss
+     because a transparent panel over this theme's own near-black page
+     still reads as "dark enough" at a glance. This file's own older
+     comments ("base-100/200/300 double as our --background / --surface-1 /
+     --surface-2") already stated the intended mapping; it was just never
+     wired into `@theme inline` to make good on it. */
+  --color-surface-1: var(--color-base-200);
+  --color-surface-2: var(--color-base-300);
   --color-surface-3: var(--surface-3);
 
   --color-edge-subtle: var(--edge-subtle);
