@@ -87,7 +87,7 @@ export function UserDetailDrawerView({
         />
       )}
 
-      {deleteConfirm}
+      {deleteConfirm !== null && <div className="mt-4">{deleteConfirm}</div>}
     </MoreDetailDrawer>
   );
 }

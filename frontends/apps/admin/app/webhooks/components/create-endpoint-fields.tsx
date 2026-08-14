@@ -50,6 +50,12 @@ export function CreateEndpointFields({
           `FormField`'s own `htmlFor` requirement exists to catch, fixed the
           correct way for a group rather than forced through a primitive
           shaped for one control. */}
+      {/* A `<fieldset>`, not a `FormField`: this groups checkboxes, where
+          the correct semantics are fieldset/legend rather than one
+          `<label for>` pointing at a single control. `FormField` requires
+          `htmlFor` precisely because a label must name one control, so it
+          cannot express a group. Left as-is deliberately — #286's agent
+          died before recording this reasoning. */}
       <fieldset className="flex flex-col gap-1.5">
         <legend className="font-medium text-body text-foreground">Event types</legend>
         <EventTypeToggles selected={eventTypes} onChange={onEventTypesChange} />

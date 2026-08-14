@@ -86,12 +86,11 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { trpc } from "@vsms/hooks";
-import { ScreenHeader, ScreenStack, toast } from "@vsms/ui";
+import { InlineConfirm, ScreenHeader, ScreenStack, toast } from "@vsms/ui";
 import { parseAsStringEnum, useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { CreateRoleDialogView } from "./components/create-role-dialog-view";
-import { InlineConfirmPanel } from "./components/inline-confirm-panel";
 import {
   type ProvisionedUser,
   ProvisionUserDialogView,
@@ -251,7 +250,7 @@ function UserDetailDrawer({
       deleteConfirm={
         deleteConfirmOpen &&
         userId !== null && (
-          <InlineConfirmPanel
+          <InlineConfirm
             title="Delete this user?"
             description="owner-only, soft-deletes the row."
             confirmLabel="Delete"
@@ -391,7 +390,7 @@ function RoleDetailDrawer({
       deleteConfirm={
         deleteConfirmOpen &&
         roleId !== null && (
-          <InlineConfirmPanel
+          <InlineConfirm
             title="Delete this role?"
             description="Fails with a foreign-key error if any user still carries it — reassign them first."
             confirmLabel="Delete"

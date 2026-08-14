@@ -92,7 +92,7 @@ export function RoleDetailDrawerView({
         />
       )}
 
-      {deleteConfirm}
+      {deleteConfirm !== null && <div className="mt-4">{deleteConfirm}</div>}
     </MoreDetailDrawer>
   );
 }
