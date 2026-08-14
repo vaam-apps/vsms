@@ -71,16 +71,16 @@ export interface MessageDetailScreenProps {
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex min-w-0 flex-col gap-1">
       <p className="text-caption text-subtle-foreground">{label}</p>
-      <div className="font-mono text-body text-foreground">{children}</div>
+      <div className="break-all font-mono text-body text-foreground">{children}</div>
     </div>
   );
 }
 
 function MessageFields({ message }: { message: MessageDetail }) {
   return (
-    <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
       <Field label="Recipient">
         <MsisdnDisplay value={message.msisdn} operator={message.operator} />
       </Field>
@@ -145,9 +145,9 @@ function ReceiptsTable({
       <TableHeader>
         <TableRow>
           <TableHead>Outcome</TableHead>
-          <TableHead>Raw status</TableHead>
-          <TableHead>Error code</TableHead>
-          <TableHead>Network</TableHead>
+          <TableHead className="hidden sm:table-cell">Raw status</TableHead>
+          <TableHead className="hidden md:table-cell">Error code</TableHead>
+          <TableHead className="hidden md:table-cell">Network</TableHead>
           <TableHead align="end">Received</TableHead>
         </TableRow>
       </TableHeader>
@@ -155,9 +155,15 @@ function ReceiptsTable({
         {receipts.map((receipt) => (
           <TableRow key={receipt.id}>
             <TableCell mono>{receipt.outcome}</TableCell>
-            <TableCell mono>{receipt.rawStatus}</TableCell>
-            <TableCell mono>{receipt.errorCode ?? "—"}</TableCell>
-            <TableCell mono>{receipt.networkCode}</TableCell>
+            <TableCell className="hidden sm:table-cell" mono>
+              {receipt.rawStatus}
+            </TableCell>
+            <TableCell className="hidden md:table-cell" mono>
+              {receipt.errorCode ?? "—"}
+            </TableCell>
+            <TableCell className="hidden md:table-cell" mono>
+              {receipt.networkCode}
+            </TableCell>
             <TableCell align="end">
               <TimestampDisplay value={receipt.receivedAt} />
             </TableCell>
@@ -173,14 +179,11 @@ export function MessageDetailScreen({ messageId }: MessageDetailScreenProps) {
   const receiptsQuery = trpc.messages.receipts.useQuery({ id: messageId });
 
   return (
-    <main className="mx-auto flex max-w-[1000px] flex-col gap-6 px-6 py-10">
-      <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
-        <div>
-          <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-            vsms admin console
-          </p>
-          <h1 className="mt-1 font-medium text-foreground text-title">Message detail</h1>
-          <p className="mt-1 max-w-xl text-body text-muted-foreground">{messageId}</p>
+    <div className="mx-auto flex w-full max-w-[1000px] flex-col gap-6">
+      <header className="flex flex-col gap-3 border-edge border-b pb-6 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+        <div className="min-w-0">
+          <h1 className="font-medium text-foreground text-title">Message detail</h1>
+          <p className="mt-1 max-w-xl break-all text-body text-muted-foreground">{messageId}</p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
           <a
@@ -264,6 +267,6 @@ export function MessageDetailScreen({ messageId }: MessageDetailScreenProps) {
           </Card>
         </>
       )}
-    </main>
+    </div>
   );
 }
