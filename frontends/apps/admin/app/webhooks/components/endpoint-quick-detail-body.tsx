@@ -1,4 +1,5 @@
 import { type EndpointListItem, EVENT_TYPES } from "../webhook-domain";
+import { DetailList, DetailRow } from "./detail-row";
 import { SecretField } from "./secret-field";
 
 // Dumb (R6): the `QuickDetailDrawer`'s summary `dl` for one endpoint.
@@ -6,30 +7,23 @@ export function EndpointQuickDetailBody({ endpoint }: { endpoint: EndpointListIt
   const circuitOpen =
     endpoint.circuitOpenUntil != null && new Date(endpoint.circuitOpenUntil) > new Date();
   return (
-    <dl className="flex flex-col gap-3 text-body">
-      <div className="flex items-center justify-between gap-3">
-        <dt className="text-muted-foreground">Active</dt>
-        <dd>{endpoint.active ? "yes" : "no"}</dd>
-      </div>
-      <div className="flex items-center justify-between gap-3">
-        <dt className="text-muted-foreground">Events</dt>
-        <dd className="font-mono text-caption">
+    <DetailList>
+      <DetailRow label="Active">{endpoint.active ? "yes" : "no"}</DetailRow>
+      <DetailRow label="Events">
+        <span className="font-mono text-caption">
           {endpoint.eventTypes.length} of {EVENT_TYPES.length}
-        </dd>
-      </div>
-      <div className="flex items-center justify-between gap-3">
-        <dt className="text-muted-foreground">Circuit</dt>
-        <dd>
-          {circuitOpen ? (
-            <span className="text-state-danger-fg">
-              open ({endpoint.consecutiveFailures} failures)
-            </span>
-          ) : (
-            <span className="text-muted-foreground">closed</span>
-          )}
-        </dd>
-      </div>
+        </span>
+      </DetailRow>
+      <DetailRow label="Circuit">
+        {circuitOpen ? (
+          <span className="text-state-danger-fg">
+            open ({endpoint.consecutiveFailures} failures)
+          </span>
+        ) : (
+          <span className="text-muted-foreground">closed</span>
+        )}
+      </DetailRow>
       <SecretField label="Current secret" value={endpoint.secret} />
-    </dl>
+    </DetailList>
   );
 }

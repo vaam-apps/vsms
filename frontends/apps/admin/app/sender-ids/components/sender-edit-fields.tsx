@@ -1,4 +1,4 @@
-import { Input, Label } from "@vsms/ui";
+import { FormField, InlineBanner, Input } from "@vsms/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import type { SenderIdFormValues } from "../sender-id-domain";
 
@@ -18,25 +18,19 @@ export function SenderEditFields({
 
   return (
     <form id={formId} onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="sender-value">Value</Label>
+      <FormField label="Value" htmlFor="sender-value" error={formState.errors.value?.message}>
         <Input
           id="sender-value"
           aria-invalid={formState.errors.value != null}
           {...register("value")}
         />
-        {formState.errors.value != null && (
-          <p className="text-caption text-state-danger-fg">{formState.errors.value.message}</p>
-        )}
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="sender-kind">Kind</Label>
+      </FormField>
+      <FormField label="Kind" htmlFor="sender-kind">
         <Input id="sender-kind" placeholder="e.g. alphanumeric" {...register("kind")} />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="sender-notes">Notes</Label>
+      </FormField>
+      <FormField label="Notes" htmlFor="sender-notes">
         <Input id="sender-notes" {...register("notes")} />
-      </div>
+      </FormField>
       <Controller
         control={control}
         name="active"
@@ -54,9 +48,7 @@ export function SenderEditFields({
         )}
       />
       {saveErrorMessage != null && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          Save failed: {saveErrorMessage}
-        </div>
+        <InlineBanner variant="danger">Save failed: {saveErrorMessage}</InlineBanner>
       )}
     </form>
   );

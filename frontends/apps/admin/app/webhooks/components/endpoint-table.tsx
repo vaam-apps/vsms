@@ -31,9 +31,9 @@ export function EndpointTable({
         <TableRow>
           <TableHead>Active</TableHead>
           <TableHead>URL</TableHead>
-          <TableHead className="hidden md:table-cell">Events</TableHead>
-          <TableHead className="hidden sm:table-cell">Circuit</TableHead>
-          <TableHead align="end" className="hidden md:table-cell">
+          <TableHead hideBelow="md">Events</TableHead>
+          <TableHead hideBelow="sm">Circuit</TableHead>
+          <TableHead align="end" hideBelow="md">
             Updated
           </TableHead>
         </TableRow>
@@ -77,12 +77,12 @@ export function EndpointTable({
                   {endpoint.url}
                 </span>
               </TableCell>
-              <TableCell className="hidden md:table-cell">
+              <TableCell hideBelow="md">
                 <span className="text-caption text-muted-foreground">
                   {endpoint.eventTypes.length} of {EVENT_TYPES.length}
                 </span>
               </TableCell>
-              <TableCell className="hidden sm:table-cell">
+              <TableCell hideBelow="sm">
                 {circuitOpen ? (
                   <span
                     className="text-state-danger-fg"
@@ -94,7 +94,7 @@ export function EndpointTable({
                   <span className="text-muted-foreground">closed</span>
                 )}
               </TableCell>
-              <TableCell align="end" className="hidden md:table-cell">
+              <TableCell align="end" hideBelow="md">
                 <TimestampDisplay value={endpoint.updatedAt} />
               </TableCell>
             </TableRow>

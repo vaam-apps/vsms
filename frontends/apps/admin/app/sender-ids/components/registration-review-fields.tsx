@@ -1,6 +1,7 @@
 import {
+  FormField,
+  InlineBanner,
   Input,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -27,8 +28,7 @@ export function RegistrationReviewFields({
 
   return (
     <form id={formId} onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="registration-status">Status</Label>
+      <FormField label="Status" htmlFor="registration-status">
         <Controller
           control={control}
           name="status"
@@ -47,23 +47,21 @@ export function RegistrationReviewFields({
             </Select>
           )}
         />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="registration-reference">
-          Reference (the provider's own tracking id, if any)
-        </Label>
+      </FormField>
+      <FormField
+        label="Reference (the provider's own tracking id, if any)"
+        htmlFor="registration-reference"
+      >
         <Input id="registration-reference" {...register("reference")} />
-      </div>
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="registration-rejection-reason">
-          Rejection reason (what needs to change before resubmitting)
-        </Label>
+      </FormField>
+      <FormField
+        label="Rejection reason (what needs to change before resubmitting)"
+        htmlFor="registration-rejection-reason"
+      >
         <Textarea id="registration-rejection-reason" rows={3} {...register("rejectionReason")} />
-      </div>
+      </FormField>
       {saveErrorMessage != null && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
-          Save failed: {saveErrorMessage}
-        </div>
+        <InlineBanner variant="danger">Save failed: {saveErrorMessage}</InlineBanner>
       )}
     </form>
   );

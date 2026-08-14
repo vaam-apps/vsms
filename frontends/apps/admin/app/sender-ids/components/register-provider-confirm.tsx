@@ -1,6 +1,6 @@
 import {
+  FormField,
   InlineConfirm,
-  Label,
   Select,
   SelectContent,
   SelectItem,
@@ -47,8 +47,7 @@ export function RegisterProviderConfirm({
       onConfirm={onConfirm}
       onCancel={onCancel}
     >
-      <div className="flex flex-col gap-1.5">
-        <Label htmlFor="register-provider">Provider</Label>
+      <FormField label="Provider" htmlFor="register-provider">
         <Select
           {...(selectedProviderId !== null ? { value: selectedProviderId } : {})}
           onValueChange={onSelectProvider}
@@ -64,7 +63,7 @@ export function RegisterProviderConfirm({
             ))}
           </SelectContent>
         </Select>
-      </div>
+      </FormField>
     </InlineConfirm>
   );
 }
