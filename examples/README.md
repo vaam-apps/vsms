@@ -24,7 +24,7 @@ interpretation of the same exchange.
 
 **Both examples now do steps 1-3 by depending on official SDKs**
 (`vsms-sdk-rust` under `sdks/rust/vsms-sdk-rust`, [#171](https://github.com/vymalo/vsms/issues/171);
-`@vsms/sdk` under `sdks/node/vsms-sdk-node`, [#242](https://github.com/vymalo/vsms/issues/242))
+`@vymalo/vsms-node` under `sdks/node/vsms-sdk-node`, [#242](https://github.com/vymalo/vsms/issues/242))
 instead of hand-rolling them — see each SDK's own docs for what it
 owns (the `private_key_jwt` credential lifecycle) and this file's own
 "Design decisions" section below for what that did to each example's size.
@@ -165,20 +165,20 @@ crate's own module doc for what's generated (`cratestack::
 include_client_schema!` — the model/input/procedure surface) versus
 hand-written (the auth layer, which is the part that used to live here).
 
-### Node: `@vsms/sdk`, not a hand-rolled token dance
+### Node: `@vymalo/vsms-node`, not a hand-rolled token dance
 
 `examples/node/sms-send-example/src/index.mjs` used to hand-roll RFC 7523
 assertion signing, the `/token` exchange, and token caching itself (~230
-lines of boilerplate). It now depends on `@vsms/sdk` (`sdks/node/vsms-sdk-node`,
+lines of boilerplate). It now depends on `@vymalo/vsms-node` (`sdks/node/vsms-sdk-node`,
 [#242](https://github.com/vymalo/vsms/issues/242)) and shrank from 298 to 110 lines;
 the example no longer directly depends on `jose` or hand-rolls token caching,
-relying on `@vsms/sdk`'s built-in credential lifecycle, automatic bounded 401
+relying on `@vymalo/vsms-node`'s built-in credential lifecycle, automatic bounded 401
 refresh, and typed procedures.
 
-*(Note: In this monorepo, `examples/node/sms-send-example` references `@vsms/sdk`
+*(Note: In this monorepo, `examples/node/sms-send-example` references `@vymalo/vsms-node`
 via a local `file:../../../sdks/node/vsms-sdk-node` dependency for local integration
 testing prior to registry publication; a third-party integrator should install
-`@vsms/sdk` directly from npm.)*
+`@vymalo/vsms-node` directly from npm.)*
 
 ### Idempotency: two independent mechanisms, both live as of #153
 

@@ -1,7 +1,17 @@
 /**
  * Types describing vsms domain models and procedures.
+ *
+ * DESIGN DECISION: These types are deliberately hand-written rather than
+ * generated via `cratestack generate-typescript`.
+ * 
+ * The full schema is large (23 models, 13 enums, 7 procedures), mostly
+ * concerning admin console operations and internal routing state. This SDK
+ * is focused purely on the integrator experience: sending messages, checking
+ * delivery, and previewing routing. Exposing the full CrateStack-generated
+ * types would clutter the SDK with internal models that integrators cannot
+ * access anyway. By hand-writing these types, we curate the public API
+ * surface to exactly what the SDK exposes.
  */
-
 export type Encoding = "gsm7" | "ucs2";
 export type OperatorCode = "mtn" | "orange" | "camtel" | "nexttel" | "unknown";
 export type MessageClass = "otp" | "transactional" | "notification" | "marketing";

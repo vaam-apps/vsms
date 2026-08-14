@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // vsms integration example (Node.js): send one message through vsms
-// using the official @vsms/sdk.
+// using the official @vymalo/vsms-node SDK.
 //
 // The SDK handles:
 // 1. Reading the private key PEM.
@@ -22,7 +22,7 @@
 // VSMS_PRIVATE_KEY_PATH, VSMS_SCOPE).
 
 import { parseArgs } from "node:util";
-import { SdkError, VsmsClient } from "@vsms/sdk";
+import { SdkError, VsmsClient } from "@vymalo/vsms-node";
 
 function parseCli() {
   const { values } = parseArgs({

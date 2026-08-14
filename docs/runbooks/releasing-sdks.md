@@ -2,7 +2,7 @@
 
 This runbook documents the release and publishing workflow for the official vsms SDKs:
 - **Rust SDK**: `vsms-sdk-rust` on [crates.io](https://crates.io/crates/vsms-sdk-rust)
-- **Node.js SDK**: `@vsms/sdk` on [npm](https://www.npmjs.com/package/@vsms/sdk)
+- **Node.js SDK**: `@vymalo/vsms-node` on [npm](https://www.npmjs.com/package/@vymalo/vsms-node)
 
 ---
 
@@ -26,9 +26,9 @@ The automated release workflow requires the following repository secrets configu
 - **Secret Name**: `CRATES_IO_TOKEN`
 - **Source**: Generate an API token on [crates.io/settings/tokens](https://crates.io/settings/tokens) with `publish-update` / `publish-new` permissions for `vsms-sdk-rust`.
 
-### B. npm (`@vsms/sdk`)
+### B. npm (`@vymalo/vsms-node`)
 - **Secret Name**: `NPM_TOKEN`
-- **Source**: Generate an Automation access token on [npmjs.com](https://www.npmjs.com/) with publish access to the `@vsms` organization scope.
+- **Source**: Generate an Automation access token on [npmjs.com](https://www.npmjs.com/) with publish access to the `@vymalo` organization scope.
 - **Provenance**: The workflow publishes with `--provenance` via GitHub Actions OpenID Connect (`id-token: write` permission).
 
 ---
@@ -49,7 +49,7 @@ cargo test
 cargo publish --dry-run
 ```
 
-### 2. Node.js SDK (`@vsms/sdk`)
+### 2. Node.js SDK (`@vymalo/vsms-node`)
 ```bash
 cd sdks/node/vsms-sdk-node
 pnpm install
@@ -78,4 +78,4 @@ To release a new version of the SDKs:
 4. **Monitor GitHub Actions**:
    - Check the `release` workflow execution under the Actions tab.
    - Verify `publish-rust-sdk` completes and crate is live on `https://crates.io/crates/vsms-sdk-rust`.
-   - Verify `publish-node-sdk` completes and package is live on `https://www.npmjs.com/package/@vsms/sdk`.
+   - Verify `publish-node-sdk` completes and package is live on `https://www.npmjs.com/package/@vymalo/vsms-node`.

@@ -229,7 +229,7 @@ jobs:
         run: cargo publish
 
   publish-node-sdk:
-    name: publish @vsms/sdk to npm
+    name: publish @vymalo/vsms-node to npm
     needs: version
     runs-on: ubuntu-latest
     steps:
