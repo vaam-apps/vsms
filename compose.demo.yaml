@@ -61,6 +61,23 @@ name: vsms-demo
 # eight characters `*anchor` — confirmed with `docker compose config`,
 # not assumed. Compose's own `${VAR:-default}` interpolation has no such
 # restriction.)
+#
+# **Known bootstrap gap, called out rather than hidden: `v0.1.0` (this
+# file's own default) predates this PR.** `seed-demo-app` and
+# `provision-client`'s `--app-slug`/`--client-id-out` flags — both added
+# alongside this file, both load-bearing for the bootstrap sequence below
+# — don't exist in `v0.1.0`. This file cannot make a version tag exist
+# before a maintainer cuts one; until the first `v*.*.*` release that
+# includes these commands ships, `VSMS_IMAGE_TAG` must be overridden (this
+# PR's own verification used the `sha-`-tagged image its own
+# `workflow_dispatch` smoke-test run published — see the PR description
+# for that exact tag) for this file to actually work. `v0.1.0` is kept as
+# the default anyway, rather than `main` (perpetually moving, exactly the
+# "silently changes under you" failure this header already argues
+# against) or a `sha-`/`branch-`-tagged smoke-test image (an artifact of
+# proving this PR, not a real release) — bump it once a compatible
+# version exists, and until then treat "the default doesn't work yet" as
+# accurate, not a bug in this file.
 
 services:
   postgres:
