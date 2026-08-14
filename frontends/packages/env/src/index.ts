@@ -40,6 +40,12 @@ export const env = createEnv({
     // less real keyspace than the cookie's own encryption implies.
     SMS_CONSOLE_SESSION_SECRET: z.string().min(32),
     MESSAGE_STREAM_POLL_MS: z.coerce.number().int().min(500).default(2000),
+    // R6 (Administration group, `audit-log-screen.tsx`): a page size is an
+    // operational tuning value, not a protocol constant — the same test
+    // `MESSAGE_STREAM_POLL_MS` already sets a precedent for. Read
+    // server-side in `audit-log/page.tsx` and handed down as a prop, the
+    // identical shape that file already uses.
+    AUDIT_LOG_PAGE_SIZE: z.coerce.number().int().min(1).max(500).default(50),
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   client: {
@@ -59,6 +65,7 @@ export const env = createEnv({
     SMS_CONSOLE_OIDC_CLIENT_ID: process.env.SMS_CONSOLE_OIDC_CLIENT_ID,
     SMS_CONSOLE_SESSION_SECRET: process.env.SMS_CONSOLE_SESSION_SECRET,
     MESSAGE_STREAM_POLL_MS: process.env.MESSAGE_STREAM_POLL_MS,
+    AUDIT_LOG_PAGE_SIZE: process.env.AUDIT_LOG_PAGE_SIZE,
     NODE_ENV: process.env.NODE_ENV,
     // Client
     NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
