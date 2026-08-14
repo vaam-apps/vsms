@@ -16,6 +16,23 @@
 // form and no nested history, so the narrow drawer already holds the
 // entire record — there is nothing a wider drawer would add.
 //
+// R6 (AGENTS.md): this file is the smart component — data fetching, URL
+// state, mutations, handlers, derived values, and a tree of dumb
+// components. No `className`, no raw markup. Markup and classes moved
+// verbatim into `components/jobs-table.tsx`, `components/job-filters-
+// bar.tsx`, `components/job-detail-fields.tsx` and `components/requeue-
+// confirm-dialog.tsx`; the four hoisted `COL_*` class consts moved with
+// the table, and the hand-maintained `JOB_STATE_LABELS` map is gone —
+// it duplicated `JOB_STATUS_META[state].label` verbatim (checked entry by
+// entry), so `job-filters-bar.tsx` reads the label straight off the same
+// status table `JobStatusPill` already uses, the same derivation
+// `messages-screen.tsx`'s own `STATE_LABELS` already uses for messages.
+// `REFETCH_INTERVAL_MS` is gone too — `pollMs` now arrives as a prop, read
+// server-side from `@vsms/env`'s `DIAGNOSTICS_POLL_MS` (`page.tsx`), the
+// same `MESSAGE_STREAM_POLL_MS` pattern `messages-screen.tsx` already
+// established, so a client component never needs a `NEXT_PUBLIC_*` copy of
+// a server-validated tuning value.
+//
 // # Why a plain poll, not a live stream
 //
 // `messages-screen.tsx` layers a live long-poll (`messages.onStateChange`)
@@ -42,108 +59,79 @@
 // anything else is the real guard (Postgres decides, this UI proposes);
 // the button is simply never rendered for a row that isn't `dead`, so an
 // operator is never invited to try an action the API would refuse anyway.
-// Confirmed via a `Dialog`, not a bare click — the design doc's own rule
+// Confirmed via a dialog, not a bare click — the design doc's own rule
 // (`toast.tsx`'s module doc) is that anything an operator must act on is
 // inline, never a toast; a requeue's own confirmation is the row's status
 // pill flipping from Dead to Pending on the very next poll, which is why
 // this screen has no success toast at all — the state change *is* the
-// confirmation. The confirm `Dialog` can be reached from the table row's
-// own action *or* from inside the quick-detail drawer (§3's own footnote:
-// "a form can open a confirmation without contradicting the rule above" —
-// a drawer opening a nested `Dialog`), both driving the same
-// `confirmTarget` state.
+// confirmation. The confirm dialog can be reached from the table row's own
+// action *or* from inside the quick-detail drawer (§3's own footnote: "a
+// form can open a confirmation without contradicting the rule above" — a
+// drawer opening a nested `Dialog`), both driving the same `confirm` URL
+// param — see `components/requeue-confirm-dialog.tsx`'s own doc for a real
+// limitation of that combination this rewrite did not introduce.
+//
+// # `detail`/`confirm` are ids in the URL, not copies of a server row
+//
+// The pre-R6 version of this screen held `detailJob`/`confirmTarget` as
+// `useState<JobListItem | null>` — full copies of a fetched row. That's a
+// second source of truth: `detailJob` needed its own `liveDetailJob = ...
+// ?? detailJob` staleness fallback to paper over the copy going stale
+// between polls, and `confirmTarget` had the identical problem. Both are
+// gone. `detail`/`confirm` hold only the job **id**, in the URL (`nuqs`,
+// alongside the existing `state`/`kind` filters — one `useQueryStates`
+// call for the screen's whole UI position, per R6's "Grouped URL state").
+// The row itself is always looked up fresh out of `listQuery.data` by that
+// id; when the id doesn't match anything in the current page (filtered
+// out, or the 1000-row window moved past it), the derived value is simply
+// `null` and the drawer/dialog close themselves — no fallback needed
+// because there is no copy left to go stale.
+//
+// `detail`/`confirm` use `history: "replace"`, not the filters' `"push"`:
+// opening a drawer or a confirm dialog while browsing the backlog
+// shouldn't grow a back-button trail one entry per row inspected.
 
-import type { inferRouterOutputs } from "@trpc/server";
-import type { AppRouter } from "@vsms/api";
 import { trpc } from "@vsms/hooks";
 import {
   Button,
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  IdDisplay,
-  InlineEmptyState,
-  Input,
+  InlineBanner,
   JOB_STATES,
   type JobState,
-  JobStatusPill,
-  Label,
   QuickDetailDrawer,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Skeleton,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-  TimestampDisplay,
+  ScreenHeader,
+  ScreenStack,
 } from "@vsms/ui";
-import { ChevronRight } from "lucide-react";
 import { parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
-import { type ReactNode, useState } from "react";
+import { JobDetailFields } from "./components/job-detail-fields";
+import { JobFiltersBar } from "./components/job-filters-bar";
+import { type JobListItem, JobsTable } from "./components/jobs-table";
+import { RequeueConfirmDialog } from "./components/requeue-confirm-dialog";
 
-type RouterOutputs = inferRouterOutputs<AppRouter>;
-type JobListItem = RouterOutputs["jobs"]["list"]["items"][number];
-
-const JOB_STATE_LABELS: Record<JobState, string> = {
-  pending: "Pending",
-  running: "Running",
-  succeeded: "Succeeded",
-  failed: "Failed (retrying)",
-  dead: "Dead",
-  cancelled: "Cancelled",
-};
-
-/** Diagnostics screens can afford a slower cadence than the messages
- * list's design-doc-mandated feel of "live" — the jobs role itself only
- * polls every `jobs::POLL_INTERVAL` (1s), and this is a human looking at a
- * table, not a feed. */
-const REFETCH_INTERVAL_MS = 5000;
-
-/** Column visibility shared between `TableHead` and `TableCell` so a
- * breakpoint hides both halves of a column together — misaligning them
- * would shift every cell after it. Mobile keeps State/Kind/Updated/Action
- * (the 3–4 columns an operator needs to triage at a glance); everything
- * else is one tap away in the quick-detail drawer. */
-const COL_ATTEMPTS = "hidden sm:table-cell";
-const COL_RUN_AT = "hidden md:table-cell";
-const COL_LAST_ERROR = "hidden lg:table-cell";
-const COL_ID = "hidden lg:table-cell";
-
-function JobDetailField({ label, value }: { label: string; value: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-0.5 border-edge-subtle border-b py-2 last:border-b-0">
-      <dt className="text-caption text-subtle-foreground">{label}</dt>
-      <dd className="text-body text-foreground">{value}</dd>
-    </div>
-  );
+export interface JobsScreenProps {
+  /** `DIAGNOSTICS_POLL_MS`, read server-side (`page.tsx`) — see this file's
+   * own module doc. */
+  pollMs: number;
 }
 
-export function JobsScreen() {
-  const [filters, setFilters] = useQueryStates(
+export function JobsScreen({ pollMs }: JobsScreenProps) {
+  const [urlState, setUrlState] = useQueryStates(
     {
       state: parseAsStringEnum<JobState>([...JOB_STATES]),
       kind: parseAsString,
+      detail: parseAsString.withOptions({ history: "replace" }),
+      confirm: parseAsString.withOptions({ history: "replace" }),
     },
     { history: "push" },
   );
 
   const listInput = {
-    state: filters.state ?? undefined,
-    kind: filters.kind && filters.kind !== "" ? filters.kind : undefined,
+    state: urlState.state ?? undefined,
+    kind: urlState.kind && urlState.kind !== "" ? urlState.kind : undefined,
     limit: 200,
   };
 
   const listQuery = trpc.jobs.list.useQuery(listInput, {
-    refetchInterval: REFETCH_INTERVAL_MS,
+    refetchInterval: pollMs,
   });
   const utils = trpc.useUtils();
   const requeueMutation = trpc.jobs.requeue.useMutation({
@@ -152,367 +140,115 @@ export function JobsScreen() {
     },
   });
 
-  const [confirmTarget, setConfirmTarget] = useState<JobListItem | null>(null);
-  const [detailJob, setDetailJob] = useState<JobListItem | null>(null);
-
   function clearFilters() {
-    void setFilters({ state: null, kind: null });
+    void setUrlState({ state: null, kind: null });
   }
 
-  const hasFilters = filters.state !== null || (filters.kind ?? "") !== "";
+  const hasFilters = urlState.state !== null || (urlState.kind ?? "") !== "";
+
+  const items: JobListItem[] = listQuery.data?.items ?? [];
+  const detailJob =
+    urlState.detail === null ? null : (items.find((j) => j.id === urlState.detail) ?? null);
+  const confirmJob =
+    urlState.confirm === null ? null : (items.find((j) => j.id === urlState.confirm) ?? null);
+
+  function openDetail(job: JobListItem) {
+    void setUrlState({ detail: job.id });
+  }
+
+  function closeDetail() {
+    void setUrlState({ detail: null });
+  }
+
+  function openConfirm(job: JobListItem) {
+    void setUrlState({ confirm: job.id });
+  }
+
+  function closeConfirm() {
+    void setUrlState({ confirm: null });
+  }
 
   function confirmRequeue() {
-    if (confirmTarget === null) return;
-    requeueMutation.mutate({ jobId: confirmTarget.id });
-    setConfirmTarget(null);
+    if (confirmJob === null) return;
+    requeueMutation.mutate({ jobId: confirmJob.id });
+    closeConfirm();
   }
 
-  // Keeps the drawer's own snapshot in sync with the next poll rather than
-  // showing a job frozen at the moment it was opened — the same live-data
-  // reasoning `JobStatusPill`'s own auto-refresh depends on elsewhere.
-  const liveDetailJob =
-    detailJob === null
-      ? null
-      : (listQuery.data?.items.find((job) => job.id === detailJob.id) ?? detailJob);
+  const truncatedNotice = listQuery.data?.truncated ?? false;
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-col gap-1">
-        <h1 className="font-medium text-foreground text-title">Jobs</h1>
-        <p className="max-w-xl text-body text-muted-foreground">
-          The background job queue — backlog, retries, and dead jobs with their last error.
-          Refreshes every {Math.round(REFETCH_INTERVAL_MS / 1000)}s.
-        </p>
-      </header>
+    <ScreenStack>
+      <ScreenHeader
+        title="Jobs"
+        description={`The background job queue — backlog, retries, and dead jobs with their last error. Refreshes every ${Math.round(pollMs / 1000)}s.`}
+      />
 
-      <div className="rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-        Whole-system backlog, not scoped to one app —{" "}
-        <span className="font-mono text-foreground">Job</span> has no app boundary to scope by. This
-        is not a filter and not a bug.
-      </div>
+      <InlineBanner variant="neutral">
+        Whole-system backlog, not scoped to one app — the "Job" model has no app boundary to scope
+        by. This is not a filter and not a bug.
+      </InlineBanner>
 
       {requeueMutation.isError && (
-        <div className="rounded-sm border border-state-danger-border bg-state-danger-bg px-3 py-2 text-caption text-state-danger-fg">
+        <InlineBanner variant="danger">
           Requeue failed: {requeueMutation.error.message}
-        </div>
+        </InlineBanner>
       )}
 
-      <div className="flex flex-wrap items-end gap-4">
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="filter-state">State</Label>
-          <Select
-            value={filters.state ?? "__all"}
-            onValueChange={(value) =>
-              void setFilters({ state: value === "__all" ? null : (value as JobState) })
-            }
-          >
-            <SelectTrigger id="filter-state" className="w-[180px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all">All states</SelectItem>
-              {JOB_STATES.map((state) => (
-                <SelectItem key={state} value={state}>
-                  {JOB_STATE_LABELS[state]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+      <JobFiltersBar
+        state={urlState.state}
+        kind={urlState.kind ?? ""}
+        hasFilters={hasFilters}
+        onStateChange={(state) => void setUrlState({ state })}
+        onKindChange={(kind) => void setUrlState({ kind: kind === "" ? null : kind })}
+        onClear={clearFilters}
+      />
 
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor="filter-kind">Kind</Label>
-          <Input
-            id="filter-kind"
-            placeholder="e.g. expire_stale"
-            className="w-[200px]"
-            value={filters.kind ?? ""}
-            onChange={(e) =>
-              void setFilters({ kind: e.target.value === "" ? null : e.target.value })
-            }
-          />
-        </div>
-
-        {hasFilters && (
-          <Button type="button" variant="ghost" size="sm" onClick={clearFilters}>
-            Clear filters
-          </Button>
-        )}
-      </div>
-
-      {listQuery.data?.truncated && (
-        <p className="text-caption text-subtle-foreground">
+      {truncatedNotice && (
+        <InlineBanner variant="plain">
           Showing the most recently updated 1000 jobs — sms-api's `GET /jobs` has no server-side
           filter for state or kind, so filtering happens over that window. Older matches outside it
           won't appear.
-        </p>
+        </InlineBanner>
       )}
 
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>State</TableHead>
-            <TableHead>Kind</TableHead>
-            <TableHead className={COL_ATTEMPTS}>Attempts</TableHead>
-            <TableHead className={COL_LAST_ERROR}>Last error</TableHead>
-            <TableHead className={COL_RUN_AT}>Run at</TableHead>
-            <TableHead className={COL_ID}>Id</TableHead>
-            <TableHead align="end">Updated</TableHead>
-            <TableHead align="end">Action</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {listQuery.isLoading &&
-            Array.from({ length: 8 }).map((_, i) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton rows, never reordered or diffed
-              <TableRow key={i}>
-                <TableCell colSpan={8}>
-                  <Skeleton className="h-4 w-full" />
-                </TableCell>
-              </TableRow>
-            ))}
-
-          {!listQuery.isLoading && (listQuery.data?.items.length ?? 0) === 0 && (
-            <tr>
-              <td colSpan={8}>
-                <InlineEmptyState
-                  message={
-                    hasFilters ? "No jobs match the current filters." : "No jobs in the backlog."
-                  }
-                  {...(hasFilters
-                    ? { action: { label: "Clear filters", onClick: clearFilters } }
-                    : {})}
-                />
-              </td>
-            </tr>
-          )}
-
-          {listQuery.data?.items.map((job) => (
-            <TableRow
-              key={job.id}
-              tabIndex={0}
-              role="button"
-              aria-label={`View details for job ${job.kind}`}
-              className="cursor-pointer"
-              onClick={() => setDetailJob(job)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  setDetailJob(job);
-                }
-              }}
-            >
-              <TableCell>
-                <JobStatusPill state={job.state} />
-              </TableCell>
-              <TableCell mono className="max-w-[160px] truncate">
-                {job.kind}
-              </TableCell>
-              <TableCell mono className={COL_ATTEMPTS}>
-                {job.attempts}/{job.maxAttempts}
-              </TableCell>
-              <TableCell className={COL_LAST_ERROR}>
-                {job.lastError != null ? (
-                  <span
-                    className="line-clamp-1 max-w-[320px] text-caption text-muted-foreground"
-                    title={job.lastError}
-                  >
-                    {job.lastError}
-                  </span>
-                ) : (
-                  <span className="text-muted-foreground">—</span>
-                )}
-              </TableCell>
-              <TableCell className={COL_RUN_AT}>
-                <TimestampDisplay value={job.runAt} />
-              </TableCell>
-              <TableCell className={COL_ID}>
-                <IdDisplay value={job.id} />
-              </TableCell>
-              <TableCell align="end">
-                <TimestampDisplay value={job.updatedAt} />
-              </TableCell>
-              <TableCell align="end">
-                <div className="flex items-center justify-end gap-1.5">
-                  {job.state === "dead" && (
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      size="sm"
-                      disabled={requeueMutation.isPending}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setConfirmTarget(job);
-                      }}
-                    >
-                      Requeue
-                    </Button>
-                  )}
-                  <ChevronRight
-                    size={14}
-                    strokeWidth={1.5}
-                    aria-hidden="true"
-                    className="text-subtle-foreground"
-                  />
-                </div>
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
+      <JobsTable
+        items={items}
+        isLoading={listQuery.isLoading}
+        hasFilters={hasFilters}
+        onClearFilters={clearFilters}
+        onRowClick={openDetail}
+        onRequeueClick={openConfirm}
+        requeuePending={requeueMutation.isPending}
+      />
 
       <QuickDetailDrawer
-        open={liveDetailJob !== null}
-        onOpenChange={(open) => !open && setDetailJob(null)}
-        title={liveDetailJob?.kind ?? "Job"}
-        description={liveDetailJob != null ? `Job ${liveDetailJob.id}` : undefined}
+        open={detailJob !== null}
+        onOpenChange={(open) => !open && closeDetail()}
+        title={detailJob?.kind ?? "Job"}
+        description={detailJob != null ? `Job ${detailJob.id}` : undefined}
         footer={
-          liveDetailJob != null && liveDetailJob.state === "dead" ? (
+          detailJob != null && detailJob.state === "dead" ? (
             <Button
               type="button"
               variant="secondary"
               size="sm"
               disabled={requeueMutation.isPending}
-              onClick={() => setConfirmTarget(liveDetailJob)}
+              onClick={() => openConfirm(detailJob)}
             >
               Requeue
             </Button>
           ) : undefined
         }
       >
-        {liveDetailJob != null && (
-          <dl className="flex flex-col">
-            <JobDetailField label="State" value={<JobStatusPill state={liveDetailJob.state} />} />
-            <JobDetailField
-              label="Kind"
-              value={<span className="font-mono">{liveDetailJob.kind}</span>}
-            />
-            <JobDetailField
-              label="Attempts"
-              value={
-                <span className="font-mono">
-                  {liveDetailJob.attempts}/{liveDetailJob.maxAttempts}
-                </span>
-              }
-            />
-            <JobDetailField
-              label="Priority"
-              value={<span className="font-mono">{liveDetailJob.priority}</span>}
-            />
-            <JobDetailField
-              label="Dedupe key"
-              value={
-                liveDetailJob.dedupeKey != null ? (
-                  <span className="break-all font-mono">{liveDetailJob.dedupeKey}</span>
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <JobDetailField
-              label="Last error"
-              value={
-                liveDetailJob.lastError != null ? (
-                  <span className="whitespace-pre-wrap break-words font-mono text-caption">
-                    {liveDetailJob.lastError}
-                  </span>
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <JobDetailField
-              label="Run at"
-              value={<TimestampDisplay value={liveDetailJob.runAt} />}
-            />
-            <JobDetailField
-              label="Lease owner"
-              value={
-                liveDetailJob.leaseOwner != null ? (
-                  <span className="break-all font-mono">{liveDetailJob.leaseOwner}</span>
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <JobDetailField
-              label="Lease until"
-              value={
-                liveDetailJob.leaseUntil != null ? (
-                  <TimestampDisplay value={liveDetailJob.leaseUntil} />
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <JobDetailField
-              label="Started at"
-              value={
-                liveDetailJob.startedAt != null ? (
-                  <TimestampDisplay value={liveDetailJob.startedAt} />
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <JobDetailField
-              label="Finished at"
-              value={
-                liveDetailJob.finishedAt != null ? (
-                  <TimestampDisplay value={liveDetailJob.finishedAt} />
-                ) : (
-                  "—"
-                )
-              }
-            />
-            <JobDetailField
-              label="Id"
-              value={<IdDisplay value={liveDetailJob.id} variant="full" />}
-            />
-            <JobDetailField
-              label="Version"
-              value={<span className="font-mono">{liveDetailJob.version}</span>}
-            />
-            <JobDetailField
-              label="Created"
-              value={<TimestampDisplay value={liveDetailJob.createdAt} />}
-            />
-            <JobDetailField
-              label="Updated"
-              value={<TimestampDisplay value={liveDetailJob.updatedAt} />}
-            />
-          </dl>
-        )}
+        {detailJob != null && <JobDetailFields job={detailJob} />}
       </QuickDetailDrawer>
 
-      <Dialog
-        open={confirmTarget !== null}
-        onOpenChange={(open) => !open && setConfirmTarget(null)}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Requeue this job?</DialogTitle>
-            <DialogDescription>
-              {confirmTarget != null && (
-                <>
-                  <span className="font-mono text-foreground">{confirmTarget.kind}</span> failed{" "}
-                  {confirmTarget.attempts} time{confirmTarget.attempts === 1 ? "" : "s"} and is now
-                  dead. Requeuing resets its attempts counter to 0 and moves it back to pending,
-                  where the next <span className="font-mono">jobs</span> poll will pick it up again.
-                </>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => setConfirmTarget(null)}>
-              Cancel
-            </Button>
-            <Button type="button" onClick={confirmRequeue}>
-              Requeue
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
+      <RequeueConfirmDialog
+        job={confirmJob}
+        pending={requeueMutation.isPending}
+        onOpenChange={(open) => !open && closeConfirm()}
+        onConfirm={confirmRequeue}
+      />
+    </ScreenStack>
   );
 }
