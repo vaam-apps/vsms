@@ -23,6 +23,7 @@ export * from "./components/primitives/command-menu";
 export * from "./components/primitives/dialog";
 export * from "./components/primitives/drawer";
 export * from "./components/primitives/dropdown-menu";
+export * from "./components/primitives/form-field";
 export * from "./components/primitives/inline-confirm";
 export * from "./components/primitives/input";
 export * from "./components/primitives/label";
