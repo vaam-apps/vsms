@@ -88,6 +88,8 @@ import { SenderQuickDetailFooter } from "./components/sender-quick-detail-footer
 import { SenderTable } from "./components/sender-table";
 import { SenderToolbar } from "./components/sender-toolbar";
 import {
+  asRegistrationStatus,
+  asSenderIdKind,
   type CreateSenderIdFormValues,
   createSenderIdSchema,
   type ProviderListItem,
@@ -152,7 +154,7 @@ export function SenderIdsScreen() {
     if (panelTarget === undefined) return;
     senderForm.reset({
       value: panelTarget.value,
-      kind: panelTarget.kind,
+      kind: asSenderIdKind(panelTarget.kind),
       notes: panelTarget.notes ?? "",
       active: panelTarget.active,
     });
@@ -191,13 +193,13 @@ export function SenderIdsScreen() {
   const [createOpen, setCreateOpen] = useState(false);
   const createForm = useForm<CreateSenderIdFormValues>({
     resolver: zodResolver(createSenderIdSchema),
-    defaultValues: { value: "", kind: "", notes: "" },
+    defaultValues: { value: "", kind: "alphanumeric", notes: "" },
   });
   const createSenderMutation = trpc.senderIds.create.useMutation({
     onSuccess: (created) => {
       toast({ title: "Sender ID created", variant: "success" });
       setCreateOpen(false);
-      createForm.reset({ value: "", kind: "", notes: "" });
+      createForm.reset({ value: "", kind: "alphanumeric", notes: "" });
       void utils.senderIds.list.invalidate();
       void setPanelId(created.id);
     },
@@ -245,7 +247,7 @@ export function SenderIdsScreen() {
   useEffect(() => {
     if (registrationTarget === undefined) return;
     registrationForm.reset({
-      status: registrationTarget.status,
+      status: asRegistrationStatus(registrationTarget.status),
       reference: registrationTarget.reference ?? "",
       rejectionReason: registrationTarget.rejectionReason ?? "",
     });

@@ -7,7 +7,8 @@ use cratestack::FilterExpr;
 use sms_api::schema::{
     app as app_filter, provider as provider_filter, sender_id as sender_id_filter,
     sender_id_registration as sender_id_registration_filter, Cratestack, CreateAppInput,
-    CreateSenderIdInput, CreateSenderIdRegistrationInput, UpdateSenderIdInput,
+    CreateSenderIdInput, CreateSenderIdRegistrationInput, SenderIdKind, SenderIdRegistrationStatus,
+    UpdateSenderIdInput,
 };
 use sms_api::{Principal, PrincipalKind};
 
@@ -132,9 +133,9 @@ async fn ensure_demo_sender_id(
                 .create(CreateSenderIdInput {
                     value: value.to_owned(),
                     kind: if value.chars().all(|c| c.is_ascii_digit()) {
-                        "shortcode".to_owned()
+                        SenderIdKind::shortcode
                     } else {
-                        "alphanumeric".to_owned()
+                        SenderIdKind::alphanumeric
                     },
                     notes: Some(
                         "seeded by vsms-demo-seed for compose.demo.yaml — not a real, \
@@ -171,7 +172,7 @@ async fn ensure_demo_sender_id(
             .create(CreateSenderIdRegistrationInput {
                 senderIdId: sender_id_row_id.clone(),
                 providerId: provider_id.to_owned(),
-                status: "approved".to_owned(),
+                status: SenderIdRegistrationStatus::approved,
                 submittedAt: None,
                 approvedAt: None,
                 reference: None,

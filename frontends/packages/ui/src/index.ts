@@ -31,6 +31,7 @@ export * from "./components/primitives/inline-confirm";
 export * from "./components/primitives/input";
 export * from "./components/primitives/label";
 export * from "./components/primitives/popover";
+export * from "./components/primitives/radio-group";
 export * from "./components/primitives/select";
 export * from "./components/primitives/separator";
 export * from "./components/primitives/side-nav";

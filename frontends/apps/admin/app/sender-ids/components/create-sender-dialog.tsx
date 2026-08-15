@@ -9,9 +9,15 @@ import {
   FormField,
   InlineBanner,
   Input,
+  RadioGroup,
 } from "@vsms/ui";
-import type { UseFormReturn } from "react-hook-form";
-import type { CreateSenderIdFormValues } from "../sender-id-domain";
+import { Controller, type UseFormReturn } from "react-hook-form";
+import {
+  type CreateSenderIdFormValues,
+  SENDER_ID_KIND_HINTS,
+  SENDER_ID_KIND_LABELS,
+  SENDER_ID_KINDS,
+} from "../sender-id-domain";
 
 // Dumb (R6): the "New sender ID" dialog, start to finish. Not affected by
 // the nested-Dialog-in-drawer bug (see sender-ids-screen.tsx's own module
@@ -59,8 +65,33 @@ export function CreateSenderDialog({
               {...register("value")}
             />
           </FormField>
-          <FormField label="Kind" htmlFor="new-sender-kind">
-            <Input id="new-sender-kind" placeholder="e.g. alphanumeric" {...register("kind")} />
+          {/* A radio group, not the free-text input this used to be. `kind`
+              was an unconstrained `String` with a placeholder reading
+              "e.g. alphanumeric" — so the honest answer to "can I type
+              banana here" was yes, all the way to the database. It is a
+              real enum now, and there are two values, so showing both
+              costs nothing. */}
+          <FormField
+            label="Kind"
+            htmlFor="new-sender-kind"
+            error={form.formState.errors.kind?.message}
+          >
+            <Controller
+              control={form.control}
+              name="kind"
+              render={({ field }) => (
+                <RadioGroup
+                  aria-label="Sender ID kind"
+                  value={field.value}
+                  onValueChange={field.onChange}
+                  options={SENDER_ID_KINDS.map((kind) => ({
+                    value: kind,
+                    label: SENDER_ID_KIND_LABELS[kind],
+                    description: SENDER_ID_KIND_HINTS[kind],
+                  }))}
+                />
+              )}
+            />
           </FormField>
           <FormField label="Notes (optional)" htmlFor="new-sender-notes">
             <Input id="new-sender-notes" {...register("notes")} />

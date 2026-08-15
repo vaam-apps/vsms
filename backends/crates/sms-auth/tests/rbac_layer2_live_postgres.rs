@@ -82,7 +82,7 @@ use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use rsa::traits::PublicKeyParts;
 use rsa::RsaPrivateKey;
 use sms_api::auth::{Principal, PrincipalKind};
-use sms_api::schema::{self, Cratestack};
+use sms_api::schema::{self, Cratestack, SenderIdKind, SenderIdRegistrationStatus};
 use sms_api::{GatewayAuth, HashPepper};
 
 /// #102, found live: on a genuinely fresh database, this binary's own
@@ -346,7 +346,7 @@ async fn seed_sender_and_provider(db: &Cratestack) -> (String, String) {
         .sender_id()
         .create(schema::CreateSenderIdInput {
             value: value.clone(),
-            kind: "alphanumeric".to_owned(),
+            kind: SenderIdKind::alphanumeric,
             notes: None,
         })
         .run(&owner())
@@ -357,7 +357,7 @@ async fn seed_sender_and_provider(db: &Cratestack) -> (String, String) {
         .create(schema::CreateSenderIdRegistrationInput {
             senderIdId: sender.id.clone(),
             providerId: provider.id.clone(),
-            status: "approved".to_owned(),
+            status: SenderIdRegistrationStatus::approved,
             submittedAt: Some(Utc::now()),
             approvedAt: Some(Utc::now()),
             reference: None,

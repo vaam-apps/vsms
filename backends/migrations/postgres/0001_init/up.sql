@@ -516,7 +516,11 @@ ALTER TABLE routes ADD CONSTRAINT routes_match_operator_enum_check CHECK (match_
 
 ALTER TABLE routes ADD CONSTRAINT routes_match_class_enum_check CHECK (match_class IN ('otp', 'transactional', 'notification', 'marketing'));
 
+ALTER TABLE sender_id_registrations ADD CONSTRAINT sender_id_registrations_status_enum_check CHECK (status IN ('pending', 'submitted', 'approved', 'rejected'));
+
 ALTER TABLE sender_ids ADD CONSTRAINT sender_ids_value_length_check CHECK (length(value) BETWEEN 3 AND 11);
+
+ALTER TABLE sender_ids ADD CONSTRAINT sender_ids_kind_enum_check CHECK (kind IN ('alphanumeric', 'shortcode'));
 
 ALTER TABLE webhook_attempts ADD CONSTRAINT webhook_attempts_state_enum_check CHECK (state IN ('pending', 'delivering', 'succeeded', 'failed', 'dead'));
 

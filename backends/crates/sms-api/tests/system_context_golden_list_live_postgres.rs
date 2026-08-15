@@ -195,7 +195,8 @@ use sms_api::schema::{
     message, oauth_client, oauth_signing_key, operator_prefix_rule, opt_out, provider, role, route,
     route_validation, sender_id, sender_id_registration, user, user_credential, webhook_attempt,
     webhook_endpoint, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding,
-    MessageClass, OperatorCode, OptOutSource, ProviderKind,
+    MessageClass, OperatorCode, OptOutSource, ProviderKind, SenderIdKind,
+    SenderIdRegistrationStatus,
 };
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
@@ -648,7 +649,7 @@ async fn seed_and_verify_sender_id(db: &Cratestack, suffix: &str) -> schema::Sen
         .sender_id()
         .create(schema::CreateSenderIdInput {
             value,
-            kind: "alphanumeric".to_owned(),
+            kind: SenderIdKind::alphanumeric,
             notes: None,
         })
         .run(&owner())
@@ -747,7 +748,7 @@ async fn seed_and_verify_sender_id_registration(
         .create(schema::CreateSenderIdRegistrationInput {
             senderIdId: sender_id_id.to_owned(),
             providerId: provider_id.to_owned(),
-            status: "pending".to_owned(),
+            status: SenderIdRegistrationStatus::pending,
             submittedAt: Some(now),
             approvedAt: None,
             reference: None,
