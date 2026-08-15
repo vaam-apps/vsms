@@ -60,11 +60,7 @@ export function MessagesTable({ rows, isLoading, hasFilters, onClearFilters }: M
           <tr>
             <td colSpan={COLUMN_COUNT}>
               <InlineEmptyState
-                message={
-                  hasFilters
-                    ? "No messages match the current filters."
-                    : "No messages yet for this app."
-                }
+                message={hasFilters ? "No messages match the current filters." : "No messages yet."}
                 {...(hasFilters
                   ? { action: { label: "Clear filters", onClick: onClearFilters } }
                   : {})}

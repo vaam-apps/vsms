@@ -6,10 +6,12 @@ import { InlineConfirm } from "@vsms/ui";
 // `NestedDialogInDrawerRegression` for why.
 export function EndpointRotateConfirm({
   pending,
+  errorMessage,
   onConfirm,
   onCancel,
 }: {
   pending: boolean;
+  errorMessage?: string | undefined;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -28,6 +30,7 @@ export function EndpointRotateConfirm({
       confirmLabel="Rotate secret"
       pendingLabel="Rotating…"
       pending={pending}
+      error={errorMessage != null ? `Rotation failed: ${errorMessage}` : undefined}
       // Not danger-hued: the original centered-`Dialog` version of this
       // confirm used the default (primary) button, not the destructive
       // one — rotation has a real consequence (see the copy above) but

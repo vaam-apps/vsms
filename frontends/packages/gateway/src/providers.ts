@@ -188,9 +188,8 @@ export interface UpdateProviderFields {
 
 /**
  * `PATCH /providers/{id}` with `If-Match: etag`. See this module's own doc
- * for why this 403s against a real gateway regardless of who is logged
- * into the browser — built and tested against that reality, not hidden
- * behind a flag.
+ * ("`updateProvider` — reachable today, as of #211") — succeeds for a
+ * signed-in `owner`/`admin`/`operator` session, 403s for anyone else.
  */
 export async function updateProvider(
   id: string,

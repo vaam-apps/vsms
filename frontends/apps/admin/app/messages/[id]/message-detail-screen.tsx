@@ -74,6 +74,7 @@ export function MessageDetailScreen({ messageId }: MessageDetailScreenProps) {
           <ReceiptsCard
             receipts={receiptsQuery.data?.receipts}
             isLoading={receiptsQuery.isLoading}
+            errorMessage={receiptsQuery.isError ? receiptsQuery.error.message : undefined}
           />
         </>
       )}

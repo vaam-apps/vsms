@@ -215,6 +215,11 @@ function AppClientsPanel({ appId }: { appId: string }) {
           confirmLabel="Retire client"
           pendingLabel="Retiring…"
           pending={retireMutation.isPending}
+          error={
+            retireMutation.error != null
+              ? `Retire failed: ${retireMutation.error.message}`
+              : undefined
+          }
           onCancel={() => setRetiringId(null)}
           onConfirm={() => {
             if (retiringClient === undefined) return;
@@ -425,6 +430,11 @@ function AppDetailDrawer({
             confirmLabel="Delete"
             pendingLabel="Deleting…"
             pending={deleteMutation.isPending}
+            error={
+              deleteMutation.error != null
+                ? `Delete failed: ${deleteMutation.error.message}`
+                : undefined
+            }
             onCancel={() => setDeleteConfirmOpen(false)}
             onConfirm={() =>
               // Known-version fast path: `detailQuery.data?.etag` is the

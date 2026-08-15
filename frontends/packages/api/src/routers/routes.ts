@@ -4,8 +4,8 @@ import "server-only";
 // `routes.remove` — #54's Routes screen. Thin wraps over `@vsms/gateway`'s
 // `listRoutes`/`getRouteById`/`createRoute`/`updateRoute`/`deleteRoute` —
 // see that module's own doc for why every write here is real, tested code
-// that cannot succeed against a real gateway until #194 (human login)
-// lands.
+// that is reachable against a real gateway as of #211 (a signed-in
+// `owner`/`admin` session succeeds; anyone else gets a real 403).
 
 import { z } from "zod";
 import { rethrowGatewayError } from "../gateway-error";

@@ -437,6 +437,7 @@ export function SenderIdsScreen() {
               registration={registrationTarget}
               providerById={providerById}
               pending={resubmitMutation.isPending}
+              errorMessage={resubmitMutation.error?.message}
               onConfirm={confirmResubmit}
               onCancel={() => setResubmitArmed(false)}
             />

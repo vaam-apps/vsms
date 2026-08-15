@@ -4,10 +4,9 @@ import "server-only";
 // screen. Thin wraps over `@vsms/gateway`'s `listProviders`/
 // `getProviderById`/`updateProvider` (see that module's own doc for the
 // live grammar findings it inherits from `messages.ts`/`jobs.ts`, and for
-// why `update` cannot succeed against a real gateway until #194 lands —
-// built and tested regardless, per this repo's own "no dormant code behind
-// a flag" convention: this is real code with a documented, honest
-// limitation, not a feature hidden until it works).
+// why `update` is reachable against a real gateway as of #211 — a
+// signed-in `owner`/`admin`/`operator` session succeeds; anyone else gets
+// a real 403).
 
 import { z } from "zod";
 import { rethrowGatewayError } from "../gateway-error";

@@ -13,12 +13,14 @@ export function ResubmitConfirm({
   registration,
   providerById,
   pending,
+  errorMessage,
   onConfirm,
   onCancel,
 }: {
   registration: RegistrationListItem;
   providerById: Map<string, ProviderListItem>;
   pending: boolean;
+  errorMessage?: string | undefined;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -39,6 +41,7 @@ export function ResubmitConfirm({
       pendingLabel="Resubmitting…"
       destructive={false}
       pending={pending}
+      error={errorMessage != null ? `Resubmit failed: ${errorMessage}` : undefined}
       onConfirm={onConfirm}
       onCancel={onCancel}
     />

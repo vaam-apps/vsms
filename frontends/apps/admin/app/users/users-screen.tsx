@@ -256,6 +256,11 @@ function UserDetailDrawer({
             confirmLabel="Delete"
             pendingLabel="Deleting…"
             pending={deleteMutation.isPending}
+            error={
+              deleteMutation.error != null
+                ? `Delete failed: ${deleteMutation.error.message}`
+                : undefined
+            }
             onCancel={() => setDeleteConfirmOpen(false)}
             onConfirm={() =>
               // Known-version fast path: `detailQuery.data?.etag` is the
@@ -402,6 +407,11 @@ function RoleDetailDrawer({
             confirmLabel="Delete"
             pendingLabel="Deleting…"
             pending={deleteMutation.isPending}
+            error={
+              deleteMutation.error != null
+                ? `Delete failed: ${deleteMutation.error.message}`
+                : undefined
+            }
             onCancel={() => setDeleteConfirmOpen(false)}
             onConfirm={() =>
               // Known-version fast path: `detailQuery.data?.etag` is the

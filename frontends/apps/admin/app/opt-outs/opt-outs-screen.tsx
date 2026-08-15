@@ -260,6 +260,7 @@ export function OptOutsScreen() {
       <RemoveConfirmDialog
         open={urlState.remove !== null}
         pending={deleteMutation.isPending}
+        errorMessage={deleteMutation.error?.message}
         onOpenChange={(open) => !open && closeRemoveConfirm()}
         onConfirm={confirmRemove}
       />

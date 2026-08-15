@@ -8,12 +8,17 @@
 // `messages/page.tsx` already establishes for `MESSAGE_STREAM_POLL_MS`.
 
 import { env } from "@vsms/env";
+import { RouteSkeleton } from "@vsms/ui";
 import { Suspense } from "react";
 import { AuditLogScreen } from "./audit-log-screen";
 
 export default function AuditLogPage() {
+  // #308: `fallback={null}` used to sit here — see `RouteSkeleton`'s own
+  // doc comment for why that made a slow-to-reveal boundary
+  // indistinguishable from a broken one. Mitigation, not a fix for the
+  // underlying rAF-gated reveal.
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<RouteSkeleton />}>
       <AuditLogScreen pageSize={env.AUDIT_LOG_PAGE_SIZE} />
     </Suspense>
   );

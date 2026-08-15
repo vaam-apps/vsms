@@ -8,6 +8,7 @@ export * from "./components/bespoke/inline-banner";
 export * from "./components/bespoke/inline-empty-state";
 export * from "./components/bespoke/live-row";
 export * from "./components/bespoke/payload-inspector";
+export * from "./components/bespoke/route-skeleton";
 export * from "./components/bespoke/screen-layout";
 export * from "./components/bespoke/stale-write-banner";
 export * from "./components/bespoke/state-timeline";

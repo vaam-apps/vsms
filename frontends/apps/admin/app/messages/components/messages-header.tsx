@@ -22,7 +22,7 @@ export function MessagesHeader({ pollMs }: MessagesHeaderProps) {
         title="Messages"
         description={
           <>
-            Live status of every message this app has sent — polled every ~
+            Live status of every message sent across every app in this deployment — polled every ~
             {Math.round(pollMs / 1000)}s, not pushed. New rows while you're scrolled down buffer
             behind a pill rather than jumping the list.
           </>

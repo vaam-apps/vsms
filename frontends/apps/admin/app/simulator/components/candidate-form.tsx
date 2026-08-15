@@ -67,7 +67,11 @@ export function CandidateForm({
               )}
             />
           </FormField>
-          <FormField label="App id" htmlFor="sim-app-id">
+          <FormField
+            label="App id (required)"
+            htmlFor="sim-app-id"
+            hint="Simulate stays disabled until this is filled in — paste an id from /apps."
+          >
             <Input
               id="sim-app-id"
               placeholder="the App this message would be sent from"
@@ -84,7 +88,12 @@ export function CandidateForm({
         </div>
 
         <div className="mt-4 flex items-center gap-2">
-          <Button type="button" onClick={onRun} disabled={isFetching || !canRun}>
+          <Button
+            type="button"
+            onClick={onRun}
+            disabled={isFetching || !canRun}
+            title={!canRun ? "Enter an App id above to enable Simulate" : undefined}
+          >
             {isFetching ? "Simulating…" : "Simulate"}
           </Button>
           {hasRun && (

@@ -4,12 +4,17 @@
 // already establish for their own `useQueryStates` calls (Next.js requires
 // this for `useSearchParams()`).
 
+import { RouteSkeleton } from "@vsms/ui";
 import { Suspense } from "react";
 import { UsersScreen } from "./users-screen";
 
 export default function UsersPage() {
+  // #308: `fallback={null}` used to sit here — see `RouteSkeleton`'s own
+  // doc comment for why that made a slow-to-reveal boundary
+  // indistinguishable from a broken one. Mitigation, not a fix for the
+  // underlying rAF-gated reveal.
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<RouteSkeleton withFilterBar={false} />}>
       <UsersScreen />
     </Suspense>
   );

@@ -8,11 +8,20 @@
 // This route group wasn't in that audit's scope; flagged, not fixed, for
 // the same reason that PR gave for not attempting a primitive-level fix.
 
-import { Button, Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@vsms/ui";
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  InlineBanner,
+} from "@vsms/ui";
 
 export interface RemoveConfirmDialogProps {
   open: boolean;
   pending: boolean;
+  errorMessage?: string | undefined;
   onOpenChange: (open: boolean) => void;
   onConfirm: () => void;
 }
@@ -20,6 +29,7 @@ export interface RemoveConfirmDialogProps {
 export function RemoveConfirmDialog({
   open,
   pending,
+  errorMessage,
   onOpenChange,
   onConfirm,
 }: RemoveConfirmDialogProps) {
@@ -29,6 +39,9 @@ export function RemoveConfirmDialog({
         <DialogHeader>
           <DialogTitle>Remove this opt-out?</DialogTitle>
         </DialogHeader>
+        {errorMessage != null && (
+          <InlineBanner variant="danger">Remove failed: {errorMessage}</InlineBanner>
+        )}
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
