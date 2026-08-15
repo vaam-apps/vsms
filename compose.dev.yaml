@@ -27,7 +27,7 @@
 #     change end to end." `just demo` is this file's own front door — see
 #     the justfile.
 #
-# Usage — see docs/runbooks/local-development.md for the full walkthrough:
+# Usage — see docs/runbooks/local-development.adoc for the full walkthrough:
 #
 #   docker compose -f compose.dev.yaml --profile console up -d --build
 #   docker compose -f compose.dev.yaml --profile console down -v   # reset
@@ -54,7 +54,7 @@
 # list-typed keys (`ports`, in particular) are not simple concatenation in
 # every Compose version, and this file wants to publish a *different* host
 # port (`VSMS_DEMO_PG_PORT`, matching this file's own pre-existing
-# convention and `docs/runbooks/local-development.md`'s documented output)
+# convention and `docs/runbooks/local-development.adoc`'s documented output)
 # than `compose.yml`'s own `VSMS_POSTGRES_PORT` default — verifying that
 # merge behaves correctly across Compose versions was more fragile than
 # the six-line duplication below, and `compose.demo.yaml` had already
@@ -93,7 +93,7 @@ services:
     # unpublished Postgres — kept for continuity with this file's own
     # predecessor (`scripts/demo.sh` always published a host port so a
     # developer could `psql` straight in) and with
-    # `docs/runbooks/local-development.md`'s documented output. Loopback
+    # `docs/runbooks/local-development.adoc`'s documented output. Loopback
     # only, never `0.0.0.0` — same reasoning `compose.yml`'s own postgres
     # service already documents.
     ports:
@@ -363,7 +363,7 @@ services:
       # same string for both "the address I connect to" and "the audience
       # I sign into my client assertion" the way a single `--issuer` flag
       # (`examples/rust/sms-send`'s own CLI shape) assumes — the exact
-      # tension `docs/runbooks/showcase.md` already documents for
+      # tension `docs/runbooks/showcase.adoc` already documents for
       # `compose.demo.yaml`'s identical `SMS_OIDC_ISSUER` choice. This
       # file's own `ci/e2e-integration` tool is written to decouple the
       # two (`vsms-sdk-rust`'s `VsmsClient::private_key_jwt(base_url, ..)`

@@ -18,7 +18,7 @@
 #     a version behind). This file will never grow TLS, backups, or
 #     Prometheus; that's what the other two are for.
 #
-# Usage — see docs/runbooks/showcase.md for the full walkthrough, including
+# Usage — see docs/runbooks/showcase.adoc for the full walkthrough, including
 # what to expect at each step and how to sign into the console:
 #
 #   docker compose -f compose.demo.yaml --profile console up -d
@@ -157,7 +157,7 @@ services:
   # sms-gateway also refuses to bind its listener without an `active`
   # `Provider` row keyed `orange_cm`, and `sms-worker`'s `dispatch` role
   # refuses to route anything without a matching, enabled `Route` pointing
-  # at it (#62's routing engine — see docs/runbooks/getting-started.md's
+  # at it (#62's routing engine — see docs/runbooks/getting-started.adoc's
   # own step 5 for the full "why", and backends/apps/sms-gateway/src/main.rs's
   # `SeedDispatch` doc comment for the fix-forward history).
   #

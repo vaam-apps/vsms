@@ -21,7 +21,7 @@
 # Local/demo run with no public DNS: swap the commented `tls internal`
 # line in for the real cert flow in both blocks below — Caddy then mints
 # its own local CA and self-signed certs. See
-# docs/runbooks/deployment.md for trusting that CA on your own machine.
+# docs/runbooks/deployment.adoc for trusting that CA on your own machine.
 #
 # #156 — rate limiting `/token` and `/dlr/{providerKey}` at this edge.
 # `docs/architecture.md` §4.2/§4.6 assign this duty to "the reverse proxy",
@@ -36,7 +36,7 @@
 # header for exactly what changes and why, and this PR's description for
 # the `deploy/docker-compose.yml` edit it requires (not made here — #156
 # scopes this agent to this file, `deploy/.env.example`, and
-# `docs/runbooks/deployment.md` only).
+# `docs/runbooks/deployment.adoc` only).
 #
 # Every numeric limit below is env-tunable with a documented default (see
 # `deploy/.env.example`'s own "Caddy rate limiting" section for the

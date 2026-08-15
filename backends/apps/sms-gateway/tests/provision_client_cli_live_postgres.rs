@@ -544,7 +544,7 @@ async fn a_client_provisioned_via_the_cli_completes_a_real_token_exchange_and_au
 
     // `sms-gateway serve` refuses to start without an active OP signing
     // key (`op::load_signing_keys`'s own error) — the same one-time setup
-    // `docs/runbooks/getting-started.md` documents an operator running by
+    // `docs/runbooks/getting-started.adoc` documents an operator running by
     // hand before the first `serve`.
     sms_auth::op::rotate_signing_key(&db, &sys(), sms_auth::op::ROTATION_OVERLAP)
         .await
@@ -562,7 +562,7 @@ async fn a_client_provisioned_via_the_cli_completes_a_real_token_exchange_and_au
     );
 
     // Steps 1–4: run the real CLI binary, exactly as documented in
-    // docs/runbooks/getting-started.md — not `Procedures` called
+    // docs/runbooks/getting-started.adoc — not `Procedures` called
     // in-process — and prove its output contract and the key file it
     // wrote.
     let (client_id, private_key_pem) = provision_via_cli_and_read_key(&db_url, &app.id, &key_out);

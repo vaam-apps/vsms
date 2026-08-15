@@ -12,7 +12,7 @@ selective/parallel replay are a real, non-trivial binary protocol with
 no reason to reimplement, and `rclone` is the one piece of this
 mechanism that is deliberately provider-agnostic (S3, B2, GCS, Azure
 Blob, MinIO, or a bare local path, all behind the same three calls —
-see `docs/runbooks/backup-restore.md`'s own "the bucket is the
+see `docs/runbooks/backup-restore.adoc`'s own "the bucket is the
 operator's choice" section). What this binary *does* replace: every
 `psql -Atc "..."` ad-hoc query (now typed functions over a real
 `postgres::Client`, `db.rs`), the manifest's own hand-built JSON

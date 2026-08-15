@@ -27,6 +27,6 @@ emits its own `info!` immediately after `create()` returns, carrying
 — the join key `backends/crates/sms-worker/src/dispatch.rs`'s own submit-success
 event and `backends/crates/sms-api/src/dlr.rs`'s own ingestion event reuse later,
 in different processes, with no span context to inherit it through. See
-`docs/runbooks/alerting.md`'s "Correlating a message end to end" section
+`docs/runbooks/alerting.adoc`'s "Correlating a message end to end" section
 for why `Message.id` is the join key and not a `traceparent`, and for a
 worked example query across all three log lines.

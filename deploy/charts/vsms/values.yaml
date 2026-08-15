@@ -3,7 +3,7 @@
 # backends/apps/sms-worker/src/main.rs, a docker-compose.yml service block, or an
 # frontends/apps/admin/ env var — the same "nothing speculative" convention
 # deploy/.env.example documents for the compose path. Read
-# docs/runbooks/deployment.md's "Kubernetes (Helm)" section alongside this
+# docs/runbooks/deployment.adoc's "Kubernetes (Helm)" section alongside this
 # file before a real install.
 #
 # Fields referenced with `{{ ... }}` below are evaluated by the bjw-s
@@ -148,7 +148,7 @@ admin:
   # audience check refuses any other value.
   oidcClientId: sms-console
   # No provisioning CLI path exists yet from inside this chart (same gap
-  # docs/runbooks/deployment.md's compose path documents by hand) — set
+  # docs/runbooks/deployment.adoc's compose path documents by hand) — set
   # this after provisioning a client the same way that runbook describes.
   consoleClientId: ""
   # #56/#57: job:read/job:enqueue gate the Jobs screen, worker:read gates
@@ -199,7 +199,7 @@ controllers:
           DATABASE_URL:
             valueFrom:
               secretKeyRef:
-                name: '{{ required "existingSecrets.database.name is required — see docs/runbooks/deployment.md" .Values.existingSecrets.database.name }}'
+                name: '{{ required "existingSecrets.database.name is required — see docs/runbooks/deployment.adoc" .Values.existingSecrets.database.name }}'
                 key: '{{ .Values.existingSecrets.database.key }}'
         resources: {}
 
@@ -299,7 +299,7 @@ controllers:
   # routine rotation later is a real operator action: `kubectl create job
   # --from=job/<release>-rotate-signing-key <name> -n <namespace>` re-runs
   # this exact Job spec on demand — see
-  # docs/runbooks/deployment.md's chart section. The `before-hook-creation`
+  # docs/runbooks/deployment.adoc's chart section. The `before-hook-creation`
   # delete policy still leaves the most recent run's Job object in place
   # after success (only a *new* hook invocation deletes the prior one), so
   # that command has something to copy from.
@@ -323,7 +323,7 @@ controllers:
         # The image ENTRYPOINT is already the binary (see
         # backends/apps/sms-gateway/Dockerfile) — only the subcommand goes here,
         # the same "run --rm sms-gateway rotate-signing-key" shape
-        # docs/runbooks/deployment.md's compose step 3 already documents.
+        # docs/runbooks/deployment.adoc's compose step 3 already documents.
         args: ['rotate-signing-key']
         env:
           DATABASE_URL:

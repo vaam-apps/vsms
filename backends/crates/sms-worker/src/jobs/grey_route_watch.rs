@@ -391,7 +391,7 @@ impl GreyRouteWatch {
                 delta = finding.delta,
                 z_score = finding.z_score,
                 "route delivery-rate divergence flagged — possible grey route; see \
-                 docs/runbooks/grey-route-validation.md"
+                 docs/runbooks/grey-route-validation.adoc"
             );
         }
         Ok(findings.len())
@@ -436,7 +436,7 @@ impl GreyRouteWatch {
                     route_name = candidate.name,
                     last_validated = ?last_validated,
                     "route overdue for handset validation (#64) — no RouteValidation in the \
-                     last 30 days; see docs/runbooks/grey-route-validation.md"
+                     last 30 days; see docs/runbooks/grey-route-validation.adoc"
                 );
             }
         }

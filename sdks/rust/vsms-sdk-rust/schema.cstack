@@ -488,7 +488,7 @@ model Route {
 // (never validated, or validated too long ago) becomes a real, queryable
 // fact instead of tribal knowledge — see
 // backends/crates/sms-worker/src/jobs/grey_route_watch.rs for the job that reads it,
-// and docs/runbooks/grey-route-validation.md for the human procedure that
+// and docs/runbooks/grey-route-validation.adoc for the human procedure that
 // writes it.
 //
 // Deliberately append-only, the same shape DeliveryReceipt/ConsentRecord

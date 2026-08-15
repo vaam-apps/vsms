@@ -18,7 +18,7 @@
 # **This file is not wired into `deploy/docker-compose.yml` — that edit
 # is intentionally left out of this PR.** #156 scopes this agent to
 # `deploy/Caddyfile`, `deploy/.env.example`, and
-# `docs/runbooks/deployment.md` only; `docker-compose.yml` is owned by
+# `docs/runbooks/deployment.adoc` only; `docker-compose.yml` is owned by
 # other concurrent work. The change it needs, verified locally against a
 # throwaway compose project (see this PR's description for the exact
 # command and observed output) before being left for a human to land:

@@ -6,7 +6,7 @@ An A2P SMS gateway for Cameroon — OTP and notification delivery over MTN and O
 
 **One thing gates real traffic, and it is not code: [#36](https://github.com/vymalo/vsms/issues/36) — no message from this system has ever reached a real handset.** That needs a human with a real Orange account and a real phone. Everything automated around it proves how *this* system behaves under faults; none of it proves Orange behaves the way this code assumes.
 
-You can run all of it locally, with no carrier account, in one command — see [local development](docs/runbooks/local-development.md).
+You can run all of it locally, with no carrier account, in one command — see [local development](docs/runbooks/local-development.adoc).
 
 ## Getting started
 
@@ -15,9 +15,9 @@ Which door you want depends on what you're doing:
 | You want to… | Start here |
 |---|---|
 | **Send SMS through vsms** from your own application | [`docs/integrating.md`](docs/integrating.md) — credentials, the token exchange, sending, message states, webhooks |
-| **Run the whole thing locally**, no carrier account | [`docs/runbooks/local-development.md`](docs/runbooks/local-development.md) — `just demo` and what it gives you |
-| **Work on vsms itself** | [`docs/runbooks/getting-started.md`](docs/runbooks/getting-started.md), then [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| **Deploy or operate it** | [`docs/runbooks/deployment.md`](docs/runbooks/deployment.md) and [`docs/runbooks/`](docs/runbooks/README.md) |
+| **Run the whole thing locally**, no carrier account | [`docs/runbooks/local-development.adoc`](docs/runbooks/local-development.adoc) — `just demo` and what it gives you |
+| **Work on vsms itself** | [`docs/runbooks/getting-started.adoc`](docs/runbooks/getting-started.adoc), then [`CONTRIBUTING.md`](CONTRIBUTING.md) |
+| **Deploy or operate it** | [`docs/runbooks/deployment.adoc`](docs/runbooks/deployment.adoc) and [`docs/runbooks/`](docs/runbooks/README.adoc) |
 
 The short version, for a developer who just wants it running:
 

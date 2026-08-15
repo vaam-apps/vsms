@@ -416,7 +416,7 @@ fn typst_string_escape(s: &str) -> String {
 }
 
 /// A filesystem-safe, human-readable fragment name derived from a
-/// repo-relative path — `docs/runbooks/36-handset-gate.md` becomes
+/// repo-relative path — `docs/runbooks/36-handset-gate.adoc` becomes
 /// `docs-runbooks-36-handset-gate`. Cosmetic only (main.typ's own
 /// generation order is what actually decides chapter order, not this
 /// name), kept for a human skimming `target/docs-pdf/fragments/`.
@@ -778,7 +778,7 @@ mod tests {
     #[test]
     fn slugify_lowercases_and_replaces_separators() {
         assert_eq!(
-            slugify("docs/runbooks/36-handset-gate.md"),
+            slugify("docs/runbooks/36-handset-gate.adoc"),
             "docs-runbooks-36-handset-gate"
         );
     }
@@ -803,13 +803,13 @@ mod tests {
     #[test]
     fn register_reference_keys_covers_bare_stripped_and_swapped_extension_forms() {
         let mut map = HashMap::new();
-        register_reference_keys(&mut map, "docs/runbooks/getting-started.md", "chapter-07");
+        register_reference_keys(&mut map, "docs/runbooks/getting-started.adoc", "chapter-07");
 
         for key in [
-            "docs/runbooks/getting-started.md",
-            "docs/runbooks/getting-started.md",
-            "runbooks/getting-started.md",
-            "runbooks/getting-started.md",
+            "docs/runbooks/getting-started.adoc",
+            "docs/runbooks/getting-started.adoc",
+            "runbooks/getting-started.adoc",
+            "runbooks/getting-started.adoc",
             "getting-started.adoc",
             "getting-started.md",
         ] {
