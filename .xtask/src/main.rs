@@ -20,6 +20,7 @@
 mod bootstrap_sql;
 mod cratestack_pin;
 mod diff;
+mod docs_pdf;
 mod migrations_current;
 mod parity;
 mod r6_ui_layers;
@@ -39,6 +40,7 @@ fn main() -> ExitCode {
     let result = match cmd.as_str() {
         "no-raw-sqlx" => raw_sqlx::run(&root),
         "parity" => parity::run(&root),
+        "docs-pdf" => docs_pdf::run(&root),
         "workflow-paths" => workflow_paths::run(&root),
         "r6" => r6_ui_layers::run(&root),
         "bootstrap-sql" => {

@@ -134,6 +134,13 @@ schema-check:
 	psql postgres://localhost/vsms_check -v ON_ERROR_STOP=1 -f ci/test-state-machine.sql
 	dropdb vsms_check
 
+# Merge docs/architecture.md, the runbooks, CONTRIBUTING.md and friends into
+# one PDF book. pandoc + Typst both run inside a single pinned container
+# image (never installed on the host) — needs `docker`, nothing else. See
+# `.xtask/src/docs_pdf.rs` for the pipeline and its own design notes.
+docs-pdf:
+	{{_cargo}} xtask docs-pdf
+
 # Regenerate 0002_bootstrap from §2.10 of the design doc
 bootstrap-sql:
 	{{_cargo}} xtask bootstrap-sql backends/migrations/postgres/0002_bootstrap/up.sql
