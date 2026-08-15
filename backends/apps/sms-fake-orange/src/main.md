@@ -11,7 +11,7 @@ real handset. It exists to unlock a local or demo run of
 a real Orange sandbox account (see
 [#138](https://github.com/vymalo/vsms/issues/138)) — it is the
 automatable complement to, and explicitly does not close,
-`docs/runbooks/36-handset-gate.md`, which stays the real acceptance gate
+`docs/runbooks/36-handset-gate.adoc`, which stays the real acceptance gate
 for an actual handset.
 
 **Never point a production deployment at this.** No production compose

@@ -1,5 +1,5 @@
 //! Fault-injecting chaos suite for the message state machine — the
-//! automatable complement to `docs/runbooks/36-handset-gate.md`, **not** a
+//! automatable complement to `docs/runbooks/36-handset-gate.adoc`, **not** a
 //! replacement for it. `sms-fake-orange` (see its own module doc) is a
 //! participant in the send/DLR lifecycle: it answers submit HTTP calls per
 //! a fault policy, autonomously schedules DLR deliveries against a real,
@@ -14,7 +14,7 @@
 //! has it, and a DLR that races the submit response it's nominally about.
 //! It **cannot** prove anything about Orange's real behaviour — no real DLR
 //! payload shape, no real `receiptRequest` honouring, no real handset. That
-//! stays `docs/runbooks/36-handset-gate.md`'s job.
+//! stays `docs/runbooks/36-handset-gate.adoc`'s job.
 //!
 //! # DLR delivery goes over real HTTP, deliberately
 //!

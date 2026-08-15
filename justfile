@@ -194,7 +194,7 @@ client-check: client-gen
 # (`compose.dev.yaml`; see that file's own header for the full design and
 # why it doesn't reuse `compose.yml`). NOT for production: sms-fake-orange
 # impersonates Orange Cameroon's API and sends no real SMS. See
-# docs/runbooks/local-development.md for what this brings up and why.
+# docs/runbooks/local-development.adoc for what this brings up and why.
 #
 # `down -v` first, every time — not just on request: `provision-client`
 # (inside `compose.dev.yaml`) refuses to overwrite an existing private
@@ -282,7 +282,7 @@ demo-login:
 # real HTTP and poll GET /messages/{id} AS THE CONSOLE's own credential —
 # the same route frontends/packages/gateway/src/messages.ts's getMessageById calls —
 # until that exact message id reaches `delivered`. Fails loudly (non-zero
-# exit) if any link in the chain breaks. See docs/runbooks/e2e-integration.md
+# exit) if any link in the chain breaks. See docs/runbooks/e2e-integration.adoc
 # for what this proves, what it fakes (Orange, via sms-fake-orange — #36's
 # handset gate is unaffected), and why both clients share one App.
 #

@@ -88,7 +88,7 @@ carrier's SMS firewall.
 # Handset-validation staleness: what this job does and does not know
 
 [`RouteValidation`](sms_api::schema::RouteValidation) rows are written
-by a human, per `docs/runbooks/grey-route-validation.md` — this job
+by a human, per `docs/runbooks/grey-route-validation.adoc` — this job
 never writes one. It only asks, per `enabled` `Route`: when was this
 last checked, and is that recent enough? [`is_overdue`] is the entire
 policy, and it is intentionally naive — "no evidence in the last N

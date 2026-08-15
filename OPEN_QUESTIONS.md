@@ -174,7 +174,7 @@ proven simplification.
 
 ### 2.2 No message has ever reached a real handset
 
-`docs/runbooks/36-handset-gate.md` is the acceptance gate for
+`docs/runbooks/36-handset-gate.adoc` is the acceptance gate for
 [#36](https://github.com/vymalo/vsms/issues/36) and still requires a human
 with a real Orange account and a real phone: a message reaching `delivered`
 within 15 seconds, and a human-timed `kill -9` against a real (not mocked)
@@ -202,7 +202,7 @@ identity requirement and looks fine in every metric except delivery quality.
 The issue proposed monthly handset validation per route plus an alert on
 delivery-rate divergence between routes that should behave identically —
 both landed (`backends/crates/sms-worker/src/jobs/grey_route_watch.rs`,
-`RouteValidation`, `docs/runbooks/grey-route-validation.md`,
+`RouteValidation`, `docs/runbooks/grey-route-validation.adoc`,
 `sms-gateway record-route-validation`).
 
 **What changed: the divergence half is now a real, gated statistical

@@ -1,6 +1,6 @@
 # Integrating with vsms
 
-For a developer whose application sends SMS **through** vsms. If you are working *on* vsms itself, start with [`CONTRIBUTING.md`](../CONTRIBUTING.md) and [`architecture.md`](architecture.md) instead; if you want the whole stack running on your laptop, [`runbooks/local-development.md`](runbooks/local-development.md) is the shorter path and this guide is what you read next.
+For a developer whose application sends SMS **through** vsms. If you are working *on* vsms itself, start with [`CONTRIBUTING.md`](../CONTRIBUTING.md) and [`architecture.md`](architecture.md) instead; if you want the whole stack running on your laptop, [`runbooks/local-development.adoc`](runbooks/local-development.adoc) is the shorter path and this guide is what you read next.
 
 Everything below works against a local stack with no Orange or MTN account, no real handset, and no SMS ever leaving the machine. The credential, the token exchange, the REST calls, and the webhooks are all real — only the carrier is faked.
 
@@ -20,7 +20,7 @@ sms-gateway provision-client \
 
 It prints `provisioned client: <clientId>` and writes the private key to `--key-out` — once, `0600`, never printed and never stored server-side. If you lose it, you get a new client; there is no recovery.
 
-Give each service (and ideally each developer) its own client against the same `App`. Messages are visible per-`App`, not per-client, so two clients on one `App` can read each other's messages — see [`runbooks/e2e-integration.md`](runbooks/e2e-integration.md) for why that is the intended design.
+Give each service (and ideally each developer) its own client against the same `App`. Messages are visible per-`App`, not per-client, so two clients on one `App` can read each other's messages — see [`runbooks/e2e-integration.adoc`](runbooks/e2e-integration.adoc) for why that is the intended design.
 
 ## 2. Send
 
@@ -202,11 +202,11 @@ The local stack fakes the carrier with `sms-fake-orange`, which can inject fault
 - `--reject-tokens` — carrier credentials revoked mid-flight.
 - `--dlr-delay-ms 30000` — slow delivery, for testing your own polling and timeouts.
 
-Details in [`runbooks/local-development.md`](runbooks/local-development.md).
+Details in [`runbooks/local-development.adoc`](runbooks/local-development.adoc).
 
 ## Where to go next
 
-- [`runbooks/local-development.md`](runbooks/local-development.md) — get the stack running.
+- [`runbooks/local-development.adoc`](runbooks/local-development.adoc) — get the stack running.
 - [`examples/README.md`](../examples/README.md) — runnable senders in Rust and Node.
 - [`sdks/rust/vsms-sdk-rust`](../sdks/rust/vsms-sdk-rust/README.md) — the Rust SDK.
 - [`architecture.md`](architecture.md) — the full design, if you want to know why any of this is shaped the way it is.

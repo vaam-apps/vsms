@@ -67,7 +67,7 @@ Both are genuinely separate from the product's own workspaces:
 ## Running either example
 
 Both need a live gateway and a provisioned credential. The fastest path is
-`just demo` from the repo root (see `docs/runbooks/getting-started.md`),
+`just demo` from the repo root (see `docs/runbooks/getting-started.adoc`),
 which brings up a scratch Postgres, `sms-gateway`, `sms-worker`,
 `sms-fake-orange` (an impersonation of Orange Cameroon — no real SMS is
 ever sent), and prints/writes a provisioned client at

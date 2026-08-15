@@ -9,7 +9,7 @@
 # (CONTRIBUTING.md's R4 — "the admin console is optional, the backend
 # must run without it") — add `--profile console` (or
 # `COMPOSE_PROFILES=console`) to bring them up too. See
-# docs/runbooks/deployment.md's own "Backend-only deployment" section for
+# docs/runbooks/deployment.adoc's own "Backend-only deployment" section for
 # what a console-off run looks like end to end, and `admin`'s/`caddy`'s
 # own comments below for exactly what each needs only once that profile
 # is active.
@@ -154,7 +154,7 @@ services:
     # `run --rm`, not `exec`, since there's no running container to exec
     # into yet:
     #   docker compose run --rm sms-gateway rotate-signing-key
-    # See docs/runbooks/deployment.md's step 3.
+    # See docs/runbooks/deployment.adoc's step 3.
     #
     # Same trap, same fix, for the `orange_cm` Provider row (#148):
     # `resolve_provider_row_id` also runs before the listener binds, so a
@@ -165,7 +165,7 @@ services:
     # landed) is idempotent on both halves, so it's safe to run again
     # later too, not just on a fresh database:
     #   docker compose run --rm sms-gateway seed-dispatch
-    # See docs/runbooks/deployment.md's step 4.
+    # See docs/runbooks/deployment.adoc's step 4.
 
   sms-worker:
     build:
@@ -178,7 +178,7 @@ services:
       # own diagram runs a second, scale-to-N-only node
       # (--roles hooks,jobs) alongside this singleton-holding one once
       # load calls for it — not added here by default; see
-      # docs/runbooks/deployment.md for that as a documented day-2 step
+      # docs/runbooks/deployment.adoc for that as a documented day-2 step
       # rather than a service this compose file stands up unused.
       SMS_WORKER_ROLES: ${SMS_WORKER_ROLES:-dispatch,drain,scheduler,hooks,jobs}
       ORANGE_CM_CLIENT_ID: ${ORANGE_CM_CLIENT_ID:?}
@@ -198,7 +198,7 @@ services:
   # unconfigured. `profiles: [console]` below is what actually gates it;
   # `docker compose --env-file .env --profile console up -d` (or
   # `COMPOSE_PROFILES=console`) is what turns it back on. See
-  # docs/runbooks/deployment.md's own "Backend-only deployment" section.
+  # docs/runbooks/deployment.adoc's own "Backend-only deployment" section.
   #
   # Every console-only var below moved from `:?` (hard required) to `:-`
   # (optional, defaults to empty) for a reason that isn't obvious from a
@@ -248,7 +248,7 @@ services:
       # `sms-gateway provision-client` (not a stub — see
       # app/sms-gateway/src/main.rs's `Command::ProvisionClient`) mints
       # this pair: `--client-id-out`/`--key-out` write the values these
-      # two vars need. See docs/runbooks/deployment.md's own console
+      # two vars need. See docs/runbooks/deployment.adoc's own console
       # section for the exact invocation — the private key is mounted
       # read-only below rather than passed through a plain env var.
       SMS_CONSOLE_CLIENT_ID: ${SMS_CONSOLE_CLIENT_ID:-}
@@ -268,7 +268,7 @@ services:
   # manifest (postgres version, applied migration names, and a SHA-256
   # *fingerprint* of SMS_HASH_PEPPER — never the pepper itself), pushed to
   # an operator-supplied rclone remote. See
-  # docs/runbooks/backup-restore.md for the pg_dump-vs-WAL decision, the
+  # docs/runbooks/backup-restore.adoc for the pg_dump-vs-WAL decision, the
   # scripted restore drill (deploy/restore-drill.sh), and why the pepper
   # is part of the recoverable state, not just the database.
   #

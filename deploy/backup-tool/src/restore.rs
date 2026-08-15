@@ -108,14 +108,14 @@ fn strip_dump_suffix(dump_name: &str) -> &str {
 
 /// Warns, never blocks — restoring under a deliberately different pepper
 /// is a legitimate DR choice in some scenarios (see
-/// `docs/runbooks/backup-restore.md`'s own "the pepper is part of the
+/// `docs/runbooks/backup-restore.adoc`'s own "the pepper is part of the
 /// recoverable state" section), but it must never be a *silent* one.
 fn check_pepper(manifest_path: &Path, hash_pepper: Option<&str>) {
     let Ok(contents) = std::fs::read_to_string(manifest_path) else {
         eprintln!(
             "vsms-backup: no manifest available — cannot check whether this backup's pepper \
              matches the current SMS_HASH_PEPPER. Proceeding blind; see \
-             docs/runbooks/backup-restore.md."
+             docs/runbooks/backup-restore.adoc."
         );
         return;
     };
@@ -154,7 +154,7 @@ fn check_pepper(manifest_path: &Path, hash_pepper: Option<&str>) {
         eprintln!(
             "vsms-backup: msisdnHash/bodyHash in the restored rows will not match anything \
              hashed under the current pepper — opt-out and dedupe checks silently stop matching \
-             old rows. See crates/sms-api/src/pepper.rs and docs/runbooks/backup-restore.md \
+             old rows. See crates/sms-api/src/pepper.rs and docs/runbooks/backup-restore.adoc \
              before proceeding."
         );
     }
