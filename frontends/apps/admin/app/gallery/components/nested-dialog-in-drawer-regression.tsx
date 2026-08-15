@@ -112,6 +112,67 @@
 // overlay on top. `routes-screen.tsx`, `webhooks-screen.tsx`, and
 // `sender-ids-screen.tsx` all converted their six broken confirmations to
 // this pattern in the same change that added this regression demo.
+// `apps-screen.tsx`'s `ProvisionClientPanel` and `users-screen.tsx`'s own
+// delete confirmations hit the identical bug independently while being
+// built on top of this file, each shipping its own inline panel before
+// this component existed to point at — #290 folded all three into this
+// one shared `InlineConfirm`, so there is now exactly one implementation
+// of "confirmation nested in an open drawer" in this codebase, not four.
+//
+// **Independent re-verification (a later pass, prompted by a bug report
+// that described a *different* symptom — "the drawer self-dismisses
+// within ~0.5s, no visible confirmation ever appears" — for the same
+// `MoreDetailDrawer`+`Dialog` nesting).** Reproduced live against the
+// unmodified primitives (a temporary, scratch-only gallery mount, driven
+// via real DOM events and polled with `getComputedStyle`/
+// `document.activeElement` at +0ms/+300ms/+1500ms after the nested
+// `Dialog` opens — not a screenshot, not a guess): the self-dismiss
+// symptom **did not reproduce, in either drawer variant**. What was
+// observed, both times, matches this file's own verdict exactly —
+// `data-vaul-drawer`'s `data-state` stays `"open"` throughout, the nested
+// `DialogPanel` stays at `opacity: 0` forever, and `document.activeElement`
+// settles on a `<div>` inside the drawer's own `FocusScope` boundary (the
+// trap's fallback target), never the trigger, never the panel. Whatever
+// produced the "self-dismisses" report was not this bug as it exists in
+// this exact `vaul@1.1.2` + `@radix-ui/react-dialog@1.1.23` +
+// `@headlessui/react@2.2.10` combination — treat any future report of an
+// outer drawer *closing* (rather than a nested confirmation staying stuck
+// and invisible) as a materially different bug and re-diagnose it fresh
+// rather than assuming this writeup already covers it.
+//
+// Two more primitive-level directions were checked on this pass and both
+// are closed, not merely untried:
+//
+// 1. **Headless UI's `Dialog` `autoFocus` prop cannot suppress the
+//    initial-focus grab that trips Radix's trap**, read directly from
+//    `@headlessui/react@2.2.10`'s compiled `focus-trap.js`. The grab is
+//    gated by the `InitialFocus` feature bit, which `dialog.js` sets
+//    whenever `!isTouchDevice()` — computed internally, not read from any
+//    prop. `autoFocus={false}` only clears the separate `AutoFocus` bit,
+//    which changes *which* focusable descendant gets chosen
+//    (`Focus.AutoFocus` vs `Focus.First` strategy) but does not gate
+//    *whether* `FocusTrap` moves focus on mount at all. The only prop that
+//    disables the grab outright is `__demoMode` — a double-underscore,
+//    undocumented prop that reads as Headless UI's own documentation-site
+//    internal, not a supported public API; shipping product code against
+//    it would trade one unreliable behavior for a dependency on
+//    unspecified library internals, not a fix.
+// 2. **The nested-Radix-dialog alternative this file already flagged as
+//    "one trial only... unverified"** — even setting aside that its own
+//    trial found a second bug (confirming also closed the outer drawer) —
+//    is foreclosed for a reason that has nothing to do with focus traps:
+//    it requires importing `@radix-ui/react-dialog` directly into
+//    `@vsms/ui`, which is the exact dependency `console-redesign.md`'s own
+//    decision ledger (D3) already replaced with Headless UI, deliberately,
+//    for every primitive that has a Headless UI equivalent. Making this
+//    one case an exception would mean carrying two competing modal/focus-
+//    trap implementations in this package permanently, for one call site —
+//    worse than the inline-panel pattern even if its own bug were fixed.
+//
+// Verdict unchanged, now on firmer footing: no fix confined to
+// `drawer.tsx`/`dialog.tsx` is both reliable and consistent with this
+// package's own architecture. `InlineConfirm` is not a stopgap standing in
+// for a primitive fix that might still land later — it is the fix.
 
 import { Button, InlineConfirm, MoreDetailDrawer } from "@vsms/ui";
 import { useState } from "react";
