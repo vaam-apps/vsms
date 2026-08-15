@@ -145,10 +145,20 @@ jobs:
       - name: Cargo.lock is up to date
         run: cargo metadata --locked --format-version 1 > /dev/null
 
-      # The Rust SDK is a standalone package intended for crates.io publishing
+      # The Rust SDK is a standalone package intended for crates.io publishing.
+      #
+      # `--locked` is load-bearing, not decoration. This package is excluded
+      # from the root workspace, so it has its own `sdks/rust/Cargo.lock`
+      # that the root job's own "Cargo.lock is up to date"
+      # (`cargo metadata --locked`) step never sees. Bumping the SDK's
+      # version for v0.2.1 left that lock still pinning 0.2.0, and every
+      # command here would have silently rewritten it and passed —
+      # a committed lockfile disagreeing with its own manifest, with no
+      # check anywhere positioned to notice. Found by a review bot, not by
+      # CI, which is the point.
       - name: Rust SDK (vsms-sdk-rust) — cargo check, clippy, test, and dry-run
         run: |
-          cargo check --all-targets
+          cargo check --locked --all-targets
           cargo clippy --all-targets -- -D warnings
           cargo test
           if cargo tree -i aws-lc-rs; then exit 1; fi
