@@ -575,6 +575,19 @@ services:
       # showcase has no real session to protect).
       SMS_CONSOLE_SESSION_SECRET: vsms-demo-session-secret-DO-NOT-USE-IN-PRODUCTION-abcdefgh
       MESSAGE_STREAM_POLL_MS: '2000'
+      # Every entry below has a zod `.default()` in `@vsms/env`, and every
+      # one must still be set explicitly HERE, because `SKIP_ENV_VALIDATION=1`
+      # (below) does not merely skip validation — it skips zod entirely, so
+      # **its defaults are never applied either**. `MESSAGE_STREAM_POLL_MS`
+      # above was already set explicitly and so always worked; these three
+      # were not, and the Jobs screen rendered a literal "Refreshes every
+      # NaNs" until someone opened it. That is the real cost of the escape
+      # hatch, and it is quieter than this file elsewhere claims: not "a
+      # confusing runtime error" on a misconfiguration, but silent
+      # `undefined` on a correct one.
+      DIAGNOSTICS_POLL_MS: '5000'
+      DASHBOARD_REFETCH_INTERVAL_MS: '15000'
+      AUDIT_LOG_PAGE_SIZE: '50'
       NEXT_PUBLIC_APP_NAME: vsms Admin Console (showcase)
       SKIP_ENV_VALIDATION: '1'
     volumes:
