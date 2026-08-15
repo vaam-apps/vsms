@@ -89,3 +89,13 @@ uuid = { version = "1", features = ["v4"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# Mocks the /token endpoint for `token.rs`'s own `connect_url` unit tests —
+# proving the physical POST address and the asserted `aud` identity can
+# genuinely diverge, not just reading the code and assuming it. Same
+# version pin the main vsms workspace uses (root Cargo.toml).
+wiremock = "0.6"
+# Parses the form-encoded /token request body captured by wiremock in the
+# same tests, to pull out `client_assertion` for decoding. Already present
+# transitively via `reqwest`; named explicitly since this crate depends on
+# it directly here.
+url = "2"
