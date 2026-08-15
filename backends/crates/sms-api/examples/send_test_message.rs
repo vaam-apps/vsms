@@ -31,7 +31,7 @@ use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, procedures::send_message, procedures::ProcedureRegistry, provider, route, sender_id,
-    sender_id_registration, Cratestack,
+    sender_id_registration, Cratestack, SenderIdRegistrationStatus,
 };
 use sms_api::Procedures;
 
@@ -283,7 +283,7 @@ async fn ensure_sender_ready(
             .create(schema::CreateSenderIdRegistrationInput {
                 senderIdId: sender_id_row_id.to_owned(),
                 providerId: provider_id.to_owned(),
-                status: "approved".to_owned(),
+                status: SenderIdRegistrationStatus::approved,
                 submittedAt: Some(Utc::now()),
                 approvedAt: Some(Utc::now()),
                 reference: None,
@@ -330,9 +330,9 @@ async fn ensure_approved_sender(
         .create(schema::CreateSenderIdInput {
             value: value.to_owned(),
             kind: if value.chars().all(|c| c.is_ascii_digit()) {
-                "shortcode".to_owned()
+                schema::SenderIdKind::shortcode
             } else {
-                "alphanumeric".to_owned()
+                schema::SenderIdKind::alphanumeric
             },
             notes: Some("seeded by send_test_message for the #36 acceptance gate".to_owned()),
         })

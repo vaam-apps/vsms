@@ -1,14 +1,4 @@
-import {
-  FormField,
-  InlineBanner,
-  Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-  Textarea,
-} from "@vsms/ui";
+import { FormField, InlineBanner, Input, RadioGroup, Textarea } from "@vsms/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import { KNOWN_STATUSES, type RegistrationFormValues } from "../sender-id-domain";
 
@@ -28,23 +18,25 @@ export function RegistrationReviewFields({
 
   return (
     <form id={formId} onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
-      <FormField label="Status" htmlFor="registration-status">
+      {/* A radio group, not a select: four values, and seeing the other
+          three is the decision this drawer exists to make. It also cannot
+          hit #315's portal-inside-a-focus-trap bug, since `RadioGroup`
+          renders inline with no portal and no transition. */}
+      <FormField
+        label="Status"
+        htmlFor="registration-status"
+        error={form.formState.errors.status?.message}
+      >
         <Controller
           control={control}
           name="status"
           render={({ field }) => (
-            <Select value={field.value} onValueChange={field.onChange}>
-              <SelectTrigger id="registration-status">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {KNOWN_STATUSES.map((status) => (
-                  <SelectItem key={status} value={status}>
-                    {status}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <RadioGroup
+              aria-label="Registration status"
+              value={field.value}
+              onValueChange={field.onChange}
+              options={KNOWN_STATUSES.map((status) => ({ value: status, label: status }))}
+            />
           )}
         />
       </FormField>

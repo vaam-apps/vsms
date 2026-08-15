@@ -94,6 +94,50 @@ enum AttemptState {
   dead
 }
 
+// The lifecycle of one (sender, provider) registration. Was a bare
+// `String` until this change, with the four values living only as a
+// `KNOWN_STATUSES` array in the console — so the database happily accepted
+// anything. Proven before fixing, then rolled back:
+// `UPDATE sender_id_registrations SET status='banana'` succeeded.
+//
+// `submitted` sits between `pending` and a decision because registration
+// is a real out-of-band process per §2.5 (Orange whitelists via a support
+// form, MTN pre-registers through an aggregator) — "we have asked" is a
+// distinct state from "we have not yet asked", and the console's Resubmit
+// action exists to move a `rejected` row back to it.
+enum SenderIdRegistrationStatus {
+  pending
+  submitted
+  approved
+  rejected
+}
+
+// What kind of sender the `value` is.
+//
+// **This vocabulary is a decision made here, not one read off the design
+// doc** — §2.5 declares `kind String` and never enumerates it, and every
+// row in every fixture and the demo database is `alphanumeric`. Nothing in
+// `backends/` branches on it; it is a label, which is exactly why it was
+// free to drift.
+//
+// Two values, and both are words this codebase already writes rather than
+// ones invented here. The first draft of this enum used `numeric`; the
+// compiler rejected it, because `backends/apps/vsms-demo-seed` has been
+// writing `"shortcode"` for an all-digit value since it was built. Nothing
+// enforced that, nothing else knew about it, and no fixture used it — an
+// unconstrained column growing a second vocabulary in one corner of the
+// tree is precisely the failure this enum exists to end, so the enum
+// adopts the existing word instead of renaming it in flight.
+//
+// No `long_number`: `SenderId.value` is `@length(min: 3, max: 11)`, and a
+// full E.164 number does not fit. Advertising a value the model cannot
+// store would be a false promise — add it alongside a length change, if it
+// is ever wanted.
+enum SenderIdKind {
+  alphanumeric
+  shortcode
+}
+
 enum OptOutSource {
   inbound_stop
   admin
@@ -298,7 +342,7 @@ model SenderId {
 
   id Cuid @id @default(dbgenerated())
   value String @unique @length(min: 3, max: 11) @db_enforce
-  kind String
+  kind SenderIdKind
   notes String?
   active Boolean @default(false)
   // #59: operator-editable (activation, notes).
@@ -321,7 +365,7 @@ model SenderIdRegistration {
   senderId SenderId @relation(fields: [senderIdId], references: [id])
   providerId Cuid
   provider Provider @relation(fields: [providerId], references: [id])
-  status String
+  status SenderIdRegistrationStatus
   submittedAt DateTime?
   approvedAt DateTime?
   reference String?

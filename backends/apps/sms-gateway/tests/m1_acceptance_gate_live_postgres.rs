@@ -85,7 +85,7 @@ use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, oauth_signing_key, procedures::provision_app_client, procedures::ProcedureRegistry,
-    provider as provider_filter, Cratestack,
+    provider as provider_filter, Cratestack, SenderIdKind, SenderIdRegistrationStatus,
 };
 use sms_api::{HashPepper, Procedures};
 
@@ -281,7 +281,7 @@ async fn seed_approved_sender(db: &Cratestack, provider_id: &str) -> String {
         .sender_id()
         .create(schema::CreateSenderIdInput {
             value: value.clone(),
-            kind: "alphanumeric".to_owned(),
+            kind: SenderIdKind::alphanumeric,
             notes: None,
         })
         .run(&owner())
@@ -292,7 +292,7 @@ async fn seed_approved_sender(db: &Cratestack, provider_id: &str) -> String {
         .create(schema::CreateSenderIdRegistrationInput {
             senderIdId: sender.id.clone(),
             providerId: provider_id.to_owned(),
-            status: "approved".to_owned(),
+            status: SenderIdRegistrationStatus::approved,
             submittedAt: Some(Utc::now()),
             approvedAt: Some(Utc::now()),
             reference: None,

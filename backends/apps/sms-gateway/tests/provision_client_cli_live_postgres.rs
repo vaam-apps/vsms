@@ -37,7 +37,9 @@ use chrono::{Duration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
-use sms_api::schema::{self, provider as provider_filter, Cratestack};
+use sms_api::schema::{
+    self, provider as provider_filter, Cratestack, SenderIdKind, SenderIdRegistrationStatus,
+};
 
 /// The `Provider.key` `sms-provider-orange-cm::OrangeCmProvider` reports —
 /// see `m1_acceptance_gate_live_postgres.rs`'s own identical constant for
@@ -225,7 +227,7 @@ async fn seed_approved_sender(db: &Cratestack, provider_id: &str) -> String {
         .sender_id()
         .create(schema::CreateSenderIdInput {
             value: value.clone(),
-            kind: "alphanumeric".to_owned(),
+            kind: SenderIdKind::alphanumeric,
             notes: None,
         })
         .run(&owner())
@@ -236,7 +238,7 @@ async fn seed_approved_sender(db: &Cratestack, provider_id: &str) -> String {
         .create(schema::CreateSenderIdRegistrationInput {
             senderIdId: sender.id.clone(),
             providerId: provider_id.to_owned(),
-            status: "approved".to_owned(),
+            status: SenderIdRegistrationStatus::approved,
             submittedAt: Some(Utc::now()),
             approvedAt: Some(Utc::now()),
             reference: None,

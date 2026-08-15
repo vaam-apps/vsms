@@ -30,7 +30,11 @@ ALTER TABLE app_clients DROP CONSTRAINT app_clients_app_id_fkey;
 
 ALTER TABLE webhook_attempts DROP CONSTRAINT webhook_attempts_state_enum_check;
 
+ALTER TABLE sender_ids DROP CONSTRAINT sender_ids_kind_enum_check;
+
 ALTER TABLE sender_ids DROP CONSTRAINT sender_ids_value_length_check;
+
+ALTER TABLE sender_id_registrations DROP CONSTRAINT sender_id_registrations_status_enum_check;
 
 ALTER TABLE routes DROP CONSTRAINT routes_match_class_enum_check;
 
