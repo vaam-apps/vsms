@@ -64,10 +64,21 @@ impl VsmsClient {
     }
 
     /// The common case in one call: `private_key_jwt` against a key on
-    /// disk (or supplied in memory — see [`PrivateKeyJwtConfig::new`]),
-    /// talking to `base_url` for both the OIDC `/token` endpoint and the
-    /// REST API (the same origin in every vsms deployment today — see
-    /// `examples/rust/sms-send`'s own `--issuer`).
+    /// disk (or supplied in memory — see [`PrivateKeyJwtConfig::new`]).
+    ///
+    /// `base_url` backs the REST API only (`sendMessage`/`get_message`/...
+    /// via the generated client). The OIDC `/token` endpoint is derived
+    /// exclusively from [`PrivateKeyJwtConfig::issuer`] — see
+    /// `PrivateKeyJwtTokenStore::new` (`token.rs`), which builds
+    /// `token_endpoint` from `config.issuer` alone and never reads
+    /// `base_url`. In every vsms deployment today the two happen to be the
+    /// same origin (see `examples/rust/sms-send`'s own `--issuer`), which
+    /// is why passing one value for both feels natural here — but they are
+    /// two independent settings, not one. A deployment where the gateway
+    /// is reachable at a different address than its issuer (for example,
+    /// a container reached over one address while its issuer is an
+    /// internal DNS name) must set `issuer` accordingly; `base_url` alone
+    /// cannot redirect where the token exchange goes.
     pub fn private_key_jwt(
         base_url: impl Into<String>,
         config: PrivateKeyJwtConfig,
