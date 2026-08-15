@@ -123,10 +123,10 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    message, provider as provider_filter, webhook_attempt, Cratestack, CreateAppInput,
-    CreateMessageInput, CreateProviderInput, CreateWebhookEndpointInput, Encoding, MessageClass,
-    MessageState, OperatorCode, ProviderKind, ProviderState, UpdateMessageInput,
-    UpdateProviderInput,
+    Cratestack, CreateAppInput, CreateMessageInput, CreateProviderInput,
+    CreateWebhookEndpointInput, Encoding, MessageClass, MessageState, OperatorCode, ProviderKind,
+    ProviderState, UpdateMessageInput, UpdateProviderInput, message, provider as provider_filter,
+    webhook_attempt,
 };
 /// How many `WebhookEndpoint`s subscribe to the one event this test fires
 /// — see this module's own doc for why this is the mechanism that widens
@@ -566,10 +566,9 @@ async fn wait_until_ready(base_url: &str, child: &mut Child) {
             .get(format!("{base_url}/.well-known/openid-configuration"))
             .send()
             .await
+            && response.status().is_success()
         {
-            if response.status().is_success() {
-                return;
-            }
+            return;
         }
         assert!(
             tokio::time::Instant::now() < deadline,

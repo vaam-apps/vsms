@@ -197,13 +197,15 @@ mod tests {
     #[test]
     fn ignores_keys_outside_the_checked_set() {
         let re = key_pattern();
-        assert!(re
-            .captures("          file: ${{ matrix.dockerfile }}")
-            .is_none());
+        assert!(
+            re.captures("          file: ${{ matrix.dockerfile }}")
+                .is_none()
+        );
         assert!(re.captures("          context: .").is_none());
-        assert!(re
-            .captures("          path: target/release/sms-gateway")
-            .is_none());
+        assert!(
+            re.captures("          path: target/release/sms-gateway")
+                .is_none()
+        );
         assert!(re.captures("          image: sms-gateway").is_none());
     }
 

@@ -1,7 +1,7 @@
 #![doc = include_str!("login.md")]
 
 use cratestack::{CoolContext, FilterExpr};
-use sms_api::schema::{self, role, user, user_credential, Cratestack};
+use sms_api::schema::{self, Cratestack, role, user, user_credential};
 use sms_core::password::{hash_password, verify_password};
 use sms_core::unpack;
 use thiserror::Error;

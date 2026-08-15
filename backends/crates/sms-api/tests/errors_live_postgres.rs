@@ -30,10 +30,10 @@
 //! ```
 
 use chrono::{Duration, Utc};
-use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::CoolContext;
+use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
-use sms_api::errors::{is_illegal_transition, map_database_error, SM001, UNIQUE_VIOLATION};
+use sms_api::errors::{SM001, UNIQUE_VIOLATION, is_illegal_transition, map_database_error};
 use sms_api::schema::{
     self, Cratestack, Encoding, MessageClass, MessageState, OperatorCode, UpdateMessageInput,
 };

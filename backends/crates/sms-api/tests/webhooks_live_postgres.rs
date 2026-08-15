@@ -37,8 +37,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, message, webhook_attempt, Cratestack, Encoding, Message, MessageClass, MessageState,
-    OperatorCode,
+    self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode, message,
+    webhook_attempt,
 };
 use sms_api::webhooks::enqueue_message_webhook_attempts;
 

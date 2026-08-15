@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
-use sms_api::schema::{message, Cratestack, Job, MessageState, UpdateMessageInput};
+use sms_api::schema::{Cratestack, Job, MessageState, UpdateMessageInput, message};
 use sms_api::{is_illegal_transition, map_database_error};
 use tracing::warn;
 

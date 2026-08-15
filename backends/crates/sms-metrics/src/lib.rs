@@ -229,7 +229,7 @@ pub fn render() -> Result<String, prometheus::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_illegal_transition, record_sm001, render, SM001_TOTAL};
+    use super::{SM001_TOTAL, parse_illegal_transition, record_sm001, render};
 
     #[test]
     fn parses_the_message_triggers_exact_text() {

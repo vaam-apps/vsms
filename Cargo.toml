@@ -51,7 +51,7 @@ exclude = ["examples/rust", "sdks/rust"]
 
 [workspace.package]
 version = "0.2.1"
-edition = "2021"
+edition = "2024"
 # Raised to 1.95.0 for the cratestack 0.7.10 bump: cratestack/cratestack#480
 # declares that as cratestack's own MSRV workspace-wide, and this repo pins
 # the whole cratestack family exactly (see below) — so its MSRV is a floor

@@ -10,16 +10,16 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::FilterExpr;
-use sms_api::schema::procedures::{provision_app_client, ProcedureRegistry};
+use cratestack::sqlx::postgres::PgPoolOptions;
+use sms_api::schema::procedures::{ProcedureRegistry, provision_app_client};
 use sms_api::schema::{
-    app as app_filter, provider as provider_filter, route as route_filter, ClientAuthMethod,
-    Cratestack, CreateOauthClientInput, CreateProviderInput, CreateRouteInput,
+    ClientAuthMethod, Cratestack, CreateOauthClientInput, CreateProviderInput, CreateRouteInput,
     CreateUserCredentialInput, CreateUserInput, ProviderKind, ProviderState, ProvisionClientInput,
-    UpdateProviderInput, UpdateRouteInput,
+    UpdateProviderInput, UpdateRouteInput, app as app_filter, provider as provider_filter,
+    route as route_filter,
 };
 use sms_api::{GatewayAuth, Principal, PrincipalKind, Procedures};
 use sms_provider::SmsProvider;
@@ -1760,7 +1760,7 @@ async fn record_route_validation_command(command: Command) -> Result<()> {
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate()).expect("installing a SIGTERM handler");
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}

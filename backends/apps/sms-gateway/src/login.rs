@@ -1,7 +1,7 @@
 #![doc = include_str!("login.md")]
 
 use authkestra_engine::auth::state::Identity;
-use authkestra_op::handlers::authorize::{handle_authorize, AuthorizeOutcome, AuthorizeRequest};
+use authkestra_op::handlers::authorize::{AuthorizeOutcome, AuthorizeRequest, handle_authorize};
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;

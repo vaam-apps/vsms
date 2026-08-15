@@ -4,7 +4,7 @@ mod operator;
 mod plan;
 
 pub use operator::OperatorPrefixTable;
-pub use plan::{classify, LineType, COUNTRY_CODE};
+pub use plan::{COUNTRY_CODE, LineType, classify};
 
 /// Why a string is not a usable Cameroon MSISDN.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -211,7 +211,7 @@ fn to_national(input: &str) -> Result<String, MsisdnError> {
             None => {
                 return Err(MsisdnError::UnsupportedCountry {
                     cc: rest.chars().take(3).collect(),
-                })
+                });
             }
         }
     } else if plus {
@@ -220,7 +220,7 @@ fn to_national(input: &str) -> Result<String, MsisdnError> {
             None => {
                 return Err(MsisdnError::UnsupportedCountry {
                     cc: digits.chars().take(3).collect(),
-                })
+                });
             }
         }
     } else if digits.len() > 9 {

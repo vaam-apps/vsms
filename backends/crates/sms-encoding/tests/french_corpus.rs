@@ -5,7 +5,7 @@
 //! two bodies of identical length land in different encodings, and the
 //! difference is one cedilla.
 
-use sms_encoding::{analyse, normalise, transliterate_to_gsm7, SmsEncoding};
+use sms_encoding::{SmsEncoding, analyse, normalise, transliterate_to_gsm7};
 
 struct Case {
     body: &'static str,

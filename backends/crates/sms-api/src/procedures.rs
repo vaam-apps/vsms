@@ -3,13 +3,13 @@
 use authkestra_engine::TokenManager;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
 use cratestack::{
-    run_in_isolated_tx, CoolContext, CoolError, Decimal, FilterExpr, TransactionIsolation, Value,
+    CoolContext, CoolError, Decimal, FilterExpr, TransactionIsolation, Value, run_in_isolated_tx,
 };
 use rand::rngs::OsRng;
-use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use rsa::RsaPrivateKey;
+use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use sms_core::pack;
-use sms_encoding::{analyse, normalise, transliterate_to_gsm7, SmsEncoding};
+use sms_encoding::{SmsEncoding, analyse, normalise, transliterate_to_gsm7};
 use sms_msisdn::{Msisdn, OperatorPrefixTable};
 use tracing::info;
 
@@ -17,7 +17,7 @@ use crate::audit_log;
 use crate::auth::{Principal, PrincipalKind};
 use crate::cache::TtlCache;
 use crate::errors::map_database_error;
-use crate::pepper::{hmac_sha256_hex, HashPepper};
+use crate::pepper::{HashPepper, hmac_sha256_hex};
 use crate::rbac::require_permission;
 use crate::route_simulator;
 use crate::schema::{
@@ -1183,27 +1183,27 @@ impl Procedures {
                     .into_iter()
                     .next();
 
-                if let Some(endpoint) = endpoint {
-                    if endpoint.consecutiveFailures != 0 || endpoint.circuitOpenUntil.is_some() {
-                        // #59: if_match(endpoint.version) — the row was
-                        // just read above, inside this same transaction, so
-                        // the version is fresh. A losing race here (another
-                        // writer touched this endpoint between the read and
-                        // this write) surfaces as PreconditionFailed and
-                        // aborts the whole replay rather than silently
-                        // clobbering whatever the other writer just set.
-                        let endpoint_version = endpoint.version;
-                        db.webhook_endpoint()
-                            .update(endpoint.id)
-                            .set(schema::UpdateWebhookEndpointInput {
-                                consecutiveFailures: Some(0),
-                                circuitOpenUntil: Some(None),
-                                ..Default::default()
-                            })
-                            .if_match(endpoint_version)
-                            .run_in_tx(&mut tx, sys)
-                            .await?;
-                    }
+                if let Some(endpoint) = endpoint
+                    && (endpoint.consecutiveFailures != 0 || endpoint.circuitOpenUntil.is_some())
+                {
+                    // #59: if_match(endpoint.version) — the row was
+                    // just read above, inside this same transaction, so
+                    // the version is fresh. A losing race here (another
+                    // writer touched this endpoint between the read and
+                    // this write) surfaces as PreconditionFailed and
+                    // aborts the whole replay rather than silently
+                    // clobbering whatever the other writer just set.
+                    let endpoint_version = endpoint.version;
+                    db.webhook_endpoint()
+                        .update(endpoint.id)
+                        .set(schema::UpdateWebhookEndpointInput {
+                            consecutiveFailures: Some(0),
+                            circuitOpenUntil: Some(None),
+                            ..Default::default()
+                        })
+                        .if_match(endpoint_version)
+                        .run_in_tx(&mut tx, sys)
+                        .await?;
                 }
 
                 Ok((updated, tx))
@@ -2080,8 +2080,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::enqueue_job::Authorized,
-    ) -> impl core::future::Future<Output = Result<schema::procedures::enqueue_job::Output, CoolError>>
-           + Send {
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::enqueue_job::Output, CoolError>,
+    > + Send {
         core::future::ready(Err(not_yet("enqueueJob", "milestone 2 (the jobs role)")))
     }
 
@@ -2135,8 +2136,9 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::requeue_job::Authorized,
-    ) -> impl core::future::Future<Output = Result<schema::procedures::requeue_job::Output, CoolError>>
-           + Send {
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::requeue_job::Output, CoolError>,
+    > + Send {
         self.requeue(db, ctx, args.args)
     }
 
@@ -2247,7 +2249,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         // identical comment above.
         _authorized: schema::procedures::audit_log::Authorized,
     ) -> impl core::future::Future<Output = Result<schema::procedures::audit_log::Output, CoolError>>
-           + Send {
+    + Send {
         self.list_audit_log(db, ctx, args.args)
     }
 

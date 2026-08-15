@@ -121,7 +121,7 @@ pub fn needle(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains, needle, pack, unpack, PackError, EMPTY};
+    use super::{EMPTY, PackError, contains, needle, pack, unpack};
 
     #[test]
     fn packing_adds_both_sentinels() {

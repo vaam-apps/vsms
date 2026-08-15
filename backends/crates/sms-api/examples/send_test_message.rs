@@ -28,12 +28,12 @@ use chrono::Utc;
 use clap::Parser;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
+use sms_api::Procedures;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, procedures::send_message, procedures::ProcedureRegistry, provider, route, sender_id,
-    sender_id_registration, Cratestack, SenderIdRegistrationStatus,
+    self, Cratestack, SenderIdRegistrationStatus, procedures::ProcedureRegistry,
+    procedures::send_message, provider, route, sender_id, sender_id_registration,
 };
-use sms_api::Procedures;
 
 /// Fixed, well-known slugs/keys — reused across repeated runs of this tool
 /// rather than accumulating a fresh `App`/`Provider` row every time.

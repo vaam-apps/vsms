@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use authkestra_engine::auth::strategy::utils::extract_bearer_token;
 use authkestra_engine::token::Claims;
-use authkestra_resource::jwt::{validate_jwt_generic, JwksCache};
+use authkestra_resource::jwt::{JwksCache, validate_jwt_generic};
 use cratestack::{AuthProvider, CoolContext, CoolError, FilterExpr, RequestContext, Value};
 use jsonwebtoken::{Algorithm, Validation};
 
 use crate::cache::TtlCache;
-use crate::schema::{self, app_client, role, user, Cratestack};
+use crate::schema::{self, Cratestack, app_client, role, user};
 
 /// The `OauthClient.clientId` #194's own `sms-console` provisioning
 /// (`sms-gateway seed-console-client`) registers under, and the default

@@ -191,12 +191,12 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, app, app_client, audit_anchor, client_assertion, consent_record, delivery_receipt, job,
-    message, oauth_client, oauth_signing_key, operator_prefix_rule, opt_out, provider, role, route,
+    self, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass,
+    OperatorCode, OptOutSource, ProviderKind, SenderIdKind, SenderIdRegistrationStatus, app,
+    app_client, audit_anchor, client_assertion, consent_record, delivery_receipt, job, message,
+    oauth_client, oauth_signing_key, operator_prefix_rule, opt_out, provider, role, route,
     route_validation, sender_id, sender_id_registration, user, user_credential, webhook_attempt,
-    webhook_endpoint, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding,
-    MessageClass, OperatorCode, OptOutSource, ProviderKind, SenderIdKind,
-    SenderIdRegistrationStatus,
+    webhook_endpoint,
 };
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
@@ -498,7 +498,9 @@ macro_rules! assert_system_can_read_back {
              is: {}. CrateStack denies a list-route policy by filtering to an EMPTY \
              ARRAY, not by erroring (AGENTS.md's own documented failure mode) — this \
              is the eighth instance of the bug #155 exists to catch.",
-            $model_name, $model_name, $clause
+            $model_name,
+            $model_name,
+            $clause
         );
     }};
 }

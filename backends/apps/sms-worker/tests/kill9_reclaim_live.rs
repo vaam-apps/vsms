@@ -38,15 +38,15 @@
 //! ```
 
 use chrono::{Duration as ChronoDuration, Utc};
-use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::CoolContext;
+use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
 };
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

@@ -5,12 +5,12 @@ use std::time::Duration;
 
 use authkestra_axum::helpers::AxumError;
 use authkestra_axum::op::axum_token_handler;
-use authkestra_engine::token::jwk::Jwk;
 use authkestra_engine::TokenManager;
+use authkestra_engine::token::jwk::Jwk;
+use authkestra_op::OpStore;
 use authkestra_op::config::OpConfig;
 use authkestra_op::handlers::discovery::OidcDiscovery;
 use authkestra_op::handlers::jwks::JwksResponse;
-use authkestra_op::OpStore;
 use axum::extract::{FromRef, State};
 use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
@@ -19,7 +19,7 @@ use cratestack::CoolContext;
 use sms_api::schema::Cratestack;
 use sms_auth::op::MachineOnlyOpStore;
 
-use crate::token_rate_limit::{enforce_token_client_rate_limit, TokenRateLimitState};
+use crate::token_rate_limit::{TokenRateLimitState, enforce_token_client_rate_limit};
 
 /// How often a running process reloads signing keys from the database —
 /// short relative to `sms_auth::op::ROTATION_OVERLAP` (30 minutes), so a

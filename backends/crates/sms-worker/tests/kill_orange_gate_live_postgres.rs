@@ -82,8 +82,8 @@ use sms_fake_orange::{FakeOrange, FaultPolicy, SubmitDecision, TokenPolicy};
 use sms_provider::SmsProvider;
 use sms_provider_mtn::{MtnAggregatorConfig, MtnAggregatorProvider};
 use sms_provider_orange_cm::{OrangeCmConfig, OrangeCmProvider};
-use sms_worker::dispatch::tick;
 use sms_worker::WorkerContext;
+use sms_worker::dispatch::tick;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

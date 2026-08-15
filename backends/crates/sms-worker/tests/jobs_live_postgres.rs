@@ -16,8 +16,8 @@
 //! ```
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -25,13 +25,13 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, job, message, Cratestack, Encoding, Job, MessageClass, MessageState, OperatorCode,
-    UpdateJobInput,
+    self, Cratestack, Encoding, Job, MessageClass, MessageState, OperatorCode, UpdateJobInput, job,
+    message,
 };
+use sms_worker::WorkerContext;
 use sms_worker::jobs::expire_stale::ExpireStale;
 use sms_worker::jobs::{self, JobHandler, Registry};
 use sms_worker::scheduler::{self, RecurringJobSpec};
-use sms_worker::WorkerContext;
 
 /// #102, found live: `jobs::tick`/`scheduler::tick`'s own candidate
 /// queries are deliberately global, so this binary's own tests, run

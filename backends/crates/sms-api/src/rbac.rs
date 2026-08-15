@@ -1,10 +1,10 @@
 #![doc = include_str!("rbac.md")]
 
+use cratestack::axum::Json;
 use cratestack::axum::extract::{Request, State};
 use cratestack::axum::http::Method;
 use cratestack::axum::middleware::Next;
 use cratestack::axum::response::{IntoResponse, Response};
-use cratestack::axum::Json;
 use cratestack::{AuthProvider, CoolContext, CoolError, CoolErrorResponse, RequestContext, Value};
 
 use crate::auth::GatewayAuth;

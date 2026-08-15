@@ -17,13 +17,13 @@
 //! ```
 
 use chrono::{DateTime, Duration, Utc};
-use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::CoolContext;
+use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
 };
-use sms_worker::claim::{claim_batch, Claimable};
+use sms_worker::claim::{Claimable, claim_batch};
 
 /// #102, found live: `claim_batch::<Message>`'s candidate query is
 /// deliberately global (production's own claim loop must see every app's

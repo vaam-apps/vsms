@@ -7,7 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::errors::UNIQUE_VIOLATION;
-use sms_api::schema::{job, Cratestack, CreateJobInput};
+use sms_api::schema::{Cratestack, CreateJobInput, job};
 use tracing::{error, warn};
 
 use crate::WorkerContext;

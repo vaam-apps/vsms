@@ -22,8 +22,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, procedures::send_message, procedures::ProcedureRegistry, Cratestack, Encoding,
-    MessageClass, MessageState, OperatorCode, SenderIdKind, SenderIdRegistrationStatus,
+    self, Cratestack, Encoding, MessageClass, MessageState, OperatorCode, SenderIdKind,
+    SenderIdRegistrationStatus, procedures::ProcedureRegistry, procedures::send_message,
 };
 use sms_api::{HashPepper, Procedures};
 

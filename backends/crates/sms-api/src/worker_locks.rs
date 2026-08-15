@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 // reap_outbox.rs`'s own convention: `cargo xtask no-raw-sqlx`'s pattern
 // matches the literal substring `sqlx::query`, so the raw call stays visible at
 // the call site rather than hidden behind a braced `use`.
-use cratestack::sqlx;
 use cratestack::CoolError;
+use cratestack::sqlx;
 
 use crate::schema::{Cratestack, WorkerLockInfo};
 use crate::worker_roles::{ADVISORY_LOCK_NAMESPACE, ROLE_LOCK_KEYS};

@@ -38,7 +38,7 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, provider as provider_filter, Cratestack, SenderIdKind, SenderIdRegistrationStatus,
+    self, Cratestack, SenderIdKind, SenderIdRegistrationStatus, provider as provider_filter,
 };
 
 /// The `Provider.key` `sms-provider-orange-cm::OrangeCmProvider` reports —
@@ -442,10 +442,9 @@ async fn wait_until_ready(issuer: &str, child: &mut Child) {
             .get(format!("{issuer}/.well-known/openid-configuration"))
             .send()
             .await
+            && response.status().is_success()
         {
-            if response.status().is_success() {
-                return;
-            }
+            return;
         }
         assert!(
             tokio::time::Instant::now() < deadline,

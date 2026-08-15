@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::schema::{
-    delivery_receipt, message, Cratestack, DeliveryReceipt, Job, MessageState, UpdateMessageInput,
+    Cratestack, DeliveryReceipt, Job, MessageState, UpdateMessageInput, delivery_receipt, message,
 };
 use tracing::warn;
 
@@ -184,7 +184,7 @@ async fn purge_delivery_receipts(
 
 #[cfg(test)]
 mod tests {
-    use super::{PurgeRetention, PURGED_MSISDN_PLACEHOLDER, RETENTION};
+    use super::{PURGED_MSISDN_PLACEHOLDER, PurgeRetention, RETENTION};
     use crate::jobs::JobHandler;
 
     #[test]

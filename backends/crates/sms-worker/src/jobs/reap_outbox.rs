@@ -9,8 +9,8 @@ use chrono::{DateTime, Duration, Utc};
 // matches the literal substring `sqlx::query`/`sqlx::query_as`/`sqlx::raw_sql`,
 // so the exception has to be visible at the call site, not hidden behind a
 // braced multi-item `use` the check can't see through.
-use cratestack::sqlx;
 use cratestack::CoolContext;
+use cratestack::sqlx;
 use sms_api::schema::{Cratestack, Job};
 use tracing::{debug, info, warn};
 
@@ -183,7 +183,7 @@ pub async fn reap_delivered(db: &Cratestack, cutoff: DateTime<Utc>) -> Result<u6
 
 #[cfg(test)]
 mod tests {
-    use super::{ReapOutbox, DELIVERED_RETENTION, POISON_ATTEMPTS_THRESHOLD};
+    use super::{DELIVERED_RETENTION, POISON_ATTEMPTS_THRESHOLD, ReapOutbox};
     use crate::jobs::JobHandler;
 
     #[test]

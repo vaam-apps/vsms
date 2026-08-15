@@ -4,8 +4,8 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use cratestack::sqlx::postgres::{PgConnectOptions, PgConnection};
-use cratestack::sqlx::{query_scalar, Connection};
-use sms_api::worker_roles::{lock_key_for_role, ADVISORY_LOCK_NAMESPACE};
+use cratestack::sqlx::{Connection, query_scalar};
+use sms_api::worker_roles::{ADVISORY_LOCK_NAMESPACE, lock_key_for_role};
 
 use crate::Role;
 
@@ -179,7 +179,7 @@ pub const RETRY_INTERVAL: Duration = Duration::from_secs(5);
 
 #[cfg(test)]
 mod tests {
-    use super::{advisory_lock_key, NS};
+    use super::{NS, advisory_lock_key};
     use crate::ALL;
 
     #[test]

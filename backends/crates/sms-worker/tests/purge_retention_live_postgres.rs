@@ -64,11 +64,11 @@ use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::schema::{
-    self, delivery_receipt, message, webhook_attempt, Cratestack, DeliveryOutcome, Encoding,
-    Message, MessageClass, MessageState, OperatorCode, UpdateMessageInput,
+    self, Cratestack, DeliveryOutcome, Encoding, Message, MessageClass, MessageState, OperatorCode,
+    UpdateMessageInput, delivery_receipt, message, webhook_attempt,
 };
-use sms_worker::jobs::purge_retention::PurgeRetention;
 use sms_worker::jobs::JobHandler;
+use sms_worker::jobs::purge_retention::PurgeRetention;
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
 /// `claim_live_postgres.rs`'s own `TEST_MUTEX` doc (#102).

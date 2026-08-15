@@ -2,10 +2,10 @@
 
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::get;
-use axum::Router;
 use sms_api::schema::Cratestack;
 
 /// Wall-clock budget for `/readyz`'s database round-trip. Chosen to sit

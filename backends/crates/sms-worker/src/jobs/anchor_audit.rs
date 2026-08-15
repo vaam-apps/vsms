@@ -73,11 +73,11 @@ impl AnchorAudit {
 
         let period_start = latest.as_ref().map(|anchor| anchor.periodEnd);
         let period_end = now - ANCHOR_LAG;
-        if let Some(start) = period_start {
-            if period_end <= start {
-                debug!("nothing new to anchor yet this run");
-                return Ok(());
-            }
+        if let Some(start) = period_start
+            && period_end <= start
+        {
+            debug!("nothing new to anchor yet this run");
+            return Ok(());
         }
 
         let rows = rows_in_period(db, period_start, period_end)
@@ -127,7 +127,7 @@ impl JobHandler for AnchorAudit {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnchorAudit, ANCHOR_LAG};
+    use super::{ANCHOR_LAG, AnchorAudit};
     use crate::jobs::JobHandler;
 
     #[test]

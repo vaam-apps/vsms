@@ -8,7 +8,7 @@ mod translit;
 pub use gsm7::{is_gsm7, is_gsm7_str};
 pub use normalise::normalise;
 pub use segment::{GSM7_CONCATENATED, GSM7_SINGLE, UCS2_CONCATENATED, UCS2_SINGLE};
-pub use translit::{replacement_for, transliterate_to_gsm7, Replacement};
+pub use translit::{Replacement, replacement_for, transliterate_to_gsm7};
 
 use segment::pack;
 

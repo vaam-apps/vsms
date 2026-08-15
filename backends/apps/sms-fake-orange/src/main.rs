@@ -147,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate()).expect("installing a SIGTERM handler");
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}

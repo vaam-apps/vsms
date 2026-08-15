@@ -35,7 +35,7 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, webhook_attempt, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
+    self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode, webhook_attempt,
 };
 use sms_worker::drain;
 

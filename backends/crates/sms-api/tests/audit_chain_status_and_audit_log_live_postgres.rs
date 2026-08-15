@@ -23,9 +23,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, CoolError};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self,
-    procedures::{audit_chain_status, audit_log, ProcedureRegistry},
-    Cratestack, UpdateAuditAnchorInput,
+    self, Cratestack, UpdateAuditAnchorInput,
+    procedures::{ProcedureRegistry, audit_chain_status, audit_log},
 };
 use sms_api::{HashPepper, Procedures};
 

@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use crate::errors::{is_illegal_transition, map_database_error};
 use crate::procedures::parse_operator_code;
-use crate::schema::{self, message, Cratestack, MessageState};
+use crate::schema::{self, Cratestack, MessageState, message};
 
 /// §7.4's own backoff schedule for retryable failures ("Backoff on
 /// retryable failures: 5s, 30s, 2m, 10m, 30m, capped by `maxAttempts` and

@@ -21,8 +21,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, message, Cratestack, Encoding, MessageClass, MessageState, OperatorCode,
-    UpdateMessageInput,
+    self, Cratestack, Encoding, MessageClass, MessageState, OperatorCode, UpdateMessageInput,
+    message,
 };
 use sms_provider::{
     Capabilities, DeliveryOutcome, DeliveryUpdate, Health, ProviderError, RawCallback, SmsProvider,

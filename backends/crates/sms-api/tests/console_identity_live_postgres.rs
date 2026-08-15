@@ -12,9 +12,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self,
-    procedures::{provision_user, record_opt_out, search_opt_out_by_msisdn, ProcedureRegistry},
-    Cratestack,
+    self, Cratestack,
+    procedures::{ProcedureRegistry, provision_user, record_opt_out, search_opt_out_by_msisdn},
 };
 use sms_api::{HashPepper, Procedures};
 

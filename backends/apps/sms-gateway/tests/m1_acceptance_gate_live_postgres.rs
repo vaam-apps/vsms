@@ -84,8 +84,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, oauth_signing_key, procedures::provision_app_client, procedures::ProcedureRegistry,
-    provider as provider_filter, Cratestack, SenderIdKind, SenderIdRegistrationStatus,
+    self, Cratestack, SenderIdKind, SenderIdRegistrationStatus, oauth_signing_key,
+    procedures::ProcedureRegistry, procedures::provision_app_client, provider as provider_filter,
 };
 use sms_api::{HashPepper, Procedures};
 
@@ -572,10 +572,9 @@ async fn wait_until_ready(issuer: &str, child: &mut Child) {
             .get(format!("{issuer}/.well-known/openid-configuration"))
             .send()
             .await
+            && response.status().is_success()
         {
-            if response.status().is_success() {
-                return;
-            }
+            return;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -587,8 +586,8 @@ async fn wait_until_ready(issuer: &str, child: &mut Child) {
 
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn a_persisted_client_credentials_client_survives_a_process_restart_and_a_developer_token_is_refused(
-) {
+async fn a_persisted_client_credentials_client_survives_a_process_restart_and_a_developer_token_is_refused()
+ {
     let db_url = sms_test_support::database_url().await;
     let db = db().await;
 
