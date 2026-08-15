@@ -224,8 +224,16 @@ jobs:
       - name: Publish to crates.io
         if: needs.version.outputs.is_tag == 'true'
         working-directory: sdks/rust/vsms-sdk-rust
+        # The secret is named CARGO_REGISTRY_TOKEN, matching the env var
+        # cargo itself reads. v0.2.0's publish failed with "please provide
+        # a non-empty token" because this line referenced a differently
+        # named secret (`CRATES_IO_TOKEN`) that was never created — and an
+        # unset secret interpolates to the empty string rather than
+        # failing the step, so the log showed a blank value instead of an
+        # error naming the missing secret. Keep the two names identical;
+        # the indirection bought nothing and cost a release.
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish
 
   publish-node-sdk:
@@ -261,9 +269,22 @@ jobs:
         working-directory: sdks/node/vsms-sdk-node
         run: pnpm publish --dry-run --no-git-checks
 
-      - name: Publish to npm
+      # No `NODE_AUTH_TOKEN`. This publishes via npm Trusted Publishing
+      # (OIDC), which `permissions: id-token: write` above enables and
+      # pnpm 11 performs on its own — there is no npm token in this repo
+      # and there is not meant to be one.
+      #
+      # Setting NODE_AUTH_TOKEN from an npm-token secret that does not
+      # exist was actively harmful, not merely redundant:
+      # `actions/setup-node`'s `registry-url` writes an `.npmrc` with
+      # `_authToken=${NODE_AUTH_TOKEN}`, so an unset secret became an
+      # *empty* token rather than no token. On v0.2.0 that turned a clean
+      # "OIDC unavailable" into a misleading `E404 PUT
+      # https://registry.npmjs.org/@vymalo%2fvsms-node` — npm masks a bad
+      # credential as "not found" rather than confirming a package exists
+      # to an unauthenticated caller, which sends whoever reads the log
+      # hunting for a missing package instead of a missing publisher.
+      - name: Publish to npm (Trusted Publishing / OIDC)
         if: needs.version.outputs.is_tag == 'true'
         working-directory: sdks/node/vsms-sdk-node
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: pnpm publish --access public --provenance --no-git-checks

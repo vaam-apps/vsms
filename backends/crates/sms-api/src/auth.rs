@@ -456,7 +456,32 @@ async fn authenticate_human(
     // Real, per-realm audience validation — see `GatewayAuth::new`'s own
     // doc on why this can't live in the shared `Validation` both realms
     // decode through.
-    if claims.aud.as_deref() != Some(human_client_id) {
+    //
+    // `Audience::contains`, not string equality. authkestra 0.5 changed
+    // `Claims::aud` from `Option<String>` to `Option<Audience>`, an
+    // untagged `Single(String) | Multiple(Vec<String>)`, and its own doc
+    // says `contains` is "the 'matches ANY' membership test that replaces
+    // exact-string-equality comparisons against `aud`".
+    //
+    // That is a real semantic change and it is the correct one: RFC 7519
+    // §4.1.3 makes a token valid when its `aud` *contains* the intended
+    // recipient, and `aud` is permitted to be an array. Under 0.3.3's
+    // `Option<String>` an array-valued `aud` did not deserialize at all,
+    // so such a token was rejected as malformed rather than evaluated —
+    // accidental strictness, not a policy this repo chose. Membership is
+    // both spec-correct and strictly better-defined.
+    //
+    // It does mean a token minted for `["sms-console", "something-else"]`
+    // now authenticates here. That is intended: such a token *was* issued
+    // for this audience. Nothing in this deployment mints a multi-audience
+    // token today (`sms_auth::op` issues one `aud` per client), so the
+    // widening is theoretical against our own OP and correct against any
+    // future one.
+    if !claims
+        .aud
+        .as_ref()
+        .is_some_and(|aud| aud.contains(human_client_id))
+    {
         return Err(CoolError::Unauthorized(
             "human token audience mismatch".to_owned(),
         ));
