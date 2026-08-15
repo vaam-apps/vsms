@@ -144,6 +144,12 @@ export function RoutesScreen() {
     setDeleteTargetId(null);
     createMutation.reset();
     updateMutation.reset();
+    // Found in the same audit as #309/#310: without this, a failed delete
+    // on one route left `deleteMutation.error` set, and the very next
+    // route's delete confirm — a fresh `deleteTargetId`, but the same
+    // mutation hook — rendered that stale error against a row it never
+    // applied to.
+    deleteMutation.reset();
   }
 
   function onSubmit(values: RouteFormValues) {

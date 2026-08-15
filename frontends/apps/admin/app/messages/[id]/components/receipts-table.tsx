@@ -5,6 +5,7 @@
 // separately from the timeline rather than folded into it.
 
 import {
+  InlineBanner,
   InlineEmptyState,
   Skeleton,
   Table,
@@ -20,15 +21,27 @@ import type { DeliveryReceiptSummary } from "../message-record";
 export interface ReceiptsTableProps {
   receipts: DeliveryReceiptSummary[] | undefined;
   isLoading: boolean;
+  /** Set when `messages.receipts` itself failed — distinct from a
+   * successful fetch that genuinely found zero rows (#311). Takes
+   * priority over the empty state below: "couldn't load" and "none
+   * recorded" must never render identically on the one screen whose
+   * purpose is being the evidence trail for diagnosing a message. */
+  errorMessage?: string | undefined;
 }
 
-export function ReceiptsTable({ receipts, isLoading }: ReceiptsTableProps) {
+export function ReceiptsTable({ receipts, isLoading, errorMessage }: ReceiptsTableProps) {
   if (isLoading) {
     return (
       <div className="flex flex-col gap-2">
         <Skeleton className="h-4 w-full" />
         <Skeleton className="h-4 w-full" />
       </div>
+    );
+  }
+
+  if (errorMessage != null) {
+    return (
+      <InlineBanner variant="danger">Could not load delivery receipts: {errorMessage}</InlineBanner>
     );
   }
 

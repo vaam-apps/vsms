@@ -27,8 +27,9 @@ export function UsersTabView({
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <InlineBanner variant="neutral">
-          Provisioning and editing both require <Code>user:manage</Code> (owner, admin) — a role
-          without it gets a real error here, not a silent no-op.
+          Provisioning and editing both require your role to be <Code>owner</Code> or{" "}
+          <Code>admin</Code>. The backend checks that role directly; no <Code>user:manage</Code>{" "}
+          permission is enforced here. Missing the role gets a real error, not a silent no-op.
         </InlineBanner>
         <Button type="button" onClick={onProvisionClick}>
           Provision user

@@ -5,7 +5,7 @@
 export function TruncatedNotice() {
   return (
     <p className="text-caption text-subtle-foreground">
-      Showing the most recent 1000 messages for this app — sms-api's `GET /messages` has no
+      Showing the most recent 1000 messages across every app — sms-api's `GET /messages` has no
       server-side filter for state or date range (see `@vsms/gateway/messages.ts`'s module doc), so
       filtering happens over that window. Older matches outside it won't appear.
     </p>

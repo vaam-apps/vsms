@@ -10,12 +10,17 @@
 // `MESSAGE_STREAM_POLL_MS`).
 
 import { env } from "@vsms/env";
+import { RouteSkeleton } from "@vsms/ui";
 import { Suspense } from "react";
 import { JobsScreen } from "./jobs-screen";
 
 export default function JobsPage() {
+  // #308: `fallback={null}` used to sit here — see `RouteSkeleton`'s own
+  // doc comment for why that made a slow-to-reveal boundary
+  // indistinguishable from a broken one. Mitigation, not a fix for the
+  // underlying rAF-gated reveal.
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<RouteSkeleton />}>
       <JobsScreen pollMs={env.DIAGNOSTICS_POLL_MS} />
     </Suspense>
   );

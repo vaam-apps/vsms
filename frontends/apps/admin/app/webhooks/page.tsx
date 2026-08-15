@@ -12,12 +12,17 @@
 // (R6-reconcile).
 
 import { env } from "@vsms/env";
+import { RouteSkeleton } from "@vsms/ui";
 import { Suspense } from "react";
 import { WebhooksScreen } from "./webhooks-screen";
 
 export default function WebhooksPage() {
+  // #308: `fallback={null}` used to sit here — see `RouteSkeleton`'s own
+  // doc comment for why that made a slow-to-reveal boundary
+  // indistinguishable from a broken one. Mitigation, not a fix for the
+  // underlying rAF-gated reveal.
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<RouteSkeleton />}>
       <WebhooksScreen attemptsRefetchIntervalMs={env.DIAGNOSTICS_POLL_MS} />
     </Suspense>
   );

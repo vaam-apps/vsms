@@ -9,12 +9,17 @@
 // `pollMs`, the same pattern those two pages use.
 
 import { env } from "@vsms/env";
+import { RouteSkeleton } from "@vsms/ui";
 import { Suspense } from "react";
 import { WorkersScreen } from "./workers-screen";
 
 export default function WorkersPage() {
+  // #308: `fallback={null}` used to sit here — see `RouteSkeleton`'s own
+  // doc comment for why that made a slow-to-reveal boundary
+  // indistinguishable from a broken one. Mitigation, not a fix for the
+  // underlying rAF-gated reveal.
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<RouteSkeleton withFilterBar={false} rows={6} />}>
       <WorkersScreen pollMs={env.DIAGNOSTICS_POLL_MS} />
     </Suspense>
   );

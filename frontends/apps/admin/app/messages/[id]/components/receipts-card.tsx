@@ -8,9 +8,10 @@ import { ReceiptsTable } from "./receipts-table";
 export interface ReceiptsCardProps {
   receipts: DeliveryReceiptSummary[] | undefined;
   isLoading: boolean;
+  errorMessage?: string | undefined;
 }
 
-export function ReceiptsCard({ receipts, isLoading }: ReceiptsCardProps) {
+export function ReceiptsCard({ receipts, isLoading, errorMessage }: ReceiptsCardProps) {
   return (
     <Card>
       <CardHeader
@@ -18,7 +19,7 @@ export function ReceiptsCard({ receipts, isLoading }: ReceiptsCardProps) {
         meta="Raw DeliveryReceipt evidence, oldest first — including duplicates and out-of-order arrivals"
       />
       <CardBody>
-        <ReceiptsTable receipts={receipts} isLoading={isLoading} />
+        <ReceiptsTable receipts={receipts} isLoading={isLoading} errorMessage={errorMessage} />
       </CardBody>
     </Card>
   );

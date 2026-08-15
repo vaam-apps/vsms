@@ -24,10 +24,9 @@ export function AppsHeader({ onCreateClick }: { onCreateClick: () => void }) {
       </div>
 
       <InlineBanner variant="neutral">
-        Reads and writes act as you — saving requires your own role to carry <Code>app:write</Code>{" "}
-        (owner and admin by default), and provisioning/retiring a client needs{" "}
-        <Code>user:manage</Code>-adjacent trust: this console&apos;s own permission table gates it
-        at <Code>owner</Code>/<Code>admin</Code> only.
+        Reads and writes act as you — saving an app, and provisioning or retiring a service-account
+        client, both require your role to be <Code>owner</Code> or <Code>admin</Code>. The backend
+        checks that role directly; no <Code>app:write</Code> permission is enforced here.
       </InlineBanner>
     </>
   );

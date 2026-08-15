@@ -250,14 +250,19 @@ export function WebhooksScreen({
     { refetchInterval: attemptsRefetchIntervalMs },
   );
 
-  const replayMutation = trpc.webhookAttempts.replay.useMutation({
-    onSuccess: () => {
-      void utils.webhookAttempts.list.invalidate();
-    },
-  });
   // A boolean, not a copy of the row — same reasoning as `rotateArmed`
   // above: replay always targets whatever `quickAttempt` is currently open.
   const [replayArmed, setReplayArmed] = useState(false);
+  const replayMutation = trpc.webhookAttempts.replay.useMutation({
+    onSuccess: () => {
+      // Dismissing the confirmation here, not synchronously after
+      // `.mutate()`, is the fix for #310: closing it eagerly made a
+      // failed replay look identical to a successful one, since nothing
+      // was left mounted to show `replayMutation.error` against.
+      setReplayArmed(false);
+      void utils.webhookAttempts.list.invalidate();
+    },
+  });
   const [quickAttemptId, setQuickAttemptId] = useState<string | null>(null);
   const quickAttempt = attemptsQuery.data?.items.find((a) => a.id === quickAttemptId);
   const [attemptPanelId, setAttemptPanelId] = useQueryState("attempt", parseAsString);
@@ -270,7 +275,6 @@ export function WebhooksScreen({
   function confirmReplay() {
     if (quickAttempt === undefined) return;
     replayMutation.mutate({ attemptId: quickAttempt.id });
-    setReplayArmed(false);
   }
 
   return (
@@ -361,6 +365,7 @@ export function WebhooksScreen({
         ) : rotateArmed && panelTarget !== undefined ? (
           <EndpointRotateConfirm
             pending={rotateMutation.isPending}
+            errorMessage={rotateMutation.error?.message}
             onConfirm={() => rotateMutation.mutate({ endpointId: panelTarget.id })}
             onCancel={() => setRotateArmed(false)}
           />
@@ -430,7 +435,20 @@ export function WebhooksScreen({
               attempt={quickAttempt}
               replayPending={replayMutation.isPending}
               onClose={() => setQuickAttemptId(null)}
-              onReplay={() => setReplayArmed(true)}
+              onReplay={() => {
+                // A residual side effect of #310's own fix, guarded here
+                // rather than on every dismissal path (drawer close,
+                // Cancel): before that fix, `setReplayArmed(false)` ran
+                // synchronously right after every `.mutate()` call, so a
+                // failed replay's error could never survive to be seen
+                // again. Now it can — reset it the moment the confirm is
+                // (re)armed, so reopening it (same attempt or a different
+                // one, after Cancel or after closing the drawer outright)
+                // never shows a previous failure before this attempt has
+                // even been submitted.
+                replayMutation.reset();
+                setReplayArmed(true);
+              }}
               onViewPayload={() => {
                 void setAttemptPanelId(quickAttempt.id);
                 setQuickAttemptId(null);
@@ -443,6 +461,8 @@ export function WebhooksScreen({
           <AttemptReplayConfirm
             attempt={quickAttempt}
             endpointUrl={endpointUrlFor(quickAttempt.endpointId)}
+            pending={replayMutation.isPending}
+            errorMessage={replayMutation.error?.message}
             onConfirm={confirmReplay}
             onCancel={() => setReplayArmed(false)}
           />

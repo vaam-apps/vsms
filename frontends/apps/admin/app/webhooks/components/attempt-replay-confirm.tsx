@@ -12,11 +12,15 @@ import type { AttemptListItem } from "../webhook-domain";
 export function AttemptReplayConfirm({
   attempt,
   endpointUrl,
+  pending,
+  errorMessage,
   onConfirm,
   onCancel,
 }: {
   attempt: AttemptListItem;
   endpointUrl: string;
+  pending: boolean;
+  errorMessage?: string | undefined;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -33,7 +37,10 @@ export function AttemptReplayConfirm({
         </>
       }
       confirmLabel="Replay"
+      pendingLabel="Replaying…"
       destructive={false}
+      pending={pending}
+      error={errorMessage != null ? `Replay failed: ${errorMessage}` : undefined}
       onConfirm={onConfirm}
       onCancel={onCancel}
     />
