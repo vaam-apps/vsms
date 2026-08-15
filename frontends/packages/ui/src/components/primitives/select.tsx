@@ -87,7 +87,19 @@ export function Select({ value, defaultValue, onValueChange, disabled, children 
   const itemLabel = useMemo(() => (v: string) => findItemLabel(children, v), [children]);
 
   return (
-    <Listbox value={currentValue ?? ""} onChange={handleChange} {...omitUndefined({ disabled })}>
+    // `as="div"` + `relative`: with `SelectContent` no longer portaled
+    // (see its own comment), the options position themselves against this
+    // element. Headless UI's `Listbox` renders a fragment by default, which
+    // would leave `absolute` resolving against whatever ancestor happened
+    // to be positioned — usually the drawer, putting the dropdown in the
+    // wrong place entirely.
+    <Listbox
+      as="div"
+      className="relative"
+      value={currentValue ?? ""}
+      onChange={handleChange}
+      {...omitUndefined({ disabled })}
+    >
       <SelectContext.Provider value={{ value: currentValue, itemLabel }}>
         {children}
       </SelectContext.Provider>
@@ -151,11 +163,49 @@ export function SelectContent({
   useSelectContext("SelectContent");
   return (
     <ListboxOptions
-      anchor="bottom start"
-      transition
+      // `portal={false}` is a correctness fix, not a preference.
+      //
+      // Headless UI's `anchor` prop portals the options into
+      // `#headlessui-portal-root`, a top-level sibling of `<body>`. Inside a
+      // `vaul` drawer that is fatal: vaul's `Content` mounts a Radix
+      // `FocusScope` with `trapped: true`, a document-level `focusin`
+      // listener that force-refocuses back into the drawer the instant
+      // focus lands outside it. The portaled listbox is outside, so its
+      // enter transition stalls mid-flight and it never becomes usable.
+      //
+      // Measured on the live console rather than inferred — opening the
+      // registration status select inside its stacked drawer gave:
+      //
+      //   parentChain     [..., DIV#headlessui-portal-root, BODY]
+      //   insideAnyDrawer false
+      //   opacity         "0"
+      //   pointerEvents   "none"
+      //   rect            [122, 10]   (collapsed, not four options tall)
+      //
+      // — byte-for-byte the signature #274 recorded for a nested Dialog.
+      // #282 fixed that class for `Dialog` and never covered `Select`, so
+      // every select inside a drawer has been silently unusable since.
+      //
+      // Rendering inline keeps the options inside the drawer's own subtree,
+      // so the focus trap contains them instead of fighting them. The cost
+      // is losing `anchor`'s collision detection; `top-full` + `w-full`
+      // below reproduces the same "directly under the trigger, matching its
+      // width" placement, which is what every call site here wants anyway.
+      portal={false}
+      // No `transition`, and no `data-closed:*` classes. Headless UI's
+      // transition machinery holds `data-closed` until it observes the
+      // enter transition finish; inside a drawer it never does. Measured
+      // after the portal fix, 1.4s after opening: `data-closed` and
+      // `data-enter` both still present, `opacity: 0`, on an element that
+      // was otherwise correct (inside the drawer, `pointer-events: auto`,
+      // full 146px height, all four options present).
+      //
+      // That is the same failure mode twice now — #274's nested Dialog was
+      // also a stalled enter transition, not a mispositioned element. A
+      // 100ms fade on a select dropdown is not worth a second component
+      // that silently does not open, so it is gone rather than debugged.
       className={cn(
-        "z-50 max-h-80 min-w-[8rem] overflow-y-auto rounded-md border border-edge bg-surface-2 p-1 shadow-[var(--shadow-popover)] [--anchor-gap:4px] focus:outline-none",
-        "origin-top transition duration-100 ease-out data-closed:scale-95 data-closed:opacity-0",
+        "absolute top-full left-0 z-50 mt-1 max-h-80 w-full min-w-[8rem] overflow-y-auto rounded-md border border-edge bg-surface-2 p-1 shadow-[var(--shadow-popover)] focus:outline-none",
         className,
       )}
     >
