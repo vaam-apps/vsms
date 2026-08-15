@@ -16,8 +16,25 @@
 //! and as `AGENTS.md`'s own `#87` — a check that cannot run before merge is
 //! not a check.
 //!
-//! A path reference is the part of a workflow that *can* be verified
+//! A path reference is the part of such a file that *can* be verified
 //! statically, cheaply, from any branch. So it is.
+//!
+//! # The second instance, which this check's first version missed
+//!
+//! The first version scanned `.github/workflows/**` and nothing else.
+//! `compose.dev.yaml` — what `just demo` runs, the primary local
+//! development entry point — carried **eleven** stale `app/*` and `admin/`
+//! Dockerfile paths from the same #271 restructure, and stayed broken
+//! through seven further merges. It surfaced only when someone actually
+//! ran `just demo` and got `lstat /Users/.../app: no such file or
+//! directory`.
+//!
+//! The lesson is not "add compose files"; it is that the blind spot was
+//! *the scan root*, not the rule. A build-file path reference is
+//! statically checkable wherever it lives, so the roots below cover every
+//! place this repo declares one. `deploy/docker-compose.yml` was already
+//! correct — #271 updated it — which is what made the breakage partial and
+//! easy to miss, exactly as the `demo` matrix entry did for `release.yml`.
 //!
 //! # What is checked
 //!
@@ -43,7 +60,13 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
-const WORKFLOW_DIR: &str = ".github/workflows";
+/// Every place this repo declares a build-file path. Not just workflows:
+/// see the module doc for why limiting the scan root was the actual bug.
+const SCAN_ROOTS: [&str; 2] = [".github/workflows", "deploy"];
+
+/// Compose files at the repo root, which is where `just demo`'s own
+/// `compose.dev.yaml` lives.
+const ROOT_FILES: [&str; 3] = ["compose.yml", "compose.dev.yaml", "compose.demo.yaml"];
 
 /// The keys whose values are real, must-already-exist paths. See the module
 /// doc for why the list is this short.
@@ -64,9 +87,21 @@ fn key_pattern() -> Regex {
 }
 
 pub fn run(root: &Path) -> Result<(), String> {
-    let dir = root.join(WORKFLOW_DIR);
-    if !dir.is_dir() {
-        println!("no {WORKFLOW_DIR} — workflow-path lint vacuously passes");
+    let mut files: Vec<PathBuf> = Vec::new();
+    for r in SCAN_ROOTS {
+        let dir = root.join(r);
+        if dir.is_dir() {
+            files.extend(yaml_files(&dir));
+        }
+    }
+    for f in ROOT_FILES {
+        let p = root.join(f);
+        if p.is_file() {
+            files.push(p);
+        }
+    }
+    if files.is_empty() {
+        println!("no workflow or compose files — path lint vacuously passes");
         return Ok(());
     }
 
@@ -74,7 +109,7 @@ pub fn run(root: &Path) -> Result<(), String> {
     let mut checked = 0usize;
     let mut misses = Vec::new();
 
-    for file in workflow_files(&dir) {
+    for file in files {
         let rel = file
             .strip_prefix(root)
             .unwrap_or(&file)
@@ -101,23 +136,23 @@ pub fn run(root: &Path) -> Result<(), String> {
     }
 
     if misses.is_empty() {
-        println!("workflow paths OK ({checked} checked across {WORKFLOW_DIR})");
+        println!("build-file paths OK ({checked} checked)");
         return Ok(());
     }
 
-    eprintln!("workflow references a path that does not exist:");
+    eprintln!("a workflow or compose file references a path that does not exist:");
     for miss in &misses {
         eprintln!("  {miss}");
     }
     eprintln!();
-    eprintln!("`release` runs only on push to main and on v*.*.* tags, so a pull");
-    eprintln!("request never executes it — a stale path here is invisible until");
-    eprintln!("after it has merged. That is exactly how #271's restructure left");
-    eprintln!("every image build broken across four subsequent merges.");
-    Err(format!("{} missing workflow path(s)", misses.len()))
+    eprintln!("Nothing in CI runs `release` on a pull request, and nothing runs");
+    eprintln!("`just demo` at all — so a stale path in either is invisible until");
+    eprintln!("after it merges. #271's restructure broke every image build for");
+    eprintln!("four merges that way, and `just demo` for seven.");
+    Err(format!("{} missing path(s)", misses.len()))
 }
 
-fn workflow_files(dir: &Path) -> Vec<PathBuf> {
+fn yaml_files(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = fs::read_dir(dir) else {
         return out;
