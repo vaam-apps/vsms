@@ -800,16 +800,42 @@ redesign can silently regress if a screen gets rewritten instead of re-skinned:*
   under Headless UI's own implementation; this needs its own focused manual
   keyboard-nav check in Phase 3, on the Messages-screen state filter
   specifically (the highest-traffic `Select` usage in the product).
-- **`vaul` (Bucket C) and Headless UI `Dialog` (Bucket A) both render into
-  portals and both need a z-index above the `ConsoleShell`'s off-canvas
-  `.drawer-side` (Phase 0)** — a nested case (a `Dialog` confirmation opened
-  from inside a `MoreDetailContent` drawer, e.g. webhook secret rotation's
-  confirm step, §3) needs its z-index layered *above* the drawer that opened it.
-  This wasn't a problem under Radix, which shares a z-index convention with
-  `vaul` already in the existing codebase (`z-50` on both) — Headless UI's
-  `Dialog` needs the same `z-50`-or-higher treatment applied explicitly, it does
-  not inherit one. Phase 1 Bucket A must set this deliberately, and Phase 3 must
-  test the nested case, not just each primitive standalone.
+- **RESOLVED — tested, not just flagged; a z-index fix was not the answer.**
+  This entry originally predicted a z-index layering problem: `vaul` (Bucket
+  C) and Headless UI `Dialog` (Bucket A) both portal, and a `Dialog`
+  confirmation opened from inside a `MoreDetailDrawer` would need its
+  z-index above the drawer's own. That framing was wrong about the actual
+  failure mode, found live while building the Routes/Webhooks/Sender IDs
+  screens: the nested `Dialog` never gets far enough to have a visible
+  z-index problem. `MoreDetailDrawer`/`QuickDetailDrawer` always mount a
+  trapped, document-level `@radix-ui/react-focus-scope` `FocusScope`
+  (`vaul` never forwards its own `modal` prop down to
+  `@radix-ui/react-dialog`'s `Root`, so Radix's default of `true` — and
+  therefore the trap — applies unconditionally, regardless of `dimmed`),
+  and Headless UI's `Dialog` always portals to a *sibling*
+  `#headlessui-portal-root`, outside that trap's container. The trap
+  force-refocuses back into the drawer the instant the nested `Dialog`
+  tries to move focus into itself, permanently stalling its enter
+  transition before it becomes visible at all — a confirmation stuck at
+  `opacity: 0` forever, not a z-index collision. Four primitive-level
+  fixes were tried and all four reproduced the stuck state; re-verified
+  independently on a later pass, live, against the unmodified primitives,
+  with the identical result both times, and with two more directions
+  (`Dialog`'s own `autoFocus` prop; a nested Radix `Dialog` instead of
+  Headless UI's) checked and closed for good — see
+  `frontends/apps/admin/app/gallery/components/nested-dialog-in-drawer-regression.tsx`
+  for the full writeup, including why the Radix alternative is foreclosed
+  by D3 even apart from its own bugs. **The fix is `@vsms/ui`'s
+  `InlineConfirm`** (§1.7, §3) — render the confirmation inline inside the
+  drawer's own DOM subtree instead of nesting a second portaled, trapped
+  overlay. `routes-screen.tsx`, `webhooks-screen.tsx`, `sender-ids-screen.tsx`,
+  `apps-screen.tsx`, and `users-screen.tsx` all use it today (consolidated
+  onto one shared implementation in #290). No further Phase 3 testing is
+  needed for this case; the remaining z-index question (Bucket A's own
+  `Dialog` needing an explicit `z-50`-or-higher, since it doesn't inherit
+  one from Radix's old convention the way `vaul` still shares) applies only
+  to a `Dialog` opened with **no** enclosing drawer, which was never the
+  problem case.
 - **Mobile-first is a real constraint on every screen agent, not just the
   shell** — five of the eighteen routes (Messages, Jobs, Workers, Providers,
   Routes) are dense multi-column tables; §1.6/§1.4's research answers "how does
