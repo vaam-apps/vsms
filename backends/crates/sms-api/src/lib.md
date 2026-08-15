@@ -1,0 +1,26 @@
+The generated `CrateStack` surface for the SMS gateway.
+
+This crate hosts `include_server_schema!` and the hand-written pieces that
+plug into it: the [`AuthProvider`](cratestack::AuthProvider) that turns a
+request into a policy-evaluable identity, and the
+[`ProcedureRegistry`](schema::procedures::ProcedureRegistry) implementation
+behind the seven procedures the schema declares.
+
+# Why the schema lives outside this crate
+
+`include_server_schema!` resolves its path against `CARGO_MANIFEST_DIR`, so
+the conventional layout is to keep the `.cstack` file inside the crate that
+expands it. Here it stays at the repository root next to
+`backends/migrations/`, because three other things already read it — the
+migration diff, `cargo xtask bootstrap-sql`, and (soon) `sms-worker` — and
+splitting the schema from its own migrations to satisfy a macro's default
+path resolution is the wrong trade. Hence the `../../` in the path below.
+
+# `clippy::ptr_arg`
+
+Generated code inside `cratestack_schema` takes `&String` in places clippy
+flags under `-D warnings`. It is generated, not ours to fix, and an outer
+`#[allow]` on the macro invocation does not work — the macro expands to many
+items, so clippy reports the attribute as unused. A crate-level inner
+attribute is the only reliable suppression, and this crate exists to host
+the generated module, so the blast radius is exactly right.
