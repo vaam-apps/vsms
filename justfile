@@ -88,6 +88,7 @@ all-checks: lint test
 	{{_cargo}} xtask no-raw-sqlx
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask workflow-paths
+	{{_cargo}} xtask docs-drift
 	{{_cargo}} xtask r6
 
 # R2: the state diagram and the transition table must agree
@@ -101,6 +102,12 @@ no-raw-sqlx:
 # Every path a workflow names must exist (release.yml never runs on a PR)
 workflow-paths:
 	{{_cargo}} xtask workflow-paths
+
+# Every documentation path a doc, config file or runtime string names must
+# exist. Catches a renamed runbook leaving a Prometheus alert annotation
+# pointing at nothing — see .xtask/src/docs_drift.rs for the incident list.
+docs-drift:
+	{{_cargo}} xtask docs-drift
 # R6: no CSS classes or raw markup in page/*-screen view files
 r6:
 	{{_cargo}} xtask r6
