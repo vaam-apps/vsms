@@ -539,44 +539,30 @@ services:
     # one-command, clone-and-run showcase; tracked as follow-up work, not
     # silently worked around.
     #
-    # **A second, more serious finding, found live and reproduced twice —
-    # not something this file can work around at all, only document.**
-    # Every mutating (POST) tRPC call through this console — the
-    # Composer's own "Send message" included — is rejected with
-    # `cross-origin request rejected: Origin "http://localhost:<port>"
-    # does not match "http://0.0.0.0:8080"` by
-    # `frontends/packages/api/src/context.ts`'s `assertSameOriginForMutations`. The
-    # "expected" side of that check is `new URL(req.url).origin`, and for
-    # this image's compiled `next.config.ts` (`experimental.trustHostHeader:
-    # false`, confirmed by reading the literal compiled config out of
-    # `server.js`, not assumed), that resolves from the server's own bind
-    # `HOSTNAME`/`PORT` — which must be `0.0.0.0:8080` for Docker's own
-    # port-publishing to reach it at all — never from the incoming
-    # `Host`/`X-Forwarded-Host` header. A browser's `Origin` can never
-    # equal that string through any normal navigation (typing `localhost`
-    # or `127.0.0.1`, the only things a browser reliably treats as
-    # connectable), and no reverse proxy in front changes this either,
-    # since the check never reads anything a proxy could set. Confirmed by
-    # elimination, not just read off the source: navigating a second,
-    # differently-configured instance of this exact image straight to
-    # `http://0.0.0.0:<its own port>` (published on the host with the same
-    # internal/external port number, the one condition under which the
-    # strings could ever match) still failed — one step earlier, on cookie
-    # persistence for that literal hostname, before the origin check was
-    # even reached. **This is not specific to this showcase or to
-    # `compose.demo.yaml`'s own design** — it is a property of the
-    # packaged `admin` image itself (`output: "standalone"` plus the
-    # `next.config.ts` default), so `deploy/docker-compose.yml`'s own
-    # Caddy-fronted production stack is very likely affected identically;
-    # nothing about a proxy in front changes which header this check
-    # reads. `frontends/apps/admin/next.config.ts` and `frontends/packages/api/src/context.ts` are
-    # both out of scope for this PR (see its own description), so this is
-    # reported rather than fixed here. `docs/runbooks/showcase.md`
-    # documents the workaround this PR's own verification used — a real
-    # `private_key_jwt` HTTP call with `provision-client`'s own credential
-    # — to still prove a message reaching `delivered`, confirmed in this
-    # same console's read-only Messages screen (GETs are unaffected; the
-    # check only runs `if (req.method !== "POST") return;`).
+    # **A second finding, found live while this file was first written —
+    # fixed since, in #243/#244, not by this file.** At the time, every
+    # mutating (POST) tRPC call through this console — the Composer's own
+    # "Send message" included — was rejected with `cross-origin request
+    # rejected: Origin "http://localhost:<port>" does not match
+    # "http://0.0.0.0:8080"` by `frontends/packages/api/src/context.ts`'s
+    # `assertSameOriginForMutations`. Root cause: the "expected" side of
+    # that check was `new URL(req.url).origin`, which under this image's
+    # `output: "standalone"` runtime resolves from the server's own
+    # `HOSTNAME`/`PORT` bind (`0.0.0.0:8080`, required for Docker's own
+    # port-publishing to reach it) rather than from anything a browser's
+    # `Origin` could ever equal — and, since `next.config.ts`'s
+    # `experimental.trustHostHeader` is `false`, no incoming `Host`/
+    # `X-Forwarded-Host` header changed that either, so no reverse proxy in
+    # front could have masked or fixed it. `#244` re-pinned the check to
+    # `ADMIN_BASE_URL` instead — already the validated, documented "origin a
+    # browser actually reaches" value below, needing no new trust — and
+    # deliberately did *not* switch to trusting `X-Forwarded-Host` (see that
+    # commit's own reasoning, echoing #163: this deployment has more than
+    # one internal caller of the gateway, so there is no single trusted hop
+    # to pin a header-based check to). A pulled `VSMS_IMAGE_TAG` built from
+    # a commit before #244 (2026-08-14) still has the bug; one built after
+    # does not — verified live against a source build of the same image in
+    # this PR.
     environment:
       SMS_API_URL: http://sms-gateway:8080
       SMS_AUTH_ISSUER: http://sms-gateway:8080

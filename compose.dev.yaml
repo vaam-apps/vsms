@@ -20,8 +20,9 @@
 #     GHCR, pinned to a release tag, no source build. The right tool for
 #     "let me see this work" with no Rust/Node toolchain at all.
 #   - `compose.dev.yaml` (this file) — every vsms image **built from this
-#     checkout's own source** (`build:` stanzas, `app/*/Dockerfile` and
-#     `admin/Dockerfile`, all pre-existing and untouched by this file).
+#     checkout's own source** (`build:` stanzas, `backends/apps/*/Dockerfile`
+#     and `frontends/apps/admin/Dockerfile`, all pre-existing and untouched
+#     by this file).
 #     The right tool for "I'm changing this codebase and want to see the
 #     change end to end." `just demo` is this file's own front door — see
 #     the justfile.
@@ -65,8 +66,9 @@
 # Where this file draws "nothing on the host": every *application*
 # process (postgres, migrate, sms-gateway, sms-worker, sms-fake-orange,
 # admin, and every one-shot seed/provision step) runs in a container built
-# from a pinned base image, via the pre-existing `app/*/Dockerfile`/
-# `admin/Dockerfile` this repo already ships. `docker compose` itself, and
+# from a pinned base image, via the pre-existing `backends/apps/*/Dockerfile`/
+# `frontends/apps/admin/Dockerfile` this repo already ships. `docker compose`
+# itself, and
 # the `just demo`/`just demo-down`/`just demo-status` recipes that
 # shell out to it, run on the host — the same accepted exception `cargo
 # xtask` already has (see AGENTS.md's xtask section and this PR's own
@@ -111,7 +113,7 @@ services:
   migrate:
     build:
       context: .
-      dockerfile: app/sms-migrate/Dockerfile
+      dockerfile: backends/apps/sms-migrate/Dockerfile
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
     depends_on:
@@ -127,7 +129,7 @@ services:
   seed-signing-key:
     build:
       context: .
-      dockerfile: app/sms-gateway/Dockerfile
+      dockerfile: backends/apps/sms-gateway/Dockerfile
     # Every `sms-gateway`-image service in this file shares this exact
     # `image:` tag, not just the same `build:` block — found live, not
     # assumed: with each service building its own separately-named image
@@ -159,7 +161,7 @@ services:
   seed-dispatch:
     build:
       context: .
-      dockerfile: app/sms-gateway/Dockerfile
+      dockerfile: backends/apps/sms-gateway/Dockerfile
     image: vsms-dev/sms-gateway:local
     command: ['seed-dispatch']
     environment:
@@ -170,18 +172,20 @@ services:
     restart: 'no'
 
   # The one `App` + approved `SenderId` this file's own demo message needs
-  # to exist before `sendMessage` will accept anything — same command
-  # `compose.demo.yaml` uses, same reasoning (this file has no way to run
-  # `crates/sms-api/examples/send_test_message.rs`'s own fixture-seeding
-  # half inside a container any more than a GHCR-only stack does, since
-  # doing so would mean giving every service in this file a full
-  # workspace build stage just for one example binary).
+  # to exist before `sendMessage` will accept anything. Not an `sms-gateway`
+  # subcommand any more — #258 moved this fixture-seeding logic out of the
+  # production gateway image into its own crate/image, `vsms-demo-seed`
+  # (`backends/apps/vsms-demo-seed/src/main.rs`'s own module doc has the full
+  # reasoning), the same binary `compose.demo.yaml`'s own `seed-demo-app`
+  # service pulls pre-built from GHCR. This file builds it from source
+  # instead, like every other service here. Every flag defaults to what the
+  # old `sms-gateway seed-demo-app` command used (`--app-slug vsms-demo` in
+  # particular, matching `provision-client`'s own `--app-slug` below), so no
+  # `command:` override is needed — only `DATABASE_URL`.
   seed-demo-app:
     build:
       context: .
-      dockerfile: app/sms-gateway/Dockerfile
-    image: vsms-dev/sms-gateway:local
-    command: ['seed-demo-app']
+      dockerfile: backends/apps/vsms-demo-seed/Dockerfile
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
     depends_on:
@@ -206,7 +210,7 @@ services:
   provision-client:
     build:
       context: .
-      dockerfile: app/sms-gateway/Dockerfile
+      dockerfile: backends/apps/sms-gateway/Dockerfile
     image: vsms-dev/sms-gateway:local
     user: '0:0'
     command:
@@ -272,7 +276,7 @@ services:
   seed-console-client:
     build:
       context: .
-      dockerfile: app/sms-gateway/Dockerfile
+      dockerfile: backends/apps/sms-gateway/Dockerfile
     image: vsms-dev/sms-gateway:local
     command:
       - seed-console-client
@@ -295,7 +299,7 @@ services:
   provision-user:
     build:
       context: .
-      dockerfile: app/sms-gateway/Dockerfile
+      dockerfile: backends/apps/sms-gateway/Dockerfile
     image: vsms-dev/sms-gateway:local
     command:
       - provision-user
@@ -319,7 +323,7 @@ services:
   sms-fake-orange:
     build:
       context: .
-      dockerfile: app/sms-fake-orange/Dockerfile
+      dockerfile: backends/apps/sms-fake-orange/Dockerfile
     restart: unless-stopped
     command:
       - --bind-addr
@@ -340,7 +344,7 @@ services:
   sms-gateway:
     build:
       context: .
-      dockerfile: app/sms-gateway/Dockerfile
+      dockerfile: backends/apps/sms-gateway/Dockerfile
     image: vsms-dev/sms-gateway:local
     restart: unless-stopped
     environment:
@@ -404,7 +408,7 @@ services:
   sms-worker:
     build:
       context: .
-      dockerfile: app/sms-worker/Dockerfile
+      dockerfile: backends/apps/sms-worker/Dockerfile
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
@@ -434,7 +438,7 @@ services:
   admin:
     build:
       context: .
-      dockerfile: admin/Dockerfile
+      dockerfile: frontends/apps/admin/Dockerfile
     restart: unless-stopped
     profiles: [console]
     environment:
@@ -451,11 +455,10 @@ services:
       # length: the packaged image's own `next.config.ts` hardcodes
       # `NODE_ENV=production`, which trips @vsms/env's https-only deploy
       # rules for a loopback, no-TLS stack. See that file's own comment for
-      # the full mechanism, including the known cross-origin-write bug this
-      # inherits identically (reads work; POST/PATCH/DELETE from the
-      # browser do not, until `admin/next.config.ts`/
-      # `packages/api/src/context.ts` are fixed — both out of scope for
-      # this PR, same as for `compose.demo.yaml`).
+      # the full mechanism. The cross-origin-write bug that comment also
+      # used to describe (reads work; POST/PATCH/DELETE from the browser
+      # do not) was fixed in #243/#244, ahead of this file's own PR — see
+      # `frontends/packages/api/src/context.ts`'s own module doc.
       SKIP_ENV_VALIDATION: '1'
     volumes:
       - vsms_dev_secrets:/secrets:ro
@@ -465,7 +468,7 @@ services:
     # feed one container's output into a sibling's environment.
     entrypoint: ['/bin/sh', '-c']
     command:
-      - export SMS_CONSOLE_CLIENT_ID="$(cat /secrets/console-client-id)" && exec node admin/server.js
+      - export SMS_CONSOLE_CLIENT_ID="$(cat /secrets/console-client-id)" && exec node frontends/apps/admin/server.js
     depends_on:
       sms-gateway:
         condition: service_healthy

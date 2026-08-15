@@ -76,46 +76,21 @@ otherwise.
 
 ## Send a message and watch it reach a terminal state
 
-**Known issue, found live while writing this runbook, not specific to
-this showcase — see `compose.demo.yaml`'s own comment on the `admin`
-service for the full mechanism.** The Composer's "Send message" button —
-and every other mutating (`PATCH`/`POST`/`DELETE`) action anywhere in this
-console — currently fails with a `cross-origin request rejected` error
-against the *packaged* `admin` image, because that image's compiled
-`next.config.ts` doesn't trust the incoming `Host` header, and the
-computed "expected origin" it compares against can never equal what a
-browser actually sends once the container's own bind address and its
-published/proxied port differ — which they structurally must under
-Docker. This isn't something `compose.demo.yaml` can work around; it
-needs a fix in `frontends/apps/admin/next.config.ts` or `frontends/packages/api/src/context.ts`,
-both out of scope for the PR that added this file. Reads (the Messages
-list, Dashboard, etc.) are unaffected — only writes.
-
-Until that's fixed, prove the pipeline using the same real,
-`private_key_jwt`-authenticated credential `provision-client` already
-minted, the way any external integrator would:
-
-```bash
-# The client id `provision-client` generated (also on this container's own log):
-docker run --rm -v vsms-demo_vsms_demo_secrets:/secrets:ro busybox \
-  cat /secrets/console-client-id
-```
-
-Sign a `private_key_jwt` client assertion with `/secrets/console-client-key.pem`
-(`iss`/`sub` = the client id above, `aud` = `http://sms-gateway:8080` — the
-issuer `sms-gateway` was started with, not the host-published port you
-connect through), exchange it at `POST http://127.0.0.1:8280/token`, then
-`POST http://127.0.0.1:8280/$procs/sendMessage` with `Authorization: Bearer
-<token>` and body `{"args": {"to": "+237677123456", "body": "...",
-"senderId": "VSMS", "class": "transactional"}}`. `backends/apps/sms-gateway/tests/
-provision_client_cli_live_postgres.rs`'s own `sign_client_assertion`/
-`request_token` helpers are the reference implementation of this exact
-exchange. Refresh <http://localhost:3200/messages> and the message shows
-up and moves `accepted → queued → routed → submitted → delivered` within
-a few seconds — the same pipeline [Local development](local-development.md)
-proves, just against `sms-fake-orange` instead of a real Orange sandbox —
-no real SMS is ever sent (`backends/apps/sms-fake-orange/src/main.rs`'s own module
+From the signed-in console, open the Composer and send a message to
+`+237677123456` with any body and an approved sender id. It moves
+`accepted → queued → routed → submitted → delivered` within a few
+seconds on the Messages screen — the same pipeline
+[Local development](local-development.md) proves, just against
+`sms-fake-orange` instead of a real Orange sandbox — no real SMS is
+ever sent (`backends/apps/sms-fake-orange/src/main.rs`'s own module
 doc).
+
+(Every mutating action in the console — the Composer's "Send message"
+included — used to fail here with a `cross-origin request rejected`
+error under a packaged, containerised `admin` image; see `frontends/packages/api/src/context.ts`'s
+module doc for the mechanism and #243/#244 for the fix. A `VSMS_IMAGE_TAG`
+built from a commit before 2026-08-14 still has the bug — pin to a newer
+tag if the Composer's Send button 403s.)
 
 ## Backend-only (no console)
 
