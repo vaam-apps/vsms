@@ -173,8 +173,13 @@ export async function updateRole(
  * bump, rather than hand-rolling the same request a second time.** `Role`
  * also carries `@version` (#59) and, per cratestack 0.7.13
  * (cratestack#519), `DELETE` on a `@version` model now requires
- * `If-Match` — see `rest.ts`'s `deleteResource` doc for the mechanism and
- * its honestly-stated TOCTOU cost. */
-export async function deleteRole(id: string): Promise<void> {
-  return deleteResource(`/roles/${encodeURIComponent(id)}`, "deleteRole");
+ * `If-Match`. Pass `etag` (the row's `WithEtag.etag`, e.g. from
+ * `getRoleById`) when the caller already has it —
+ * `users-screen.tsx`'s `RoleDetailDrawer` always does, from the same `GET`
+ * that populated the edit form — so `deleteResource` sends it directly
+ * with no extra round trip. Omit it and `deleteResource` falls back to a
+ * `GET` first — see `rest.ts`'s `deleteResource` doc for that mechanism
+ * and its honestly-stated TOCTOU cost. */
+export async function deleteRole(id: string, etag?: string): Promise<void> {
+  return deleteResource(`/roles/${encodeURIComponent(id)}`, "deleteRole", etag);
 }

@@ -167,10 +167,15 @@ export async function updateUser(
  * bump, rather than hand-rolling the same request a second time.** `User`
  * also carries `@version` (#59) and, per cratestack 0.7.13
  * (cratestack#519), `DELETE` on a `@version` model now requires
- * `If-Match` — see `rest.ts`'s `deleteResource` doc for the mechanism and
- * its honestly-stated TOCTOU cost. */
-export async function deleteUser(id: string): Promise<void> {
-  return deleteResource(`/users/${encodeURIComponent(id)}`, "deleteUser");
+ * `If-Match`. Pass `etag` (the row's `WithEtag.etag`, e.g. from
+ * `getUserById`) when the caller already has it — `users-screen.tsx`'s
+ * `UserDetailDrawer` always does, from the same `GET` that populated the
+ * edit form — so `deleteResource` sends it directly with no extra round
+ * trip. Omit it and `deleteResource` falls back to a `GET` first — see
+ * `rest.ts`'s `deleteResource` doc for that mechanism and its
+ * honestly-stated TOCTOU cost. */
+export async function deleteUser(id: string, etag?: string): Promise<void> {
+  return deleteResource(`/users/${encodeURIComponent(id)}`, "deleteUser", etag);
 }
 
 export interface ProvisionUserResult {

@@ -65,10 +65,10 @@ export const rolesRouter = router({
   }),
 
   delete: publicProcedure
-    .input(z.object({ id: z.string().min(1) }))
+    .input(z.object({ id: z.string().min(1), etag: z.string().min(1).optional() }))
     .mutation(async ({ ctx, input }) => {
       try {
-        await ctx.gateway.deleteRole(input.id);
+        await ctx.gateway.deleteRole(input.id, input.etag);
         return { ok: true as const };
       } catch (error) {
         rethrowGatewayError(error);

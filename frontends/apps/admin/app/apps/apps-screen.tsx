@@ -426,7 +426,13 @@ function AppDetailDrawer({
             pendingLabel="Deleting…"
             pending={deleteMutation.isPending}
             onCancel={() => setDeleteConfirmOpen(false)}
-            onConfirm={() => deleteMutation.mutate({ id: appId })}
+            onConfirm={() =>
+              // Known-version fast path: `detailQuery.data?.etag` is the
+              // same captured `ETag` `onSubmit`'s own `updateMutation`
+              // call uses above — so `deleteResource` sends it directly
+              // as `If-Match` with no extra `GET` round trip.
+              deleteMutation.mutate({ id: appId, etag: detailQuery.data?.etag })
+            }
           />
         )
       }

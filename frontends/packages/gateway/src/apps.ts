@@ -215,10 +215,13 @@ export async function updateApp(
  * made `DELETE` on a `@version` model require `If-Match` — independent of
  * `@@soft_delete`, per `cratestack-sqlx`'s own `delete_exec.rs` doc
  * comment ("if_match gates on version_column alone ... whether or not it
- * is also soft_delete_column"). This function's own hand-rolled `DELETE`
- * sent none and would 412 against a real gateway; `deleteResource` now
- * acquires the current `ETag` via a `GET` first — see its own doc comment
+ * is also soft_delete_column"). Pass `etag` (the row's `WithEtag.etag`,
+ * e.g. from `getAppById`) when the caller already has it —
+ * `apps-screen.tsx`'s `AppDetailDrawer` always does, from the same `GET`
+ * that populated the edit form — so `deleteResource` sends it directly
+ * with no extra round trip. Omit it and `deleteResource` falls back to
+ * acquiring the current `ETag` via a `GET` first — see its own doc comment
  * for the shape and its honestly-stated TOCTOU cost. */
-export async function deleteApp(id: string): Promise<void> {
-  return deleteResource(`/apps/${encodeURIComponent(id)}`, "deleteApp");
+export async function deleteApp(id: string, etag?: string): Promise<void> {
+  return deleteResource(`/apps/${encodeURIComponent(id)}`, "deleteApp", etag);
 }
