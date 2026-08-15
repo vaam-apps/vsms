@@ -209,10 +209,14 @@ export async function updateRoute(
 }
 
 /** `DELETE /routes/{id}`. `Route` carries `@version` (#59), and as of the
- * cratestack 0.7.16 bump `DELETE` on a `@version` model needs `If-Match`
- * — `rest.ts`'s own `deleteResource` acquires it via a `GET` first now;
- * see its doc comment for the mechanism and its honestly-stated TOCTOU
- * cost. Same reachability caveat as [`createRoute`]. */
-export async function deleteRoute(id: string): Promise<void> {
-  return deleteResource(`/routes/${encodeURIComponent(id)}`, "deleteRoute");
+ * cratestack 0.7.16 bump `DELETE` on a `@version` model needs `If-Match`.
+ * Pass `etag` (the row's `WithEtag.etag` or a plain `String(version)`)
+ * when the caller already has it — `routes-screen.tsx`'s `deleteTarget`
+ * comes straight from `listRoutes`, which already carries `version` — so
+ * `rest.ts`'s `deleteResource` sends it directly with no extra round trip.
+ * Omit it and `deleteResource` falls back to a `GET` first; see its own
+ * doc comment for that mechanism and its honestly-stated TOCTOU cost.
+ * Same reachability caveat as [`createRoute`]. */
+export async function deleteRoute(id: string, etag?: string): Promise<void> {
+  return deleteResource(`/routes/${encodeURIComponent(id)}`, "deleteRoute", etag);
 }

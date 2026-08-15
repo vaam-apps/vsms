@@ -253,7 +253,14 @@ export function RoutesScreen() {
             route={deleteTarget}
             pending={deleteMutation.isPending}
             errorMessage={deleteMutation.error?.message}
-            onConfirm={() => deleteMutation.mutate({ id: deleteTarget.id })}
+            onConfirm={() =>
+              // Known-version fast path: `deleteTarget` already carries
+              // `version` from `listRoutes`, the same synthesized-`ETag`
+              // shape `onSubmit`'s own `updateMutation` call uses above —
+              // so `deleteResource` sends it directly as `If-Match` with
+              // no extra `GET` round trip.
+              deleteMutation.mutate({ id: deleteTarget.id, etag: `"${deleteTarget.version}"` })
+            }
             onCancel={() => setDeleteTargetId(null)}
           />
         ) : (

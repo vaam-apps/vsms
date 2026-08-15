@@ -83,10 +83,10 @@ export const routesRouter = router({
   }),
 
   remove: publicProcedure
-    .input(z.object({ id: z.string().min(1) }))
+    .input(z.object({ id: z.string().min(1), etag: z.string().min(1).optional() }))
     .mutation(async ({ ctx, input }) => {
       try {
-        await ctx.gateway.deleteRoute(input.id);
+        await ctx.gateway.deleteRoute(input.id, input.etag);
         return { id: input.id };
       } catch (error) {
         rethrowGatewayError(error);

@@ -73,10 +73,10 @@ export const webhookEndpointsRouter = router({
   }),
 
   remove: publicProcedure
-    .input(z.object({ id: z.string().min(1) }))
+    .input(z.object({ id: z.string().min(1), etag: z.string().min(1).optional() }))
     .mutation(async ({ ctx, input }) => {
       try {
-        await ctx.gateway.deleteWebhookEndpoint(input.id);
+        await ctx.gateway.deleteWebhookEndpoint(input.id, input.etag);
         return { id: input.id };
       } catch (error) {
         rethrowGatewayError(error);

@@ -348,7 +348,14 @@ export function WebhooksScreen({
             endpoint={deleteTarget}
             pending={deleteMutation.isPending}
             errorMessage={deleteMutation.error?.message}
-            onConfirm={() => deleteMutation.mutate({ id: deleteTarget.id })}
+            onConfirm={() =>
+              // Known-version fast path: `deleteTarget` already carries
+              // `version` from `listWebhookEndpoints`, the same shape
+              // `saveEndpoint`'s own `updateMutation` call uses above — so
+              // `deleteResource` sends it directly as `If-Match` with no
+              // extra `GET` round trip.
+              deleteMutation.mutate({ id: deleteTarget.id, etag: String(deleteTarget.version) })
+            }
             onCancel={() => setDeleteTargetId(null)}
           />
         ) : rotateArmed && panelTarget !== undefined ? (

@@ -284,9 +284,9 @@ export async function postJson<T>(
  * `DELETE <path>` — #54's `Route` delete, and every other model-delete
  * screen built on top of it since.
  *
- * **Fixed for the cratestack 0.7.16 bump: this function now acquires an
- * `ETag` and sends it as `If-Match`.** The doc here used to say the
- * generated delete handler needed no `If-Match` at all
+ * **Fixed for the cratestack 0.7.16 bump: this function now sends an
+ * `ETag` as `If-Match`.** The doc here used to say the generated delete
+ * handler needed no `If-Match` at all
  * (`cratestack-macros-0.7.10/src/axum/model/prep/etag.rs`'s `EtagTokens`
  * only wired `update_if_match_*`/`get_etag_*`, nothing for delete — true
  * at the time, read directly rather than assumed). cratestack 0.7.13
@@ -303,47 +303,64 @@ export async function postJson<T>(
  * a deliberately stale `If-Match` still produces a real `412` — see
  * `AGENTS.md`'s 0.7.16 bump section for both terminal transcripts.
  *
- * **The shape: a `GET` (via `fetchWithEtag`) to capture the row's current
- * `ETag`, then the `DELETE` carrying it as `If-Match`.** Deliberately kept
- * the function's own signature unchanged — every existing call site
- * (`deleteRoute`, `deleteWebhookEndpoint`, …) keeps working with zero
- * changes, no screen touched, nothing to collide with the console
- * redesign in flight under `frontends/apps/admin/`.
+ * **The optional `etag` parameter is the better long-term shape this
+ * function's own doc used to name as future work — it's built now, not
+ * deferred again.** A caller that already holds the row's current
+ * `version`/`ETag` — which every screen does, since it necessarily
+ * rendered the row to offer a delete button in the first place — passes
+ * it straight through: `deleteResource` sends it verbatim as `If-Match`
+ * and skips the internal `GET` entirely, so a known-version delete is a
+ * single round trip with no TOCTOU window at all. `etag` is normalised the
+ * same way [`updateWithIfMatch`]'s own `etag` parameter is (bare or
+ * quoted, either works — see [`normaliseIfMatch`]), so a caller can pass a
+ * captured `WithEtag.etag` verbatim or a plain `String(row.version)`, the
+ * same two shapes `updateRoute`/`updateWebhookEndpoint`/etc. already
+ * accept.
  *
- * **Be honest about what this shape costs.** There is a real TOCTOU
- * window between the `GET` and the `DELETE`: if the row is edited in
- * between (another operator's concurrent `PATCH`), the captured `ETag` is
- * stale and the `DELETE` gets a real `412` — that is `If-Match` doing
- * exactly its job, not a bug, but it does mean this shape can fail a
- * delete that would have succeeded a moment earlier. A caller that
- * already holds the row's current `version` — which every screen does,
- * since it necessarily rendered the row to offer a delete button in the
- * first place — could pass it straight through and skip both the extra
- * round trip and the race entirely. That is the better long-term shape;
- * it needs a signature change (`deleteResource` would need an optional
- * `etag`/`version` parameter) and per-screen wiring under `frontends/apps/admin/`, which
- * is exactly the work the console redesign already in flight should do
- * for Phase 2, not a reason to leave deletes broken today. This function
- * is the interim: it keeps every delete working now, without touching a
- * single screen.
+ * **When `etag` is omitted, this falls back to the original shape: a
+ * `GET` (via `fetchWithEtag`) to capture the row's current `ETag`, then
+ * the `DELETE` carrying it as `If-Match`.** This keeps every caller that
+ * doesn't have a version handy working exactly as before — deliberately
+ * kept as a fallback rather than requiring every call site to be updated
+ * in lockstep, since not every future model-delete screen will
+ * necessarily hold the row's version in state at the point it calls this.
  *
- * A `404` on the `GET` means the row is already gone — nothing to send
- * `If-Match` against — so the `DELETE` below still runs with no `If-Match`
- * header at all, and its own response is what decides the outcome,
- * unchanged from this function's pre-existing behaviour for a row that
- * doesn't exist. A model with no `@version` field (`OptOut`'s own
- * hand-rolled delete, not routed through this function, is the one
+ * **Be honest about what the fallback still costs.** There is a real
+ * TOCTOU window between the `GET` and the `DELETE` in the fallback path:
+ * if the row is edited in between (another operator's concurrent
+ * `PATCH`), the captured `ETag` is stale and the `DELETE` gets a real
+ * `412` — that is `If-Match` doing exactly its job, not a bug, but it
+ * does mean the fallback can fail a delete that would have succeeded a
+ * moment earlier. The known-version path above avoids this entirely; the
+ * fallback exists only for a caller that genuinely has no version to
+ * supply.
+ *
+ * A `404` on the fallback `GET` means the row is already gone — nothing
+ * to send `If-Match` against — so the `DELETE` below still runs with no
+ * `If-Match` header at all, and its own response is what decides the
+ * outcome, unchanged from this function's pre-existing behaviour for a
+ * row that doesn't exist. A model with no `@version` field (`OptOut`'s
+ * own hand-rolled delete, not routed through this function, is the one
  * example today) never has an `ETag` to capture either, so this adds no
  * behaviour there.
  */
 export async function deleteResource(
   path: string,
   routeLabel: string,
+  etag?: string,
   fetcher: Fetcher = undiciFetch,
 ): Promise<void> {
-  const existing = await fetchWithEtag<unknown>(path, routeLabel, fetcher);
-
   const url = restUrl(path);
+
+  let ifMatch: string | undefined;
+  if (etag !== undefined) {
+    ifMatch = normaliseIfMatch(etag);
+  } else {
+    const existing = await fetchWithEtag<unknown>(path, routeLabel, fetcher);
+    if (existing?.etag !== undefined) {
+      ifMatch = normaliseIfMatch(existing.etag);
+    }
+  }
 
   const attempt = async (): Promise<UndiciResponse> => {
     const token = await resolveUpstreamAccessToken();
@@ -351,8 +368,8 @@ export async function deleteResource(
       accept: "application/json",
       authorization: `Bearer ${token}`,
     };
-    if (existing?.etag !== undefined) {
-      headers["if-match"] = normaliseIfMatch(existing.etag);
+    if (ifMatch !== undefined) {
+      headers["if-match"] = ifMatch;
     }
     return fetcher(url, {
       method: "DELETE",

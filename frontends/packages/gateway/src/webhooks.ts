@@ -340,11 +340,20 @@ export async function updateWebhookEndpoint(
 
 /** `DELETE /webhook_endpoints/{id}`. `WebhookEndpoint` carries `@version`
  * (#59), and as of the cratestack 0.7.16 bump `DELETE` on a `@version`
- * model needs `If-Match` — see `rest.ts`'s own doc on [`deleteResource`]
- * for the mechanism it now uses (a `GET` first, to acquire the current
- * `ETag`) and its honestly-stated TOCTOU cost. */
-export async function deleteWebhookEndpoint(id: string): Promise<void> {
-  return deleteResource(`/webhook_endpoints/${encodeURIComponent(id)}`, "deleteWebhookEndpoint");
+ * model needs `If-Match`. Pass `etag` (the row's `WithEtag.etag` or a
+ * plain `String(version)`) when the caller already has it —
+ * `webhooks-screen.tsx`'s `deleteTarget` comes straight from
+ * `listWebhookEndpoints`, which already carries `version` — so `rest.ts`'s
+ * `deleteResource` sends it directly with no extra round trip. Omit it and
+ * `deleteResource` falls back to a `GET` first — see its own doc on
+ * [`deleteResource`] for that mechanism and its honestly-stated TOCTOU
+ * cost. */
+export async function deleteWebhookEndpoint(id: string, etag?: string): Promise<void> {
+  return deleteResource(
+    `/webhook_endpoints/${encodeURIComponent(id)}`,
+    "deleteWebhookEndpoint",
+    etag,
+  );
 }
 
 /**

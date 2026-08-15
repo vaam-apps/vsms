@@ -257,7 +257,13 @@ function UserDetailDrawer({
             pendingLabel="Deleting…"
             pending={deleteMutation.isPending}
             onCancel={() => setDeleteConfirmOpen(false)}
-            onConfirm={() => deleteMutation.mutate({ id: userId })}
+            onConfirm={() =>
+              // Known-version fast path: `detailQuery.data?.etag` is the
+              // same captured `ETag` `onSubmit`'s own `updateMutation`
+              // call uses above — so `deleteResource` sends it directly
+              // as `If-Match` with no extra `GET` round trip.
+              deleteMutation.mutate({ id: userId, etag: detailQuery.data?.etag })
+            }
           />
         )
       }
@@ -397,7 +403,13 @@ function RoleDetailDrawer({
             pendingLabel="Deleting…"
             pending={deleteMutation.isPending}
             onCancel={() => setDeleteConfirmOpen(false)}
-            onConfirm={() => deleteMutation.mutate({ id: roleId })}
+            onConfirm={() =>
+              // Known-version fast path: `detailQuery.data?.etag` is the
+              // same captured `ETag` `onSubmit`'s own `updateMutation`
+              // call uses above — so `deleteResource` sends it directly
+              // as `If-Match` with no extra `GET` round trip.
+              deleteMutation.mutate({ id: roleId, etag: detailQuery.data?.etag })
+            }
           />
         )
       }
