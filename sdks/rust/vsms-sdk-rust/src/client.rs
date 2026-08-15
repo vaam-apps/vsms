@@ -74,11 +74,16 @@ impl VsmsClient {
     /// `base_url`. In every vsms deployment today the two happen to be the
     /// same origin (see `examples/rust/sms-send`'s own `--issuer`), which
     /// is why passing one value for both feels natural here — but they are
-    /// two independent settings, not one. A deployment where the gateway
-    /// is reachable at a different address than its issuer (for example,
-    /// a container reached over one address while its issuer is an
-    /// internal DNS name) must set `issuer` accordingly; `base_url` alone
-    /// cannot redirect where the token exchange goes.
+    /// two independent settings, not one. `base_url` alone cannot redirect
+    /// where the token exchange goes.
+    ///
+    /// For a deployment where the gateway is reachable at a different
+    /// address than its issuer identity (a container reached over one
+    /// address while its issuer is an internal DNS name, say), `base_url`
+    /// still can't help — but [`PrivateKeyJwtConfig::connect_url`] can: it
+    /// overrides the physical wire address `/token` is POSTed to, while
+    /// `issuer` still drives the identity the signed assertion asserts
+    /// (`aud`), matching what the server's own OIDC configuration expects.
     pub fn private_key_jwt(
         base_url: impl Into<String>,
         config: PrivateKeyJwtConfig,
