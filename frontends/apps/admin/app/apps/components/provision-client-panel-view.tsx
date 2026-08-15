@@ -3,7 +3,16 @@
 // the live-verified reason (a nested Headless UI `Dialog` inside an
 // already-open `MoreDetailDrawer` self-dismisses the whole drawer).
 
-import { Button, ChipSelect, Code, FormField, Input, Textarea, toast } from "@vsms/ui";
+import {
+  Button,
+  ChipSelect,
+  Code,
+  FormField,
+  groupLabelId,
+  Input,
+  Textarea,
+  toast,
+} from "@vsms/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import type { ProvisionClientValues } from "../app-forms";
 import { KNOWN_SCOPES, parseScopes, SCOPE_DESCRIPTIONS, serializeScopes } from "../scopes";
@@ -76,6 +85,7 @@ export function ProvisionClientPanelView({
           <FormField
             label="Scopes"
             htmlFor="client-scopes"
+            control="group"
             error={form.formState.errors.scopes?.message}
           >
             <Controller
@@ -83,7 +93,7 @@ export function ProvisionClientPanelView({
               name="scopes"
               render={({ field }) => (
                 <ChipSelect
-                  aria-label="Client scopes"
+                  aria-labelledby={groupLabelId("client-scopes")}
                   value={parseScopes(field.value)}
                   onValueChange={(next) => field.onChange(serializeScopes(next))}
                   options={KNOWN_SCOPES.map((scope) => ({

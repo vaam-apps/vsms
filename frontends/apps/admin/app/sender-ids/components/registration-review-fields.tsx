@@ -1,4 +1,4 @@
-import { FormField, InlineBanner, Input, RadioGroup, Textarea } from "@vsms/ui";
+import { FormField, groupLabelId, InlineBanner, Input, RadioGroup, Textarea } from "@vsms/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import { KNOWN_STATUSES, type RegistrationFormValues } from "../sender-id-domain";
 
@@ -25,6 +25,7 @@ export function RegistrationReviewFields({
       <FormField
         label="Status"
         htmlFor="registration-status"
+        control="group"
         error={form.formState.errors.status?.message}
       >
         <Controller
@@ -32,7 +33,7 @@ export function RegistrationReviewFields({
           name="status"
           render={({ field }) => (
             <RadioGroup
-              aria-label="Registration status"
+              aria-labelledby={groupLabelId("registration-status")}
               value={field.value}
               onValueChange={field.onChange}
               options={KNOWN_STATUSES.map((status) => ({ value: status, label: status }))}

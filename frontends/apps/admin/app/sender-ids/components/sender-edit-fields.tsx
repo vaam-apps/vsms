@@ -1,4 +1,4 @@
-import { FormField, InlineBanner, Input, RadioGroup } from "@vsms/ui";
+import { FormField, groupLabelId, InlineBanner, Input, RadioGroup } from "@vsms/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import {
   SENDER_ID_KIND_HINTS,
@@ -35,13 +35,18 @@ export function SenderEditFields({
           vocabulary could still be *edited* back to free text — which is
           the more dangerous half, since it is the path an operator uses
           repeatedly. */}
-      <FormField label="Kind" htmlFor="sender-kind" error={form.formState.errors.kind?.message}>
+      <FormField
+        label="Kind"
+        htmlFor="sender-kind"
+        control="group"
+        error={form.formState.errors.kind?.message}
+      >
         <Controller
           control={form.control}
           name="kind"
           render={({ field }) => (
             <RadioGroup
-              aria-label="Sender ID kind"
+              aria-labelledby={groupLabelId("sender-kind")}
               value={field.value}
               onValueChange={field.onChange}
               options={SENDER_ID_KINDS.map((kind) => ({

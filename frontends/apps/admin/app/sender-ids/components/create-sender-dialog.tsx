@@ -7,6 +7,7 @@ import {
   DialogHeader,
   DialogTitle,
   FormField,
+  groupLabelId,
   InlineBanner,
   Input,
   RadioGroup,
@@ -74,6 +75,7 @@ export function CreateSenderDialog({
           <FormField
             label="Kind"
             htmlFor="new-sender-kind"
+            control="group"
             error={form.formState.errors.kind?.message}
           >
             <Controller
@@ -81,7 +83,7 @@ export function CreateSenderDialog({
               name="kind"
               render={({ field }) => (
                 <RadioGroup
-                  aria-label="Sender ID kind"
+                  aria-labelledby={groupLabelId("new-sender-kind")}
                   value={field.value}
                   onValueChange={field.onChange}
                   options={SENDER_ID_KINDS.map((kind) => ({

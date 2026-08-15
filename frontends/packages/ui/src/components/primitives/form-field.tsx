@@ -55,14 +55,54 @@ export interface FormFieldProps {
   error?: string | undefined;
   /** Help text rendered between the label and the control. */
   hint?: ReactNode;
+  /**
+   * `"field"` (default) labels a single form control by `htmlFor`.
+   *
+   * `"group"` is for a `RadioGroup`/`ChipSelect`, where the control is a
+   * `role="radiogroup"`/`role="group"` wrapper rather than a labelable
+   * element. HTML's `for` only associates with labelable form controls, so
+   * pointing it at a `<div>` is invalid *and* dangling — which is exactly
+   * what the enum migration shipped: four `<Label for="…">` with no
+   * element carrying that id anywhere, found in review.
+   *
+   * In group mode no `for` is emitted; the label carries
+   * [`groupLabelId(htmlFor)`] instead, and the caller wires the group with
+   * `aria-labelledby={groupLabelId(htmlFor)}`. Both sides derive the id
+   * from the same function so they cannot drift.
+   */
+  control?: "field" | "group";
   children: ReactNode;
   className?: string | undefined;
 }
 
-export function FormField({ label, htmlFor, error, hint, children, className }: FormFieldProps) {
+/** The id a `control="group"` FormField puts on its label, and the value a
+ * grouped control must pass as `aria-labelledby`. One function so the two
+ * sides cannot disagree. */
+export function groupLabelId(htmlFor: string): string {
+  return `${htmlFor}-label`;
+}
+
+export function FormField({
+  label,
+  htmlFor,
+  error,
+  hint,
+  children,
+  className,
+  control = "field",
+}: FormFieldProps) {
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
-      <Label htmlFor={htmlFor}>{label}</Label>
+      {control === "group" ? (
+        // Not a <Label>: with no `for` it would associate with nothing, and
+        // a label wrapping no control is worse than a plain element with an
+        // id the group points back at.
+        <span id={groupLabelId(htmlFor)} className="font-medium text-body text-foreground">
+          {label}
+        </span>
+      ) : (
+        <Label htmlFor={htmlFor}>{label}</Label>
+      )}
       {hint !== undefined && <p className="text-caption text-muted-foreground">{hint}</p>}
       {children}
       {error !== undefined && <FieldError>{error}</FieldError>}
