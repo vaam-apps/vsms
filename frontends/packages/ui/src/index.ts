@@ -22,6 +22,7 @@ export * from "./components/primitives/badge";
 // Primitives
 export * from "./components/primitives/button";
 export * from "./components/primitives/card";
+export * from "./components/primitives/chip-select";
 export * from "./components/primitives/command-menu";
 export * from "./components/primitives/dialog";
 export * from "./components/primitives/drawer";

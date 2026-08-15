@@ -1,6 +1,11 @@
-import { FormField, InlineBanner, Input } from "@vsms/ui";
+import { FormField, groupLabelId, InlineBanner, Input, RadioGroup } from "@vsms/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
-import type { SenderIdFormValues } from "../sender-id-domain";
+import {
+  SENDER_ID_KIND_HINTS,
+  SENDER_ID_KIND_LABELS,
+  SENDER_ID_KINDS,
+  type SenderIdFormValues,
+} from "../sender-id-domain";
 
 // Dumb (R6): the sender id's own edit form fields.
 export function SenderEditFields({
@@ -25,8 +30,33 @@ export function SenderEditFields({
           {...register("value")}
         />
       </FormField>
-      <FormField label="Kind" htmlFor="sender-kind">
-        <Input id="sender-kind" placeholder="e.g. alphanumeric" {...register("kind")} />
+      {/* Same RadioGroup as the create dialog. The enum migration converted
+          create and missed this one, so a sender created from a closed
+          vocabulary could still be *edited* back to free text — which is
+          the more dangerous half, since it is the path an operator uses
+          repeatedly. */}
+      <FormField
+        label="Kind"
+        htmlFor="sender-kind"
+        control="group"
+        error={form.formState.errors.kind?.message}
+      >
+        <Controller
+          control={form.control}
+          name="kind"
+          render={({ field }) => (
+            <RadioGroup
+              aria-labelledby={groupLabelId("sender-kind")}
+              value={field.value}
+              onValueChange={field.onChange}
+              options={SENDER_ID_KINDS.map((kind) => ({
+                value: kind,
+                label: SENDER_ID_KIND_LABELS[kind],
+                description: SENDER_ID_KIND_HINTS[kind],
+              }))}
+            />
+          )}
+        />
       </FormField>
       <FormField label="Notes" htmlFor="sender-notes">
         <Input id="sender-notes" {...register("notes")} />
