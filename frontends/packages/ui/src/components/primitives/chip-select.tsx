@@ -1,8 +1,16 @@
 "use client";
 
 // No `CheckboxGroup` — Headless UI 2.2.10 does not export one (checked,
-// not assumed: `tsc` rejected it). A plain `role="group"` wrapper gives
-// assistive tech the same grouping without inventing a dependency.
+// not assumed: `tsc` rejected it), so the grouping is done here.
+//
+// A `<fieldset>`, not `<div role="group">`. Biome's `a11y/useSemanticElements`
+// is right that the native element beats the ARIA role, and it caught the
+// div in CI after a local `biome check frontends` had passed — CI runs
+// `pnpm biome ci .`, which is not the same command. Run CI's own.
+//
+// `min-w-0` because a `<fieldset>` has a UA `min-width: min-content` that a
+// `<div>` does not, which would otherwise stop the chips wrapping inside a
+// narrow drawer.
 import { Checkbox, Field, Label } from "@headlessui/react";
 import { Check } from "lucide-react";
 import type { ReactNode } from "react";
@@ -54,7 +62,7 @@ export function ChipSelect<T extends string>({
   ...aria
 }: ChipSelectProps<T>) {
   return (
-    <div className={cn("flex flex-wrap gap-2", className)} role="group" {...aria}>
+    <fieldset className={cn("flex min-w-0 flex-wrap gap-2", className)} {...aria}>
       {options.map((option) => {
         const checked = value.includes(option.value);
         return (
@@ -92,6 +100,6 @@ export function ChipSelect<T extends string>({
           </Field>
         );
       })}
-    </div>
+    </fieldset>
   );
 }
