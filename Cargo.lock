@@ -3045,7 +3045,7 @@ dependencies = [
 
 [[package]]
 name = "sms-api"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3083,7 +3083,7 @@ dependencies = [
 
 [[package]]
 name = "sms-auth"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3110,7 +3110,7 @@ dependencies = [
 
 [[package]]
 name = "sms-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "rand 0.8.7",
@@ -3119,14 +3119,14 @@ dependencies = [
 
 [[package]]
 name = "sms-encoding"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "unicode-normalization",
 ]
 
 [[package]]
 name = "sms-fake-orange"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rand 0.8.7",
  "reqwest 0.12.28",
@@ -3138,7 +3138,7 @@ dependencies = [
 
 [[package]]
 name = "sms-fake-orange-bin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -3151,7 +3151,7 @@ dependencies = [
 
 [[package]]
 name = "sms-gateway"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "authkestra-axum",
@@ -3187,14 +3187,14 @@ dependencies = [
 
 [[package]]
 name = "sms-metrics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "prometheus",
 ]
 
 [[package]]
 name = "sms-migrate"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "cratestack-pg",
@@ -3205,14 +3205,14 @@ dependencies = [
 
 [[package]]
 name = "sms-msisdn"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "sms-provider"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3224,7 +3224,7 @@ dependencies = [
 
 [[package]]
 name = "sms-provider-mtn"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3242,7 +3242,7 @@ dependencies = [
 
 [[package]]
 name = "sms-provider-orange-cm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3260,11 +3260,11 @@ dependencies = [
 
 [[package]]
 name = "sms-routing"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "sms-test-support"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cratestack-pg",
  "rustls",
@@ -3273,7 +3273,7 @@ dependencies = [
 
 [[package]]
 name = "sms-webhook"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "hmac",
@@ -3284,7 +3284,7 @@ dependencies = [
 
 [[package]]
 name = "sms-worker"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
@@ -3318,7 +3318,7 @@ dependencies = [
 
 [[package]]
 name = "sms-worker-bin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4024,7 +4024,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vsms-demo-seed"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4499,7 +4499,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "regex",
 ]
