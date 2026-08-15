@@ -1,6 +1,6 @@
 {
   "name": "@vymalo/vsms-node",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Official Node.js SDK for vsms: owns the private_key_jwt credential lifecycle so integrators stop hand-rolling token acquisition.",
   "license": "MIT",
   "repository": {

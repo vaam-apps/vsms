@@ -145,10 +145,20 @@ jobs:
       - name: Cargo.lock is up to date
         run: cargo metadata --locked --format-version 1 > /dev/null
 
-      # The Rust SDK is a standalone package intended for crates.io publishing
+      # The Rust SDK is a standalone package intended for crates.io publishing.
+      #
+      # `--locked` is load-bearing, not decoration. This package is excluded
+      # from the root workspace, so it has its own `sdks/rust/Cargo.lock`
+      # that the root job's own "Cargo.lock is up to date"
+      # (`cargo metadata --locked`) step never sees. Bumping the SDK's
+      # version for v0.2.1 left that lock still pinning 0.2.0, and every
+      # command here would have silently rewritten it and passed —
+      # a committed lockfile disagreeing with its own manifest, with no
+      # check anywhere positioned to notice. Found by a review bot, not by
+      # CI, which is the point.
       - name: Rust SDK (vsms-sdk-rust) — cargo check, clippy, test, and dry-run
         run: |
-          cargo check --all-targets
+          cargo check --locked --all-targets
           cargo clippy --all-targets -- -D warnings
           cargo test
           if cargo tree -i aws-lc-rs; then exit 1; fi
@@ -374,12 +384,29 @@ jobs:
       # `ERR_PNPM_IGNORED_BUILDS` before running a single test. A local
       # `pnpm-workspace.yaml` beside the package does not help either — the
       # flag ignores that too. Verified both, rather than reasoned about.
-      - name: Official Node SDK (@vymalo/vsms-node) — test, typecheck and dry-run publish
+      # `npm pack --dry-run`, NOT `npm publish --dry-run`. The publish form
+      # contacts the registry and refuses when the version already exists:
+      #
+      #   npm error You cannot publish over the previously published versions: 0.2.0.
+      #
+      # which is the *steady state* between a release and the next version
+      # bump, not a defect — so it turned `main` red the moment
+      # @vymalo/vsms-node@0.2.0 was published, and would do so after every
+      # single release. `npm pack --dry-run` validates the same packaging
+      # (files list, package.json shape) without asserting the version is
+      # unpublished, which is the only part of that check CI actually wants.
+      #
+      # Checked rather than assumed that the Rust side needs no equivalent
+      # change: `cargo publish --dry-run` packages, verifies the crate
+      # builds from the packaged source, and aborts before upload — it
+      # never asks crates.io whether the version exists. Run locally
+      # against the already-published 0.2.0, it exits 0.
+      - name: Official Node SDK (@vymalo/vsms-node) — test, typecheck and pack validation
         run: |
           pnpm --filter @vymalo/vsms-node run build
           pnpm --filter @vymalo/vsms-node run typecheck
           node --test
-          npm publish --provenance --dry-run
+          npm pack --dry-run
         working-directory: sdks/node/vsms-sdk-node
 
   rules:
