@@ -94,7 +94,9 @@ fn help_text() -> &'static str {
      sdk-schema-vendor     refresh the vendored SDK schema copy\n  \
      cratestack-pin         print the pinned cratestack version from Cargo.toml\n  \
      migrations-current    fail if 0001_init has drifted from `cratestack migrate diff`\n  \
-     workflow-paths        fail if a workflow names a path that does not exist"
+     workflow-paths        fail if a workflow names a path that does not exist\n  \
+     docs-drift            fail if a doc, config or string names a missing path\n  \
+     docs-pdf              merge the docs into one PDF book (pandoc + Typst, needs docker)"
 }
 
 /// The directory containing this crate's own `Cargo.toml`'s parent — i.e.
