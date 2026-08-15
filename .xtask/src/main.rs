@@ -20,6 +20,7 @@
 mod bootstrap_sql;
 mod cratestack_pin;
 mod diff;
+mod docs_drift;
 mod docs_pdf;
 mod migrations_current;
 mod parity;
@@ -41,6 +42,7 @@ fn main() -> ExitCode {
         "no-raw-sqlx" => raw_sqlx::run(&root),
         "parity" => parity::run(&root),
         "docs-pdf" => docs_pdf::run(&root),
+        "docs-drift" => docs_drift::run(&root),
         "workflow-paths" => workflow_paths::run(&root),
         "r6" => r6_ui_layers::run(&root),
         "bootstrap-sql" => {
