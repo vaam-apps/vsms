@@ -3,9 +3,10 @@
 // the live-verified reason (a nested Headless UI `Dialog` inside an
 // already-open `MoreDetailDrawer` self-dismisses the whole drawer).
 
-import { Button, Code, FormField, Input, Textarea, toast } from "@vsms/ui";
-import type { UseFormReturn } from "react-hook-form";
+import { Button, ChipSelect, Code, FormField, Input, Textarea, toast } from "@vsms/ui";
+import { Controller, type UseFormReturn } from "react-hook-form";
 import type { ProvisionClientValues } from "../app-forms";
+import { KNOWN_SCOPES, parseScopes, SCOPE_DESCRIPTIONS, serializeScopes } from "../scopes";
 import { ErrorBanner } from "./error-banner";
 
 export interface ProvisionedClientKey {
@@ -66,21 +67,33 @@ export function ProvisionClientPanelView({
               {...form.register("label")}
             />
           </FormField>
+          {/* Chips over the real vocabulary, not a space-separated text box.
+              Before this an operator had to already know both that scopes
+              are space-delimited *and* what the fourteen valid strings
+              are, with a typo silently producing a client that is denied
+              at Layer 2 with no hint why. See `../scopes.ts` for how that
+              list was derived from what the server actually enforces. */}
           <FormField
-            label="Scopes (space-separated)"
+            label="Scopes"
             htmlFor="client-scopes"
             error={form.formState.errors.scopes?.message}
           >
-            <Input
-              id="client-scopes"
-              aria-invalid={form.formState.errors.scopes != null}
-              {...form.register("scopes")}
+            <Controller
+              control={form.control}
+              name="scopes"
+              render={({ field }) => (
+                <ChipSelect
+                  aria-label="Client scopes"
+                  value={parseScopes(field.value)}
+                  onValueChange={(next) => field.onChange(serializeScopes(next))}
+                  options={KNOWN_SCOPES.map((scope) => ({
+                    value: scope,
+                    label: scope,
+                    description: SCOPE_DESCRIPTIONS[scope],
+                  }))}
+                />
+              )}
             />
-            {form.formState.errors.scopes == null && (
-              <p className="text-caption text-subtle-foreground">
-                e.g. <span className="font-mono">sms:send sms:read</span>
-              </p>
-            )}
           </FormField>
           {isError && <ErrorBanner>{errorMessage}</ErrorBanner>}
 
