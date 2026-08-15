@@ -190,22 +190,57 @@ client-check: client-gen
 # "reset the database on every up" behaviour — a full volume wipe rather
 # than a targeted `DROP DATABASE`/`CREATE DATABASE`.
 #
-# `COMPOSE_PARALLEL_LIMIT=1` on the build specifically — found live, not
-# assumed: every `app/*/Dockerfile` builder stage deliberately shares one
-# BuildKit cache-mount id (`cargo-registry-musl`) across sms-gateway/
-# sms-worker/sms-fake-orange/sms-migrate, "so building any one warms the
-# cache for the other three" (their own comment). That's true for
-# *sequential* builds; building all of them for the first time in one
-# `docker compose build` invocation races several `cargo` processes
-# extracting into the *same* registry cache directory concurrently, and
-# reproduced a real failure twice in a row (`failed to unpack package
-# ...: File exists (os error 17)`) before this line was added — gone
-# entirely once builds were forced sequential. A cache already warmed by
-# a previous `just demo` doesn't hit this (nothing new to extract), so
-# this mainly costs time on the very first run.
+# The build step is forced strictly sequential, one distinct image at a
+# time — found live, not assumed: every `app/*/Dockerfile` builder stage
+# deliberately shares one BuildKit cache-mount id (`cargo-registry-musl`)
+# across sms-gateway/sms-worker/sms-fake-orange/sms-migrate, "so building
+# any one warms the cache for the other three" (their own comment).
+# That's true for *sequential* builds; building more than one for the
+# first time at once races several `cargo` processes extracting into the
+# *same* registry cache directory concurrently and reproduces a real,
+# non-deterministic failure (`failed to unpack package <whichever crate
+# lost the race>: File exists (os error 17)`) — seen on at least two
+# separate machines, a different crate each time (`pem`, then `pkcs1`).
+#
+# `COMPOSE_PARALLEL_LIMIT=1` alone was the original fix and stopped being
+# reliable the moment a machine's Docker Compose defaults `build` to
+# `buildx bake` (Compose >=2.x with a recent buildx): bake fans every
+# target out into one concurrent invocation regardless of that env var,
+# which only ever throttled the legacy per-service build loop. Confirmed
+# live: the race reproduced again with `COMPOSE_PARALLEL_LIMIT=1` set
+# exactly as before, and `COMPOSE_BAKE=false` on its own wasn't
+# sufficient either (a single `build` invocation with both env vars set
+# still launched multiple images' `cargo build`s concurrently). What
+# actually serializes it, on every toolchain: genuinely separate,
+# blocking `docker compose build <service>` invocations, one at a time —
+# so below.
+#
+# Six loop entries, not all fourteen `--profile console` services: the
+# other eight (`provision-client`, `provision-user`, `seed-console-client`,
+# `seed-dispatch`, `seed-signing-key`, plus non-building services) either
+# share `sms-gateway`'s own explicit `image: vsms-dev/sms-gateway:local`
+# tag (building `sms-gateway` once already produces the image every one
+# of those needs — confirmed via `docker compose ... config --format
+# json`) or build nothing at all. This list can drift if a *new*, image-
+# distinct build target is ever added to `compose.dev.yaml` without a
+# matching entry here — re-derive it with the `config --format json`
+# query above if a build ever silently skips a service's own image.
+#
+# `down -v` first, every time — not just on request: `provision-client`
+# (inside `compose.dev.yaml`) refuses to overwrite an existing private
+# key, so a second `up` against the same named volumes would otherwise
+# fail loudly on that step rather than silently reusing stale credentials.
+# This is the compose-native equivalent of `scripts/demo.sh`'s own former
+# "reset the database on every up" behaviour — a full volume wipe rather
+# than a targeted `DROP DATABASE`/`CREATE DATABASE`. Note `down -v` wipes
+# named *volumes* only, not the BuildKit cache — a cache already warmed
+# by a previous `just demo` doesn't hit the race above (nothing new to
+# extract), so this mainly costs time on the very first run.
 demo:
 	docker compose -f compose.dev.yaml --profile console down -v --remove-orphans
-	COMPOSE_PARALLEL_LIMIT=1 docker compose -f compose.dev.yaml --profile console build
+	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-worker admin; do \
+		COMPOSE_BAKE=false docker compose -f compose.dev.yaml --profile console build "$svc"; \
+	done
 	docker compose -f compose.dev.yaml --profile console up -d --wait
 
 # Stop everything `just demo` started and remove its volumes (scratch
