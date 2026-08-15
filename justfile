@@ -88,6 +88,7 @@ all-checks: lint test
 	{{_cargo}} xtask no-raw-sqlx
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask workflow-paths
+	{{_cargo}} xtask docs-drift
 	{{_cargo}} xtask r6
 
 # R2: the state diagram and the transition table must agree
@@ -101,6 +102,12 @@ no-raw-sqlx:
 # Every path a workflow names must exist (release.yml never runs on a PR)
 workflow-paths:
 	{{_cargo}} xtask workflow-paths
+
+# Every documentation path a doc, config file or runtime string names must
+# exist. Catches a renamed runbook leaving a Prometheus alert annotation
+# pointing at nothing — see .xtask/src/docs_drift.rs for the incident list.
+docs-drift:
+	{{_cargo}} xtask docs-drift
 # R6: no CSS classes or raw markup in page/*-screen view files
 r6:
 	{{_cargo}} xtask r6
@@ -133,6 +140,13 @@ schema-check:
 	DATABASE_URL=postgres://localhost/vsms_check {{_cargo}} run -q -p sms-migrate
 	psql postgres://localhost/vsms_check -v ON_ERROR_STOP=1 -f ci/test-state-machine.sql
 	dropdb vsms_check
+
+# Merge docs/architecture.md, the runbooks, CONTRIBUTING.md and friends into
+# one PDF book. pandoc + Typst both run inside a single pinned container
+# image (never installed on the host) — needs `docker`, nothing else. See
+# `.xtask/src/docs_pdf.rs` for the pipeline and its own design notes.
+docs-pdf:
+	{{_cargo}} xtask docs-pdf
 
 # Regenerate 0002_bootstrap from §2.10 of the design doc
 bootstrap-sql:

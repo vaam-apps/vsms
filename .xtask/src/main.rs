@@ -20,6 +20,8 @@
 mod bootstrap_sql;
 mod cratestack_pin;
 mod diff;
+mod docs_drift;
+mod docs_pdf;
 mod migrations_current;
 mod parity;
 mod r6_ui_layers;
@@ -39,6 +41,8 @@ fn main() -> ExitCode {
     let result = match cmd.as_str() {
         "no-raw-sqlx" => raw_sqlx::run(&root),
         "parity" => parity::run(&root),
+        "docs-pdf" => docs_pdf::run(&root),
+        "docs-drift" => docs_drift::run(&root),
         "workflow-paths" => workflow_paths::run(&root),
         "r6" => r6_ui_layers::run(&root),
         "bootstrap-sql" => {
@@ -90,7 +94,9 @@ fn help_text() -> &'static str {
      sdk-schema-vendor     refresh the vendored SDK schema copy\n  \
      cratestack-pin         print the pinned cratestack version from Cargo.toml\n  \
      migrations-current    fail if 0001_init has drifted from `cratestack migrate diff`\n  \
-     workflow-paths        fail if a workflow names a path that does not exist"
+     workflow-paths        fail if a workflow names a path that does not exist\n  \
+     docs-drift            fail if a doc, config or string names a missing path\n  \
+     docs-pdf              merge the docs into one PDF book (pandoc + Typst, needs docker)"
 }
 
 /// The directory containing this crate's own `Cargo.toml`'s parent — i.e.
