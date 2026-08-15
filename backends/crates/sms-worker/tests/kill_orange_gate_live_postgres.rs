@@ -3,11 +3,11 @@
 //! cleanly, nothing double-sends, and the circuit breaker reopens when
 //! Orange returns."
 //!
-//! Same split as `docs/runbooks/36-handset-gate.md` (M2's own gate, cited
+//! Same split as `docs/runbooks/36-handset-gate.adoc` (M2's own gate, cited
 //! by AGENTS.md as the model to follow): the automatable half is proven
 //! here, rigorously, against real processes; the half that genuinely needs
 //! a real staging deployment and a real Orange/aggregator account is
-//! `docs/runbooks/65-kill-orange-gate.md`. Which is which is stated
+//! `docs/runbooks/65-kill-orange-gate.adoc`. Which is which is stated
 //! plainly in both places — this suite proves the *mechanism* (routing,
 //! failover, the circuit breaker) holds under a real transport-level
 //! outage; it cannot prove Orange's real failure modes match what's

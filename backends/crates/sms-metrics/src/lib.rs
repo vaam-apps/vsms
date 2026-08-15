@@ -25,7 +25,7 @@ pub static SM001_TOTAL: LazyLock<IntCounterVec> = LazyLock::new(|| {
             "Illegal state-transition rejections (Postgres SQLSTATE SM001) observed by this \
              process, by entity and from/to state. Flat zero in a correct system — any non-zero \
              rate means application code proposed a transition the database's own guard trigger \
-             refused; see docs/runbooks/alerting.md.",
+             refused; see docs/runbooks/alerting.adoc.",
         ),
         &["entity", "from_state", "to_state"],
     )
@@ -47,7 +47,7 @@ pub static SINGLETON_LEASE_HELD: LazyLock<IntGaugeVec> = LazyLock::new(|| {
             "1 if this process currently holds this singleton role's advisory-lock lease, 0 \
              while configured for the role but standing by. A role with no non-zero series and \
              no series at all anywhere means it is unheld cluster-wide; see \
-             docs/runbooks/alerting.md.",
+             docs/runbooks/alerting.adoc.",
         ),
         &["role"],
     )

@@ -1,7 +1,7 @@
 //! The automatable half of [#36](https://github.com/vymalo/vsms/issues/36):
 //! `kill -9` a *real* `sms-worker` process mid-submit and prove the message
 //! is neither lost nor stuck — a second, independent process reclaims and
-//! resubmits it. `docs/runbooks/36-handset-gate.md` covers the other half
+//! resubmits it. `docs/runbooks/36-handset-gate.adoc` covers the other half
 //! (a real Orange handset), which stays permanently manual — no amount of
 //! mocking proves a real SMS arrived. But "crash mid-submit, reclaim
 //! without loss" needs no real Orange account, and #36's own text is the
@@ -502,7 +502,7 @@ async fn kill_9_mid_submit_reclaims_and_resubmits_without_losing_the_message() {
     // between "Orange accepts the request" and "we write the outcome" can
     // and does produce two real outbound submissions — nothing today gives
     // Orange a dedup key, and `providerMessageRef` has no uniqueness
-    // constraint at the DB level either (see docs/runbooks/36-handset-gate.md
+    // constraint at the DB level either (see docs/runbooks/36-handset-gate.adoc
     // and this repo's tracked follow-up for real provider-side or
     // application-level submit idempotency). If this assertion ever
     // becomes 1, that's this gap having been closed, not a regression.

@@ -1,7 +1,7 @@
 # #70/#71: the five alert conditions #70's own issue text names, each
 # backed by a real metric — see backends/crates/sms-metrics/src/lib.rs's own module
 # doc for what each metric measures and why it's shaped the way it is, and
-# docs/runbooks/alerting.md for what an operator does when one of these
+# docs/runbooks/alerting.adoc for what an operator does when one of these
 # fires. This is the honest deliverable #70 asked for: the metrics and the
 # rules that would fire, not a bespoke in-process alerting engine — nothing
 # in this repository can page anyone, and this file's only job is to be
@@ -32,7 +32,7 @@ groups:
             to={{ $labels.to_state }}). The database's own transition-table
             guard trigger is a backstop, not a control path — this means
             application logic and the state machine have drifted. See
-            docs/runbooks/alerting.md#sm001.
+            docs/runbooks/alerting.adoc#sm001.
 
   - name: vsms-singleton-roles
     rules:
@@ -65,7 +65,7 @@ groups:
           description: >-
             Nothing has claimed the dispatch advisory lock for at least
             30s. Messages are not being submitted to any provider. See
-            docs/runbooks/alerting.md#singleton-unheld.
+            docs/runbooks/alerting.adoc#singleton-unheld.
       - alert: SMSDrainSingletonUnheld
         expr: >-
           (sum(sms_worker_singleton_lease_held{role="drain"}) == 0)
@@ -79,7 +79,7 @@ groups:
             Nothing has claimed the drain advisory lock for at least 30s.
             Webhook outbox events are only being delivered by writers' own
             automatic post-commit drain, not retried on a timer. See
-            docs/runbooks/alerting.md#singleton-unheld.
+            docs/runbooks/alerting.adoc#singleton-unheld.
       - alert: SMSSchedulerSingletonUnheld
         expr: >-
           (sum(sms_worker_singleton_lease_held{role="scheduler"}) == 0)
@@ -94,7 +94,7 @@ groups:
             30s. Recurring jobs (expire_stale, reap_outbox) are not being
             enqueued. Lower severity than dispatch/drain: nothing already
             enqueued is lost, only delayed until the lock is next held.
-            See docs/runbooks/alerting.md#singleton-unheld.
+            See docs/runbooks/alerting.adoc#singleton-unheld.
 
   - name: vsms-dispatch-concurrency
     rules:
@@ -117,7 +117,7 @@ groups:
             for at least a minute. dispatch is a singleton role — this
             means two processes both believe they hold its lease, which
             risks doubled sends and a provider account block. See
-            docs/runbooks/alerting.md#concurrent-dispatch.
+            docs/runbooks/alerting.adoc#concurrent-dispatch.
 
   - name: vsms-webhook-outbox
     rules:
@@ -143,7 +143,7 @@ groups:
             waiting past drain's own 2-minute stalled threshold (or no
             process is reporting this metric at all, meaning drain is
             unheld — see the SMSDrainSingletonUnheld alert). See
-            docs/runbooks/alerting.md#outbox-stalled.
+            docs/runbooks/alerting.adoc#outbox-stalled.
 
   - name: vsms-event-outbox
     rules:
@@ -165,7 +165,7 @@ groups:
             in place for diagnosis, not deleted — see the per-row warn!
             logs on whichever sms-worker instance last ran reap_outbox for
             model/operation/last_error. See
-            docs/runbooks/alerting.md#poison-rows.
+            docs/runbooks/alerting.adoc#poison-rows.
 
   - name: vsms-grey-route-detection
     rules:
@@ -196,13 +196,13 @@ groups:
             {{ $value }} route pair(s) flagged as divergent on the most
             recent grey_route_watch run. This is a proxy for a possible
             grey route (Article 48 identity substitution) — it is not
-            confirmation. See docs/runbooks/grey-route-validation.md to
+            confirmation. See docs/runbooks/grey-route-validation.adoc to
             confirm with a real handset.
       # #64's other half: "monthly handset validation per route." This
       # metric knows nothing about whether a route is actually healthy —
       # only whether the one thing that could tell you (a human, a real
       # handset) has happened recently enough to trust. See
-      # docs/runbooks/grey-route-validation.md's own closing section.
+      # docs/runbooks/grey-route-validation.adoc's own closing section.
       - alert: SMSRouteValidationOverdue
         expr: sum(sms_route_validation_overdue) > 0
         for: 5m
@@ -213,4 +213,4 @@ groups:
           description: >-
             {{ $value }} enabled route(s) have no RouteValidation row in
             the last 30 days, per the most recent grey_route_watch run.
-            See docs/runbooks/grey-route-validation.md.
+            See docs/runbooks/grey-route-validation.adoc.

@@ -113,7 +113,7 @@ pub fn read_marker_note(client: &mut Client, marker_id: &str) -> Result<Option<S
 /// a different database), and works against a managed Postgres where the
 /// application's own role can never hold `DROP DATABASE` — an honest
 /// stand-in for "destroy the database," documented at length in
-/// `docs/runbooks/backup-restore.md`.
+/// `docs/runbooks/backup-restore.adoc`.
 pub fn destroy_public_schema(client: &mut Client) -> Result<()> {
     client
         .batch_execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public;")

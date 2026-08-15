@@ -48,7 +48,7 @@ enum Command {
         /// itself is: `deploy/Caddyfile`'s blanket `reverse_proxy
         /// sms-gateway:8080` never reaches this port at all, since it's a
         /// different port entirely — see `sms_api::metrics`'s own module
-        /// doc for the full reasoning and `docs/runbooks/alerting.md` for
+        /// doc for the full reasoning and `docs/runbooks/alerting.adoc` for
         /// how an operator points a real Prometheus at it.
         #[arg(
             long,
@@ -490,7 +490,7 @@ enum Command {
     },
     /// Records the result of a monthly handset check — #64's own "the
     /// structure that records validations," the CLI half of
-    /// `docs/runbooks/grey-route-validation.md`. Writes a `RouteValidation`
+    /// `docs/runbooks/grey-route-validation.adoc`. Writes a `RouteValidation`
     /// row exactly once per invocation; there is no update path (see
     /// `schema.cstack`'s own comment on `RouteValidation` for why it's
     /// append-only), so a mistaken entry needs a fresh, corrected run of
@@ -1734,7 +1734,7 @@ async fn record_route_validation_command(command: Command) -> Result<()> {
     if expected_sender_id != observed_sender_id {
         println!(
             "  WARNING: observed sender id does not match expected — this is §6.4's own named \
-             grey-route symptom. See docs/runbooks/grey-route-validation.md for next steps."
+             grey-route symptom. See docs/runbooks/grey-route-validation.adoc for next steps."
         );
     }
     Ok(())

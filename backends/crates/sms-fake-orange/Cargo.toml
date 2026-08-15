@@ -1,6 +1,6 @@
 [package]
 name = "sms-fake-orange"
-description = "A fault-injecting fake of Orange Cameroon's SMS HTTP API — a participant in the send/DLR lifecycle (inbound stubbing, an autonomous DLR scheduler, a request ledger), not a response stub. Dev/test-only: fuzzes the message state machine for invariant violations from backends/crates/sms-worker's chaos suite, and backs the standalone backends/apps/sms-fake-orange demo process. Does not, and cannot, close #36 — see docs/runbooks/36-handset-gate.md."
+description = "A fault-injecting fake of Orange Cameroon's SMS HTTP API — a participant in the send/DLR lifecycle (inbound stubbing, an autonomous DLR scheduler, a request ledger), not a response stub. Dev/test-only: fuzzes the message state machine for invariant violations from backends/crates/sms-worker's chaos suite, and backs the standalone backends/apps/sms-fake-orange demo process. Does not, and cannot, close #36 — see docs/runbooks/36-handset-gate.adoc."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

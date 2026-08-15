@@ -28,5 +28,5 @@ replacement for them: a request id ties together everything logged
 *within* this one process for *this* request; `message_id` is what
 survives into `sms-worker`'s dispatch and the DLR ingestion path,
 neither of which shares this process or this request. See
-`docs/runbooks/alerting.md`'s own "Correlating a message end to end"
+`docs/runbooks/alerting.adoc`'s own "Correlating a message end to end"
 section for the worked example joining both.

@@ -9,7 +9,7 @@
 # This image did not exist before the GHCR-only showcase compose stack
 # (`compose.demo.yaml`) needed it: nothing in `.github/workflows/release.yml`
 # built or published it, because every other consumer (`scripts/demo.sh`,
-# `docs/runbooks/getting-started.md` step 6) runs it as a host binary via
+# `docs/runbooks/getting-started.adoc` step 6) runs it as a host binary via
 # `cargo run`. A GHCR-only compose file has no `build:` stanza to fall back
 # on, so this binary needs a real published image the same as the other
 # four — see this Dockerfile's sibling comment in

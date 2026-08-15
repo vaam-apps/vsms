@@ -1,7 +1,7 @@
 A fault-injecting fake of Orange Cameroon's SMS HTTP API.
 
 Built to fuzz `vsms`'s message state machine for invariant violations —
-the automatable complement to `docs/runbooks/36-handset-gate.md`, not a
+the automatable complement to `docs/runbooks/36-handset-gate.adoc`, not a
 replacement for it. **This crate cannot close #36**: it cannot tell you
 Orange's real DLR payload shape, whether `receiptRequest` is genuinely
 honoured, or whether a handset ever buzzes. What it buys is a permanent
