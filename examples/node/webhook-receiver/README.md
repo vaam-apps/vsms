@@ -115,7 +115,7 @@ src/
 ## Running it
 
 Requires Node with native TypeScript support unflagged (Node ≥23.6; this
-repo's own `.nvmrc` pins Node 24, which has it — no `ts-node`/`tsx`
+repo's own `.nvmrc` pins Node 26, which has it — no `ts-node`/`tsx`
 dependency needed).
 
 ```bash

@@ -1,10 +1,10 @@
 #![doc = include_str!("password.md")]
 
+use argon2::Argon2;
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use argon2::Argon2;
-use rand::distributions::Alphanumeric;
 use rand::Rng;
+use rand::distributions::Alphanumeric;
 
 /// Hash `password` with Argon2id, using the crate's own recommended default
 /// parameters (19 MiB memory, 2 iterations, 1 lane — OWASP's own minimum

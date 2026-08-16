@@ -25,13 +25,13 @@ pub mod webhooks;
 pub mod worker_locks;
 pub mod worker_roles;
 
-pub use auth::{GatewayAuth, Principal, PrincipalKind, DEFAULT_CONSOLE_CLIENT_ID};
+pub use auth::{DEFAULT_CONSOLE_CLIENT_ID, GatewayAuth, Principal, PrincipalKind};
 pub use errors::{is_illegal_transition, map_database_error};
-pub use pepper::{hmac_sha256_hex, HashPepper, PepperError};
+pub use pepper::{HashPepper, PepperError, hmac_sha256_hex};
 pub use procedures::Procedures;
 pub use rbac::require_permission;
 pub use router::{
-    default_rate_limit_config, default_source_rate_limit_config, route_table, router,
-    DEFAULT_IDEMPOTENCY_TTL,
+    DEFAULT_IDEMPOTENCY_TTL, default_rate_limit_config, default_source_rate_limit_config,
+    route_table, router,
 };
 pub use webhooks::register_subscribers;

@@ -184,37 +184,37 @@ fn failing_predicate(
     route: &RouteRow,
     candidate: &RoutingCandidate<'_>,
 ) -> Option<PredicateFailure> {
-    if let Some(expected) = route.match_operator {
-        if expected != candidate.operator {
-            return Some(PredicateFailure::Operator {
-                expected,
-                actual: candidate.operator,
-            });
-        }
+    if let Some(expected) = route.match_operator
+        && expected != candidate.operator
+    {
+        return Some(PredicateFailure::Operator {
+            expected,
+            actual: candidate.operator,
+        });
     }
-    if let Some(expected) = route.match_class {
-        if expected != candidate.class {
-            return Some(PredicateFailure::Class {
-                expected,
-                actual: candidate.class,
-            });
-        }
+    if let Some(expected) = route.match_class
+        && expected != candidate.class
+    {
+        return Some(PredicateFailure::Class {
+            expected,
+            actual: candidate.class,
+        });
     }
-    if let Some(expected) = &route.match_app_id {
-        if expected != candidate.app_id {
-            return Some(PredicateFailure::AppId {
-                expected: expected.clone(),
-                actual: candidate.app_id.to_owned(),
-            });
-        }
+    if let Some(expected) = &route.match_app_id
+        && expected != candidate.app_id
+    {
+        return Some(PredicateFailure::AppId {
+            expected: expected.clone(),
+            actual: candidate.app_id.to_owned(),
+        });
     }
-    if let Some(expected) = &route.match_prefix {
-        if !candidate.msisdn_national.starts_with(expected.as_str()) {
-            return Some(PredicateFailure::Prefix {
-                expected: expected.clone(),
-                msisdn_national: candidate.msisdn_national.to_owned(),
-            });
-        }
+    if let Some(expected) = &route.match_prefix
+        && !candidate.msisdn_national.starts_with(expected.as_str())
+    {
+        return Some(PredicateFailure::Prefix {
+            expected: expected.clone(),
+            msisdn_national: candidate.msisdn_national.to_owned(),
+        });
     }
     None
 }

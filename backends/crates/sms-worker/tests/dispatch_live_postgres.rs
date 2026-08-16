@@ -17,8 +17,8 @@
 //! ```
 
 use chrono::{Duration, Utc};
-use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::CoolContext;
+use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
@@ -28,8 +28,8 @@ use sms_provider::{
     SubmitAck, SubmitRequest,
 };
 use sms_provider_orange_cm::{OrangeCmConfig, OrangeCmProvider};
-use sms_worker::dispatch::tick;
 use sms_worker::WorkerContext;
+use sms_worker::dispatch::tick;
 use std::sync::Arc;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -620,9 +620,11 @@ async fn a_rejected_submit_fails_the_message_outright() {
 
     let after = reload(&db, &seeded.id).await;
     assert_eq!(after.state, MessageState::failed);
-    assert!(after
-        .stateReason
-        .is_some_and(|reason| reason.contains("400")));
+    assert!(
+        after
+            .stateReason
+            .is_some_and(|reason| reason.contains("400"))
+    );
 }
 
 #[tokio::test]
@@ -674,9 +676,11 @@ async fn exhausting_max_attempts_fails_the_message_without_a_further_submit_atte
 
     let after = reload(&db, &seeded.id).await;
     assert_eq!(after.state, MessageState::failed);
-    assert!(after
-        .stateReason
-        .is_some_and(|reason| reason.contains("max attempts")));
+    assert!(
+        after
+            .stateReason
+            .is_some_and(|reason| reason.contains("max attempts"))
+    );
 }
 
 #[tokio::test]
@@ -895,9 +899,11 @@ async fn a_connect_level_failure_still_backs_off_to_queued_not_uncertain() {
         MessageState::queued,
         "a connect-level failure must still be safe to retry, not land in uncertain"
     );
-    assert!(after
-        .stateReason
-        .is_some_and(|reason| reason.contains("provider unavailable")));
+    assert!(
+        after
+            .stateReason
+            .is_some_and(|reason| reason.contains("provider unavailable"))
+    );
 }
 
 /// Closes the loop the design doc's own reasoning depends on: an
@@ -1345,10 +1351,12 @@ async fn a_permanent_failure_fails_over_to_the_next_route_and_reaches_submitted(
     tick(&ctx, &sys, "worker-1").await.expect("tick succeeds"); // queued -> routed -> submitted (via B)
     let after_submit = reload(&db, &seeded.id).await;
     assert_eq!(after_submit.state, MessageState::submitted);
-    assert!(after_submit
-        .providerMessageRef
-        .as_deref()
-        .is_some_and(|r| r.starts_with("scripted-ok-")));
+    assert!(
+        after_submit
+            .providerMessageRef
+            .as_deref()
+            .is_some_and(|r| r.starts_with("scripted-ok-"))
+    );
 
     assert_eq!(
         a_calls.load(std::sync::atomic::Ordering::SeqCst),

@@ -251,7 +251,7 @@ jobs:
       # a floating `express@^5.1.0` from silently changing under CI.
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '26'
       - name: Enable corepack (pins pnpm from packageManager)
         run: corepack enable
       - name: Install the sample Node receiver's dependencies
@@ -304,7 +304,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '26'
       - name: Enable corepack (pins pnpm from packageManager)
         run: corepack enable
       - name: Install
@@ -464,7 +464,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '26'
       - name: Install the parse-only checker
         working-directory: ci/mermaid-parse
         run: npm ci

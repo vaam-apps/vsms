@@ -7,7 +7,7 @@ use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::map_database_error;
 use sms_api::schema::{
-    provider, Encoding, Message, MessageState, Provider, UpdateMessageInput, UpdateProviderInput,
+    Encoding, Message, MessageState, Provider, UpdateMessageInput, UpdateProviderInput, provider,
 };
 use sms_encoding::SmsEncoding;
 use sms_provider::{ProviderError, RoutingConsequence, SmsProvider, SubmitRequest};
@@ -327,10 +327,10 @@ async fn handle_submit_error(
 ) {
     let consequence = err.routing();
 
-    if matches!(consequence, RoutingConsequence::OpenCircuitAndTryNextRoute) {
-        if let Some(row) = provider_row {
-            record_provider_failure(ctx, sys, row).await;
-        }
+    if matches!(consequence, RoutingConsequence::OpenCircuitAndTryNextRoute)
+        && let Some(row) = provider_row
+    {
+        record_provider_failure(ctx, sys, row).await;
     }
 
     let should_attempt_failover = matches!(
@@ -475,10 +475,10 @@ async fn attempt_failover(
             .into_iter()
             .map(ToOwned::to_owned)
             .collect();
-    if let Some(current_route_id) = &message.routeId {
-        if !excluded.iter().any(|id| id == current_route_id) {
-            excluded.push(current_route_id.clone());
-        }
+    if let Some(current_route_id) = &message.routeId
+        && !excluded.iter().any(|id| id == current_route_id)
+    {
+        excluded.push(current_route_id.clone());
     }
 
     if excluded.len() > MAX_FAILOVER_HOPS {
@@ -731,7 +731,7 @@ fn log_write_failure(message_id: &str, attempted_state: MessageState, error: &Co
 
 #[cfg(test)]
 mod tests {
-    use super::{budget_for, decode_encoding, terminal_outcome, UNAVAILABLE_BACKOFF};
+    use super::{UNAVAILABLE_BACKOFF, budget_for, decode_encoding, terminal_outcome};
     use sms_api::schema::{Encoding, MessageState};
     use sms_encoding::SmsEncoding;
     use sms_provider::ProviderError;

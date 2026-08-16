@@ -8,13 +8,13 @@ use reqwest::StatusCode;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::map_database_error;
 use sms_api::schema::{
-    webhook_endpoint, AttemptState, UpdateWebhookAttemptInput, UpdateWebhookEndpointInput,
-    WebhookAttempt, WebhookEndpoint,
+    AttemptState, UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, WebhookAttempt,
+    WebhookEndpoint, webhook_endpoint,
 };
 use tracing::{error, warn};
 
-use crate::claim::claim_batch;
 use crate::WorkerContext;
+use crate::claim::claim_batch;
 
 /// How often this loop polls for claimable attempts. Same order of
 /// magnitude as `dispatch`/`jobs`'s own poll intervals — `hooks` is
@@ -644,7 +644,7 @@ fn log_write_failure(attempt_id: &str, attempted_state: AttemptState, error: &Co
 
 #[cfg(test)]
 mod tests {
-    use super::{backoff_for, build_envelope, BACKOFF_SCHEDULE};
+    use super::{BACKOFF_SCHEDULE, backoff_for, build_envelope};
     use chrono::{Duration, TimeZone, Utc};
 
     #[test]

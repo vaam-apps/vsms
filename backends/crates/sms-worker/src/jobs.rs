@@ -17,8 +17,8 @@ use sms_api::schema::{Cratestack, Job, JobState, UpdateJobInput};
 use sms_api::{is_illegal_transition, map_database_error};
 use tracing::{error, warn};
 
-use crate::claim::claim_batch;
 use crate::WorkerContext;
+use crate::claim::claim_batch;
 
 /// How often this loop polls for claimable jobs. No TPS-style external
 /// ceiling constrains `jobs` the way Orange's contract constrains
@@ -314,7 +314,7 @@ fn swallow_stale_write(job: &Job, error: CoolError) -> Result<(), CoolError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{backoff_for, BACKOFF_SCHEDULE};
+    use super::{BACKOFF_SCHEDULE, backoff_for};
     use chrono::Duration;
 
     #[test]

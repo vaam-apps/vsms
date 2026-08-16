@@ -223,9 +223,11 @@ mod tests {
         let diagrams = mermaid_state_diagrams(md);
         assert_eq!(diagrams.len(), 1);
         assert_eq!(diagrams[0].edges.len(), 1);
-        assert!(diagrams[0]
-            .edges
-            .contains(&("a".to_owned(), "b".to_owned())));
+        assert!(
+            diagrams[0]
+                .edges
+                .contains(&("a".to_owned(), "b".to_owned()))
+        );
         assert!(diagrams[0].states.contains("a"));
         assert!(diagrams[0].states.contains("b"));
         assert!(!diagrams[0].states.contains(PSEUDO));

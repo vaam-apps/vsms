@@ -47,7 +47,7 @@
 //!   `examples/`, its pnpm workspace root) — Node's native TypeScript
 //!   support needs no build step, but `express` still has to be resolvable
 //!   from `node_modules`.
-//! - Node ≥23.6 on `PATH` as `node` (this repo's own `.nvmrc` pins 24,
+//! - Node ≥23.6 on `PATH` as `node` (this repo's own `.nvmrc` pins 26,
 //!   which qualifies) — native TS support unflagged, per the receiver's own
 //!   `package.json` `engines` field.
 //!
@@ -79,8 +79,8 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use chrono::Utc;
-use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::CoolContext;
+use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput};
 
@@ -309,10 +309,10 @@ async fn wait_until_ready(base_url: &str, child: &mut Child) {
                  that `pnpm install` has been run in examples/node/webhook-receiver"
             );
         }
-        if let Ok(response) = reqwest::get(format!("{base_url}/healthz")).await {
-            if response.status().is_success() {
-                return;
-            }
+        if let Ok(response) = reqwest::get(format!("{base_url}/healthz")).await
+            && response.status().is_success()
+        {
+            return;
         }
         assert!(
             tokio::time::Instant::now() < deadline,

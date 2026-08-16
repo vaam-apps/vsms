@@ -45,18 +45,18 @@ use std::sync::Arc;
 use authkestra_axum::helpers::AxumError;
 use authkestra_axum::op::axum_token_handler;
 use authkestra_engine::TokenManager;
-use authkestra_op::config::OpConfig;
 use authkestra_op::OpStore;
+use authkestra_op::config::OpConfig;
+use axum::Router;
 use axum::extract::FromRef;
 use axum::routing::post;
-use axum::Router;
 use chrono::{Duration, Utc};
-use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::CoolContext;
+use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, procedures::provision_app_client, procedures::ProcedureRegistry, ClientAuthMethod,
-    Cratestack,
+    self, ClientAuthMethod, Cratestack, procedures::ProcedureRegistry,
+    procedures::provision_app_client,
 };
 use sms_api::{HashPepper, Procedures};
 

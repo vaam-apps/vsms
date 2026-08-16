@@ -302,8 +302,8 @@ mod tests {
     use super::decision_to_wire;
     use crate::schema;
     use sms_routing::{
-        select_route, ExcludedRouteIds, MessageClass, Operator, ProviderRow, RouteOutcome,
-        RouteRow, RoutingCandidate,
+        ExcludedRouteIds, MessageClass, Operator, ProviderRow, RouteOutcome, RouteRow,
+        RoutingCandidate, select_route,
     };
     use std::collections::HashMap;
 

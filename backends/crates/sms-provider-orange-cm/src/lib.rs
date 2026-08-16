@@ -471,7 +471,7 @@ fn classify_submit_error(status: StatusCode, body: &str) -> ProviderError {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_transport_error, resource_id_from_url, OrangeCmConfig, OrangeCmProvider, KEY,
+        KEY, OrangeCmConfig, OrangeCmProvider, classify_transport_error, resource_id_from_url,
     };
     use sms_encoding::SmsEncoding;
     use sms_provider::{ProviderError, SmsProvider, SubmitRequest};

@@ -4,8 +4,8 @@ use std::collections::HashMap;
 
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::schema::{
-    self, provider, route, Cratestack, MessageClass as SchemaMessageClass,
-    OperatorCode as SchemaOperatorCode,
+    self, Cratestack, MessageClass as SchemaMessageClass, OperatorCode as SchemaOperatorCode,
+    provider, route,
 };
 use sms_msisdn::Msisdn;
 use sms_routing::{Decision, ExcludedRouteIds, MessageClass, Operator, ProviderRow, RouteRow};

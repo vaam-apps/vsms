@@ -406,9 +406,11 @@ mod tests {
         assert!(secret.starts_with(SECRET_PREFIX));
         let hex_part = secret.strip_prefix(SECRET_PREFIX).unwrap();
         assert_eq!(hex_part.len(), SECRET_BYTES * 2);
-        assert!(hex_part
-            .chars()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(
+            hex_part
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
     }
 
     #[test]

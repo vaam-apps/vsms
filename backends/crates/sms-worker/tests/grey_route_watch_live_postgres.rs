@@ -34,10 +34,10 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, route, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
+    self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode, route,
 };
-use sms_worker::jobs::grey_route_watch::GreyRouteWatch;
 use sms_worker::jobs::JobHandler;
+use sms_worker::jobs::grey_route_watch::GreyRouteWatch;
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
 /// `claim_live_postgres.rs`'s own `TEST_MUTEX` doc (#102).

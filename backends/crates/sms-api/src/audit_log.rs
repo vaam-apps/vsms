@@ -4,11 +4,11 @@ use chrono::{DateTime, Utc};
 // `cratestack::sqlx` the module, not individual items — see `worker_locks.rs`'s
 // identical comment: `cargo xtask no-raw-sqlx`'s pattern matches the literal
 // substring `sqlx::query`, so the raw call stays visible at the call site.
-use cratestack::sqlx;
 use cratestack::CoolError;
+use cratestack::sqlx;
 use sha2::{Digest, Sha256};
 
-use crate::schema::{audit_anchor, AuditAnchor, Cratestack};
+use crate::schema::{AuditAnchor, Cratestack, audit_anchor};
 
 /// Fixed 32-byte value folded in as the "previous row" when there is
 /// nothing earlier to fold — see [`fold_rows`].
@@ -513,7 +513,7 @@ pub async fn list_audit_entries(
         Err(error) => {
             return Err(CoolError::Internal(format!(
                 "reading cratestack_audit for the console audit log: {error}"
-            )))
+            )));
         }
     };
 
@@ -531,8 +531,8 @@ pub async fn list_audit_entries(
 #[cfg(test)]
 mod tests {
     use super::{
-        canonical_json, compute_chain_hash_hex, fold_rows, genesis_hex, hash_audit_row, AuditRow,
-        ROW_FOLD_GENESIS,
+        AuditRow, ROW_FOLD_GENESIS, canonical_json, compute_chain_hash_hex, fold_rows, genesis_hex,
+        hash_audit_row,
     };
     use chrono::{TimeZone, Utc};
 

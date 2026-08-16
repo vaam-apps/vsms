@@ -2,15 +2,15 @@
 
 use std::sync::Arc;
 
-use axum::body::{to_bytes, Body};
+use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use cratestack::CoolError;
 use cratestack::ratelimit::{
     InMemoryRateLimitStore, RateLimitConfig, RateLimitDecision, RateLimitStore,
 };
-use cratestack::CoolError;
 
 /// Real `/token` bodies are tiny — a handful of `application/
 /// x-www-form-urlencoded` fields plus one RS256-signed `client_assertion`
@@ -142,9 +142,9 @@ pub async fn enforce_token_client_rate_limit(
 
 #[cfg(test)]
 mod tests {
+    use axum::Router;
     use axum::body::to_bytes as read_body;
     use axum::routing::post;
-    use axum::Router;
     use tower::ServiceExt;
 
     use super::*;

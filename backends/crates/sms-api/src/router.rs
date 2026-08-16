@@ -4,13 +4,13 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
-use cratestack::axum::extract::{ConnectInfo, Request, State};
-use cratestack::axum::http::{header, Method};
-use cratestack::axum::middleware::{from_fn_with_state, Next};
-use cratestack::axum::response::Response;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cratestack::axum::Router;
+use cratestack::axum::extract::{ConnectInfo, Request, State};
+use cratestack::axum::http::{Method, header};
+use cratestack::axum::middleware::{Next, from_fn_with_state};
+use cratestack::axum::response::Response;
 use cratestack::idempotency::{IdempotencyLayer, IdempotencyStore};
 use cratestack::ratelimit::{
     InMemoryRateLimitStore, RateLimitConfig, RateLimitLayer, RateLimitStore,
@@ -23,7 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::auth::GatewayAuth;
 use crate::pepper::HashPepper;
 use crate::procedures::Procedures;
-use crate::rbac::{enforce_route_permission, RbacState, RoutePermission};
+use crate::rbac::{RbacState, RoutePermission, enforce_route_permission};
 use crate::schema;
 
 /// #24's concrete write-route anchor, for #25's gate test to target (see
@@ -545,12 +545,12 @@ async fn verify_idempotency_principal(
             body: &[],
             extensions: &extensions,
         };
-        if let Ok(ctx) = state.auth.authenticate(&request_ctx).await {
-            if let Some(Value::String(sub)) = ctx.auth_field("sub") {
-                request
-                    .extensions_mut()
-                    .insert(VerifiedIdempotencyPrincipal(format!("client:{sub}")));
-            }
+        if let Ok(ctx) = state.auth.authenticate(&request_ctx).await
+            && let Some(Value::String(sub)) = ctx.auth_field("sub")
+        {
+            request
+                .extensions_mut()
+                .insert(VerifiedIdempotencyPrincipal(format!("client:{sub}")));
         }
         // A verification failure is deliberately silent here: this
         // middleware never rejects anything itself (see this function's

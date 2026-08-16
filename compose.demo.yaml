@@ -601,7 +601,7 @@ services:
     # `frontends/apps/admin/Dockerfile`) — the only place in this file that overrides an
     # image's entrypoint, and only because Compose has no declarative way
     # to feed one container's computed output into a sibling container's
-    # environment. `node:22-bookworm-slim` (this image's runtime base,
+    # environment. `node:26-bookworm-slim` (this image's runtime base,
     # unlike the distroless gateway/worker/fake-orange images) has a real
     # `/bin/sh` to run this with — confirmed directly, not assumed.
     entrypoint: ['/bin/sh', '-c']

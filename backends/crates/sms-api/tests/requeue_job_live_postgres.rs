@@ -22,8 +22,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, CoolError, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, procedures::requeue_job, procedures::ProcedureRegistry, Cratestack, JobState,
-    UpdateJobInput,
+    self, Cratestack, JobState, UpdateJobInput, procedures::ProcedureRegistry,
+    procedures::requeue_job,
 };
 use sms_api::{HashPepper, Procedures};
 

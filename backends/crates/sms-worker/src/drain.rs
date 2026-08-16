@@ -3,8 +3,8 @@
 use std::time::Duration as StdDuration;
 
 use chrono::Duration;
-use cratestack::sqlx::query_scalar;
 use cratestack::CoolError;
+use cratestack::sqlx::query_scalar;
 use sms_api::schema::Cratestack;
 use tracing::{debug, error, warn};
 

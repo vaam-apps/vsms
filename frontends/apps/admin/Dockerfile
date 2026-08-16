@@ -5,7 +5,7 @@
 # hooks). Build with `docker build -f frontends/apps/admin/Dockerfile .` from the repo
 # root.
 
-FROM node:22-bookworm-slim AS builder
+FROM node:26-bookworm-slim AS builder
 
 # Matches package.json's own packageManager pin (pnpm@11.18.0) exactly,
 # rather than whatever corepack's default would otherwise resolve to.
@@ -38,7 +38,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm turbo run build --filter=admin...
 
 # --- runtime -------------------------------------------------------------
-FROM node:22-bookworm-slim AS runtime
+FROM node:26-bookworm-slim AS runtime
 
 RUN useradd --system --uid 10001 --home-dir /nonexistent --shell /usr/sbin/nologin admin
 

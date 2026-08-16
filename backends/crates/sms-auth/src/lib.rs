@@ -13,7 +13,7 @@ use authkestra_op::{
 use chrono::{DateTime, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::errors::UNIQUE_VIOLATION;
-use sms_api::schema::{self, oauth_client, ClientAuthMethod, Cratestack};
+use sms_api::schema::{self, ClientAuthMethod, Cratestack, oauth_client};
 use sms_core::unpack;
 use thiserror::Error;
 
@@ -238,7 +238,7 @@ impl ClientAssertionStore for SmsClientAssertionStore {
 
 #[cfg(test)]
 mod tests {
-    use super::{to_registration, RegistrationError};
+    use super::{RegistrationError, to_registration};
     use authkestra_op::{GrantType, TokenEndpointAuthMethod};
     use sms_api::schema::{ClientAuthMethod, CreateOauthClientInput, OauthClient};
 

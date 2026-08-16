@@ -54,13 +54,13 @@ use std::net::TcpListener as StdTcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration as StdDuration;
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, FilterExpr};
 use sha2::{Digest, Sha256};
 use sms_api::auth::{Principal, PrincipalKind};
-use sms_api::schema::{self, provider as provider_filter, ClientAuthMethod, Cratestack};
+use sms_api::schema::{self, ClientAuthMethod, Cratestack, provider as provider_filter};
 
 /// Same reasoning as every other live suite's own copy of this mutex —
 /// #102. Load-bearing here specifically because
@@ -353,10 +353,9 @@ async fn wait_until_ready(issuer: &str, child: &mut Child) {
             .get(format!("{issuer}/.well-known/openid-configuration"))
             .send()
             .await
+            && response.status().is_success()
         {
-            if response.status().is_success() {
-                return;
-            }
+            return;
         }
         assert!(
             tokio::time::Instant::now() < deadline,

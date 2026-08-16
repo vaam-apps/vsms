@@ -324,7 +324,7 @@ const fn story_for(role: Role) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cardinality, Role, WorkerContext, ALL};
+    use super::{ALL, Cardinality, Role, WorkerContext};
     use std::str::FromStr;
     use std::sync::Arc;
 

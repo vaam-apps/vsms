@@ -52,8 +52,8 @@ fn install_default_crypto_provider() {
 
 #[tokio::test]
 #[ignore = "needs outbound HTTPS reachability, not this workspace's Postgres harness"]
-async fn a_provider_installed_before_client_construction_lets_rustls_no_provider_reqwest_complete_a_real_handshake(
-) {
+async fn a_provider_installed_before_client_construction_lets_rustls_no_provider_reqwest_complete_a_real_handshake()
+ {
     install_default_crypto_provider();
 
     let client = reqwest_no_provider::Client::builder().build().expect(

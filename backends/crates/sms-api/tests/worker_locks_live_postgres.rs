@@ -20,10 +20,10 @@
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CoolContext, CoolError, Value};
 use sms_api::auth::{Principal, PrincipalKind};
-use sms_api::schema::{self, procedures::worker_locks, procedures::ProcedureRegistry, Cratestack};
+use sms_api::schema::{self, Cratestack, procedures::ProcedureRegistry, procedures::worker_locks};
 use sms_api::{HashPepper, Procedures};
-use sms_worker::lease::RoleLease;
 use sms_worker::Role;
+use sms_worker::lease::RoleLease;
 
 /// #102: this binary's own tests can race on Postgres's own `pg_type`
 /// catalog the first time two of them prepare the exact same not-yet-cached

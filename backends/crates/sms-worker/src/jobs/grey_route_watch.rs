@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CoolContext, CoolError, FilterExpr};
 use sms_api::schema::{
-    message, route, route_validation, Cratestack, Job, MessageClass, MessageState, OperatorCode,
+    Cratestack, Job, MessageClass, MessageState, OperatorCode, message, route, route_validation,
 };
 use tracing::warn;
 
@@ -458,8 +458,8 @@ impl JobHandler for GreyRouteWatch {
 #[cfg(test)]
 mod tests {
     use super::{
-        aggregate_outcomes, detect_divergent_routes, is_overdue, GreyRouteWatch, MessageOutcome,
-        RouteOutcome, MIN_DELTA, MIN_SAMPLE, VALIDATION_INTERVAL, Z_THRESHOLD,
+        GreyRouteWatch, MIN_DELTA, MIN_SAMPLE, MessageOutcome, RouteOutcome, VALIDATION_INTERVAL,
+        Z_THRESHOLD, aggregate_outcomes, detect_divergent_routes, is_overdue,
     };
     use crate::jobs::JobHandler;
     use chrono::{Duration, Utc};

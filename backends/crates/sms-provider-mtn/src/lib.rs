@@ -351,7 +351,7 @@ fn classify_submit_error(status: StatusCode, body: &str) -> ProviderError {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_transport_error, MtnAggregatorConfig, MtnAggregatorProvider, KEY};
+    use super::{KEY, MtnAggregatorConfig, MtnAggregatorProvider, classify_transport_error};
     use sms_encoding::SmsEncoding;
     use sms_provider::{ProviderError, SmsProvider, SubmitRequest};
     use wiremock::matchers::{method, path};

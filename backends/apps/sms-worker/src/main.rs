@@ -1,6 +1,6 @@
 #![doc = include_str!("main.md")]
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Parser;
 use sms_provider::SmsProvider;
 use sms_worker::{Cardinality, Role, WorkerContext};
@@ -485,7 +485,7 @@ fn healthcheck_command() -> Result<()> {
 async fn shutdown_signal() {
     #[cfg(unix)]
     {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let mut sigterm = signal(SignalKind::terminate()).expect("installing a SIGTERM handler");
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {}

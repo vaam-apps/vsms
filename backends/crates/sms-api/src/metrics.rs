@@ -1,9 +1,9 @@
 #![doc = include_str!("metrics.md")]
 
+use cratestack::axum::Router;
 use cratestack::axum::http::StatusCode;
 use cratestack::axum::response::IntoResponse;
 use cratestack::axum::routing::get;
-use cratestack::axum::Router;
 
 /// A standalone router carrying exactly one route, `GET /metrics` — see
 /// this module's own doc for why it is never `.merge()`d into the main

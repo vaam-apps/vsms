@@ -40,8 +40,8 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
 };
-use sms_worker::jobs::reap_outbox::{reap_delivered, ReapOutbox};
 use sms_worker::jobs::JobHandler;
+use sms_worker::jobs::reap_outbox::{ReapOutbox, reap_delivered};
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
 /// `claim_live_postgres.rs`'s own `TEST_MUTEX` doc (#102).
