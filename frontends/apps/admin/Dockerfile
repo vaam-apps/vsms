@@ -7,9 +7,13 @@
 
 FROM node:26-bookworm-slim AS builder
 
-# Matches package.json's own packageManager pin (pnpm@11.18.0) exactly,
+# Node 26 no longer bundles corepack — it was removed from the Node
+# distribution (verified: `node:26-bookworm-slim` has npm but no corepack;
+# `actions/setup-node`'s Node 26 still ships it, which is why only this
+# Docker build hit the gap). Install it explicitly, pinned, then use it to
+# honour package.json's own packageManager pin (pnpm@11.18.0) exactly,
 # rather than whatever corepack's default would otherwise resolve to.
-RUN corepack enable && corepack prepare pnpm@11.18.0 --activate
+RUN npm install -g corepack@0.35.0 && corepack enable && corepack prepare pnpm@11.18.0 --activate
 
 WORKDIR /repo
 COPY . .
