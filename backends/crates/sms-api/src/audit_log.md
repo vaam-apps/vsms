@@ -85,9 +85,9 @@ compile-time absence), which turned out to be wrong the moment it was
 actually tried, the same "verify against live execution" trap AGENTS.md
 is full of examples of. **The real guard is deny-by-default at
 runtime, for every caller including `system`.** Run for real against a
-live, migrated Postgres, with a `system`-role `CoolContext` — the most
+live, migrated Postgres, with a `system`-role `CratestackContext` — the most
 privileged context this codebase ever constructs — the call above
-returns `Err(CoolError::Forbidden("update policy denied this
+returns `Err(CratestackError::Forbidden("update policy denied this
 operation"))`, not an error naming a missing row (there was one — the
 id was fictional — so a row-not-found error would have meant the
 *policy* check never ran at all, which would be the actual hole). No

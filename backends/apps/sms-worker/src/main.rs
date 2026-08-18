@@ -269,7 +269,7 @@ async fn main() -> Result<()> {
 
     // Unconditional — not gated on `drain` being one of `--roles`. Every
     // role in this process shares this one `Cratestack` (cloned per task,
-    // sharing the same underlying `CoolEventBus` via its `Arc`-backed
+    // sharing the same underlying `CratestackEventBus` via its `Arc`-backed
     // internals), and `dispatch`/`jobs::expire_stale` write to `Message`
     // themselves — a write on an emitting model with no subscriber
     // registered on this process's own runtime doesn't wait for `drain` to

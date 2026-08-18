@@ -11,7 +11,7 @@ use authkestra_op::{
     TokenEndpointAuthMethod,
 };
 use chrono::{DateTime, Utc};
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::errors::UNIQUE_VIOLATION;
 use sms_api::schema::{self, ClientAuthMethod, Cratestack, oauth_client};
 use sms_core::unpack;
@@ -24,10 +24,10 @@ use thiserror::Error;
 /// *"storage backends should not leak implementation details (e.g. SQL
 /// errors) into OAuth error responses."* That is a reason to keep the detail
 /// out of the **response**, not out of the **logs** — collapsing every
-/// `CoolError` into `Storage` silently would make a policy denial (a `sys`
+/// `CratestackError` into `Storage` silently would make a policy denial (a `sys`
 /// context that somehow lost the `system` role) indistinguishable from a
 /// genuine outage in the one place a human could tell them apart.
-fn log_and_opaque(context: &'static str, error: &CoolError) -> OpError {
+fn log_and_opaque(context: &'static str, error: &CratestackError) -> OpError {
     tracing::error!(context, error = %error, "sms-auth delegate call failed");
     OpError::Storage
 }
@@ -140,14 +140,14 @@ fn to_registration(row: schema::OauthClient) -> Result<ClientRegistration, Regis
 /// worked example in §4.2 of the design doc, which this mirrors.
 pub struct SmsClientStore {
     db: Arc<Cratestack>,
-    sys: CoolContext,
+    sys: CratestackContext,
 }
 
 impl SmsClientStore {
     /// `sys` must be a `system`-role context — the only one `OauthClient`'s
     /// policy admits (`@@allow("read", hasRole('system'))`).
     #[must_use]
-    pub fn new(db: Arc<Cratestack>, sys: CoolContext) -> Self {
+    pub fn new(db: Arc<Cratestack>, sys: CratestackContext) -> Self {
         Self { db, sys }
     }
 }
@@ -196,14 +196,14 @@ impl ClientStore for SmsClientStore {
 /// something a `record_jti` call should ever do inline.
 pub struct SmsClientAssertionStore {
     db: Arc<Cratestack>,
-    sys: CoolContext,
+    sys: CratestackContext,
 }
 
 impl SmsClientAssertionStore {
     /// `sys` must be a `system`-role context, matching `ClientAssertion`'s
     /// policy.
     #[must_use]
-    pub fn new(db: Arc<Cratestack>, sys: CoolContext) -> Self {
+    pub fn new(db: Arc<Cratestack>, sys: CratestackContext) -> Self {
         Self { db, sys }
     }
 }

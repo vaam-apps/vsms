@@ -3,7 +3,7 @@
 use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Duration, Utc};
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use reqwest::StatusCode;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::map_database_error;
@@ -70,7 +70,7 @@ fn backoff_for(attempts: i64) -> Duration {
 }
 
 /// The `system` context this role does all its work under.
-fn sys(worker: &str) -> CoolContext {
+fn sys(worker: &str) -> CratestackContext {
     Principal {
         sub: format!("sms-worker:hooks:{worker}"),
         kind: PrincipalKind::App,
@@ -123,10 +123,10 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 /// filters out `queued` and `jobs` filters out `pending`.
 pub async fn tick(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     worker: &str,
     http: &reqwest::Client,
-) -> Result<(), CoolError> {
+) -> Result<(), CratestackError> {
     let claimed = claim_batch::<WebhookAttempt>(&ctx.db, sys, worker, BUDGET).await?;
     for attempt in claimed {
         deliver_one(ctx, sys, http, attempt).await;
@@ -174,7 +174,7 @@ enum Outcome {
 /// `jobs::run_one`.
 async fn deliver_one(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     http: &reqwest::Client,
     attempt: WebhookAttempt,
 ) {
@@ -310,9 +310,9 @@ fn build_envelope(
 
 async fn fetch_endpoint(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     endpoint_id: &str,
-) -> Result<Option<WebhookEndpoint>, CoolError> {
+) -> Result<Option<WebhookEndpoint>, CratestackError> {
     Ok(ctx
         .db
         .webhook_endpoint()
@@ -347,7 +347,7 @@ async fn fetch_endpoint(
 /// outcome-writer in this crate.
 async fn write_outcome(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     attempt: &WebhookAttempt,
     endpoint: &WebhookEndpoint,
     outcome: Outcome,
@@ -422,7 +422,7 @@ async fn write_outcome(
 
 async fn write_succeeded(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     attempt: &WebhookAttempt,
     status: u16,
     now: DateTime<Utc>,
@@ -457,7 +457,7 @@ async fn write_succeeded(
 /// again (`claim.rs`'s `candidates`, via `webhook_due_idx`).
 async fn write_failed_retry(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     attempt: &WebhookAttempt,
     status: Option<u16>,
     message: String,
@@ -492,7 +492,7 @@ async fn write_failed_retry(
 
 async fn write_dead(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     attempt: &WebhookAttempt,
     status: Option<u16>,
     message: String,
@@ -541,7 +541,7 @@ async fn write_dead(
 /// anyone.
 async fn record_endpoint_failure(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     endpoint: &WebhookEndpoint,
     now: DateTime<Utc>,
 ) {
@@ -585,7 +585,7 @@ async fn record_endpoint_failure(
 /// reasoning as `record_endpoint_failure` above.
 async fn reset_endpoint_failures(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     endpoint: &WebhookEndpoint,
 ) {
     if endpoint.consecutiveFailures == 0 && endpoint.circuitOpenUntil.is_none() {
@@ -612,7 +612,11 @@ async fn reset_endpoint_failures(
 ///
 /// #59: carries `if_match(endpoint.version)`, same best-effort-not-retried
 /// reasoning as `record_endpoint_failure` above.
-async fn deactivate_endpoint(ctx: &WorkerContext, sys: &CoolContext, endpoint: &WebhookEndpoint) {
+async fn deactivate_endpoint(
+    ctx: &WorkerContext,
+    sys: &CratestackContext,
+    endpoint: &WebhookEndpoint,
+) {
     if let Err(error) = ctx
         .db
         .webhook_endpoint()
@@ -634,7 +638,7 @@ async fn deactivate_endpoint(ctx: &WorkerContext, sys: &CoolContext, endpoint: &
 /// an operator-triggered replay racing this outcome — a legitimate race,
 /// not a bug, so this logs and lets the tick continue rather than treating
 /// it as fatal. Same shape as `dispatch::log_write_failure`.
-fn log_write_failure(attempt_id: &str, attempted_state: AttemptState, error: &CoolError) {
+fn log_write_failure(attempt_id: &str, attempted_state: AttemptState, error: &CratestackError) {
     warn!(
         attempt_id,
         attempted_state = ?attempted_state, %error,

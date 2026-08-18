@@ -32,7 +32,7 @@
 
 use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode, webhook_attempt,
@@ -44,7 +44,7 @@ use sms_worker::drain;
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-worker-drain-test".to_owned(),
         kind: PrincipalKind::App,
@@ -54,7 +54,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-worker-drain-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -77,7 +77,7 @@ fn unique_suffix() -> String {
 }
 
 /// A fresh `Cratestack` — a fresh pool *and* a fresh, empty
-/// `CoolEventBus` — against the one database this test binary shares
+/// `CratestackEventBus` — against the one database this test binary shares
 /// (`sms_test_support::database_url()` memoizes the URL per process, so
 /// every call here targets the same Postgres). Deliberately not shared
 /// between "writer" and "drain role" in a test: registering subscribers
@@ -202,7 +202,7 @@ async fn drain_tick_retries_a_row_whose_first_delivery_attempt_failed() {
     writer
         .events()
         .on_message_updated(|_event: schema::events::MessageUpdatedEvent| async {
-            Err(CoolError::Internal(
+            Err(CratestackError::Internal(
                 "simulated transient failure on first delivery attempt".to_owned(),
             ))
         });
@@ -240,7 +240,7 @@ async fn drain_tick_retries_a_row_whose_first_delivery_attempt_failed() {
     );
 
     // The drain role's own Cratestack instance: a fresh, independent
-    // CoolEventBus carrying the *real* production subscribers. No further
+    // CratestackEventBus carrying the *real* production subscribers. No further
     // write on any emitting model happens between here and the
     // assertions below — tick() alone has to be what turns the stuck row
     // into a real WebhookAttempt.
@@ -271,7 +271,7 @@ async fn oldest_undelivered_age_reflects_a_real_stuck_row_and_clears_after_drain
     writer
         .events()
         .on_message_updated(|_event: schema::events::MessageUpdatedEvent| async {
-            Err(CoolError::Internal(
+            Err(CratestackError::Internal(
                 "simulated transient failure".to_owned(),
             ))
         });

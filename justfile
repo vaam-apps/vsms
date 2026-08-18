@@ -161,9 +161,28 @@ bootstrap-sql:
 # at `/`, not the generator's `/api` default. Also applies the DO-NOT-EDIT
 # README banner (see ci/postprocess-sms-client-readme.mjs) as a
 # deterministic, reproducible post-processing step, not a one-off hand-edit.
+#
+# `--tanstack` is load-bearing for the same reason `--base-path ''` is, and
+# it is new as of the cratestack 0.8.3 bump. Through 0.8.0 the generator
+# emitted `src/react-query.ts` plus the `@tanstack/react-query` peer and dev
+# dependencies unconditionally; cratestack#617 (in 0.8.1) gated all three
+# behind this additive flag, finishing the same convergence `--swr` (#589)
+# and `--refine` (#571) already went through. The tracked
+# `frontends/packages/sms-client/package.json` — the one file in that
+# otherwise-gitignored package that IS committed — declares both of those
+# dependencies, so without this flag a regeneration silently rewrites it
+# and the tracked file drifts from what the generator produces. Verified
+# byte-for-byte at 0.8.3: with `--tanstack` the emitted `package.json` is
+# identical to the committed one; without it, it differs by exactly those
+# two lines. Dropping the tanstack deps instead is defensible — nothing in
+# this repo imports `@vsms/sms-client` at runtime yet (checked repo-wide,
+# and `frontends/apps/admin/Dockerfile` records the same finding) — but
+# that is a deliberate scope decision about the package's shape, not
+# something a dependency bump should make on its own.
 client-gen:
 	{{cratestack_bin}} generate-typescript --schema schemas/vsms.cstack \
-		--out frontends/packages/sms-client --package-name @vsms/sms-client --base-path ''
+		--out frontends/packages/sms-client --package-name @vsms/sms-client --base-path '' \
+		--tanstack
 	node ci/postprocess-sms-client-readme.mjs frontends/packages/sms-client/README.md
 
 # The drift gate over frontends/packages/sms-client that still means something once

@@ -7,7 +7,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use sms_api::schema::Cratestack;
 use sms_provider::{ProviderError, RawCallback, SmsProvider};
 use tracing::warn;
@@ -15,7 +15,7 @@ use tracing::warn;
 #[derive(Clone)]
 struct DlrState {
     db: Cratestack,
-    sys: CoolContext,
+    sys: CratestackContext,
     provider: Arc<dyn SmsProvider>,
     provider_row_id: String,
 }
@@ -79,7 +79,7 @@ async fn dlr_handler(
 // as `sms_api::router`'s and `op::router`'s own doc comments on this.
 pub fn router(
     db: Cratestack,
-    sys: CoolContext,
+    sys: CratestackContext,
     provider: Arc<dyn SmsProvider>,
     provider_row_id: String,
 ) -> Router {

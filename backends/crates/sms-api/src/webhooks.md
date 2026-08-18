@@ -5,7 +5,7 @@ reading it cold.
 
 # The hard constraint every function here is written against
 
-`@@emit` delivery (`cratestack_event_outbox` → `CoolEventBus::emit`,
+`@@emit` delivery (`cratestack_event_outbox` → `CratestackEventBus::emit`,
 §8.2) is **synchronous, blocks the mutation that triggered it, and is
 not panic-isolated**. A subscriber that blocks or panics breaks
 `sendMessage`, `dlr::ingest`, or whatever else touched an emitting
@@ -23,7 +23,7 @@ synchronously, what does `drain` (#39) drain?
 
 `db.events().on_message_created(...)`/`on_message_updated(...)` each
 register against a `Cratestack`/`SqlxRuntime` instance's own **in-process**
-`CoolEventBus` (`cratestack_sqlx::descriptor::SqlxRuntime::subscribe`,
+`CratestackEventBus` (`cratestack_sqlx::descriptor::SqlxRuntime::subscribe`,
 read directly in the vendored source, not assumed) — registration
 never crosses a process boundary, and *every* `@@emit`-annotated
 mutation triggers an automatic drain of its own process's runtime
@@ -32,7 +32,7 @@ immediately after commit (`cratestack-sqlx`'s `create.rs`/`update.rs`:
 `db.events().drain()` call required to trigger it).
 
 That has a sharp edge, and it is the actual answer to the question
-above: **`CoolEventBus::emit` returns `Ok(())` for a topic with zero
+above: **`CratestackEventBus::emit` returns `Ok(())` for a topic with zero
 registered handlers** (`cratestack-core/src/events/bus.rs`: an empty
 handler `Vec`, an empty `for` loop, `Ok(())`) — not an error, not a
 skip flagged anywhere. So a process that writes to an emitting model
@@ -53,7 +53,7 @@ scheduled: `backends/apps/sms-gateway` (`sendMessage`, `dlr::ingest`, both write
 `jobs::expire_stale` writes it too). `backends/apps/sms-worker` registers once in
 `main`, before any role task is spawned, against the one `Cratestack`
 every role's `WorkerContext` clones — `Cratestack`/`SqlxRuntime`/
-`CoolEventBus` all derive `Clone` over `Arc`-backed state, so a clone
+`CratestackEventBus` all derive `Clone` over `Arc`-backed state, so a clone
 shares the same live handler registry, not a copy of it. One
 registration call covers every role that process runs, including ones
 that never touch an emitting model themselves (`hooks`, `jobs`) — those

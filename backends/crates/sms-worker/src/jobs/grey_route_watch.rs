@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::schema::{
     Cratestack, Job, MessageClass, MessageState, OperatorCode, message, route, route_validation,
 };
@@ -320,7 +320,7 @@ impl GreyRouteWatch {
     pub async fn run_at(
         &self,
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         now: DateTime<Utc>,
     ) -> Result<(), String> {
         let flagged = self
@@ -346,9 +346,9 @@ impl GreyRouteWatch {
     pub async fn check_divergence(
         &self,
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         now: DateTime<Utc>,
-    ) -> Result<usize, CoolError> {
+    ) -> Result<usize, CratestackError> {
         let cutoff = now - LOOKBACK;
         let rows = db
             .message()
@@ -403,9 +403,9 @@ impl GreyRouteWatch {
     pub async fn check_overdue_validations(
         &self,
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         now: DateTime<Utc>,
-    ) -> Result<usize, CoolError> {
+    ) -> Result<usize, CratestackError> {
         let routes = db
             .route()
             .find_many()
@@ -450,7 +450,12 @@ impl JobHandler for GreyRouteWatch {
         "grey_route_watch"
     }
 
-    async fn run(&self, db: &Cratestack, sys: &CoolContext, _job: &Job) -> Result<(), String> {
+    async fn run(
+        &self,
+        db: &Cratestack,
+        sys: &CratestackContext,
+        _job: &Job,
+    ) -> Result<(), String> {
         self.run_at(db, sys, Utc::now()).await
     }
 }

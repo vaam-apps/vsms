@@ -17,7 +17,7 @@
 //! ```
 
 use chrono::{Duration, Utc};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
@@ -53,7 +53,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-worker-dispatch-test".to_owned(),
         kind: PrincipalKind::App,
@@ -63,7 +63,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-worker-dispatch-test-owner".to_owned(),
         kind: PrincipalKind::User,

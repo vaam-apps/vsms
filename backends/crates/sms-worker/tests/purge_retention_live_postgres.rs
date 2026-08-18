@@ -62,7 +62,7 @@
 
 use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::schema::{
     self, Cratestack, DeliveryOutcome, Encoding, Message, MessageClass, MessageState, OperatorCode,
     UpdateMessageInput, delivery_receipt, message, webhook_attempt,
@@ -75,7 +75,7 @@ use sms_worker::jobs::purge_retention::PurgeRetention;
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     sms_api::auth::Principal {
         sub: "sms-worker-purge-retention-test".to_owned(),
         kind: sms_api::auth::PrincipalKind::App,
@@ -85,7 +85,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     sms_api::auth::Principal {
         sub: "sms-worker-purge-retention-test-owner".to_owned(),
         kind: sms_api::auth::PrincipalKind::User,

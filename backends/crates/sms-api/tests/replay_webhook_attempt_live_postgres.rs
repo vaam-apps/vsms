@@ -19,7 +19,7 @@
 
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError, FilterExpr, Value};
+use cratestack::{CratestackContext, CratestackError, FilterExpr, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, AttemptState, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput,
@@ -37,7 +37,7 @@ use sms_api::{HashPepper, Procedures};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "replay-webhook-attempt-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -47,7 +47,7 @@ fn owner() -> CoolContext {
     .into_context()
 }
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "replay-webhook-attempt-test-system".to_owned(),
         kind: PrincipalKind::App,
@@ -64,7 +64,7 @@ fn sys() -> CoolContext {
 /// exists in this deployment — see AGENTS.md's M1/#24 notes), so it has to
 /// carry the claim by hand, the same way `send_message_live_postgres.rs`'s
 /// own `app_caller` does for `scope`.
-fn developer_with_webhook_manage() -> CoolContext {
+fn developer_with_webhook_manage() -> CratestackContext {
     let mut ctx = Principal {
         sub: "replay-webhook-attempt-test-developer".to_owned(),
         kind: PrincipalKind::User,
@@ -82,7 +82,7 @@ fn developer_with_webhook_manage() -> CoolContext {
 /// The same role, but with no `perms` claim at all — the exact "an omitted
 /// scope yields denial" shape §5.2 documents, extended to `perms` by
 /// `require_permission`'s own doc comment.
-fn developer_without_permission() -> CoolContext {
+fn developer_without_permission() -> CratestackContext {
     Principal {
         sub: "replay-webhook-attempt-test-developer-no-perms".to_owned(),
         kind: PrincipalKind::User,
@@ -442,7 +442,7 @@ async fn replaying_a_non_replayable_attempt_is_a_conflict_not_a_crash() {
         .expect_err(&format!("replaying a {label} attempt must not succeed"));
 
         assert!(
-            matches!(error, CoolError::Conflict(_)),
+            matches!(error, CratestackError::Conflict(_)),
             "expected a 409 Conflict replaying a {label} attempt, got {error:?}"
         );
     }
@@ -465,7 +465,7 @@ async fn replaying_a_non_replayable_attempt_is_a_conflict_not_a_crash() {
 /// runs. For a nonexistent id that query structurally cannot distinguish
 /// "no row" from "row exists but policy denies" (the exact ambiguity
 /// `CONTRIBUTING.md`'s own R1 section already documents for
-/// `CoolError::Forbidden` on update/delete — this is the same ambiguity,
+/// `CratestackError::Forbidden` on update/delete — this is the same ambiguity,
 /// now reachable from a procedure's own `@authorize` preflight too), so it
 /// always returns `Forbidden("detail policy denied this operation")`. The
 /// procedure's own `NotFound`-producing branch is unreachable for a
@@ -501,7 +501,7 @@ async fn replaying_an_unknown_attempt_id_is_refused() {
     .expect_err("a nonexistent attempt id must not silently succeed");
 
     assert!(
-        matches!(error, CoolError::Forbidden(_)),
+        matches!(error, CratestackError::Forbidden(_)),
         "expected Forbidden (the @authorize detail-policy preflight denying a nonexistent row — \
          see this test's own doc comment), got {error:?}"
     );
@@ -570,10 +570,10 @@ async fn replay_denies_a_caller_with_no_webhook_manage_permission() {
     .expect_err("a caller with no webhook:manage permission must be denied");
 
     assert!(
-        matches!(error, CoolError::Forbidden(_)),
+        matches!(error, CratestackError::Forbidden(_)),
         "expected Forbidden, got {error:?}"
     );
-    if let CoolError::Forbidden(message) = error {
+    if let CratestackError::Forbidden(message) = error {
         assert!(
             message.contains("webhook:manage"),
             "expected the denial to name the missing permission: {message}"

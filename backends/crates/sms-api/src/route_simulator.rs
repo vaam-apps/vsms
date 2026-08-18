@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_routing::{
     Decision, MessageClass, Operator, PredicateFailure, ProviderRow, RouteOutcome, RouteRow,
 };
@@ -108,8 +108,8 @@ fn convert_provider(row: &schema::Provider) -> ProviderRow {
 /// database at all.
 pub(crate) async fn fetch_routes_and_providers(
     db: &schema::Cratestack,
-    sys: &CoolContext,
-) -> Result<(Vec<RouteRow>, HashMap<String, ProviderRow>), CoolError> {
+    sys: &CratestackContext,
+) -> Result<(Vec<RouteRow>, HashMap<String, ProviderRow>), CratestackError> {
     let routes = db
         .route()
         .find_many()

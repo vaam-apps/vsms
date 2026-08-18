@@ -22,7 +22,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Job, MessageClass, MessageState, OperatorCode, UpdateJobInput, job,
@@ -44,7 +44,7 @@ use sms_worker::scheduler::{self, RecurringJobSpec};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-worker-jobs-test".to_owned(),
         kind: PrincipalKind::App,
@@ -54,7 +54,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-worker-jobs-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -179,7 +179,12 @@ impl JobHandler for ScriptedHandler {
         Box::leak(self.kind_owned.clone().into_boxed_str())
     }
 
-    async fn run(&self, _db: &Cratestack, _sys: &CoolContext, _job: &Job) -> Result<(), String> {
+    async fn run(
+        &self,
+        _db: &Cratestack,
+        _sys: &CratestackContext,
+        _job: &Job,
+    ) -> Result<(), String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.succeed {
             Ok(())

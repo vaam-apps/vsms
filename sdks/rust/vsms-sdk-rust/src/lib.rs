@@ -107,7 +107,12 @@
 #![allow(clippy::ptr_arg)]
 #![allow(missing_docs)]
 
-cratestack::include_client_schema!("schema.cstack");
+// `decimal = RustDecimal` required as of the cratestack 0.8.3 bump — see
+// `sms-api`'s own `lib.rs` for the full reasoning (cratestack#609 made the
+// decimal backends additive, so the macro can no longer infer one). Must
+// stay in step with the server side's choice: this crate's generated
+// client types are the wire mirror of that schema.
+cratestack::include_client_schema!("schema.cstack", decimal = RustDecimal);
 
 /// Shorter alias for the generated module, matching `sms-api`'s own
 /// `pub use crate::cratestack_schema as schema;` convention so the two

@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::map_database_error;
 use sms_api::schema::{
@@ -44,7 +44,7 @@ const PROVIDER_CIRCUIT_OPEN_DURATION: chrono::Duration = chrono::Duration::secon
 /// The `system` context this role does all its work under — `kind` and
 /// `role` both set, per the trap `#21`/`Principal::into_context`'s own doc
 /// names: setting only one denies every write.
-fn sys(worker: &str) -> CoolContext {
+fn sys(worker: &str) -> CratestackContext {
     Principal {
         sub: format!("sms-worker:dispatch:{worker}"),
         kind: PrincipalKind::App,
@@ -72,7 +72,11 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 /// so live tests can drive exactly one iteration deterministically instead
 /// of racing [`run`]'s own timer — the same reason [`crate::claim::claim_batch`]
 /// itself is `pub` rather than only reachable through a role's loop.
-pub async fn tick(ctx: &WorkerContext, sys: &CoolContext, worker: &str) -> Result<(), CoolError> {
+pub async fn tick(
+    ctx: &WorkerContext,
+    sys: &CratestackContext,
+    worker: &str,
+) -> Result<(), CratestackError> {
     let budget = budget_for(total_tps_ceiling(&ctx.providers));
     let claimed = claim_batch::<Message>(&ctx.db, sys, worker, budget).await?;
 
@@ -147,7 +151,7 @@ fn decode_encoding(encoding: Encoding) -> SmsEncoding {
 /// safe behaviour, not a crash).
 async fn resolve_provider(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     message: &Message,
 ) -> Result<(Provider, Arc<dyn SmsProvider>), String> {
     let Some(provider_id) = message.providerId.clone() else {
@@ -186,7 +190,7 @@ async fn resolve_provider(
 /// its outcome implies. Errors writing that transition are logged, not
 /// propagated — one message's DB write failing must not stall the rest of
 /// this tick's batch.
-async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
+async fn submit_one(ctx: &WorkerContext, sys: &CratestackContext, message: Message) {
     // `Message.body` is nullable in the schema (a future retention pass
     // may redact it), but every row this loop ever sees is freshly created
     // and long before its own `expiresAt`, let alone a 90-day retention
@@ -311,7 +315,7 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
 /// still attempts failover, just without touching any provider's own
 /// bookkeeping (there is nothing to touch).
 ///
-/// A [`CoolError`] from [`attempt_failover`]'s own routing query — not a
+/// A [`CratestackError`] from [`attempt_failover`]'s own routing query — not a
 /// `PreconditionFailed` on the *reroute* write, which `attempt_failover`
 /// already logs and treats as "someone else already moved this row" — is
 /// logged and nothing is written: the message is still safely `routed`
@@ -320,7 +324,7 @@ async fn submit_one(ctx: &WorkerContext, sys: &CoolContext, message: Message) {
 /// relies on for every other failure it only logs.
 async fn handle_submit_error(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     message: &Message,
     provider_row: Option<&Provider>,
     err: &ProviderError,
@@ -466,10 +470,10 @@ enum FailoverOutcome {
 /// anyway.
 async fn attempt_failover(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     message: &Message,
     reason: &str,
-) -> Result<FailoverOutcome, CoolError> {
+) -> Result<FailoverOutcome, CratestackError> {
     let mut excluded: Vec<String> =
         sms_core::unpack(message.excludedRouteIds.as_deref().unwrap_or(""))
             .into_iter()
@@ -527,7 +531,7 @@ async fn attempt_failover(
 /// work" pattern that branch already uses.
 async fn write_failover(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     message: &Message,
     winner: &sms_routing::Winner,
     excluded_route_ids: &str,
@@ -564,7 +568,7 @@ async fn write_failover(
 /// transition table (§2.10) — never set explicitly here.
 async fn write_submitted(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     message: &Message,
     provider_ref: &str,
     provider_ref_alt: Option<&str>,
@@ -615,7 +619,7 @@ async fn write_submitted(
 /// not an oversight.
 async fn write_transition(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     message: &Message,
     next_state: MessageState,
     reason: Option<String>,
@@ -660,7 +664,11 @@ async fn write_transition(
 /// failing against the same provider at once undercounts by a small
 /// amount, which only matters for a heuristic that exists to stop hammering
 /// a dead provider, not to bill anyone.
-async fn record_provider_failure(ctx: &WorkerContext, sys: &CoolContext, provider: &Provider) {
+async fn record_provider_failure(
+    ctx: &WorkerContext,
+    sys: &CratestackContext,
+    provider: &Provider,
+) {
     let now = chrono::Utc::now();
     let consecutive = provider.consecutiveFailures + 1;
     let opening_circuit = consecutive >= PROVIDER_CIRCUIT_FAILURE_THRESHOLD;
@@ -696,7 +704,11 @@ async fn record_provider_failure(ctx: &WorkerContext, sys: &CoolContext, provide
 /// `hooks::reset_endpoint_failures`, including skipping the write entirely
 /// when there is nothing to reset, so a healthy provider's every single
 /// success doesn't cost a pointless `UPDATE`.
-async fn reset_provider_failures(ctx: &WorkerContext, sys: &CoolContext, provider: &Provider) {
+async fn reset_provider_failures(
+    ctx: &WorkerContext,
+    sys: &CratestackContext,
+    provider: &Provider,
+) {
     if provider.consecutiveFailures == 0 && provider.circuitOpenUntil.is_none() {
         return;
     }
@@ -721,7 +733,7 @@ async fn reset_provider_failures(ctx: &WorkerContext, sys: &CoolContext, provide
 /// concurrently cancelling the same message — a legitimate race, not a
 /// bug, so this logs and lets the tick continue rather than treating it as
 /// fatal.
-fn log_write_failure(message_id: &str, attempted_state: MessageState, error: &CoolError) {
+fn log_write_failure(message_id: &str, attempted_state: MessageState, error: &CratestackError) {
     warn!(
         message_id,
         attempted_state = ?attempted_state, %error,

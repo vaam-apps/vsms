@@ -70,7 +70,7 @@
 //! ```
 
 use chrono::{Duration as ChronoDuration, Utc};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::audit_log::{verify_chain_linkage, verify_period_content};
@@ -87,7 +87,7 @@ use sms_worker::jobs::anchor_audit::AnchorAudit;
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-worker-anchor-audit-test".to_owned(),
         kind: PrincipalKind::App,
@@ -97,7 +97,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-worker-anchor-audit-test-owner".to_owned(),
         kind: PrincipalKind::User,

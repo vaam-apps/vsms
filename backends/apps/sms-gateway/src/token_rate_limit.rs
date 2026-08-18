@@ -7,7 +7,7 @@ use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use cratestack::CoolError;
+use cratestack::CratestackError;
 use cratestack::ratelimit::{
     InMemoryRateLimitStore, RateLimitConfig, RateLimitDecision, RateLimitStore,
 };
@@ -81,7 +81,7 @@ fn throttled_response(retry_after_secs: u32) -> Response {
 /// the error's own status code, the same as `sms_api::router`'s two
 /// `RateLimitLayer`s already do. Consistency with that established
 /// precedent, not a fresh design decision.
-fn store_error_response(error: &CoolError) -> Response {
+fn store_error_response(error: &CratestackError) -> Response {
     tracing::warn!(%error, "token client_id rate limit store error");
     let mut response = Response::new(Body::from(error.public_message().into_owned()));
     *response.status_mut() = error.status_code();

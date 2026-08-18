@@ -23,7 +23,7 @@
 
 use chrono::{Duration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError, Value};
+use cratestack::{CratestackContext, CratestackError, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, MessageClass, MessageState, OperatorCode, UpdateMessageInput,
@@ -38,7 +38,7 @@ use sms_api::{HashPepper, Procedures};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "list-message-receipts-test-system".to_owned(),
         kind: PrincipalKind::App,
@@ -48,7 +48,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "list-message-receipts-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -79,7 +79,7 @@ fn owner() -> CoolContext {
 /// a latent mismatch in this fixture, invisible only because the bypass
 /// bug hid it. Fixed at the root — every caller of this function now
 /// passes the actual seeded app id.
-fn app_caller_with_sms_read(app_id: &str) -> CoolContext {
+fn app_caller_with_sms_read(app_id: &str) -> CratestackContext {
     let mut ctx = Principal {
         sub: "list-message-receipts-test-console-client".to_owned(),
         kind: PrincipalKind::App,
@@ -98,7 +98,7 @@ fn app_caller_with_sms_read(app_id: &str) -> CoolContext {
 /// "an omitted scope yields denial" shape §5.2 documents. See
 /// [`app_caller_with_sms_read`]'s own doc for why `app_id` is now a real
 /// parameter.
-fn app_caller_without_sms_read(app_id: &str) -> CoolContext {
+fn app_caller_without_sms_read(app_id: &str) -> CratestackContext {
     let mut ctx = Principal {
         sub: "list-message-receipts-test-console-client-no-scope".to_owned(),
         kind: PrincipalKind::App,
@@ -463,10 +463,10 @@ async fn denies_a_caller_with_no_sms_read_scope() {
     .expect_err("a caller with no sms:read scope must be denied");
 
     assert!(
-        matches!(error, CoolError::Forbidden(_)),
+        matches!(error, CratestackError::Forbidden(_)),
         "expected Forbidden, got {error:?}"
     );
-    if let CoolError::Forbidden(message) = error {
+    if let CratestackError::Forbidden(message) = error {
         assert!(
             message.contains("sms:read"),
             "expected the denial to name the missing permission: {message}"

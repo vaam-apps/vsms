@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::schema::{
     Cratestack, DeliveryReceipt, Job, MessageState, UpdateMessageInput, delivery_receipt, message,
 };
@@ -60,7 +60,7 @@ impl PurgeRetention {
     pub async fn run_at(
         &self,
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         now: DateTime<Utc>,
     ) -> Result<(), String> {
         let cutoff = now - RETENTION;
@@ -92,7 +92,12 @@ impl JobHandler for PurgeRetention {
         "purge_retention"
     }
 
-    async fn run(&self, db: &Cratestack, sys: &CoolContext, _job: &Job) -> Result<(), String> {
+    async fn run(
+        &self,
+        db: &Cratestack,
+        sys: &CratestackContext,
+        _job: &Job,
+    ) -> Result<(), String> {
         self.run_at(db, sys, Utc::now()).await
     }
 }
@@ -106,10 +111,10 @@ impl JobHandler for PurgeRetention {
 /// a terminal message — is logged and skipped, not a fault.
 async fn purge_messages(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     cutoff: DateTime<Utc>,
     now: DateTime<Utc>,
-) -> Result<usize, CoolError> {
+) -> Result<usize, CratestackError> {
     let candidates = db
         .message()
         .find_many()
@@ -142,7 +147,9 @@ async fn purge_messages(
 
         match result {
             Ok(_) => purged += 1,
-            Err(CoolError::Conflict(reason) | CoolError::PreconditionFailed(reason)) => {
+            Err(
+                CratestackError::Conflict(reason) | CratestackError::PreconditionFailed(reason),
+            ) => {
                 warn!(
                     message_id = %candidate.id,
                     reason,
@@ -163,9 +170,9 @@ async fn purge_messages(
 /// `.create()`s one).
 async fn purge_delivery_receipts(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     cutoff: DateTime<Utc>,
-) -> Result<usize, CoolError> {
+) -> Result<usize, CratestackError> {
     let candidates: Vec<DeliveryReceipt> = db
         .delivery_receipt()
         .find_many()

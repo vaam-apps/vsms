@@ -21,7 +21,7 @@ import "server-only";
 // `backends/crates/sms-api/tests/if_match_live_postgres.rs` (Rust side of #59) is
 // the genuine end-to-end proof: a real Postgres, the real generated CAS SQL
 // two operators racing a `Provider` update actually executes, a real
-// `CoolError::PreconditionFailed` mapping to a real HTTP 412 — verified
+// `CratestackError::PreconditionFailed` mapping to a real HTTP 412 — verified
 // against `cratestack-core`'s own `error.rs`, not assumed. That test's own
 // module doc explains why it stops at the delegate layer rather than going
 // over real HTTP through this package: `GatewayAuth::authenticate`
@@ -104,7 +104,7 @@ export interface WithEtag<T> {
  *
  * ```rust
  * raw.strip_prefix('"').and_then(|s| s.strip_suffix('"'))
- *    .ok_or_else(|| CoolError::BadRequest(
+ *    .ok_or_else(|| CratestackError::BadRequest(
  *        "If-Match must be a strong ETag of the form \"<integer>\""))?
  * ```
  *

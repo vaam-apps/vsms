@@ -24,7 +24,7 @@
 
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, Value};
+use cratestack::{CratestackContext, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, procedures::ProcedureRegistry, procedures::rotate_webhook_secret,
@@ -38,7 +38,7 @@ use sms_api::{HashPepper, Procedures};
 /// `replay_webhook_attempt_live_postgres.rs`'s own
 /// `developer_without_permission`, since #193 gave `rotateWebhookSecret`
 /// the same Layer 2 gate `replayWebhookAttempt` already had.
-fn developer_without_permission() -> CoolContext {
+fn developer_without_permission() -> CratestackContext {
     Principal {
         sub: "rotate-webhook-secret-test-developer-no-perms".to_owned(),
         kind: PrincipalKind::User,
@@ -57,7 +57,7 @@ fn developer_without_permission() -> CoolContext {
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "rotate-webhook-secret-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -77,7 +77,7 @@ fn owner() -> CoolContext {
 /// the claim spelled out by hand for a direct procedure call, the same way
 /// `replay_webhook_attempt_live_postgres.rs`'s own
 /// `developer_with_webhook_manage` does for its sibling procedure.
-fn owner_with_webhook_manage() -> CoolContext {
+fn owner_with_webhook_manage() -> CratestackContext {
     let mut ctx = owner();
     ctx.extensions.insert(
         "perms".to_owned(),
@@ -284,7 +284,7 @@ async fn rotating_an_unknown_endpoint_id_is_not_found() {
     .expect_err("a nonexistent endpoint id must not silently succeed");
 
     assert!(
-        matches!(error, cratestack::CoolError::NotFound(_)),
+        matches!(error, cratestack::CratestackError::NotFound(_)),
         "expected NotFound, got {error:?}"
     );
 }
@@ -329,10 +329,10 @@ async fn rotate_denies_a_caller_with_no_webhook_manage_permission() {
     .expect_err("a caller with no webhook:manage permission must be denied");
 
     assert!(
-        matches!(error, cratestack::CoolError::Forbidden(_)),
+        matches!(error, cratestack::CratestackError::Forbidden(_)),
         "expected Forbidden, got {error:?}"
     );
-    if let cratestack::CoolError::Forbidden(message) = error {
+    if let cratestack::CratestackError::Forbidden(message) = error {
         assert!(
             message.contains("webhook:manage"),
             "expected the denial to name the missing permission: {message}"

@@ -53,7 +53,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
@@ -98,7 +98,7 @@ const CHAOS_REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-worker-chaos-test".to_owned(),
         kind: PrincipalKind::App,
@@ -108,7 +108,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-worker-chaos-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -551,7 +551,7 @@ fn orange_config(base_url: String) -> OrangeCmConfig {
 /// `dispatch`'s own `WorkerContext` pointed at [`FakeOrange`].
 struct Harness {
     db: Cratestack,
-    sys: CoolContext,
+    sys: CratestackContext,
     app_id: String,
     ctx: WorkerContext,
     fake: FakeOrange,

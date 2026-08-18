@@ -60,7 +60,7 @@ writer (incremented immediately before, decremented immediately after,
 send-path chain — see `backends/crates/sms-api/src/procedures.rs`'s own module
 doc for the first, and `sms_metrics`'s own doc for why a fleet-wide sum
 sustained above `1` on that gauge is the split-brain signal #70 names.
-Every write in this module also now routes its resulting `CoolError`
+Every write in this module also now routes its resulting `CratestackError`
 through `sms_api::map_database_error` before logging — the same reason
 `crate::claim`, `crate::jobs`, `crate::hooks`, and `crate::jobs::
 expire_stale` all do the same: that function is `sms_sm001_total`'s one

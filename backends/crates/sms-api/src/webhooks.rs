@@ -1,7 +1,7 @@
 #![doc = include_str!("webhooks.md")]
 
 use chrono::Utc;
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use tracing::error;
 
 use crate::auth::{Principal, PrincipalKind};
@@ -16,7 +16,7 @@ use crate::schema::{
 /// under. No real caller's token ever carries this identity — see
 /// `Principal::into_context`'s own doc for why setting only `kind` or only
 /// `role` denies every write instead of granting one.
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-api:webhooks".to_owned(),
         kind: PrincipalKind::App,
@@ -64,7 +64,7 @@ pub fn message_event_type(state: MessageState) -> Option<&'static str> {
 }
 
 /// Registers every subscriber this milestone builds against `db`'s own
-/// `CoolEventBus`. See this module's own doc for why calling this exactly
+/// `CratestackEventBus`. See this module's own doc for why calling this exactly
 /// once per process — not once per role, not gated on which roles a
 /// `sms-worker` process runs — is the actual correctness requirement, not
 /// a style preference.
@@ -117,9 +117,9 @@ pub fn register_subscribers(db: &Cratestack) {
 /// drain called this handler. §8.2: "handlers are not panic-isolated — no
 /// `catch_unwind` in the framework itself." This is the boundary #38 says
 /// has to exist, and this is where it lives.
-async fn panic_isolated<F>(fut: F) -> Result<(), CoolError>
+async fn panic_isolated<F>(fut: F) -> Result<(), CratestackError>
 where
-    F: std::future::Future<Output = Result<(), CoolError>> + Send + 'static,
+    F: std::future::Future<Output = Result<(), CratestackError>> + Send + 'static,
 {
     match tokio::spawn(fut).await {
         Ok(result) => result,
@@ -128,7 +128,7 @@ where
                 %join_error,
                 "webhook subscriber panicked; event left undelivered for retry"
             );
-            Err(CoolError::Internal(format!(
+            Err(CratestackError::Internal(format!(
                 "webhook subscriber panicked: {join_error}"
             )))
         }
@@ -176,7 +176,7 @@ pub async fn enqueue_message_webhook_attempts(
     db: &Cratestack,
     source_event_id: cratestack::uuid::Uuid,
     message: &Message,
-) -> Result<(), CoolError> {
+) -> Result<(), CratestackError> {
     if message.purgedAt.is_some() {
         return Ok(());
     }
@@ -316,7 +316,7 @@ mod tests {
     /// whatever called it. Without `tokio::spawn`'s task boundary, a panic
     /// inside a future awaited in-line propagates exactly like a
     /// synchronous panic — which, chained through
-    /// `CoolEventBus::emit` → `SqlxRuntime::drain_event_outbox` → the
+    /// `CratestackEventBus::emit` → `SqlxRuntime::drain_event_outbox` → the
     /// `@@emit` mutation's own post-commit call, would abort whatever
     /// procedure (`sendMessage`, `dlr::ingest`) triggered it.
     #[tokio::test]
@@ -339,11 +339,14 @@ mod tests {
     #[tokio::test]
     async fn a_non_panicking_err_passes_through_unchanged() {
         let result = super::panic_isolated(async {
-            Err(cratestack::CoolError::Internal(
+            Err(cratestack::CratestackError::Internal(
                 "ordinary failure".to_owned(),
             ))
         })
         .await;
-        assert!(matches!(result, Err(cratestack::CoolError::Internal(_))));
+        assert!(matches!(
+            result,
+            Err(cratestack::CratestackError::Internal(_))
+        ));
     }
 }

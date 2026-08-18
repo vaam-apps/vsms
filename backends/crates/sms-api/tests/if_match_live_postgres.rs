@@ -36,7 +36,7 @@
 //! etag.rs` (read directly, not assumed) shows the generated handler does
 //! exactly three things around the handler body this test exercises
 //! directly — parse `If-Match` into `Option<i64>` (missing header ==>
-//! `CoolError::PreconditionFailed("If-Match header required")`, the same
+//! `CratestackError::PreconditionFailed("If-Match header required")`, the same
 //! error this test asserts below), call `.if_match(version)` on the same
 //! `UpdateRecordSet` builder `db.provider().update(id).set(...)` returns
 //! here, and stamp the response `ETag` from the returned row's own
@@ -48,12 +48,12 @@
 //! piece of this deployment (`GatewayAuth`) that structurally cannot get
 //! there yet.
 //!
-//! `CoolError::PreconditionFailed`'s HTTP shape (412, code
+//! `CratestackError::PreconditionFailed`'s HTTP shape (412, code
 //! `"PRECONDITION_FAILED"`) is asserted directly against the framework's
 //! own `status_code()`/`code()` methods below — `cratestack-core-0.7.10/
 //! src/error.rs`, not this crate's own `errors.rs` (which only maps
 //! *database*-level SQLSTATEs; a losing `if_match` is a plain
-//! `Err(CoolError::PreconditionFailed(...))` returned before any SQL runs,
+//! `Err(CratestackError::PreconditionFailed(...))` returned before any SQL runs,
 //! see `cratestack-sqlx-0.7.10/src/query/write/update.rs`'s own
 //! `run_in_tx`) — so this test is checking the framework's real behaviour,
 //! not restating this crate's own code back at itself.
@@ -66,7 +66,7 @@
 //! ```
 
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError};
+use cratestack::{CratestackContext, CratestackError};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack};
 
@@ -101,7 +101,7 @@ async fn db() -> Cratestack {
 /// which role is used doesn't matter to this file, only that CAS behaves
 /// the same regardless (Layer 1's own admission is `policy_golden_list_
 /// live_postgres.rs`'s job, not this file's).
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "if-match-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -196,7 +196,7 @@ async fn two_operators_editing_the_same_provider_row_the_second_stale_write_gets
         "operator B's stale write must be rejected, not silently overwrite operator A's change",
     );
     assert!(
-        matches!(error, CoolError::PreconditionFailed(_)),
+        matches!(error, CratestackError::PreconditionFailed(_)),
         "expected PreconditionFailed, got {error:?}"
     );
     // The framework's own HTTP shape (cratestack-core's error.rs), asserted
@@ -304,7 +304,7 @@ async fn omitting_if_match_entirely_is_rejected_not_silently_allowed() {
 
     let error = result.expect_err("a versioned model's update with no If-Match must be rejected");
     assert!(
-        matches!(error, CoolError::PreconditionFailed(_)),
+        matches!(error, CratestackError::PreconditionFailed(_)),
         "expected PreconditionFailed, got {error:?}"
     );
     assert_eq!(error.status_code().as_u16(), 412);

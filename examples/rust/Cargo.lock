@@ -308,9 +308,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-client"
-version = "0.7.16"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "83d6e508384581ccfbdc69118c51b2dd91b009c79679d307bcc83b5dbf114cd3"
+checksum = "bad7f5d8e0826201de611c81fe88fc2025537737381a23c44ab997d031c33b86"
 dependencies = [
  "chrono",
  "cratestack-client-rust",
@@ -324,9 +324,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-client-rust"
-version = "0.7.16"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9db9f92ec2418d96153fbef4a573d48f9b4d87b4ba0959c27b9a2a9edc9c5595"
+checksum = "69d335cfaf0f17e17245dc5cf758a813b1e11fa5ef8fd2688de06c57e3b9a18b"
 dependencies = [
  "async-trait",
  "bytes",
@@ -349,9 +349,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-codec-cbor"
-version = "0.7.16"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "617e1e9050a2f1925e617bc3d44dcf757172893f7abc4b9c369d69eb827fadae"
+checksum = "7d861c7ad307ab46bbdea10e082965b6e11ff609f234123e73df11bbd6e2bfef"
 dependencies = [
  "cratestack-core",
  "minicbor-serde",
@@ -360,9 +360,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-codec-json"
-version = "0.7.16"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fd1fe4881bf4f8709c006f0fd725ab472d3857e5c3ea5f9773eb3f09b8e2732"
+checksum = "486c5dd10269c454f6efa2c6d73a509e8cc0ed1bf5d2973ef541922c04f44930"
 dependencies = [
  "cratestack-core",
  "serde",
@@ -371,9 +371,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-core"
-version = "0.7.16"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9b3bf18f3b6b8ed36161f27edafc7b5c2a7edd513b9839d59ff9c3657fc5606"
+checksum = "d560f197bf1ec8a983b5c9089dacc39b7e1e8dc0deb5457a1be24a95020cbeb4"
 dependencies = [
  "async-trait",
  "base64",
@@ -393,9 +393,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-macros"
-version = "0.7.16"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66fae74a5a7c86a3f714712cdf4e3f3af48b3dc78e2f3dfca1fa0ca94ea9f2f6"
+checksum = "063c952391ab270d14a83c33ee0e02968ed388eda6c9a9573453afeac6074b5b"
 dependencies = [
  "cratestack-core",
  "cratestack-parser",
@@ -409,9 +409,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-parser"
-version = "0.7.16"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71ddcc6821eaa52949d178f1fac2319fe9fcaa128e5104b9c66f6ac84fd9fba7"
+checksum = "12a03d9e31d40ceadc4067f25b0bc084f7e6e5d43c1872d2764fa40172dd3362"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -422,9 +422,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-policy"
-version = "0.7.16"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f818f19dbd68435246b8dcc301cebe45a59c568d2d0c42a6a3610195b186220"
+checksum = "80fbfa0e866e1a3d6dd67e4ee55f4a0f6bbf0058484ede36bb74af9f9cd3dffd"
 dependencies = [
  "cratestack-core",
  "serde",
@@ -432,9 +432,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-proto"
-version = "0.7.16"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "619fdc04635c1e4104a0df191b3dca2549c1cb991077c51cf45a0c18bd044b3f"
+checksum = "5edec0b42ee4adf065285479e92541202b747f538975e468a808008361a58106"
 dependencies = [
  "cratestack-core",
  "serde",
@@ -444,9 +444,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-sql"
-version = "0.7.16"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0332350ffe9475caf45860e8c44251b782c5f3582488a0fc704181ae5adff750"
+checksum = "a423985cafa53351bbd8396b1725759d276b3f677f031038a76071bee032c205"
 dependencies = [
  "chrono",
  "cratestack-core",
@@ -2269,7 +2269,7 @@ dependencies = [
 
 [[package]]
 name = "vsms-sdk-rust"
-version = "0.1.0"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "cratestack-client",

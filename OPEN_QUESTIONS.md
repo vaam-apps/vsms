@@ -336,6 +336,14 @@ each row.** None of the fixes were adopted (removing a workaround is a real
 schema/code change with its own risk, out of scope for a pure dependency
 bump), but the blocking reason for each is gone.
 
+**Re-checked 2026-08-18 (the cratestack 0.8.3 bump): every row below is
+unchanged.** Nothing in `v0.7.16...v0.8.3` touches `auth().isSystem()` or
+`.upsert().do_nothing()`, and the three closed bugs stay closed with their
+workarounds still in place here — 0.8.x's own breaking changes (the
+`Cool*` → `Cratestack*` rename, additive decimal backends, the `--tanstack`
+gate) are unrelated to all five. Each remains a deliberate follow-up rather
+than something a dependency bump should spend its budget on.
+
 | Question | Where | State |
 |---|---|---|
 | Does `cratestack studio`'s direct-DB mode intend to bypass `@version` and `@@emit`? | [cratestack#507](https://github.com/cratestack/cratestack/issues/507) | **Closed 2026-08-13, cratestack 0.7.13** (PR [cratestack#553](https://github.com/cratestack/cratestack/pull/553): `[target.db]` writes now route through the same descriptor path every other write does, rather than being refused outright; PR [cratestack#557](https://github.com/cratestack/cratestack/pull/557) fixed a related no-payload SQL-preview duplication in the same window). Not verified live against `cratestack studio` by this PR — `docs/roadmap.md`'s own #46 section already disqualified Studio from any deployed vsms surface for unrelated reasons (no procedure surface, bypasses `@@allow`), so nothing here currently depends on the fix. |

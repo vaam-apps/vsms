@@ -17,7 +17,7 @@
 //! ```
 
 use chrono::{DateTime, Duration, Utc};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
@@ -48,7 +48,7 @@ use sms_worker::claim::{Claimable, claim_batch};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-worker-claim-test".to_owned(),
         kind: PrincipalKind::App,
@@ -58,7 +58,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-worker-claim-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -859,7 +859,7 @@ async fn concurrent_if_match_updates_never_both_win() {
         for h in handles {
             match h.await.expect("racer task must not panic") {
                 Ok(_) => wins += 1,
-                Err(cratestack::CoolError::PreconditionFailed(_)) => {
+                Err(cratestack::CratestackError::PreconditionFailed(_)) => {
                     total_precondition_failed += 1;
                 }
                 Err(other) => {

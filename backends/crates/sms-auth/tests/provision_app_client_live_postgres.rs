@@ -51,7 +51,7 @@ use axum::Router;
 use axum::extract::FromRef;
 use axum::routing::post;
 use chrono::{Duration, Utc};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
@@ -72,7 +72,7 @@ use sms_api::{HashPepper, Procedures};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "provision-app-client-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -82,7 +82,7 @@ fn owner() -> CoolContext {
     .into_context()
 }
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "provision-app-client-test-system".to_owned(),
         kind: PrincipalKind::App,

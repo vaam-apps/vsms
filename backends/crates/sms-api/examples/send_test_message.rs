@@ -27,7 +27,7 @@ use anyhow::Context;
 use chrono::Utc;
 use clap::Parser;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::Procedures;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
@@ -62,7 +62,7 @@ struct Cli {
     hash_pepper: String,
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "send-test-message-tool".to_owned(),
         kind: PrincipalKind::User,
@@ -72,7 +72,7 @@ fn owner() -> CoolContext {
     .into_context()
 }
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "send-test-message-tool".to_owned(),
         kind: PrincipalKind::App,
@@ -88,7 +88,7 @@ fn sys() -> CoolContext {
 /// `GatewayAuth` (see this file's own module doc — no admin console or
 /// `provisionAppClient` exists yet), so it has to carry the same claim a
 /// real token's `scope` would by hand.
-fn app_caller() -> CoolContext {
+fn app_caller() -> CratestackContext {
     let mut ctx = Principal {
         sub: CLIENT_ID.to_owned(),
         kind: PrincipalKind::App,

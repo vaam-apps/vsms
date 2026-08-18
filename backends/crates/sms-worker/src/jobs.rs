@@ -11,7 +11,7 @@ use std::time::Duration as StdDuration;
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
-use cratestack::{CoolContext, CoolError};
+use cratestack::{CratestackContext, CratestackError};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{Cratestack, Job, JobState, UpdateJobInput};
 use sms_api::{is_illegal_transition, map_database_error};
@@ -70,7 +70,7 @@ pub trait JobHandler: Send + Sync + 'static {
     /// makes, because §7.5's diagram draws exactly one failure edge
     /// (`running -> failed`) regardless of cause; every failure gets the
     /// same backoff-then-`dead` treatment.
-    async fn run(&self, db: &Cratestack, sys: &CoolContext, job: &Job) -> Result<(), String>;
+    async fn run(&self, db: &Cratestack, sys: &CratestackContext, job: &Job) -> Result<(), String>;
 }
 
 /// `kind` string to handler, built once at startup.
@@ -122,7 +122,7 @@ pub fn default_registry() -> Registry {
         .register(grey_route_watch::GreyRouteWatch)
 }
 
-fn sys(worker: &str) -> CoolContext {
+fn sys(worker: &str) -> CratestackContext {
     Principal {
         sub: format!("sms-worker:jobs:{worker}"),
         kind: PrincipalKind::App,
@@ -149,10 +149,10 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 /// live tests drive exactly one iteration deterministically.
 pub async fn tick(
     ctx: &WorkerContext,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     worker: &str,
     registry: &Registry,
-) -> Result<(), CoolError> {
+) -> Result<(), CratestackError> {
     let claimed = claim_batch::<Job>(&ctx.db, sys, worker, BUDGET).await?;
     for job in claimed {
         // A `pending` result is a crash-reclaim, not a real claim — see
@@ -170,7 +170,7 @@ pub async fn tick(
 /// outcome implies. Errors writing that transition are logged, not
 /// propagated — one job's DB write failing must not stall the rest of this
 /// tick's batch, same reasoning as `dispatch::submit_one`.
-async fn run_one(db: &Cratestack, sys: &CoolContext, job: &Job, registry: &Registry) {
+async fn run_one(db: &Cratestack, sys: &CratestackContext, job: &Job, registry: &Registry) {
     let outcome = match registry.get(&job.kind) {
         Some(handler) => handler.run(db, sys, job).await,
         None => Err(format!("no handler registered for kind {:?}", job.kind)),
@@ -188,10 +188,10 @@ async fn run_one(db: &Cratestack, sys: &CoolContext, job: &Job, registry: &Regis
 /// shape `backends/crates/sms-api/src/dlr.rs`'s `ingest_one` already uses.
 async fn apply_outcome(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     job: &Job,
     outcome: Result<(), String>,
-) -> Result<(), CoolError> {
+) -> Result<(), CratestackError> {
     let message = match outcome {
         Ok(()) => {
             return match db
@@ -216,10 +216,10 @@ async fn apply_outcome(
 
 async fn apply_failure(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     job: &Job,
     message: String,
-) -> Result<(), CoolError> {
+) -> Result<(), CratestackError> {
     let failed = match db
         .job()
         .update(job.id.clone())
@@ -273,16 +273,16 @@ async fn apply_failure(
 /// # #71: checked against the *raw* error, deliberately before any mapping
 ///
 /// [`sms_api::is_illegal_transition`] reads `error.db_sqlstate()` directly
-/// off the framework's own, unmapped `CoolError` — it does not need
+/// off the framework's own, unmapped `CratestackError` — it does not need
 /// `sms_api::map_database_error` to have already run, and checking it first
 /// here is load-bearing, not stylistic. A version-race write and a genuine
 /// SM001 both arrive at this call site raw, and — before #71 — this
-/// function's own `CoolError::Conflict(reason)` arm existed for a case that
+/// function's own `CratestackError::Conflict(reason)` arm existed for a case that
 /// was, in fact, unreachable: nothing on this write path ever produced
 /// `Conflict` without going through `map_database_error` first, and nothing
 /// here called it (confirmed by reading `cratestack-sqlx`'s own
 /// `update_run.rs`/`error.rs`, not assumed — nowhere in that path does
-/// `.if_match().update().run()` construct `CoolError::Conflict` directly).
+/// `.if_match().update().run()` construct `CratestackError::Conflict` directly).
 /// Wiring #71's own SM001 counting the naive way — mapping every error at
 /// the call site before it ever reaches this function — would have made
 /// that dead branch live for the wrong reason: a genuinely illegal edge
@@ -295,12 +295,12 @@ async fn apply_failure(
 /// propagated (surfacing as `run_one`'s own `error!`, the same loud
 /// treatment it already got before this crate had a metric to record it
 /// with), and only a genuine version race is ever swallowed.
-fn swallow_stale_write(job: &Job, error: CoolError) -> Result<(), CoolError> {
+fn swallow_stale_write(job: &Job, error: CratestackError) -> Result<(), CratestackError> {
     if is_illegal_transition(&error) {
         return Err(map_database_error(error));
     }
     match error {
-        CoolError::PreconditionFailed(reason) => {
+        CratestackError::PreconditionFailed(reason) => {
             warn!(
                 job_id = %job.id,
                 reason,

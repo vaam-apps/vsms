@@ -1,6 +1,6 @@
 #![doc = include_str!("login.md")]
 
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::schema::{self, Cratestack, role, user, user_credential};
 use sms_core::password::{hash_password, verify_password};
 use sms_core::unpack;
@@ -91,7 +91,7 @@ pub enum LoginError {
 /// attacker-visible one.
 pub async fn authenticate_user(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     email: &str,
     password: &str,
 ) -> Result<AuthenticatedUser, LoginError> {
@@ -143,7 +143,7 @@ pub async fn authenticate_user(
 /// login must honour both.
 async fn find_active_user(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     email: &str,
 ) -> Option<(schema::User, schema::UserCredential)> {
     let users = db
@@ -175,7 +175,11 @@ async fn find_active_user(
     Some((user_row, credential_row))
 }
 
-async fn find_role(db: &Cratestack, sys: &CoolContext, role_key: &str) -> Option<schema::Role> {
+async fn find_role(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    role_key: &str,
+) -> Option<schema::Role> {
     let roles = db
         .role()
         .find_many()

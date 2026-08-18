@@ -2,7 +2,7 @@
 //! surface, against a genuinely spawned `sms-gateway serve` process — not
 //! an in-process router the way most of this workspace's other live
 //! suites build (`rbac_layer2_live_postgres.rs`, `oidc_flow_live.rs`), and
-//! not a hand-built `CoolContext` the way a unit test would. `POST /login`
+//! not a hand-built `CratestackContext` the way a unit test would. `POST /login`
 //! is a raw axum route this binary's own `main.rs` mounts (see
 //! `src/login.rs`'s own module doc), so — matching
 //! `m1_acceptance_gate_live_postgres.rs`'s own precedent and its own
@@ -57,7 +57,7 @@ use std::time::Duration as StdDuration;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sha2::{Digest, Sha256};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, ClientAuthMethod, Cratestack, provider as provider_filter};
@@ -79,7 +79,7 @@ const CONSOLE_CLIENT_ID: &str = "sms-console";
 const REDIRECT_URI: &str = "http://127.0.0.1:1/callback";
 const TEST_PASSWORD: &str = "correct horse battery staple login flow test";
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "login-flow-gate-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -89,7 +89,7 @@ fn owner() -> CoolContext {
     .into_context()
 }
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "login-flow-gate-test-system".to_owned(),
         kind: PrincipalKind::App,

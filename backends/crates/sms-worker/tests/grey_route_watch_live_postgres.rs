@@ -31,7 +31,7 @@
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode, route,
@@ -44,7 +44,7 @@ use sms_worker::jobs::grey_route_watch::GreyRouteWatch;
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-worker-grey-route-watch-test".to_owned(),
         kind: PrincipalKind::App,
@@ -54,7 +54,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-worker-grey-route-watch-test-owner".to_owned(),
         kind: PrincipalKind::User,

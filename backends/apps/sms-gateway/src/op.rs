@@ -15,7 +15,7 @@ use axum::extract::{FromRef, State};
 use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use sms_api::schema::Cratestack;
 use sms_auth::op::MachineOnlyOpStore;
 
@@ -165,7 +165,7 @@ pub fn router(state: OpState, token_rate_limit: TokenRateLimitState) -> Router {
 pub fn spawn_key_refresh(
     state: OpState,
     db: Cratestack,
-    sys: CoolContext,
+    sys: CratestackContext,
     issuer: String,
     interval: Duration,
 ) {

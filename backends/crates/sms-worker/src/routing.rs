@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::schema::{
     self, Cratestack, MessageClass as SchemaMessageClass, OperatorCode as SchemaOperatorCode,
     provider, route,
@@ -119,10 +119,10 @@ fn convert_provider(row: &schema::Provider, now: chrono::DateTime<chrono::Utc>) 
 /// the route(s) a message has already been rerouted away from.
 pub async fn decide(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     candidate: &Candidate<'_>,
     exclude: &ExcludedRouteIds,
-) -> Result<Decision, CoolError> {
+) -> Result<Decision, CratestackError> {
     let routes = db
         .route()
         .find_many()
