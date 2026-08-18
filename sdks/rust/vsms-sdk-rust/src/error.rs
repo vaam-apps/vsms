@@ -88,7 +88,7 @@ impl SdkError {
     /// another request under the *same* `Idempotency-Key` is still being
     /// processed (not yet reserved-and-replayable). Distinguished from
     /// `clientRef`'s `409` (see [`SdkError::is_conflict`]) by message
-    /// content — that response body is plain text, not a `CoolErrorResponse`,
+    /// content — that response body is plain text, not a `CratestackErrorResponse`,
     /// so `decode_send_message_response` falls back to using it verbatim as
     /// this error's message, and it always contains "Idempotency-Key".
     pub fn is_idempotency_in_flight(&self) -> bool {

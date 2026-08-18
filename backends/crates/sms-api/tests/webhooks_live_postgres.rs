@@ -34,7 +34,7 @@
 
 use chrono::{Duration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode, message,
@@ -47,7 +47,7 @@ use sms_api::webhooks::enqueue_message_webhook_attempts;
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-api-webhooks-test".to_owned(),
         kind: PrincipalKind::App,
@@ -57,7 +57,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-api-webhooks-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -418,7 +418,7 @@ async fn a_message_with_no_matching_endpoints_produces_no_attempts_and_no_error(
 
 /// **The one honest caveat under `#44`'s "no event lost" gate.** Read
 /// `webhooks.rs`'s own module doc before this test: on the Postgres
-/// backend, `CoolEventBus::emit` returns `Ok(())` for a topic with zero
+/// backend, `CratestackEventBus::emit` returns `Ok(())` for a topic with zero
 /// registered handlers, and the framework's own automatic post-commit
 /// drain treats `Ok` the same whether a handler actually ran or there
 /// never was one to run — it marks the outbox row `delivered_at = NOW()`
@@ -457,7 +457,7 @@ async fn a_writer_that_never_registered_subscribers_silently_loses_the_event() {
     // transition below still commits successfully — R2/the trigger don't
     // care whether anyone is listening — and its own automatic post-commit
     // drain still runs (`create.rs`/`update.rs`'s unconditional call), but
-    // `CoolEventBus::emit` has zero handlers for this topic on *this*
+    // `CratestackEventBus::emit` has zero handlers for this topic on *this*
     // instance, so it's `Ok(())` immediately and the row is marked
     // delivered having done nothing.
     unregistered_db

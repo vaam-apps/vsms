@@ -1,7 +1,7 @@
 // #59's mechanism-level proof for the web half of "thread ETag / If-Match
 // through every edit ... in the data layer once." The genuine end-to-end
 // proof — a real Postgres, the real generated CAS SQL, a real
-// `CoolError::PreconditionFailed` mapped to a real HTTP 412 — is
+// `CratestackError::PreconditionFailed` mapped to a real HTTP 412 — is
 // `backends/crates/sms-api/tests/if_match_live_postgres.rs`; that test's own module
 // doc explains why *this* file stands in a fake upstream rather than a live
 // `sms-gateway` (`GatewayAuth` hardcodes `role: "app"` for every real

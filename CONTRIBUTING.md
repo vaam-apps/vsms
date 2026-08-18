@@ -48,9 +48,9 @@ Two things people reach for that are **not** exceptions:
 - **Transactions.** Every delegate builder has `.run_in_tx(&mut tx, &ctx)`. Delegates inside a caller-managed transaction still write their audit and outbox rows into that transaction. `cratestack::run_in_isolated_tx(pool, isolation, closure)` handles `SERIALIZABLE` with 40001 retries.
 - **Row locking.** `.for_update()` exists on `find_many` and `find_unique` and appends a real `FOR UPDATE`.
 
-The one genuine gap is **`SKIP LOCKED`**, which the framework cannot express — `skip_locked()`, `nowait()` and `lock_mode()` are all compile errors. The claim loops use optimistic compare-and-swap on `@version` instead, treating `CoolError::PreconditionFailed` as "another worker won". That is better here regardless: no lock is held across the provider HTTP call.
+The one genuine gap is **`SKIP LOCKED`**, which the framework cannot express — `skip_locked()`, `nowait()` and `lock_mode()` are all compile errors. The claim loops use optimistic compare-and-swap on `@version` instead, treating `CratestackError::PreconditionFailed` as "another worker won". That is better here regardless: no lock is held across the provider HTTP call.
 
-One trap in that pattern. `CoolError::Forbidden` is **ambiguous** — the framework returns it both when the update policy denies and when the row is gone, because both produce zero rows. Do not fold it into the "lost the race" branch; log it. Swallowing it hides a policy regression as unexplained throughput loss.
+One trap in that pattern. `CratestackError::Forbidden` is **ambiguous** — the framework returns it both when the update policy denies and when the row is gone, because both produce zero rows. Do not fold it into the "lost the race" branch; log it. Swallowing it hides a policy regression as unexplained throughput loss.
 
 ---
 
@@ -66,7 +66,7 @@ Three reasons this lives in the database, in ascending order of how much they wi
 
 Terminal states are simply rows with no outgoing edges, so terminality is data rather than a branch someone can forget.
 
-**When you touch a state machine:** update the transition table in a migration, update the Mermaid diagram in the design doc, and make sure `state_machine_parity` still passes. Map `sqlstate = 'SM001'` to `CoolError::Conflict` so it surfaces as `409`, not `500`.
+**When you touch a state machine:** update the transition table in a migration, update the Mermaid diagram in the design doc, and make sure `state_machine_parity` still passes. Map `sqlstate = 'SM001'` to `CratestackError::Conflict` so it surfaces as `409`, not `500`.
 
 **Alert on any non-zero `SM001` rate in production.** In a correct system it is flat zero — the trigger is a backstop, not a control path. A non-zero rate means the code and the transition table disagree, and it will tell you before a customer does.
 

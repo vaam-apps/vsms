@@ -25,7 +25,7 @@
 
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError, Value};
+use cratestack::{CratestackContext, CratestackError, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
@@ -38,7 +38,7 @@ use sms_api::{HashPepper, Procedures};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "dashboard-summary-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -48,7 +48,7 @@ fn owner() -> CoolContext {
     .into_context()
 }
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "dashboard-summary-test".to_owned(),
         kind: PrincipalKind::App,
@@ -60,7 +60,7 @@ fn sys() -> CoolContext {
 
 /// The console's own real shape: `kind == "app"`, scoped to one `appId`,
 /// carrying the `dashboard:read` scope `require_permission` checks.
-fn app_caller_with_dashboard_read(app_id: &str) -> CoolContext {
+fn app_caller_with_dashboard_read(app_id: &str) -> CratestackContext {
     let mut ctx = Principal {
         sub: "dashboard-summary-test-console-client".to_owned(),
         kind: PrincipalKind::App,
@@ -75,7 +75,7 @@ fn app_caller_with_dashboard_read(app_id: &str) -> CoolContext {
     ctx
 }
 
-fn app_caller_without_dashboard_read(app_id: &str) -> CoolContext {
+fn app_caller_without_dashboard_read(app_id: &str) -> CratestackContext {
     let mut ctx = Principal {
         sub: "dashboard-summary-test-console-client-no-scope".to_owned(),
         kind: PrincipalKind::App,
@@ -292,7 +292,7 @@ async fn a_caller_with_no_dashboard_read_scope_is_denied() {
     .expect_err("a caller with no dashboard:read scope must be refused");
 
     assert!(
-        matches!(error, CoolError::Forbidden(_)),
+        matches!(error, CratestackError::Forbidden(_)),
         "expected Forbidden, got {error:?}"
     );
 }

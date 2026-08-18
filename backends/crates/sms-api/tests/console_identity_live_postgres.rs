@@ -9,7 +9,7 @@
 
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, Value};
+use cratestack::{CratestackContext, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack,
@@ -49,7 +49,7 @@ async fn db() -> Cratestack {
     Cratestack::builder(pool).build()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "console-identity-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -63,7 +63,7 @@ fn owner() -> CoolContext {
 /// `perms` claim unless one is added by hand — see
 /// `rotate_webhook_secret_live_postgres.rs`'s own
 /// `owner_with_webhook_manage` for the precedent this mirrors.
-fn owner_with_user_manage() -> CoolContext {
+fn owner_with_user_manage() -> CratestackContext {
     let mut ctx = owner();
     ctx.extensions.insert(
         "perms".to_owned(),
@@ -72,7 +72,7 @@ fn owner_with_user_manage() -> CoolContext {
     ctx
 }
 
-fn operator_with_optout_manage() -> CoolContext {
+fn operator_with_optout_manage() -> CratestackContext {
     let mut ctx = Principal {
         sub: "console-identity-test-operator".to_owned(),
         kind: PrincipalKind::User,
@@ -90,7 +90,7 @@ fn operator_with_optout_manage() -> CoolContext {
 /// The bare role, no `perms` claim at all — Layer 1 alone would admit this
 /// caller (`operator` is in every relevant procedure's own `@allow`), but
 /// Layer 2's `require_permission(ctx, "optout:manage")` must still deny it.
-fn operator_without_permission() -> CoolContext {
+fn operator_without_permission() -> CratestackContext {
     Principal {
         sub: "console-identity-test-operator-no-perms".to_owned(),
         kind: PrincipalKind::User,
@@ -105,7 +105,7 @@ fn operator_without_permission() -> CoolContext {
 /// `optout:manage` specifically because opt-outs are its stated job. This
 /// context is what proves `createOptOutEntry`'s `sys()`-context write
 /// closes that gap without touching the model's own policy.
-fn support_with_optout_manage() -> CoolContext {
+fn support_with_optout_manage() -> CratestackContext {
     let mut ctx = Principal {
         sub: "console-identity-test-support".to_owned(),
         kind: PrincipalKind::User,
@@ -247,7 +247,7 @@ async fn provisioning_the_same_email_twice_is_a_conflict() {
     })
     .await;
     assert!(
-        matches!(second, Err(cratestack::CoolError::Conflict(_))),
+        matches!(second, Err(cratestack::CratestackError::Conflict(_))),
         "expected a named Conflict on a duplicate email, got {second:?}"
     );
 }
@@ -430,7 +430,10 @@ async fn recording_or_searching_denies_a_caller_with_no_optout_manage_permission
     })
     .await;
     assert!(
-        matches!(record_result, Err(cratestack::CoolError::Forbidden(_))),
+        matches!(
+            record_result,
+            Err(cratestack::CratestackError::Forbidden(_))
+        ),
         "expected Forbidden, got {record_result:?}"
     );
 
@@ -445,7 +448,10 @@ async fn recording_or_searching_denies_a_caller_with_no_optout_manage_permission
         })
         .await;
     assert!(
-        matches!(search_result, Err(cratestack::CoolError::Forbidden(_))),
+        matches!(
+            search_result,
+            Err(cratestack::CratestackError::Forbidden(_))
+        ),
         "expected Forbidden, got {search_result:?}"
     );
 }

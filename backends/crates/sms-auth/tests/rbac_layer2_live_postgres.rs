@@ -3,7 +3,7 @@
 //! key, a real `client_credentials` token minted by the OP with a real
 //! `scope` claim, `sms_api::router`'s own `require_permission`/
 //! `enforce_route_permission` deciding on it, against a real Postgres. Not
-//! a hand-built `CoolContext`: see `backends/crates/sms-api/tests/errors_live_postgres.rs`'s
+//! a hand-built `CratestackContext`: see `backends/crates/sms-api/tests/errors_live_postgres.rs`'s
 //! own history (#87) for why this repo doesn't trust a green `cargo test`
 //! that never went through the real claim-extraction path, and #29's own
 //! `claim_live_postgres.rs` for the same lesson landing a second time
@@ -76,7 +76,7 @@ use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
@@ -101,7 +101,7 @@ use sms_api::{GatewayAuth, HashPepper};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "rbac-layer2-test-system".to_owned(),
         kind: PrincipalKind::App,
@@ -111,7 +111,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "rbac-layer2-test-owner".to_owned(),
         kind: PrincipalKind::User,

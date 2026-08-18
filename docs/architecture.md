@@ -1012,9 +1012,9 @@ Implement these on the generated `ProcedureRegistry`:
 fn send_message(
     &self,
     db: &super::Cratestack,
-    ctx: &::cratestack::CoolContext,
+    ctx: &::cratestack::CratestackContext,
     args: send_message::Args,
-) -> impl ::core::future::Future<Output = Result<send_message::Output, ::cratestack::CoolError>> + Send;
+) -> impl ::core::future::Future<Output = Result<send_message::Output, ::cratestack::CratestackError>> + Send;
 ```
 
 ### 2.10 Hand-written SQL: defaults, indexes, and the state machines
@@ -1545,12 +1545,12 @@ moment a human tried to open the message-detail or dashboard screens.
 
 **Three notes on the triggers.**
 
-`SM001` is a user-defined SQLSTATE. CrateStack's `CoolError::DatabaseTyped` carries `DbErrorInfo { detail, sqlstate, constraint }`, so you branch on it exactly rather than substring-matching an error message:
+`SM001` is a user-defined SQLSTATE. CrateStack's `CratestackError::DatabaseTyped` carries `DbErrorInfo { detail, sqlstate, constraint }`, so you branch on it exactly rather than substring-matching an error message:
 
 ```rust
 match err {
-    CoolError::DatabaseTyped(info) if info.sqlstate.as_deref() == Some("SM001") =>
-        CoolError::Conflict("message is no longer in a state that allows this".into()),
+    CratestackError::DatabaseTyped(info) if info.sqlstate.as_deref() == Some("SM001") =>
+        CratestackError::Conflict("message is no longer in a state that allows this".into()),
     other => other,
 }
 ```
@@ -1715,10 +1715,10 @@ Custom("urn:example:custom") -> "urn:example:custom" -> Custom(..)  OK
 We still implement `ClientStore` ourselves, but now for the ordinary reason — clients live in `oauth_clients` and R1 says that read goes through a delegate, not raw SQL. `grantTypes` stays a delimited `String` column mapped in Rust, which is both what OAuth puts on the wire and one less thing depending on a serde impl staying correct:
 
 ```rust
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use cratestack_schema::oauth_client;
 
-pub struct SmsClientStore { db: Arc<Cratestack>, sys: CoolContext }
+pub struct SmsClientStore { db: Arc<Cratestack>, sys: CratestackContext }
 
 #[async_trait]
 impl ClientStore for SmsClientStore {
@@ -1794,27 +1794,27 @@ The `sys` context is a `system`-role principal, which is the only thing `OauthCl
 
 Authorization code + PKCE against `sms-auth`, single OIDC client (`sms-console`). Tokens in httpOnly cookies via Next.js route handlers acting as a BFF — never `localStorage`, never an access token in a client component.
 
-Both realms land in the same `CoolContext`. `AuthProvider` is an RPITIT trait (not `#[async_trait]`) requiring `Clone + Send + Sync + 'static`:
+Both realms land in the same `CratestackContext`. `AuthProvider` is an RPITIT trait (not `#[async_trait]`) requiring `Clone + Send + Sync + 'static`:
 
 ```rust
 #[derive(Clone)]
 struct GatewayAuth { jwks: JwksCache, apps: AppCache, denylist: SubjectDenylist }
 
 impl AuthProvider for GatewayAuth {
-    type Error = CoolError;
+    type Error = CratestackError;
 
-    async fn authenticate(&self, req: &RequestContext<'_>) -> Result<CoolContext, CoolError> {
+    async fn authenticate(&self, req: &RequestContext<'_>) -> Result<CratestackContext, CratestackError> {
         let bearer = req.headers.get("authorization")
-            .ok_or_else(|| CoolError::Unauthorized("no credentials".into()))?;
+            .ok_or_else(|| CratestackError::Unauthorized("no credentials".into()))?;
         let claims = self.jwks.validate(bearer).await?;      // iss, exp, sig, kid
         if self.denylist.contains(&claims.sub) {
-            return Err(CoolError::Unauthorized("revoked".into()));
+            return Err(CratestackError::Unauthorized("revoked".into()));
         }
         match claims.extra.get("kind").and_then(|v| v.as_str()) {
             Some("user") => Ok(user_context(claims)),
             _ => {
                 let app = self.apps.by_client_id(&claims.sub).await?
-                    .ok_or_else(|| CoolError::Unauthorized("unknown client".into()))?;
+                    .ok_or_else(|| CratestackError::Unauthorized("unknown client".into()))?;
                 Ok(app_context(&claims, &app))               // kind "app", appId, role "app"
             }
         }
@@ -2249,12 +2249,12 @@ Every claim in the system is the same shape: select candidates, take a lease by 
 
 ```rust
 use chrono::{Duration, Utc};
-use cratestack::{CoolError, FilterExpr};
+use cratestack::{CratestackError, FilterExpr};
 use cratestack_schema::{message, MessageState, inputs::UpdateMessageInput, models::Message};
 
 async fn claim_batch(
-    db: &Cratestack, sys: &CoolContext, worker: &str, budget: i64,
-) -> Result<Vec<Message>, CoolError> {
+    db: &Cratestack, sys: &CratestackContext, worker: &str, budget: i64,
+) -> Result<Vec<Message>, CratestackError> {
     let now = Utc::now();
 
     let candidates = db.message().find_many()
@@ -2289,10 +2289,10 @@ async fn claim_batch(
         match taken {
             Ok(row) => claimed.push(row),
             // Someone else claimed it between our read and our write.
-            Err(CoolError::PreconditionFailed(_)) => continue,
+            Err(CratestackError::PreconditionFailed(_)) => continue,
             // Ambiguous: policy denied, or the row is gone. Should not happen
             // under the system context — log it, it means a policy bug.
-            Err(CoolError::Forbidden(_)) => {
+            Err(CratestackError::Forbidden(_)) => {
                 tracing::warn!(message_id = %m.id, "claim forbidden");
                 continue;
             }
@@ -2307,7 +2307,7 @@ async fn claim_batch(
 
 Two details in that code carry the whole design.
 
-**`if_match(m.version)` is the claim.** The framework renders it as `WHERE id = $1 AND version = $2`, and a zero-row result becomes `CoolError::PreconditionFailed`. That is *exactly* the semantics you want from a competing-consumer queue — the loser of a race learns it lost, cheaply, and moves to the next row. It's also why `@version` is mandatory on every claimable model.
+**`if_match(m.version)` is the claim.** The framework renders it as `WHERE id = $1 AND version = $2`, and a zero-row result becomes `CratestackError::PreconditionFailed`. That is *exactly* the semantics you want from a competing-consumer queue — the loser of a race learns it lost, cheaply, and moves to the next row. It's also why `@version` is mandatory on every claimable model.
 
 **`Forbidden` is ambiguous and must not be swallowed as "lost the race".** The framework returns it both when the update policy denies *and* when the row is invisible or gone, because both produce zero rows. Under a `system` principal neither should ever happen, so treating it as a warning rather than a `continue`-in-silence is what surfaces a policy regression instead of hiding it as mysterious throughput loss.
 
@@ -2465,7 +2465,7 @@ db.events().on_opt_out_created(|event| async move { ... });
 
 Four properties that shape everything downstream. All verified in source; none are in the docs.
 
-**Delivery is synchronous and blocks the mutation.** `drain_event_outbox` sequentially awaits each envelope, and `CoolEventBus::emit` sequentially awaits each handler, inside the caller's future, after commit. There is no `tokio::spawn` anywhere. A slow subscriber adds its latency directly to `sendMessage`.
+**Delivery is synchronous and blocks the mutation.** `drain_event_outbox` sequentially awaits each envelope, and `CratestackEventBus::emit` sequentially awaits each handler, inside the caller's future, after commit. There is no `tokio::spawn` anywhere. A slow subscriber adds its latency directly to `sendMessage`.
 
 **Handlers are not panic-isolated.** No `catch_unwind`. A panicking subscriber unwinds out of `run()` into the caller's task *after* the row has committed — turning a successful write into an apparent API failure.
 
@@ -2526,7 +2526,7 @@ match db.webhook_attempt().create(input).run(sys).await {
 }
 ```
 
-Branching on the SQLSTATE rather than substring-matching the message is the whole reason `CoolError::DatabaseTyped` carries `DbErrorInfo { detail, sqlstate, constraint }`. Check `constraint` too if more than one unique index can fire on this table.
+Branching on the SQLSTATE rather than substring-matching the message is the whole reason `CratestackError::DatabaseTyped` carries `DbErrorInfo { detail, sqlstate, constraint }`. Check `constraint` too if more than one unique index can fire on this table.
 
 **Handlers cannot panic.** Every subscriber body is wrapped so a bug becomes a logged error and an `Err` return, never an unwind. An `Err` leaves the row undelivered for retry, which is what you want; a panic corrupts the caller's response, which is not.
 
@@ -2764,7 +2764,7 @@ vsms/
 │   ├── sms-provider-aggregator/
 │   ├── sms-provider-smpp/          # scaffold only, milestone 7
 │   ├── sms-api/          # include_server_schema! + AuthProvider + procedures + subscribers
-│   │   ├── src/auth.rs             # Principal → CoolContext; the only place field names live
+│   │   ├── src/auth.rs             # Principal → CratestackContext; the only place field names live
 │   │   ├── src/procedures.rs       # ProcedureRegistry
 │   │   ├── src/router.rs           # generated router assembly
 │   │   └── src/cache.rs            # R1 exception: LISTEN for opt-out invalidation
@@ -2848,7 +2848,7 @@ Milestone 0 still comes first. The encoding crate has the highest ratio of busin
 | **Two workers both running `dispatch` → Orange TPS doubled → blocked** | Advisory lock is the only gate; alert on "singleton unheld" *and* on unexpected concurrent submits per provider |
 | Claim-loop `Forbidden` swallowed as "lost the race", hiding a policy bug as throughput loss | Match `PreconditionFailed` for the race; log `Forbidden` loudly (§7.3) |
 | **State machine and code drift** → production `SM001` on a legal-looking transition | `state_machine_parity` test in CI; alert on any non-zero `SM001` rate |
-| Illegal transition surfaces as `500 DATABASE_ERROR` | Map `sqlstate = 'SM001'` → `CoolError::Conflict` → 409 |
+| Illegal transition surfaces as `500 DATABASE_ERROR` | Map `sqlstate = 'SM001'` → `CratestackError::Conflict` → 409 |
 | `/token` unprotected → Argon2 19 MiB DoS amplification | `tower_governor` keyed on client_id **and** IP |
 | A client provisioned with `client_secret_hash = None` authenticates anyone | `NOT NULL` column; `find_client` refuses to build a registration without it |
 | Secret containing `+ / = %` fails Basic auth non-obviously | Generate from `[A-Za-z0-9._~-]` only |

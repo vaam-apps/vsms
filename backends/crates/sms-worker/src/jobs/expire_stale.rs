@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::schema::{Cratestack, Job, MessageState, UpdateMessageInput, message};
 use sms_api::{is_illegal_transition, map_database_error};
 use tracing::warn;
@@ -33,7 +33,7 @@ impl ExpireStale {
     pub async fn run_at(
         &self,
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         now: chrono::DateTime<Utc>,
     ) -> Result<(), String> {
         expire_matching(
@@ -73,7 +73,12 @@ impl JobHandler for ExpireStale {
         "expire_stale"
     }
 
-    async fn run(&self, db: &Cratestack, sys: &CoolContext, _job: &Job) -> Result<(), String> {
+    async fn run(
+        &self,
+        db: &Cratestack,
+        sys: &CratestackContext,
+        _job: &Job,
+    ) -> Result<(), String> {
         self.run_at(db, sys, Utc::now()).await
     }
 }
@@ -85,9 +90,9 @@ impl JobHandler for ExpireStale {
 /// row is simply no longer stale by the time this job got to it.
 async fn expire_matching(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     filter: FilterExpr,
-) -> Result<(), CoolError> {
+) -> Result<(), CratestackError> {
     let candidates = db
         .message()
         .find_many()
@@ -112,7 +117,7 @@ async fn expire_matching(
             // #71: checked against the raw error before any mapping — see
             // `crate::jobs::swallow_stale_write`'s own doc for why this
             // order matters and is not merely stylistic: mapping first
-            // would turn a genuine SM001 into `CoolError::Conflict`, which
+            // would turn a genuine SM001 into `CratestackError::Conflict`, which
             // this function's own `Conflict`/`PreconditionFailed` arm
             // below would otherwise swallow as if it were the harmless
             // "message moved on" race it exists to catch — exactly the
@@ -121,7 +126,7 @@ async fn expire_matching(
                 return Err(map_database_error(error));
             }
             match error {
-                CoolError::Conflict(reason) | CoolError::PreconditionFailed(reason) => {
+                CratestackError::Conflict(reason) | CratestackError::PreconditionFailed(reason) => {
                     warn!(
                         message_id = %candidate.id,
                         reason,

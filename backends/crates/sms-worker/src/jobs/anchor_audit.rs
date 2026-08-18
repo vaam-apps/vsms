@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use sms_api::audit_log::{
     compute_chain_hash_hex, fold_rows, genesis_hex, latest_anchor, rows_in_period,
     verify_chain_linkage, verify_period_content,
@@ -33,7 +33,7 @@ impl AnchorAudit {
     pub async fn run_at(
         &self,
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         now: DateTime<Utc>,
     ) -> Result<(), String> {
         let latest = latest_anchor(db, sys)
@@ -120,7 +120,12 @@ impl JobHandler for AnchorAudit {
         "anchor_audit"
     }
 
-    async fn run(&self, db: &Cratestack, sys: &CoolContext, _job: &Job) -> Result<(), String> {
+    async fn run(
+        &self,
+        db: &Cratestack,
+        sys: &CratestackContext,
+        _job: &Job,
+    ) -> Result<(), String> {
         self.run_at(db, sys, Utc::now()).await
     }
 }

@@ -34,7 +34,7 @@ export interface PrivateKeyJwtClientOptions extends PrivateKeyJwtConfigOptions {
   privateKeyPem?: string | undefined;
 }
 
-interface CoolErrorResponseBody {
+interface CratestackErrorResponseBody {
   code?: string | undefined;
   message?: string | undefined;
   details?: unknown;
@@ -143,9 +143,9 @@ export class VsmsClient {
     const isReplayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER) === "true";
 
     if (!response.ok) {
-      let parsed: CoolErrorResponseBody | undefined;
+      let parsed: CratestackErrorResponseBody | undefined;
       try {
-        parsed = JSON.parse(text) as CoolErrorResponseBody;
+        parsed = JSON.parse(text) as CratestackErrorResponseBody;
       } catch {
         // Fallback for non-JSON errors (e.g. text/plain idempotency in flight message)
       }
@@ -186,9 +186,9 @@ export class VsmsClient {
 
     const text = await response.text();
     if (!response.ok) {
-      let parsed: CoolErrorResponseBody | undefined;
+      let parsed: CratestackErrorResponseBody | undefined;
       try {
-        parsed = JSON.parse(text) as CoolErrorResponseBody;
+        parsed = JSON.parse(text) as CratestackErrorResponseBody;
       } catch {
         // fallback
       }
@@ -217,9 +217,9 @@ export class VsmsClient {
 
     const text = await response.text();
     if (!response.ok) {
-      let parsed: CoolErrorResponseBody | undefined;
+      let parsed: CratestackErrorResponseBody | undefined;
       try {
-        parsed = JSON.parse(text) as CoolErrorResponseBody;
+        parsed = JSON.parse(text) as CratestackErrorResponseBody;
       } catch {
         // fallback
       }

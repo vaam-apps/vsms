@@ -19,7 +19,7 @@ use cratestack::client_rust::{
     ClientConfig, ClientError, CratestackClient, JsonCodec, RuntimeHeader, RuntimeRequestWire,
     RuntimeResponseWire,
 };
-use cratestack::{CoolError, CoolErrorResponse};
+use cratestack::{CratestackError, CratestackErrorResponse};
 use reqwest::StatusCode;
 
 use crate::authorizer::GatewayAuthorizer;
@@ -158,7 +158,7 @@ impl VsmsClient {
     ) -> Result<SendMessageOutcome, SdkError> {
         let wire_args = schema::procedures::send_message::Args { args };
         let body = serde_json::to_vec(&wire_args).map_err(|error| {
-            SdkError::Client(ClientError::Codec(CoolError::Codec(format!(
+            SdkError::Client(ClientError::Codec(CratestackError::Codec(format!(
                 "failed to encode sendMessage args as JSON: {error}"
             ))))
         })?;
@@ -270,7 +270,7 @@ fn decode_send_message_response(
     if (200..=299).contains(&response.status_code) {
         let result: schema::SendMessageResult =
             serde_json::from_slice(&response.body).map_err(|error| {
-                SdkError::Client(ClientError::Codec(CoolError::Codec(format!(
+                SdkError::Client(ClientError::Codec(CratestackError::Codec(format!(
                     "failed to decode sendMessage response as JSON: {error}"
                 ))))
             })?;
@@ -280,7 +280,7 @@ fn decode_send_message_response(
         });
     }
 
-    let parsed: Option<CoolErrorResponse> = serde_json::from_slice(&response.body).ok();
+    let parsed: Option<CratestackErrorResponse> = serde_json::from_slice(&response.body).ok();
     let message = match &parsed {
         Some(error) => error.message.clone(),
         None if !response.body.is_empty() => {

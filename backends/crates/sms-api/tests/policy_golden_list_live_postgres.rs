@@ -27,7 +27,7 @@
 //!   default made every role, `owner` included, unable to create one until
 //!   #32 found it live).
 //! - `create`/`update`/`delete` fail *loud* on denial — a real
-//!   `CoolError::Forbidden` this file can assert against directly.
+//!   `CratestackError::Forbidden` this file can assert against directly.
 //!   `find_many`-backed actions (`read`/`list`/`detail`) fail *quiet*:
 //!   confirmed live in `backends/crates/sms-auth/tests/oidc_flow_live.rs` (the
 //!   `OauthSigningKey` assertion), `CrateStack`'s policy enforcement there is
@@ -47,7 +47,7 @@
 //! ```
 
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError};
+use cratestack::{CratestackContext, CratestackError};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack};
 
@@ -90,7 +90,7 @@ async fn db() -> Cratestack {
     Cratestack::builder(pool).build()
 }
 
-fn ctx_for_role(role: &str) -> CoolContext {
+fn ctx_for_role(role: &str) -> CratestackContext {
     Principal {
         sub: format!("golden-list-{role}"),
         kind: PrincipalKind::User,
@@ -104,7 +104,7 @@ fn ctx_for_role(role: &str) -> CoolContext {
 /// runs under — never a real caller's token (see `GatewayAuth`'s own
 /// doc), but a real, distinct grant this file has to check on its own
 /// terms rather than assume from the human-role results.
-fn system_ctx() -> CoolContext {
+fn system_ctx() -> CratestackContext {
     Principal {
         sub: "golden-list-system".to_owned(),
         kind: PrincipalKind::App,
@@ -118,7 +118,7 @@ fn system_ctx() -> CoolContext {
 /// role `GatewayAuth` ever hands a real token (see its own doc). Included
 /// because "no policy names this role" and "this role is denied" are the
 /// same outcome and worth confirming stay the same outcome.
-fn app_ctx() -> CoolContext {
+fn app_ctx() -> CratestackContext {
     Principal {
         sub: "golden-list-app".to_owned(),
         kind: PrincipalKind::App,
@@ -128,8 +128,8 @@ fn app_ctx() -> CoolContext {
     .into_context()
 }
 
-fn is_forbidden<T: std::fmt::Debug>(result: &Result<T, CoolError>) -> bool {
-    matches!(result, Err(CoolError::Forbidden(_)))
+fn is_forbidden<T: std::fmt::Debug>(result: &Result<T, CratestackError>) -> bool {
+    matches!(result, Err(CratestackError::Forbidden(_)))
 }
 
 fn fresh_provider_input() -> schema::CreateProviderInput {

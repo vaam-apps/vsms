@@ -32,7 +32,7 @@ uses — and it inherits that same crate's own documented, upstream-filed
 gap: `db_sqlstate()` is unpopulated on every generated write against a
 live Postgres (cratestack-sqlx `=0.5.0`, tracked as
 [vymalo/vsms#87](https://github.com/vymalo/vsms/issues/87)), so a real
-`23505` collision surfaces as a generic `CoolError::Database` today, not
+`23505` collision surfaces as a generic `CratestackError::Database` today, not
 the `Ok(false)` this code is written to produce. This is defense in
 depth under a singleton role, not the primary correctness mechanism —
 see the cadence-tracking note above — so the live impact is a spurious

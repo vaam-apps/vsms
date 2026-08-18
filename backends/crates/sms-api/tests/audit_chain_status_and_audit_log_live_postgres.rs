@@ -20,7 +20,7 @@
 //! ```
 
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError};
+use cratestack::{CratestackContext, CratestackError};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, UpdateAuditAnchorInput,
@@ -58,7 +58,7 @@ async fn db() -> Cratestack {
     Cratestack::builder(pool).build()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "audit-log-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -68,7 +68,7 @@ fn owner() -> CoolContext {
     .into_context()
 }
 
-fn owner_with_audit_read() -> CoolContext {
+fn owner_with_audit_read() -> CratestackContext {
     let mut ctx = owner();
     ctx.extensions.insert(
         "perms".to_owned(),
@@ -77,7 +77,7 @@ fn owner_with_audit_read() -> CoolContext {
     ctx
 }
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "audit-log-test-sys".to_owned(),
         kind: PrincipalKind::App,
@@ -200,7 +200,7 @@ async fn audit_log_denies_a_caller_with_no_audit_read_permission() {
     })
     .await;
     assert!(
-        matches!(result, Err(CoolError::Forbidden(_))),
+        matches!(result, Err(CratestackError::Forbidden(_))),
         "expected Forbidden, got {result:?}"
     );
 }
@@ -265,7 +265,7 @@ async fn no_role_including_system_can_write_an_audit_anchor() {
         .run(&sys())
         .await;
     assert!(
-        matches!(update_result, Err(CoolError::Forbidden(_))),
+        matches!(update_result, Err(CratestackError::Forbidden(_))),
         "expected Forbidden (policy denial), not NotFound (which would mean the policy check \
          never ran) or Ok (which would mean AuditAnchor is writable): got {update_result:?}"
     );
@@ -279,7 +279,7 @@ async fn no_role_including_system_can_write_an_audit_anchor() {
         .run(&sys())
         .await;
     assert!(
-        matches!(delete_result, Err(CoolError::Forbidden(_))),
+        matches!(delete_result, Err(CratestackError::Forbidden(_))),
         "expected Forbidden, got {delete_result:?}"
     );
 }

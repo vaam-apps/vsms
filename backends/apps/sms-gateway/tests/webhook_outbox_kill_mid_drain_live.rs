@@ -120,7 +120,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     Cratestack, CreateAppInput, CreateMessageInput, CreateProviderInput,
@@ -149,7 +149,7 @@ const KILL_SETTLE_DELAY: Duration = Duration::from_millis(50);
 const ORANGE_PROVIDER_KEY: &str = "orange_cm";
 const TEST_HASH_PEPPER: &str = "webhook-outbox-kill-mid-drain-live-test-pepper-over-minimum";
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "webhook-outbox-kill-test-system".to_owned(),
         kind: PrincipalKind::App,
@@ -159,7 +159,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "webhook-outbox-kill-test-owner".to_owned(),
         kind: PrincipalKind::User,

@@ -188,8 +188,8 @@ fn parse_illegal_transition(detail: &str) -> (&str, &str, &str) {
 }
 
 /// Record one SM001 rejection. `detail` is the raw database error text —
-/// `CoolError::DatabaseTyped`'s own `detail` field, or equivalently
-/// `CoolError::to_string()` — not yet mapped or truncated. Called from
+/// `CratestackError::DatabaseTyped`'s own `detail` field, or equivalently
+/// `CratestackError::to_string()` — not yet mapped or truncated. Called from
 /// exactly one place, `backends/crates/sms-api/src/errors.rs::map_database_error`,
 /// so every SM001 this workspace ever sees, from either process, passes
 /// through here exactly once.

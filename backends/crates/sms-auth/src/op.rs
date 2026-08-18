@@ -8,7 +8,7 @@ use authkestra_engine::token::jwk::Jwk;
 use authkestra_op::config::OpConfig;
 use authkestra_op::store::CompositeOpStore;
 use chrono::{Duration, Utc};
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use rand::rngs::OsRng;
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
@@ -39,10 +39,10 @@ pub const ROTATION_OVERLAP: Duration = Duration::minutes(30);
 /// # Errors
 ///
 /// RSA key generation failure (extremely unlikely at this bit size) or any
-/// `CoolError` from the two writes.
+/// `CratestackError` from the two writes.
 pub async fn rotate_signing_key(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     overlap: Duration,
 ) -> anyhow::Result<String> {
     let mut rng = OsRng;
@@ -105,12 +105,12 @@ pub async fn rotate_signing_key(
 ///
 /// # Errors
 ///
-/// Any `CoolError` from the read, or no row is `active` at all (the
+/// Any `CratestackError` from the read, or no row is `active` at all (the
 /// deployment has never rotated in a key — an operator action, not a
 /// schema default, on purpose: see `rotate_signing_key`'s own doc).
 pub async fn load_signing_keys(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     issuer: &str,
 ) -> anyhow::Result<(Arc<TokenManager>, Vec<Jwk>)> {
     let now = Utc::now();
@@ -186,7 +186,7 @@ pub type MachineOnlyOpStore = CompositeOpStore<
 /// placeholders, despite being `MemoryStore` like the genuinely-unused
 /// device-code slot next to them.
 #[must_use]
-pub fn machine_only_store(db: Arc<Cratestack>, sys: CoolContext) -> MachineOnlyOpStore {
+pub fn machine_only_store(db: Arc<Cratestack>, sys: CratestackContext) -> MachineOnlyOpStore {
     CompositeOpStore::new(
         SmsClientStore::new(db.clone(), sys.clone()),
         MemoryStore::new(),

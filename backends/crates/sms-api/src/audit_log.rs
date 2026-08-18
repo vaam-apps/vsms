@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 // `cratestack::sqlx` the module, not individual items — see `worker_locks.rs`'s
 // identical comment: `cargo xtask no-raw-sqlx`'s pattern matches the literal
 // substring `sqlx::query`, so the raw call stays visible at the call site.
-use cratestack::CoolError;
+use cratestack::CratestackError;
 use cratestack::sqlx;
 use sha2::{Digest, Sha256};
 
@@ -248,8 +248,8 @@ pub fn compute_chain_hash_hex(
 /// Whatever the underlying `find_many` returns.
 pub async fn latest_anchor(
     db: &Cratestack,
-    sys: &cratestack::CoolContext,
-) -> Result<Option<AuditAnchor>, CoolError> {
+    sys: &cratestack::CratestackContext,
+) -> Result<Option<AuditAnchor>, CratestackError> {
     let mut rows = db
         .audit_anchor()
         .find_many()
@@ -275,8 +275,8 @@ pub async fn latest_anchor(
 /// Whatever the underlying `find_many` returns.
 pub async fn verify_chain_linkage(
     db: &Cratestack,
-    sys: &cratestack::CoolContext,
-) -> Result<Vec<String>, CoolError> {
+    sys: &cratestack::CratestackContext,
+) -> Result<Vec<String>, CratestackError> {
     let anchors = db
         .audit_anchor()
         .find_many()
@@ -367,15 +367,15 @@ pub struct ChainStatus {
 ///
 /// # Errors
 ///
-/// [`CoolError`] from the underlying `AuditAnchor` reads. A failure to
+/// [`CratestackError`] from the underlying `AuditAnchor` reads. A failure to
 /// re-verify the latest period's own *content* (a raw SQL error) is not
 /// propagated as an error here — see [`ChainStatus::latest_period_content_verified`]'s
 /// own doc for why that's a `None`, not a hard failure of the whole
 /// procedure.
 pub async fn chain_status(
     db: &Cratestack,
-    sys: &cratestack::CoolContext,
-) -> Result<ChainStatus, CoolError> {
+    sys: &cratestack::CratestackContext,
+) -> Result<ChainStatus, CratestackError> {
     let latest = latest_anchor(db, sys).await?;
     let linkage_breaks = verify_chain_linkage(db, sys).await?;
 
@@ -471,16 +471,16 @@ pub struct AuditLogPage {
 ///
 /// # Errors
 ///
-/// A raw `sqlx::Error`, or `CoolError::Validation` if `limit`/`offset` are
+/// A raw `sqlx::Error`, or `CratestackError::Validation` if `limit`/`offset` are
 /// negative.
 pub async fn list_audit_entries(
     db: &Cratestack,
     filter: &AuditLogFilter,
     limit: i64,
     offset: i64,
-) -> Result<AuditLogPage, CoolError> {
+) -> Result<AuditLogPage, CratestackError> {
     if limit < 0 || offset < 0 {
-        return Err(CoolError::Validation(
+        return Err(CratestackError::Validation(
             "limit and offset must not be negative".to_owned(),
         ));
     }
@@ -511,7 +511,7 @@ pub async fn list_audit_entries(
         Ok(rows) => rows,
         Err(error) if is_undefined_table(&error) => Vec::new(),
         Err(error) => {
-            return Err(CoolError::Internal(format!(
+            return Err(CratestackError::Internal(format!(
                 "reading cratestack_audit for the console audit log: {error}"
             )));
         }

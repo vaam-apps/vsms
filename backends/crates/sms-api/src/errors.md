@@ -3,7 +3,7 @@ Translating database-level rejections into HTTP-shaped errors.
 R2 says state transitions are proposed by Rust and decided by Postgres. The
 deciding half is a `BEFORE UPDATE` trigger that raises SQLSTATE `SM001` on
 an illegal edge. Left untranslated that arrives as
-[`CoolError::DatabaseTyped`], which the framework maps to
+[`CratestackError::DatabaseTyped`], which the framework maps to
 `500 DATABASE_ERROR` — and a 500 reads as "the gateway is broken" when the
 truth is "you asked for a transition that does not exist". Callers retry
 500s and do not retry 409s, so the distinction changes their behaviour, not

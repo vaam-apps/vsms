@@ -1,7 +1,7 @@
 #![doc = include_str!("dlr.md")]
 
 use chrono::{Duration as ChronoDuration, Utc};
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_provider::{DeliveryOutcome, DeliveryUpdate, ProviderError, RawCallback, SmsProvider};
 use tracing::{info, warn};
 
@@ -53,7 +53,7 @@ fn undelivered_retry_backoff(attempts: i64) -> ChronoDuration {
 /// [`ingest_one`].
 pub async fn ingest(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     provider: &dyn SmsProvider,
     provider_row_id: &str,
     raw: &RawCallback,
@@ -83,18 +83,18 @@ pub async fn ingest(
 ///
 /// # Errors
 ///
-/// Any `CoolError` from the database reads/writes this performs, except a
-/// rejected transition (`CoolError::Conflict`) on a *stale* update — see
+/// Any `CratestackError` from the database reads/writes this performs, except a
+/// rejected transition (`CratestackError::Conflict`) on a *stale* update — see
 /// the inline comment where that's handled — which resolves to `Ok(())`
 /// after logging, since it is an expected outcome (a late or duplicate
 /// DLR), not a fault.
 async fn ingest_one(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     provider_row_id: &str,
     raw_payload: &str,
     update: &DeliveryUpdate,
-) -> Result<(), CoolError> {
+) -> Result<(), CratestackError> {
     let candidates = db
         .message()
         .find_many()
@@ -187,7 +187,7 @@ async fn ingest_one(
             // `procedures.rs`'s own module doc for the first. No
             // `cratestack_request_id` here: a DLR arrives on its own
             // unauthenticated HTTP connection (this module's own doc — no
-            // bearer token, no `GatewayAuth`, so no `CoolContext` was ever
+            // bearer token, no `GatewayAuth`, so no `CratestackContext` was ever
             // constructed per-request the way `sendMessage`'s was), so
             // there is no HTTP-request-scoped id to carry forward. The
             // join across processes is `message_id` alone.
@@ -209,7 +209,7 @@ async fn ingest_one(
         // `error.db_sqlstate()` directly off the framework's own unmapped
         // error, so it doesn't need `map_database_error` to have already
         // run — and checking it *first* is what stops a genuine SM001 from
-        // being caught by the `Err(CoolError::Conflict(reason))` arm below
+        // being caught by the `Err(CratestackError::Conflict(reason))` arm below
         // and misreported as a merely stale DLR. That arm's own comment
         // used to claim `Conflict` here always meant "the message moved on
         // between the read and this write" — true for the version-mismatch
@@ -220,7 +220,7 @@ async fn ingest_one(
         // — so a real SM001 here can only mean the Rust-side transition
         // logic and the database's own transition table disagree about
         // what's legal, never a race. Confirmed live, not assumed: nothing
-        // in `cratestack-sqlx` ever constructs a raw `CoolError::Conflict`
+        // in `cratestack-sqlx` ever constructs a raw `CratestackError::Conflict`
         // from this write path (see `update_run.rs`/`error.rs`) — before
         // this fix, the `Conflict` arm below was unreachable dead code,
         // and a real SM001 here silently fell through to `Err(error) =>
@@ -232,7 +232,7 @@ async fn ingest_one(
         // at-least-once, possibly-reordered DLR delivery, not a fault: the
         // receipt is already written either way, so nothing about this
         // update is lost, just not applied to the message's own state.
-        Err(CoolError::PreconditionFailed(reason)) => {
+        Err(CratestackError::PreconditionFailed(reason)) => {
             warn!(
                 message_id = %found.id,
                 target = ?target,

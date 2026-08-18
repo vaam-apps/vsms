@@ -1,6 +1,6 @@
 #![doc = include_str!("errors.md")]
 
-use cratestack::CoolError;
+use cratestack::CratestackError;
 
 /// SQLSTATE raised by `messages_guard_transition`, `jobs_guard_transition`,
 /// and `attempts_guard_transition` when the proposed edge is absent from the
@@ -13,8 +13,8 @@ pub const UNIQUE_VIOLATION: &str = "23505";
 
 /// Map database rejections that are really client errors onto the right shape.
 ///
-/// - `SM001` → [`CoolError::Conflict`] → HTTP 409.
-/// - `23505` → [`CoolError::Conflict`] → HTTP 409, so a duplicate
+/// - `SM001` → [`CratestackError::Conflict`] → HTTP 409.
+/// - `23505` → [`CratestackError::Conflict`] → HTTP 409, so a duplicate
 ///   `idempotencyKey` or a re-inserted webhook attempt reads as "already
 ///   exists" rather than as an internal fault.
 ///
@@ -22,7 +22,7 @@ pub const UNIQUE_VIOLATION: &str = "23505";
 /// fault stays a 500, because turning every database error into a 4xx would
 /// hide real outages behind a client-error status.
 #[must_use]
-pub fn map_database_error(error: CoolError) -> CoolError {
+pub fn map_database_error(error: CratestackError) -> CratestackError {
     match error.db_sqlstate() {
         Some(SM001) => {
             // #71: the one metrics choke point — see this module's own
@@ -30,9 +30,9 @@ pub fn map_database_error(error: CoolError) -> CoolError {
             // message is constructed below, so the label parser sees the
             // trigger's full original text.
             sms_metrics::record_sm001(&error.to_string());
-            CoolError::Conflict(illegal_transition_message(&error))
+            CratestackError::Conflict(illegal_transition_message(&error))
         }
-        Some(UNIQUE_VIOLATION) => CoolError::Conflict(error.db_constraint().map_or_else(
+        Some(UNIQUE_VIOLATION) => CratestackError::Conflict(error.db_constraint().map_or_else(
             || "resource already exists".to_owned(),
             |c| format!("resource already exists ({c})"),
         )),
@@ -45,7 +45,7 @@ pub fn map_database_error(error: CoolError) -> CoolError {
 /// Worth checking explicitly in a claim loop: `SM001` means the state machine
 /// and the code disagree, which is a bug to alert on, not a race to retry.
 #[must_use]
-pub fn is_illegal_transition(error: &CoolError) -> bool {
+pub fn is_illegal_transition(error: &CratestackError) -> bool {
     error.db_sqlstate() == Some(SM001)
 }
 
@@ -53,7 +53,7 @@ pub fn is_illegal_transition(error: &CoolError) -> bool {
 ///
 /// Falls back to a generic string if the driver gave us no detail — better a
 /// vague 409 than a misleading 500.
-fn illegal_transition_message(error: &CoolError) -> String {
+fn illegal_transition_message(error: &CratestackError) -> String {
     let detail = error.to_string();
     if detail.contains("illegal") {
         // "database: illegal message transition delivered -> queued on abc123"
@@ -70,8 +70,8 @@ mod tests {
     use super::*;
     use cratestack::DbErrorInfo;
 
-    fn db_error(sqlstate: &str, detail: &str, constraint: Option<&str>) -> CoolError {
-        CoolError::DatabaseTyped(DbErrorInfo {
+    fn db_error(sqlstate: &str, detail: &str, constraint: Option<&str>) -> CratestackError {
+        CratestackError::DatabaseTyped(DbErrorInfo {
             detail: detail.to_owned(),
             sqlstate: Some(sqlstate.to_owned()),
             constraint: constraint.map(ToOwned::to_owned),
@@ -86,7 +86,10 @@ mod tests {
             None,
         );
         let mapped = map_database_error(error);
-        assert!(matches!(mapped, CoolError::Conflict(_)), "got {mapped:?}");
+        assert!(
+            matches!(mapped, CratestackError::Conflict(_)),
+            "got {mapped:?}"
+        );
         assert_eq!(mapped.status_code(), 409);
     }
 
@@ -153,7 +156,7 @@ mod tests {
             None,
         );
         let message = match map_database_error(error) {
-            CoolError::Conflict(m) => m,
+            CratestackError::Conflict(m) => m,
             other => panic!("expected Conflict, got {other:?}"),
         };
         assert!(message.contains("delivered"), "{message}");
@@ -168,7 +171,7 @@ mod tests {
             Some("messages_app_idempotency_key"),
         );
         let message = match map_database_error(error) {
-            CoolError::Conflict(m) => m,
+            CratestackError::Conflict(m) => m,
             other => panic!("expected Conflict, got {other:?}"),
         };
         assert!(
@@ -189,13 +192,13 @@ mod tests {
 
     #[test]
     fn non_database_errors_pass_through_untouched() {
-        let mapped = map_database_error(CoolError::NotFound("message".to_owned()));
-        assert!(matches!(mapped, CoolError::NotFound(_)));
+        let mapped = map_database_error(CratestackError::NotFound("message".to_owned()));
+        assert!(matches!(mapped, CratestackError::NotFound(_)));
     }
 
     #[test]
     fn a_missing_sqlstate_is_not_guessed_at() {
-        let error = CoolError::DatabaseTyped(DbErrorInfo {
+        let error = CratestackError::DatabaseTyped(DbErrorInfo {
             detail: "something happened".to_owned(),
             sqlstate: None,
             constraint: None,
@@ -215,13 +218,15 @@ mod tests {
             "dup",
             None
         )));
-        assert!(!is_illegal_transition(&CoolError::Conflict("x".to_owned())));
+        assert!(!is_illegal_transition(&CratestackError::Conflict(
+            "x".to_owned()
+        )));
     }
 
     #[test]
     fn a_detail_free_sm001_still_conflicts() {
         let mapped = map_database_error(db_error(SM001, "", None));
-        assert!(matches!(mapped, CoolError::Conflict(_)));
+        assert!(matches!(mapped, CratestackError::Conflict(_)));
         assert_eq!(mapped.status_code(), 409);
     }
 }

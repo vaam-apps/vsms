@@ -79,12 +79,12 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use chrono::Utc;
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput};
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "hooks-node-receiver-test".to_owned(),
         kind: PrincipalKind::App,
@@ -94,7 +94,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "hooks-node-receiver-test-owner".to_owned(),
         kind: PrincipalKind::User,

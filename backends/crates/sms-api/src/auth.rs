@@ -5,7 +5,9 @@ use std::time::Duration;
 use authkestra_engine::auth::strategy::utils::extract_bearer_token;
 use authkestra_engine::token::Claims;
 use authkestra_resource::jwt::{JwksCache, validate_jwt_generic};
-use cratestack::{AuthProvider, CoolContext, CoolError, FilterExpr, RequestContext, Value};
+use cratestack::{
+    AuthProvider, CratestackContext, CratestackError, FilterExpr, RequestContext, Value,
+};
 use jsonwebtoken::{Algorithm, Validation};
 
 use crate::cache::TtlCache;
@@ -65,8 +67,8 @@ impl Principal {
     /// only one of the two denies every message write, which is the failure
     /// mode §13 of the architecture doc calls out by name.
     #[must_use]
-    pub fn into_context(self) -> CoolContext {
-        CoolContext::authenticated([
+    pub fn into_context(self) -> CratestackContext {
+        CratestackContext::authenticated([
             ("sub".to_owned(), Value::String(self.sub)),
             (
                 "kind".to_owned(),
@@ -121,7 +123,7 @@ pub struct GatewayAuth {
     /// where a fixed audience genuinely exists to check against.
     human_client_id: String,
     db: Cratestack,
-    sys: CoolContext,
+    sys: CratestackContext,
 }
 
 /// What `GatewayAuth` needs about a human token's subject, cached under
@@ -201,7 +203,7 @@ impl GatewayAuth {
 /// The `system`-role context this provider's own `AppClient` lookup runs
 /// under — never handed to a caller, only used internally the same way
 /// `Procedures::sys()` is.
-fn system_context() -> CoolContext {
+fn system_context() -> CratestackContext {
     Principal {
         sub: "sms-api:auth".to_owned(),
         kind: PrincipalKind::App,
@@ -258,12 +260,12 @@ fn request_id_from(headers: &cratestack::axum::http::HeaderMap) -> String {
 }
 
 impl AuthProvider for GatewayAuth {
-    type Error = CoolError;
+    type Error = CratestackError;
 
     fn authenticate(
         &self,
         request: &RequestContext<'_>,
-    ) -> impl core::future::Future<Output = Result<CoolContext, Self::Error>> + Send {
+    ) -> impl core::future::Future<Output = Result<CratestackContext, Self::Error>> + Send {
         let token = extract_bearer_token(request.headers).map(str::to_owned);
         // #71: extracted synchronously, alongside `token` above, for the
         // same reason — `request` itself is a borrow tied to this call's
@@ -279,14 +281,16 @@ impl AuthProvider for GatewayAuth {
 
         async move {
             let token =
-                token.ok_or_else(|| CoolError::Unauthorized("no credentials".to_owned()))?;
+                token.ok_or_else(|| CratestackError::Unauthorized("no credentials".to_owned()))?;
             let claims: Claims = validate_jwt_generic(&token, &jwks, &validation)
                 .await
-                .map_err(|error| CoolError::Unauthorized(format!("invalid token: {error}")))?;
+                .map_err(|error| {
+                    CratestackError::Unauthorized(format!("invalid token: {error}"))
+                })?;
 
             // Layer 2 (#24, §5.1): read now, while `claims` is still whole —
             // `scope` is a first-class field, `perms` lives in `extra`. Both
-            // survive into the returned `CoolContext` below regardless of
+            // survive into the returned `CratestackContext` below regardless of
             // whether either is actually present; an absent claim becoming
             // an absent/empty context field, rather than the request
             // failing here, is what lets `require_permission` be the one
@@ -340,8 +344,8 @@ async fn authenticate_app(
     claims: Claims,
     app_cache: &TtlCache<String, schema::AppClient>,
     db: &Cratestack,
-    sys: &CoolContext,
-) -> Result<CoolContext, CoolError> {
+    sys: &CratestackContext,
+) -> Result<CratestackContext, CratestackError> {
     let perms = extract_perms(&claims.extra);
     let client_id = claims.sub;
     let app_client = app_cache
@@ -360,7 +364,7 @@ async fn authenticate_app(
                     .await?
                     .into_iter()
                     .next()
-                    .ok_or_else(|| CoolError::Unauthorized("unknown client".to_owned()))
+                    .ok_or_else(|| CratestackError::Unauthorized("unknown client".to_owned()))
             }
         })
         .await?;
@@ -420,8 +424,8 @@ async fn authenticate_human(
     human_client_id: &str,
     user_cache: &TtlCache<String, HumanPrincipal>,
     db: &Cratestack,
-    sys: &CoolContext,
-) -> Result<CoolContext, CoolError> {
+    sys: &CratestackContext,
+) -> Result<CratestackContext, CratestackError> {
     // Real, per-realm audience validation — see `GatewayAuth::new`'s own
     // doc on why this can't live in the shared `Validation` both realms
     // decode through.
@@ -451,14 +455,14 @@ async fn authenticate_human(
         .as_ref()
         .is_some_and(|aud| aud.contains(human_client_id))
     {
-        return Err(CoolError::Unauthorized(
+        return Err(CratestackError::Unauthorized(
             "human token audience mismatch".to_owned(),
         ));
     }
 
     let identity = claims
         .identity
-        .ok_or_else(|| CoolError::Unauthorized("human token missing identity".to_owned()))?;
+        .ok_or_else(|| CratestackError::Unauthorized("human token missing identity".to_owned()))?;
     let subject = identity.external_id;
 
     let principal = user_cache
@@ -489,7 +493,7 @@ async fn authenticate_human(
 ///
 /// # Errors
 ///
-/// [`CoolError::Unauthorized`] for anything that must not distinguish
+/// [`CratestackError::Unauthorized`] for anything that must not distinguish
 /// "no such user" from "deactivated" from "role deleted out from under
 /// them" to the caller — a revoked/renamed account must fail exactly like
 /// one that never existed, the same fail-closed posture
@@ -497,9 +501,9 @@ async fn authenticate_human(
 /// login itself.
 async fn load_human_principal(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     subject: &str,
-) -> Result<HumanPrincipal, CoolError> {
+) -> Result<HumanPrincipal, CratestackError> {
     let user_row = db
         .user()
         .find_many()
@@ -511,7 +515,7 @@ async fn load_human_principal(
         .await?
         .into_iter()
         .next()
-        .ok_or_else(|| CoolError::Unauthorized("unknown or inactive user".to_owned()))?;
+        .ok_or_else(|| CratestackError::Unauthorized("unknown or inactive user".to_owned()))?;
 
     let role_row = db
         .role()
@@ -522,7 +526,7 @@ async fn load_human_principal(
         .await?
         .into_iter()
         .next()
-        .ok_or_else(|| CoolError::Unauthorized("user's role no longer exists".to_owned()))?;
+        .ok_or_else(|| CratestackError::Unauthorized("user's role no longer exists".to_owned()))?;
 
     // Fail closed at the point of use — the second of two independent
     // guards, deliberately not the only one (see RESERVED_ROLE_KEYS' own
@@ -543,7 +547,7 @@ async fn load_human_principal(
     // on the common path, not redundant with the invariant itself, so
     // don't remove either half without re-reading this comment.
     if RESERVED_ROLE_KEYS.contains(&role_row.key.as_str()) {
-        return Err(CoolError::Unauthorized(
+        return Err(CratestackError::Unauthorized(
             "unknown or inactive user".to_owned(),
         ));
     }
@@ -649,7 +653,7 @@ mod tests {
             extensions: &extensions,
         };
         let error = gateway_auth().authenticate(&request).await.unwrap_err();
-        assert!(matches!(error, CoolError::Unauthorized(_)));
+        assert!(matches!(error, CratestackError::Unauthorized(_)));
     }
 
     #[tokio::test]
@@ -676,6 +680,6 @@ mod tests {
             extensions: &extensions,
         };
         let error = gateway_auth().authenticate(&request).await.unwrap_err();
-        assert!(matches!(error, CoolError::Unauthorized(_)));
+        assert!(matches!(error, CratestackError::Unauthorized(_)));
     }
 }

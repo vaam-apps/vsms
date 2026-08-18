@@ -22,7 +22,7 @@
 //! ```
 
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError, FilterExpr, Value};
+use cratestack::{CratestackContext, CratestackError, FilterExpr, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, procedures::ProcedureRegistry, procedures::simulate_route, route,
@@ -69,7 +69,7 @@ async fn db() -> Cratestack {
 /// `Route`/`Provider` writes need a human role — `owner` is the loosest of
 /// either model's admitted roles, same reasoning `if_match_live_postgres.rs`'s
 /// own `owner()` gives.
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "simulate-route-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -83,7 +83,7 @@ fn owner() -> CoolContext {
 /// production once provisioned with the `route:read` scope (#54) —
 /// `kind == "app"`, matching `Route`/`Provider`'s own `@@allow` (this PR),
 /// plus the Layer 2 scope `simulate_route`'s `require_permission` checks.
-fn app_caller_with_route_read() -> CoolContext {
+fn app_caller_with_route_read() -> CratestackContext {
     let mut ctx = Principal {
         sub: "simulate-route-test-console-client".to_owned(),
         kind: PrincipalKind::App,
@@ -100,7 +100,7 @@ fn app_caller_with_route_read() -> CoolContext {
 
 /// The identical caller shape, but without the `route:read` scope — the
 /// exact "an omitted scope yields denial" shape §5.2 documents.
-fn app_caller_without_route_read() -> CoolContext {
+fn app_caller_without_route_read() -> CratestackContext {
     let mut ctx = Principal {
         sub: "simulate-route-test-console-client-no-scope".to_owned(),
         kind: PrincipalKind::App,
@@ -397,10 +397,10 @@ async fn simulate_route_denies_a_caller_with_no_route_read_scope() {
     .expect_err("a caller with no route:read scope must be denied");
 
     assert!(
-        matches!(error, CoolError::Forbidden(_)),
+        matches!(error, CratestackError::Forbidden(_)),
         "expected Forbidden, got {error:?}"
     );
-    if let CoolError::Forbidden(message) = error {
+    if let CratestackError::Forbidden(message) = error {
         assert!(
             message.contains("route:read"),
             "expected the denial to name the missing permission: {message}"

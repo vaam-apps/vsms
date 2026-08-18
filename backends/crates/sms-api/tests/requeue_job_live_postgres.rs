@@ -19,7 +19,7 @@
 
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError, Value};
+use cratestack::{CratestackContext, CratestackError, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, JobState, UpdateJobInput, procedures::ProcedureRegistry,
@@ -34,7 +34,7 @@ use sms_api::{HashPepper, Procedures};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "requeue-job-test-system".to_owned(),
         kind: PrincipalKind::App,
@@ -51,7 +51,7 @@ fn sys() -> CoolContext {
 /// checks. A hand-built context, since this test never goes through
 /// `GatewayAuth` — same shape `send_message_live_postgres.rs`'s own
 /// `app_caller` documents.
-fn app_caller_with_job_enqueue() -> CoolContext {
+fn app_caller_with_job_enqueue() -> CratestackContext {
     let mut ctx = Principal {
         sub: "requeue-job-test-console-client".to_owned(),
         kind: PrincipalKind::App,
@@ -68,7 +68,7 @@ fn app_caller_with_job_enqueue() -> CoolContext {
 
 /// The identical caller shape, but without the `job:enqueue` scope — the
 /// exact "an omitted scope yields denial" shape §5.2 documents.
-fn app_caller_without_job_enqueue() -> CoolContext {
+fn app_caller_without_job_enqueue() -> CratestackContext {
     let mut ctx = Principal {
         sub: "requeue-job-test-console-client-no-scope".to_owned(),
         kind: PrincipalKind::App,
@@ -270,7 +270,7 @@ async fn requeuing_a_non_dead_job_is_a_conflict_not_a_crash() {
         .expect_err(&format!("requeuing a {label} job must not succeed"));
 
         assert!(
-            matches!(error, CoolError::Conflict(_)),
+            matches!(error, CratestackError::Conflict(_)),
             "expected a 409 Conflict requeuing a {label} job, got {error:?}"
         );
     }
@@ -292,7 +292,7 @@ async fn requeuing_a_non_dead_job_is_a_conflict_not_a_crash() {
 /// AND <detail policy>` preflight — *before* the procedure body ever runs.
 /// For a nonexistent id that query cannot distinguish "no row" from "row
 /// exists but policy denies" (`CONTRIBUTING.md`'s own documented
-/// `CoolError::Forbidden` ambiguity, now reachable here too), so it always
+/// `CratestackError::Forbidden` ambiguity, now reachable here too), so it always
 /// returns `Forbidden("detail policy denied this operation")` — the
 /// procedure's own `NotFound` branch is unreachable for a missing id.
 /// Confirmed live: reverting this assertion to `NotFound` reproduces
@@ -324,7 +324,7 @@ async fn requeuing_an_unknown_job_id_is_refused() {
     .expect_err("a nonexistent job id must not silently succeed");
 
     assert!(
-        matches!(error, CoolError::Forbidden(_)),
+        matches!(error, CratestackError::Forbidden(_)),
         "expected Forbidden (the @authorize detail-policy preflight denying a nonexistent row — \
          see this test's own doc comment), got {error:?}"
     );
@@ -380,10 +380,10 @@ async fn requeue_denies_a_caller_with_no_job_enqueue_scope() {
     .expect_err("a caller with no job:enqueue scope must be denied");
 
     assert!(
-        matches!(error, CoolError::Forbidden(_)),
+        matches!(error, CratestackError::Forbidden(_)),
         "expected Forbidden, got {error:?}"
     );
-    if let CoolError::Forbidden(message) = error {
+    if let CratestackError::Forbidden(message) = error {
         assert!(
             message.contains("job:enqueue"),
             "expected the denial to name the missing permission: {message}"
@@ -455,7 +455,7 @@ async fn a_stale_version_is_a_conflict_not_a_lost_update() {
         .await;
 
     match raced {
-        Err(CoolError::PreconditionFailed(_) | CoolError::Conflict(_)) => {}
+        Err(CratestackError::PreconditionFailed(_) | CratestackError::Conflict(_)) => {}
         other => panic!(
             "expected the stale version to be rejected as PreconditionFailed/Conflict, got \
              {other:?} — if this now succeeds, requeue_job's own if_match(existing.version) \

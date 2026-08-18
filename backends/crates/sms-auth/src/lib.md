@@ -23,16 +23,16 @@ their output into an `AuthProvider` is #21.
 catching `23505`, not a `SELECT` followed by an `INSERT` — the pre-check
 form races, and `upsert` does not exist when the `@id` carries a default
 (§2.0). That makes it dependent on the driver's SQLSTATE surviving the
-framework's sqlx→`CoolError` conversion.
+framework's sqlx→`CratestackError` conversion.
 
 For the whole of `cratestack-sqlx` `=0.5.0`–`=0.5.2` it did not: every
-generated write mapped through `CoolError::Database(error.to_string())`,
+generated write mapped through `CratestackError::Database(error.to_string())`,
 discarding SQLSTATE and constraint before application code saw them, so
 `db_sqlstate()` was `None` on every database-rejected write. Filed as
 [cratestack/cratestack#267](https://github.com/cratestack/cratestack/issues/267),
 tracked here as [vymalo/vsms#87](https://github.com/vymalo/vsms/issues/87),
 **fixed in `cratestack-sqlx` 0.6.0** — all twelve write paths now route
-through `cool_error_from_sqlx`.
+through `cratestack_error_from_sqlx`.
 
 `tests/live_postgres.rs`'s `record_jti_is_true_once_and_false_on_replay`
 was written to assert the correct behaviour while that bug was live, and
@@ -40,5 +40,5 @@ left failing rather than weakened, so it would go green the moment the
 pin moved. It does. Keep it, and the sibling assertions in
 `sms-api`'s `tests/errors_live_postgres.rs`: they are the only coverage
 that can see this class of regression, since a hand-constructed
-`CoolError::DatabaseTyped` never exercises the conversion, and
+`CratestackError::DatabaseTyped` never exercises the conversion, and
 `cargo build` / `cratestack check` stay green through it either way.

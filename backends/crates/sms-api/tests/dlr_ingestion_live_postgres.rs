@@ -18,7 +18,7 @@
 
 use chrono::{Duration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, MessageClass, MessageState, OperatorCode, UpdateMessageInput,
@@ -43,7 +43,7 @@ use sms_provider::{
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "dlr-ingestion-test-system".to_owned(),
         kind: PrincipalKind::App,
@@ -53,7 +53,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "dlr-ingestion-test-owner".to_owned(),
         kind: PrincipalKind::User,

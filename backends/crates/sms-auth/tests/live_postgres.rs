@@ -33,7 +33,7 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 
 /// A `system`-role context — the only one `OauthClient` and `ClientAssertion`
 /// admit.
-fn sys() -> cratestack::CoolContext {
+fn sys() -> cratestack::CratestackContext {
     Principal {
         sub: "sms-auth-live-test".to_owned(),
         kind: PrincipalKind::App,
@@ -131,7 +131,7 @@ async fn find_client_returns_none_for_an_unknown_client() {
 }
 
 /// The replay check depends on `db_sqlstate()` surviving the framework's
-/// sqlx→`CoolError` conversion. Through `cratestack-sqlx` `=0.5.2` it did
+/// sqlx→`CratestackError` conversion. Through `cratestack-sqlx` `=0.5.2` it did
 /// not — every generated write discarded SQLSTATE and constraint, so a
 /// replay fell through to "opaque fault" instead of "already spent"
 /// ([cratestack/cratestack#267](https://github.com/cratestack/cratestack/issues/267),
@@ -141,7 +141,7 @@ async fn find_client_returns_none_for_an_unknown_client() {
 /// This test was written to assert the correct behaviour and deliberately
 /// left failing while the bug was live, so it would go green the moment the
 /// pin moved rather than the regression going unnoticed a second time. It
-/// now passes. Keep it: a hand-constructed `CoolError::DatabaseTyped` never
+/// now passes. Keep it: a hand-constructed `CratestackError::DatabaseTyped` never
 /// exercises that conversion, so this is the only shape of test that can
 /// see the regression come back.
 #[tokio::test]

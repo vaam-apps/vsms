@@ -95,7 +95,7 @@
 //!
 //! Cross-checked against every `db.<model>()...run(sys)` call in
 //! `backends/crates/sms-api/src`, `backends/crates/sms-worker/src`, and `backends/crates/sms-auth/src`
-//! (the only places a `system`-role [`CoolContext`] is ever constructed) as
+//! (the only places a `system`-role [`CratestackContext`] is ever constructed) as
 //! of #40: no tenth instance existed at that point. All 15 models an
 //! internal system context read then already admitted one; the 4 that
 //! didn't (`Route`, `MessagePart`, `User`, `Role`) had no internal reader
@@ -188,7 +188,7 @@ use std::path::Path;
 
 use chrono::{Duration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass,
@@ -423,7 +423,7 @@ fn every_model_in_the_schema_is_classified() {
     }
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "system-golden-list-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -437,7 +437,7 @@ fn owner() -> CoolContext {
 /// runs under — `kind: App`, `role: "system"`, exactly as
 /// `Procedures::sys()` / `auth::system_context()` build it. Never a real
 /// caller's token; see either of those functions' own doc for why.
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "system-golden-list-system".to_owned(),
         kind: PrincipalKind::App,

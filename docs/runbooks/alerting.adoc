@@ -53,7 +53,7 @@ message, so there is nothing request-scoped to carry forward.
 dlr.rs::ingest_one`): `info!(message_id, from_state, to_state,
 provider_ref, "DLR applied")`. Also no `cratestack_request_id` -- a DLR
 arrives on its own unauthenticated HTTP connection with no bearer token
-and therefore no per-request `CoolContext` (``dlr.rs``'s own module doc).
+and therefore no per-request `CratestackContext` (``dlr.rs``'s own module doc).
 
 *`message_id` (`Message.id`) is the join key across all three, not a
 `traceparent` or a shared span context* -- these are three separate

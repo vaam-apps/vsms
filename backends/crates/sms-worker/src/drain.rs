@@ -3,7 +3,7 @@
 use std::time::Duration as StdDuration;
 
 use chrono::Duration;
-use cratestack::CoolError;
+use cratestack::CratestackError;
 use cratestack::sqlx::query_scalar;
 use sms_api::schema::Cratestack;
 use tracing::{debug, error, warn};
@@ -83,7 +83,7 @@ pub async fn tick(db: &Cratestack) {
 /// `pub` for the same reason `tick` is: `drain_live_postgres.rs` asserts
 /// this directly against a real Postgres rather than trying to scrape a
 /// `tracing` log line out of `tick`'s own `warn!`/`debug!` calls.
-pub async fn oldest_undelivered_age(db: &Cratestack) -> Result<Option<Duration>, CoolError> {
+pub async fn oldest_undelivered_age(db: &Cratestack) -> Result<Option<Duration>, CratestackError> {
     // `ensure_event_outbox_table` doesn't run here — `db.events().drain()`
     // already ran it unconditionally, immediately before this is ever
     // called (see `tick`), so the table is guaranteed to exist by the time
@@ -99,7 +99,7 @@ pub async fn oldest_undelivered_age(db: &Cratestack) -> Result<Option<Duration>,
     .fetch_one(db.pool())
     .await
     .map_err(|error| {
-        CoolError::Internal(format!("reading oldest undelivered event age: {error}"))
+        CratestackError::Internal(format!("reading oldest undelivered event age: {error}"))
     })?;
 
     // Sub-second precision doesn't matter for a staleness alert — this age

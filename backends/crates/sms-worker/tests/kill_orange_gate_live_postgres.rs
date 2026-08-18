@@ -73,7 +73,7 @@ use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
@@ -98,7 +98,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-worker-kill-orange-gate".to_owned(),
         kind: PrincipalKind::App,
@@ -108,7 +108,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-worker-kill-orange-gate-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -588,7 +588,7 @@ async fn build_gate_harness(
 /// pass.
 async fn run_baseline_phase(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     ctx: &WorkerContext,
     app_id: &str,
     fixture: &GateFixture,
@@ -632,7 +632,7 @@ async fn run_baseline_phase(
 /// not `0`).
 async fn run_outage_phase(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     ctx: &WorkerContext,
     app_id: &str,
     fixture: &GateFixture,
@@ -731,7 +731,7 @@ async fn run_outage_phase(
 /// #65's circuit-breaker clause: it doesn't just open, it closes again.
 async fn run_recovery_phase(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     ctx: &WorkerContext,
     app_id: &str,
     fixture: &GateFixture,
@@ -778,7 +778,7 @@ async fn run_recovery_phase(
 /// the same comparison (`circuitOpenUntil > now`,
 /// `backends/crates/sms-worker/src/routing.rs::convert_provider`) that 60 real
 /// seconds elapsing would, without waiting them out.
-async fn force_circuit_cooldown_past(db: &Cratestack, sys: &CoolContext, provider_id: &str) {
+async fn force_circuit_cooldown_past(db: &Cratestack, sys: &CratestackContext, provider_id: &str) {
     let row = reload_provider(db, provider_id).await;
     db.provider()
         .update(provider_id.to_owned())

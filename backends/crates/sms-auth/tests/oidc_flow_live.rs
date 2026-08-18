@@ -40,7 +40,7 @@ use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
@@ -49,7 +49,7 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack};
 use sms_api::{GatewayAuth, HashPepper};
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "oidc-flow-test-system".to_owned(),
         kind: PrincipalKind::App,
@@ -59,7 +59,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "oidc-flow-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -171,7 +171,7 @@ fn op_router(state: OpState) -> Router {
         .with_state(state)
 }
 
-fn spawn_key_refresh(state: OpState, db: Cratestack, sys: CoolContext, issuer: String) {
+fn spawn_key_refresh(state: OpState, db: Cratestack, sys: CratestackContext, issuer: String) {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(TEST_KEY_REFRESH_INTERVAL);
         loop {

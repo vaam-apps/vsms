@@ -9,7 +9,7 @@ use chrono::{DateTime, Duration, Utc};
 // matches the literal substring `sqlx::query`/`sqlx::query_as`/`sqlx::raw_sql`,
 // so the exception has to be visible at the call site, not hidden behind a
 // braced multi-item `use` the check can't see through.
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx;
 use sms_api::schema::{Cratestack, Job};
 use tracing::{debug, info, warn};
@@ -91,7 +91,12 @@ impl JobHandler for ReapOutbox {
         "reap_outbox"
     }
 
-    async fn run(&self, db: &Cratestack, _sys: &CoolContext, _job: &Job) -> Result<(), String> {
+    async fn run(
+        &self,
+        db: &Cratestack,
+        _sys: &CratestackContext,
+        _job: &Job,
+    ) -> Result<(), String> {
         self.run_at(db, Utc::now()).await
     }
 }

@@ -6,7 +6,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::routing::post;
 use axum::{Json, Router};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use serde::{Deserialize, Serialize};
 use sms_api::schema::Cratestack;
 
@@ -15,7 +15,7 @@ use crate::op::OpState;
 #[derive(Clone)]
 struct LoginState {
     db: Cratestack,
-    sys: CoolContext,
+    sys: CratestackContext,
     op: OpState,
 }
 
@@ -155,7 +155,7 @@ fn error_response(
 /// own shape.
 // No `#[must_use]`: axum's `Router` already carries one — same reasoning as
 // `sms_api::router`'s and `op::router`'s own doc comments on this.
-pub fn router(db: Cratestack, sys: CoolContext, op: OpState) -> Router {
+pub fn router(db: Cratestack, sys: CratestackContext, op: OpState) -> Router {
     let state = LoginState { db, sys, op };
     Router::new()
         .route("/login", post(login_handler))

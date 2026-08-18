@@ -5,7 +5,10 @@ use cratestack::axum::extract::{Request, State};
 use cratestack::axum::http::Method;
 use cratestack::axum::middleware::Next;
 use cratestack::axum::response::{IntoResponse, Response};
-use cratestack::{AuthProvider, CoolContext, CoolError, CoolErrorResponse, RequestContext, Value};
+use cratestack::{
+    AuthProvider, CratestackContext, CratestackError, CratestackErrorResponse, RequestContext,
+    Value,
+};
 
 use crate::auth::GatewayAuth;
 
@@ -16,8 +19,8 @@ use crate::auth::GatewayAuth;
 ///
 /// # Errors
 ///
-/// [`CoolError::Forbidden`] when `required` is in neither claim.
-pub fn require_permission(ctx: &CoolContext, required: &str) -> Result<(), CoolError> {
+/// [`CratestackError::Forbidden`] when `required` is in neither claim.
+pub fn require_permission(ctx: &CratestackContext, required: &str) -> Result<(), CratestackError> {
     let has_perm = matches!(
         ctx.extensions.get("perms"),
         Some(Value::List(items))
@@ -31,7 +34,7 @@ pub fn require_permission(ctx: &CoolContext, required: &str) -> Result<(), CoolE
     if has_perm || has_scope {
         Ok(())
     } else {
-        Err(CoolError::Forbidden(format!(
+        Err(CratestackError::Forbidden(format!(
             "missing required permission {required:?}"
         )))
     }
@@ -64,9 +67,9 @@ fn path_matches(template: &str, actual: &str) -> bool {
     }
 }
 
-fn error_response(error: &CoolError) -> Response {
+fn error_response(error: &CratestackError) -> Response {
     let status = error.status_code();
-    let body = CoolErrorResponse {
+    let body = CratestackErrorResponse {
         code: error.code().to_owned(),
         message: error.public_message().into_owned(),
         details: None,
@@ -153,8 +156,8 @@ pub async fn enforce_route_permission(
 mod tests {
     use super::*;
 
-    fn ctx_with(perms: Option<&[&str]>, scope: Option<&str>) -> CoolContext {
-        let mut ctx = CoolContext::authenticated([(
+    fn ctx_with(perms: Option<&[&str]>, scope: Option<&str>) -> CratestackContext {
+        let mut ctx = CratestackContext::authenticated([(
             "sub".to_owned(),
             Value::String("test-caller".to_owned()),
         )]);
@@ -178,10 +181,10 @@ mod tests {
 
     #[test]
     fn a_caller_with_neither_claim_present_is_denied() {
-        let ctx = CoolContext::authenticated([]);
+        let ctx = CratestackContext::authenticated([]);
         assert!(matches!(
             require_permission(&ctx, "sms:send"),
-            Err(CoolError::Forbidden(_))
+            Err(CratestackError::Forbidden(_))
         ));
     }
 
@@ -192,7 +195,7 @@ mod tests {
         let ctx = ctx_with(None, None);
         assert!(matches!(
             require_permission(&ctx, "sms:send"),
-            Err(CoolError::Forbidden(_))
+            Err(CratestackError::Forbidden(_))
         ));
     }
 
@@ -201,7 +204,7 @@ mod tests {
         let ctx = ctx_with(Some(&[]), None);
         assert!(matches!(
             require_permission(&ctx, "provider:update"),
-            Err(CoolError::Forbidden(_))
+            Err(CratestackError::Forbidden(_))
         ));
     }
 
@@ -210,7 +213,7 @@ mod tests {
         let ctx = ctx_with(None, Some("sms:read"));
         assert!(matches!(
             require_permission(&ctx, "sms:send"),
-            Err(CoolError::Forbidden(_))
+            Err(CratestackError::Forbidden(_))
         ));
     }
 
@@ -227,7 +230,7 @@ mod tests {
         let ctx = ctx_with(None, Some("sms:sendall"));
         assert!(matches!(
             require_permission(&ctx, "sms:send"),
-            Err(CoolError::Forbidden(_))
+            Err(CratestackError::Forbidden(_))
         ));
     }
 
@@ -248,7 +251,7 @@ mod tests {
         );
         assert!(matches!(
             require_permission(&ctx, "provider:update"),
-            Err(CoolError::Forbidden(_))
+            Err(CratestackError::Forbidden(_))
         ));
     }
 

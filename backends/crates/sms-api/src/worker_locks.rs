@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 // reap_outbox.rs`'s own convention: `cargo xtask no-raw-sqlx`'s pattern
 // matches the literal substring `sqlx::query`, so the raw call stays visible at
 // the call site rather than hidden behind a braced `use`.
-use cratestack::CoolError;
+use cratestack::CratestackError;
 use cratestack::sqlx;
 
 use crate::schema::{Cratestack, WorkerLockInfo};
@@ -28,11 +28,11 @@ type LockRow = (i32, i32, String, Option<DateTime<Utc>>);
 ///
 /// # Errors
 ///
-/// [`CoolError::Internal`] if the query itself fails — `pg_locks`/
+/// [`CratestackError::Internal`] if the query itself fails — `pg_locks`/
 /// `pg_stat_activity` are always-present system views, so unlike
 /// `cratestack_event_outbox` there is no "table doesn't exist yet" case to
 /// treat as empty.
-pub async fn current_locks(db: &Cratestack) -> Result<Vec<WorkerLockInfo>, CoolError> {
+pub async fn current_locks(db: &Cratestack) -> Result<Vec<WorkerLockInfo>, CratestackError> {
     let rows: Vec<LockRow> = sqlx::query_as(
         "SELECT l.objid::int4 AS objid, \
                 l.pid::int4 AS pid, \
@@ -45,7 +45,9 @@ pub async fn current_locks(db: &Cratestack) -> Result<Vec<WorkerLockInfo>, CoolE
     .bind(ADVISORY_LOCK_NAMESPACE)
     .fetch_all(db.pool())
     .await
-    .map_err(|error| CoolError::Internal(format!("reading pg_locks for worker leases: {error}")))?;
+    .map_err(|error| {
+        CratestackError::Internal(format!("reading pg_locks for worker leases: {error}"))
+    })?;
 
     Ok(ROLE_LOCK_KEYS
         .iter()

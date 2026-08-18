@@ -596,7 +596,7 @@ fn write_private_key_pem(path: &std::path::Path, pem: &str) -> Result<()> {
 /// The `system`-role context every OP-adjacent database write in this
 /// binary runs under — never handed to a caller, matching
 /// `Procedures::sys()`'s own convention.
-fn system_context() -> cratestack::CoolContext {
+fn system_context() -> cratestack::CratestackContext {
     Principal {
         sub: "sms-gateway:op".to_owned(),
         kind: PrincipalKind::App,
@@ -624,7 +624,7 @@ fn system_context() -> cratestack::CoolContext {
 /// should grow its own subcommand for.
 async fn resolve_provider_row_id(
     db: &Cratestack,
-    sys: &cratestack::CoolContext,
+    sys: &cratestack::CratestackContext,
     provider: &dyn SmsProvider,
 ) -> Result<String> {
     let found = db
@@ -812,7 +812,7 @@ impl OrangeCredentials {
 /// hidden the next fifty lines of growth too.
 async fn build_dlr_router(
     db: &Cratestack,
-    sys: &cratestack::CoolContext,
+    sys: &cratestack::CratestackContext,
     orange: OrangeCredentials,
 ) -> Result<axum::Router> {
     let mut orange_config = sms_provider_orange_cm::OrangeCmConfig::production(
@@ -848,7 +848,7 @@ async fn build_dlr_router(
 /// `exec`.
 async fn build_op_state(
     db: &Cratestack,
-    sys: &cratestack::CoolContext,
+    sys: &cratestack::CratestackContext,
     issuer: &str,
 ) -> Result<op::OpState> {
     let (signing, jwks) = sms_auth::op::load_signing_keys(db, sys, issuer)
@@ -1042,7 +1042,7 @@ async fn spawn_metrics_server(
 async fn rotate_signing_key_command(database_url: String) -> Result<()> {
     // Found live prepping #36 (this repo's first time ever running
     // this command against a real database): `max_connections(1)`
-    // deadlocks with `CoolError::Database("pool timed out waiting
+    // deadlocks with `CratestackError::Database("pool timed out waiting
     // for an open connection")` on the very first
     // `OauthSigningKey::create` — reproduced twice, and confirmed
     // fixed at exactly `max_connections(2)`, one shy of that. Most
@@ -1257,7 +1257,7 @@ fn parse_provider_kind(kind: &str) -> Result<ProviderKind> {
 /// so the caller can skip a needless activation write.
 async fn create_or_find_provider(
     db: &Cratestack,
-    ctx: &cratestack::CoolContext,
+    ctx: &cratestack::CratestackContext,
     key: &str,
     input: CreateProviderInput,
 ) -> Result<(String, i64, bool)> {
@@ -1314,7 +1314,7 @@ async fn create_or_find_provider(
 /// here.
 async fn ensure_catch_all_route(
     db: &Cratestack,
-    ctx: &cratestack::CoolContext,
+    ctx: &cratestack::CratestackContext,
     provider_id: &str,
 ) -> Result<()> {
     let existing = db

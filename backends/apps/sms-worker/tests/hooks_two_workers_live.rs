@@ -83,7 +83,7 @@ use std::time::Duration;
 
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, AttemptState, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput,
@@ -99,7 +99,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// polls, not just one.
 const ROW_COUNT: usize = 50;
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "hooks-two-workers-test".to_owned(),
         kind: PrincipalKind::App,
@@ -109,7 +109,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "hooks-two-workers-test-owner".to_owned(),
         kind: PrincipalKind::User,

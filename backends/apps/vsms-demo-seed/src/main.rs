@@ -55,7 +55,7 @@ struct Cli {
 /// `@unique`.
 async fn create_or_find_demo_app(
     db: &Cratestack,
-    ctx: &cratestack::CoolContext,
+    ctx: &cratestack::CratestackContext,
     name: &str,
     slug: &str,
 ) -> Result<String> {
@@ -108,7 +108,7 @@ async fn create_or_find_demo_app(
 /// `send_test_message.rs`'s own `ensure_sender_ready`.
 async fn ensure_demo_sender_id(
     db: &Cratestack,
-    ctx: &cratestack::CoolContext,
+    ctx: &cratestack::CratestackContext,
     value: &str,
     provider_id: &str,
 ) -> Result<()> {

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Duration, Utc};
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::errors::UNIQUE_VIOLATION;
 use sms_api::schema::{Cratestack, CreateJobInput, job};
@@ -88,7 +88,7 @@ pub fn schedule() -> Vec<RecurringJobSpec> {
     ]
 }
 
-fn sys(worker: &str) -> CoolContext {
+fn sys(worker: &str) -> CratestackContext {
     Principal {
         sub: format!("sms-worker:scheduler:{worker}"),
         kind: PrincipalKind::App,
@@ -117,7 +117,7 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 /// scheduled at all.
 async fn seed_last_enqueued(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     specs: &[RecurringJobSpec],
 ) -> HashMap<&'static str, Option<DateTime<Utc>>> {
     let mut seeded = HashMap::with_capacity(specs.len());
@@ -156,7 +156,7 @@ async fn seed_last_enqueued(
 #[allow(clippy::implicit_hasher)]
 pub async fn tick(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     specs: &[RecurringJobSpec],
     last_enqueued: &mut HashMap<&'static str, Option<DateTime<Utc>>>,
 ) {
@@ -191,10 +191,10 @@ pub async fn tick(
 /// one.
 async fn try_enqueue(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     spec: &RecurringJobSpec,
     now: DateTime<Utc>,
-) -> Result<bool, CoolError> {
+) -> Result<bool, CratestackError> {
     match db
         .job()
         .create(CreateJobInput {

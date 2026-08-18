@@ -3,7 +3,24 @@
 // The generated module is not ours to document.
 #![allow(missing_docs)]
 
-cratestack::include_server_schema!("../../../schemas/vsms.cstack", db = Postgres);
+// `decimal = RustDecimal` is required, not decorative, and is new as of the
+// cratestack 0.8.3 bump. cratestack#609 made `decimal-rust-decimal` and
+// `decimal-bigdecimal` additive rather than mutually exclusive — they used
+// to be enforced apart by a `compile_error!`, which meant two independent
+// crates in one dependency graph, each making a legitimate backend choice,
+// produced a build neither author could fix. The cost of fixing that is
+// that the backend can no longer be inferred from features alone, so any
+// schema declaring a `Decimal` field must name one here. This schema has
+// three (`Provider.costPerSegmentXaf`, `Message.costXaf`,
+// `SendMessageResult.estimatedCostXaf`). `RustDecimal` matches what
+// `cratestack-pg`'s own `default` feature set already selected, so this
+// declares what was already true — no money type in this tree changed
+// shape. Omitting it is a compile error, not a silent fallback.
+cratestack::include_server_schema!(
+    "../../../schemas/vsms.cstack",
+    db = Postgres,
+    decimal = RustDecimal
+);
 
 /// Shorter alias for the generated module, so consumers write
 /// `sms_api::schema::{Message, Cratestack, ...}`.

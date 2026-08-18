@@ -27,7 +27,7 @@ use sms_core::password::hash_password;
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn owner() -> cratestack::CoolContext {
+fn owner() -> cratestack::CratestackContext {
     Principal {
         sub: "sms-auth-login-live-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -37,7 +37,7 @@ fn owner() -> cratestack::CoolContext {
     .into_context()
 }
 
-fn sys() -> cratestack::CoolContext {
+fn sys() -> cratestack::CratestackContext {
     Principal {
         sub: "sms-auth-login-live-test-system".to_owned(),
         kind: PrincipalKind::App,

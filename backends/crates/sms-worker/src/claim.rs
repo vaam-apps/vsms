@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
-use cratestack::{CoolContext, CoolError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::schema::{
     AttemptState, Cratestack, Job, JobState, Message, MessageState, UpdateJobInput,
     UpdateMessageInput, UpdateWebhookAttemptInput, WebhookAttempt, job, message, webhook_attempt,
@@ -33,10 +33,10 @@ pub trait Claimable: Sized + Send {
     /// order" mean is a property of the model, not of claiming in general.
     async fn candidates(
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         now: DateTime<Utc>,
         budget: i64,
-    ) -> Result<Vec<Self>, CoolError>;
+    ) -> Result<Vec<Self>, CratestackError>;
 
     /// Attempt to take the lease on this one candidate via
     /// `if_match(self's version)` — the compare-and-swap itself. Must set
@@ -46,10 +46,10 @@ pub trait Claimable: Sized + Send {
     async fn take_lease(
         &self,
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         worker: &str,
         now: DateTime<Utc>,
-    ) -> Result<Self, CoolError>;
+    ) -> Result<Self, CratestackError>;
 }
 
 /// Claim up to `budget` rows of `C`.
@@ -75,10 +75,10 @@ pub trait Claimable: Sized + Send {
 /// mysterious throughput loss.
 pub async fn claim_batch<C: Claimable>(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     worker: &str,
     budget: i64,
-) -> Result<Vec<C>, CoolError> {
+) -> Result<Vec<C>, CratestackError> {
     let now = Utc::now();
     let candidates = C::candidates(db, sys, now, budget).await?;
 
@@ -90,7 +90,7 @@ pub async fn claim_batch<C: Claimable>(
         // `sms_sm001_total`'s one recording site (`backends/crates/sms-api/src/
         // errors.rs`), so an illegal edge here needs to pass through it to
         // be counted. Mapping first also means an actual SM001 now arrives
-        // here as `CoolError::Conflict`, not `CoolError::DatabaseTyped` —
+        // here as `CratestackError::Conflict`, not `CratestackError::DatabaseTyped` —
         // still falls to the `Err(e) => return Err(e)` arm below either
         // way (this loop has no "swallow a Conflict" branch of its own,
         // unlike `crate::jobs`/`crate::jobs::expire_stale`), but now
@@ -101,8 +101,8 @@ pub async fn claim_batch<C: Claimable>(
             .map_err(sms_api::map_database_error)
         {
             Ok(row) => claimed.push(row),
-            Err(CoolError::PreconditionFailed(_)) => {}
-            Err(CoolError::Forbidden(_)) => {
+            Err(CratestackError::PreconditionFailed(_)) => {}
+            Err(CratestackError::Forbidden(_)) => {
                 warn!(
                     id = candidate.id(),
                     worker, "claim forbidden — policy denied or row gone"
@@ -132,9 +132,9 @@ const DISPATCH_LEASE: Duration = Duration::minutes(2);
 /// itself — see `crate::routing`'s and `sms_routing`'s own module docs.
 async fn route(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     message: &Message,
-) -> Result<sms_routing::Decision, CoolError> {
+) -> Result<sms_routing::Decision, CratestackError> {
     let candidate = crate::routing::Candidate {
         operator: message.operator,
         class: message.class,
@@ -155,11 +155,11 @@ async fn route(
 /// [`Claimable::take_lease`]'s own doc on why no real lease is taken here.
 async fn apply_routing_decision(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     message: &Message,
     worker: &str,
     now: DateTime<Utc>,
-) -> Result<Message, CoolError> {
+) -> Result<Message, CratestackError> {
     let decision = route(db, sys, message).await?;
     match decision.winner {
         Some(winner) => {
@@ -201,13 +201,13 @@ async fn apply_routing_decision(
 /// now that it has two "max attempts" arms instead of one (#122).
 async fn fail_max_attempts(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     id: String,
     version: i64,
     worker: &str,
     now: DateTime<Utc>,
     reason: String,
-) -> Result<Message, CoolError> {
+) -> Result<Message, CratestackError> {
     db.message()
         .update(id)
         .set(UpdateMessageInput {
@@ -230,10 +230,10 @@ impl Claimable for Message {
 
     async fn candidates(
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         now: DateTime<Utc>,
         budget: i64,
-    ) -> Result<Vec<Self>, CoolError> {
+    ) -> Result<Vec<Self>, CratestackError> {
         // `routed` belongs in this list, not just `accepted`/`queued` — §7.3's
         // own illustrative query omits it, but `messages_lease_reclaim_idx`
         // (§2.10, committed since milestone 0) is built `WHERE ... state IN
@@ -333,10 +333,10 @@ impl Claimable for Message {
     async fn take_lease(
         &self,
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         worker: &str,
         now: DateTime<Utc>,
-    ) -> Result<Self, CoolError> {
+    ) -> Result<Self, CratestackError> {
         match self.state {
             MessageState::accepted => apply_routing_decision(db, sys, self, worker, now).await,
             MessageState::queued if self.attempts >= self.maxAttempts => {
@@ -422,10 +422,10 @@ impl Claimable for Job {
 
     async fn candidates(
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         now: DateTime<Utc>,
         budget: i64,
-    ) -> Result<Vec<Self>, CoolError> {
+    ) -> Result<Vec<Self>, CratestackError> {
         // Two disjoint groups, matching the two partial indexes §2.10
         // already commits to (`jobs_claim_idx` on `pending`,
         // `jobs_lease_reclaim_idx` on `running`) — a single query spanning
@@ -482,10 +482,10 @@ impl Claimable for Job {
     async fn take_lease(
         &self,
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         worker: &str,
         now: DateTime<Utc>,
-    ) -> Result<Self, CoolError> {
+    ) -> Result<Self, CratestackError> {
         match self.state {
             JobState::pending => {
                 db.job()
@@ -551,11 +551,11 @@ const CANDIDATE_OVERFETCH_FACTOR: i64 = 3;
 /// filtering, so the caller never sees more than it asked for.
 async fn filter_by_endpoint_health(
     db: &Cratestack,
-    sys: &CoolContext,
+    sys: &CratestackContext,
     candidates: Vec<WebhookAttempt>,
     now: DateTime<Utc>,
     budget: i64,
-) -> Result<Vec<WebhookAttempt>, CoolError> {
+) -> Result<Vec<WebhookAttempt>, CratestackError> {
     if candidates.is_empty() {
         return Ok(candidates);
     }
@@ -610,10 +610,10 @@ impl Claimable for WebhookAttempt {
     /// could.
     async fn candidates(
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         now: DateTime<Utc>,
         budget: i64,
-    ) -> Result<Vec<Self>, CoolError> {
+    ) -> Result<Vec<Self>, CratestackError> {
         let fetch_budget = budget
             .saturating_mul(CANDIDATE_OVERFETCH_FACTOR)
             .max(budget);
@@ -669,10 +669,10 @@ impl Claimable for WebhookAttempt {
     async fn take_lease(
         &self,
         db: &Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         worker: &str,
         now: DateTime<Utc>,
-    ) -> Result<Self, CoolError> {
+    ) -> Result<Self, CratestackError> {
         match self.state {
             AttemptState::pending | AttemptState::failed => {
                 db.webhook_attempt()

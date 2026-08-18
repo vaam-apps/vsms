@@ -19,7 +19,7 @@
 
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, Value};
+use cratestack::{CratestackContext, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, MessageClass, MessageState, OperatorCode, SenderIdKind,
@@ -37,7 +37,7 @@ use sms_api::{HashPepper, Procedures};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "send-message-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -47,7 +47,7 @@ fn owner() -> CoolContext {
     .into_context()
 }
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "send-message-test-system".to_owned(),
         kind: PrincipalKind::App,
@@ -68,7 +68,7 @@ fn sys() -> CoolContext {
 /// `GatewayAuth` — has to carry the same claim by hand, or every test below
 /// would fail on that gate rather than on whatever it actually means to
 /// exercise.
-fn app_caller(client_id: &str) -> CoolContext {
+fn app_caller(client_id: &str) -> CratestackContext {
     let mut ctx = Principal {
         sub: client_id.to_owned(),
         kind: PrincipalKind::App,
@@ -342,7 +342,10 @@ async fn an_unknown_client_id_is_unauthorized() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, cratestack::CoolError::Unauthorized(_)));
+    assert!(matches!(
+        error,
+        cratestack::CratestackError::Unauthorized(_)
+    ));
 }
 
 #[tokio::test]
@@ -429,7 +432,7 @@ async fn an_opted_out_recipient_is_refused_before_persistence() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, cratestack::CoolError::Validation(_)));
+    assert!(matches!(error, cratestack::CratestackError::Validation(_)));
 
     let count = db
         .message()
@@ -479,7 +482,7 @@ async fn a_full_monthly_quota_is_refused() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, cratestack::CoolError::Validation(_)));
+    assert!(matches!(error, cratestack::CratestackError::Validation(_)));
 }
 
 #[tokio::test]
@@ -501,7 +504,7 @@ async fn no_sender_id_and_no_default_is_refused() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, cratestack::CoolError::Validation(_)));
+    assert!(matches!(error, cratestack::CratestackError::Validation(_)));
 }
 
 #[tokio::test]
@@ -523,7 +526,7 @@ async fn an_unregistered_sender_id_is_refused() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, cratestack::CoolError::Validation(_)));
+    assert!(matches!(error, cratestack::CratestackError::Validation(_)));
 }
 
 #[tokio::test]
@@ -750,7 +753,7 @@ async fn a_marketing_send_is_refused_but_a_transactional_send_to_the_same_recipi
     .await
     .unwrap_err();
     assert!(
-        matches!(marketing_error, cratestack::CoolError::Validation(_)),
+        matches!(marketing_error, cratestack::CratestackError::Validation(_)),
         "a marketing send with no consent on file must be refused, got: {marketing_error:?}"
     );
 
@@ -797,7 +800,7 @@ async fn a_notification_send_with_no_consent_record_is_refused() {
     .await
     .unwrap_err();
 
-    assert!(matches!(error, cratestack::CoolError::Validation(_)));
+    assert!(matches!(error, cratestack::CratestackError::Validation(_)));
 
     let count = db
         .message()
@@ -868,7 +871,7 @@ async fn a_consent_record_scoped_to_a_different_class_does_not_authorise_this_on
     .await
     .unwrap_err();
 
-    assert!(matches!(error, cratestack::CoolError::Validation(_)));
+    assert!(matches!(error, cratestack::CratestackError::Validation(_)));
 }
 
 /// The opt-out half of the same classification exemption
@@ -998,7 +1001,7 @@ async fn a_marketing_send_scheduled_into_quiet_hours_is_refused_however_it_is_ac
          refused at accept time — otherwise the worker delivers it during quiet hours",
     );
     assert!(
-        matches!(error, cratestack::CoolError::Validation(_)),
+        matches!(error, cratestack::CratestackError::Validation(_)),
         "expected the quiet-hours Validation refusal, got: {error:?}"
     );
 }
@@ -1052,7 +1055,7 @@ async fn a_marketing_send_matches_the_real_clocks_current_quiet_hours_state() {
     } else {
         let error = outcome.unwrap_err();
         assert!(
-            matches!(error, cratestack::CoolError::Validation(_)),
+            matches!(error, cratestack::CratestackError::Validation(_)),
             "is_within_marketing_quiet_hours(now) is false, so this marketing send \
              must be refused, got: {error:?}"
         );

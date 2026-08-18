@@ -38,7 +38,7 @@
 //! ```
 
 use chrono::{Duration as ChronoDuration, Utc};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
@@ -61,7 +61,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const FIRST_SUBMIT_DELAY: Duration = Duration::from_secs(5);
 const SENDER_NUMBER: &str = "+2370000";
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-worker-kill9-test".to_owned(),
         kind: PrincipalKind::App,
@@ -71,7 +71,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-worker-kill9-test-owner".to_owned(),
         kind: PrincipalKind::User,

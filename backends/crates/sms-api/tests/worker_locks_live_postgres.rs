@@ -18,7 +18,7 @@
 //! ```
 
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError, Value};
+use cratestack::{CratestackContext, CratestackError, Value};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack, procedures::ProcedureRegistry, procedures::worker_locks};
 use sms_api::{HashPepper, Procedures};
@@ -38,7 +38,7 @@ use sms_worker::lease::RoleLease;
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn app_caller_with_worker_read() -> CoolContext {
+fn app_caller_with_worker_read() -> CratestackContext {
     let mut ctx = Principal {
         sub: "worker-locks-test-console-client".to_owned(),
         kind: PrincipalKind::App,
@@ -53,7 +53,7 @@ fn app_caller_with_worker_read() -> CoolContext {
     ctx
 }
 
-fn app_caller_without_worker_read() -> CoolContext {
+fn app_caller_without_worker_read() -> CratestackContext {
     let mut ctx = Principal {
         sub: "worker-locks-test-console-client-no-scope".to_owned(),
         kind: PrincipalKind::App,
@@ -219,10 +219,10 @@ async fn worker_locks_denies_a_caller_with_no_worker_read_scope() {
     .expect_err("a caller with no worker:read scope must be denied");
 
     assert!(
-        matches!(error, CoolError::Forbidden(_)),
+        matches!(error, CratestackError::Forbidden(_)),
         "expected Forbidden, got {error:?}"
     );
-    if let CoolError::Forbidden(message) = error {
+    if let CratestackError::Forbidden(message) = error {
         assert!(
             message.contains("worker:read"),
             "expected the denial to name the missing permission: {message}"

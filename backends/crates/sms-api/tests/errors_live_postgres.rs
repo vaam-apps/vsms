@@ -3,18 +3,18 @@
 //! through PR #78.
 //!
 //! `backends/crates/sms-api/src/errors.rs`'s own `#[cfg(test)] mod tests` construct
-//! `CoolError::DatabaseTyped { .. }` by hand. That is correct unit coverage
+//! `CratestackError::DatabaseTyped { .. }` by hand. That is correct unit coverage
 //! of the *mapping function*, and it is completely blind to the step before
-//! it: whether a driver error surviving the framework's sqlx→`CoolError`
+//! it: whether a driver error surviving the framework's sqlx→`CratestackError`
 //! conversion still carries its SQLSTATE at all. In `cratestack-sqlx`
 //! `=0.5.0` it did not — every generated write mapped through
-//! `CoolError::Database(error.to_string())`, discarding SQLSTATE and
+//! `CratestackError::Database(error.to_string())`, discarding SQLSTATE and
 //! constraint before any application code could see them, so
 //! `db_sqlstate()` was `None` on every database-rejected write and an
 //! illegal state transition surfaced as `500 DATABASE_ERROR` rather than
 //! `409 Conflict`. Fixed upstream in `cratestack-sqlx` 0.6.0
 //! (cratestack/cratestack#267), which routes all twelve write paths through
-//! `cool_error_from_sqlx`.
+//! `cratestack_error_from_sqlx`.
 //!
 //! These tests go through a real delegate call so that conversion is in the
 //! path. If the pin ever moves back to a version without the fix, or a
@@ -30,7 +30,7 @@
 //! ```
 
 use chrono::{Duration, Utc};
-use cratestack::CoolContext;
+use cratestack::CratestackContext;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::errors::{SM001, UNIQUE_VIOLATION, is_illegal_transition, map_database_error};
@@ -48,7 +48,7 @@ use sms_api::schema::{
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "errors-live-test".to_owned(),
         kind: PrincipalKind::App,
@@ -58,7 +58,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "errors-live-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -182,7 +182,7 @@ async fn an_illegal_transition_surfaces_as_409_not_500() {
         .expect_err("accepted -> delivered is not a legal edge; the trigger must reject it");
 
     // The step that was broken: the SQLSTATE has to survive the framework's
-    // own sqlx -> CoolError conversion for anything downstream to work.
+    // own sqlx -> CratestackError conversion for anything downstream to work.
     assert_eq!(
         error.db_sqlstate(),
         Some(SM001),
@@ -201,7 +201,7 @@ async fn an_illegal_transition_surfaces_as_409_not_500() {
         409,
         "an illegal transition is a client error, not a gateway fault"
     );
-    assert!(matches!(mapped, cratestack::CoolError::Conflict(_)));
+    assert!(matches!(mapped, cratestack::CratestackError::Conflict(_)));
 }
 
 /// The other half of `map_database_error`: `23505` must arrive typed, with
@@ -271,7 +271,7 @@ async fn a_duplicate_idempotency_key_surfaces_as_a_named_409() {
     // tripped; map_database_error folds it into the message when present.
     if let Some(name) = constraint {
         match mapped {
-            cratestack::CoolError::Conflict(message) => assert!(
+            cratestack::CratestackError::Conflict(message) => assert!(
                 message.contains(&name),
                 "the 409 should name the constraint it tripped; got {message:?}"
             ),

@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex};
 
 use chrono::{Duration as ChronoDuration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, CoolError};
+use cratestack::{CratestackContext, CratestackError};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
@@ -48,7 +48,7 @@ use sms_worker::jobs::reap_outbox::{ReapOutbox, reap_delivered};
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "sms-worker-reap-outbox-test".to_owned(),
         kind: PrincipalKind::App,
@@ -58,7 +58,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "sms-worker-reap-outbox-test-owner".to_owned(),
         kind: PrincipalKind::User,
@@ -80,7 +80,7 @@ fn unique_suffix() -> String {
     format!("{:06x}", (u64::from(nanos).wrapping_add(n)) % 0x0100_0000)
 }
 
-/// A fresh `Cratestack` — a fresh pool *and* a fresh, empty `CoolEventBus` —
+/// A fresh `Cratestack` — a fresh pool *and* a fresh, empty `CratestackEventBus` —
 /// against the one database this test binary shares (`sms_test_support`
 /// memoizes the URL per process). Same reasoning `drain_live_postgres.rs`'s
 /// own `fresh_db` documents: registering a handler on one must never leak
@@ -231,7 +231,7 @@ async fn a_poison_row_is_alerted_but_never_deleted() {
                 if event.data.id == *target.lock().expect("target id mutex") {
                     seen.store(true, Ordering::SeqCst);
                 }
-                Err(CoolError::Internal(
+                Err(CratestackError::Internal(
                     "simulated permanent subscriber failure".to_owned(),
                 ))
             }

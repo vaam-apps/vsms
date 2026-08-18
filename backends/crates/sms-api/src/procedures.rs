@@ -3,7 +3,8 @@
 use authkestra_engine::TokenManager;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
 use cratestack::{
-    CoolContext, CoolError, Decimal, FilterExpr, TransactionIsolation, Value, run_in_isolated_tx,
+    CratestackContext, CratestackError, Decimal, FilterExpr, TransactionIsolation, Value,
+    run_in_isolated_tx,
 };
 use rand::rngs::OsRng;
 use rsa::RsaPrivateKey;
@@ -35,8 +36,8 @@ use crate::worker_locks;
 const CLIENT_RSA_KEY_BITS: usize = 2048;
 
 /// Marker for a procedure whose backing subsystem is not built yet.
-fn not_yet(procedure: &str, milestone: &str) -> CoolError {
-    CoolError::Internal(format!(
+fn not_yet(procedure: &str, milestone: &str) -> CratestackError {
+    CratestackError::Internal(format!(
         "{procedure} is not implemented: it depends on work scheduled for {milestone}"
     ))
 }
@@ -188,7 +189,7 @@ impl Procedures {
     /// fresh per call rather than cached: it carries no state worth
     /// reusing, and constructing it is a handful of `Value::String`
     /// allocations, not a query.
-    fn sys() -> CoolContext {
+    fn sys() -> CratestackContext {
         Principal {
             sub: "sms-api:procedures".to_owned(),
             kind: PrincipalKind::App,
@@ -203,7 +204,7 @@ impl Procedures {
     /// Runs [`normalise`] before [`analyse`], because normalisation is
     /// unconditional on the send path — previewing the raw body would quote a
     /// segment count the caller will never actually be billed for.
-    fn preview(args: &schema::PreviewInput) -> Result<schema::PreviewResult, CoolError> {
+    fn preview(args: &schema::PreviewInput) -> Result<schema::PreviewResult, CratestackError> {
         let normalised = normalise(&args.body);
         let report = analyse(&normalised);
 
@@ -214,7 +215,7 @@ impl Procedures {
             .map(|to| {
                 Msisdn::parse_mobile(to)
                     .map(|m| m.as_e164().to_owned())
-                    .map_err(|error| CoolError::Validation(error.to_string()))
+                    .map_err(|error| CratestackError::Validation(error.to_string()))
             })
             .transpose()?;
 
@@ -247,9 +248,9 @@ impl Procedures {
     async fn resolve_app(
         &self,
         db: &schema::Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         client_id: String,
-    ) -> Result<schema::App, CoolError> {
+    ) -> Result<schema::App, CratestackError> {
         self.app_cache
             .get_or_fetch(client_id, |client_id| async move {
                 let app_client = db
@@ -264,7 +265,7 @@ impl Procedures {
                     .await?
                     .into_iter()
                     .next()
-                    .ok_or_else(|| CoolError::Unauthorized("unknown client".to_owned()))?;
+                    .ok_or_else(|| CratestackError::Unauthorized("unknown client".to_owned()))?;
 
                 db.app()
                     .find_many()
@@ -277,7 +278,9 @@ impl Procedures {
                     .await?
                     .into_iter()
                     .next()
-                    .ok_or_else(|| CoolError::Unauthorized("app not found or inactive".to_owned()))
+                    .ok_or_else(|| {
+                        CratestackError::Unauthorized("app not found or inactive".to_owned())
+                    })
             })
             .await
     }
@@ -287,8 +290,8 @@ impl Procedures {
     async fn operator_table(
         &self,
         db: &schema::Cratestack,
-        sys: &CoolContext,
-    ) -> Result<OperatorPrefixTable, CoolError> {
+        sys: &CratestackContext,
+    ) -> Result<OperatorPrefixTable, CratestackError> {
         self.operator_cache
             .get_or_fetch((), |()| async move {
                 let rows = db
@@ -310,9 +313,9 @@ impl Procedures {
     async fn classify_operator(
         &self,
         db: &schema::Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         msisdn: &Msisdn,
-    ) -> Result<schema::OperatorCode, CoolError> {
+    ) -> Result<schema::OperatorCode, CratestackError> {
         let table = self.operator_table(db, sys).await?;
         Ok(table
             .lookup(msisdn)
@@ -333,9 +336,9 @@ impl Procedures {
     /// a compliance gap, but not what was asked for either.
     async fn ensure_not_opted_out(
         db: &schema::Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         msisdn_hash: &str,
-    ) -> Result<(), CoolError> {
+    ) -> Result<(), CratestackError> {
         let opted_out = db
             .opt_out()
             .find_many()
@@ -346,7 +349,7 @@ impl Procedures {
         if opted_out.is_empty() {
             Ok(())
         } else {
-            Err(CoolError::Validation(
+            Err(CratestackError::Validation(
                 "recipient has opted out of messages from this scope".to_owned(),
             ))
         }
@@ -372,11 +375,13 @@ impl Procedures {
     ///
     /// So the argument is `scheduledAt.unwrap_or(now)`: what the recipient
     /// experiences, which is the only thing the policy is about.
-    fn ensure_within_marketing_quiet_hours(delivery_utc: DateTime<Utc>) -> Result<(), CoolError> {
+    fn ensure_within_marketing_quiet_hours(
+        delivery_utc: DateTime<Utc>,
+    ) -> Result<(), CratestackError> {
         if crate::consent::is_within_marketing_quiet_hours(delivery_utc) {
             Ok(())
         } else {
-            Err(CoolError::Validation(format!(
+            Err(CratestackError::Validation(format!(
                 "marketing messages are only sent between {:02}:00 and {:02}:00 WAT \
                  (self-imposed quiet hours, docs/architecture.md §10) — schedule this send \
                  for that window instead",
@@ -396,11 +401,11 @@ impl Procedures {
     /// comment and `sms_api::pepper`'s module doc).
     async fn ensure_consent_on_file(
         db: &schema::Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         app_id: &str,
         msisdn_hash: &str,
         class: schema::MessageClass,
-    ) -> Result<(), CoolError> {
+    ) -> Result<(), CratestackError> {
         let consented = db
             .consent_record()
             .find_many()
@@ -413,7 +418,7 @@ impl Procedures {
             .run(sys)
             .await?;
         if consented.is_empty() {
-            Err(CoolError::Validation(format!(
+            Err(CratestackError::Validation(format!(
                 "no consent record on file for this recipient for {class:?} messages — \
                  Law No. 2024/017 requires opt-in consent before this class may be sent"
             )))
@@ -435,10 +440,10 @@ impl Procedures {
     /// the quota as an exact ceiling rather than a monthly budget signal.
     async fn ensure_within_quota(
         db: &schema::Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         app: &schema::App,
         now: DateTime<Utc>,
-    ) -> Result<(), CoolError> {
+    ) -> Result<(), CratestackError> {
         let sent_this_month = db
             .message()
             .aggregate()
@@ -453,7 +458,7 @@ impl Procedures {
         if sent_this_month < app.monthlyQuota {
             Ok(())
         } else {
-            Err(CoolError::Validation(format!(
+            Err(CratestackError::Validation(format!(
                 "monthly quota of {} messages exceeded",
                 app.monthlyQuota
             )))
@@ -472,17 +477,17 @@ impl Procedures {
     /// silently read as unapproved.
     async fn resolve_sender_id(
         db: &schema::Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         app: &schema::App,
         requested: Option<&str>,
-    ) -> Result<String, CoolError> {
+    ) -> Result<String, CratestackError> {
         const APPROVED: &str = "approved";
 
         let value = if let Some(value) = requested {
             value.to_owned()
         } else {
             let default_id = app.defaultSenderIdId.clone().ok_or_else(|| {
-                CoolError::Validation(
+                CratestackError::Validation(
                     "no senderId given and this app has no default sender".to_owned(),
                 )
             })?;
@@ -495,7 +500,7 @@ impl Procedures {
                 .into_iter()
                 .next()
                 .ok_or_else(|| {
-                    CoolError::Validation(
+                    CratestackError::Validation(
                         "this app's default sender id no longer exists".to_owned(),
                     )
                 })?
@@ -515,7 +520,9 @@ impl Procedures {
             .into_iter()
             .next()
             .ok_or_else(|| {
-                CoolError::Validation(format!("sender id {value:?} is not a registered sender"))
+                CratestackError::Validation(format!(
+                    "sender id {value:?} is not a registered sender"
+                ))
             })?;
 
         let approved = db
@@ -530,7 +537,7 @@ impl Procedures {
             .await?;
 
         if approved.is_empty() {
-            Err(CoolError::Validation(format!(
+            Err(CratestackError::Validation(format!(
                 "sender id {value:?} has no approved provider registration"
             )))
         } else {
@@ -550,9 +557,9 @@ impl Procedures {
     /// nothing is configured, not a fabricated estimate.
     async fn estimate_cost(
         db: &schema::Cratestack,
-        sys: &CoolContext,
+        sys: &CratestackContext,
         segments: i64,
-    ) -> Result<Decimal, CoolError> {
+    ) -> Result<Decimal, CratestackError> {
         let cheapest = db
             .provider()
             .find_many()
@@ -583,13 +590,17 @@ impl Procedures {
     /// not a theoretical one — surfaced as a clear error rather than
     /// guessed at, until there's a design for which app a human sends on
     /// behalf of.
-    fn caller_client_id(ctx: &CoolContext) -> Result<String, CoolError> {
+    fn caller_client_id(ctx: &CratestackContext) -> Result<String, CratestackError> {
         let kind = match ctx.auth_field("kind") {
             Some(Value::String(kind)) => kind.as_str(),
-            _ => return Err(CoolError::Unauthorized("missing kind claim".to_owned())),
+            _ => {
+                return Err(CratestackError::Unauthorized(
+                    "missing kind claim".to_owned(),
+                ));
+            }
         };
         if kind != PrincipalKind::App.as_str() {
-            return Err(CoolError::Validation(
+            return Err(CratestackError::Validation(
                 "sendMessage currently requires a machine (client_credentials) caller — \
                  deriving an App for a human caller has no design yet"
                     .to_owned(),
@@ -597,7 +608,9 @@ impl Procedures {
         }
         match ctx.auth_field("sub") {
             Some(Value::String(sub)) => Ok(sub.clone()),
-            _ => Err(CoolError::Unauthorized("missing sub claim".to_owned())),
+            _ => Err(CratestackError::Unauthorized(
+                "missing sub claim".to_owned(),
+            )),
         }
     }
 
@@ -607,9 +620,9 @@ impl Procedures {
     async fn send(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::SendMessageInput,
-    ) -> Result<schema::SendMessageResult, CoolError> {
+    ) -> Result<schema::SendMessageResult, CratestackError> {
         // Layer 2 (#24, §5.1), checked before anything else runs. Layer 1's
         // own `@allow` on `sendMessage` admits any authenticated
         // `kind == "app"` caller unconditionally (schema.cstack:
@@ -630,7 +643,7 @@ impl Procedures {
         // 2. MSISDN normalisation. `parse_mobile` rejects fixed-line and
         // unallocated ranges — failing here beats failing on a DLR later.
         let msisdn = Msisdn::parse_mobile(&args.to)
-            .map_err(|error| CoolError::Validation(error.to_string()))?;
+            .map_err(|error| CratestackError::Validation(error.to_string()))?;
         let msisdn_hash = self.keyed_hash_hex(msisdn.as_e164());
 
         // #72: classification decided here, ahead of the checks that key
@@ -819,9 +832,9 @@ impl Procedures {
     async fn provision_client(
         &self,
         db: &schema::Cratestack,
-        _ctx: &CoolContext,
+        _ctx: &CratestackContext,
         args: schema::ProvisionClientInput,
-    ) -> Result<schema::ProvisionClientResult, CoolError> {
+    ) -> Result<schema::ProvisionClientResult, CratestackError> {
         let sys = Self::sys();
 
         // The app must exist and be active before a client is allowed to
@@ -836,9 +849,9 @@ impl Procedures {
             .await?
             .into_iter()
             .next()
-            .ok_or_else(|| CoolError::NotFound(format!("no App with id {}", args.appId)))?;
+            .ok_or_else(|| CratestackError::NotFound(format!("no App with id {}", args.appId)))?;
         if !app.active {
-            return Err(CoolError::Validation(format!(
+            return Err(CratestackError::Validation(format!(
                 "App {} is not active",
                 app.id
             )));
@@ -857,10 +870,11 @@ impl Procedures {
         // public half is ever persisted (below); the private half is
         // returned to the caller and never stored anywhere.
         let mut rng = OsRng;
-        let key = RsaPrivateKey::new(&mut rng, CLIENT_RSA_KEY_BITS)
-            .map_err(|error| CoolError::Internal(format!("generating client keypair: {error}")))?;
+        let key = RsaPrivateKey::new(&mut rng, CLIENT_RSA_KEY_BITS).map_err(|error| {
+            CratestackError::Internal(format!("generating client keypair: {error}"))
+        })?;
         let private_key_pem = key.to_pkcs8_pem(LineEnding::LF).map_err(|error| {
-            CoolError::Internal(format!("encoding client key to PKCS#8 PEM: {error}"))
+            CratestackError::Internal(format!("encoding client key to PKCS#8 PEM: {error}"))
         })?;
 
         // `TokenManager::new_asymmetric` + `public_jwk()` derives n/e from
@@ -873,10 +887,10 @@ impl Procedures {
         let manager =
             TokenManager::new_asymmetric(private_key_pem.as_bytes(), None, Some(client_id.clone()))
                 .map_err(|error| {
-                    CoolError::Internal(format!("deriving the client's public JWK: {error}"))
+                    CratestackError::Internal(format!("deriving the client's public JWK: {error}"))
                 })?;
         let public_jwk = manager.public_jwk().ok_or_else(|| {
-            CoolError::Internal(
+            CratestackError::Internal(
                 "TokenManager produced no public JWK for a freshly generated asymmetric key"
                     .to_owned(),
             )
@@ -884,7 +898,7 @@ impl Procedures {
         let jwks_json = serde_json::json!({ "keys": [public_jwk] }).to_string();
 
         let scopes_packed =
-            pack(&args.scopes).map_err(|error| CoolError::Validation(error.to_string()))?;
+            pack(&args.scopes).map_err(|error| CratestackError::Validation(error.to_string()))?;
         // client_credentials only — the only grant type a machine caller in
         // this system ever uses (§4.2; see `sms_auth::op`'s own module doc).
         let grant_types_packed =
@@ -1016,9 +1030,9 @@ impl Procedures {
     async fn rotate_secret(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::EndpointInput,
-    ) -> Result<schema::WebhookEndpoint, CoolError> {
+    ) -> Result<schema::WebhookEndpoint, CratestackError> {
         require_permission(ctx, "webhook:manage")?;
 
         let sys = Self::sys();
@@ -1040,7 +1054,9 @@ impl Procedures {
                     .into_iter()
                     .next()
                     .ok_or_else(|| {
-                        CoolError::NotFound(format!("no WebhookEndpoint with id {endpoint_id}"))
+                        CratestackError::NotFound(format!(
+                            "no WebhookEndpoint with id {endpoint_id}"
+                        ))
                     })?;
 
                 let updated = db
@@ -1113,9 +1129,9 @@ impl Procedures {
     async fn replay_attempt(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::ReplayWebhookAttemptInput,
-    ) -> Result<schema::WebhookAttempt, CoolError> {
+    ) -> Result<schema::WebhookAttempt, CratestackError> {
         require_permission(ctx, "webhook:manage")?;
 
         let sys = Self::sys();
@@ -1138,13 +1154,13 @@ impl Procedures {
                     .into_iter()
                     .next()
                     .ok_or_else(|| {
-                        CoolError::NotFound(format!("no WebhookAttempt with id {attempt_id}"))
+                        CratestackError::NotFound(format!("no WebhookAttempt with id {attempt_id}"))
                     })?;
 
                 match attempt.state {
                     schema::AttemptState::failed | schema::AttemptState::dead => {}
                     other => {
-                        return Err(CoolError::Conflict(format!(
+                        return Err(CratestackError::Conflict(format!(
                             "webhook attempt {attempt_id} is {other:?}; replay only applies to \
                              a failed or dead delivery"
                         )));
@@ -1247,9 +1263,9 @@ impl Procedures {
     async fn requeue(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::RequeueJobInput,
-    ) -> Result<schema::Job, CoolError> {
+    ) -> Result<schema::Job, CratestackError> {
         require_permission(ctx, "job:enqueue")?;
 
         let sys = Self::sys();
@@ -1269,10 +1285,10 @@ impl Procedures {
                     .await?
                     .into_iter()
                     .next()
-                    .ok_or_else(|| CoolError::NotFound(format!("no Job with id {job_id}")))?;
+                    .ok_or_else(|| CratestackError::NotFound(format!("no Job with id {job_id}")))?;
 
                 if existing.state != schema::JobState::dead {
-                    return Err(CoolError::Conflict(format!(
+                    return Err(CratestackError::Conflict(format!(
                         "job {job_id} is {:?}; requeue only applies to a dead job",
                         existing.state
                     )));
@@ -1320,8 +1336,8 @@ impl Procedures {
     async fn worker_lock_snapshot(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
-    ) -> Result<schema::WorkerLocksResult, CoolError> {
+        ctx: &CratestackContext,
+    ) -> Result<schema::WorkerLocksResult, CratestackError> {
         require_permission(ctx, "worker:read")?;
 
         let locks = worker_locks::current_locks(db).await?;
@@ -1349,9 +1365,9 @@ impl Procedures {
     async fn simulate(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::SimulateRouteInput,
-    ) -> Result<schema::SimulateRouteResult, CoolError> {
+    ) -> Result<schema::SimulateRouteResult, CratestackError> {
         require_permission(ctx, "route:read")?;
 
         let sys = Self::sys();
@@ -1362,7 +1378,7 @@ impl Procedures {
         // one that would let the simulator answer for a number sendMessage
         // itself would already have rejected before routing ever ran.
         let msisdn = Msisdn::parse_mobile(&args.msisdn)
-            .map_err(|error| CoolError::Validation(error.to_string()))?;
+            .map_err(|error| CratestackError::Validation(error.to_string()))?;
         let operator = self.classify_operator(db, &sys, &msisdn).await?;
 
         let (routes, providers) = route_simulator::fetch_routes_and_providers(db, &sys).await?;
@@ -1437,9 +1453,9 @@ impl Procedures {
     async fn message_receipts(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::MessageReceiptsInput,
-    ) -> Result<schema::MessageReceiptsResult, CoolError> {
+    ) -> Result<schema::MessageReceiptsResult, CratestackError> {
         require_permission(ctx, "sms:read")?;
 
         let sys = Self::sys();
@@ -1481,7 +1497,7 @@ impl Procedures {
     /// change that flips a caller from denied to allowed must not read a
     /// stale allowed-shaped cache entry belonging to a different role that
     /// happened to share `kind`/`appId`.
-    fn dashboard_cache_key(ctx: &CoolContext) -> String {
+    fn dashboard_cache_key(ctx: &CratestackContext) -> String {
         // `kind`/`role`/`appId` are `auth()`-queryable fields
         // (`Principal::into_context`, `auth.rs`) — a different bag from
         // `perms`/`scope`, which `require_permission` reads out of
@@ -1547,9 +1563,9 @@ impl Procedures {
     /// no reuse beyond that one caller.
     async fn dashboard_hourly_buckets(
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         now: DateTime<Utc>,
-    ) -> Result<Vec<schema::HourlyBucket>, CoolError> {
+    ) -> Result<Vec<schema::HourlyBucket>, CratestackError> {
         let mut hourly_buckets = Vec::with_capacity(6);
         for hours_ago in (0..6i64).rev() {
             let bucket_end = now - ChronoDuration::hours(hours_ago);
@@ -1588,9 +1604,9 @@ impl Procedures {
     /// live proof that getting this wrong is caught, not just asserted.
     async fn dashboard_operator_stats(
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         now: DateTime<Utc>,
-    ) -> Result<Vec<schema::OperatorDeliveryStats>, CoolError> {
+    ) -> Result<Vec<schema::OperatorDeliveryStats>, CratestackError> {
         let window_start = now - ChronoDuration::hours(24);
         let mut operator_stats = Vec::with_capacity(5);
         for operator in [
@@ -1641,8 +1657,8 @@ impl Procedures {
     /// `stuckMessages`, `jobBacklog`, `outboxDepth` — in that order.
     async fn dashboard_live_gauges(
         db: &schema::Cratestack,
-        ctx: &CoolContext,
-    ) -> Result<(i64, i64, i64, i64), CoolError> {
+        ctx: &CratestackContext,
+    ) -> Result<(i64, i64, i64, i64), CratestackError> {
         let queue_depth = db
             .message()
             .aggregate()
@@ -1693,8 +1709,8 @@ impl Procedures {
     async fn dashboard_snapshot(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
-    ) -> Result<schema::DashboardSummary, CoolError> {
+        ctx: &CratestackContext,
+    ) -> Result<schema::DashboardSummary, CratestackError> {
         require_permission(ctx, "dashboard:read")?;
 
         let key = Self::dashboard_cache_key(ctx);
@@ -1719,7 +1735,7 @@ impl Procedures {
                     _ => None,
                 };
 
-                Ok::<_, CoolError>(schema::DashboardSummary {
+                Ok::<_, CratestackError>(schema::DashboardSummary {
                     generatedAt: now,
                     appId: app_id,
                     queueDepth: queue_depth,
@@ -1759,14 +1775,14 @@ impl Procedures {
     async fn provision_console_user(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::ProvisionUserInput,
-    ) -> Result<schema::ProvisionUserResult, CoolError> {
+    ) -> Result<schema::ProvisionUserResult, CratestackError> {
         require_permission(ctx, "user:manage")?;
 
         let password = sms_core::password::generate_password(24);
         let password_hash = sms_core::password::hash_password(&password).map_err(|error| {
-            CoolError::Internal(format!("hashing the generated password: {error}"))
+            CratestackError::Internal(format!("hashing the generated password: {error}"))
         })?;
 
         let sys = Self::sys();
@@ -1843,13 +1859,13 @@ impl Procedures {
     async fn create_opt_out_entry(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::RecordOptOutInput,
-    ) -> Result<schema::OptOut, CoolError> {
+    ) -> Result<schema::OptOut, CratestackError> {
         require_permission(ctx, "optout:manage")?;
 
         let msisdn = Msisdn::parse_mobile(&args.msisdn)
-            .map_err(|error| CoolError::Validation(error.to_string()))?;
+            .map_err(|error| CratestackError::Validation(error.to_string()))?;
         let msisdn_hash = self.keyed_hash_hex(msisdn.as_e164());
 
         let sys = Self::sys();
@@ -1904,13 +1920,13 @@ impl Procedures {
     async fn search_opt_out(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::OptOutSearchInput,
-    ) -> Result<schema::OptOutSearchResult, CoolError> {
+    ) -> Result<schema::OptOutSearchResult, CratestackError> {
         require_permission(ctx, "optout:manage")?;
 
         let msisdn = Msisdn::parse_mobile(&args.msisdn)
-            .map_err(|error| CoolError::Validation(error.to_string()))?;
+            .map_err(|error| CratestackError::Validation(error.to_string()))?;
         let msisdn_hash = self.keyed_hash_hex(msisdn.as_e164());
 
         let sys = Self::sys();
@@ -1934,9 +1950,9 @@ impl Procedures {
     async fn list_audit_log(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::AuditLogQuery,
-    ) -> Result<schema::AuditLogPage, CoolError> {
+    ) -> Result<schema::AuditLogPage, CratestackError> {
         require_permission(ctx, "audit:read")?;
 
         let filter = audit_log::AuditLogFilter {
@@ -1962,8 +1978,8 @@ impl Procedures {
     async fn audit_chain_snapshot(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
-    ) -> Result<schema::AuditChainStatus, CoolError> {
+        ctx: &CratestackContext,
+    ) -> Result<schema::AuditChainStatus, CratestackError> {
         require_permission(ctx, "audit:read")?;
 
         let sys = Self::sys();
@@ -2016,7 +2032,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn preview_message(
         &self,
         _db: &schema::Cratestack,
-        _ctx: &CoolContext,
+        _ctx: &CratestackContext,
         args: schema::procedures::preview_message::Args,
         // cratestack 0.7.13 (cratestack#512): every `ProcedureRegistry`
         // method gained a trailing, unconstructible witness parameter —
@@ -2025,7 +2041,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         // own module doc if this pattern needs re-deriving.
         _authorized: schema::procedures::preview_message::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::preview_message::Output, CoolError>,
+        Output = Result<schema::procedures::preview_message::Output, CratestackError>,
     > + Send {
         core::future::ready(Self::preview(&args.args))
     }
@@ -2033,13 +2049,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn send_message(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::send_message::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::send_message::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::send_message::Output, CoolError>,
+        Output = Result<schema::procedures::send_message::Output, CratestackError>,
     > + Send {
         self.send(db, ctx, args.args)
     }
@@ -2047,13 +2063,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn list_messages_page(
         &self,
         _db: &schema::Cratestack,
-        _ctx: &CoolContext,
+        _ctx: &CratestackContext,
         _args: schema::procedures::list_messages_page::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::list_messages_page::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::list_messages_page::Output, CoolError>,
+        Output = Result<schema::procedures::list_messages_page::Output, CratestackError>,
     > + Send {
         core::future::ready(Err(not_yet("listMessagesPage", "milestone 2")))
     }
@@ -2061,13 +2077,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn cancel_message(
         &self,
         _db: &schema::Cratestack,
-        _ctx: &CoolContext,
+        _ctx: &CratestackContext,
         _args: schema::procedures::cancel_message::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::cancel_message::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::cancel_message::Output, CoolError>,
+        Output = Result<schema::procedures::cancel_message::Output, CratestackError>,
     > + Send {
         core::future::ready(Err(not_yet("cancelMessage", "milestone 2")))
     }
@@ -2075,13 +2091,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn enqueue_job(
         &self,
         _db: &schema::Cratestack,
-        _ctx: &CoolContext,
+        _ctx: &CratestackContext,
         _args: schema::procedures::enqueue_job::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::enqueue_job::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::enqueue_job::Output, CoolError>,
+        Output = Result<schema::procedures::enqueue_job::Output, CratestackError>,
     > + Send {
         core::future::ready(Err(not_yet("enqueueJob", "milestone 2 (the jobs role)")))
     }
@@ -2089,13 +2105,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn provision_app_client(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::provision_app_client::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::provision_app_client::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::provision_app_client::Output, CoolError>,
+        Output = Result<schema::procedures::provision_app_client::Output, CratestackError>,
     > + Send {
         self.provision_client(db, ctx, args.args)
     }
@@ -2103,13 +2119,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn rotate_webhook_secret(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::rotate_webhook_secret::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::rotate_webhook_secret::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::rotate_webhook_secret::Output, CoolError>,
+        Output = Result<schema::procedures::rotate_webhook_secret::Output, CratestackError>,
     > + Send {
         self.rotate_secret(db, ctx, args.args)
     }
@@ -2117,13 +2133,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn replay_webhook_attempt(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::replay_webhook_attempt::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::replay_webhook_attempt::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::replay_webhook_attempt::Output, CoolError>,
+        Output = Result<schema::procedures::replay_webhook_attempt::Output, CratestackError>,
     > + Send {
         self.replay_attempt(db, ctx, args.args)
     }
@@ -2131,13 +2147,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn requeue_job(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::requeue_job::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::requeue_job::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::requeue_job::Output, CoolError>,
+        Output = Result<schema::procedures::requeue_job::Output, CratestackError>,
     > + Send {
         self.requeue(db, ctx, args.args)
     }
@@ -2145,13 +2161,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn worker_locks(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         _args: schema::procedures::worker_locks::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::worker_locks::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::worker_locks::Output, CoolError>,
+        Output = Result<schema::procedures::worker_locks::Output, CratestackError>,
     > + Send {
         self.worker_lock_snapshot(db, ctx)
     }
@@ -2159,13 +2175,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn simulate_route(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::simulate_route::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::simulate_route::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::simulate_route::Output, CoolError>,
+        Output = Result<schema::procedures::simulate_route::Output, CratestackError>,
     > + Send {
         self.simulate(db, ctx, args.args)
     }
@@ -2173,13 +2189,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn list_message_receipts(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::list_message_receipts::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::list_message_receipts::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::list_message_receipts::Output, CoolError>,
+        Output = Result<schema::procedures::list_message_receipts::Output, CratestackError>,
     > + Send {
         self.message_receipts(db, ctx, args.args)
     }
@@ -2187,13 +2203,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn dashboard_summary(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         _args: schema::procedures::dashboard_summary::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::dashboard_summary::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::dashboard_summary::Output, CoolError>,
+        Output = Result<schema::procedures::dashboard_summary::Output, CratestackError>,
     > + Send {
         self.dashboard_snapshot(db, ctx)
     }
@@ -2201,13 +2217,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn provision_user(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::provision_user::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::provision_user::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::provision_user::Output, CoolError>,
+        Output = Result<schema::procedures::provision_user::Output, CratestackError>,
     > + Send {
         self.provision_console_user(db, ctx, args.args)
     }
@@ -2215,13 +2231,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn record_opt_out(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::record_opt_out::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::record_opt_out::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::record_opt_out::Output, CoolError>,
+        Output = Result<schema::procedures::record_opt_out::Output, CratestackError>,
     > + Send {
         self.create_opt_out_entry(db, ctx, args.args)
     }
@@ -2229,13 +2245,13 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn search_opt_out_by_msisdn(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::search_opt_out_by_msisdn::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::search_opt_out_by_msisdn::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::search_opt_out_by_msisdn::Output, CoolError>,
+        Output = Result<schema::procedures::search_opt_out_by_msisdn::Output, CratestackError>,
     > + Send {
         self.search_opt_out(db, ctx, args.args)
     }
@@ -2243,26 +2259,27 @@ impl schema::procedures::ProcedureRegistry for Procedures {
     fn audit_log(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         args: schema::procedures::audit_log::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::audit_log::Authorized,
-    ) -> impl core::future::Future<Output = Result<schema::procedures::audit_log::Output, CoolError>>
-    + Send {
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::audit_log::Output, CratestackError>,
+    > + Send {
         self.list_audit_log(db, ctx, args.args)
     }
 
     fn audit_chain_status(
         &self,
         db: &schema::Cratestack,
-        ctx: &CoolContext,
+        ctx: &CratestackContext,
         _args: schema::procedures::audit_chain_status::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
         // identical comment above.
         _authorized: schema::procedures::audit_chain_status::Authorized,
     ) -> impl core::future::Future<
-        Output = Result<schema::procedures::audit_chain_status::Output, CoolError>,
+        Output = Result<schema::procedures::audit_chain_status::Output, CratestackError>,
     > + Send {
         self.audit_chain_snapshot(db, ctx)
     }
@@ -2273,7 +2290,7 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
 
-    fn preview(body: &str, to: Option<&str>) -> Result<schema::PreviewResult, CoolError> {
+    fn preview(body: &str, to: Option<&str>) -> Result<schema::PreviewResult, CratestackError> {
         Procedures::preview(&schema::PreviewInput {
             body: body.to_owned(),
             to: to.map(str::to_owned),
@@ -2325,7 +2342,7 @@ mod tests {
         // A fixed line parses as a valid Cameroon number and cannot receive an
         // SMS. Failing here beats failing on a DLR three seconds later.
         let error = preview("bonjour", Some("+237222123456")).unwrap_err();
-        assert!(matches!(error, CoolError::Validation(_)));
+        assert!(matches!(error, CratestackError::Validation(_)));
     }
 
     #[test]

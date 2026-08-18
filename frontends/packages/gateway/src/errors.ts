@@ -1,6 +1,6 @@
 import "server-only";
 
-// Mapping sms-api's `CoolErrorResponse` (`{ code, message, details }` —
+// Mapping sms-api's `CratestackErrorResponse` (`{ code, message, details }` —
 // see `cratestack-core`'s `error.rs`) onto the vocabulary tRPC's error
 // formatter understands, so a `TRPCError` built from a `GatewayError`'s
 // `trpcCode` carries the right HTTP status all the way back to the
@@ -46,8 +46,8 @@ export interface GatewayFieldErrors {
   [field: string]: string[];
 }
 
-/** The shape `cratestack-core::CoolErrorResponse` serialises to. */
-interface CoolErrorResponse {
+/** The shape `cratestack-core::CratestackErrorResponse` serialises to. */
+interface CratestackErrorResponse {
   code: string;
   message: string;
   details?: unknown;
@@ -55,7 +55,7 @@ interface CoolErrorResponse {
 
 /**
  * Thrown by every `@vsms/gateway` call that reaches sms-api and gets back
- * a non-2xx `CoolErrorResponse`-shaped body (or a response this module
+ * a non-2xx `CratestackErrorResponse`-shaped body (or a response this module
  * can't parse as one, in which case `code`/`message` describe the parse
  * failure instead and `httpStatus`/`trpcCode` still reflect the real HTTP
  * status). `frontends/packages/api/src/routers/compose.ts` catches this and
@@ -85,7 +85,7 @@ export class GatewayError extends Error {
   }
 }
 
-function isCoolErrorResponse(body: unknown): body is CoolErrorResponse {
+function isCratestackErrorResponse(body: unknown): body is CratestackErrorResponse {
   return (
     typeof body === "object" &&
     body !== null &&
@@ -97,7 +97,7 @@ function isCoolErrorResponse(body: unknown): body is CoolErrorResponse {
 }
 
 /**
- * Best-effort extraction of per-field errors from `CoolErrorResponse.details`.
+ * Best-effort extraction of per-field errors from `CratestackErrorResponse.details`.
  * The framework version this repo pins (`cratestack-pg =0.5.0`) does not
  * yet populate `details` on `Validation` errors — see `cratestack-core`'s
  * `error.rs`, every construction site sets `details: None` — so this
@@ -168,7 +168,7 @@ export function mapGatewayError(status: number, body: unknown, procedure: string
     );
   }
 
-  if (!isCoolErrorResponse(body)) {
+  if (!isCratestackErrorResponse(body)) {
     return new GatewayError(`sms-api ${procedure} failed with status ${status}`, {
       httpStatus: status,
       trpcCode,
@@ -192,7 +192,7 @@ export function mapGatewayError(status: number, body: unknown, procedure: string
  * else changed this row since I loaded it, reload and try again" — rather
  * than the generic `trpcCode: "CONFLICT"` bucket a duplicate-key 409 also
  * falls into. Checks `httpStatus` (always present, even when the response
- * body didn't parse as a `CoolErrorResponse`) rather than `gatewayCode`
+ * body didn't parse as a `CratestackErrorResponse`) rather than `gatewayCode`
  * alone, so a stale `If-Match` is still recognised as such even against a
  * malformed error body — matching this module's own "a vague 409 beats a
  * misleading 500" bias toward a still-actionable answer over a precise one

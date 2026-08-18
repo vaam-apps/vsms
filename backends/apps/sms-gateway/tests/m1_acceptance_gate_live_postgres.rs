@@ -81,7 +81,7 @@ use std::time::Duration as StdDuration;
 use authkestra_engine::token::Claims;
 use chrono::{Duration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CoolContext, FilterExpr};
+use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, SenderIdKind, SenderIdRegistrationStatus, oauth_signing_key,
@@ -110,7 +110,7 @@ fn test_pepper() -> HashPepper {
     HashPepper::new(TEST_HASH_PEPPER).expect("test pepper meets HashPepper::new's minimum length")
 }
 
-fn sys() -> CoolContext {
+fn sys() -> CratestackContext {
     Principal {
         sub: "m1-acceptance-gate-test-system".to_owned(),
         kind: PrincipalKind::App,
@@ -120,7 +120,7 @@ fn sys() -> CoolContext {
     .into_context()
 }
 
-fn owner() -> CoolContext {
+fn owner() -> CratestackContext {
     Principal {
         sub: "m1-acceptance-gate-test-owner".to_owned(),
         kind: PrincipalKind::User,
