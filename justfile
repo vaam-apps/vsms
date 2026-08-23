@@ -38,11 +38,19 @@ test:
 # Docker, nothing else. Safe to rerun: the project+service name is fixed
 # and Compose revives or reuses rather than recreates across runs.
 #
-# No `--tests` (removed for the cratestack 0.8.10 bump): this is now
-# byte-for-byte the command CI's own `live-Postgres suites` job runs, and
-# that is the point — the two diverging is what caused the incident the
-# 0.7.16 bump section of AGENTS.md records at length (the fix was verified
-# against `--tests` locally, while CI ran the bare command and went red).
+# No `--tests` (removed for the cratestack 0.8.10 bump). CI's own
+# `live-Postgres suites` job runs `cargo test --workspace -- --ignored`;
+# this recipe is that command plus `--no-fail-fast`, and nothing else. The
+# added flag only makes a local run report every failing suite instead of
+# stopping at the first — strictly more information, and the direction
+# AGENTS.md already argues for (workspace `cargo test` being fail-fast by
+# default "is exactly how this stayed hidden behind whichever suite CI
+# happened to reach first").
+#
+# What matters is that the target-kind restriction is gone, because that is
+# the axis on which the two commands used to disagree: the 0.7.16 fix was
+# verified with `--tests` locally while CI ran without it and went red. See
+# the 0.7.16 bump section of AGENTS.md for that incident in full.
 #
 # `--tests` was added at 0.7.16 to dodge cratestack#512's generated
 # `invoke_with_db` doc example, fenced ```` ```ignore ````, which a bare
