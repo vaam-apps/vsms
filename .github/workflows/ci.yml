@@ -225,6 +225,37 @@ jobs:
           command: check
           manifest-path: sdks/rust/vsms-sdk-rust/Cargo.toml
 
+      # #324: the same workspace-`exclude` gap as vsms-sdk-rust above, on
+      # three more manifests the root check above can never reach —
+      # `ci/e2e-integration/vsms-e2e-integration` (built into a container
+      # and run against real credentials), `examples/rust/sms-send` (sample
+      # code integrators copy into their own projects), and
+      # `deploy/backup-tool` (`vsms-backup`, wired into
+      # `deploy/docker-compose.yml` and run against the production
+      # database — not a published GHCR image, but a real deployed
+      # component holding database credentials, so leaving it unchecked
+      # was arguably the worst gap of the three). All were confirmed clean
+      # on `advisories`/`bans`/`sources` before this PR; none declared a
+      # `license` field, so all three failed `licenses` outright — fixed in
+      # #327, a prerequisite for this job actually passing.
+      - name: cargo deny on ci/e2e-integration
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          manifest-path: ci/e2e-integration/vsms-e2e-integration/Cargo.toml
+
+      - name: cargo deny on examples/rust
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          manifest-path: examples/rust/sms-send/Cargo.toml
+
+      - name: cargo deny on deploy/backup-tool
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          manifest-path: deploy/backup-tool/Cargo.toml
+
   live:
     name: live-Postgres suites (sms-test-support)
     runs-on: ubuntu-latest
