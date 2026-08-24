@@ -2,6 +2,7 @@
 name = "vsms-e2e-integration"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 publish = false
 description = "#160's joined integration story, ported off scripts/e2e-integration.sh: an external integrator sends over real HTTP, the console's own credential reads the same message id back — proving cross-principal, same-App visibility end to end against compose.dev.yaml."
 
