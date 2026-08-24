@@ -89,9 +89,16 @@ lint:
 fmt:
 	cargo fmt --all
 
-# Licence and advisory audit
+# Licence and advisory audit — every manifest CI's `deny` job checks, not
+# just the root workspace. Before #324 this recipe covered only the root,
+# silently out of step with CI's own SDK check (#234) and, since #324, the
+# three workspace-`exclude`d manifests the root can never reach.
 deny:
 	cargo deny check
+	cargo deny --manifest-path sdks/rust/vsms-sdk-rust/Cargo.toml check
+	cargo deny --manifest-path ci/e2e-integration/vsms-e2e-integration/Cargo.toml check
+	cargo deny --manifest-path examples/rust/sms-send/Cargo.toml check
+	cargo deny --manifest-path deploy/backup-tool/Cargo.toml check
 
 # Everything CI runs, in CI's order
 all-checks: lint test
