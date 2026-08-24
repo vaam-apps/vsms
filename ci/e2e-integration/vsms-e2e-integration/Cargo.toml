@@ -22,7 +22,7 @@ vsms-sdk-rust = { path = "../../../sdks/rust/vsms-sdk-rust" }
 # `Cargo.toml` (`SdkError::Client` wraps this crate's `ClientError`
 # directly) — needed here only to pattern-match a `404` out of it for the
 # "message exists but this principal can't see it" case, see main.rs.
-cratestack = { package = "cratestack-client", version = "=0.8.3", default-features = false, features = [
+cratestack = { package = "cratestack-client", version = "=0.8.10", default-features = false, features = [
   "codec-json",
   "decimal-rust-decimal",
 ] }

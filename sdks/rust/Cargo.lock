@@ -318,9 +318,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-client"
-version = "0.8.3"
+version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bad7f5d8e0826201de611c81fe88fc2025537737381a23c44ab997d031c33b86"
+checksum = "ee627114fcf7d8b9a706c4eda6ca93de5fbfbc3d324992ee2fb380bb6767774c"
 dependencies = [
  "chrono",
  "cratestack-client-rust",
@@ -334,9 +334,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-client-rust"
-version = "0.8.3"
+version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69d335cfaf0f17e17245dc5cf758a813b1e11fa5ef8fd2688de06c57e3b9a18b"
+checksum = "9baafd6a941fb5f59de0d8f89285dc5c52722a080c2ac5fde8da5f9d7db5e7db"
 dependencies = [
  "async-trait",
  "bytes",
@@ -359,9 +359,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-codec-cbor"
-version = "0.8.3"
+version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d861c7ad307ab46bbdea10e082965b6e11ff609f234123e73df11bbd6e2bfef"
+checksum = "cef0588e34faf17a0f6a6ec636b19d6aba7bfeba44522259efcb187c16267e5f"
 dependencies = [
  "cratestack-core",
  "minicbor-serde",
@@ -370,9 +370,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-codec-json"
-version = "0.8.3"
+version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "486c5dd10269c454f6efa2c6d73a509e8cc0ed1bf5d2973ef541922c04f44930"
+checksum = "b86c4118dc9ef5e58d7b33a3ba14430c41d082adca5f3f958baabcfb8d975f12"
 dependencies = [
  "cratestack-core",
  "serde",
@@ -381,9 +381,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-core"
-version = "0.8.3"
+version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d560f197bf1ec8a983b5c9089dacc39b7e1e8dc0deb5457a1be24a95020cbeb4"
+checksum = "a53d72e09b5a6800ed189480614da29d28b3ede26dfdf19029ce62920ec916e4"
 dependencies = [
  "async-trait",
  "base64",
@@ -403,14 +403,13 @@ dependencies = [
 
 [[package]]
 name = "cratestack-macros"
-version = "0.8.3"
+version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "063c952391ab270d14a83c33ee0e02968ed388eda6c9a9573453afeac6074b5b"
+checksum = "65847efdfaf76cf8f274110965a6ecff9ed94ef6aab150c508d13cac7ecb37ca"
 dependencies = [
  "cratestack-core",
  "cratestack-parser",
  "cratestack-policy",
- "cratestack-proto",
  "proc-macro2",
  "quote",
  "sha2",
@@ -419,9 +418,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-parser"
-version = "0.8.3"
+version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "12a03d9e31d40ceadc4067f25b0bc084f7e6e5d43c1872d2764fa40172dd3362"
+checksum = "e9adf0f3069974493e026e0590f12bf524f7aba2cc6e8ce37047b944840e44bb"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -432,31 +431,19 @@ dependencies = [
 
 [[package]]
 name = "cratestack-policy"
-version = "0.8.3"
+version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80fbfa0e866e1a3d6dd67e4ee55f4a0f6bbf0058484ede36bb74af9f9cd3dffd"
+checksum = "a5dfd534c6c8847d2159e8d166a5e4519f8906e231d9433208a93660b708e2b2"
 dependencies = [
  "cratestack-core",
  "serde",
-]
-
-[[package]]
-name = "cratestack-proto"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5edec0b42ee4adf065285479e92541202b747f538975e468a808008361a58106"
-dependencies = [
- "cratestack-core",
- "serde",
- "thiserror",
- "toml",
 ]
 
 [[package]]
 name = "cratestack-sql"
-version = "0.8.3"
+version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a423985cafa53351bbd8396b1725759d276b3f677f031038a76071bee032c205"
+checksum = "9105a987774f16da3ab3fa9a527a279a2cee2082e3cea075e092563d6ca5ce7e"
 dependencies = [
  "chrono",
  "cratestack-core",
@@ -1749,7 +1736,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1883,15 +1870,6 @@ dependencies = [
  "serde",
  "serde_core",
  "zmij",
-]
-
-[[package]]
-name = "serde_spanned"
-version = "1.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6662b5879511e06e8999a8a235d848113e942c9124f211511b16466ee2995f26"
-dependencies = [
- "serde_core",
 ]
 
 [[package]]
@@ -2183,45 +2161,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "toml"
-version = "0.9.12+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
-dependencies = [
- "indexmap",
- "serde_core",
- "serde_spanned",
- "toml_datetime",
- "toml_parser",
- "toml_writer",
- "winnow 0.7.15",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "0.7.5+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
-dependencies = [
- "serde_core",
-]
-
-[[package]]
-name = "toml_parser"
-version = "1.1.3+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
-dependencies = [
- "winnow 1.0.4",
-]
-
-[[package]]
-name = "toml_writer"
-version = "1.1.2+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
-
-[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2502,7 +2441,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2645,18 +2584,6 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
-
-[[package]]
-name = "winnow"
-version = "0.7.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
-
-[[package]]
-name = "winnow"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23b97319f7b8343df12cc98938e5c3eb436064524c8d2b4e30a1d3a36eecdf81"
 
 [[package]]
 name = "wiremock"

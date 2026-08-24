@@ -38,23 +38,33 @@ test:
 # Docker, nothing else. Safe to rerun: the project+service name is fixed
 # and Compose revives or reuses rather than recreates across runs.
 #
-# `--tests` (added for the cratestack 0.7.16 bump): every live-Postgres
-# suite lives under a `tests/` integration-test binary — never a doctest,
-# never a `--lib` unit test — so restricting to that target kind loses no
-# real coverage. Needed because cratestack 0.7.13 (cratestack#512) added a
-# generated `invoke_with_db` doc comment to every procedure module, with an
-# illustrative, deliberately non-compiling pseudocode example fenced
-# ```` ```ignore ````. `cargo test`'s doctest runner treats `--ignored` as
-# "actually try to compile and run the ones marked ignore" — the opposite
-# of what `--ignored` does for `#[ignore]`-attributed tests — so a bare
-# `cargo test --workspace -- --ignored` now genuinely tries to compile that
-# pseudocode once per procedure (18 failures, all `cannot find value/type`
-# for names the example never defines, e.g. `SystemContext`/`registry`) and
-# fails the whole run. Confirmed live: `cargo test --workspace --no-fail-fast
-# -- --ignored` (no `--tests`) reproduces exactly this; adding `--tests`
-# restores a clean run with identical real coverage.
+# No `--tests` (removed for the cratestack 0.8.10 bump). CI's own
+# `live-Postgres suites` job runs `cargo test --workspace -- --ignored`;
+# this recipe is that command plus `--no-fail-fast`, and nothing else. The
+# added flag only makes a local run report every failing suite instead of
+# stopping at the first — strictly more information, and the direction
+# AGENTS.md already argues for (workspace `cargo test` being fail-fast by
+# default "is exactly how this stayed hidden behind whichever suite CI
+# happened to reach first").
+#
+# What matters is that the target-kind restriction is gone, because that is
+# the axis on which the two commands used to disagree: the 0.7.16 fix was
+# verified with `--tests` locally while CI ran without it and went red. See
+# the 0.7.16 bump section of AGENTS.md for that incident in full.
+#
+# `--tests` was added at 0.7.16 to dodge cratestack#512's generated
+# `invoke_with_db` doc example, fenced ```` ```ignore ````, which a bare
+# `-- --ignored` force-compiles (rustdoc reuses the same "ignored" bucket
+# for "skipped test" and "non-compiling example") — 18 failures, one per
+# procedure. That is fixed upstream in cratestack 0.8.6 (cratestack#611):
+# the example is fenced ```` ```text ```` now, which rustdoc never schedules
+# as a doctest under any flag. Confirmed live at 0.8.10, not assumed —
+# `cargo test --workspace --no-fail-fast -- --ignored` runs clean, and
+# `Doc-tests sms_api` reports `running 0 tests` rather than the pre-fix
+# `18 ignored`. `backends/crates/sms-api`'s own `[lib] doctest = false`
+# workaround was removed in the same change.
 test-live:
-	{{_cargo}} test --workspace --tests -- --ignored
+	{{_cargo}} test --workspace --no-fail-fast -- --ignored
 
 # Tear down the shared test-harness Postgres — container, network, and its
 # named volume (so data doesn't linger as orphaned state). Scoped by the

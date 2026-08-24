@@ -336,6 +336,13 @@ each row.** None of the fixes were adopted (removing a workaround is a real
 schema/code change with its own risk, out of scope for a pure dependency
 bump), but the blocking reason for each is gone.
 
+**Re-checked 2026-08-23 (the cratestack 0.8.10 bump): every row below is
+still unchanged.** `auth().isSystem()` and `.upsert().do_nothing()` are named
+nowhere in `v0.8.3...v0.8.10` — both landed back in 0.7.10 and have had no
+upstream work since, so seven further releases moved neither. The three closed
+bugs' workarounds stay in place here for the same reason as before: removing one
+is a real schema/code change, not a dependency bump's business.
+
 **Re-checked 2026-08-18 (the cratestack 0.8.3 bump): every row below is
 unchanged.** Nothing in `v0.7.16...v0.8.3` touches `auth().isSystem()` or
 `.upsert().do_nothing()`, and the three closed bugs stay closed with their

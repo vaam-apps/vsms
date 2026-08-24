@@ -117,8 +117,8 @@ sms-fake-orange = { path = "./backends/crates/sms-fake-orange" }
 # exactly — CrateStack is pre-1.0 and shipped 23 releases in 11 weeks; the
 # whole family must move in lockstep or the generated code stops matching the
 # runtime it calls into.
-cratestack = { package = "cratestack-pg", version = "=0.8.3" }
-cratestack-codec-json = "=0.8.3"
+cratestack = { package = "cratestack-pg", version = "=0.8.10" }
+cratestack-codec-json = "=0.8.10"
 
 # OIDC provider. Pinned exactly, same reasoning as cratestack above — see
 # AGENTS.md. 0.3.2 fixed the `GrantType` serde bug that shaped early M1

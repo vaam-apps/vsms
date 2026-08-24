@@ -728,7 +728,7 @@ The maintainer's direction went further: no bash script survives *anywhere* in t
 
 - **The generated `invoke_with_db` doc comment (new in 0.7.13, spliced into every procedure module alongside the `Authorized` witness) broke this repo's own standard live-suite command — and broke CI, in a way the first pass at this section's own local verification missed.** Its illustrative example is deliberately non-compiling pseudocode, correctly fenced `` ```ignore `` (referencing `SystemContext`/`registry`/`db` names that don't exist in that scope — by design, since it's prose, not a real call site) — a plain `cargo test` genuinely skips it, reported `ignored`, not a failure. The break is `--ignored`'s own second, unrelated meaning: rustdoc reuses the identical "ignored" bucket for both "a real test, temporarily skipped, run it when explicitly asked" (what `--ignored` is meant to force-run) and "a doc example marked non-compiling on purpose" (which `--ignored` then also force-compiles, with nothing to tell the two apart). `cargo test --workspace -- --ignored` (this repo's own documented live-suite command, and CI's own `live-Postgres suites` job) genuinely tries to compile that pseudocode once per procedure (18 failures, `cannot find value/type` for names the example never defines) and fails the whole run.
 
-  **What the first pass at this fix actually verified, and why it wasn't enough:** `just test-live` was changed to `cargo test --workspace --tests -- --ignored`, restricting to the `tests/` target kind (no live-Postgres suite is ever a doctest) — a real, correct fix for the *local* convenience command, confirmed clean. But CI's own job runs the bare command, no `--tests`, and that command was never re-run locally before the first push — the gap this whole section exists to record. **Caught in CI, not locally, and the fix corrected once found**: `backends/crates/sms-api/Cargo.toml` now carries `[lib] doctest = false`, with an inline comment giving the real justification (not "doctests were noisy") — this crate's entire public surface is macro-generated from `schemas/vsms.cstack`, so its doc comments are upstream's own illustrative text, not this repository's documentation, and doctesting them tests cratestack's comment text, not this repo's code. Checked before disabling, not assumed: `backends/crates/sms-api/src/`'s own hand-written source has exactly one fenced code block (`procedures.rs`, a ` ```text ` block, never compiled as a doctest regardless) — zero genuine hand-written doctests exist in this crate to lose. No sibling crate needed the same fix: `cratestack::include_server_schema!` is invoked exactly once in this workspace (`backends/crates/sms-api/src/lib.rs`) — every other file matching `include_server_schema!` in a grep is prose referencing the macro in a doc comment, not an invocation, confirmed by reading each one. Filed upstream as a real, reproducible defect, not a local workaround: [cratestack#611](https://github.com/cratestack/cratestack/issues/611) — any consumer whose own CI runs `cargo test -- --ignored` in the crate hosting `include_server_schema!` hits the identical collision, with no schema or code change of their own able to fix it.
+  **What the first pass at this fix actually verified, and why it wasn't enough:** `just test-live` was changed to `cargo test --workspace --tests -- --ignored`, restricting to the `tests/` target kind (no live-Postgres suite is ever a doctest) — a real, correct fix for the *local* convenience command, confirmed clean. But CI's own job runs the bare command, no `--tests`, and that command was never re-run locally before the first push — the gap this whole section exists to record. **Caught in CI, not locally, and the fix corrected once found**: `backends/crates/sms-api/Cargo.toml` now carries `[lib] doctest = false`, with an inline comment giving the real justification (not "doctests were noisy") — this crate's entire public surface is macro-generated from `schemas/vsms.cstack`, so its doc comments are upstream's own illustrative text, not this repository's documentation, and doctesting them tests cratestack's comment text, not this repo's code. Checked before disabling, not assumed: `backends/crates/sms-api/src/`'s own hand-written source has exactly one fenced code block (`procedures.rs`, a ` ```text ` block, never compiled as a doctest regardless) — zero genuine hand-written doctests exist in this crate to lose. No sibling crate needed the same fix: `cratestack::include_server_schema!` is invoked exactly once in this workspace (`backends/crates/sms-api/src/lib.rs`) — every other file matching `include_server_schema!` in a grep is prose referencing the macro in a doc comment, not an invocation, confirmed by reading each one. Filed upstream as a real, reproducible defect, not a local workaround: [cratestack#611](https://github.com/cratestack/cratestack/issues/611) — any consumer whose own CI runs `cargo test -- --ignored` in the crate hosting `include_server_schema!` hits the identical collision, with no schema or code change of their own able to fix it. **Superseded 2026-08-23: cratestack#611 is fixed in 0.8.6, and `[lib] doctest = false` has been removed from `backends/crates/sms-api/Cargo.toml` along with the comment block described here — see the `=0.8.10` bump section above for the three-way verification and the live proof. `just test-live`'s own `--tests` is gone with it — that recipe is now CI's command plus `--no-fail-fast` (so a local run reports every failing suite rather than stopping at the first), with the target-kind restriction removed, which is exactly what this paragraph argues should have been true all along. The paragraph is kept as written because the reasoning it records — why `--tests` was never the real fix, and why CI's own bare command is the one that must be run — is the durable lesson; only the two workarounds are gone.**
 
   **Verified against the exact commands that must pass, not a proxy for them:** `cargo test --workspace -- --ignored` (no `--tests` — CI's own command) and plain `cargo test --workspace` (no `--ignored`) were both re-run to completion after the fix, matching the standing lesson `#87` already established for this file — when a local run and CI disagree, the fix is to run what CI runs, not to trust that a related command passing is close enough.
 
@@ -789,6 +789,161 @@ Neither vsms issue's calculus moved: `grep`ing the six release bodies (v0.7.11 t
 ### Verification
 
 `just check`/`just lint` (`cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings`) both clean. `cargo test --workspace` (in-process): 391 passed, 0 failed. **Full live-Postgres suite, foreground, to completion**: `cargo test --workspace --no-fail-fast --tests -- --ignored` — **212 passed, 0 failed**, across all suites this file's own "The live suites run in CI now" section names (including the process-spawning gates: `kill9_reclaim_live.rs`, `m1_acceptance_gate_live_postgres.rs`, `kill_orange_gate_live_postgres.rs`, and `hooks_node_receiver_live.rs`, the last needing a one-time `pnpm install --ignore-workspace --frozen-lockfile` in `examples/node/webhook-receiver` in this environment — a pre-existing local-environment gap this file's own #64 section already names, not a regression). `cargo deny check`: `advisories ok, bans ok, licenses ok, sources ok` — one new informational duplicate-version warning (`winnow` 0.7.15/1.0.4, via `cratestack-proto`'s new `toml` dependency), not a `deny.toml` violation. `cargo tree -i aws-lc-rs`: no match, workspace and SDK both — `ring`, still the only provider, unchanged. On the TypeScript side: `pnpm --filter @vsms/gateway typecheck`/`biome check` both clean, `pnpm --filter @vsms/gateway test` — 52 passed, 0 failed — and the `deleteResource` fix itself verified live against a real `just demo` gateway (both directions — see "A real regression, found and fixed" above), not merely by the mocked unit tests.
+
+## cratestack bumped to `=0.8.10` (from `=0.8.3`)
+
+`v0.8.3...v0.8.10` is seven releases in six days. Most of it is Dart packaging, `cratestack_cbor`
+platform support, and release-tooling repair that cannot reach a Rust+TypeScript consumer at all —
+but three changes are genuinely breaking, and one closes a workaround this repo has carried since
+the 0.7.16 bump. **The isolated CLI matched the pin at every step** (`cratestack --version` → `0.8.10`,
+`cargo xtask cratestack-pin` → `0.8.10`).
+
+**The workspace compiled clean at 0.8.10 with zero source changes** — no rename sweep, no call-site
+edits, nothing like the 708-replacement `Cool*` → `Cratestack*` pass the 0.8.3 bump needed. That is
+itself the evidence for the biggest-sounding entry in the range; see below.
+
+### The one thing this bump actually removes: `[lib] doctest = false`
+
+[cratestack#611](https://github.com/cratestack/cratestack/issues/611) — filed by this repo during the
+0.7.16 bump — is fixed in 0.8.6. The bug: `include_server_schema!` gave every generated
+`invoke_with_db` an illustrative doc example fenced ` ```ignore `, and `cargo test --workspace --
+--ignored` (CI's own command, no `--tests`) reuses rustdoc's identical "ignored" bucket to
+*force-compile* it, so all 18 procedures failed on prose that was never meant to compile. The
+workaround was `[lib] doctest = false` in `backends/crates/sms-api/Cargo.toml`, with a 26-line comment
+explaining why.
+
+Both are deleted here. The fix was verified three ways before trusting it, not taken from the
+changelog: the upstream CHANGELOG entry names this repo's own workaround verbatim ("One downstream
+project worked around it with `[lib] doctest = false`"); the vendored generator itself now emits
+` ```text ` (`cratestack-macros-0.8.10/src/procedure/instrument/invoke_with_db.rs:42`), which rustdoc
+never schedules as a doctest under any flag or merge mode; and upstream carries a named regression
+guard for it (`src/procedure/tests.rs:180`). Then the decisive check — **the exact command that used
+to break was run, to completion, with the workaround removed.**
+
+0.8.9's `#683` is a *different* entry and does not cover this: it generalises the same ` ```ignore ` →
+` ```text ` fix to cratestack's own hand-written doctests inside its own crates, none of which ship
+into vsms. Read them as two entries, not one.
+
+### The three breaking changes, and why each misses this repo
+
+Each precondition was checked against the tree rather than assumed:
+
+- **Typestate builders on every generated struct-shaped type (0.8.5).** This sounds like it should
+  break every `CreateXInput { .. }`/`UpdateXInput { .. }` struct literal in this workspace, including
+  `create_inputs.rs`'s deliberately exhaustive ones. It does not: the builders are *companions*
+  emitted alongside the existing types, and the changelog is explicit that an untouched field "stays
+  absent from the wire, exactly like today's struct-literal update inputs." The only breaking part is
+  a name collision — a `model`/`type`/`view`/`enum` named `{X}Builder`, or a field set declaring both
+  `build` and `set_build`/`setBuild`. `schemas/vsms.cstack` has neither. The clean compile above is
+  the proof, not the reasoning.
+- **Field-level `@allow`/`@deny` rejected at parse time (0.8.7, #679).** A grep for bare `@allow(`
+  returns 18 hits, which looks alarming until you read them: all 18 are procedure-level (`procedure`
+  / `mutation procedure` declarations), and the changelog states procedure-level is "untouched — this
+  targets the field-position, single-`@` case only." Zero field-level occurrences exist. *Counting the
+  grep hits would have raised a false alarm; reading them is what settled it.*
+- **Protobuf/gRPC removed entirely (0.8.5, ADR 0017).** No `transport grpc`, no `@pb(...)`, no
+  `TransportStyle::Grpc` anywhere. Inert — and a small win: it drops six packages from the lock
+  (`cratestack-proto`, `toml`, `toml_writer`, `toml_datetime`, `serde_spanned`, and **one of the two
+  `winnow`s**). That last one clears the duplicate-version warning the 0.8.3 bump section recorded as
+  its own only non-clean `cargo deny` signal. Note the precision: `winnow` went 2 → 1, it is not gone.
+
+### Checked and found inert, with the reason
+
+- **DDL emission is unchanged**, confirmed two independent ways. Empirically: `cargo xtask
+  migrations-current` at a pin-matching `=0.8.10` CLI reports `OK — backends/migrations/postgres/0001_init
+  matches`. And from the other direction: the entire 513-line changelog range contains **no mention of
+  the migration or DDL emitter at all**. Migrations were correspondingly **not** regenerated, per this
+  file's own standing rule.
+- **MSRV unchanged at `1.95.0`** — cratestack-pg 0.8.10 declares the same floor, so `rust-version`
+  needed no edit.
+- **The CI installer action ref stays `@v0.8.3`.** `.github/workflows/ci.yml`'s own comment explains
+  the ref and the `version:` input are deliberately independent (GitHub forbids expressions in
+  `uses:`). Verified rather than assumed that nothing was missed by leaving it: the action file is
+  **byte-identical at both tags** (sha256 `fe959390747a0aa3…` for `v0.8.3` and `v0.8.10` alike).
+- **`#663` (untouched update-input fields off the wire) does not touch `senders.ts`'s empty-string
+  workaround.** #663 is a *serialize*-side bug in the generated Rust/Dart **client**; cratestack#567 —
+  the reason `frontends/packages/gateway/src/senders.ts` writes `""` to mean "clear a nullable column" —
+  is a *deserialize*-side bug in the server's PATCH route, fixed back in 0.7.15. Different direction,
+  different layer. Nothing in this range touches server-side PATCH deserialization.
+- **`#666` (enum-literal comparisons in read policies)** is purely additive: every one of this schema's
+  `@@allow`/`@@deny` clauses uses `hasRole(...)`, `auth().kind == "..."` or an `appId` equality. None
+  compares an enum field to a literal, so no existing policy is reinterpreted.
+- **`#657`/`#646` (`/rpc/batch` CBOR null encoding, and per-envelope authentication)** are both inert:
+  this router mounts no RPC transport. Settled empirically with `just routes` — 133 routes, all REST
+  plus `POST /$procs/<name>`, no `/rpc/*` anywhere — not by grepping hand-written source, which could
+  never have seen a macro-generated route either way.
+- **`#176`/`#177` are unchanged**, same as at 0.8.3: `auth().isSystem()` and `.upsert().do_nothing()`
+  are named nowhere in the range. Both landed in 0.7.10 and have had no upstream work since.
+- Everything Dart (`cratestack_annotations`, `cratestack_builder`, `cratestack_cbor` platforms,
+  `--native-cbor` → `--no-native-cbor`) is inert — there is no Dart in this repo.
+
+### The generated TypeScript client now does ETag/If-Match natively — not adopted here
+
+0.8.6's [#610](https://github.com/cratestack/cratestack/pull/610) makes the generated client emit
+`getWithResponse()` (returning `{ value, response }` so a caller can read the `ETag` header),
+a `withIfMatchHeader` helper, and an `ifMatch` field on every write config, per `@version` model.
+That is functionally what `frontends/packages/gateway/src/rest.ts` hand-rolls today as
+`fetchWithEtag`/`updateWithIfMatch`/`deleteResource`, known-version fast path (#295) included.
+
+**Deliberately not adopted in this bump.** Retiring that hand-rolled seam means changing a signature
+five screens depend on, and `frontends/packages/sms-client` still is not imported at runtime anywhere
+(T3, `OPEN_QUESTIONS.md` §5) — so this is a real piece of work with its own verification, not a
+dependency bump's business. Recorded here so the next person does not rediscover it.
+
+Regenerating the client is a **no-op on tracked files**: `just client-gen` leaves
+`frontends/packages/sms-client/package.json` and `README.md` byte-identical, so `--tanstack` (added at
+the 0.8.1 bump for exactly this reason) is still doing its job across seven further releases.
+
+### The three manifests `cargo check --workspace` cannot see
+
+Unchanged from the two previous bumps' own warnings, and re-checked by hand for the same reason:
+`sdks/rust/vsms-sdk-rust`, `examples/rust` and `ci/e2e-integration/vsms-e2e-integration` are outside the
+root workspace, so a bump that left one on the old pin would show green everywhere in CI. All three were
+moved to `=0.8.10` (or inherit it by path, as `examples/rust` does), and all three were checked, linted,
+tested and `cargo deny`-ed individually. All nine `cratestack-*` packages sit at `0.8.10` in each of the
+three lockfiles, each of which also dropped the `cratestack-proto`/`toml`/`winnow` chain.
+
+**One real, pre-existing finding surfaced while doing this, and it is not caused by the bump:**
+`cargo deny check` (all four categories, not just `advisories`) reports `licenses FAILED` —
+`error[unlicensed]` — for `ci/e2e-integration/vsms-e2e-integration` and `examples/rust/sms-send`.
+Neither declares a `license` field, and neither ever has (`git show HEAD:<path>/Cargo.toml` confirms
+it, and the only working-tree change to those files is the one-line version pin). `deploy/backup-tool`
+has the same missing field. This matters directly to
+[#324](https://github.com/vymalo/vsms/issues/324), which proposes gating these manifests in CI:
+**wiring those steps up as written would turn CI red immediately**, so a `license` decision has to come
+first. #324 has been corrected in a comment rather than left to mislead whoever picks it up.
+
+That finding also came with its own lesson, recorded because it is the same shape this file keeps
+returning to: the first pass at #324 ran `cargo deny check advisories` — one of four categories — and
+stated the conclusion as though it had run all four. A narrower check reported clean, and the claim was
+written wider than the check.
+
+### Verification
+
+`cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` both clean;
+`cargo test --workspace` (in-process) **415 passed, 0 failed** across 80 binaries; `cargo deny check`
+on the root workspace: `advisories ok, bans ok, licenses ok, sources ok` against a freshly-fetched
+advisory database. All eight `xtask` guards pass — `no-raw-sqlx`, `parity`, `workflow-paths`,
+`docs-drift`, `sdk-schema-check`, `migrations-current`, `bootstrap-sql-check`, and `r6` (35 view
+files) — plus `cratestack-pin` printing exactly `0.8.10`, the value CI feeds straight into the
+installer action, so a stale one silently installs the wrong emitter.
+
+**Full live-Postgres suite, to completion, with the doctest workaround removed:
+`cargo test --workspace --no-fail-fast -- --ignored` — 212 passed, 0 failed**, across 81 test binaries.
+Note the command deliberately omits `--tests`: with `--tests` it would never have compiled a doctest
+at all, which is precisely the thing under test here. `Doc-tests sms_api` reports **`running 0 tests`** —
+not "18 ignored", the pre-fix shape — confirming the generated examples are no longer doctest
+candidates in any mode.
+
+The 212 was checked against a ground truth established *before* reading it (the in-process run's own
+`212 ignored`, and this file's own prior record of 212), not merely accepted because the command exited
+`0`. That habit exists because the 0.8.3 bump's first live run reported `40 passed` from a truncated
+capture and exited `0` all the same.
+
+On the TypeScript side, the whole `js` CI job verbatim: `pnpm biome ci .` (395 files, 0 errors),
+`just client-gen` (tracked files byte-identical) and `just client-check` (**133 client calls, all
+matching served routes**), `pnpm turbo run typecheck build` (10/10) and `test` (7/7, 195 tests), plus
+the standalone `examples/node/webhook-receiver` leg (2/2 — the cross-language HMAC vectors still agree).
 
 ## cratestack bumped to `=0.8.3` (from `=0.7.16`), authkestra to `=0.5.1` (from `=0.5.0`)
 
@@ -897,12 +1052,12 @@ Retained because they are cheap and still correct, not because they are load-bea
 
 | | |
 |---|---|
-| [CrateStack](https://cratestack.dev/) `=0.8.3` | Schema-first. `.cstack` generates models, policies, audit, events, REST. Pre-1.0 and moving fast — pin exactly, and **keep the installed CLI on the same version**: a mismatched CLI emits DDL the compiled library never produces. Never below 0.6.0 (see `#87`) and never below 0.5.0 (see the build-cost section). |
+| [CrateStack](https://cratestack.dev/) `=0.8.10` | Schema-first. `.cstack` generates models, policies, audit, events, REST. Pre-1.0 and moving fast — pin exactly, and **keep the installed CLI on the same version**: a mismatched CLI emits DDL the compiled library never produces. Never below 0.6.0 (see `#87`) and never below 0.5.0 (see the build-cost section). |
 | [Authkestra](https://github.com/marcjazz/authkestra) `=0.5.1` | OIDC provider. 0.3.2 fixed the `GrantType` serde bug that shaped early M1 design (#6). Pin exactly — still moving fast, and `authkestra-macros` is transitive, so `cargo update -p authkestra-macros` is needed to keep the family in true lockstep. |
 | PostgreSQL 16 | The only coordination mechanism. Queues (`SKIP LOCKED`), leader election (advisory locks), state machines (triggers). No broker, no Redis. |
 | Rust 2021, TypeScript / Next.js 15 | |
 
-`sms-api` depends on `cratestack = { package = "cratestack-pg", version = "=0.8.3" }` — the rename is mandatory, generated code emits absolute `::cratestack::*` paths. `JsonCodec` lives in the separate `cratestack-codec-json` crate. (An earlier revision of this line said `=0.5.0` — stale even before the 0.7.10 bump, and never the actual root `Cargo.toml` pin; corrected while touching this section for that bump, and the version number itself kept current at every bump since.)
+`sms-api` depends on `cratestack = { package = "cratestack-pg", version = "=0.8.10" }` — the rename is mandatory, generated code emits absolute `::cratestack::*` paths. `JsonCodec` lives in the separate `cratestack-codec-json` crate. (An earlier revision of this line said `=0.5.0` — stale even before the 0.7.10 bump, and never the actual root `Cargo.toml` pin; corrected while touching this section for that bump, and the version number itself kept current at every bump since.)
 
 ## The three rules
 
