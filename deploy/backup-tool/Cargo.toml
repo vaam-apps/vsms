@@ -13,6 +13,7 @@
 name = "vsms-backup"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 publish = false
 description = "The Rust replacement for deploy/{backup,restore,restore-drill,backup-entrypoint}.sh — pg_dump/pg_restore + rclone orchestration, with no bash anywhere in the picture."
 

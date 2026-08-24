@@ -2,6 +2,7 @@
 name = "vsms-example-send"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
 publish = false
 description = "Runnable example: authenticate to vsms with private_key_jwt and send a message over real HTTP, using vsms-sdk-rust."
 
