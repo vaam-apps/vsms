@@ -171,25 +171,35 @@ services:
         condition: service_completed_successfully
     restart: 'no'
 
-  # The one `App` + approved `SenderId` this file's own demo message needs
-  # to exist before `sendMessage` will accept anything. Not an `sms-gateway`
+  # The one `App` + approved `SenderId` + `WebhookEndpoint` this file's own
+  # demo message needs before `sendMessage` will accept anything and
+  # before `demo-app` (below) has anywhere to seed. Not an `sms-gateway`
   # subcommand any more — #258 moved this fixture-seeding logic out of the
   # production gateway image into its own crate/image, `vsms-demo-seed`
   # (`backends/apps/vsms-demo-seed/src/main.rs`'s own module doc has the full
   # reasoning), the same binary `compose.demo.yaml`'s own `seed-demo-app`
   # service pulls pre-built from GHCR. This file builds it from source
-  # instead, like every other service here. Every flag defaults to what the
-  # old `sms-gateway seed-demo-app` command used (`--app-slug vsms-demo` in
-  # particular, matching `provision-client`'s own `--app-slug` below), so no
-  # `command:` override is needed — only `DATABASE_URL`.
+  # instead, like every other service here. Every App/SenderId flag
+  # defaults to what the old `sms-gateway seed-demo-app` command used
+  # (`--app-slug vsms-demo` in particular, matching `provision-client`'s
+  # own `--app-slug` below); the one flag this file DOES override is
+  # `--webhook-secret-out`, so `demo-app` (below) has a file to read the
+  # freshly-generated `WebhookEndpoint.secret` from — the identical
+  # "one container's computed output, a sibling's input" problem
+  # `provision-client`'s own `--client-id-out` already solves the same way.
   seed-demo-app:
     build:
       context: .
       dockerfile: backends/apps/vsms-demo-seed/Dockerfile
+    command: ['--webhook-secret-out', '/secrets/webhook-secret']
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
+    volumes:
+      - vsms_dev_secrets:/secrets
     depends_on:
       seed-dispatch:
+        condition: service_completed_successfully
+      secrets-init:
         condition: service_completed_successfully
     restart: 'no'
 
@@ -256,9 +266,13 @@ services:
     restart: 'no'
 
   # Makes the key/id `provision-client` wrote (owned by uid 0) readable by
-  # `admin`'s own non-root uid — same trade `compose.demo.yaml` documents
-  # at length on its own identically-named service. `--client-id-out`'s
-  # output has no restrictive mode to begin with, only the PEM does.
+  # `admin`'s AND `demo-app`'s own non-root uids — same trade
+  # `compose.demo.yaml` documents at length on its own identically-named
+  # service. `--client-id-out`'s output has no restrictive mode to begin
+  # with, only the PEM does. `profiles: [console]` even though `demo-app`
+  # now depends on this too: `demo-app` itself is console-profile-gated
+  # (see its own comment below) rather than a core-backend service, so
+  # gating this alongside it costs nothing R4 cares about.
   secrets-fix-perms:
     image: busybox:1.36
     command: ['sh', '-c', 'chmod 0644 /secrets/console-client-key.pem /secrets/console-client-id']
@@ -413,8 +427,12 @@ services:
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
       # dispatch/scheduler/jobs — the same three roles `scripts/demo.sh`
-      # ran. drain/hooks omitted: this stack seeds no `WebhookEndpoint`.
-      SMS_WORKER_ROLES: dispatch,scheduler,jobs
+      # used to run — plus drain/hooks: `seed-demo-app` (via
+      # `vsms-demo-seed`) now seeds a real `WebhookEndpoint` pointed at
+      # `demo-app` (below), so there is something for both roles to
+      # drive — `drain` retries a stalled outbox row, `hooks` is the
+      # role that actually signs and POSTs.
+      SMS_WORKER_ROLES: dispatch,scheduler,jobs,drain,hooks
       ORANGE_CM_CLIENT_ID: placeholder
       ORANGE_CM_CLIENT_SECRET: placeholder
       ORANGE_CM_SENDER_NUMBER: '+2370000'
@@ -495,6 +513,41 @@ services:
         condition: service_completed_successfully
     ports:
       - '127.0.0.1:${VSMS_DEMO_CONSOLE_PORT:-3100}:8080'
+
+  # The demo showcase's own evaluator — `examples/node/demo-app`'s own
+  # module doc has the full reasoning. Sends one OTP through
+  # `@vymalo/vsms-node`, watches it reach a terminal state, and verifies
+  # the `hooks` role's own signed webhook for it — the one piece of this
+  # stack nothing else exercises end to end. `profiles: [console]`, same
+  # as `admin`: not because it needs the console (it doesn't — it talks
+  # to `sms-gateway` directly, the same way `admin` itself does), but
+  # because it needs the exact same `secrets-fix-perms` output `admin`
+  # needs (the console-client PEM, `0600`/root-owned until that step
+  # loosens it) to read the credential it reuses from `provision-client`
+  # — see that service's own updated comment above.
+  demo-app:
+    build:
+      context: .
+      dockerfile: examples/node/demo-app/Dockerfile
+    profiles: [console]
+    environment:
+      VSMS_ISSUER: http://sms-gateway:8080
+      VSMS_CLIENT_ID_PATH: /secrets/console-client-id
+      VSMS_PRIVATE_KEY_PATH: /secrets/console-client-key.pem
+      VSMS_SCOPE: sms:send sms:read
+      DEMO_WEBHOOK_SECRET_PATH: /secrets/webhook-secret
+      DEMO_WEBHOOK_PORT: '9000'
+    volumes:
+      - vsms_dev_secrets:/secrets:ro
+    depends_on:
+      sms-gateway:
+        condition: service_healthy
+      sms-worker:
+        condition: service_started
+      seed-demo-app:
+        condition: service_completed_successfully
+      secrets-fix-perms:
+        condition: service_completed_successfully
 
 volumes:
   vsms_dev_pgdata:
