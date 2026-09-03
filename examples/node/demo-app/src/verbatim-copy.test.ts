@@ -17,6 +17,14 @@ import { fileURLToPath } from "node:url";
  * narrower gap it doesn't cover: two *copies* of the same confirmed
  * file disagreeing with each other. It fails loudly, naming both paths,
  * the moment they do.
+ *
+ * A repo-checkout test, not a shipped-image one: it reads
+ * `../../webhook-receiver/src` by relative path, which is outside this
+ * package's own Docker build context (`examples/node/demo-app/Dockerfile`
+ * only `COPY`s this package's own directory — see that file's own header
+ * comment). It runs from `pnpm test` against a full checkout (this
+ * package's own README, and the `js` CI job), never inside the built
+ * `demo-app` image — there is no `node --test` step in that image at all.
  */
 const here = dirname(fileURLToPath(import.meta.url));
 const sourceOfTruth = join(here, "..", "..", "webhook-receiver", "src");

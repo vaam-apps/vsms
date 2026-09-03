@@ -29,7 +29,10 @@
  * `delivered` AND at least one webhook for it verified. Anything else is
  * a loud, non-zero failure naming exactly what didn't happen — this is
  * meant to be watched in `docker compose logs demo-app` (or `just
- * demo-app`), not just left to run.
+ * demo-app`), not just left to run. That decision itself lives in
+ * `./decision.ts`, deliberately not inline here — see that module's own
+ * doc comment for why (a sabotaged inline predicate passed every test
+ * this package had before the extraction).
  *
  * # Credential reuse, deliberately not a second provisioned client
  *
@@ -52,6 +55,7 @@ import type { Message, MessageState } from "@vymalo/vsms-node";
 import { SdkError, VsmsClient } from "@vymalo/vsms-node";
 import type { Request, Response } from "express";
 import express from "express";
+import { decide } from "./decision.ts";
 import { verifySignature } from "./signature.ts";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +86,14 @@ const PRIVATE_KEY_PATH = process.env.VSMS_PRIVATE_KEY_PATH ?? "/secrets/console-
 
 const WEBHOOK_PORT = envInt("DEMO_WEBHOOK_PORT", 9000);
 const WEBHOOK_SECRET_PATH = process.env.DEMO_WEBHOOK_SECRET_PATH ?? "/secrets/webhook-secret";
+// §4.4's own rotation-overlap design (backends/crates/sms-webhook):
+// a receiver is handed BOTH the current and previous secret, and accepts
+// if either one verifies. `vsms-demo-seed`'s own `ensure_demo_webhook_endpoint`
+// always writes `prevSecret: None` today (this demo never rotates its own
+// endpoint's secret), so this env var exists for completeness/future use
+// rather than anything the seeded stack currently exercises — the wiring
+// is real, just not driven by anything yet.
+const WEBHOOK_PREV_SECRET = process.env.DEMO_WEBHOOK_PREV_SECRET;
 
 const DEMO_TO = process.env.DEMO_TO ?? "+237677123456";
 const DEMO_SENDER_ID = process.env.DEMO_SENDER_ID ?? "VSMS";
@@ -135,7 +147,7 @@ interface ReceivedWebhook {
   dataState: string | undefined;
 }
 
-function startWebhookServer(port: number, secret: string, events: ReceivedWebhook[]) {
+function startWebhookServer(port: number, secrets: readonly string[], events: ReceivedWebhook[]) {
   const app = express();
 
   // Raw bytes, not `express.json()` — verification is over the exact
@@ -152,7 +164,7 @@ function startWebhookServer(port: number, secret: string, events: ReceivedWebhoo
         timestamp: req.header("x-sms-timestamp"),
         eventId: req.header("x-sms-event-id"),
         signatureHeader: req.header("x-sms-signature"),
-        secrets: [secret],
+        secrets,
       });
 
       let messageId: string | undefined;
@@ -213,13 +225,57 @@ function startWebhookServer(port: number, secret: string, events: ReceivedWebhoo
 // Outbound half: send, then poll until terminal.
 // ---------------------------------------------------------------------------
 
+/**
+ * `@vymalo/vsms-node` accepts no `fetch` override and no `signal`/timeout
+ * option anywhere in its public API — checked directly against
+ * `sdks/node/vsms-sdk-node/src/{client,token}.ts`, not assumed: every
+ * `fetch(...)` call in that package (the token exchange, `sendMessage`,
+ * `getMessage`, `previewMessage`) is bare, with no way for a caller to
+ * bound it. Without this wrapper, a genuinely stalled gateway would
+ * block a single SDK call for however long undici's own default request
+ * timeout is (~300s), regardless of `DEMO_TIMEOUT_MS` — this package's
+ * own documented overall budget would be silently meaningless the
+ * moment one request hangs rather than erroring. `Promise.race`d
+ * against the remaining deadline is the workaround available without
+ * the SDK's cooperation; a real fix (an SDK-level `signal`/timeout
+ * option) is being filed upstream separately, not attempted here.
+ */
+function withDeadline<T>(promise: Promise<T>, deadlineMs: number, label: string): Promise<T> {
+  const remainingMs = Math.max(deadlineMs - Date.now(), 0);
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new Error(
+          `${label} exceeded the remaining ${remainingMs}ms budget (deadline reached) — ` +
+            "@vymalo/vsms-node's fetch calls carry no AbortSignal, so this is a client-side " +
+            "bound, not a real request cancellation",
+        ),
+      );
+    }, remainingMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
+}
+
 async function sendWithRetry(client: VsmsClient, deadlineMs: number) {
   let lastError: unknown;
   while (Date.now() < deadlineMs) {
     try {
-      return await client.sendMessage(
-        { to: DEMO_TO, senderId: DEMO_SENDER_ID, body: DEMO_BODY, class: "otp" },
-        {},
+      return await withDeadline(
+        client.sendMessage(
+          { to: DEMO_TO, senderId: DEMO_SENDER_ID, body: DEMO_BODY, class: "otp" },
+          {},
+        ),
+        deadlineMs,
+        "sendMessage",
       );
     } catch (err) {
       lastError = err;
@@ -245,7 +301,7 @@ async function pollUntilTerminal(
   while (Date.now() < deadlineMs) {
     let message: Message;
     try {
-      message = await client.getMessage(messageId);
+      message = await withDeadline(client.getMessage(messageId), deadlineMs, "getMessage");
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       console.log(`[demo-app] getMessage failed transiently (${detail}) — retrying...`);
@@ -277,9 +333,13 @@ async function pollUntilTerminal(
 async function main(): Promise<number> {
   const secret = process.env.DEMO_WEBHOOK_SECRET ?? readFileTrimmed(WEBHOOK_SECRET_PATH);
   const clientId = process.env.VSMS_CLIENT_ID ?? readFileTrimmed(CLIENT_ID_PATH);
+  // Both the current and previous secret are accepted, per §4.4's own
+  // rotation-overlap design — see WEBHOOK_PREV_SECRET's own comment for
+  // why nothing in the seeded stack drives this today.
+  const secrets = [secret, WEBHOOK_PREV_SECRET].filter((s): s is string => Boolean(s));
 
   const events: ReceivedWebhook[] = [];
-  const server = await startWebhookServer(WEBHOOK_PORT, secret, events);
+  const server = await startWebhookServer(WEBHOOK_PORT, secrets, events);
 
   const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS;
 
@@ -345,27 +405,25 @@ async function main(): Promise<number> {
     }
     console.log("");
 
-    if (delivered && verifiedCount >= 1) {
+    const decision = decide({ delivered, verifiedCount, eventCount: events.length });
+    exitCode = decision.exitCode;
+
+    if (decision.exitCode === 0) {
       console.log(
         `[demo-app] SUCCESS: messageId=${sent.messageId} reached delivered with ${verifiedCount} verified webhook(s) of ${events.length} received`,
       );
-      exitCode = 0;
     } else {
-      const reasons: string[] = [];
-      if (!delivered) {
-        reasons.push(
-          `message never reached delivered (final observed state: ${final?.state ?? "timed out waiting"})`,
-        );
-      }
-      if (verifiedCount === 0) {
-        reasons.push(
-          events.length === 0
-            ? "no webhook was received at all"
-            : `${events.length} webhook(s) were received but NONE verified their signature — check that WEBHOOK secret matches the seeded WebhookEndpoint`,
-        );
-      }
+      // decide()'s own "message never reached delivered" reason is
+      // deliberately generic (no I/O, no `final` — see decision.ts's own
+      // doc comment); this is the one place that adds the runtime detail
+      // back in for the printed line, without decision.ts itself needing
+      // to know about `Message`/`final` at all.
+      const reasons = decision.reasons.map((reason) =>
+        reason === "message never reached delivered"
+          ? `${reason} (final observed state: ${final?.state ?? "timed out waiting"})`
+          : reason,
+      );
       console.error(`[demo-app] FAILURE: messageId=${sent.messageId} — ${reasons.join("; ")}`);
-      exitCode = 1;
     }
   } catch (err) {
     if (err instanceof SdkError) {
