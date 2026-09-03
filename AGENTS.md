@@ -143,7 +143,7 @@ The tool also writes `backends/migrations/postgres/schema.snapshot.json` as a si
 Five things about it are load-bearing, each learned by something breaking:
 
 - **Never cache a container handle in a `static`.** The first attempt held `testcontainers::ContainerAsync` in a `OnceCell`, reasoning that `Drop` would clean up. **Rust never runs `Drop` for a `static`'s contents on any process-exit path**, so every run leaked its container — 56 orphaned Postgres instances filled a 32 GB laptop before anyone noticed. There is no Ryuk reaper installed to catch what `Drop` misses. Nothing here may depend on a destructor running at exit.
-- **Cleanup is scoped by the harness's own label (`dev.vsms.test-harness=true`), never by image or name.** A sweep filtered by `ancestor=postgres:16-alpine` would cheerfully destroy a developer's unrelated running database. Never `docker prune` in any form.
+- **Cleanup is scoped by the harness's own fixed Compose project name (`vsms-test-harness`), never by image or a bare name pattern.** (Corrected: an earlier revision of this line named a `dev.vsms.test-harness=true` label from a pre-Compose `docker run` design; the harness moved onto `docker compose -p vsms-test-harness -f compose.yml` and Compose's own project-scoped labelling instead — see `backends/crates/sms-test-support/src/lib.rs`'s own module doc.) A sweep filtered by `ancestor=postgres:16-alpine` would cheerfully destroy a developer's unrelated running database. Never `docker prune` in any form.
 - **One database per test *binary*, not one shared database.** All 14 sharing one database let `kill9_reclaim_live`'s real `sms-worker --roles dispatch` subprocess claim *other suites'* leftover messages — the claim loop deliberately selects any eligible row, as it must in production. Passed alone, timed out under the full sweep.
 - **The migration check fingerprints migration *content*** (stamped via `COMMENT ON DATABASE`), not merely whether `public.messages` exists. The existence check silently served a **stale schema** from a pre-existing container after a bootstrap-only change, so tests reported `ok` against migrations that had never been applied.
 - **The container name is fixed and global**, so two concurrent `cargo test` invocations on one machine fight over it and corrupt each other's runs. This is real, not theoretical — it cost one investigation a stress run. Don't run overlapping live-test processes; scoping that name is tracked follow-up work.
@@ -1187,11 +1187,14 @@ just all-checks     # everything CI runs, in CI's order
 just routes         # print the generated route table; no database needed
 just jobs=8 check   # raise the concurrency cap on a big machine
 
-# the 14 live-Postgres suites. sms-test-support starts (or reuses) its own
-# container and applies migrations — no manual docker run, no DATABASE_URL.
-# Don't run two of these concurrently: the container name is global.
+# the live-Postgres suites (42 test files, 214 #[ignore]d tests as of this
+# writing — grep -rc '#\[ignore' backends/ to recount). sms-test-support
+# starts (or reuses) its own Postgres via `docker compose -p
+# vsms-test-harness -f compose.yml` and applies migrations — no manual
+# docker run, no DATABASE_URL. Don't run two of these concurrently: the
+# Compose project name is fixed and shared across every invocation.
 just test-live
-just test-live-clean   # remove the harness container (label-scoped; never prune)
+just test-live-clean   # remove the harness container (Compose-project-scoped; never prune)
 
 # the full demo, one command: scratch Postgres, migrations, a signing key, a
 # freshly provisioned client, sms-fake-orange, the gateway, the worker, and the
@@ -1203,7 +1206,7 @@ just demo-down
 # apply migrations to a scratch database by hand — still what the psql-side
 # CI job does; NOT needed for the Rust live suites any more
 createdb vsms_check
-DATABASE_URL=postgres://localhost/vsms_check ./ci/apply-migrations.sh
+DATABASE_URL=postgres://localhost/vsms_check cargo run -p sms-migrate
 psql postgres://localhost/vsms_check -v ON_ERROR_STOP=1 -f ci/test-state-machine.sql
 dropdb vsms_check
 

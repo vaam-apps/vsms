@@ -42,7 +42,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
       # Milestone 0's gate: a fresh database, every migration in order, no
-      # errors. `app/sms-migrate` is the real production migration
+      # errors. `backends/apps/sms-migrate` is the real production migration
       # runner, not a CI-only stand-in — this job now proves the actual
       # binary a deployment runs, not a parallel shell-script path that
       # could silently drift from it.
@@ -157,7 +157,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
       # Milestone 0's encoding gate lives in
-      # crates/sms-encoding/tests/french_corpus.rs.
+      # backends/crates/sms-encoding/tests/french_corpus.rs.
       - run: cargo test --workspace
 
       # The lock file is committed; a build must not silently change it.
@@ -275,13 +275,13 @@ jobs:
       # sms-test-support shells out to `psql` to apply migrations — not
       # preinstalled on ubuntu-latest runners, same as the `migrations`
       # job above (which no longer needs it for this specific purpose:
-      # its own "Apply migrations" step now runs `app/sms-migrate`
+      # its own "Apply migrations" step now runs `backends/apps/sms-migrate`
       # directly — see that job's own comment — but still needs `psql`
       # for the state-machine assertions step right after it).
       - name: Install psql
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
 
-      # #44's gate suite (app/sms-worker/tests/hooks_node_receiver_live.rs)
+      # #44's gate suite (backends/apps/sms-worker/tests/hooks_node_receiver_live.rs)
       # spawns `node src/gate-receiver.ts` as a real subprocess, so this Rust
       # job needs a Node toolchain and that package's dependencies — express
       # is a real runtime dependency, not a dev one.
@@ -309,10 +309,10 @@ jobs:
         working-directory: examples/node/webhook-receiver
 
       # ubuntu-latest ships a running Docker daemon — sms-test-support
-      # starts (or reuses) one Postgres 16 container itself, keyed by a
-      # fixed name and a distinctive label
-      # (`dev.vsms.test-harness=true`), and applies both migrations before
-      # any test runs. This is a genuinely separate job from `rust` above,
+      # starts (or reuses) one Postgres 16 container itself via
+      # `docker compose -p vsms-test-harness -f compose.yml`, a fixed
+      # Compose project name, and applies both migrations before any test
+      # runs. This is a genuinely separate job from `rust` above,
       # not an extra step in it: the `postgres:16` service container in
       # the `migrations` job above is unrelated (used only to prove
       # migrations apply to an empty database, never by these Rust
@@ -326,7 +326,7 @@ jobs:
       # the rest of this job's lifetime (there is only ever one, and this
       # runner is destroyed at job end regardless), matching the same
       # "leave it running, the fixed name makes a rerun replace rather
-      # than add" strategy documented in crates/sms-test-support/src/lib.rs.
+      # than add" strategy documented in backends/crates/sms-test-support/src/lib.rs.
 
   js:
     name: pnpm biome, typecheck, build, test
@@ -423,7 +423,7 @@ jobs:
       # languages by asserting both implementations against fixtures a third
       # tool (`openssl dgst -sha256 -hmac`) computed, and names `pnpm test`
       # as the gate for the TypeScript half. The Rust half really was gated
-      # (`crates/sms-webhook/tests/cross_language_fixtures.rs`, plain `cargo
+      # (`backends/crates/sms-webhook/tests/cross_language_fixtures.rs`, plain `cargo
       # test`); the TypeScript half had only ever been run by hand. A
       # cross-language agreement proof that only one side actually checks in
       # CI is the half that silently drifts.
@@ -523,6 +523,14 @@ jobs:
       # is R6's equivalent, and it is why the rule landed with a check
       # rather than after the first repeat.
       - run: cargo xtask r6
+
+      # #252: `sdks/node/vsms-sdk-node/src/types.ts` hand-curates enum
+      # unions (Encoding, OperatorCode, MessageClass, MessageState) out of
+      # schemas/vsms.cstack rather than generating them — nothing else
+      # here ever typechecks that hand-written copy against the schema it
+      # was copied from, so a variant added, removed, or renamed on either
+      # side goes unnoticed until an integrator hits it at runtime.
+      - run: cargo xtask node-sdk-types-check
 
   diagrams:
     name: mermaid diagrams parse

@@ -9,6 +9,7 @@ First-time setup, in order. Each step proves something works before the next one
 * *Rust*, stable, edition 2021 toolchain (`rustup default stable`).
 * *PostgreSQL 16* reachable somehow -- a local install, or Docker (`docker run --rm -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:16`). Nothing here needs a specific host; every command below assumes `psql`/`createdb` are on `PATH` and `DATABASE_URL` points at a reachable server.
 * *https://github.com/casey/just[`just`]* -- the task runner this repo's own commands go through (`cargo install just`, or your package manager).
+* *Node >= 26* and *pnpm 11* -- needed only for step 8 below (the admin console); every step before that is pure Rust/`psql`.
 
 Nothing else: every repo-owned check (the R1 lint, the R2 parity check, bootstrap-SQL/migration-drift gates) is `cargo xtask <check>` -- see `.xtask/` and ``AGENTS.md``'s own "Repo automation moved to ``xtask``" section -- so there is no separate Python or shell interpreter to install for any of them.
 
@@ -212,8 +213,8 @@ Everything above proves the gateway/worker chain over HTTP; nothing in steps 1--
 starts the Next.js console. This step was never written down before -- the first end-to-end
 dry run of this whole chain found the gap.
 
-Prerequisites: *Node >= 22* and *pnpm 11* (`packageManager` in the root `package.json`
-pins the exact version; `corepack enable` will resolve it automatically).
+Prerequisites: *Node >= 26* and *pnpm 11* (`packageManager`/`engines` in the root `package.json`
+pin the exact versions; `corepack enable` will resolve pnpm automatically).
 
 [,bash]
 ----
