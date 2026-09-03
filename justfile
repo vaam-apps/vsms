@@ -265,15 +265,20 @@ client-check: client-gen
 # blocking `docker compose build <service>` invocations, one at a time —
 # so below.
 #
-# Six loop entries, not all fourteen `--profile console` services: the
+# Seven loop entries, not all fifteen `--profile console` services: the
 # other eight (`provision-client`, `provision-user`, `seed-console-client`,
 # `seed-dispatch`, `seed-signing-key`, plus non-building services) either
 # share `sms-gateway`'s own explicit `image: vsms-dev/sms-gateway:local`
 # tag (building `sms-gateway` once already produces the image every one
 # of those needs — confirmed via `docker compose ... config --format
-# json`) or build nothing at all. This list can drift if a *new*, image-
-# distinct build target is ever added to `compose.dev.yaml` without a
-# matching entry here — re-derive it with the `config --format json`
+# json`) or build nothing at all. `demo-app` joined this list as its own,
+# image-distinct entry (a genuinely separate Dockerfile, `examples/node/
+# demo-app/Dockerfile` — Node, not Rust, so it never shares the cargo
+# cache-mount ids the race above is actually about, but the sequential
+# loop costs it nothing and keeps this list's own reasoning uniform
+# rather than special-casing one entry). This list can drift if a *new*,
+# image-distinct build target is ever added to `compose.dev.yaml` without
+# a matching entry here — re-derive it with the `config --format json`
 # query above if a build ever silently skips a service's own image.
 #
 # `down -v` first, every time — not just on request: `provision-client`
@@ -286,12 +291,27 @@ client-check: client-gen
 # named *volumes* only, not the BuildKit cache — a cache already warmed
 # by a previous `just demo` doesn't hit the race above (nothing new to
 # extract), so this mainly costs time on the very first run.
+#
+# `up -d --wait` does NOT block until `demo-app` (a one-shot evaluator,
+# `restart: 'no'`, no healthcheck) actually finishes — verified live, not
+# assumed: Compose's `--wait` only waits for a plain service to reach
+# "Started"/"Healthy", never for it to exit, healthcheck-less or not. The
+# `docker compose wait` subcommand is the one that genuinely blocks until
+# a container stops and hands back its real exit code — that's the whole
+# reason the two extra lines below exist rather than trusting `--wait`
+# alone. `; demo_exit=$?; ... ; exit $demo_exit`, not `&&`/separate recipe
+# lines: `just` aborts a recipe the moment any line exits non-zero, which
+# would skip the `logs demo-app` line entirely on the one run where
+# seeing those logs matters most — a failed demo.
 demo:
 	docker compose -f compose.dev.yaml --profile console down -v --remove-orphans
-	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-worker admin; do \
+	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-worker admin demo-app; do \
 		COMPOSE_BAKE=false docker compose -f compose.dev.yaml --profile console build "$svc"; \
 	done
 	docker compose -f compose.dev.yaml --profile console up -d --wait
+	docker compose -f compose.dev.yaml --profile console wait demo-app; demo_exit=$?; \
+	docker compose -f compose.dev.yaml --profile console logs demo-app; \
+	exit $demo_exit
 
 # Stop everything `just demo` started and remove its volumes (scratch
 # Postgres data, provisioned secrets) — by exact Compose project name
@@ -309,6 +329,24 @@ demo-status:
 # anywhere (see backends/apps/sms-gateway/src/main.rs's own `ProvisionUser` doc).
 demo-login:
 	docker compose -f compose.dev.yaml logs provision-user
+
+# Re-run `demo-app` (`examples/node/demo-app`) against an ALREADY-RUNNING
+# `just demo` stack, without tearing anything else down — the fast loop
+# for iterating on the evaluator itself (or re-proving the end-to-end
+# story after `sendMessage` traffic has already flowed once) rather than
+# a full `just demo`. `--no-deps`: everything `demo-app` depends on is
+# already up; re-resolving dependencies here would at best be a no-op and
+# at worst race `seed-demo-app`'s own one-shot `restart: 'no'` container
+# into trying to run again. `--force-recreate`: a bare `up -d` would
+# no-op on a service whose image/config hasn't changed, even though the
+# whole point of rerunning is a fresh attempt (a new message, a fresh
+# webhook exchange) — recreating is what actually restarts it.
+demo-app:
+	docker compose -f compose.dev.yaml --profile console build demo-app
+	docker compose -f compose.dev.yaml --profile console up -d --no-deps --force-recreate demo-app
+	docker compose -f compose.dev.yaml --profile console wait demo-app; demo_exit=$?; \
+	docker compose -f compose.dev.yaml --profile console logs demo-app; \
+	exit $demo_exit
 
 # #160: the joined integration story — brings up `just demo`'s stack,
 # provisions a SECOND client against the same App ("external integrator"),
