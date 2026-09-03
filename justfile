@@ -292,23 +292,64 @@ client-check: client-gen
 # by a previous `just demo` doesn't hit the race above (nothing new to
 # extract), so this mainly costs time on the very first run.
 #
-# `up -d --wait` does NOT block until `demo-app` (a one-shot evaluator,
-# `restart: 'no'`, no healthcheck) actually finishes — verified live, not
-# assumed: Compose's `--wait` only waits for a plain service to reach
-# "Started"/"Healthy", never for it to exit, healthcheck-less or not. The
-# `docker compose wait` subcommand is the one that genuinely blocks until
-# a container stops and hands back its real exit code — that's the whole
-# reason the two extra lines below exist rather than trusting `--wait`
-# alone. `; demo_exit=$?; ... ; exit $demo_exit`, not `&&`/separate recipe
-# lines: `just` aborts a recipe the moment any line exits non-zero, which
-# would skip the `logs demo-app` line entirely on the one run where
-# seeing those logs matters most — a failed demo.
+# `up -d` — deliberately WITHOUT `--wait`, and as a SINGLE invocation for
+# the whole `--profile console` set. Two real bugs were found live,
+# in this order, getting here:
+#
+# 1. Plain `up -d --wait` (no service names) makes `--wait` poll
+#    `demo-app` too, and `demo-app` is a one-shot evaluator
+#    (`restart: 'no'`, no healthcheck) that can genuinely finish — with
+#    exit 0, a real SUCCESS — before `--wait`'s own convergence check
+#    next runs. The instant it observes an Exited container in its wait
+#    set, Compose fails the whole `up -d --wait` invocation (exit 1),
+#    regardless of that container's own exit code. Reproduced on a real
+#    run: `demo-app` printed a genuine `SUCCESS: ... reached delivered
+#    with 2 verified webhook(s)`, and `just demo` still reported
+#    failure, because `up -d --wait`'s own line failed before the `wait
+#    demo-app`/`logs demo-app` lines below it ever ran.
+#
+# 2. The first fix for (1) split this into TWO separate `docker compose
+#    up` invocations — `up -d --wait <the four long-running services>`,
+#    then a second `up -d demo-app` to actually start it. That is worse,
+#    not better: two independent CLI processes against the same project,
+#    started moments apart, do not share one atomic view of "has this
+#    one-shot dependency already run" — reproduced live, not assumed:
+#    the second `up -d demo-app` call (demo-app depends on
+#    `secrets-fix-perms`, which depends on `provision-client`) caused
+#    Compose to recreate and RE-RUN `provision-client` a second time,
+#    even though the first `up` call had already run it to a clean
+#    success moments earlier. `provision-client` refuses to overwrite an
+#    existing private key (by design — see that command's own doc), so
+#    the second run's own log shows the bizarre-looking shape of a
+#    genuine success (a real `provisioned client:`/`private key written
+#    to:` — a SECOND, real `AppClient` row, a real side effect) followed
+#    immediately by `Error: ... already exists — refusing to overwrite`,
+#    and the whole recipe failed on a completely different line.
+#
+# The actual fix needs neither trick: `depends_on: condition:
+# service_healthy`/`service_completed_successfully` (already correct,
+# already how every other one-shot step in this file gets sequenced)
+# blocks a dependent container's own START regardless of `--wait` —
+# `--wait` only ever added "also block the CLI and report readiness",
+# which this recipe doesn't need from `up` itself, because the very next
+# line (`docker compose wait demo-app`) already blocks for real
+# completion and hands back demo-app's own real exit code. One plain
+# `up -d`, one Compose invocation, the same dependency graph deciding
+# everything exactly as it already did for migrate/seed-signing-key/
+# seed-dispatch/provision-client/etc. — no race between two CLI
+# processes, and no service whose "Exited" state `--wait` could
+# misread as a failure.
+#
+# `; demo_exit=$?; ... ; exit $demo_exit`, not `&&`/separate recipe
+# lines: `just` aborts a recipe the moment any line exits non-zero,
+# which would skip the `logs demo-app` line entirely on the one run
+# where seeing those logs matters most — a failed demo.
 demo:
 	docker compose -f compose.dev.yaml --profile console down -v --remove-orphans
 	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-worker admin demo-app; do \
 		COMPOSE_BAKE=false docker compose -f compose.dev.yaml --profile console build "$svc"; \
 	done
-	docker compose -f compose.dev.yaml --profile console up -d --wait
+	docker compose -f compose.dev.yaml --profile console up -d
 	docker compose -f compose.dev.yaml --profile console wait demo-app; demo_exit=$?; \
 	docker compose -f compose.dev.yaml --profile console logs demo-app; \
 	exit $demo_exit
