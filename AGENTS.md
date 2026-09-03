@@ -1183,7 +1183,8 @@ db.message().update(id).set(UpdateMessageInput { ..Default::default() })
 just check          # cargo check --workspace --all-targets
 just test           # unit + in-process only; the live suites stay #[ignore]d here
 just lint           # fmt --check, then clippy -D warnings
-just all-checks     # everything CI runs, in CI's order
+just all-checks     # fast host-toolchain subset — NOT the whole gate; see `just ci`
+just ci             # the ENTIRE CI gate, in one command — needs only docker/compose/just
 just routes         # print the generated route table; no database needed
 just jobs=8 check   # raise the concurrency cap on a big machine
 

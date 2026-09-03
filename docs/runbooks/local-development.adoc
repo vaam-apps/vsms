@@ -184,7 +184,8 @@ The same weighted distribution drives link:../../backends/crates/sms-worker/test
 just check        # cargo check, with the build-concurrency cap
 just test         # unit + in-process; the live suites stay ignored here
 just test-live    # every live-Postgres suite — manages its own container
-just all-checks   # everything CI runs, in CI's order
+just all-checks   # fast host-toolchain subset -- NOT the whole gate
+just ci           # the ENTIRE CI gate -- needs only docker/compose/just; see docs/runbooks/testing.adoc
 ----
 
 `test-live` starts (or reuses) one labelled Postgres container and gives each test binary its own database. *Do not run two `test-live` invocations concurrently on one machine* -- the container name is global and they will corrupt each other's runs. `just test-live-clean` removes it.
