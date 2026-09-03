@@ -41,7 +41,13 @@ examples/
 ├── pnpm-workspace.yaml     a separate pnpm workspace (packages: "node/*"),
 ├── package.json            never a member of the root pnpm workspace
 └── node/
-    └── sms-send-example/  node src/index.mjs
+    ├── sms-send-example/   node src/index.mjs
+    ├── webhook-receiver/   a reference inbound receiver (§4.4 signature
+    │                       verification), against a local fabricated emitter
+    └── demo-app/           the demo showcase's own evaluator — sends AND
+                             receives, against the real compose.dev.yaml/
+                             compose.demo.yaml stack, not a local fabrication.
+                             See that package's own README.
 ```
 
 `examples/rust` and `examples/pnpm-workspace.yaml`/`examples/package.json`
@@ -227,10 +233,22 @@ accepts the bare issuer — the live test suites in `backends/apps/sms-gateway/t
 use that form — but matching the canonical reference removes one axis of
 divergence to debug if the exchange ever starts failing.
 
+## demo-app: a third package, a different job
+
+`examples/node/demo-app` is not a third variant of "send one message and
+print the result" — it sends AND receives, against the real
+`compose.dev.yaml`/`compose.demo.yaml` stack `just demo` brings up, and its
+exit code is the actual pass/fail signal those compose files' own `demo-app`
+service reports. See that package's own README for what it proves and how
+to run it standalone; its typecheck and its copy of the cross-language
+signature-vector test (shared with `webhook-receiver`, see
+`verbatim-copy.test.ts`) run in `js` CI — unlike the two examples below,
+which have no CI gate at all (next section).
+
 ## CI coverage — read this before assuming these are checked automatically
 
-**Neither example is exercised by CI today**, and this is a deliberate,
-stated gap rather than an oversight to discover later:
+**Neither `sms-send-example` (Rust or Node) is exercised by CI today**, and
+this is a deliberate, stated gap rather than an oversight to discover later:
 
 - The root `cargo check --workspace` / `cargo clippy --workspace
   --all-targets` / `cargo test --workspace` (`.github/workflows/ci.yml`'s
