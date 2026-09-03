@@ -365,8 +365,10 @@ services:
   # *fingerprint* of SMS_HASH_PEPPER — never the pepper itself), pushed to
   # an operator-supplied rclone remote. See
   # docs/runbooks/backup-restore.adoc for the pg_dump-vs-WAL decision, the
-  # scripted restore drill (deploy/restore-drill.sh), and why the pepper
-  # is part of the recoverable state, not just the database.
+  # scripted restore drill (`vsms-backup restore-drill`, deploy/backup-tool
+  # — deploy/restore-drill.sh no longer exists, per the
+  # containerize-tooling rewrite), and why the pepper is part of the
+  # recoverable state, not just the database.
   #
   # BACKUP_RCLONE_REMOTE has no default on purpose — a bare
   # ${VAR:?...} means this service refuses to start rather than silently
