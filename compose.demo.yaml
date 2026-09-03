@@ -263,14 +263,18 @@ services:
   # file's own header used to name for `provision-client`'s
   # `--app-slug`/`--client-id-out` (fixed as of `v0.2.1` — see the
   # header) but not yet fixed here:** `--webhook-url`/
-  # `--webhook-secret-out` don't exist in `v0.2.1` either — they land in
-  # whatever tag first publishes this PR's own `vsms-demo-seed` changes.
-  # Until then `VSMS_DEMO_IMAGE_TAG` must be overridden to a tag that has
-  # them — unlike every other `VSMS_DEMO_IMAGE_TAG`/
-  # `VSMS_FAKE_ORANGE_IMAGE_TAG` reference in this file, this one has no
-  # working default to fall back to yet, so it stays `:?`-required.
+  # `--webhook-secret-out` don't exist in `v0.2.1` — they land in the
+  # first tag that publishes this `vsms-demo-seed` change. The default
+  # below is still `v0.2.1`, deliberately: Compose interpolates every
+  # service's `image:` regardless of which profiles are active, so a
+  # `:?`-required value here would break the bare, backend-only
+  # `docker compose -f compose.demo.yaml up -d` — the one command the
+  # showcase promises — for a service that command never starts. The
+  # cost is that `--profile demo` at the default tag fails loudly at
+  # this one-shot (`unexpected argument '--webhook-url'`) rather than at
+  # interpolation time, until the next release moves the default.
   seed-demo-webhook:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:?see this file's own header comment on VSMS_DEMO_IMAGE_TAG}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     profiles: [demo]
     command:

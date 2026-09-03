@@ -243,10 +243,14 @@ why the default may need to move to `vaam-store` alongside a future
 different requirements, though: `seed-demo-app` genuinely works at the
 `v0.2.1` default above, but `seed-demo-webhook` (`--profile demo` --
 covers the `WebhookEndpoint` half of the same image, `--webhook-url`/
-`--webhook-secret-out`) does not -- those flags don't exist in `v0.2.1`
-either, so that one stays `:?`-required with no working default, and
-`--profile demo` needs `VSMS_DEMO_IMAGE_TAG` overridden explicitly to a
-tag that has them. `demo-app` is a THIRD non-production image, and
+`--webhook-secret-out`) does not -- those flags don't exist in `v0.2.1`.
+It keeps the same `v0.2.1` default anyway, because Compose interpolates
+every service's `image:` whether or not its profile is active, and a
+required-with-no-default value there would break the bare backend-only
+`up -d` for a service that command never starts. So at the default tag
+`--profile demo` fails loudly at that one-shot (`unexpected argument
+'--webhook-url'`); override `VSMS_DEMO_IMAGE_TAG` to a tag that has the
+flags until the next release moves the default. `demo-app` is a THIRD non-production image, and
 doesn't fit either pattern yet: no
 `ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo-app` has ever been
 published (the `.github/workflows/release.yml` matrix entry that will
