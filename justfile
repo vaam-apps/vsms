@@ -5,8 +5,17 @@
 # recipes below cap concurrency rather than leaving each developer to discover
 # that the hard way. See the `[profile.dev]` note in Cargo.toml.
 
-# Cap build concurrency. Raise on a machine with headroom: `just jobs=8 check`.
-jobs := "4"
+# Cap build concurrency. Raise on a machine with headroom: `just jobs=8 check`,
+# or export CARGO_BUILD_JOBS before invoking `just` (e.g. `CARGO_BUILD_JOBS=8
+# just ci` — compose.test.yaml's own `runner` service reads that same env var
+# through to the container, so this is also how `just ci`'s own concurrency
+# gets raised). Read from the environment, not a bare literal, on purpose:
+# `jobs := "4"` would have made every `_cargo`-prefixed command below emit a
+# literal `CARGO_BUILD_JOBS=4` on argv, which — because an explicit
+# command-line assignment wins over an already-exported environment variable
+# of the same name — silently discarded any `CARGO_BUILD_JOBS` the caller had
+# already set, the exact bug this comment exists to not reintroduce.
+jobs := env_var_or_default("CARGO_BUILD_JOBS", "4")
 
 _cargo := "CARGO_BUILD_JOBS=" + jobs + " cargo"
 
@@ -102,7 +111,17 @@ deny:
 	cargo deny --manifest-path examples/rust/sms-send/Cargo.toml check
 	cargo deny --manifest-path deploy/backup-tool/Cargo.toml check
 
-# Everything CI runs, in CI's order
+# The fast, host-toolchain subset — NOT the entire CI gate. It never runs
+# `cargo deny`, the live-Postgres suites, or anything on the TypeScript
+# side (all three need either Docker or a pnpm install this recipe assumes
+# nothing about). `just ci` is the one command that runs everything CI
+# runs; this is for iterating on one piece without paying for that.
+# `sdk-schema-check`/`bootstrap-sql-check` need no external tool at all
+# (plain text comparisons); `migrations-current` needs the `cratestack`
+# CLI on PATH, version-locked to the pin — if it's missing or mismatched,
+# the check fails with a readable message naming the mismatch, not a raw
+# "command not found", so it's included here rather than left to `ci`.
+# Run the fast, host-toolchain subset of checks — NOT the whole CI gate.
 all-checks: lint test
 	{{_cargo}} xtask no-raw-sqlx
 	{{_cargo}} xtask parity
@@ -110,6 +129,9 @@ all-checks: lint test
 	{{_cargo}} xtask docs-drift
 	{{_cargo}} xtask r6
 	{{_cargo}} xtask node-sdk-types-check
+	{{_cargo}} xtask sdk-schema-check
+	{{_cargo}} xtask bootstrap-sql-check
+	{{_cargo}} xtask migrations-current
 
 # #252: the hand-written Node SDK's enum unions must agree with schema.cstack
 node-sdk-types-check:
@@ -533,14 +555,44 @@ ci-build:
 # reuse the named volumes (cargo registry, pnpm store, target dir) and are
 # much faster. `--build` keeps the image current with ci/runner/Dockerfile
 # without needing a separate `ci-build` step first.
+# Run the entire CI gate (all 21 steps) inside the container.
 ci:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	if [ -f .git ]; then
+		echo "error: .git is a file, not a directory — this looks like a linked git" >&2
+		echo "worktree (\`git worktree add\`). \`just ci\` bind-mounts only this directory" >&2
+		echo "into the container; a linked worktree's .git redirect points at an" >&2
+		echo "absolute host path OUTSIDE it, which the container can't see — cargo" >&2
+		echo "xtask docs-drift's \`git ls-files\` and Turborepo's own root detection" >&2
+		echo "both break on it. See docs/runbooks/testing.adoc's Troubleshooting" >&2
+		echo "section for the fix (a plain \`git clone\`, or two extra bind mounts)." >&2
+		exit 2
+	fi
 	docker compose -f compose.test.yaml run --build --rm runner just ci-inner
 
 # The fast-iteration subset: everything in `ci` except the live-Postgres
-# suites (the slowest single step by a wide margin) and the JS
-# typecheck+build. Good for "did I break something obvious" before paying
-# for the full gate.
+# suites (steps 13, the slowest single step by a wide margin) and the JS
+# typecheck+build+test (steps 17-18, skipped together — turbo.json's own
+# "test" task depends on "build", so skipping only the build step saves
+# nothing; `pnpm turbo run test` would just trigger the identical build as
+# one of its own dependency tasks). Good for "did I break something
+# obvious" before paying for the full gate.
+# Run everything in `ci` except the live-Postgres suites and JS build/test.
 ci-quick:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	if [ -f .git ]; then
+		echo "error: .git is a file, not a directory — this looks like a linked git" >&2
+		echo "worktree (\`git worktree add\`). \`just ci\`/\`ci-quick\` bind-mount only this" >&2
+		echo "directory into the container; a linked worktree's .git redirect points" >&2
+		echo "at an absolute host path OUTSIDE it, which the container can't see —" >&2
+		echo "cargo xtask docs-drift's \`git ls-files\` and Turborepo's own root" >&2
+		echo "detection both break on it. See docs/runbooks/testing.adoc's" >&2
+		echo "Troubleshooting section for the fix (a plain \`git clone\`, or two" >&2
+		echo "extra bind mounts)." >&2
+		exit 2
+	fi
 	docker compose -f compose.test.yaml run --build --rm -e VSMS_CI_QUICK=1 runner just ci-inner
 
 # Drop into an interactive shell in the runner container — same image,
@@ -548,6 +600,7 @@ ci-quick:
 # postgres:5432 — for running one suite by hand:
 #   just ci-shell
 #   cargo test -p sms-worker --no-fail-fast -- --ignored
+# Open an interactive shell in the runner container.
 ci-shell:
 	docker compose -f compose.test.yaml run --build --rm runner bash
 
@@ -556,13 +609,17 @@ ci-shell:
 # scoped to this file's own Compose project (`vsms-ci`) only, never
 # touching `compose.yml`'s `vsms` project, `compose.dev.yaml`'s `vsms-dev`,
 # or `sms-test-support`'s own `vsms-test-harness`.
+# Remove the CI stack's containers, network and named volumes.
 ci-clean:
 	docker compose -f compose.test.yaml down --volumes --remove-orphans
 
 # The actual gate script, run INSIDE the container by `ci`/`ci-quick` above
 # — never call this directly on a bare host, it assumes the runner image's
 # toolchain and `VSMS_TEST_DATABASE_URL`. Set VSMS_CI_QUICK=1 (as `ci-quick`
-# does) to skip the live-Postgres suites and the JS typecheck+build step.
+# does) to skip the live-Postgres suites (step 13) and the JS
+# typecheck+build+test steps (17-18, together — see `ci-quick`'s own
+# comment for why splitting them saves nothing).
+# The 21-step gate script itself — run inside the container, not directly.
 ci-inner:
 	#!/usr/bin/env bash
 	set -euo pipefail
@@ -589,12 +646,18 @@ ci-inner:
 	cargo metadata --locked --format-version 1 > /dev/null
 
 	step 5 21 "Rust SDK (vsms-sdk-rust) — check, clippy, test, aws-lc-rs absence, publish dry-run"
+	# --allow-dirty: this recipe runs against whatever the caller's actual
+	# working tree looks like, which — being a local run, not a CI
+	# checkout — is routinely mid-PR-review or otherwise not committed.
+	# ci.yml's own `rust` job keeps the strict form (no --allow-dirty),
+	# since it always runs on a clean checkout and a dirty tree there
+	# would mean something genuinely wrong with the checkout step itself.
 	( cd sdks/rust/vsms-sdk-rust \
 	  && cargo check --locked --all-targets \
 	  && cargo clippy --all-targets -- -D warnings \
 	  && cargo test \
 	  && ( cargo tree -i aws-lc-rs && exit 1 || true ) \
-	  && cargo publish --dry-run )
+	  && cargo publish --dry-run --allow-dirty )
 
 	step 6 21 "Examples (Rust) — check, clippy"
 	( cd examples/rust && cargo check --all-targets && cargo clippy --all-targets -- -D warnings )
@@ -617,9 +680,28 @@ ci-inner:
 	step 10 21 "0002_bootstrap matches the design doc"
 	{{_cargo}} xtask bootstrap-sql-check
 
-	step 11 21 "Apply migrations, then the state-machine SQL assertions"
-	cargo run -p sms-migrate
-	psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f ci/test-state-machine.sql
+	step 11 21 "Apply migrations to a fresh scratch database, then the state-machine SQL assertions"
+	# A fresh, per-run scratch database, not the persistent `vsms_ci_pgdata`
+	# volume's own `vsms` database — found in review, and real: that volume
+	# survives across `just ci` runs (it's the whole point of caching it),
+	# so from the second run on, applying migrations against the SAME
+	# already-migrated database makes `sms-migrate` log "already applied —
+	# skipping" for all three and do nothing at all. A regenerated
+	# 0001_init with a genuine psql-time error (a column type CI's own
+	# `migrations` job — a real fresh-container `postgres:16` service, every
+	# single run — would catch) would then pass `just ci` silently. `$$`
+	# (this script's own PID) keeps the name unique across a `ci-quick`/`ci`
+	# rerun that overlaps a slow teardown; the `trap` guarantees the scratch
+	# database is dropped even if `sms-migrate` or the SQL assertions fail
+	# partway through, not just on the happy path.
+	scratch_db="vsms_ci_migrate_$$"
+	cleanup_scratch_db() { dropdb -h postgres -U vsms --if-exists "$scratch_db" >/dev/null 2>&1 || true; }
+	trap cleanup_scratch_db EXIT
+	createdb -h postgres -U vsms "$scratch_db"
+	DATABASE_URL="postgres://vsms:vsms@postgres:5432/${scratch_db}" cargo run -p sms-migrate
+	psql "postgres://vsms:vsms@postgres:5432/${scratch_db}" -v ON_ERROR_STOP=1 -q -f ci/test-state-machine.sql
+	cleanup_scratch_db
+	trap - EXIT
 
 	step 12 21 "Sample Node receiver's dependencies (for the live gate suite)"
 	( cd examples/node/webhook-receiver && pnpm install --ignore-workspace --frozen-lockfile )
@@ -640,15 +722,21 @@ ci-inner:
 	step 16 21 "Generate the client and check its routes against the server"
 	just client-check
 
+	# Steps 17 and 18 are skipped together under VSMS_CI_QUICK, not
+	# independently — found in review: turbo.json's own "test" task
+	# `dependsOn: ["build"]`, so skipping only step 17 saves nothing at
+	# all. `pnpm turbo run test` would simply trigger the identical build
+	# as one of its own dependency tasks, just folded silently into step
+	# 18's own timing instead of appearing as step 17's.
 	if [ -n "$quick" ]; then
-		echo; echo "VSMS_CI_QUICK set — skipping JS typecheck+build (step 17)."
+		echo; echo "VSMS_CI_QUICK set — skipping JS typecheck+build and tests (steps 17-18)."
 	else
 		step 17 21 "Typecheck and build (pnpm turbo)"
 		pnpm turbo run typecheck build
-	fi
 
-	step 18 21 "Tests (pnpm turbo)"
-	pnpm turbo run test
+		step 18 21 "Tests (pnpm turbo)"
+		pnpm turbo run test
+	fi
 
 	step 19 21 "Sample Node receiver — cross-language signature vectors"
 	( cd examples/node/webhook-receiver && node --test )
