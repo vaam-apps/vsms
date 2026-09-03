@@ -69,12 +69,15 @@ fn parse_schedule(cron_expression: &str) -> Result<Schedule> {
     })
 }
 
-/// Bumps [`ScheduleConfig::health_file`]'s mtime (creating it if absent)
-/// — the one signal [`check_health`] has that a backup actually
-/// succeeded, since a stale rclone remote's own listing is a network call
-/// this local, frequent exec-form healthcheck should not have to make.
-/// Failure to write it is logged, not propagated: a healthcheck write
-/// failure must never fail an otherwise-successful backup.
+/// Bumps `path`'s mtime (creating it if absent) — used for both
+/// [`ScheduleConfig::health_file`] (the one signal [`check_health`] has
+/// that a backup actually succeeded, since a stale rclone remote's own
+/// listing is a network call this local, frequent exec-form healthcheck
+/// should not have to make) and, since review round 1 item 15, the
+/// start-marker file [`start_marker_path`] derives next to it. Failure
+/// to write either is logged, not propagated: a healthcheck-plumbing
+/// write failure must never fail an otherwise-successful backup, or stop
+/// `schedule` from starting at all.
 fn touch_health_file(path: &Path) {
     if let Err(error) = std::fs::write(path, Utc::now().to_rfc3339()) {
         eprintln!(
@@ -85,9 +88,31 @@ fn touch_health_file(path: &Path) {
     }
 }
 
+/// Where `run` records the moment this process actually started, next
+/// to `health_file` — review round 1, item 15: without this, a
+/// `BACKUP_RUN_ON_START=false` container (or one still running a
+/// genuinely slow first backup) has no health file at all yet, and
+/// [`check_health`] would report unhealthy for up to a full schedule
+/// period after every single restart, indistinguishable from a
+/// deployment where backups have silently stopped working. The start
+/// marker gives [`check_health`] a second, independent "this is
+/// expected, not broken" signal for exactly that window.
+fn start_marker_path(health_file: &Path) -> std::path::PathBuf {
+    let mut path = health_file.as_os_str().to_owned();
+    path.push(".started");
+    std::path::PathBuf::from(path)
+}
+
 pub fn run(config: ScheduleConfig) -> Result<()> {
     let schedule = parse_schedule(&config.cron_expression)?;
     println!("vsms-backup: schedule = {}", config.cron_expression);
+
+    // Review round 1, item 15: written unconditionally, before anything
+    // else — including before `BACKUP_RUN_ON_START`'s own branch below,
+    // which may not touch `health_file` at all for a long time (or ever,
+    // if every scheduled backup keeps failing). See
+    // `start_marker_path`'s own doc for why this exists.
+    touch_health_file(&start_marker_path(&config.health_file));
 
     let shutdown = Arc::new(AtomicBool::new(false));
     // SIGTERM (`docker stop`'s own signal) and SIGINT (Ctrl-C, for a
@@ -182,38 +207,84 @@ fn approximate_period(schedule: &Schedule) -> Duration {
 /// `Err` arm above), but two in a row past the schedule's own cadence is
 /// a real, actionable signal.
 ///
-/// A missing health file (no backup has ever succeeded — a fresh
-/// container mid-way through its first run, or one that has never once
-/// succeeded) is reported as unhealthy too; the Dockerfile's own
-/// `--start-period` is what keeps that from flapping a genuinely healthy,
-/// still-warming-up container.
+/// A missing health file falls back to [`start_marker_path`] (review
+/// round 1, item 15) rather than reporting unhealthy outright: found
+/// live, `BACKUP_RUN_ON_START=false` (or a container still running a
+/// genuinely slow first backup) left no health file at all for up to a
+/// full schedule period after every restart, indistinguishable from a
+/// deployment whose backups have actually stopped working — the exact
+/// false-positive the Dockerfile's own `--start-period` cannot fully
+/// paper over on its own, since `--start-period` only covers the first
+/// container start, not every subsequent restart of a long-lived
+/// service. The start marker is written unconditionally the instant
+/// `run` starts, so it gives this check the same 2x-period grace window
+/// a successful backup gets, without waiting for one to actually land.
+/// Only if *neither* file exists (this container isn't running
+/// `schedule` at all, or something deleted both) does this report
+/// unhealthy immediately.
 pub fn check_health(health_file: &Path, cron_expression: &str) -> Result<()> {
     let schedule = parse_schedule(cron_expression)?;
     let period = approximate_period(&schedule);
     let max_age = period * 2;
 
-    let metadata = std::fs::metadata(health_file).with_context(|| {
+    match std::fs::metadata(health_file) {
+        Ok(metadata) => {
+            let modified = metadata
+                .modified()
+                .context("reading the health file's own mtime")?;
+            let age = SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or(Duration::ZERO);
+            if age > max_age {
+                anyhow::bail!(
+                    "last successful backup is {age:?} old — older than 2x the schedule's own \
+                     ~{period:?} period ({max_age:?}, from \
+                     BACKUP_CRON_SCHEDULE={cron_expression:?})"
+                );
+            }
+            println!("vsms-backup: healthy — last successful backup {age:?} ago (max {max_age:?})");
+            Ok(())
+        }
+        Err(_) => check_health_via_start_marker(health_file, cron_expression, max_age, period),
+    }
+}
+
+/// The no-successful-backup-yet half of [`check_health`] — split out
+/// purely to keep that function under `clippy::too_many_lines`.
+fn check_health_via_start_marker(
+    health_file: &Path,
+    cron_expression: &str,
+    max_age: Duration,
+    period: Duration,
+) -> Result<()> {
+    let marker = start_marker_path(health_file);
+    let marker_metadata = std::fs::metadata(&marker).with_context(|| {
         format!(
-            "no successful backup recorded yet at {} (a fresh container still running its \
-             first backup is expected to fail this check until it lands — see the Dockerfile's \
-             own --start-period)",
-            health_file.display()
+            "no successful backup recorded yet at {} and no start marker at {} either — this \
+             container may not be running `vsms-backup schedule` at all",
+            health_file.display(),
+            marker.display()
         )
     })?;
-    let modified = metadata
+    let started = marker_metadata
         .modified()
-        .context("reading the health file's own mtime")?;
+        .context("reading the start marker's own mtime")?;
     let age = SystemTime::now()
-        .duration_since(modified)
+        .duration_since(started)
         .unwrap_or(Duration::ZERO);
 
     if age > max_age {
         anyhow::bail!(
-            "last successful backup is {age:?} old — older than 2x the schedule's own ~{period:?} \
-             period ({max_age:?}, from BACKUP_CRON_SCHEDULE={cron_expression:?})"
+            "no successful backup recorded at {} within 2x the schedule's own ~{period:?} \
+             period ({max_age:?}) since this process started {age:?} ago (from \
+             BACKUP_CRON_SCHEDULE={cron_expression:?})",
+            health_file.display()
         );
     }
-    println!("vsms-backup: healthy — last successful backup {age:?} ago (max {max_age:?})");
+    println!(
+        "vsms-backup: healthy — no backup has succeeded yet, but this process only started \
+         {age:?} ago (within the {max_age:?} grace period)"
+    );
     Ok(())
 }
 
@@ -229,12 +300,51 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_health_file_is_unhealthy() {
+    fn a_missing_health_file_and_no_start_marker_is_unhealthy() {
         let dir = tempfile::tempdir().expect("a scratch dir");
         let missing = dir.path().join("never-written");
-        let error = check_health(&missing, "0 3 * * *").expect_err("no file was ever written");
+        let error = check_health(&missing, "0 3 * * *").expect_err("neither file was ever written");
         assert!(
-            format!("{error:#}").contains("no successful backup recorded yet"),
+            format!("{error:#}").contains("no start marker at"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    /// Review round 1, item 15: a container that hasn't produced a
+    /// successful backup yet (`BACKUP_RUN_ON_START=false`, or still
+    /// running a genuinely slow first backup) must not be reported
+    /// unhealthy just because `health_file` doesn't exist yet, as long as
+    /// `run` started recently enough — the start marker is what proves
+    /// "recently enough" here instead of just asserting it.
+    #[test]
+    fn a_missing_health_file_with_a_fresh_start_marker_is_healthy() {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let health_file = dir.path().join("never-written");
+        touch_health_file(&start_marker_path(&health_file));
+        check_health(&health_file, "0 3 * * *")
+            .expect("a process that only just started must not be reported unhealthy yet");
+    }
+
+    /// The other half of item 15: once the start-marker's own grace
+    /// window has elapsed with still no successful backup, this must
+    /// become a real, actionable failure again, not stay silently
+    /// healthy forever just because the process once started.
+    #[test]
+    fn a_missing_health_file_with_a_stale_start_marker_is_unhealthy() {
+        let dir = tempfile::tempdir().expect("a scratch dir");
+        let health_file = dir.path().join("never-written");
+        let marker = start_marker_path(&health_file);
+        touch_health_file(&marker);
+        // Same two-days-and-one-second-past-the-2x-daily-max-age
+        // backdating `a_stale_health_file_is_unhealthy` below uses.
+        let stale = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60 + 1);
+        let file = std::fs::File::open(&marker).expect("reopening the fixture");
+        file.set_modified(stale).expect("backdating the mtime");
+        drop(file);
+        let error = check_health(&health_file, "0 3 * * *")
+            .expect_err("the start marker's own grace period has long since elapsed");
+        assert!(
+            format!("{error:#}").contains("no successful backup recorded at"),
             "unexpected error: {error:#}"
         );
     }

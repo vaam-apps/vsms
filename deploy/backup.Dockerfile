@@ -70,9 +70,13 @@ COPY --from=builder /tmp/vsms-backup /usr/local/bin/vsms-backup
 # the full mechanism) fails once the last *successful* backup is older
 # than 2x the schedule's own period, not merely once the process has
 # crashed. `--start-period` is generous: a fresh container's first backup
-# can genuinely take a while against a large database, and this check
-# reports unhealthy until that first backup lands, by design — see
-# `check_health`'s own doc for why that's correct, not a bug.
+# can genuinely take a while against a large database. Review round 1,
+# item 15: a start-marker file (written unconditionally the instant
+# `schedule` starts, before the first backup even begins) gives this
+# check the same 2x-period grace *every* restart, not just the first —
+# without it, `BACKUP_RUN_ON_START=false` (or a still-running first
+# backup) reported unhealthy on every single restart, indistinguishable
+# from backups having actually stopped working.
 HEALTHCHECK --interval=15m --timeout=10s --start-period=15m --retries=2 \
   CMD ["/usr/local/bin/vsms-backup", "healthcheck"]
 
