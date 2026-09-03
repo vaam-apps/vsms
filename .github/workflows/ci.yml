@@ -431,6 +431,23 @@ jobs:
         run: pnpm install --ignore-workspace --frozen-lockfile && node --test
         working-directory: examples/node/webhook-receiver
 
+      # `examples/node/demo-app` — the demo showcase's own evaluator (the
+      # `demo-app` compose service) — carries a byte-for-byte copy of
+      # `signature.ts`/`cross-language-vectors.test.ts` from the
+      # webhook-receiver step just above, per that package's own README.
+      # Gate it exactly the same way, plus a typecheck (this package has
+      # no live-gateway run in CI — see `just demo`/`just e2e-integration`
+      # for that — so a compile error is the one class of regression this
+      # step can catch on its own): `verbatim-copy.test.ts` (part of `node
+      # --test` below) is what actually proves the copy hasn't drifted
+      # from the file the step above just tested.
+      - name: Demo app — typecheck and cross-language signature vectors
+        run: |
+          pnpm install --ignore-workspace --frozen-lockfile
+          pnpm run typecheck
+          node --test
+        working-directory: examples/node/demo-app
+
       # NOT `--ignore-workspace`, unlike the webhook-receiver step above.
       # That example is deliberately outside `pnpm-workspace.yaml` so an
       # integrator can copy it out and run it standalone; this SDK is a real
