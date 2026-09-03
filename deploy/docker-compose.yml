@@ -145,19 +145,16 @@ services:
       # zones.
       SMS_TOKEN_RATE_LIMIT_BURST: ${SMS_TOKEN_RATE_LIMIT_BURST:-10}
       SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND:-0.3333333333333333}
+      # Production-readiness audit (B3): `serve --console-client-id`
+      # (`main.rs`) and `bootstrap --console-client-id` both read this —
+      # missing here entirely before this fix, even though `admin`'s own
+      # environment block already had it. A deployment that overrode
+      # `SMS_CONSOLE_OIDC_CLIENT_ID` away from its shared default would
+      # have silently broken every human login: `GatewayAuth`'s audience
+      # check compares the token's `aud` against *this* value, which
+      # would have stayed the old default forever.
+      SMS_CONSOLE_OIDC_CLIENT_ID: ${SMS_CONSOLE_OIDC_CLIENT_ID:-sms-console}
       RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,cratestack=info}
-    # Production-readiness audit (B1): mounted so `docker compose run --rm
-    # sms-gateway provision-client --key-out /secrets/console-private-key.pem
-    # ...` (deployment.adoc step 5) writes into a path that survives past
-    # that one-shot container's own lifetime, rather than a container-local
-    # path `--rm` discards — the exact bug this mount closes. The
-    # long-running `serve` process never reads this directory itself; it's
-    # mounted here (rather than on a separate one-shot service definition)
-    # only so `docker compose run --rm sms-gateway ...` can reuse this
-    # service's own image/environment without a second, near-duplicate
-    # service block to keep in sync.
-    volumes:
-      - ./secrets:/secrets
     depends_on:
       postgres:
         condition: service_healthy
@@ -259,6 +256,125 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  # Production-readiness audit B2 (review round 1, blocker 2): a
+  # dedicated one-shot service that mints the admin console's own
+  # `private_key_jwt` machine credential (distinct from `sms-console`,
+  # the public human-login OIDC client `seed-console-client`/`bootstrap`
+  # register — this is the credential `frontends/packages/gateway`'s own
+  # server-side calls to `sms-gateway` authenticate with), rather than a
+  # runbook incantation an operator has to get exactly right by hand.
+  # Mirrors `compose.demo.yaml`'s own proven `provision-client`/
+  # `secrets-fix-perms` mechanism (see that file's own comments), adapted
+  # from its Docker-managed named volume to this file's host bind mount.
+  #
+  # `deploy/secrets` itself must be `chmod 711`, not `700`
+  # (`docs/runbooks/deployment.adoc` step 1) — verified live: a directory
+  # with no execute ("search") bit for "other" blocks *any* other uid
+  # from even traversing into it, regardless of what mode the file
+  # inside has. `711` allows traversal (so a uid that owns a specific
+  # file inside can still open it) without allowing directory listing —
+  # `ls` inside it still fails for every uid but the operator's own host
+  # user.
+  #
+  # `user: '0:0'` overrides the image's own distroless-nonroot uid
+  # (65532): root bypasses host-side Unix permission checks on a bind
+  # mount entirely (confirmed live — a `chmod 700`-owned-by-a-different-
+  # uid host directory is still writable by a root container), so this
+  # can write into the operator's own `deploy/secrets/` regardless of
+  # who owns it or what its own mode is, without needing a
+  # `compose.demo.yaml`-style `secrets-init` step first (that file needs
+  # one because a fresh *named volume* is Docker-managed and root-owned
+  # at 0755 on first use; a host bind mount has no such Docker-side
+  # initialization step to work around).
+  #
+  # `SMS_CONSOLE_APP_ID` defaults to empty, not `:?` — a real deployment's
+  # first `App` (`sms-gateway create-app`, step 5 below) is a business
+  # decision this compose file can't make for an operator, but a `:?`
+  # here would fail *every* `docker compose up`, this service's own
+  # `profiles: [console]` gate notwithstanding, the identical reason
+  # every other console-only var in this file already uses `:-` (see
+  # `admin`'s own comment below) — Compose interpolates every service's
+  # fields up front, regardless of the active profile set. The fail-loud
+  # property survives at the point that actually matters instead:
+  # `provision_client_command`'s own `--app-id`/`--app-slug`
+  # empty-string check refuses to start with a named error the moment
+  # this container actually runs.
+  provision-console-client:
+    build:
+      context: ..
+      dockerfile: backends/apps/sms-gateway/Dockerfile
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
+    profiles: [console]
+    user: '0:0'
+    command:
+      - provision-client
+      - --app-id
+      - ${SMS_CONSOLE_APP_ID:-}
+      - --label
+      - admin console
+      - --scope
+      - sms:send
+      - --scope
+      - sms:read
+      - --scope
+      - job:read
+      - --scope
+      - job:enqueue
+      - --scope
+      - worker:read
+      - --scope
+      - provider:read
+      - --scope
+      - route:read
+      - --scope
+      - dashboard:read
+      - --key-out
+      - /secrets/console-private-key.pem
+      - --client-id-out
+      - /secrets/console-client-id
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
+      SMS_HASH_PEPPER: ${SMS_HASH_PEPPER:?generate one via `openssl rand -base64 48`}
+    volumes:
+      - ./secrets:/secrets
+    depends_on:
+      sms-gateway:
+        condition: service_healthy
+    restart: 'no'
+
+  # The other half of the handoff: lock the private key down to exactly
+  # the uid that needs it (admin's own runtime uid, 10001 —
+  # `frontends/apps/admin/Dockerfile`'s `useradd --uid 10001`) at mode
+  # `0400` — never `0644`, world-readable is not an acceptable mode for a
+  # private key. This has to be a real `chown`/`chmod`, not a compose-file
+  # declaration: `configs:`' own `mode`/`uid`/`gid` fields are silently
+  # ignored by the Compose CLI outside swarm mode (confirmed live — a
+  # `chmod 600`-owned-by-a-different-uid source file stays exactly that
+  # inside the container regardless of what's set there), so `admin`'s
+  # own `configs:` reference below only ever sees whatever this step
+  # already left on the host file. `console-client-id` stays root-owned
+  # and world-readable — it's the client's public half (every `/token`
+  # request already sends it in the clear as the assertion's own `sub`),
+  # and the *operator* is the one who reads it (`cat
+  # secrets/console-client-id`), not `admin` itself, to copy into
+  # `SMS_CONSOLE_CLIENT_ID` in `.env`.
+  secrets-fix-perms:
+    image: busybox:1.36
+    profiles: [console]
+    command:
+      - sh
+      - -c
+      - >-
+        chown 10001:10001 /secrets/console-private-key.pem &&
+        chmod 0400 /secrets/console-private-key.pem &&
+        chmod 0644 /secrets/console-client-id
+    volumes:
+      - ./secrets:/secrets
+    depends_on:
+      provision-console-client:
+        condition: service_completed_successfully
+    restart: 'no'
+
   # R4 (CONTRIBUTING.md): the admin console is optional, and a bare
   # `docker compose up` must bring up a working gateway + worker + migrate
   # with it switched off — not started-then-idle, not present-but-
@@ -343,12 +459,16 @@ services:
     # Compose (non-swarm) maps this straight onto a bind mount, byte- and
     # permission-identical to the source file — `mode`/`uid`/`gid` below
     # are accepted by the Compose *file* schema but silently ignored by
-    # the Compose *CLI* outside swarm mode (confirmed live: a
-    # `chmod 600`-owned-by-a-different-uid source file is unreadable
-    # inside the container regardless of what's set here), so
-    # `docs/runbooks/deployment.adoc` step 5 still ends with an explicit
-    # `chmod 0644` on the host file — this mount only closes the
-    # missing-file gap, not the cross-uid-readability one.
+    # the Compose *CLI* outside swarm mode (confirmed live: a source
+    # file's real host owner/mode passes through unchanged regardless of
+    # what's set here), which is why `secrets-fix-perms` above does a
+    # real `chown 10001:10001`/`chmod 0400` on the host file itself
+    # (review round 1, blocker 2 — an earlier revision of this comment
+    # said `chmod 0644` was the plan; that was rejected on review as
+    # world-readable being the wrong mode for a private key, and
+    # `chown`-to-the-real-uid plus `0400` replaced it, since `0644`
+    # would have made the key readable by literally anything on the
+    # host, not just the one process that needs it).
     configs:
       - source: console_private_key
         target: /secrets/console-private-key.pem
