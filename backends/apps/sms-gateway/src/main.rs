@@ -20,7 +20,7 @@ use sms_api::schema::{
     CreateRouteInput, CreateUserCredentialInput, CreateUserInput, ProviderKind, ProviderState,
     ProvisionClientInput, UpdateProviderInput, UpdateRouteInput, app as app_filter,
     oauth_signing_key as oauth_signing_key_filter, provider as provider_filter,
-    route as route_filter,
+    route as route_filter, user as user_filter, user_credential as user_credential_filter,
 };
 use sms_api::{GatewayAuth, Principal, PrincipalKind, Procedures};
 use sms_provider::SmsProvider;
@@ -543,6 +543,19 @@ enum Command {
     /// this only closes the gap that stops `sms-gateway`/`admin` from
     /// ever starting at all.
     ///
+    /// R4 (`CONTRIBUTING.md`: "the admin console is optional, the
+    /// backend must run without it") — found in review, not by
+    /// inspection: the first cut required `--console-redirect-uri`/
+    /// `--owner-email`/`--owner-display-name` unconditionally, which
+    /// made this command unusable for a genuinely backend-only
+    /// deployment (no console, no operator account, ever). All three
+    /// are optional now: omitting `--console-redirect-uri` skips both
+    /// the console-client step and the owner-account step outright
+    /// (there is no `OauthClient` for a human to log into without a
+    /// real `redirect_uri`, and no reason to provision an owner with
+    /// nothing to sign into) — see `bootstrap_command`'s own doc for
+    /// the exact validation and skip logic.
+    ///
     /// Every step reuses the exact function the equivalent standalone
     /// subcommand calls — this is a thinner wrapper chaining them over
     /// one shared connection pool, not a second copy of any of their
@@ -562,7 +575,8 @@ enum Command {
         /// Passed through to the `seed-console-client` step verbatim —
         /// see that variant's own doc for why it must match
         /// `sms-gateway serve --console-client-id` and `admin`'s own
-        /// `SMS_CONSOLE_OIDC_CLIENT_ID` exactly.
+        /// `SMS_CONSOLE_OIDC_CLIENT_ID` exactly. Irrelevant, and never
+        /// read, when `--console-redirect-uri` is absent.
         #[arg(
             long,
             env = "SMS_CONSOLE_OIDC_CLIENT_ID",
@@ -572,18 +586,26 @@ enum Command {
 
         /// Passed through to the `seed-console-client` step verbatim —
         /// must equal `{ADMIN_BASE_URL}/api/auth/callback` exactly (RFC
-        /// 6749 §3.1.2, whole-string comparison).
+        /// 6749 §3.1.2, whole-string comparison). Optional: omit
+        /// entirely for a backend-only deployment (R4) — doing so skips
+        /// both this step and the owner-account step below, printing
+        /// why rather than silently doing nothing.
         #[arg(long)]
-        console_redirect_uri: String,
+        console_redirect_uri: Option<String>,
 
         /// Passed through to the `provision-user` step as `--email`.
+        /// Optional, but requires `--console-redirect-uri` to be given
+        /// alongside it — `bootstrap_command` refuses to start with a
+        /// named error otherwise, rather than silently provisioning an
+        /// owner account with no console to sign into.
         #[arg(long)]
-        owner_email: String,
+        owner_email: Option<String>,
 
         /// Passed through to the `provision-user` step as
-        /// `--display-name`.
+        /// `--display-name`. Required together with `--owner-email`
+        /// (both or neither).
         #[arg(long)]
-        owner_display_name: String,
+        owner_display_name: Option<String>,
 
         /// Passed through to the `provision-user` step as `--role-key`.
         #[arg(long, default_value = "owner")]
@@ -1210,6 +1232,24 @@ async fn provision_client_command(command: Command) -> Result<()> {
              nothing else, got {role:?}"
         );
     }
+    // An empty string satisfies clap's `required_unless_present`/
+    // `conflicts_with` XOR just as well as a real value would — found
+    // live (review round 1, blocker 2): `deploy/docker-compose.yml`'s own
+    // `provision-console-client` one-shot service reads `--app-id` from
+    // `${SMS_CONSOLE_APP_ID:-}`, which resolves to an empty string for
+    // every `docker compose up` that isn't specifically provisioning a
+    // console client (Compose interpolates every service's fields up
+    // front, regardless of profile — the same reason every other
+    // console-only var in this file uses `:-` rather than `:?`). Refuse
+    // with a clear message rather than letting an empty id reach a real
+    // `provisionAppClient` call and fail with a confusing "App not
+    // found".
+    if app_id.as_deref() == Some("") || app_slug.as_deref() == Some("") {
+        bail!(
+            "--app-id/--app-slug must not be empty — pass a real App id (see `sms-gateway \
+             create-app`) via SMS_CONSOLE_APP_ID or the flag directly"
+        );
+    }
     // Refuse up front, before touching the database at all, so a typo'd
     // --key-out never causes a real provisioning call (and a real,
     // now-orphaned private key) that this process then fails to hand back
@@ -1663,7 +1703,14 @@ async fn create_or_find_app(
             println!("created App {} (slug={slug:?})", created.id);
             Ok(created.id)
         }
-        Err(e) if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION) => {
+        // Narrowed to `apps_slug_key` specifically (review round 1, item
+        // 13) — an unrelated `23505` (a bug, not a duplicate slug) now
+        // propagates loudly through the final `Err(e) => ...` arm below
+        // instead of being folded into "already exists".
+        Err(e)
+            if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION)
+                && e.db_constraint() == Some("apps_slug_key") =>
+        {
             let existing = db
                 .app()
                 .find_many()
@@ -1791,14 +1838,27 @@ async fn seed_console_client_core(
 /// [`provision_user_command`] and `bootstrap_command` — see
 /// [`seed_dispatch_core`]'s own doc for why this split exists.
 ///
+/// Review round 1, item 12: all three writes (`User` create, `User`
+/// update-subject, `UserCredential` create) now run in one
+/// `run_in_isolated_tx` transaction, not three independent calls. Before
+/// this, a failure between the `User` create and the `UserCredential`
+/// create left a real, undetected orphan: the `User` row survived with
+/// no password, and a later re-run hit `23505` on the email and reported
+/// "already exists — skipping" — a clean exit 0 for an account nobody
+/// could ever log into. [`check_existing_user_has_credential`] is the
+/// other half of the fix: the duplicate-email path no longer trusts that
+/// a matching `User` row means a *usable* one.
+///
 /// Returns `Ok(None)` rather than an error on a duplicate `email` (a
-/// `23505` on `User.email`'s own `@unique` index) — the same
-/// "already-provisioned is success, not failure" idiom every other
-/// seed/provision function in this file uses, and specifically what
-/// `bootstrap_command` needs to stay a clean no-op re-run against an
-/// already-bootstrapped deployment. The caller decides what to print;
-/// there is no password to hand back for a `User` this call didn't
-/// create.
+/// `23505` on `users_email_key`, narrowed by constraint name — item 13 —
+/// so an unrelated `23505` propagates loudly instead of being folded
+/// into "already exists") — the same "already-provisioned is success,
+/// not failure" idiom every other seed/provision function in this file
+/// uses, and specifically what `bootstrap_command` needs to stay a clean
+/// no-op re-run against an already-bootstrapped deployment, *provided*
+/// the existing account actually has a credential. The caller decides
+/// what to print; there is no password to hand back for a `User` this
+/// call didn't create.
 async fn create_console_user_if_absent(
     db: &Cratestack,
     sys: &cratestack::CratestackContext,
@@ -1826,63 +1886,154 @@ async fn create_console_user_if_absent(
     }
     .into_context();
 
-    let user = match db
-        .user()
-        .create(CreateUserInput {
-            // The OP is itself the identity source for a locally
-            // authenticated user (#194's own login.rs module doc — no
-            // external IdP is wired up), so `subject` is simply this row's
-            // own id, the same way `authenticate_user`'s Identity
-            // construction (backends/apps/sms-gateway/src/login.rs) uses `User.id`
-            // as `external_id`. `db.user().create` doesn't know its own
-            // generated id ahead of the call, so this writes a unique
-            // placeholder (subject is @unique — a fixed literal here would
-            // make a second concurrent run collide on it before either
-            // gets to the corrective update below) and immediately
-            // corrects it in a second update — an accepted two-write cost
-            // for a one-shot bootstrap command, not a hot path.
-            subject: format!("pending-{}", cratestack::uuid::Uuid::new_v4()),
-            email: email.to_owned(),
-            displayName: display_name.to_owned(),
-            roleKey: role_key.to_owned(),
-            lastLoginAt: None,
-            deletedAt: None,
-        })
-        .run(&ctx)
-        .await
-    {
-        Ok(user) => user,
-        Err(e) if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION) => return Ok(None),
-        Err(e) => {
-            return Err(e)
-                .context("creating the User row — check that --role-key names an existing Role");
-        }
+    let email_owned = email.to_owned();
+    let display_name_owned = display_name.to_owned();
+    let role_key_owned = role_key.to_owned();
+
+    let created_user_id = cratestack::run_in_isolated_tx(
+        db.pool(),
+        cratestack::TransactionIsolation::Serializable,
+        |mut tx| {
+            let ctx = &ctx;
+            let email = email_owned.clone();
+            let display_name = display_name_owned.clone();
+            let role_key = role_key_owned.clone();
+            let password_hash = password_hash.clone();
+            async move {
+                let user = match db
+                    .user()
+                    .create(CreateUserInput {
+                        // The OP is itself the identity source for a locally
+                        // authenticated user (#194's own login.rs module doc —
+                        // no external IdP is wired up), so `subject` is simply
+                        // this row's own id, the same way `authenticate_user`'s
+                        // Identity construction (backends/apps/sms-gateway/src/login.rs)
+                        // uses `User.id` as `external_id`. `db.user().create`
+                        // doesn't know its own generated id ahead of the call,
+                        // so this writes a unique placeholder (subject is
+                        // @unique — a fixed literal here would make a second
+                        // concurrent run collide on it before either gets to
+                        // the corrective update below) and immediately
+                        // corrects it in a second update, in the same
+                        // transaction now.
+                        subject: format!("pending-{}", cratestack::uuid::Uuid::new_v4()),
+                        email,
+                        displayName: display_name,
+                        roleKey: role_key,
+                        lastLoginAt: None,
+                        deletedAt: None,
+                    })
+                    .run_in_tx(&mut tx, ctx)
+                    .await
+                {
+                    Ok(created) => created.value,
+                    Err(e)
+                        if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION)
+                            && e.db_constraint() == Some("users_email_key") =>
+                    {
+                        return Ok((None, tx));
+                    }
+                    Err(e) => return Err(e),
+                };
+
+                db.user()
+                    .update(user.id.clone())
+                    .set(sms_api::schema::UpdateUserInput {
+                        subject: Some(user.id.clone()),
+                        ..Default::default()
+                    })
+                    // #59: User is @version'd. cratestack refuses a
+                    // versioned update with no If-Match at runtime.
+                    .if_match(user.version)
+                    .run_in_tx(&mut tx, ctx)
+                    .await?;
+
+                // `UserCredential.create`'s own `@@allow` is
+                // `hasRole('system')` only — never the owner-role `ctx`
+                // the two `User` writes above use. Found live (review
+                // round 1): the first cut of this transaction wrap
+                // passed `ctx` here by mistake, which the pre-transaction
+                // version never could have, since it always called
+                // `.run(sys)` on a separately-typed value. `sys` is a
+                // plain `&CratestackContext` (`Copy`), captured directly.
+                db.user_credential()
+                    .create(CreateUserCredentialInput {
+                        userId: user.id.clone(),
+                        passwordHash: password_hash,
+                    })
+                    .run_in_tx(&mut tx, sys)
+                    .await?;
+
+                Ok((Some(user.id), tx))
+            }
+        },
+    )
+    .await
+    .context("creating the User row — check that --role-key names an existing Role")?;
+
+    let Some(user_id) = created_user_id else {
+        return check_existing_user_has_credential(db, sys, email).await;
     };
 
-    db.user()
-        .update(user.id.clone())
-        .set(sms_api::schema::UpdateUserInput {
-            subject: Some(user.id.clone()),
-            ..Default::default()
-        })
-        // #59 (landed after this branch): User is @version'd now, and
-        // cratestack refuses a versioned update with no If-Match at
-        // runtime — cargo check stays green either way.
-        .if_match(user.version)
-        .run(&ctx)
-        .await
-        .context("stamping the User row's own id as its subject")?;
+    Ok(Some((user_id, password)))
+}
 
-    db.user_credential()
-        .create(CreateUserCredentialInput {
-            userId: user.id.clone(),
-            passwordHash: password_hash,
-        })
+/// The duplicate-`email` path out of [`create_console_user_if_absent`] —
+/// see that function's own doc for why this exists (review round 1, item
+/// 12): a `23505` on `users_email_key` proves a matching `User` row
+/// exists, not that it's usable. Looks the row up and confirms a
+/// `UserCredential` actually exists for it before reporting "already
+/// exists" as though nothing is wrong; if one doesn't, refuses loudly
+/// and names what a human has to do next, since this command has no way
+/// to repair an orphaned row automatically (there is no
+/// `--force`/overwrite path for a security-sensitive credential write).
+async fn check_existing_user_has_credential(
+    db: &Cratestack,
+    sys: &cratestack::CratestackContext,
+    email: &str,
+) -> Result<Option<(String, String)>> {
+    let existing = db
+        .user()
+        .find_many()
+        .where_expr(FilterExpr::from(user_filter::email().eq(email.to_owned())))
+        .limit(1)
         .run(sys)
         .await
-        .context("creating the UserCredential row")?;
+        .context("looking up the existing User row after a duplicate-email create")?
+        .into_iter()
+        .next()
+        .with_context(|| {
+            format!(
+                "User row with email {email:?} reported as a duplicate on create but not \
+                 found on lookup"
+            )
+        })?;
 
-    Ok(Some((user.id, password)))
+    let has_credential = !db
+        .user_credential()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            user_credential_filter::userId().eq(existing.id.clone()),
+        ))
+        .limit(1)
+        .run(sys)
+        .await
+        .context("checking for an existing UserCredential")?
+        .is_empty();
+
+    if !has_credential {
+        bail!(
+            "a User with email {email:?} already exists (id={}) but has no UserCredential — an \
+             earlier provisioning attempt was interrupted after creating the User row but \
+             before creating its credential, leaving an account nobody can log into. This \
+             command cannot repair it automatically: delete the orphaned User row (a direct \
+             generated-CRUD write under a bootstrapped owner session, or psql against \
+             users/user_credentials) and re-run, or provision under a different --owner-email.",
+            existing.id
+        );
+    }
+
+    Ok(None)
 }
 
 /// `Command::ProvisionUser`'s body (#194) — see that variant's own doc
@@ -2001,7 +2152,7 @@ async fn bootstrap_step_seed_dispatch(db: &Cratestack) -> Result<()> {
             supportsAlphaSender: true,
             supportsUcs2: true,
             supportsConcat: true,
-            costPerSegmentXaf: "0".parse().expect("\"0\" is a valid Decimal literal"),
+            costPerSegmentXaf: cratestack::Decimal::ZERO,
             healthCheckedAt: None,
             circuitOpenUntil: None,
         },
@@ -2010,11 +2161,13 @@ async fn bootstrap_step_seed_dispatch(db: &Cratestack) -> Result<()> {
 }
 
 /// `Command::Bootstrap`'s body — see that variant's own doc comment for
-/// what this chains and why. Every step below calls the exact same
-/// function its own standalone subcommand does
+/// what this chains and why, including the R4 console-optional
+/// validation this function enforces before touching the database at
+/// all. Every step below calls the exact same function its own
+/// standalone subcommand does
 /// ([`bootstrap_step_signing_key`]/[`bootstrap_step_seed_dispatch`]/
-/// [`seed_console_client_core`]/[`create_console_user_if_absent`]), over
-/// one shared pool, rather than re-deriving any of their logic.
+/// [`bootstrap_step_console`]), over one shared pool, rather than
+/// re-deriving any of their logic.
 async fn bootstrap_command(command: Command) -> Result<()> {
     let Command::Bootstrap {
         database_url,
@@ -2027,6 +2180,22 @@ async fn bootstrap_command(command: Command) -> Result<()> {
     else {
         unreachable!("only ever called with Command::Bootstrap")
     };
+
+    // R4: `--owner-email` with no `--console-redirect-uri` would
+    // silently provision an operator account with nothing to sign
+    // into — refuse before connecting to the database at all, the same
+    // "validate first" discipline `provision_client_command`'s own
+    // `--role` check already uses.
+    if owner_email.is_some() && console_redirect_uri.is_none() {
+        bail!(
+            "--owner-email requires --console-redirect-uri — both are needed together to \
+             provision the console's human-login half of bootstrap. Omit both for a \
+             backend-only deployment (R4), or supply both."
+        );
+    }
+    if owner_email.is_some() && owner_display_name.is_none() {
+        bail!("--owner-email requires --owner-display-name — both are required together");
+    }
 
     // Same conservative pool size as every other one-shot command in this
     // file, and for the same reason (rotate_signing_key_command's own
@@ -2042,32 +2211,16 @@ async fn bootstrap_command(command: Command) -> Result<()> {
 
     bootstrap_step_signing_key(&db, &sys).await?;
     bootstrap_step_seed_dispatch(&db).await?;
-
-    println!("== bootstrap: step 3/4 — sms-console OauthClient ==");
-    seed_console_client_core(&db, &sys, &console_client_id, &console_redirect_uri).await?;
-
-    println!("== bootstrap: step 4/4 — first operator account ==");
-    match create_console_user_if_absent(
+    bootstrap_step_console(
         &db,
         &sys,
-        &owner_email,
-        &owner_display_name,
+        &console_client_id,
+        console_redirect_uri.as_deref(),
+        owner_email.as_deref(),
+        owner_display_name.as_deref(),
         &owner_role_key,
     )
-    .await?
-    {
-        Some((user_id, password)) => {
-            println!("provisioned user: {owner_email} (id={user_id})");
-            println!("one-time password (never stored, never shown again): {password}");
-            println!(
-                "share this over a channel the recipient controls, not this command's own \
-                 stdout log."
-            );
-        }
-        None => {
-            println!("a User with email {owner_email:?} already exists — skipping provision-user");
-        }
-    }
+    .await?;
 
     println!();
     println!(
@@ -2075,6 +2228,51 @@ async fn bootstrap_command(command: Command) -> Result<()> {
          database. Run `sms-gateway create-app` next for a real production App (its own \
          quota/allowlist is a decision this command doesn't make for you)."
     );
+    Ok(())
+}
+
+/// Bootstrap steps 3/4 — see `bootstrap_command`'s own doc. Split out
+/// purely to keep that function under `clippy::too_many_lines`, and
+/// because both steps share one precondition
+/// (`console_redirect_uri.is_some()`) that's simplest to reason about
+/// together: R4's own backend-only case skips both in one place rather
+/// than two separately-reasoned-about branches.
+async fn bootstrap_step_console(
+    db: &Cratestack,
+    sys: &cratestack::CratestackContext,
+    console_client_id: &str,
+    console_redirect_uri: Option<&str>,
+    owner_email: Option<&str>,
+    owner_display_name: Option<&str>,
+    owner_role_key: &str,
+) -> Result<()> {
+    println!("== bootstrap: step 3/4 — sms-console OauthClient ==");
+    let Some(redirect_uri) = console_redirect_uri else {
+        println!("skipped — no --console-redirect-uri given (backend-only deployment)");
+        println!("== bootstrap: step 4/4 — first operator account ==");
+        println!("skipped — no --console-redirect-uri given (backend-only deployment)");
+        return Ok(());
+    };
+    seed_console_client_core(db, sys, console_client_id, redirect_uri).await?;
+
+    println!("== bootstrap: step 4/4 — first operator account ==");
+    let (Some(email), Some(display_name)) = (owner_email, owner_display_name) else {
+        println!("skipped — no --owner-email given");
+        return Ok(());
+    };
+    match create_console_user_if_absent(db, sys, email, display_name, owner_role_key).await? {
+        Some((user_id, password)) => {
+            println!("provisioned user: {email} (id={user_id})");
+            println!("one-time password (never stored, never shown again): {password}");
+            println!(
+                "share this over a channel the recipient controls, not this command's own \
+                 stdout log."
+            );
+        }
+        None => {
+            println!("a User with email {email:?} already exists — skipping provision-user");
+        }
+    }
     Ok(())
 }
 

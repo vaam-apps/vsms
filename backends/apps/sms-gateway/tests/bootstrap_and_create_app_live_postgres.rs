@@ -54,6 +54,20 @@ fn sys() -> CratestackContext {
     .into_context()
 }
 
+/// `User.create`'s own `@@allow` is `hasRole('owner') ||
+/// hasRole('admin')` — used by
+/// [`seed_orphaned_user_with_no_credential`], the fixture for review
+/// round 1's item 12 test.
+fn owner() -> CratestackContext {
+    Principal {
+        sub: "bootstrap-cli-test-owner".to_owned(),
+        kind: PrincipalKind::User,
+        role: "owner".to_owned(),
+        app_id: String::new(),
+    }
+    .into_context()
+}
+
 async fn db() -> Cratestack {
     let url = sms_test_support::database_url().await;
     let pool = PgPoolOptions::new()
@@ -64,25 +78,35 @@ async fn db() -> Cratestack {
     Cratestack::builder(pool).build()
 }
 
+/// `console_redirect_uri`/`owner_email`/`owner_display_name` are all
+/// optional flags on the real CLI (R4 — see `Command::Bootstrap`'s own
+/// doc comment) — `None` here means the flag is omitted entirely, not
+/// passed as an empty string, so callers can exercise the real
+/// backend-only path.
 fn run_bootstrap_cli(
     database_url: &str,
     console_client_id: &str,
-    console_redirect_uri: &str,
-    owner_email: &str,
-    owner_display_name: &str,
+    console_redirect_uri: Option<&str>,
+    owner_email: Option<&str>,
+    owner_display_name: Option<&str>,
 ) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_sms-gateway"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sms-gateway"));
+    command
         .arg("bootstrap")
         .arg("--database-url")
         .arg(database_url)
         .arg("--console-client-id")
-        .arg(console_client_id)
-        .arg("--console-redirect-uri")
-        .arg(console_redirect_uri)
-        .arg("--owner-email")
-        .arg(owner_email)
-        .arg("--owner-display-name")
-        .arg(owner_display_name)
+        .arg(console_client_id);
+    if let Some(redirect_uri) = console_redirect_uri {
+        command.arg("--console-redirect-uri").arg(redirect_uri);
+    }
+    if let Some(email) = owner_email {
+        command.arg("--owner-email").arg(email);
+    }
+    if let Some(display_name) = owner_display_name {
+        command.arg("--owner-display-name").arg(display_name);
+    }
+    command
         .env("SMS_HASH_PEPPER", TEST_HASH_PEPPER)
         .output()
         .expect("running `sms-gateway bootstrap`")
@@ -144,33 +168,50 @@ struct BootstrapFixture<'a> {
     owner_display_name: &'a str,
 }
 
-/// The first half of the live test: run `bootstrap` once against a fresh
-/// database and assert every artifact it's supposed to create actually
-/// landed. Pulled out purely to keep the test function itself under
+/// State captured right after the first `bootstrap` run, for the second
+/// run's own idempotency assertions to compare against. Deliberately
+/// *not* built on the assumption that this test's own database starts
+/// empty — see [`assert_first_bootstrap_run_creates_everything`]'s own
+/// doc for why: this binary's one database is shared, sequentially, by
+/// every test in this file (`sms_test_support`'s "one database per
+/// binary" rule), and Rust gives no ordering guarantee between them, so
+/// a sibling test's own bootstrap call may have already run first.
+struct FirstRunState {
+    active_signing_key_ids: Vec<String>,
+    signing_key_row_count: usize,
+    provider: schema::Provider,
+}
+
+/// The first half of the live test: run `bootstrap` once and assert
+/// every artifact it's supposed to create actually landed. Pulled out
+/// purely to keep the test function itself under
 /// `clippy::too_many_lines` — same reason `main.rs`'s own multi-step
 /// command functions are split into per-step helpers.
+///
+/// Does *not* assert the database starts with zero `OauthSigningKey`
+/// rows, or that this specific call is the one that rotates a key in —
+/// found live while adding the sibling backend-only test (review round
+/// 1): this file's own test-isolation convention shares one database
+/// across every test in the binary, sequentially, with no ordering
+/// guarantee, so a `bootstrap_backend_only_...` run that happens to
+/// execute first already leaves an active key behind, and this test's
+/// own first call correctly reports "already exists — skipping" rather
+/// than "rotated". The real, order-independent claim — a second run
+/// never rotates an already-active key — is what
+/// [`assert_second_bootstrap_run_is_a_no_op`] checks, by comparing state
+/// *after this call* against state after the next one, not against an
+/// assumed-empty starting point.
 async fn assert_first_bootstrap_run_creates_everything(
     db: &Cratestack,
     db_url: &str,
     fixture: &BootstrapFixture<'_>,
-) -> (Vec<String>, schema::Provider) {
-    // A fresh, just-migrated per-binary database (sms_test_support's own
-    // guarantee) starts with zero rows in every table this test cares
-    // about — asserted, not assumed, since the whole point of the
-    // idempotency half that follows is a *delta* of zero on the second
-    // run.
-    assert_eq!(
-        signing_key_row_count(db).await,
-        0,
-        "a fresh database must start with no OauthSigningKey rows"
-    );
-
+) -> FirstRunState {
     let first = run_bootstrap_cli(
         db_url,
         fixture.console_client_id,
-        fixture.redirect_uri,
-        fixture.owner_email,
-        fixture.owner_display_name,
+        Some(fixture.redirect_uri),
+        Some(fixture.owner_email),
+        Some(fixture.owner_display_name),
     );
     let first_stdout = String::from_utf8_lossy(&first.stdout).into_owned();
     let first_stderr = String::from_utf8_lossy(&first.stderr).into_owned();
@@ -181,8 +222,10 @@ async fn assert_first_bootstrap_run_creates_everything(
         first.status
     );
     assert!(
-        first_stdout.contains("rotated: new signing key"),
-        "the first run must actually rotate in a key: {first_stdout}"
+        first_stdout.contains("rotated: new signing key")
+            || first_stdout.contains("already exists — skipping rotate-signing-key"),
+        "step 1 must either rotate a key in or correctly report one already exists: \
+         {first_stdout}"
     );
     assert!(
         first_stdout.contains("provisioned user:"),
@@ -199,14 +242,15 @@ async fn assert_first_bootstrap_run_creates_everything(
 async fn read_and_assert_bootstrap_artifacts(
     db: &Cratestack,
     fixture: &BootstrapFixture<'_>,
-) -> (Vec<String>, schema::Provider) {
+) -> FirstRunState {
     let active_after_first = active_signing_key_ids(db).await;
     assert_eq!(
         active_after_first.len(),
         1,
-        "exactly one OauthSigningKey must be active after the first run"
+        "exactly one OauthSigningKey must be active after the first run — regardless of \
+         whether this call or an earlier sibling test's call is the one that created it"
     );
-    assert_eq!(signing_key_row_count(db).await, 1);
+    let signing_key_row_count_after_first = signing_key_row_count(db).await;
 
     let provider = db
         .provider()
@@ -283,7 +327,11 @@ async fn read_and_assert_bootstrap_artifacts(
         "bootstrap must have created exactly one UserCredential for the owner"
     );
 
-    (active_after_first, provider)
+    FirstRunState {
+        active_signing_key_ids: active_after_first,
+        signing_key_row_count: signing_key_row_count_after_first,
+        provider,
+    }
 }
 
 /// The second half: re-run `bootstrap` against the already-bootstrapped
@@ -294,15 +342,15 @@ async fn assert_second_bootstrap_run_is_a_no_op(
     db: &Cratestack,
     db_url: &str,
     fixture: &BootstrapFixture<'_>,
-    active_after_first: &[String],
-    provider: &schema::Provider,
+    first_run: &FirstRunState,
 ) {
+    let provider = &first_run.provider;
     let second = run_bootstrap_cli(
         db_url,
         fixture.console_client_id,
-        fixture.redirect_uri,
-        fixture.owner_email,
-        fixture.owner_display_name,
+        Some(fixture.redirect_uri),
+        Some(fixture.owner_email),
+        Some(fixture.owner_display_name),
     );
     let second_stdout = String::from_utf8_lossy(&second.stdout).into_owned();
     let second_stderr = String::from_utf8_lossy(&second.stderr).into_owned();
@@ -329,13 +377,15 @@ async fn assert_second_bootstrap_run_is_a_no_op(
     // this PR's own guard-failure proof).
     let active_after_second = active_signing_key_ids(db).await;
     assert_eq!(
-        active_after_second, active_after_first,
+        active_after_second, first_run.active_signing_key_ids,
         "the second run must not rotate — the active signing key's id must be unchanged"
     );
     assert_eq!(
         signing_key_row_count(db).await,
-        1,
-        "the second run must not have inserted a second OauthSigningKey row at all"
+        first_run.signing_key_row_count,
+        "the second run must not have inserted a second OauthSigningKey row at all — compared \
+         against the row count right after the first run, not an assumed starting count, since \
+         this database is shared with sibling tests in this binary"
     );
 
     let provider_count_after_second = db
@@ -413,10 +463,162 @@ async fn bootstrap_on_a_fresh_database_creates_every_artifact_and_a_second_run_i
         owner_display_name: "Bootstrap Test Owner",
     };
 
-    let (active_after_first, provider) =
-        assert_first_bootstrap_run_creates_everything(&db, &db_url, &fixture).await;
-    assert_second_bootstrap_run_is_a_no_op(&db, &db_url, &fixture, &active_after_first, &provider)
-        .await;
+    let first_run = assert_first_bootstrap_run_creates_everything(&db, &db_url, &fixture).await;
+    assert_second_bootstrap_run_is_a_no_op(&db, &db_url, &fixture, &first_run).await;
+}
+
+/// R4 (production-readiness audit review round 1, blocker 1): a
+/// backend-only deployment (`CONTRIBUTING.md`'s "the admin console is
+/// optional, the backend must run without it") must be able to run
+/// `bootstrap` with none of the console/owner flags and still get a
+/// working signing key + `Provider` + `Route` — the two steps that
+/// gate `sms-gateway serve` ever binding its listener at all — without
+/// `bootstrap` attempting (or silently no-op'ing) the console-client or
+/// owner-account steps, which have no meaning with no console.
+///
+/// This test shares this binary's one database with the two tests
+/// above it (`sms_test_support`'s own "one database per binary" rule),
+/// so it deliberately never asserts a *global* zero row count for
+/// `User`/`OauthClient` — Rust test order isn't guaranteed, and another
+/// test in this file may have already created rows of both kinds.
+/// Instead: a `console_client_id` unique to this test proves *this run*
+/// created zero matching `OauthClient` rows (a global count could never
+/// be exactly zero once the sibling tests have run, but a row keyed to
+/// an id only this test ever uses can), and the `User` table's own row
+/// count is compared before/after to prove this call created none.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn bootstrap_backend_only_skips_the_console_client_and_owner_user_steps() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db_url = sms_test_support::database_url().await;
+    let db = db().await;
+
+    let console_client_id = "bootstrap-backend-only-test-sms-console";
+    let user_count_before = db
+        .user()
+        .find_many()
+        .run(&sys())
+        .await
+        .expect("reading back every User row before the backend-only run")
+        .len();
+
+    let output = run_bootstrap_cli(&db_url, console_client_id, None, None, None);
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "a backend-only bootstrap run (no console flags at all) must still succeed (status \
+         {:?}); stdout: {stdout}\nstderr: {stderr}",
+        output.status
+    );
+
+    // Steps 1/2 (signing key, Provider/Route) still ran — the actual R4
+    // claim: a backend-only deployment still gets everything
+    // `sms-gateway serve` needs to bind its listener.
+    assert!(
+        stdout.contains("rotated: new signing key")
+            || stdout.contains("already exists — skipping rotate-signing-key"),
+        "step 1 must still run (or be correctly skipped if an earlier test already \
+         bootstrapped this shared database): {stdout}"
+    );
+
+    // Steps 3/4 must both report the R4 skip, never attempt anything.
+    let skip_count = stdout
+        .matches("skipped — no --console-redirect-uri given (backend-only deployment)")
+        .count();
+    assert_eq!(
+        skip_count, 2,
+        "both step 3 (console client) and step 4 (owner user) must print the R4 skip message \
+         exactly once each: {stdout}"
+    );
+    assert!(
+        !stdout.contains("provisioned user:"),
+        "a backend-only run must never provision a user: {stdout}"
+    );
+
+    let oauth_client_count = db
+        .oauth_client()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            oauth_client_filter::clientId().eq(console_client_id.to_owned()),
+        ))
+        .run(&sys())
+        .await
+        .expect("reading back OauthClient rows for this test's own client id")
+        .len();
+    assert_eq!(
+        oauth_client_count, 0,
+        "a backend-only bootstrap run must never register an sms-console OauthClient"
+    );
+
+    let user_count_after = db
+        .user()
+        .find_many()
+        .run(&sys())
+        .await
+        .expect("reading back every User row after the backend-only run")
+        .len();
+    assert_eq!(
+        user_count_after, user_count_before,
+        "a backend-only bootstrap run must not create any User row"
+    );
+
+    let orange_provider = db
+        .provider()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            schema::provider::key().eq("orange_cm".to_owned()),
+        ))
+        .run(&sys())
+        .await
+        .expect("reading back the orange_cm Provider row")
+        .into_iter()
+        .next()
+        .expect("a backend-only bootstrap run must still create the orange_cm Provider row");
+    assert_eq!(orange_provider.state, schema::ProviderState::active);
+
+    let route_count = db
+        .route()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            schema::route::providerId().eq(orange_provider.id.clone()),
+        ))
+        .run(&sys())
+        .await
+        .expect("reading back the catch-all Route")
+        .len();
+    assert!(
+        route_count >= 1,
+        "a backend-only bootstrap run must still create the catch-all Route"
+    );
+}
+
+/// R4 (blocker 1): `--owner-email` with no `--console-redirect-uri` is
+/// a named, refused misconfiguration, not a silent no-op — an operator
+/// who wants an owner account almost certainly also wants the console
+/// client that account can actually sign into.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn bootstrap_refuses_owner_email_without_console_redirect_uri() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db_url = sms_test_support::database_url().await;
+
+    let output = run_bootstrap_cli(
+        &db_url,
+        "bootstrap-validation-test-sms-console",
+        None,
+        Some("orphan-owner@example.test"),
+        Some("Orphan Owner"),
+    );
+    assert!(
+        !output.status.success(),
+        "--owner-email without --console-redirect-uri must be refused, not silently accepted"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--owner-email requires --console-redirect-uri"),
+        "the refusal must name which two flags are required together: {stderr}"
+    );
 }
 
 #[tokio::test]
@@ -473,5 +675,62 @@ async fn create_app_is_idempotent_and_returns_the_same_id_on_a_second_run() {
         rows.len(),
         1,
         "exactly one App row must exist for this slug after two create-app runs"
+    );
+}
+
+/// Review round 1, item 12's own fixture: writes a real `User` row with
+/// no `UserCredential` at all — simulating an interrupted earlier
+/// provisioning attempt (the exact race `create_console_user_if_absent`'s
+/// transaction wrap now prevents for any *future* attempt, but which a
+/// database written before this fix could already contain).
+async fn seed_orphaned_user_with_no_credential(db: &Cratestack, email: &str, display_name: &str) {
+    db.user()
+        .create(schema::CreateUserInput {
+            subject: format!("orphan-test-{email}"),
+            email: email.to_owned(),
+            displayName: display_name.to_owned(),
+            roleKey: "owner".to_owned(),
+            lastLoginAt: None,
+            deletedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding an orphaned User row with no UserCredential");
+}
+
+/// Review round 1, item 12: `bootstrap`'s duplicate-email path must not
+/// silently report "already exists" for a `User` row with no
+/// `UserCredential` — that account can never log in, and reporting
+/// success would hide a real, actionable problem rather than surface it.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn bootstrap_refuses_a_duplicate_email_with_no_credential() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db_url = sms_test_support::database_url().await;
+    let db = db().await;
+
+    let email = "orphaned-owner@example.test";
+    seed_orphaned_user_with_no_credential(&db, email, "Orphaned Owner").await;
+
+    let output = run_bootstrap_cli(
+        &db_url,
+        "bootstrap-orphan-test-sms-console",
+        Some("https://console.example.test/api/auth/callback"),
+        Some(email),
+        Some("Orphaned Owner"),
+    );
+    assert!(
+        !output.status.success(),
+        "bootstrap must refuse to silently report success for an orphaned User row"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("already exists") && stderr.contains("no UserCredential"),
+        "the refusal must name the actual problem: {stderr}"
+    );
+    assert!(
+        stderr.contains("cannot repair it automatically"),
+        "the refusal must say what this command can't do, not just that something's wrong: \
+         {stderr}"
     );
 }
