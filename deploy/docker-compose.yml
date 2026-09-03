@@ -475,6 +475,12 @@ services:
     depends_on:
       sms-gateway:
         condition: service_healthy
+      # Structural, not prose-only: a plain `--profile console up -d`
+      # would otherwise start `admin` concurrently with the provisioning
+      # chain and race the key's chown/chmod (or fail on a not-yet-existing
+      # bind source). The runbook's step order still works unchanged.
+      secrets-fix-perms:
+        condition: service_completed_successfully
     logging: *default-logging
     mem_limit: 1g
     cpus: 1.0
@@ -522,6 +528,9 @@ services:
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
       BACKUP_CRON_SCHEDULE: ${BACKUP_CRON_SCHEDULE:-0 3 * * *}
       BACKUP_RUN_ON_START: ${BACKUP_RUN_ON_START:-true}
+      # Documented in .env.example; both `schedule` and `healthcheck` read it,
+      # so it must reach the service or the .env entry is inert.
+      BACKUP_HEALTH_FILE: ${BACKUP_HEALTH_FILE:-/tmp/vsms-backup-last-success}
     configs:
       - source: rclone_conf
         target: /root/.config/rclone/rclone.conf
