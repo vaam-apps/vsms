@@ -16,9 +16,10 @@ use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::schema::procedures::{ProcedureRegistry, provision_app_client};
 use sms_api::schema::{
-    ClientAuthMethod, Cratestack, CreateOauthClientInput, CreateProviderInput, CreateRouteInput,
-    CreateUserCredentialInput, CreateUserInput, ProviderKind, ProviderState, ProvisionClientInput,
-    UpdateProviderInput, UpdateRouteInput, app as app_filter, provider as provider_filter,
+    ClientAuthMethod, Cratestack, CreateAppInput, CreateOauthClientInput, CreateProviderInput,
+    CreateRouteInput, CreateUserCredentialInput, CreateUserInput, ProviderKind, ProviderState,
+    ProvisionClientInput, UpdateProviderInput, UpdateRouteInput, app as app_filter,
+    oauth_signing_key as oauth_signing_key_filter, provider as provider_filter,
     route as route_filter,
 };
 use sms_api::{GatewayAuth, Principal, PrincipalKind, Procedures};
@@ -405,6 +406,48 @@ enum Command {
         #[arg(long, default_value = "owner")]
         role: String,
     },
+    /// Creates the first (or a subsequent) `App` row for a production
+    /// deployment — closing the gap `deployment.adoc`'s own "Known seams"
+    /// and "Backend-only deployment" sections named explicitly: `App`'s
+    /// own `@allow` in `schema.cstack` is `hasRole('owner') ||
+    /// hasRole('admin')` on create, nothing this deployment can mint over
+    /// HTTP ever carries either role, and `seed-demo-app`/`vsms-demo-seed`
+    /// is explicitly demo-only (see that binary's own `--help` text) —
+    /// not a substitute for a real production `App`.
+    ///
+    /// Field choices beyond `--slug`/`--name` reuse
+    /// `vsms-demo-seed::create_or_find_demo_app`'s own placeholders
+    /// (`monthlyQuota: 1000`, an unrestricted `ipAllowlist`, no GSM-7
+    /// transliteration) rather than exposing a flag for every column —
+    /// the same "make this deployment able to send something, not a
+    /// policy authoring tool" scope `seed-dispatch`'s own catch-all
+    /// `Route` already accepts. Adjust the row afterward (the admin
+    /// console's own App screen, once one exists, or a direct
+    /// generated-CRUD write under a bootstrapped `owner` session) once
+    /// the real quota/allowlist for this app is known — a runbook can't
+    /// make that business decision for an operator.
+    ///
+    /// Idempotent: `create` + catching the `23505` on `App.slug`'s
+    /// `@unique` index, the same shape every other seed/provision command
+    /// in this file uses.
+    CreateApp {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+
+        /// `App.slug`'s own `@regex` — lowercase alphanumeric and `-`
+        /// only, 3-40 characters.
+        #[arg(long)]
+        slug: String,
+
+        #[arg(long)]
+        name: String,
+
+        /// Which of `App`'s two create-admitted roles to run this call
+        /// under. Same choice, same reasoning as `ProvisionClient`'s own
+        /// `--role`.
+        #[arg(long, default_value = "owner")]
+        role: String,
+    },
     /// own `@allow` in `schema.cstack` is `hasRole('system')` only, and
     /// `GatewayAuth::authenticate` never mints that role for any real
     /// token. Public client (`token_endpoint_auth_method = none`): the
@@ -487,6 +530,64 @@ enum Command {
         /// `roles_key_not_reserved_check` rejects it.
         #[arg(long)]
         role_key: String,
+    },
+    /// Chains the idempotent steps a fresh deployment needs before
+    /// `sms-gateway serve` can ever bind its listener, in the order
+    /// `docs/runbooks/deployment.adoc`'s step 3 documents both as one
+    /// combined call and, in its own "What `bootstrap` does" subsection,
+    /// one sub-step at a time: an OP signing key, the `orange_cm` `Provider` + catch-all
+    /// `Route`, the `sms-console` `OauthClient`, and the first operator
+    /// account. Deliberately does **not** include `create-app` — a real
+    /// production `App`'s quota/allowlist is a business decision this
+    /// command can't make for an operator (see that variant's own doc);
+    /// this only closes the gap that stops `sms-gateway`/`admin` from
+    /// ever starting at all.
+    ///
+    /// Every step reuses the exact function the equivalent standalone
+    /// subcommand calls — this is a thinner wrapper chaining them over
+    /// one shared connection pool, not a second copy of any of their
+    /// logic. Safe to run again against an already-bootstrapped
+    /// deployment: signing-key rotation is skipped outright (not just
+    /// idempotent — an unconditional rotation here would silently
+    /// invalidate every token signed under the previous key's overlap
+    /// window sooner than an operator asked for) whenever an `active`
+    /// `OauthSigningKey` already exists, `seed-dispatch`'s own two halves
+    /// are already idempotent, `seed-console-client`'s is a `23505`
+    /// catch, and `provision-user`'s duplicate-email case is reported and
+    /// skipped rather than failing the whole chain.
+    Bootstrap {
+        #[arg(long, env = "DATABASE_URL")]
+        database_url: String,
+
+        /// Passed through to the `seed-console-client` step verbatim —
+        /// see that variant's own doc for why it must match
+        /// `sms-gateway serve --console-client-id` and `admin`'s own
+        /// `SMS_CONSOLE_OIDC_CLIENT_ID` exactly.
+        #[arg(
+            long,
+            env = "SMS_CONSOLE_OIDC_CLIENT_ID",
+            default_value = sms_api::DEFAULT_CONSOLE_CLIENT_ID
+        )]
+        console_client_id: String,
+
+        /// Passed through to the `seed-console-client` step verbatim —
+        /// must equal `{ADMIN_BASE_URL}/api/auth/callback` exactly (RFC
+        /// 6749 §3.1.2, whole-string comparison).
+        #[arg(long)]
+        console_redirect_uri: String,
+
+        /// Passed through to the `provision-user` step as `--email`.
+        #[arg(long)]
+        owner_email: String,
+
+        /// Passed through to the `provision-user` step as
+        /// `--display-name`.
+        #[arg(long)]
+        owner_display_name: String,
+
+        /// Passed through to the `provision-user` step as `--role-key`.
+        #[arg(long, default_value = "owner")]
+        owner_role_key: String,
     },
     /// Records the result of a monthly handset check — #64's own "the
     /// structure that records validations," the CLI half of
@@ -682,9 +783,13 @@ async fn main() -> Result<()> {
 
         command @ Command::SeedDispatch { .. } => seed_dispatch_command(command).await,
 
+        command @ Command::CreateApp { .. } => create_app_command(command).await,
+
         command @ Command::SeedConsoleClient { .. } => seed_console_client_command(command).await,
 
         command @ Command::ProvisionUser { .. } => provision_user_command(command).await,
+
+        command @ Command::Bootstrap { .. } => bootstrap_command(command).await,
 
         command @ Command::RecordRouteValidation { .. } => {
             record_route_validation_command(command).await
@@ -1450,12 +1555,11 @@ async fn seed_dispatch_command(command: Command) -> Result<()> {
     }
     .into_context();
 
-    let (provider_id, provider_version, already_active) = create_or_find_provider(
+    seed_dispatch_core(
         &db,
         &ctx,
-        &key,
         CreateProviderInput {
-            key: key.clone(),
+            key,
             displayName: display_name,
             kind,
             config,
@@ -1476,7 +1580,22 @@ async fn seed_dispatch_command(command: Command) -> Result<()> {
             circuitOpenUntil: None,
         },
     )
-    .await?;
+    .await
+}
+
+/// The actual `Provider` + catch-all `Route` seeding logic, shared by
+/// [`seed_dispatch_command`] and `bootstrap_command` — pulled out so
+/// `bootstrap` reuses this exact function over its own already-open pool
+/// rather than re-deriving `Command::SeedDispatch`'s field defaults a
+/// second time or opening a second connection just to run this step.
+async fn seed_dispatch_core(
+    db: &Cratestack,
+    ctx: &cratestack::CratestackContext,
+    input: CreateProviderInput,
+) -> Result<()> {
+    let key = input.key.clone();
+    let (provider_id, provider_version, already_active) =
+        create_or_find_provider(db, ctx, &key, input).await?;
 
     if already_active {
         println!("Provider already active — nothing to do there");
@@ -1494,16 +1613,117 @@ async fn seed_dispatch_command(command: Command) -> Result<()> {
             // a missing one surfaces only when the command is actually
             // run.
             .if_match(provider_version)
-            .run(&ctx)
+            .run(ctx)
             .await
             .context("activating the Provider row")?;
         println!("activated Provider {provider_id} (key={key:?})");
     }
 
-    ensure_catch_all_route(&db, &ctx, &provider_id).await
+    ensure_catch_all_route(db, ctx, &provider_id).await
 }
 
 /// `create` the `App` row, or resolve the id of the one that already
+/// exists — same create-then-catch-`23505` idiom as
+/// [`create_or_find_provider`], mirroring
+/// `backends/apps/vsms-demo-seed/src/main.rs`'s own
+/// `create_or_find_demo_app` (a deliberately separate binary/image — see
+/// that crate's own module doc — so the two aren't shared code, just the
+/// same small pattern applied twice). Pulled out of
+/// [`create_app_command`] purely to keep that function under
+/// `clippy::too_many_lines`, the same reason `create_or_find_provider`
+/// was split out of `seed_dispatch_core` above.
+async fn create_or_find_app(
+    db: &Cratestack,
+    ctx: &cratestack::CratestackContext,
+    slug: &str,
+    name: &str,
+) -> Result<String> {
+    match db
+        .app()
+        .create(CreateAppInput {
+            name: name.to_owned(),
+            slug: slug.to_owned(),
+            description: None,
+            defaultSenderIdId: None,
+            // Placeholders, not a policy decision this command makes for
+            // an operator — see `Command::CreateApp`'s own doc comment.
+            // Matching `vsms-demo-seed::create_or_find_demo_app`'s own
+            // field choices: an unrestricted quota, no IP allowlist (the
+            // empty-list sentinel encoding, §2.0), no GSM-7
+            // transliteration.
+            monthlyQuota: 1000,
+            ipAllowlist: " ".to_owned(),
+            transliterateToGsm7: false,
+            deletedAt: None,
+        })
+        .run(ctx)
+        .await
+    {
+        Ok(created) => {
+            println!("created App {} (slug={slug:?})", created.id);
+            Ok(created.id)
+        }
+        Err(e) if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION) => {
+            let existing = db
+                .app()
+                .find_many()
+                .where_expr(FilterExpr::from(app_filter::slug().eq(slug.to_owned())))
+                .limit(1)
+                .run(ctx)
+                .await
+                .context("looking up the existing App row after a duplicate-slug create")?;
+            let row = existing.into_iter().next().with_context(|| {
+                format!(
+                    "App row with slug {slug:?} reported as a duplicate on create but not \
+                     found on lookup"
+                )
+            })?;
+            println!("App {} (slug={slug:?}) already exists", row.id);
+            Ok(row.id)
+        }
+        Err(e) => Err(e).context("creating the App row"),
+    }
+}
+
+/// `Command::CreateApp`'s body — see that variant's own doc comment for
+/// what this does and why it exists.
+async fn create_app_command(command: Command) -> Result<()> {
+    let Command::CreateApp {
+        database_url,
+        slug,
+        name,
+        role,
+    } = command
+    else {
+        unreachable!("only ever called with Command::CreateApp")
+    };
+
+    if role != "owner" && role != "admin" {
+        bail!(
+            "--role must be \"owner\" or \"admin\" — App's own @allow admits nothing else on \
+             create, got {role:?}"
+        );
+    }
+
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .context("connecting to Postgres")?;
+    let db = Cratestack::builder(pool).build();
+    let ctx = Principal {
+        sub: format!("sms-gateway:create-app:{role}"),
+        kind: PrincipalKind::User,
+        role: role.clone(),
+        app_id: String::new(),
+    }
+    .into_context();
+
+    let app_id = create_or_find_app(&db, &ctx, &slug, &name).await?;
+    println!("app id: {app_id}");
+    Ok(())
+}
+
 /// `Command::SeedConsoleClient`'s body (#194) — see that variant's own doc
 /// comment for what this does and why. Idempotent, same
 /// create-then-catch-23505 shape as [`create_or_find_provider`].
@@ -1525,8 +1745,20 @@ async fn seed_console_client_command(command: Command) -> Result<()> {
     let db = Cratestack::builder(pool).build();
     let sys = system_context();
 
+    seed_console_client_core(&db, &sys, &client_id, &redirect_uri).await
+}
+
+/// The actual `sms-console` `OauthClient` seeding logic, shared by
+/// [`seed_console_client_command`] and `bootstrap_command` — see
+/// [`seed_dispatch_core`]'s own doc for why this split exists.
+async fn seed_console_client_core(
+    db: &Cratestack,
+    sys: &cratestack::CratestackContext,
+    client_id: &str,
+    redirect_uri: &str,
+) -> Result<()> {
     let input = CreateOauthClientInput {
-        clientId: client_id.clone(),
+        clientId: client_id.to_owned(),
         appClientId: None,
         tokenEndpointAuthMethod: ClientAuthMethod::none,
         jwks: None,
@@ -1536,7 +1768,7 @@ async fn seed_console_client_command(command: Command) -> Result<()> {
         requirePkce: true,
     };
 
-    match db.oauth_client().create(input).run(&sys).await {
+    match db.oauth_client().create(input).run(sys).await {
         Ok(created) => {
             println!(
                 "registered sms-console OauthClient {} (clientId={client_id:?})",
@@ -1555,20 +1787,25 @@ async fn seed_console_client_command(command: Command) -> Result<()> {
     Ok(())
 }
 
-/// `Command::ProvisionUser`'s body (#194) — see that variant's own doc
-/// comment for what this does, why it exists, and why the password is
-/// generated rather than accepted as a flag.
-async fn provision_user_command(command: Command) -> Result<()> {
-    let Command::ProvisionUser {
-        database_url,
-        email,
-        display_name,
-        role_key,
-    } = command
-    else {
-        unreachable!("only ever called with Command::ProvisionUser")
-    };
-
+/// The actual `User` + `UserCredential` provisioning logic, shared by
+/// [`provision_user_command`] and `bootstrap_command` — see
+/// [`seed_dispatch_core`]'s own doc for why this split exists.
+///
+/// Returns `Ok(None)` rather than an error on a duplicate `email` (a
+/// `23505` on `User.email`'s own `@unique` index) — the same
+/// "already-provisioned is success, not failure" idiom every other
+/// seed/provision function in this file uses, and specifically what
+/// `bootstrap_command` needs to stay a clean no-op re-run against an
+/// already-bootstrapped deployment. The caller decides what to print;
+/// there is no password to hand back for a `User` this call didn't
+/// create.
+async fn create_console_user_if_absent(
+    db: &Cratestack,
+    sys: &cratestack::CratestackContext,
+    email: &str,
+    display_name: &str,
+    role_key: &str,
+) -> Result<Option<(String, String)>> {
     // #52/#58: both the password generator and the hasher now live in
     // `sms_core::password` — the console's own `provisionUser` procedure
     // needs the identical logic from `sms-api`, which cannot depend on
@@ -1577,12 +1814,10 @@ async fn provision_user_command(command: Command) -> Result<()> {
     let password_hash = sms_core::password::hash_password(&password)
         .map_err(|error| anyhow::anyhow!("hashing the generated password: {error}"))?;
 
-    let pool = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&database_url)
-        .await
-        .context("connecting to Postgres")?;
-    let db = Cratestack::builder(pool).build();
+    // `User.create`'s own `@@allow` is `hasRole('owner') ||
+    // hasRole('admin')` — never `hasRole('system')` — so this needs its
+    // own human-role-shaped context distinct from `sys`, the same split
+    // `Command::ProvisionUser`'s original body already made.
     let ctx = Principal {
         sub: "sms-gateway:provision-user:owner".to_owned(),
         kind: PrincipalKind::User,
@@ -1590,9 +1825,8 @@ async fn provision_user_command(command: Command) -> Result<()> {
         app_id: String::new(),
     }
     .into_context();
-    let sys = system_context();
 
-    let user = db
+    let user = match db
         .user()
         .create(CreateUserInput {
             // The OP is itself the identity source for a locally
@@ -1608,15 +1842,22 @@ async fn provision_user_command(command: Command) -> Result<()> {
             // corrects it in a second update — an accepted two-write cost
             // for a one-shot bootstrap command, not a hot path.
             subject: format!("pending-{}", cratestack::uuid::Uuid::new_v4()),
-            email: email.clone(),
-            displayName: display_name,
-            roleKey: role_key,
+            email: email.to_owned(),
+            displayName: display_name.to_owned(),
+            roleKey: role_key.to_owned(),
             lastLoginAt: None,
             deletedAt: None,
         })
         .run(&ctx)
         .await
-        .context("creating the User row — check that --role-key names an existing Role")?;
+    {
+        Ok(user) => user,
+        Err(e) if e.db_sqlstate() == Some(sms_api::errors::UNIQUE_VIOLATION) => return Ok(None),
+        Err(e) => {
+            return Err(e)
+                .context("creating the User row — check that --role-key names an existing Role");
+        }
+    };
 
     db.user()
         .update(user.id.clone())
@@ -1637,11 +1878,46 @@ async fn provision_user_command(command: Command) -> Result<()> {
             userId: user.id.clone(),
             passwordHash: password_hash,
         })
-        .run(&sys)
+        .run(sys)
         .await
         .context("creating the UserCredential row")?;
 
-    println!("provisioned user: {email} (id={})", user.id);
+    Ok(Some((user.id, password)))
+}
+
+/// `Command::ProvisionUser`'s body (#194) — see that variant's own doc
+/// comment for what this does, why it exists, and why the password is
+/// generated rather than accepted as a flag.
+async fn provision_user_command(command: Command) -> Result<()> {
+    let Command::ProvisionUser {
+        database_url,
+        email,
+        display_name,
+        role_key,
+    } = command
+    else {
+        unreachable!("only ever called with Command::ProvisionUser")
+    };
+
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .context("connecting to Postgres")?;
+    let db = Cratestack::builder(pool).build();
+    let sys = system_context();
+
+    let Some((user_id, password)) =
+        create_console_user_if_absent(&db, &sys, &email, &display_name, &role_key).await?
+    else {
+        println!(
+            "a User with email {email:?} already exists — nothing to do (no password to print; \
+             it was only ever shown once, at that account's own provisioning time)"
+        );
+        return Ok(());
+    };
+
+    println!("provisioned user: {email} (id={user_id})");
     println!("one-time password (never stored, never shown again): {password}");
     println!();
     // #52/#58 landed the users-and-roles screens (`provisionUser` is the
@@ -1651,6 +1927,153 @@ async fn provision_user_command(command: Command) -> Result<()> {
     println!("no password-rotation flow exists yet — see OPEN_QUESTIONS.md §3.6 —");
     println!(
         "share this over a channel the recipient controls, not this command's own stdout log."
+    );
+    Ok(())
+}
+
+/// Bootstrap step 1/4 — see `bootstrap_command`'s own doc for the whole
+/// chain. Pulled out purely to keep `bootstrap_command` itself under
+/// `clippy::too_many_lines`, the same reason every other multi-step
+/// command function in this file is already split this way.
+///
+/// Never rotates unconditionally: unlike every other step in this chain,
+/// rotation is not idempotent — re-running it against an
+/// already-bootstrapped deployment would mint a brand-new key and start
+/// the previous one's `ROTATION_OVERLAP` countdown early, exactly the
+/// silent-on-every-upgrade trap `values.yaml`'s own `rotateSigningKey`
+/// Helm hook comment already documents for why that hook is deliberately
+/// *not* `pre-upgrade`. So this checks for an existing `active` row
+/// first, the same existence check `load_signing_keys` itself makes
+/// before erroring, rather than calling `sms_auth::op::rotate_signing_key`
+/// (the real function every `rotate-signing-key` invocation goes through)
+/// unconditionally.
+async fn bootstrap_step_signing_key(
+    db: &Cratestack,
+    sys: &cratestack::CratestackContext,
+) -> Result<()> {
+    println!("== bootstrap: step 1/4 — OP signing key ==");
+    let has_active_signing_key = !db
+        .oauth_signing_key()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            oauth_signing_key_filter::active().is_true(),
+        ))
+        .limit(1)
+        .run(sys)
+        .await
+        .context("checking for an existing active OauthSigningKey")?
+        .is_empty();
+    if has_active_signing_key {
+        println!("an active OauthSigningKey already exists — skipping rotate-signing-key");
+        return Ok(());
+    }
+    let id = sms_auth::op::rotate_signing_key(db, sys, sms_auth::op::ROTATION_OVERLAP).await?;
+    println!("rotated: new signing key {id} is now active");
+    Ok(())
+}
+
+/// Bootstrap step 2/4 — see `bootstrap_command`'s own doc. Same defaults
+/// `Command::SeedDispatch`'s own `#[arg(...)]` attributes fall back to —
+/// `bootstrap` exposes no flags for these, matching `deployment.adoc`
+/// step 3's own "no flags are required here" note (in its `seed-dispatch`
+/// sub-step).
+async fn bootstrap_step_seed_dispatch(db: &Cratestack) -> Result<()> {
+    println!("== bootstrap: step 2/4 — orange_cm Provider + catch-all Route ==");
+    let ctx = Principal {
+        sub: "sms-gateway:bootstrap:seed-dispatch".to_owned(),
+        kind: PrincipalKind::User,
+        role: "owner".to_owned(),
+        app_id: String::new(),
+    }
+    .into_context();
+    seed_dispatch_core(
+        db,
+        &ctx,
+        CreateProviderInput {
+            key: "orange_cm".to_owned(),
+            displayName: "Orange Cameroon SMS API".to_owned(),
+            kind: ProviderKind::orange_cm_http,
+            config: "{}".to_owned(),
+            credentialRef: "env:ORANGE_CM_CLIENT_SECRET".to_owned(),
+            maxTps: 10.0,
+            maxDailySubmissions: 100_000,
+            supportsDlr: true,
+            supportsAlphaSender: true,
+            supportsUcs2: true,
+            supportsConcat: true,
+            costPerSegmentXaf: "0".parse().expect("\"0\" is a valid Decimal literal"),
+            healthCheckedAt: None,
+            circuitOpenUntil: None,
+        },
+    )
+    .await
+}
+
+/// `Command::Bootstrap`'s body — see that variant's own doc comment for
+/// what this chains and why. Every step below calls the exact same
+/// function its own standalone subcommand does
+/// ([`bootstrap_step_signing_key`]/[`bootstrap_step_seed_dispatch`]/
+/// [`seed_console_client_core`]/[`create_console_user_if_absent`]), over
+/// one shared pool, rather than re-deriving any of their logic.
+async fn bootstrap_command(command: Command) -> Result<()> {
+    let Command::Bootstrap {
+        database_url,
+        console_client_id,
+        console_redirect_uri,
+        owner_email,
+        owner_display_name,
+        owner_role_key,
+    } = command
+    else {
+        unreachable!("only ever called with Command::Bootstrap")
+    };
+
+    // Same conservative pool size as every other one-shot command in this
+    // file, and for the same reason (rotate_signing_key_command's own
+    // comment) — this one just reuses it across four writes instead of
+    // one or two.
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&database_url)
+        .await
+        .context("connecting to Postgres")?;
+    let db = Cratestack::builder(pool).build();
+    let sys = system_context();
+
+    bootstrap_step_signing_key(&db, &sys).await?;
+    bootstrap_step_seed_dispatch(&db).await?;
+
+    println!("== bootstrap: step 3/4 — sms-console OauthClient ==");
+    seed_console_client_core(&db, &sys, &console_client_id, &console_redirect_uri).await?;
+
+    println!("== bootstrap: step 4/4 — first operator account ==");
+    match create_console_user_if_absent(
+        &db,
+        &sys,
+        &owner_email,
+        &owner_display_name,
+        &owner_role_key,
+    )
+    .await?
+    {
+        Some((user_id, password)) => {
+            println!("provisioned user: {owner_email} (id={user_id})");
+            println!("one-time password (never stored, never shown again): {password}");
+            println!(
+                "share this over a channel the recipient controls, not this command's own \
+                 stdout log."
+            );
+        }
+        None => {
+            println!("a User with email {owner_email:?} already exists — skipping provision-user");
+        }
+    }
+
+    println!();
+    println!(
+        "bootstrap complete — `sms-gateway serve`/`sms-worker` can now start against this \
+         database. Run `sms-gateway create-app` next for a real production App (its own \
+         quota/allowlist is a decision this command doesn't make for you)."
     );
     Ok(())
 }
