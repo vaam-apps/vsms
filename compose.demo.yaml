@@ -64,47 +64,57 @@ name: vsms-demo
 # not assumed. Compose's own `${VAR:-default}` interpolation has no such
 # restriction.)
 #
-# **Known bootstrap gap, called out rather than hidden: `v0.1.0` (this
-# file's own default) predates this PR.** `provision-client`'s
-# `--app-slug`/`--client-id-out` flags — both added alongside this file,
-# both load-bearing for the bootstrap sequence below — don't exist in
-# `v0.1.0`. This file cannot make a version tag exist before a maintainer
-# cuts one; until the first `v*.*.*` release that includes these commands
-# ships, `VSMS_IMAGE_TAG` must be overridden (this PR's own verification
-# used the `sha-`-tagged image its own `workflow_dispatch` smoke-test run
-# published — see the PR description for that exact tag) for this file to
-# actually work. `v0.1.0` is kept as the default anyway, rather than `main`
-# (perpetually moving, exactly the "silently changes under you" failure
-# this header already argues against) or a `sha-`/`branch-`-tagged
-# smoke-test image (an artifact of proving this PR, not a real release) —
-# bump it once a compatible version exists, and until then treat "the
-# default doesn't work yet" as accurate, not a bug in this file.
+# VSMS_IMAGE_OWNER (default `vymalo`) is the other half of every image
+# reference below — every image through `v0.2.1` published under
+# `ghcr.io/vymalo/...`. This repository's own GitHub owner has since
+# moved to `vaam-store`, and `.github/workflows/release.yml` already
+# publishes to `ghcr.io/${{ github.repository_owner }}/...`
+# unconditionally (correct, untouched by this change), so the *next*
+# tagged release lands under the new owner — bump `VSMS_IMAGE_OWNER`
+# alongside `VSMS_IMAGE_TAG` once one exists, rather than assuming
+# today's default keeps working forever.
 #
-# `seed-demo-app` (below) no longer shares `VSMS_IMAGE_TAG` at all — an
-# image-hygiene PR moved its logic out of `sms-gateway` (it used to be
-# `Command::SeedDemoApp`) into its own binary and its own image,
+# **`v0.2.1` (this file's own default, production-readiness audit S2) is
+# a real, working release — verified live, not assumed.** `v0.2.0`'s own
+# release run failed (`.github/workflows/release.yml`, tag `v0.2.0` —
+# confirmed against the GHCR API); `v0.2.1`'s succeeded, and all six
+# images this file references (the four production images plus
+# `sms-fake-orange` and the demo seeder, both below) were confirmed to
+# exist at that tag with `docker manifest inspect` before this default
+# was changed from the earlier `v0.1.0` (which predated
+# `provision-client`'s `--app-slug`/`--client-id-out` flags this file's
+# own bootstrap sequence depends on, and so never actually worked as
+# written).
+#
+# `seed-demo-app` (below) no longer shares `sms-gateway`'s own image at
+# all — an image-hygiene PR moved its logic out of `sms-gateway` (it used
+# to be `Command::SeedDemoApp`) into its own binary and its own image,
 # `ghcr.io/vymalo/vsms/demo`, so that no demo-only fixture-seeding code
 # ships inside the production gateway image any more. See that binary's
-  # own module doc (`backends/apps/vsms-demo-seed/src/main.rs`) for the full
-# reasoning. It's versioned independently via `VSMS_DEMO_IMAGE_TAG`
-# (required, no default — same `:?` shape `VSMS_FAKE_ORANGE_IMAGE_TAG`
-# already uses below, for the identical reason: this image has never been
-# published under a `v*.*.*` tag, only under `main`/`sha-`/`branch-`
-# tags, so there is no version-tagged default that could actually work).
+# own module doc (`backends/apps/vsms-demo-seed/src/main.rs`) for the full
+# reasoning. It (`VSMS_DEMO_IMAGE_TAG`) and `sms-fake-orange`
+# (`VSMS_FAKE_ORANGE_IMAGE_TAG`) are still versioned independently of the
+# four production images — both are published on the identical `v*.*.*`
+# cadence now (`release.yml`'s build-images matrix shares one
+# `tag_primary`/`tag_secondary` across every matrix entry on a given
+# trigger, this repo's nested pair included, confirmed live rather than
+# assumed from reading the workflow alone), so both now default to
+# `v0.2.1` too instead of being required with no default.
 #
 # `demo-app` (near the bottom of this file) is a THIRD non-production
 # image, and does not fit either pattern above yet: no
-# `ghcr.io/vymalo/vsms/demo-app` image has ever been published (its own
-# `.github/workflows/release.yml` matrix entry is new in this PR — the
-# next `v*.*.*` tag is the first one that will actually publish it), so
-# this file builds it from source (`build:`, that service's own comment
-# explains why this is the one deliberate exception to "every image
-# pulled from GHCR"). Once a tag exists, its `image:` line should follow
-# the identical `${VSMS_DEMO_APP_IMAGE_TAG:?...}` shape
-# `VSMS_DEMO_IMAGE_TAG`/`VSMS_FAKE_ORANGE_IMAGE_TAG` already use — not
-# introduced here as a real variable, since nothing in this file reads
-# it yet and an unused required variable would just be a second kind of
-# dangling reference.
+# `ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo-app` image has ever been
+# published (its own `.github/workflows/release.yml` matrix entry is new
+# in this PR — the next `v*.*.*` tag is the first one that will actually
+# publish it), so this file builds it from source (`build:`, that
+# service's own comment explains why this is the one deliberate
+# exception to "every image pulled from GHCR"). Once a tag exists, its
+# `image:` line should follow the identical
+# `ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:?...}`
+# shape `VSMS_DEMO_IMAGE_TAG`/`VSMS_FAKE_ORANGE_IMAGE_TAG` already use —
+# not introduced here as a real variable, since nothing in this file
+# reads it yet and an unused required variable would just be a second
+# kind of dangling reference.
 
 services:
   postgres:
@@ -137,7 +147,7 @@ services:
   # this is the same image `deploy/docker-compose.yml`'s `migrate` service
   # runs, just pulled from GHCR instead of built from source.
   migrate:
-    image: ghcr.io/vymalo/vsms-migrate:${VSMS_IMAGE_TAG:-v0.1.0}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.2.1}
     # release.yml's build-and-push matrix publishes one architecture
     # (whatever the ubuntu-latest runner is, amd64) with no multi-arch
     # manifest — pin every vsms image to it explicitly so this file
@@ -160,7 +170,7 @@ services:
   # to complete before `sms-gateway` is ever started, not just before it's
   # expected to serve traffic.
   seed-signing-key:
-    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     command: ['rotate-signing-key']
     environment:
@@ -190,7 +200,7 @@ services:
   # trading a few seconds of startup time for never hitting this race
   # instead of hoping not to.
   seed-dispatch:
-    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     command: ['seed-dispatch']
     environment:
@@ -221,7 +231,7 @@ services:
   # sibling that seeds the endpoint, only when `demo-app` is actually
   # part of the stack.
   seed-demo-app:
-    image: ghcr.io/vymalo/vsms/demo:${VSMS_DEMO_IMAGE_TAG:?see this file's own header comment on VSMS_DEMO_IMAGE_TAG}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
@@ -249,15 +259,18 @@ services:
   # `provision-client`'s own `--client-id-out` already solves the same
   # way.
   #
-  # **Same known bootstrap gap this file's own header comment already
-  # names for `provision-client`'s `--app-slug`/`--client-id-out`:**
-  # `--webhook-url`/`--webhook-secret-out` don't exist in `v0.1.0` either
-  # — they land in whatever tag first publishes this PR's own
-  # `vsms-demo-seed` changes. Until then `VSMS_DEMO_IMAGE_TAG` must be
-  # overridden to a tag that has them, exactly like that header comment
-  # already says for the flags this entry sits beside.
+  # **A real, still-open bootstrap gap, same shape as the one this
+  # file's own header used to name for `provision-client`'s
+  # `--app-slug`/`--client-id-out` (fixed as of `v0.2.1` — see the
+  # header) but not yet fixed here:** `--webhook-url`/
+  # `--webhook-secret-out` don't exist in `v0.2.1` either — they land in
+  # whatever tag first publishes this PR's own `vsms-demo-seed` changes.
+  # Until then `VSMS_DEMO_IMAGE_TAG` must be overridden to a tag that has
+  # them — unlike every other `VSMS_DEMO_IMAGE_TAG`/
+  # `VSMS_FAKE_ORANGE_IMAGE_TAG` reference in this file, this one has no
+  # working default to fall back to yet, so it stays `:?`-required.
   seed-demo-webhook:
-    image: ghcr.io/vymalo/vsms/demo:${VSMS_DEMO_IMAGE_TAG:?see this file's own header comment on VSMS_DEMO_IMAGE_TAG}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:?see this file's own header comment on VSMS_DEMO_IMAGE_TAG}
     platform: linux/amd64
     profiles: [demo]
     command:
@@ -305,7 +318,7 @@ services:
   # anything `profiles: [console]`-gated, so it still runs to completion in
   # backend-only mode.)
   provision-client:
-    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     user: '0:0'
     command:
@@ -414,7 +427,7 @@ services:
   # chains sequentially, console-only steps included, rather than racing a
   # sibling container's first touch of the same catalog.
   seed-console-client:
-    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     command:
       - seed-console-client
@@ -442,7 +455,7 @@ services:
   # as that service's own comment, chaining the last of the seed/provision
   # one-shots.
   provision-user:
-    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     command:
       - provision-user
@@ -481,7 +494,7 @@ services:
   # (below), the Helm chart, and `deploy/`, so renaming them is a separate
   # decision with real blast radius the maintainer hasn't made yet.
   sms-fake-orange:
-    image: ghcr.io/vymalo/vsms/sms-fake-orange:${VSMS_FAKE_ORANGE_IMAGE_TAG:?see this file's own header comment on VSMS_FAKE_ORANGE_IMAGE_TAG}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/sms-fake-orange:${VSMS_FAKE_ORANGE_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     restart: unless-stopped
     command:
@@ -493,7 +506,7 @@ services:
       - '+2370000'
 
   sms-gateway:
-    image: ghcr.io/vymalo/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.1.0}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     restart: unless-stopped
     environment:
@@ -552,7 +565,7 @@ services:
       - 127.0.0.1:${VSMS_DEMO_GATEWAY_PORT:-8280}:8080
 
   sms-worker:
-    image: ghcr.io/vymalo/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.1.0}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     restart: unless-stopped
     environment:
@@ -592,7 +605,7 @@ services:
   # healthy with this service never started at all
   # (`docker compose -f compose.demo.yaml up -d`, no `--profile console`).
   admin:
-    image: ghcr.io/vymalo/vsms-admin:${VSMS_IMAGE_TAG:-v0.1.0}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-admin:${VSMS_IMAGE_TAG:-v0.2.1}
     platform: linux/amd64
     restart: unless-stopped
     profiles: [console]
@@ -712,10 +725,11 @@ services:
   #
   # **`build:`, this file's ONE deliberate exception to its own "every
   # image pulled from GHCR, no `build:` stanza anywhere" header claim.**
-  # No `ghcr.io/vymalo/vsms/demo-app` image exists yet — this PR's own
-  # `.github/workflows/release.yml` matrix entry is what will publish one
-  # on the next `v*.*.*` tag, at which point this should switch to
-  # `image: ghcr.io/vymalo/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:?...}`
+  # No `ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo-app` image exists
+  # yet — this PR's own `.github/workflows/release.yml` matrix entry is
+  # what will publish one on the next `v*.*.*` tag, at which point this
+  # should switch to
+  # `image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:?...}`
   # the same shape `sms-fake-orange`/`seed-demo-app` already use, not
   # left building from source indefinitely — until then, building it is
   # the only way this showcase can include it at all, and the source it
