@@ -441,10 +441,18 @@ jobs:
       # step can catch on its own): `verbatim-copy.test.ts` (part of `node
       # --test` below) is what actually proves the copy hasn't drifted
       # from the file the step above just tested.
+      # `tsc` is invoked from node_modules directly rather than via `pnpm
+      # run typecheck`: pnpm 11 verifies dependencies before every `run`,
+      # and from a directory under the repo root — without
+      # `--ignore-workspace` — that check resolves against the ROOT
+      # workspace lockfile, which knows nothing about this standalone
+      # package, and fails with ERR_PNPM_OUTDATED_LOCKFILE. Found on the
+      # first CI run of this step; the install line above is unaffected
+      # because it passes the flag.
       - name: Demo app — typecheck and cross-language signature vectors
         run: |
           pnpm install --ignore-workspace --frozen-lockfile
-          pnpm run typecheck
+          node_modules/.bin/tsc --noEmit
           node --test
         working-directory: examples/node/demo-app
 

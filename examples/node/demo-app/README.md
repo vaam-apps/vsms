@@ -98,8 +98,13 @@ closed rather than accepting whatever arrives.
 ## Tests
 
 ```bash
-pnpm test
+node --test
 ```
+
+(`node --test` directly, not `pnpm test`: from a full checkout, pnpm 11
+verifies dependencies before every `run` against the *root* workspace
+lockfile, which does not know this standalone package, and refuses. The
+`js` CI job invokes `tsc` and `node --test` the same way.)
 
 `cross-language-vectors.test.ts` checks `verifySignature` against fixtures a
 *third*, independent tool computed (`openssl dgst -sha256 -hmac` — see that

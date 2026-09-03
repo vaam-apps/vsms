@@ -440,15 +440,20 @@ async fn main() -> Result<()> {
             )
             .await?;
 
-            if let Some(path) = &webhook_secret_out {
-                std::fs::write(path, &webhook_secret)
-                    .with_context(|| format!("writing the webhook secret to {}", path.display()))?;
-                println!("webhook secret written to: {}", path.display());
-            } else {
-                // No sibling container told to read a file — print it so a
-                // human running this by hand can still configure a receiver.
-                println!("webhook secret (no --webhook-secret-out given): {webhook_secret}");
-            }
+            // The secret is never printed: stdout is a container log, and a
+            // log is exactly where a signing secret must not end up
+            // (CodeQL flagged the previous fallback as cleartext logging).
+            // `--webhook-secret-out` is the only way to receive it.
+            let Some(path) = &webhook_secret_out else {
+                bail!(
+                    "--webhook-url was given without --webhook-secret-out — the webhook secret \
+                     is only ever written to a file, never printed. Pass --webhook-secret-out \
+                     <path> (a path the receiver container can read)."
+                );
+            };
+            std::fs::write(path, &webhook_secret)
+                .with_context(|| format!("writing the webhook secret to {}", path.display()))?;
+            println!("webhook secret written to: {}", path.display());
 
             println!(
                 "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?})"
