@@ -19,13 +19,51 @@
 # (`postgres:5432`). This machine may already be running an unrelated
 # postgres container on 5432 — nothing here should be able to collide
 # with it even by accident.
+#
+# Production-readiness audit (S6): `migrate`/`sms-gateway`/`sms-worker`/
+# `admin` each carry both `build:` (source, the default path — nothing
+# below changes what a bare `docker compose up -d --build` does) and a
+# matching `image:` referencing the four images `.github/workflows/release.yml`
+# publishes, so `docker compose pull && docker compose up -d` (no
+# `--build`) is also a real, working path once a tagged release exists —
+# see the "Releasing a new version" section of `docs/runbooks/deployment.adoc`
+# for both paths spelled out. `VSMS_IMAGE_OWNER` defaults to `vymalo`,
+# where every image through `v0.2.1` was published; this repository's own
+# GitHub owner has since moved to `vaam-store`
+# (`.github/workflows/release.yml` publishes to
+# `ghcr.io/${{ github.repository_owner }}/...` unconditionally, which is
+# correct and untouched here), so the next tagged release will land under
+# the new owner — bump `VSMS_IMAGE_OWNER` (and `VSMS_IMAGE_TAG`) together
+# once one exists, rather than assuming today's default keeps working
+# forever.
 
 name: vsms
+
+x-logging: &default-logging
+  # Production-readiness audit (S8): the default `json-file` driver with
+  # no `max-size` grows unboundedly — a long-running `sms-gateway`/
+  # `sms-worker` under real traffic will eventually fill the host disk
+  # with its own logs. Bounded, not disabled: `docker logs`/`docker
+  # compose logs` still work identically, this only caps how much any one
+  # container's log file is allowed to grow to before rotating.
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '5'
 
 services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
+    # Production-readiness audit (S9): conservative floors for a
+    # single-VM deployment with no real traffic yet, not a tuned
+    # production ceiling — the one service everything else depends on
+    # gets the largest share. Raise these once real traffic/data volume
+    # is known; a Postgres instance OOM-killed under `mem_limit` is worse
+    # than an unbounded one on a VM sized for this stack alone.
+    mem_limit: 2g
+    cpus: 2.0
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-vsms}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -49,6 +87,10 @@ services:
     build:
       context: ..
       dockerfile: backends/apps/sms-migrate/Dockerfile
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.2.1}
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: 1.0
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
     depends_on:
@@ -60,7 +102,11 @@ services:
     build:
       context: ..
       dockerfile: backends/apps/sms-gateway/Dockerfile
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: 1.0
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
       # The externally reachable https origin Caddy fronts this service
@@ -100,6 +146,18 @@ services:
       SMS_TOKEN_RATE_LIMIT_BURST: ${SMS_TOKEN_RATE_LIMIT_BURST:-10}
       SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND:-0.3333333333333333}
       RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,cratestack=info}
+    # Production-readiness audit (B1): mounted so `docker compose run --rm
+    # sms-gateway provision-client --key-out /secrets/console-private-key.pem
+    # ...` (deployment.adoc step 5) writes into a path that survives past
+    # that one-shot container's own lifetime, rather than a container-local
+    # path `--rm` discards — the exact bug this mount closes. The
+    # long-running `serve` process never reads this directory itself; it's
+    # mounted here (rather than on a separate one-shot service definition)
+    # only so `docker compose run --rm sms-gateway ...` can reuse this
+    # service's own image/environment without a second, near-duplicate
+    # service block to keep in sync.
+    volumes:
+      - ./secrets:/secrets
     depends_on:
       postgres:
         condition: service_healthy
@@ -146,15 +204,13 @@ services:
       retries: 3
       start_period: 10s
     # sms-gateway needs an active OP signing key to start AT ALL — found
-    # live (#139): `Command::Serve` in backends/apps/sms-gateway/src/main.rs loads
-    # signing keys before binding the listener, so a fresh database makes
-    # this container crash-loop, not just fail its first /token request
-    # (AGENTS.md's own M1 prose describes the latter; it's stale). Run
-    # once, on a fresh database, BEFORE the first `up` of this service —
-    # `run --rm`, not `exec`, since there's no running container to exec
-    # into yet:
+    # live (#139): `Command::Serve` in backends/apps/sms-gateway/src/main.rs
+    # loads signing keys before binding the listener, so a fresh database
+    # makes this container crash-loop, not just fail its first /token
+    # request. Run once, on a fresh database, BEFORE the first `up` of
+    # this service — `run --rm`, not `exec`, since there's no running
+    # container to exec into yet:
     #   docker compose run --rm sms-gateway rotate-signing-key
-    # See docs/runbooks/deployment.adoc's step 3.
     #
     # Same trap, same fix, for the `orange_cm` Provider row (#148):
     # `resolve_provider_row_id` also runs before the listener binds, so a
@@ -165,13 +221,24 @@ services:
     # landed) is idempotent on both halves, so it's safe to run again
     # later too, not just on a fresh database:
     #   docker compose run --rm sms-gateway seed-dispatch
-    # See docs/runbooks/deployment.adoc's step 4.
+    #
+    # Production-readiness audit (N2): `docker compose run --rm sms-gateway
+    # bootstrap --console-redirect-uri ... --owner-email ... --owner-display-name ...`
+    # chains both steps above plus seed-console-client and provision-user
+    # in one idempotent call — see `Command::Bootstrap`'s own doc comment
+    # (`backends/apps/sms-gateway/src/main.rs`) and
+    # `docs/runbooks/deployment.adoc`'s step 3 for both the combined form
+    # and each individual step spelled out.
 
   sms-worker:
     build:
       context: ..
       dockerfile: backends/apps/sms-worker/Dockerfile
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.2.1}
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: 1.0
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
       # §7.1's five implemented roles (smpp is M7 scaffold-only). §9.2's
@@ -220,6 +287,7 @@ services:
     build:
       context: ..
       dockerfile: frontends/apps/admin/Dockerfile
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-admin:${VSMS_IMAGE_TAG:-v0.2.1}
     restart: unless-stopped
     profiles: [console]
     environment:
@@ -246,22 +314,50 @@ services:
       # second time here.
       SMS_AUTH_ISSUER: ${SMS_OIDC_ISSUER:?}
       # `sms-gateway provision-client` (not a stub — see
-      # app/sms-gateway/src/main.rs's `Command::ProvisionClient`) mints
-      # this pair: `--client-id-out`/`--key-out` write the values these
-      # two vars need. See docs/runbooks/deployment.adoc's own console
-      # section for the exact invocation — the private key is mounted
-      # read-only below rather than passed through a plain env var.
+      # backends/apps/sms-gateway/src/main.rs's `Command::ProvisionClient`)
+      # mints this pair: `--client-id-out`/`--key-out` write the values
+      # these two vars need. See docs/runbooks/deployment.adoc's own
+      # console section for the exact invocation — the private key is
+      # mounted read-only below (as a `configs:` reference, not a plain
+      # `volumes:` bind — see that block's own comment) rather than
+      # passed through a plain env var.
       SMS_CONSOLE_CLIENT_ID: ${SMS_CONSOLE_CLIENT_ID:-}
       SMS_CONSOLE_PRIVATE_KEY_PATH: /secrets/console-private-key.pem
-      SMS_CONSOLE_SCOPE: ${SMS_CONSOLE_SCOPE:-sms:send sms:read job:read job:enqueue worker:read}
+      # Production-readiness audit (N4): aligned with the 8-scope list
+      # `docs/runbooks/deployment.adoc` step 5 and `deploy/.env.example`
+      # actually provision `provision-client`/`bootstrap` with —
+      # `provider:read`/`route:read`/`dashboard:read` were missing here,
+      # which would have silently 403'd the Providers/Routes/Dashboard
+      # screens for any deployment that left this at its default.
+      SMS_CONSOLE_SCOPE: ${SMS_CONSOLE_SCOPE:-sms:send sms:read job:read job:enqueue worker:read provider:read route:read dashboard:read}
       MESSAGE_STREAM_POLL_MS: ${MESSAGE_STREAM_POLL_MS:-2000}
       NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-vsms Admin Console}
       NODE_ENV: production
-    volumes:
-      - ./secrets/console-private-key.pem:/secrets/console-private-key.pem:ro
+    # Production-readiness audit (B2): a plain `volumes:` bind mount onto
+    # a host path that does not yet exist is created *silently as an
+    # empty directory* by the Docker daemon — reproduced live, in this
+    # PR's own verification, before this fix. A `configs:` reference
+    # (below) fails `docker compose up` outright with "bind source path
+    # does not exist" instead, the same fail-loud property this repo's
+    # own §9.2 already expects of every other missing-prerequisite case.
+    # Compose (non-swarm) maps this straight onto a bind mount, byte- and
+    # permission-identical to the source file — `mode`/`uid`/`gid` below
+    # are accepted by the Compose *file* schema but silently ignored by
+    # the Compose *CLI* outside swarm mode (confirmed live: a
+    # `chmod 600`-owned-by-a-different-uid source file is unreadable
+    # inside the container regardless of what's set here), so
+    # `docs/runbooks/deployment.adoc` step 5 still ends with an explicit
+    # `chmod 0644` on the host file — this mount only closes the
+    # missing-file gap, not the cross-uid-readability one.
+    configs:
+      - source: console_private_key
+        target: /secrets/console-private-key.pem
     depends_on:
       sms-gateway:
         condition: service_healthy
+    logging: *default-logging
+    mem_limit: 1g
+    cpus: 1.0
 
   # #69: the only thing standing between this deployment and unrecoverable
   # data loss. Nightly pg_dump (custom format) + a small unencrypted
@@ -276,16 +372,27 @@ services:
   # ${VAR:?...} means this service refuses to start rather than silently
   # backing up to nowhere. deploy/secrets/rclone.conf holds the remote's
   # own credentials (same gitignored-directory convention as
-  # secrets/console-private-key.pem — see deployment.md's "Secrets"
-  # section) and must exist before this service starts; an empty or
-  # missing rclone.conf is fine only when BACKUP_RCLONE_REMOTE is a bare
-  # local path (a drill, or a deliberately same-disk backup — see the
-  # runbook for why that's not sufficient on its own for production).
+  # secrets/console-private-key.pem — see deployment.adoc's "Secrets"
+  # section). Production-readiness audit (B2): this file must now exist
+  # before `up`, full stop, even when `BACKUP_RCLONE_REMOTE` is a bare
+  # local path and rclone needs no real credentials — `deploy/secrets/rclone.conf.example`
+  # is committed specifically so `cp`-ing it (empty is fine for the
+  # local-path case) is always step 1, never conditional on which case
+  # applies. Before this, a `volumes:` bind mount onto a not-yet-existing
+  # host path was silently created as an empty *directory* by the Docker
+  # daemon — reproduced live in this PR's own verification — and rclone
+  # would fail obscurely against a directory where it expected a config
+  # file. The `configs:` reference below fails `docker compose up`
+  # outright instead, the same fail-loud property `admin`'s own
+  # `console_private_key` config above already gets.
   backup:
     build:
       context: ..
       dockerfile: deploy/backup.Dockerfile
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: 1.0
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
       SMS_HASH_PEPPER: ${SMS_HASH_PEPPER:?}
@@ -293,8 +400,9 @@ services:
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
       BACKUP_CRON_SCHEDULE: ${BACKUP_CRON_SCHEDULE:-0 3 * * *}
       BACKUP_RUN_ON_START: ${BACKUP_RUN_ON_START:-true}
-    volumes:
-      - ./secrets/rclone.conf:/root/.config/rclone/rclone.conf:ro
+    configs:
+      - source: rclone_conf
+        target: /root/.config/rclone/rclone.conf
     depends_on:
       postgres:
         condition: service_healthy
@@ -313,11 +421,18 @@ services:
   # compose deployment therefore gets no bundled TLS edge for sms-gateway
   # either — front it with your own reverse proxy/ingress, the same "BYO"
   # posture deploy/charts/vsms/values.yaml already takes for
-  # `ingress.gateway` (disabled by default, operator's own opinion) — or
-  # enable this profile anyway and simply never start `admin` itself
-  # (`docker compose --profile console up -d sms-gateway sms-worker
-  # migrate caddy`), accepting `SMS_ADMIN_DOMAIN` as a real DNS record
-  # this deployment happens not to use.
+  # `ingress.gateway` (disabled by default, operator's own opinion).
+  #
+  # Production-readiness audit (S7): an earlier revision of this comment
+  # suggested "enable this profile anyway and simply never start `admin`
+  # itself" as a way to get `caddy` up without it — that doesn't work and
+  # was never tested: `caddy`'s own `depends_on: admin: condition:
+  # service_healthy` below means Compose starts `admin` as a transitive
+  # dependency the moment `caddy` is requested, regardless of which
+  # service names are listed on the command line. There is no way to
+  # bring `caddy` up without `admin` also starting; the only real
+  # backend-only options are the reverse-proxy/ingress BYO path above, or
+  # accepting both.
   #
   # Not stock caddy:2-alpine — the Caddyfile uses `rate_limit` (#156),
   # a third-party module absent from the official image, so Caddy would
@@ -331,6 +446,9 @@ services:
       dockerfile: deploy/caddy.Dockerfile
     restart: unless-stopped
     profiles: [console]
+    logging: *default-logging
+    mem_limit: 256m
+    cpus: 1.0
     environment:
       # Not console-only in what they configure, but only interpolated
       # (and only load-bearing) when this service actually runs — see
@@ -375,6 +493,9 @@ services:
   prometheus:
     image: prom/prometheus:v3.5.0
     restart: unless-stopped
+    logging: *default-logging
+    mem_limit: 512m
+    cpus: 1.0
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
@@ -399,3 +520,18 @@ volumes:
   caddy_data:
   caddy_config:
   prometheus_data:
+
+# Production-readiness audit (B1/B2): both files below are real, host-
+# specific credentials this repo never commits (deploy/secrets/ is
+# gitignored except for the two example/placeholder files — see
+# .gitignore's own comment) and must exist, as real files, before the
+# service referencing them starts — see each config's own referencing
+# service (`admin`/`backup`, above) for the "why `configs:` instead of
+# `volumes:`" reasoning. `deploy/secrets/rclone.conf.example` and
+# `deploy/secrets/.gitkeep` are what make `deploy/secrets/` itself exist
+# in a fresh clone at all.
+configs:
+  console_private_key:
+    file: ./secrets/console-private-key.pem
+  rclone_conf:
+    file: ./secrets/rclone.conf
