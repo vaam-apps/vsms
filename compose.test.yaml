@@ -22,14 +22,23 @@
 # `docker compose` against `compose.yml` — the runner container has no
 # Docker socket, deliberately, so it can never do that anyway).
 #
-# `runner` runs as uid:gid 1000:1000 (`user:` below), not root. The repo is
-# bind-mounted read-write, and a container writing into that bind mount as
-# root would leave root-owned files in the actual working tree on the
+# `runner` runs as a non-root uid:gid (`user:` below), not root. The repo
+# is bind-mounted read-write, and a container writing into that bind mount
+# as root would leave root-owned files in the actual working tree on the
 # host — invisible to `git status` as anything but present, but
-# unreadable/undeletable by the host's own non-root user afterward. 1000:1000
-# is not a guess: it is documented in docs/runbooks/testing.adoc as the
-# assumption this file makes, with the override for a host where it does
-# not hold.
+# unreadable/undeletable by the host's own non-root user afterward.
+# 1000:1000 is only the *default*, not a guaranteed match: GitHub-hosted
+# runners (and plenty of real developer machines) use 1001 or something
+# else entirely, and a mismatch here reproduces the identical
+# Permission-denied failure this whole design exists to prevent — just for
+# a different uid. `VSMS_CI_UID`/`VSMS_CI_GID` override both the runtime
+# `user:` below AND the build-time `args:` the Dockerfile's own `useradd`/
+# `chown` run under (see that file's own comment on `CI_UID`/`CI_GID`) —
+# both have to move together, so overriding the env vars alone and
+# reusing an already-built image with the OLD uid baked into it reproduces
+# the same failure. `docs/runbooks/testing.adoc` documents the override
+# and says plainly that it needs a rebuild (`just ci-build`), not just a
+# re-run.
 name: vsms-ci
 
 services:
@@ -55,6 +64,15 @@ services:
     build:
       context: .
       dockerfile: ci/runner/Dockerfile
+      # Plumbed straight through to the Dockerfile's own `CI_UID`/`CI_GID`
+      # ARGs (defaults there match these defaults) — see this file's own
+      # header comment and that file's comment on the `useradd`/`chown`
+      # step for why the build-time user and the runtime `user:` below
+      # must be the same uid:gid, and why changing one means rebuilding
+      # (`just ci-build`), not just re-running.
+      args:
+        CI_UID: "${VSMS_CI_UID:-1000}"
+        CI_GID: "${VSMS_CI_GID:-1000}"
     working_dir: /repo
     user: "${VSMS_CI_UID:-1000}:${VSMS_CI_GID:-1000}"
     # The repo mounted read-write: `cargo` builds straight into `target/`

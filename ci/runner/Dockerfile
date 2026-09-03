@@ -17,9 +17,13 @@ FROM rust:1.95-bookworm
 
 # CARGO_BUILD_JOBS default matches AGENTS.md's own "Build cost" warning:
 # `include_server_schema!` expansion is memory-hungry enough to OOM at
-# cargo's default job count on a constrained machine. `just ci`/`ci-inner`
-# read this from the environment (overridable: `docker compose -f
-# compose.test.yaml run -e CARGO_BUILD_JOBS=8 runner just ci-inner`).
+# cargo's default job count on a constrained machine. This is only ever
+# the *image's* own default — the actual value every `just ci`/`ci-inner`
+# cargo invocation runs with is set by `justfile`'s own `jobs`/`_cargo`
+# variables (which read `CARGO_BUILD_JOBS` from the environment, so
+# `CARGO_BUILD_JOBS=8 just ci` overrides it — see that file's own comment
+# on `jobs :=`), not this `ENV` line — this is what a bare, non-`just`
+# process in the container falls back to.
 ENV CARGO_BUILD_JOBS=4 \
     CARGO_INCREMENTAL=0 \
     DEBIAN_FRONTEND=noninteractive
@@ -70,13 +74,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
     | bash -s -- --to /usr/local/bin --tag 1.21.0
 
-# cargo-deny, via cargo-binstall (prebuilt binary, not a from-source
-# compile) — the `deny` CI job's own tool, checked against all five
-# manifests inside `ci-inner`.
+# cargo-deny, via cargo-binstall (a prebuilt binary install, not a
+# from-source compile) — the `deny` CI job's own tool, checked against all
+# five manifests inside `ci-inner`. Both moving pieces here are pinned, not
+# floating: the installer script itself is fetched at a tagged ref
+# (`v1.22.0`, not `main`, which could change what it fetches or how,
+# out from under this image on a rebuild with no Dockerfile change at all
+# — the exact unpinned-dependency-in-a-pipeline shape AGENTS.md's own
+# release-engineering notes warn about elsewhere), `BINSTALL_VERSION`
+# makes that same installer fetch the matching pinned `cargo-binstall`
+# release rather than whatever `releases/latest` resolves to on the day
+# this image happens to build, and `cargo binstall --version` pins
+# `cargo-deny` itself (`0.20.2`, matching `cargo deny --version` at the
+# time this file was written — bump both together, deliberately, not let
+# one drift).
 RUN curl -L --proto '=https' --tlsv1.2 -sSf \
-        https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh \
-    | bash \
-    && cargo binstall --no-confirm cargo-deny
+        https://raw.githubusercontent.com/cargo-bins/cargo-binstall/v1.22.0/install-from-binstall-release.sh \
+    | BINSTALL_VERSION=v1.22.0 bash \
+    && cargo binstall --no-confirm --version 0.20.2 cargo-deny
 
 # The cratestack CLI, pinned to CRATESTACK_VERSION above. A Dockerfile
 # build ARG cannot itself run `cargo xtask cratestack-pin` (there is no
@@ -89,20 +104,35 @@ RUN curl -L --proto '=https' --tlsv1.2 -sSf \
 ARG CRATESTACK_VERSION=0.8.10
 RUN cargo install cratestack-cli --version "=${CRATESTACK_VERSION}" --locked
 
-# `runner` in compose.test.yaml runs as uid:gid 1000:1000, not root — a
-# container writing into the bind-mounted repo as root would leave
-# root-owned files in the actual host working tree (see that file's own
-# comment). `/home/ci` doesn't exist yet, and compose.test.yaml mounts
-# named volumes over it (`ci_home`, `pnpm_store`) that need pre-existing,
-# correctly-owned content at each exact path for Docker to seed the volume
-# from on first mount — a named volume mounted at a path with no real
-# content in the image gets its mount-point directory auto-created by the
-# Docker daemon itself, as root, regardless of the container's own
-# configured `user:`. Reproduced live, not assumed, for
-# `/usr/local/cargo/registry` below — and a second time, differently, for
-# `/repo/target`: that one is NOT a named volume (see compose.test.yaml's
-# own comment on `CARGO_TARGET_DIR` for why — a script this repo already
-# ships, `ci/assert-client-routes-match-server.mjs`, hardcodes
+# `runner` in compose.test.yaml runs as a non-root uid:gid — a container
+# writing into the bind-mounted repo as root would leave root-owned files
+# in the actual host working tree (see that file's own comment). That uid
+# is NOT always 1000: found in review, not assumed — GitHub-hosted runners
+# (and plenty of real developer machines) use 1001 or something else
+# entirely, and compose.test.yaml's own `user:` already reads
+# `VSMS_CI_UID`/`VSMS_CI_GID` for exactly this reason. `CI_UID`/`CI_GID`
+# build ARGs (default 1000, matching the compose file's own default) let
+# `useradd`/`chown` below create the SAME uid:gid the container will
+# actually run as — a mismatch here reproduces the identical
+# Permission-denied failure this whole comment block exists to prevent,
+# just for a different uid than 1000. Overriding the host uid means
+# rebuilding this image with the matching build args (`just ci-build` —
+# see that recipe's own comment, and docs/runbooks/testing.adoc), not just
+# re-running `compose.test.yaml` with a different `VSMS_CI_UID` — the
+# users this `RUN` creates are baked into the image layer, not
+# re-evaluated at container start.
+#
+# `/home/ci` doesn't exist yet, and compose.test.yaml mounts named volumes
+# over it (`ci_home`, `pnpm_store`) that need pre-existing, correctly-owned
+# content at each exact path for Docker to seed the volume from on first
+# mount — a named volume mounted at a path with no real content in the
+# image gets its mount-point directory auto-created by the Docker daemon
+# itself, as root, regardless of the container's own configured `user:`.
+# Reproduced live, not assumed, for `/usr/local/cargo/registry` below —
+# and a second time, differently, for `/repo/target`: that one is NOT a
+# named volume (see compose.test.yaml's own comment on `CARGO_TARGET_DIR`
+# for why — a script this repo already ships,
+# `ci/assert-client-routes-match-server.mjs`, hardcodes
 # `target/debug/sms-gateway` relative to the repo root), so it's a plain
 # subdirectory of the bind-mounted `/repo` instead, inheriting whatever
 # uid already owns the host tree — nothing to `chown` here for it at all.
@@ -121,9 +151,20 @@ RUN cargo install cratestack-cli --version "=${CRATESTACK_VERSION}" --locked
 # 13)` the moment `cargo test` (running as uid 1000) tried to read a
 # root-owned cache file. `chown -R` on both fixes it at the source, the
 # same fix `/home/ci` already needed for the identical reason.
-RUN useradd --uid 1000 --create-home --shell /bin/bash ci \
+ARG CI_UID=1000
+ARG CI_GID=1000
+RUN groupadd --gid "${CI_GID}" ci \
+    && useradd --uid "${CI_UID}" --gid "${CI_GID}" --create-home --shell /bin/bash ci \
     && mkdir -p /home/ci/.local/share/pnpm \
     && chown -R ci:ci /home/ci \
-    && chown -R 1000:1000 /usr/local/cargo /usr/local/rustup
+    && chown -R "${CI_UID}:${CI_GID}" /usr/local/cargo /usr/local/rustup
 
 WORKDIR /repo
+
+# So a bare `docker run` (bypassing compose.test.yaml's own `user:`
+# entirely) is non-root too, by default — defense in depth, not the
+# primary mechanism: compose.test.yaml's `user:` is still what actually
+# controls the uid `just ci`/`ci-shell` run as, and still needs to match
+# what this image was built with (`CI_UID`/`CI_GID` above) for the reasons
+# that comment block already gives.
+USER ci
