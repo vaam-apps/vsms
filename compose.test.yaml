@@ -1,0 +1,127 @@
+# The whole CI gate, runnable with nothing on the host but `docker`,
+# `docker compose` and `just`. See `docs/runbooks/testing.adoc` for the
+# guided walkthrough; `just ci` is the one command a contributor needs.
+#
+# A separate file from `compose.yml`/`compose.dev.yaml`/`compose.demo.yaml`
+# on purpose — each of those already picked its own reserved Compose
+# project name for an identical reason (see `compose.yml`'s own header):
+# `vsms` (bare `compose.yml`), `vsms-dev` (`compose.dev.yaml`), `vsms-demo`
+# (`compose.demo.yaml`), and `vsms-test-harness` (reserved by
+# `backends/crates/sms-test-support` itself, invoked *inside* this stack's
+# `runner` container against a *different* Postgres — see below). This
+# file's own project name is `vsms-ci`, set via `name:` below so every
+# `docker compose -f compose.test.yaml ...` invocation is scoped
+# consistently without every caller needing to repeat `-p vsms-ci`.
+#
+# Two services, not one: `postgres` is a plain, disposable Postgres 16 the
+# `runner` container reaches over the Compose network as `postgres:5432` —
+# used directly by the `migrations` job's own scratch-database steps, and
+# indirectly by every live-Postgres suite via `VSMS_TEST_DATABASE_URL`
+# (`backends/crates/sms-test-support`'s override hook, so the harness talks
+# to *this* Postgres instead of trying to start its own nested
+# `docker compose` against `compose.yml` — the runner container has no
+# Docker socket, deliberately, so it can never do that anyway).
+#
+# `runner` runs as uid:gid 1000:1000 (`user:` below), not root. The repo is
+# bind-mounted read-write, and a container writing into that bind mount as
+# root would leave root-owned files in the actual working tree on the
+# host — invisible to `git status` as anything but present, but
+# unreadable/undeletable by the host's own non-root user afterward. 1000:1000
+# is not a guess: it is documented in docs/runbooks/testing.adoc as the
+# assumption this file makes, with the override for a host where it does
+# not hold.
+name: vsms-ci
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: vsms
+      POSTGRES_PASSWORD: vsms
+      POSTGRES_DB: vsms
+    # No host port published — nothing outside this Compose network needs
+    # to reach it, and publishing one would risk colliding with
+    # compose.yml's own 5432/compose.dev.yaml's own Postgres on a busy
+    # host. Only `runner`, over the Compose network, connects to it.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vsms -d vsms"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - vsms_ci_pgdata:/var/lib/postgresql/data
+
+  runner:
+    build:
+      context: .
+      dockerfile: ci/runner/Dockerfile
+    working_dir: /repo
+    user: "${VSMS_CI_UID:-1000}:${VSMS_CI_GID:-1000}"
+    # The repo mounted read-write: `cargo` builds straight into `target/`
+    # there (gitignored, and this is exactly what a native, non-container
+    # `cargo build` already does on a contributor's own machine — no
+    # named volume needed for it, deliberately). `pnpm` similarly writes
+    # `node_modules` straight into the bind mount, and a handful of
+    # generated files genuinely belong in the tree during the run (e.g.
+    # `frontends/packages/sms-client`, gitignored except its own
+    # `package.json` — `just ci` must leave every *tracked* file
+    # byte-identical, not the untracked generated output itself).
+    #
+    # `CARGO_TARGET_DIR` is deliberately left unset (cargo's own default,
+    # `<workspace root>/target`) rather than pointed at a named volume —
+    # found live, not assumed: a named volume mounted at a path with no
+    # real content anywhere in the *image* (the bind-mounted host tree's
+    # own `target/`, gitignored and never committed, doesn't count — Docker
+    # seeds a volume from the image, not from a bind mount it's about to
+    # be layered under) gets its mount-point directory auto-created by the
+    # Docker daemon itself, as root, regardless of the container's own
+    # configured `user:` — reproduced exactly as `failed to create
+    # directory \`/repo/target/debug\`: Permission denied (os error 13)`.
+    # Moving it under `/home/ci` (already correctly owned — see
+    # `ci/runner/Dockerfile`) fixed that, but broke something else no less
+    # real: `ci/assert-client-routes-match-server.mjs` (an existing,
+    # unmodified script `just client-check` already depended on) hardcodes
+    # `target/debug/sms-gateway` relative to the repo root, matching what
+    # every contributor's own native `cargo build` already produces there.
+    # A relocated `CARGO_TARGET_DIR` breaks that assumption for a script
+    # this file has no business changing just to suit its own container.
+    # The fix that satisfies both: don't use a named volume for `target/`
+    # at all — plain bind-mount persistence (the directory simply stays on
+    # the host disk across container recreations, same as a native build)
+    # is sufficient, and it's owned by whichever uid already owns the
+    # bind-mounted host tree, sidestepping the seeding problem entirely
+    # rather than working around it.
+    volumes:
+      - .:/repo
+      - cargo_registry:/usr/local/cargo/registry
+      - cargo_git:/usr/local/cargo/git
+      - ci_home:/home/ci
+      - pnpm_store:/home/ci/.local/share/pnpm
+    environment:
+      HOME: /home/ci
+      # sms-test-support's own override hook (backends/crates/sms-test-support/src/lib.rs):
+      # when set, it skips trying to start its own nested `docker compose`
+      # (this container has no Docker socket) and instead provisions its
+      # per-binary scratch databases directly against this URL's server —
+      # which needs CREATEDB on the `postgres` admin database, which the
+      # official postgres image's own POSTGRES_USER always has.
+      VSMS_TEST_DATABASE_URL: postgres://vsms:vsms@postgres:5432/vsms
+      DATABASE_URL: postgres://vsms:vsms@postgres:5432/vsms
+      PGPASSWORD: vsms
+      CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-4}
+      CARGO_INCREMENTAL: "0"
+      # Matches ci.yml's own `js` job — `next build` sets NODE_ENV=production
+      # otherwise, which trips @vsms/env's deploy-time validation with none
+      # of the real config a deployment would have.
+      SKIP_ENV_VALIDATION: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["just", "ci-inner"]
+
+volumes:
+  vsms_ci_pgdata:
+  cargo_registry:
+  cargo_git:
+  ci_home:
+  pnpm_store:
