@@ -52,14 +52,14 @@ That brings up a scratch Postgres, the gateway, the worker, a fake Orange, and t
 | `backends/crates/sms-provider/` | The `SmsProvider` trait every adapter implements — capabilities, submit, DLR parsing, health — framework-free. |
 | `backends/crates/sms-provider-orange-cm/`, `backends/crates/sms-provider-mtn/` | The Orange Cameroon and MTN adapters. |
 | `backends/crates/sms-fake-orange/` | A fault-injecting fake of Orange's API — a participant, not a response stub. Development and testing only. |
-| `backends/apps/sms-gateway/` | The API server binary. `serve` binds HTTP and mounts the OP; `provision-client`, `provision-user`, `rotate-signing-key`, and `seed-provider` are the operator actions; `routes` prints the route table and needs no database. |
+| `backends/apps/sms-gateway/` | The API server binary. `serve` binds HTTP and mounts the OP; `rotate-signing-key`, `seed-dispatch`, `seed-console-client`, `provision-user` (`bootstrap` chains all four in one idempotent, R4-aware call), plus `create-app`, `provision-client`, and `record-route-validation` are the operator actions; `routes` prints the route table and `healthcheck` is the exec-form liveness/readiness probe — neither needs a database. |
 | `backends/apps/sms-worker/` | The role-selectable worker binary (`--roles dispatch,scheduler,jobs,...`) — see its own module doc for why the package is `sms-worker-bin` but the binary is `sms-worker`. |
 | `frontends/apps/admin/`, `frontends/packages/` | The Next.js admin console and its shared TypeScript packages. |
 | `sdks/rust/`, `examples/` | The Rust SDK, and runnable Rust and Node integration examples including a reference webhook receiver. |
 | `deploy/` | Compose stack, Caddy edge, migration job, backup and restore. |
 | `ci/` | The R1 lint, the R2 state-machine parity check, the migration runner, the bootstrap-SQL generator, and the state-machine SQL test. |
 
-`crates/` is libraries, `app/` is binaries, and nothing in `crates/` depends on anything in `app/`.
+`backends/crates/` is libraries, `backends/apps/` is binaries, and nothing in `backends/crates/` depends on anything in `backends/apps/`.
 
 ## Stack
 
