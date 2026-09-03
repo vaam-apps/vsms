@@ -128,8 +128,36 @@ enum Command {
 
         #[arg(long, env = "BACKUP_RUN_ON_START", default_value_t = true)]
         run_on_start: bool,
+
+        /// Touched after every successful backup — [`Command::Healthcheck`]
+        /// reads its mtime back. Not a tuning value an operator is
+        /// expected to change; overridable mainly so a test can point it
+        /// somewhere throwaway.
+        #[arg(long, env = "BACKUP_HEALTH_FILE", default_value = DEFAULT_HEALTH_FILE)]
+        health_file: PathBuf,
+    },
+
+    /// Exec-form health check for the `schedule` container's own
+    /// long-running process (`deploy/backup.Dockerfile`'s `HEALTHCHECK`)
+    /// — a real signal that backups are actually landing, not "is the
+    /// process alive." See `schedule::check_health`'s own doc for the
+    /// mechanism (a health file touched after every successful backup,
+    /// compared against 2x the schedule's own empirically-derived
+    /// period) and why one missed backup alone doesn't fail it.
+    Healthcheck {
+        #[arg(long, env = "BACKUP_HEALTH_FILE", default_value = DEFAULT_HEALTH_FILE)]
+        health_file: PathBuf,
+
+        #[arg(long, env = "BACKUP_CRON_SCHEDULE", default_value = "0 3 * * *")]
+        cron_schedule: String,
     },
 }
+
+/// Where [`Command::Schedule`] touches a file after every successful
+/// backup, and where [`Command::Healthcheck`] reads it back from by
+/// default — mirrors `sms-worker`'s own `/tmp/sms-worker-healthy`
+/// heartbeat-file convention (`backends/apps/sms-worker/src/main.rs`).
+const DEFAULT_HEALTH_FILE: &str = "/tmp/vsms-backup-last-success";
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -199,6 +227,7 @@ fn main() -> Result<()> {
             retention_days,
             cron_schedule,
             run_on_start,
+            health_file,
         } => schedule::run(schedule::ScheduleConfig {
             backup: backup::BackupConfig {
                 database_url,
@@ -208,6 +237,12 @@ fn main() -> Result<()> {
             },
             cron_expression: cron_schedule,
             run_on_start,
+            health_file,
         }),
+
+        Command::Healthcheck {
+            health_file,
+            cron_schedule,
+        } => schedule::check_health(&health_file, &cron_schedule),
     }
 }
