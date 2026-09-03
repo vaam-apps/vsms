@@ -134,6 +134,19 @@ jobs:
           - image: demo
             dockerfile: backends/apps/vsms-demo-seed/Dockerfile
             repo: vsms/demo
+          # The demo showcase's own evaluator (`compose.dev.yaml`'s and
+          # `compose.demo.yaml`'s `demo-app` service — see
+          # `examples/node/demo-app`'s own README/module doc). Nested
+          # under `vsms/`, same reasoning as `sms-fake-orange`/`demo`
+          # above: a dev/demo tool, never a production artifact.
+          # `compose.demo.yaml`'s own `demo-app` service still builds
+          # from source (`build:`, its own flagged exception to that
+          # file's "every image pulled from GHCR" rule) until the first
+          # tag that includes this matrix entry publishes an image for
+          # it to switch to — see that service's own comment.
+          - image: demo-app
+            dockerfile: examples/node/demo-app/Dockerfile
+            repo: vsms/demo-app
 
     steps:
       - uses: actions/checkout@v4
