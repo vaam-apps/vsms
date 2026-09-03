@@ -1,0 +1,27 @@
+{
+  "name": "@vsms-examples/demo-app",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "The demo showcase's own end-to-end evaluator: sends one OTP through @vymalo/vsms-node, watches it reach a terminal state, and verifies the signed webhooks vsms sends back for it. Run by compose.dev.yaml/compose.demo.yaml's own `demo-app` service, not by hand against a production deployment.",
+  "scripts": {
+    "start": "node src/index.ts",
+    "test": "node --test",
+    "typecheck": "tsc --noEmit",
+    "format": "biome format --write .",
+    "lint": "biome check ."
+  },
+  "engines": {
+    "node": ">=23.6.0"
+  },
+  "dependencies": {
+    "@vymalo/vsms-node": "^0.2.1",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.7",
+    "@types/express": "^5.0.1",
+    "@types/node": "^24.0.0",
+    "typescript": "5.9.3"
+  }
+}
