@@ -349,41 +349,66 @@ direct generated-CRUD write). Pass the printed app id below as
 
 [,bash]
 ----
-mkdir -p secrets && chmod 700 secrets
-
-docker compose --env-file .env run --rm sms-gateway provision-client \
-  --app-id <the App id> \
-  --label "admin console" \
-  --scope sms:send --scope sms:read \
-  --scope job:read --scope job:enqueue --scope worker:read \
-  --scope provider:read --scope route:read --scope dashboard:read \
-  --key-out /secrets/console-private-key.pem \
-  --client-id-out /secrets/console-client-id
-
-chmod 0644 secrets/console-private-key.pem
+mkdir -p secrets && chmod 711 secrets
 ----
 
-(Production-readiness audit B1: an earlier revision of this step wrote
-`--key-out secrets/console-private-key.pem` (a container-local relative
-path, discarded the instant `run --rm` exits) and `--client-id-out
-/tmp/console-client-id` (same problem, `/tmp` inside a throwaway
-container). Neither survived past this one-shot command's own lifetime
--- `sms-gateway`'s own `volumes: - ./secrets:/secrets` now makes
-`/secrets` a real path shared with the host's `deploy/secrets/`
-directory, so both `--key-out`/`--client-id-out` targets above actually
-persist.)
+*Production-readiness audit B2 (review round 1, blocker 2): the private
+key now gets provisioned by two dedicated one-shot compose services,*
+`provision-console-client` and `secrets-fix-perms`, *not a runbook
+incantation an operator has to get exactly right by hand.* Two real bugs
+in the previous revision of this step were found live, by actually
+running it end to end, not by inspection:
 
-`--key-out` writes the private key exactly once, `0600`, and refuses to
-overwrite an existing file (`ProvisionClientResult::privateKeyPem` is
-returned exactly once and never stored anywhere else -- #23/#111). The
-resulting file is owned by the `sms-gateway` image's own uid (65532,
-distroless `nonroot`) at `0600` -- unreadable by `admin`'s own uid
-(10001) until the `chmod 0644` above loosens it; see
-`deploy/docker-compose.yml`'s own `console_private_key` config comment
-for why that mode change has to happen on the host rather than in
-either container. Set `SMS_CONSOLE_CLIENT_ID` in `.env` to
-`$(cat secrets/console-client-id)` (or the value the command printed as
-`provisioned client: <id>`).
+* `sms-gateway` itself runs as the distroless image's own uid `65532`; a
+  freshly `mkdir -p secrets && chmod 700 secrets`'d host directory (this
+  file's own earlier revision) is owned by the operator's own host user,
+  which `65532` cannot write into at all.
+* `chmod 0644` on the resulting private key -- this file's own earlier
+  fix -- is *wrong on its own terms*, not just unreachable: world-readable
+  is not an acceptable mode for a private key, regardless of who could
+  actually run the command to set it.
+
+`provision-console-client` runs as `user: '0:0'` (root bypasses
+host-side Unix permission checks on a bind mount entirely, confirmed
+live), so it can write into `secrets/` regardless of who owns it.
+`secrets-fix-perms` then `chown`s the key to admin's own runtime uid
+(`10001` -- `frontends/apps/admin/Dockerfile`'s `useradd --uid 10001`)
+and locks it to `0400` -- readable by that uid alone, not `0644`.
+`chmod 711` on the directory itself (not `700`) matters just as much:
+verified live, a directory with no execute ("search") bit for "other"
+blocks *any* other uid from even traversing into it, regardless of what
+mode the file inside has -- `711` allows traversal without allowing
+directory listing.
+
+`SMS_CONSOLE_APP_ID` (the App id from step 5's own `create-app` above)
+has to be set for the first command below to succeed -- either export it
+inline, or add it to `.env`:
+
+[,bash]
+----
+SMS_CONSOLE_APP_ID=<the App id> \
+  docker compose --env-file .env --profile console up secrets-fix-perms
+----
+
+*Run this exactly once* -- `secrets-fix-perms` depends on
+`provision-console-client`, and a *second* `up secrets-fix-perms`
+re-attempts `provision-console-client` too, which refuses to overwrite
+an already-existing `--key-out` (a real, intentional safety property --
+see `ProvisionClientResult::privateKeyPem`'s own doc: it's returned
+exactly once and never stored anywhere else, #23/#111) and fails the
+whole chain. To redo this step, remove
+`secrets/console-private-key.pem`/`secrets/console-client-id` by hand
+first.
+
+Set `SMS_CONSOLE_CLIENT_ID` in `.env` to `$(cat secrets/console-client-id)`
+(or the `provisioned client: <id>` line in `docker compose logs
+provision-console-client`).
+
+*Proven live, not just described:* a `busybox` container run as uid
+`10001` (through the same `configs:` mechanism `admin` itself uses) can
+read the resulting key; the same container run as `65532` (sms-gateway's
+own uid) or any other uid gets `Permission denied` on both the file and
+listing the directory itself.
 
 == 6. Bring up admin and Caddy
 
