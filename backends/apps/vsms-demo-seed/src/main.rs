@@ -70,13 +70,24 @@ struct Cli {
     role: String,
 
     /// The demo app's own inbound receiver — `examples/node/demo-app`,
-    /// mounted at this address by both `compose.dev.yaml` and
-    /// `compose.demo.yaml`'s `demo-app` service. `WebhookEndpoint.url`
-    /// (`@uri`) has no reachability check at write time — this only has
-    /// to resolve once `hooks` actually tries to deliver to it, well
-    /// after this command exits.
-    #[arg(long, default_value = "http://demo-app:9000/webhooks")]
-    webhook_url: String,
+    /// mounted at this address by the `demo` (never `console`- or
+    /// backend-only-) profiled `demo-app` service in both
+    /// `compose.dev.yaml` and `compose.demo.yaml`. Deliberately no
+    /// default and no `WebhookEndpoint` at all when this flag is
+    /// omitted — R4 (CONTRIBUTING.md: "the backend must run without the
+    /// console") means a *backend-only* `up -d`, with no `demo-app`
+    /// container ever started, must not seed an endpoint pointed at a
+    /// host that will never resolve: `hooks` would mark every attempt
+    /// `dead`, open the circuit, and log an error every tick, forever,
+    /// on a deployment that never asked for any of it. Passed only by
+    /// the separate, `--profile demo`-gated `seed-demo-webhook` service
+    /// (`compose.dev.yaml`/`compose.demo.yaml`), never by the
+    /// unconditional `seed-demo-app` step. `WebhookEndpoint.url`
+    /// (`@uri`) has no reachability check at write time regardless —
+    /// this only has to resolve once `hooks` actually tries to deliver
+    /// to it, well after this command exits.
+    #[arg(long)]
+    webhook_url: Option<String>,
 
     /// #59/#40: `hooks.rs`'s own endpoint-bookkeeping precedent — a
     /// generous-but-bounded retry budget for a demo endpoint that should
@@ -408,28 +419,54 @@ async fn main() -> Result<()> {
 
     let app_id = create_or_find_demo_app(&db, &ctx, &name, &slug).await?;
     ensure_demo_sender_id(&db, &ctx, &sender_id, &provider_row.id).await?;
-    let webhook_secret = ensure_demo_webhook_endpoint(
-        &db,
-        &ctx,
-        &app_id,
-        &webhook_url,
-        webhook_max_attempts,
-        webhook_mask_recipient,
-    )
-    .await?;
 
-    if let Some(path) = &webhook_secret_out {
-        std::fs::write(path, &webhook_secret)
-            .with_context(|| format!("writing the webhook secret to {}", path.display()))?;
-        println!("webhook secret written to: {}", path.display());
-    } else {
-        // No sibling container told to read a file — print it so a human
-        // running this by hand can still configure a receiver.
-        println!("webhook secret (no --webhook-secret-out given): {webhook_secret}");
+    // Conditional on purpose (see `webhook_url`'s own doc comment): no
+    // `--webhook-url` means no `WebhookEndpoint` at all, not one pointed
+    // at a default that only resolves inside a stack that also runs
+    // `demo-app` — R4 (CONTRIBUTING.md): a backend-only deployment must
+    // not silently get an endpoint that will error on every delivery
+    // attempt forever. `--webhook-secret-out` with no `--webhook-url` is
+    // a caller error, not a silent no-op — it would otherwise look like
+    // it did something.
+    match (&webhook_url, &webhook_secret_out) {
+        (Some(url), _) => {
+            let webhook_secret = ensure_demo_webhook_endpoint(
+                &db,
+                &ctx,
+                &app_id,
+                url,
+                webhook_max_attempts,
+                webhook_mask_recipient,
+            )
+            .await?;
+
+            if let Some(path) = &webhook_secret_out {
+                std::fs::write(path, &webhook_secret)
+                    .with_context(|| format!("writing the webhook secret to {}", path.display()))?;
+                println!("webhook secret written to: {}", path.display());
+            } else {
+                // No sibling container told to read a file — print it so a
+                // human running this by hand can still configure a receiver.
+                println!("webhook secret (no --webhook-secret-out given): {webhook_secret}");
+            }
+
+            println!(
+                "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?})"
+            );
+        }
+        (None, Some(_)) => {
+            bail!(
+                "--webhook-secret-out was given but --webhook-url was not — nothing would ever \
+                 be written to it. Pass --webhook-url too, or drop --webhook-secret-out."
+            );
+        }
+        (None, None) => {
+            println!(
+                "demo App/SenderId fixtures ready (slug={slug:?}, sender={sender_id:?}); no \
+                 --webhook-url given, so no WebhookEndpoint was seeded"
+            );
+        }
     }
 
-    println!(
-        "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={webhook_url:?})"
-    );
     Ok(())
 }
