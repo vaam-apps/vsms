@@ -24,6 +24,52 @@
 # enabled, job.*) are NOT passed through `tpl` either — those stay plain
 # values, set directly per controller, never cross-referenced from the
 # convenience namespaces below.
+#
+# **This chart deliberately keeps `migrate`/`seedDispatch`/
+# `rotateSigningKey` as three separate, granular pre-install hooks
+# rather than growing a single `bootstrap` hook mirroring the compose
+# path's own `sms-gateway bootstrap` (review round 1, item 7).** The
+# compose runbook's `bootstrap` exists to collapse four manual
+# `docker compose run --rm` invocations into one for a human typing
+# commands at a terminal; a Helm hook is not typed by hand, so there is
+# no equivalent "fewer commands to remember" benefit here, and the three
+# hooks already need distinct weights (`-20`/`-15`/`-10`) to run in the
+# right order regardless of whether they're one Job or three — see
+# `rotateSigningKey`'s own comment for why it stays `pre-install`-only
+# (never `pre-upgrade`), unlike the other two. A single combined hook
+# would also make the chart's own `helm template` output harder to
+# reason about per-step (one Job's logs instead of three), for no
+# offsetting gain.
+#
+# **Console-client and first-operator provisioning (compose's own
+# `provision-console-client`/`secrets-fix-perms`/`seed-console-client`/
+# `provision-user`) have no Helm-hook equivalent at all yet** — a real,
+# named gap, not an oversight: those need a writable path for the
+# private key that ends up readable by `admin`'s own pod (a
+# `Secret`/`emptyDir`-based equivalent of compose's host-bind-mount +
+# `chown`-to-runtime-uid mechanism), which this chart doesn't build. The
+# manual equivalent today, run once against a live install:
+#
+#   kubectl exec -it deploy/<release>-sms-gateway -- /usr/local/bin/sms-gateway \
+#     create-app --database-url "$DATABASE_URL" --slug <slug> --name "<name>"
+#   kubectl exec -it deploy/<release>-sms-gateway -- /usr/local/bin/sms-gateway \
+#     provision-client --database-url "$DATABASE_URL" --app-id <the App id> \
+#     --label "admin console" --scope sms:send --scope sms:read \
+#     --scope job:read --scope job:enqueue --scope worker:read \
+#     --scope provider:read --scope route:read --scope dashboard:read \
+#     --key-out /tmp/console-private-key.pem --client-id-out /tmp/console-client-id
+#   kubectl cp <sms-gateway-pod>:/tmp/console-private-key.pem ./console-private-key.pem
+#   kubectl create secret generic vsms-console-key \
+#     --from-file=console-private-key.pem=./console-private-key.pem
+#   kubectl exec -it deploy/<release>-sms-gateway -- /usr/local/bin/sms-gateway \
+#     seed-console-client --database-url "$DATABASE_URL" --redirect-uri <ADMIN_BASE_URL>/api/auth/callback
+#   kubectl exec -it deploy/<release>-sms-gateway -- /usr/local/bin/sms-gateway \
+#     provision-user --database-url "$DATABASE_URL" --email <you> --display-name "<name>" --role-key owner
+#
+# (`--database-url` can be omitted if `DATABASE_URL` is already in the
+# pod's own environment, which the `sms-gateway` Deployment's containers
+# already have.) A real Helm-hook-shaped fix is tracked as future work,
+# not attempted here.
 
 global:
   # Set by templates/common.yaml from .Release.Name when left empty — see
@@ -323,7 +369,13 @@ controllers:
         # The image ENTRYPOINT is already the binary (see
         # backends/apps/sms-gateway/Dockerfile) — only the subcommand goes here,
         # the same "run --rm sms-gateway rotate-signing-key" shape
-        # docs/runbooks/deployment.adoc's compose step 3 already documents.
+        # docs/runbooks/deployment.adoc's compose step 3 already documents,
+        # in that step's own "What bootstrap does, step by step" ->
+        # "The first OP signing key" subsection (review round 1, item 7 —
+        # step 3 became the combined `bootstrap` step; this chart
+        # deliberately keeps its own hooks granular rather than growing a
+        # `bootstrap` hook of its own, see this file's own header comment
+        # on why).
         args: ['rotate-signing-key']
         env:
           DATABASE_URL:
