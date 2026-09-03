@@ -1,16 +1,37 @@
 #![doc = include_str!("main.md")]
 
+use std::path::PathBuf;
+
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::schema::{
-    Cratestack, CreateAppInput, CreateSenderIdInput, CreateSenderIdRegistrationInput, SenderIdKind,
-    SenderIdRegistrationStatus, UpdateSenderIdInput, app as app_filter,
-    provider as provider_filter, sender_id as sender_id_filter,
+    Cratestack, CreateAppInput, CreateSenderIdInput, CreateSenderIdRegistrationInput,
+    CreateWebhookEndpointInput, SenderIdKind, SenderIdRegistrationStatus, UpdateSenderIdInput,
+    app as app_filter, provider as provider_filter, sender_id as sender_id_filter,
     sender_id_registration as sender_id_registration_filter,
+    webhook_endpoint as webhook_endpoint_filter,
 };
 use sms_api::{Principal, PrincipalKind};
+
+/// The `message.*` event catalogue §8.4/`sms_api::webhooks::message_event_type`
+/// actually emits — the full set, since this is a demo endpoint meant to
+/// show every transition an evaluator's one message can plausibly reach,
+/// not a narrowly-scoped production integration. Packed with
+/// `sms_core::pack` (§2.0's sentinel-wrapped-string convention —
+/// `WebhookEndpoint.eventTypes` matching, `backends/crates/sms-api/src/webhooks.rs`,
+/// is `.contains(sms_core::needle(event_type))` against exactly this
+/// shape).
+const DEMO_WEBHOOK_EVENT_TYPES: &[&str] = &[
+    "message.accepted",
+    "message.submitted",
+    "message.delivered",
+    "message.failed",
+    "message.expired",
+    "message.uncertain",
+    "message.cancelled",
+];
 
 /// Command-line surface — same flags, same defaults, as the
 /// `sms-gateway seed-demo-app` subcommand this replaces.
@@ -47,6 +68,47 @@ struct Cli {
     /// under.
     #[arg(long, default_value = "owner")]
     role: String,
+
+    /// The demo app's own inbound receiver — `examples/node/demo-app`,
+    /// mounted at this address by both `compose.dev.yaml` and
+    /// `compose.demo.yaml`'s `demo-app` service. `WebhookEndpoint.url`
+    /// (`@uri`) has no reachability check at write time — this only has
+    /// to resolve once `hooks` actually tries to deliver to it, well
+    /// after this command exits.
+    #[arg(long, default_value = "http://demo-app:9000/webhooks")]
+    webhook_url: String,
+
+    /// #59/#40: `hooks.rs`'s own endpoint-bookkeeping precedent — a
+    /// generous-but-bounded retry budget for a demo endpoint that should
+    /// come up quickly (the worker's `hooks` role starts around the same
+    /// time as `demo-app` itself), not §6.3-style production tuning.
+    #[arg(long, default_value_t = 8)]
+    webhook_max_attempts: i64,
+
+    /// §4.4/`webhooks.rs::message_payload`: masking `to` behind
+    /// `Msisdn::masked` is the right default for a real integration, but
+    /// this demo exists to show an evaluator the whole round trip
+    /// end to end — an unmasked MSISDN in the printed timeline is more
+    /// legible than a partially-redacted one for a stack nobody else can
+    /// see.
+    #[arg(long, default_value_t = false)]
+    webhook_mask_recipient: bool,
+
+    /// Where to write the signing secret this command ends up using —
+    /// freshly generated (`sms_webhook::generate_secret()`) on first run,
+    /// or the existing row's own `secret` on every rerun against an
+    /// already-seeded database. `demo-app` has no other way to learn this
+    /// value: `WebhookEndpoint.secret` is server-generated here, exactly
+    /// the "one container's computed output, a sibling container's
+    /// input" problem `provision-client`'s own `--client-id-out` already
+    /// solves the same way. Ordinary create-or-truncate semantics, no
+    /// restrictive mode — same reasoning `--client-id-out`'s own doc
+    /// comment gives (`backends/apps/sms-gateway/src/main.rs`): not the
+    /// half of a credential that authenticates a caller, and this whole
+    /// stack is a disposable, obviously-demo deployment regardless (see
+    /// `SMS_HASH_PEPPER`'s own inline compose comments).
+    #[arg(long)]
+    webhook_secret_out: Option<PathBuf>,
 }
 
 /// `create` the `App` row, or resolve the id of the one that already
@@ -203,6 +265,78 @@ async fn ensure_demo_sender_id(
     Ok(())
 }
 
+/// Ensure a `WebhookEndpoint` pointed at the demo app's own receiver
+/// exists, and return the signing secret it currently uses — freshly
+/// generated on the row this call creates, or read straight back off an
+/// already-existing row on a rerun. `WebhookEndpoint` carries no unique
+/// constraint on `(appId, url)` (unlike `App.slug`), so idempotency here
+/// is read-then-create, the same accepted-TOCTOU-window shape
+/// `ensure_demo_sender_id`'s own approved-registration check already
+/// uses — safe for the same reason: this only ever runs from one
+/// container in one sequential compose dependency chain, never
+/// concurrently with itself.
+///
+/// Deliberately does NOT try to keep an existing row's `secret` in sync
+/// with a caller-supplied `--webhook-secret-out` value from a *previous*
+/// run that used a different generated secret — the row's own `secret`
+/// is always the one written back to `webhook_secret_out`, so `demo-app`
+/// and the database never disagree about which value is current, even
+/// across a restart that skips re-creation.
+async fn ensure_demo_webhook_endpoint(
+    db: &Cratestack,
+    ctx: &cratestack::CratestackContext,
+    app_id: &str,
+    url: &str,
+    max_attempts: i64,
+    mask_recipient: bool,
+) -> Result<String> {
+    let existing = db
+        .webhook_endpoint()
+        .find_many()
+        .where_expr(
+            FilterExpr::from(webhook_endpoint_filter::appId().eq(app_id.to_owned()))
+                .and(webhook_endpoint_filter::url().eq(url.to_owned())),
+        )
+        .limit(1)
+        .run(ctx)
+        .await
+        .context("looking up an existing WebhookEndpoint")?;
+
+    if let Some(row) = existing.into_iter().next() {
+        println!("reusing existing WebhookEndpoint {} (url={url:?})", row.id);
+        return Ok(row.secret);
+    }
+
+    let event_types =
+        sms_core::pack(DEMO_WEBHOOK_EVENT_TYPES.iter().copied()).with_context(|| {
+            format!(
+                "packing DEMO_WEBHOOK_EVENT_TYPES ({DEMO_WEBHOOK_EVENT_TYPES:?}) — a literal, \
+                 space-free array, should never fail to pack"
+            )
+        })?;
+    let secret = sms_webhook::generate_secret();
+
+    let created = db
+        .webhook_endpoint()
+        .create(CreateWebhookEndpointInput {
+            appId: app_id.to_owned(),
+            url: url.to_owned(),
+            eventTypes: event_types,
+            secret: secret.clone(),
+            prevSecret: None,
+            secretRotatedAt: None,
+            maskRecipient: mask_recipient,
+            maxAttempts: max_attempts,
+            circuitOpenUntil: None,
+        })
+        .run(ctx)
+        .await
+        .context("creating the WebhookEndpoint row")?;
+    println!("created WebhookEndpoint {} (url={url:?})", created.id);
+
+    Ok(created.secret)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
@@ -221,6 +355,10 @@ async fn main() -> Result<()> {
         sender_id,
         provider_key,
         role,
+        webhook_url,
+        webhook_max_attempts,
+        webhook_mask_recipient,
+        webhook_secret_out,
     } = Cli::parse();
 
     if role != "owner" && role != "admin" {
@@ -268,9 +406,30 @@ async fn main() -> Result<()> {
             )
         })?;
 
-    create_or_find_demo_app(&db, &ctx, &name, &slug).await?;
+    let app_id = create_or_find_demo_app(&db, &ctx, &name, &slug).await?;
     ensure_demo_sender_id(&db, &ctx, &sender_id, &provider_row.id).await?;
+    let webhook_secret = ensure_demo_webhook_endpoint(
+        &db,
+        &ctx,
+        &app_id,
+        &webhook_url,
+        webhook_max_attempts,
+        webhook_mask_recipient,
+    )
+    .await?;
 
-    println!("demo App/SenderId fixtures ready (slug={slug:?}, sender={sender_id:?})");
+    if let Some(path) = &webhook_secret_out {
+        std::fs::write(path, &webhook_secret)
+            .with_context(|| format!("writing the webhook secret to {}", path.display()))?;
+        println!("webhook secret written to: {}", path.display());
+    } else {
+        // No sibling container told to read a file — print it so a human
+        // running this by hand can still configure a receiver.
+        println!("webhook secret (no --webhook-secret-out given): {webhook_secret}");
+    }
+
+    println!(
+        "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={webhook_url:?})"
+    );
     Ok(())
 }

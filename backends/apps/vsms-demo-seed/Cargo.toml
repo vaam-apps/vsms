@@ -18,6 +18,12 @@ publish.workspace = true
 # module doc for the full reasoning on why this couldn't be a `psql`/HTTP
 # script instead.
 sms-api.workspace = true
+# The `WebhookEndpoint.secret` this command generates has to be produced
+# the same way `rotateWebhookSecret`/`hooks.rs` produce one in production
+# (`whsec_<64 hex>`, #41) — never a second, hand-rolled random-string
+# generator that could drift from that shape.
+sms-core.workspace = true
+sms-webhook.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }
