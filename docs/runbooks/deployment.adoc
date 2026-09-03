@@ -140,7 +140,21 @@ least one operator account. `sms-gateway bootstrap` (production-readiness
 audit N2) closes all four in one idempotent call, chaining exactly the
 four steps `docs/runbooks/deployment.adoc` used to walk through one at a
 time -- see "What `bootstrap` does" below if you need to run, or
-understand, any one of them individually:
+understand, any one of them individually.
+
+*R4 (`CONTRIBUTING.md`: "the admin console is optional, the backend
+must run without it") -- review round 1, blocker 1: the command below
+is for a deployment bringing up the console.* For a genuinely
+backend-only deployment, omit `--console-redirect-uri`/`--owner-email`/
+`--owner-display-name` entirely -- `bootstrap` still creates the
+signing key and the `orange_cm` `Provider`/`Route` (everything
+`sms-gateway`/`sms-worker` themselves need to start), and explicitly
+skips the console-client and owner-account steps rather than either
+attempting them with nothing to configure them from or silently doing
+nothing. Passing `--owner-email` without `--console-redirect-uri` is
+refused with a named error, not silently accepted -- an operator
+account with no console `redirect_uri` registered has nothing to sign
+into.
 
 [,bash]
 ----
