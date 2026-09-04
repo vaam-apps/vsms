@@ -15,6 +15,7 @@
 //! cargo test -p sms-auth --test live_postgres -- --ignored
 //! ```
 
+use authkestra_engine::store::traits::ClientAssertionStore;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, ClientAuthMethod, Cratestack};
@@ -91,8 +92,13 @@ async fn find_client_reads_a_persisted_private_key_jwt_client() {
         .await
         .expect("seeding a persisted client");
 
-    let store = SmsClientStore::new(db.clone(), sys.clone());
-    let found = authkestra_op::ClientStore::find_client(&store, &client_id)
+    // `&mut store`, not `&store` — `ClientStore::find_client` takes
+    // `&mut self` as of authkestra-engine 0.8.0 (AGENTS.md's
+    // authkestra-0.8 section, item A1); nothing in `SmsClientStore`'s own
+    // body actually mutates anything, but the trait signature must be
+    // matched exactly regardless.
+    let mut store = SmsClientStore::new(db.clone(), sys.clone());
+    let found = authkestra_op::ClientStore::find_client(&mut store, &client_id)
         .await
         .expect("delegate read succeeds")
         .expect("the persisted client is found");
@@ -121,9 +127,9 @@ async fn find_client_reads_a_persisted_private_key_jwt_client() {
 async fn find_client_returns_none_for_an_unknown_client() {
     let _guard = TEST_MUTEX.lock().await;
     let db = Arc::new(db().await);
-    let store = SmsClientStore::new(db, sys());
+    let mut store = SmsClientStore::new(db, sys());
 
-    let found = authkestra_op::ClientStore::find_client(&store, "no-such-client")
+    let found = authkestra_op::ClientStore::find_client(&mut store, "no-such-client")
         .await
         .expect("a missing client is Ok(None), not an error");
 
@@ -150,17 +156,25 @@ async fn record_jti_is_true_once_and_false_on_replay() {
     let _guard = TEST_MUTEX.lock().await;
     let db = Arc::new(db().await);
     let sys = sys();
-    let store = SmsClientAssertionStore::new(db, sys);
+    // `mut` — `ClientAssertionStore::record_jti` takes `&mut self` as of
+    // authkestra-engine 0.8.0 (AGENTS.md item A1). The trait itself moved
+    // out of `authkestra_op` into `authkestra_engine::store::traits` in
+    // the same release (item A3) — `authkestra_op` re-exports its two
+    // in-memory implementations but not the trait, so this file imports
+    // it from its real home now, unlike `ClientStore`/`GrantType`/
+    // `TokenEndpointAuthMethod` below, which stay reachable through
+    // `authkestra_op`'s own compatibility re-export.
+    let mut store = SmsClientAssertionStore::new(db, sys);
 
     let jti = format!("test-jti-{}", unique_suffix());
     let expires_at = chrono::Utc::now() + chrono::Duration::minutes(5);
 
-    let first = authkestra_op::ClientAssertionStore::record_jti(&store, &jti, expires_at)
+    let first = ClientAssertionStore::record_jti(&mut store, &jti, expires_at)
         .await
         .expect("first presentation succeeds");
     assert!(first, "first use of a jti must be accepted");
 
-    let second = authkestra_op::ClientAssertionStore::record_jti(&store, &jti, expires_at)
+    let second = ClientAssertionStore::record_jti(&mut store, &jti, expires_at)
         .await
         .expect("a replay is a false, not an error");
     assert!(!second, "a replayed jti must be refused");

@@ -45,7 +45,8 @@ which was written for 0.2.3)
   then handing that to `Op::builder()` — turned out to be unnecessary:
   `backends/apps/sms-gateway`'s own `op.rs` hand-wires `axum_token_handler`/
   `axum_discovery_handler` directly, and those only need `Arc<dyn
-  OpStore>` + `Arc<TokenManager>` + `OpConfig` via `FromRef`, never a
-  full `Op`/`Engine`. An earlier version of this module built the
-  `Engine` anyway, unused — removed in review (#97) rather than kept
-  "for a future caller."
+  CloneableOpStore>` (was `Arc<dyn OpStore>` before authkestra-axum 0.8.0 —
+  see AGENTS.md's authkestra-0.8 section, item A2), `Arc<TokenManager>`,
+  and `OpConfig`, all via `FromRef`, never a full `Op`/`Engine`. An earlier
+  version of this module built the `Engine` anyway, unused — removed
+  in review (#97) rather than kept "for a future caller."

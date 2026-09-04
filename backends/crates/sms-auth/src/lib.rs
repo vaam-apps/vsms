@@ -6,10 +6,22 @@ pub mod op;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use authkestra_op::{
-    ClientAssertionStore, ClientRegistration, ClientStore, GrantType, OpError,
-    TokenEndpointAuthMethod,
-};
+// authkestra-engine 0.8.0 moved `ClientStore`/`ClientAssertionStore` (and
+// the error type both return) out of `authkestra-op` and into
+// `authkestra-engine::store` — `authkestra_op` (which itself now depends
+// on `authkestra_engine`, not the other way around) re-exports
+// `ClientStore`/`ClientRegistration`/`GrantType`/`TokenEndpointAuthMethod`
+// as a compatibility shim (`authkestra-op-0.8.0/src/client.rs` is a bare
+// `pub use authkestra_engine::...` — verified against the vendored
+// source, not assumed), but does **not** re-export `ClientAssertionStore`
+// itself, only the two in-memory implementations of it
+// (`MemoryClientAssertionStore`/`NoClientAssertionStore`). So that one
+// import moves to its real home; the other three keep working unchanged
+// through the compatibility re-export. See AGENTS.md's authkestra-0.8
+// section, item A3.
+use authkestra_engine::store::StoreError;
+use authkestra_engine::store::traits::ClientAssertionStore;
+use authkestra_op::{ClientRegistration, ClientStore, GrantType, TokenEndpointAuthMethod};
 use chrono::{DateTime, Utc};
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::errors::UNIQUE_VIOLATION;
@@ -17,19 +29,28 @@ use sms_api::schema::{self, ClientAuthMethod, Cratestack, oauth_client};
 use sms_core::unpack;
 use thiserror::Error;
 
-/// Log the database-level detail and return the opaque error `authkestra-op`
+/// Log the database-level detail and return the opaque error `authkestra`
 /// expects.
 ///
-/// `OpError::Storage`'s own doc comment says why it carries no detail:
-/// *"storage backends should not leak implementation details (e.g. SQL
-/// errors) into OAuth error responses."* That is a reason to keep the detail
-/// out of the **response**, not out of the **logs** — collapsing every
-/// `CratestackError` into `Storage` silently would make a policy denial (a `sys`
-/// context that somehow lost the `system` role) indistinguishable from a
-/// genuine outage in the one place a human could tell them apart.
-fn log_and_opaque(context: &'static str, error: &CratestackError) -> OpError {
+/// Returns `authkestra_engine::store::StoreError`, not `authkestra_op::OpError`
+/// — as of authkestra-engine 0.8.0, `ClientStore`/`ClientAssertionStore`
+/// (the two traits this function backs) are defined against `StoreError`;
+/// `authkestra_op::error::OpError`'s own `From<StoreError>` impl is what
+/// collapses an opaque `StoreError::Internal(..)` into `OpError::Storage`
+/// at the one call site inside the OP that actually needs an `OpError`
+/// (`authkestra_op::handlers::authorize::handle_authorize`). That impl's
+/// own doc comment is where "storage backends should not leak
+/// implementation details (e.g. SQL errors) into OAuth error responses"
+/// lives now — the reasoning this function's own doc used to cite
+/// directly from `OpError::Storage` before that type moved out of the
+/// return path here. Keeping detail out of the **response** was always
+/// the point, not out of the **logs** — collapsing every `CratestackError`
+/// into an opaque store error silently would make a policy denial (a
+/// `sys` context that somehow lost the `system` role) indistinguishable
+/// from a genuine outage in the one place a human could tell them apart.
+fn log_and_opaque(context: &'static str, error: &CratestackError) -> StoreError {
     tracing::error!(context, error = %error, "sms-auth delegate call failed");
-    OpError::Storage
+    StoreError::Internal("sms-auth delegate call failed".to_owned())
 }
 
 /// `OauthClient` as read from the database cannot become a valid
@@ -57,6 +78,20 @@ enum RegistrationError {
 ///
 /// A free function, not inlined into [`SmsClientStore::find_client`], so it
 /// can be exercised without a database — everything here is pure.
+///
+/// `#[allow(deprecated)]`: `ClientRegistration::require_pkce` is deprecated
+/// as of authkestra-engine 0.8.0 — PKCE is now mandatory, unconditionally,
+/// for every client on the authorization-code grant (OAuth 2.1 §4.1,
+/// authkestra#273), so neither `handlers::authorize` nor `handlers::token`
+/// reads this field any more (§4.3/#194's own login flow already sent PKCE
+/// on every request, so nothing here changes behaviourally). The field
+/// still has to be populated: `ClientRegistration` derives no `Default`, so
+/// there is no `..Default::default()` seam to omit it through. `schema.cstack`'s
+/// own `OauthClient.requirePkce` column is now dead weight this store reads
+/// and immediately discards — worth a schema decision (drop the column) at
+/// some point, but not one this dependency bump makes unilaterally; see
+/// AGENTS.md's authkestra-0.8 section, item A5.
+#[allow(deprecated)]
 fn to_registration(row: schema::OauthClient) -> Result<ClientRegistration, RegistrationError> {
     let jwks = row
         .jwks
@@ -138,6 +173,20 @@ fn to_registration(row: schema::OauthClient) -> Result<ClientRegistration, Regis
 ///
 /// Per R1, this is a `CrateStack` delegate read, not raw `sqlx` — see the
 /// worked example in §4.2 of the design doc, which this mirrors.
+///
+/// `#[derive(Clone)]`, required since authkestra-engine 0.8.0:
+/// `authkestra_op::CloneableOpStore` (the trait `authkestra-axum`'s
+/// `axum_token_handler` now requires — see `sms_auth::op`'s own doc, and
+/// AGENTS.md item A2) is blanket-implemented for any `OpStore + Clone`,
+/// and `CompositeOpStore<C, ...>` only derives `Clone` when every one of
+/// its store type parameters does. This `Clone` shares state correctly —
+/// see `CloneableOpStore`'s own doc on why that matters — because both
+/// fields are themselves cheap, state-sharing handles: `Arc<Cratestack>`
+/// clones the pool handle, not the pool, and `CratestackContext` was
+/// already `Clone` before this (see `SmsClientStore::new`'s caller,
+/// `machine_only_store`, which already called `.clone()` on both before
+/// this derive existed).
+#[derive(Clone)]
 pub struct SmsClientStore {
     db: Arc<Cratestack>,
     sys: CratestackContext,
@@ -154,7 +203,18 @@ impl SmsClientStore {
 
 #[async_trait]
 impl ClientStore for SmsClientStore {
-    async fn find_client(&self, client_id: &str) -> Result<Option<ClientRegistration>, OpError> {
+    // `&mut self`, not `&self`: authkestra-engine 0.8.0's `ClientStore`
+    // trait (`authkestra_op::ClientStore` is now a re-export of it) takes
+    // `&mut self` on every method — a real signature change this impl
+    // must match exactly, not a mechanical relaxation. Nothing in this
+    // body actually mutates `self`; the mutability exists so a stateful
+    // backend (a connection with an in-flight transaction, a
+    // non-thread-safe cache) *can*, not so every implementor must. See
+    // AGENTS.md item A1.
+    async fn find_client(
+        &mut self,
+        client_id: &str,
+    ) -> Result<Option<ClientRegistration>, StoreError> {
         let found = self
             .db
             .oauth_client()
@@ -175,7 +235,7 @@ impl ClientStore for SmsClientStore {
             .transpose()
             .map_err(|e| {
                 tracing::error!(error = %e, "sms-auth: stored client failed to parse");
-                OpError::Storage
+                StoreError::Internal("sms-auth: stored client failed to parse".to_owned())
             })
     }
 }
@@ -194,6 +254,10 @@ impl ClientStore for SmsClientStore {
 /// reaping expired rows is a scheduled job's concern (§2.10's
 /// `client_assertions_expiry_idx` exists for that job's query), not
 /// something a `record_jti` call should ever do inline.
+///
+/// `#[derive(Clone)]` for the identical reason [`SmsClientStore`] carries
+/// one now — see that type's own doc.
+#[derive(Clone)]
 pub struct SmsClientAssertionStore {
     db: Arc<Cratestack>,
     sys: CratestackContext,
@@ -210,7 +274,15 @@ impl SmsClientAssertionStore {
 
 #[async_trait]
 impl ClientAssertionStore for SmsClientAssertionStore {
-    async fn record_jti(&self, jti: &str, expires_at: DateTime<Utc>) -> Result<bool, OpError> {
+    // `&mut self` and `StoreError`, not `&self`/`OpError` — same move as
+    // `ClientStore` above (AGENTS.md item A3): `ClientAssertionStore`
+    // moved to `authkestra_engine::store::traits` in 0.8.0, taking
+    // `&mut self` and `StoreError` with it.
+    async fn record_jti(
+        &mut self,
+        jti: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<bool, StoreError> {
         match self
             .db
             .client_assertion()
@@ -275,6 +347,13 @@ mod tests {
     }
 
     #[test]
+    // `require_pkce` is deprecated (authkestra-engine 0.8.0, PKCE now
+    // mandatory unconditionally — see `to_registration`'s own doc, item
+    // A5) but this test still asserts the mapping round-trips correctly:
+    // the column and the field both still exist, `to_registration` still
+    // maps one onto the other, and that mapping is still worth a passing
+    // test even though nothing downstream reads the result any more.
+    #[allow(deprecated)]
     fn maps_a_private_key_jwt_client_end_to_end() {
         let reg = to_registration(row(|i| i)).expect("valid row parses");
 
@@ -295,6 +374,8 @@ mod tests {
     }
 
     #[test]
+    // Same reasoning as the previous test's own `#[allow(deprecated)]`.
+    #[allow(deprecated)]
     fn maps_a_public_client_with_no_jwks() {
         let reg = to_registration(row(|i| CreateOauthClientInput {
             tokenEndpointAuthMethod: ClientAuthMethod::none,

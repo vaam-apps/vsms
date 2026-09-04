@@ -7,10 +7,10 @@ use authkestra_axum::helpers::AxumError;
 use authkestra_axum::op::axum_token_handler;
 use authkestra_engine::TokenManager;
 use authkestra_engine::token::jwk::Jwk;
-use authkestra_op::OpStore;
 use authkestra_op::config::OpConfig;
 use authkestra_op::handlers::discovery::OidcDiscovery;
 use authkestra_op::handlers::jwks::JwksResponse;
+use authkestra_op::{CloneableOpStore, OpStore};
 use axum::extract::{FromRef, State};
 use axum::middleware::from_fn_with_state;
 use axum::routing::{get, post};
@@ -53,12 +53,26 @@ impl OpState {
 
     /// The OP's store, for [`crate::login`]'s own call into
     /// `authkestra_op::handlers::authorize::handle_authorize` — that
-    /// function takes `&dyn OpStore` directly rather than going through
-    /// axum's `FromRef`/`State` machinery the way the generated
-    /// `/token` handler does, so this is a plain accessor rather than a
-    /// second `FromRef` impl.
-    pub(crate) fn store(&self) -> Arc<dyn OpStore> {
-        self.store.clone()
+    /// function takes `&mut dyn OpStore` directly (every `OpStore` method
+    /// takes `&mut self` as of authkestra-op 0.8.0 — see AGENTS.md's
+    /// authkestra-0.8 section, item A1) rather than going through axum's
+    /// `FromRef`/`State` machinery the way the generated `/token` handler
+    /// does, so this is a plain accessor rather than a second `FromRef`
+    /// impl.
+    ///
+    /// Returns an owned `Box<dyn OpStore>`, not `Arc<dyn OpStore>` — an
+    /// `Arc` only ever gives shared (`&`) access to what it points at, and
+    /// `handle_authorize` needs `&mut`. `(*self.store).clone()` clones the
+    /// `MachineOnlyOpStore` value itself, which is cheap and correct
+    /// precisely because that `Clone` shares state rather than
+    /// duplicating it (`Arc<Cratestack>`/`CratestackContext` inside —
+    /// see `SmsClientStore`'s own doc on why its `Clone` is safe under
+    /// `CloneableOpStore`'s contract) — the same clone-a-handle-per-call
+    /// shape `axum_token_handler` itself now performs internally via
+    /// `CloneableOpStore::clone_op_store`, just called from here instead
+    /// of from inside that generated handler.
+    pub(crate) fn store(&self) -> Box<dyn OpStore> {
+        Box::new((*self.store).clone())
     }
 
     /// The OP's config, for the same caller and the same reason as
@@ -81,9 +95,20 @@ impl OpState {
     }
 }
 
-impl FromRef<OpState> for Result<Arc<dyn OpStore>, AxumError> {
+// `Arc<dyn CloneableOpStore>`, not `Arc<dyn OpStore>` — authkestra-axum
+// 0.8.0's `axum_token_handler` requires
+// `Result<Arc<dyn authkestra_op::CloneableOpStore>, AxumError>: FromRef<AppState>`
+// (see AGENTS.md's authkestra-0.8 section, item A2), so it can clone its
+// own short-lived, mutable, per-request store handle
+// (`CloneableOpStore::clone_op_store`) out of the one shared `Arc` this
+// impl hands it, rather than needing `&mut` access to shared state
+// itself. `MachineOnlyOpStore` (`= CompositeOpStore<...>`) satisfies
+// `CloneableOpStore` via its blanket impl for any `OpStore + Clone +
+// 'static` — see `SmsClientStore`'s/`SmsClientAssertionStore`'s own
+// `#[derive(Clone)]` doc for why that `Clone` is correct to rely on here.
+impl FromRef<OpState> for Result<Arc<dyn CloneableOpStore>, AxumError> {
     fn from_ref(state: &OpState) -> Self {
-        Ok(state.store.clone() as Arc<dyn OpStore>)
+        Ok(state.store.clone() as Arc<dyn CloneableOpStore>)
     }
 }
 

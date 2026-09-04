@@ -100,20 +100,52 @@ async fn login_handler(
         attributes: std::collections::HashMap::new(),
     };
 
-    let authorize_request = AuthorizeRequest {
-        client_id: request.client_id,
-        redirect_uri: request.redirect_uri,
-        response_type: request.response_type,
-        scope: request.scope,
-        state: Some(request.state),
-        code_challenge: Some(request.code_challenge),
-        code_challenge_method: Some(request.code_challenge_method),
-        nonce: Some(request.nonce),
+    // `AuthorizeRequest` is `#[non_exhaustive]` as of authkestra-op 0.8.0
+    // (see AGENTS.md's authkestra-0.8 section, item A7), so the struct
+    // literal this handler used to build no longer compiles
+    // from outside the crate (E0639: cannot construct a non-exhaustive
+    // struct using struct-literal syntax). No public constructor or
+    // builder exists for it — checked directly against the vendored
+    // 0.8.0 source, not assumed — but the type still derives
+    // `serde::Deserialize` (it's designed to be deserialized straight off
+    // an inbound `/authorize` request in the first place), so building the
+    // wire shape by hand and deserializing it is the construction path
+    // the type itself leaves open. This is a real behavioural difference
+    // worth being honest about, not just a syntax workaround: a future
+    // authkestra release narrowing or retyping a field used to be a
+    // compile error here (a struct literal with the wrong field types
+    // fails to build); it is now a runtime `Err` on the very next login
+    // attempt instead, caught by `login_flow_live_postgres.rs`'s live
+    // suite rather than by `cargo check`.
+    let authorize_request: AuthorizeRequest = match serde_json::from_value(serde_json::json!({
+        "client_id": request.client_id,
+        "redirect_uri": request.redirect_uri,
+        "response_type": request.response_type,
+        "scope": request.scope,
+        "state": request.state,
+        "code_challenge": request.code_challenge,
+        "code_challenge_method": request.code_challenge_method,
+        "nonce": request.nonce,
+    })) {
+        Ok(authorize_request) => authorize_request,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "login: building AuthorizeRequest from the login form's own fields failed"
+            );
+            return error_response(StatusCode::INTERNAL_SERVER_ERROR, "internal_error");
+        }
     };
 
     let config = state.op.config();
-    let store = state.op.store();
-    match handle_authorize(authorize_request, identity, &config, store.as_ref()).await {
+    // An owned, mutable store — not `Arc<dyn OpStore>` any more.
+    // `handle_authorize` takes `&mut dyn OpStore` as of authkestra-op
+    // 0.8.0 (every `OpStore` method does — AGENTS.md item A1), and an
+    // `Arc` only ever gives shared access to what it points at. See
+    // `OpState::store`'s own doc for why `Box<dyn OpStore>` from a fresh
+    // clone is the right shape here.
+    let mut store = state.op.store();
+    match handle_authorize(authorize_request, identity, &config, store.as_mut()).await {
         AuthorizeOutcome::Redirect(url) => (
             StatusCode::OK,
             Json(serde_json::to_value(LoginResponse { redirect: url }).unwrap_or_default()),

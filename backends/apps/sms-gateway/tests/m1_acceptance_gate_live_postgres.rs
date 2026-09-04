@@ -73,7 +73,6 @@
 //! cargo test -p sms-gateway --test m1_acceptance_gate_live_postgres -- --ignored --nocapture
 //! ```
 
-use std::collections::HashMap;
 use std::net::TcpListener as StdTcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration as StdDuration;
@@ -413,21 +412,37 @@ fn sign_developer_stand_in_token(
         serde_json::Value::String("message:read".to_owned()),
         serde_json::Value::String("message:send".to_owned()),
     ];
-    let mut extra = HashMap::new();
-    extra.insert("perms".to_owned(), serde_json::Value::Array(perms));
 
-    let claims = Claims {
-        iss: Some(issuer.to_owned()),
-        sub: sub.to_owned(),
-        aud: None,
-        exp,
-        iat: now,
-        nbf: None,
-        jti: None,
-        scope: None,
-        identity: None,
-        extra,
-    };
+    // authkestra-engine 0.8.0 marked `Claims` `#[non_exhaustive]` (see
+    // AGENTS.md's authkestra-0.8 section, item A7's own finding —
+    // `AuthorizeRequest` in `login.rs` hit the identical shape), so the
+    // struct literal this function used to build no longer compiles from
+    // outside the crate (E0639: cannot construct a non-exhaustive struct).
+    // `Claims` still derives `serde::Deserialize` — it's the exact type
+    // `validate_jwt_generic::<Claims>` decodes every real token into — so
+    // building the wire shape by hand and deserializing it is the
+    // sanctioned construction path a `#[non_exhaustive]` DTO with no
+    // public constructor leaves open, and it produces the real `Claims`
+    // type `GatewayAuth` will decode this signed token back into, not a
+    // local stand-in shape that could drift from it.
+    let mut claims_value = serde_json::json!({
+        "iss": issuer,
+        "sub": sub,
+        "aud": null,
+        "exp": exp,
+        "iat": now,
+        "nbf": null,
+        "jti": null,
+        "scope": null,
+    });
+    if let serde_json::Value::Object(fields) = &mut claims_value {
+        fields.insert("perms".to_owned(), serde_json::Value::Array(perms));
+    }
+    let claims: Claims = serde_json::from_value(claims_value).expect(
+        "hand-built JSON matches Claims's own field names exactly — see this function's own \
+         doc comment for why deserialization replaces the struct literal this test used before \
+         authkestra-engine 0.8.0",
+    );
 
     jsonwebtoken::encode(&header, &claims, &encoding_key)
         .expect("signing the hand-crafted developer-perms stand-in token")

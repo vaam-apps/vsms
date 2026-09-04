@@ -144,9 +144,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
 dependencies = [
  "base64ct",
- "blake2",
+ "blake2 0.10.6",
  "cpufeatures 0.2.17",
- "password-hash",
+ "password-hash 0.5.0",
+]
+
+[[package]]
+name = "argon2"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "134c52ddac6d63c576bef8168db10c83c49c26444ecbc68060fef078925a901c"
+dependencies = [
+ "base64ct",
+ "blake2 0.11.0",
+ "cpufeatures 0.3.0",
+ "password-hash 0.6.1",
 ]
 
 [[package]]
@@ -225,9 +237,9 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
 name = "authkestra-axum"
-version = "0.5.4"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ec7708d6dd57b34e1a1670dbc61913865e516caf634562fb6e3a56b273ad3f"
+checksum = "e9d94d4576db954cb4a6eed69c084c0723ce716513ccbbfb944904e953833b13"
 dependencies = [
  "authkestra-engine",
  "authkestra-op",
@@ -244,13 +256,27 @@ dependencies = [
 ]
 
 [[package]]
-name = "authkestra-engine"
-version = "0.5.4"
+name = "authkestra-crypto-util"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b72d1e2a8f90ebb6403a26b937e6f253774dc68052f71fdc1dfa8d6efe784282"
+checksum = "fbf6632253f2a39532677152cc6757a312deaad746617e5c54a833adf74f8e5d"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "authkestra-engine"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "585833ff3b94a7d9c5bb150bf8564294fc0ac943c5af44133c3394452fdd3560"
 dependencies = [
  "aes-gcm",
+ "argon2 0.6.0",
  "async-trait",
+ "authkestra-crypto-util",
  "base64 0.22.1",
  "chrono",
  "ed25519-dalek",
@@ -271,16 +297,17 @@ dependencies = [
 
 [[package]]
 name = "authkestra-op"
-version = "0.5.4"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "370a8a23c98b688d76005482f8c6305f744d6ae021c4bcccf3a05686b852e7c3"
+checksum = "27312eeb69fa9c5ce78ee52f02e22f5fb827da3ce2755b197d7c0f4a6eea4247"
 dependencies = [
- "argon2",
  "async-trait",
+ "authkestra-crypto-util",
  "authkestra-engine",
  "authkestra-resource",
  "base64 0.22.1",
  "chrono",
+ "ed25519-dalek",
  "jsonwebtoken",
  "rand 0.9.5",
  "serde",
@@ -294,13 +321,14 @@ dependencies = [
 
 [[package]]
 name = "authkestra-resource"
-version = "0.5.4"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eeeeca2810e3f3507d2a4ed8a6eba5288e425ac49d5c8a985ca8c671cc04af0b"
+checksum = "4241fc9910b34a17c936b49cda6b67b551a41b334ac7ba56d4cdd43738325c31"
 dependencies = [
  "async-trait",
  "authkestra-engine",
  "base64 0.22.1",
+ "chrono",
  "http",
  "jsonwebtoken",
  "reqwest 0.13.4",
@@ -309,6 +337,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -430,6 +459,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
 dependencies = [
  "digest 0.10.7",
+]
+
+[[package]]
+name = "blake2"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5b5d4d889834ee8ecfc0f8426ad30faf7cdcb10f741a8e6d7224d95325479f6f"
+dependencies = [
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -2215,6 +2253,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "password-hash"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aab41826031698d6ffcd9cff78ef56ef998e39dc7e5067cdfebe373842d4723b"
+dependencies = [
+ "getrandom 0.4.3",
+ "phc",
+]
+
+[[package]]
 name = "pem"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2238,6 +2286,17 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
+
+[[package]]
+name = "phc"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44dc769b75f93afdddd8c7fa12d685292ddeff1e66f7f0f3a234cf1818afe892"
+dependencies = [
+ "base64ct",
+ "ctutils",
+ "getrandom 0.4.3",
+]
 
 [[package]]
 name = "pin-project-lite"
@@ -3119,6 +3178,7 @@ dependencies = [
  "rand 0.8.7",
  "reqwest 0.12.28",
  "rsa",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3169,7 +3229,7 @@ dependencies = [
 name = "sms-core"
 version = "0.2.1"
 dependencies = [
- "argon2",
+ "argon2 0.5.3",
  "rand 0.8.7",
  "thiserror",
 ]
