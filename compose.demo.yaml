@@ -71,9 +71,12 @@ name: vsms-demo
 # already publishes to `ghcr.io/${{ github.repository_owner }}/...`
 # unconditionally (correct, untouched by this change), so `v0.3.0` and
 # every tag after it lands under the new owner. Showcasing an older
-# release means setting BOTH knobs together —
-# `VSMS_IMAGE_OWNER=vymalo VSMS_IMAGE_TAG=v0.2.1` — never one without the
-# other, since no image was ever published under a mismatched pair.
+# release means setting the owner together with EVERY tag knob in this
+# file — `VSMS_IMAGE_TAG`, `VSMS_DEMO_IMAGE_TAG` and
+# `VSMS_FAKE_ORANGE_IMAGE_TAG` — never a subset: no image was ever
+# published under a mismatched pair, so a knob left at its `v0.3.0`
+# default under `VSMS_IMAGE_OWNER=vymalo` fails at pull time with
+# `manifest unknown`. docs/runbooks/showcase.adoc has the full command.
 #
 # **`v0.3.0` (this file's own default) is the release this PR prepares —
 # the tag is cut immediately after this change merges, so at merge time
@@ -274,11 +277,12 @@ services:
   # `v0.2.1` — see the header): `--webhook-url`/`--webhook-secret-out`
   # did not exist in `v0.2.1` — they land in `v0.3.0`, this file's
   # default tag, for the first time, so no default-tag special-casing is
-  # needed here any more. Showcasing `v0.2.1` (via `VSMS_DEMO_IMAGE_TAG`)
-  # still hits the old gap: `--profile demo` at that tag fails loudly at
-  # this one-shot (`unexpected argument '--webhook-url'`) rather than at
-  # interpolation time — accepted, since the fix is "use a newer tag,"
-  # not something this file can paper over for an older one.
+  # needed here any more. Showcasing `v0.2.1` (`VSMS_IMAGE_OWNER=vymalo`
+  # plus every tag knob — see the header) still hits the old gap:
+  # `--profile demo` at that tag fails loudly at this one-shot
+  # (`unexpected argument '--webhook-url'`) rather than at interpolation
+  # time — accepted, since the fix is "use a newer tag," not something
+  # this file can paper over for an older one.
   seed-demo-webhook:
     image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64

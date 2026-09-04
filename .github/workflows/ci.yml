@@ -184,9 +184,11 @@ jobs:
           cargo publish --dry-run
         working-directory: sdks/rust/vsms-sdk-rust
 
+      # `--locked` for the same reason as the SDK step above: this
+      # workspace has its own lockfile nothing else checks.
       - name: Examples (Rust) — cargo check and clippy
         run: |
-          cargo check --all-targets
+          cargo check --locked --all-targets
           cargo clippy --all-targets -- -D warnings
         working-directory: examples/rust
 

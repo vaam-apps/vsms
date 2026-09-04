@@ -2048,15 +2048,32 @@ Every image through `v0.2.1` published under `ghcr.io/vymalo/...`;
 unconditionally, so `v0.3.0` lands under `ghcr.io/vaam-store/...`.
 Compose/chart defaults (`VSMS_IMAGE_OWNER`, `repositoryOwner`) now default
 to `vaam-store`/`v0.3.0`; showcasing an older release means setting the
-owner and tag knobs together, never one alone. The npm package name
+owner together with *every* tag knob a file has (`compose.demo.yaml` has
+three, `deploy/docker-compose.yml` one), never a subset. The npm package name
 (`@vymalo/vsms-node`) and the crates.io crate (`vsms-sdk-rust`) do **not**
 change — an npm scope, not the GitHub owner.
 
 **Ordering constraint:** `examples/node/demo-app/package.json`'s
-`@vymalo/vsms-node` dependency stays `^0.2.1` here, on purpose — the
-demo-app image is built by the same tag workflow that publishes `0.3.0`
-to npm, so at build time `0.3.0` doesn't exist there yet. Bumped to
-`^0.3.0` after the release, as a follow-up.
+`@vymalo/vsms-node` dependency stays `^0.2.1` here, on purpose. The first
+draft of this paragraph gave the wrong mechanism ("0.3.0 doesn't exist on
+npm when the image builds") — the demo app's own committed
+`pnpm-lock.yaml` pins exactly 0.2.1 and its Dockerfile installs with
+`--frozen-lockfile`, so the image resolves 0.2.1 regardless of what npm
+holds. The real constraint is the converse: the specifier cannot be
+bumped *now* because regenerating that lockfile needs 0.3.0 resolvable
+from npm, and a hand-edited lock fails `--frozen-lockfile`. Nothing is
+lost by waiting: `git diff v0.2.1..HEAD -- sdks/node/vsms-sdk-node/src`
+is a rename of a non-exported interface, no API or wire change. Bumped
+after the release, as a follow-up.
+
+**Registry-side, not in this tree:** npm Trusted Publishing for
+`@vymalo/vsms-node` is configured on npmjs.com against an `owner/repo` +
+workflow filename. It was set up as `vymalo/vsms`; the OIDC claim from
+the tag run now says `vaam-store/vsms`. Until the maintainer updates that
+entry, `publish-node-sdk` fails with the same masked `E404` the
+workflow's own comment records from v0.2.0. `release.yml`'s `version`
+job also now refuses a tag whose version differs from the workspace,
+Rust SDK and Node SDK manifests — nothing had compared them before.
 
 **Accepted:** compose/chart defaults point at images that don't exist
 until the `v0.3.0` tag runs, minutes after this merges. Two post-tag

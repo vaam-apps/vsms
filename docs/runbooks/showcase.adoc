@@ -238,11 +238,17 @@ instead. `VSMS_IMAGE_OWNER` (default `vaam-store`) is the other half of
 every image reference here -- this repository's own GitHub owner as of
 `v0.3.0`. Every image through `v0.2.1` published under the prior owner,
 `ghcr.io/vymalo/...` -- showcasing one of those older releases means
-setting BOTH knobs together, never one without the other:
+setting the owner together with EVERY tag knob this file has (there are
+three: `VSMS_IMAGE_TAG` for the four production images,
+`VSMS_DEMO_IMAGE_TAG` for `vsms/demo`, `VSMS_FAKE_ORANGE_IMAGE_TAG` for
+`vsms/sms-fake-orange`), never a subset -- a knob left at its `v0.3.0`
+default resolves to `ghcr.io/vymalo/...:v0.3.0`, an image that was never
+published under that owner, and the pull fails with `manifest unknown`:
 
 [,bash]
 ----
 VSMS_IMAGE_OWNER=vymalo VSMS_IMAGE_TAG=v0.2.1 \
+VSMS_DEMO_IMAGE_TAG=v0.2.1 VSMS_FAKE_ORANGE_IMAGE_TAG=v0.2.1 \
   docker compose -f compose.demo.yaml --profile console --profile demo up -d
 ----
 
@@ -252,11 +258,11 @@ to have different requirements between them: `seed-demo-webhook`
 image, `--webhook-url`/`--webhook-secret-out`) needs flags that did not
 exist in `v0.2.1`. They land in `v0.3.0`, this file's default tag, for
 the first time, so the default now works for both services without any
-override. Showcasing `v0.2.1` (via `VSMS_DEMO_IMAGE_TAG=v0.2.1`) still
-hits the old gap: `--profile demo` at that tag fails loudly at that
-one-shot (`unexpected argument '--webhook-url'`) -- accepted, since the
-fix is "use a newer tag," not something this file papers over for an
-older one. `demo-app` is a THIRD non-production image, and still
+override. Showcasing `v0.2.1` (all four knobs, as above) still hits the
+old gap: `--profile demo` at that tag fails loudly at that one-shot
+(`unexpected argument '--webhook-url'`) -- accepted, since the fix is
+"use a newer tag," not something this file papers over for an older
+one. `demo-app` is a THIRD non-production image, and still
 doesn't fit either pattern: no
 `ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app` has been
 published yet (the `.github/workflows/release.yml` matrix entry that

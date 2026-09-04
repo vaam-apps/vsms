@@ -41,6 +41,23 @@ jobs:
       app_version: ${{ steps.v.outputs.app_version }}
       is_tag: ${{ steps.v.outputs.is_tag }}
     steps:
+      - uses: actions/checkout@v4
+      # A tag names the version every artifact below ships as: images get
+      # the tag verbatim, crates.io and npm get whatever the manifests say.
+      # Nothing else compares the two, so a tag pushed against manifests
+      # still at the previous version would publish images at vX while the
+      # SDKs silently land as Y. Refuse that here, before any job runs.
+      - name: tag matches the manifest versions
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          WS="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          RUST_SDK="$(sed -n 's/^version = "\(.*\)"$/\1/p' sdks/rust/vsms-sdk-rust/Cargo.toml | head -1)"
+          NODE_SDK="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' sdks/node/vsms-sdk-node/package.json | head -1)"
+          echo "tag=${TAG} workspace=${WS} rust-sdk=${RUST_SDK} node-sdk=${NODE_SDK}"
+          for v in "$WS" "$RUST_SDK" "$NODE_SDK"; do
+            [[ "$v" == "$TAG" ]] || { echo "::error::tag v${TAG} does not match a manifest version (see above)"; exit 1; }
+          done
       - id: v
         run: |
           SHA_SHORT="${GITHUB_SHA:0:12}"
