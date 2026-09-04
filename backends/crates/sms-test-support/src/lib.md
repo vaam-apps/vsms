@@ -320,3 +320,34 @@ one live suite that needs no database and so never calls
 `database_url` — it already installs the provider itself, for the same
 reason its own module doc gives (it exists specifically to prove this
 exact ordering, independently of this crate).
+
+**Correction, authkestra 0.8.0 bump (AGENTS.md's authkestra-0.8 section):
+the trigger condition this section describes — "fetches the issuer's
+JWKS over HTTP" — stopped being accurate the moment that dependency
+bumped, and the gap it left was not a live-suite gap this crate could
+close at all.** `authkestra_resource::jwt::JwksCache` gained an
+eagerly-built `client: reqwest::Client` field in 0.8.0 (0.5.4's own
+`JwksCache` had no `client` field, and never touched `reqwest` before an
+actual fetch — verified by reading both vendored sources directly, not
+inferred) — so `reqwest::Client::new()`, and therefore the crypto-provider
+panic, now fires the instant a `JwksCache` (and so a `GatewayAuth`) is
+*constructed*, whether or not anything is ever fetched. Found live by
+`cargo test -p sms-api --lib` (no `--ignored`, no database) failing five
+tests that never perform an HTTP call at all — `sms-api`'s own
+`auth::tests`/`router::tests` construct a bare `GatewayAuth` against an
+unreachable JWKS URL specifically *because* they never intend to reach
+the network, and none of them call [`database_url`], so
+[`install_default_crypto_provider`]'s own "every live suite already
+calls `database_url`" reasoning above never reached them — nor could it,
+since they are not live suites at all. Fixed at the actual choke point
+instead: `GatewayAuth::new` (`backends/crates/sms-api/src/auth.rs`) now installs
+the provider itself, idempotently, the same `let _ = rustls::crypto::ring::
+default_provider().install_default();` shape [`install_default_crypto_provider`]
+already uses, and for the identical reason `cratestack-client-rust`'s own
+`CratestackClient::new` does the same (AGENTS.md's "aws-lc-rs enters this
+tree from authkestra alone" section) — a library that itself constructs a
+`reqwest::Client` internally should not depend on every caller, live suite
+or plain unit test, remembering to install a provider first. This is a
+strictly stronger fix than adding another call to [`database_url`] would
+have been: it protects every current and future caller of `GatewayAuth::new`
+by construction, not just the ones that happen to be live-Postgres suites.

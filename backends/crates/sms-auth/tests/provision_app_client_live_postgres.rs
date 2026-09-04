@@ -45,7 +45,7 @@ use std::sync::Arc;
 use authkestra_axum::helpers::AxumError;
 use authkestra_axum::op::axum_token_handler;
 use authkestra_engine::TokenManager;
-use authkestra_op::OpStore;
+use authkestra_op::CloneableOpStore;
 use authkestra_op::config::OpConfig;
 use axum::Router;
 use axum::extract::FromRef;
@@ -151,9 +151,12 @@ struct OpState {
     config: OpConfig,
 }
 
-impl FromRef<OpState> for Result<Arc<dyn OpStore>, AxumError> {
+// `Arc<dyn CloneableOpStore>`, not `Arc<dyn OpStore>` — see
+// `backends/apps/sms-gateway/src/op.rs`'s own identical `FromRef` impl,
+// and AGENTS.md's authkestra-0.8 section item A2.
+impl FromRef<OpState> for Result<Arc<dyn CloneableOpStore>, AxumError> {
     fn from_ref(state: &OpState) -> Self {
-        Ok(state.store.clone() as Arc<dyn OpStore>)
+        Ok(state.store.clone() as Arc<dyn CloneableOpStore>)
     }
 }
 

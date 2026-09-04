@@ -173,6 +173,23 @@ pub async fn load_signing_keys(
 /// shared store before human sessions could survive a restart hitting the
 /// other replica — not a concern today, and flagged here for whoever adds
 /// one.
+///
+/// Five explicit type parameters, not six — `CompositeOpStore` gained a
+/// sixth, `P` (its `DPoP`-replay-store slot), in authkestra-op 0.8.0
+/// (`CompositeOpStore<C, A, R, D, J = NoClientAssertionStore, P =
+/// NoDpopReplayStore>`, both `J` and `P` defaulted). Naming five here
+/// leaves `P` at its default, `NoDpopReplayStore` — a deliberate choice,
+/// not an oversight left over from the type only having five slots before
+/// 0.8.0. `NoDpopReplayStore::check_and_record_dpop_jti` refuses every
+/// `DPoP` proof outright (fails closed, the same posture
+/// `NoClientAssertionStore` already has for a deployment that hasn't
+/// wired a `ClientAssertionStore` — see that type's own doc), which is
+/// correct here: no `DPoP` client exists anywhere in this deployment
+/// (`sms_auth::op`'s own module doc — machine callers use
+/// `private_key_jwt`, not `DPoP`-bound tokens), so refusing every `DPoP`
+/// proof this OP is never sent is a no-op, not a restriction. Revisit
+/// only if a real `DPoP`-bound caller is ever added, the same way
+/// `with_client_assertion_store` was wired in for `private_key_jwt`.
 pub type MachineOnlyOpStore = CompositeOpStore<
     SmsClientStore,
     MemoryStore<authkestra_op::code::AuthorizationCode>,

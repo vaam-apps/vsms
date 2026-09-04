@@ -59,6 +59,14 @@ sms-provider.workspace = true
 # keygen snippet is duplicated here rather than shared.
 authkestra-engine.workspace = true
 authkestra-resource.workspace = true
+# `GatewayAuth::new` (auth.rs) needs this directly — see that constructor's
+# own comment on `rustls::crypto::ring::default_provider().install_default()`.
+# Named directly rather than left transitive so that comment's own claim
+# (which crate installs the provider, and why) is checkable against this
+# manifest, the same reasoning the root `Cargo.toml`'s own `rustls` entry
+# already gives for the two binaries. Same version already resolved
+# workspace-wide (0.23.x) — this doesn't fork the rustls tree.
+rustls.workspace = true
 jsonwebtoken.workspace = true
 # router.rs's `client_id_fingerprint` (#153): a lightweight, unverified
 # base64url decode of a bearer JWT's payload segment, to partition

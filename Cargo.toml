@@ -131,7 +131,11 @@ cratestack-codec-json = "=0.11.0"
 
 # OIDC provider. Pinned exactly, same reasoning as cratestack above — see
 # AGENTS.md. 0.3.2 fixed the `GrantType` serde bug that shaped early M1
-# design (#6): don't drop below it.
+# design (#6): don't drop below it. Bumped 0.5.4 -> 0.8.0 — see AGENTS.md's
+# authkestra-0.8 section for the full audit (OpStore's `&mut self` methods,
+# ClientStore/ClientAssertionStore relocating to authkestra-engine,
+# CompositeOpStore's new 6th (DPoP) type parameter, PKCE going
+# unconditional, and AuthorizeRequest/Claims both going #[non_exhaustive]).
 #
 # `default-features = false, features = ["rustls-no-provider"]`: authkestra's
 # own reqwest 0.13 dependency otherwise defaults to `aws-lc-rs`, the only
@@ -144,29 +148,45 @@ cratestack-codec-json = "=0.11.0"
 # binary's `main()` makes before constructing any HTTP client — see that
 # call site's own comment for why ordering there is load-bearing, and
 # AGENTS.md for the live-TLS test that proves this path actually works
-# rather than panicking at the first outbound call.
-authkestra-op = { version = "=0.5.4", default-features = false, features = ["rustls-no-provider"] }
+# rather than panicking at the first outbound call. Re-verified still true
+# at 0.8.0 — the feature exists unchanged on all four crates.
+authkestra-op = { version = "=0.8.0", default-features = false, features = ["rustls-no-provider"] }
 # Underpins authkestra-op (TokenManager, Engine, the generic MemoryStore<T>
 # op.rs uses for the authorization-code/refresh-token/device-code slots
 # this deployment doesn't populate — see op.rs's own doc). Not used
 # directly by application code beyond that; pinned because the whole
 # authkestra family moves in lockstep. Same `rustls-no-provider` reasoning
 # as authkestra-op above.
-authkestra-engine = { version = "=0.5.4", default-features = false, features = ["rustls-no-provider"] }
+authkestra-engine = { version = "=0.8.0", default-features = false, features = ["rustls-no-provider"] }
 # JWKS-backed token validation for the real AuthProvider (#21). Same pin
 # discipline as authkestra-op — the whole family moves in lockstep. Same
 # `rustls-no-provider` reasoning as authkestra-op above.
-authkestra-resource = { version = "=0.5.4", default-features = false, features = ["rustls-no-provider"] }
+authkestra-resource = { version = "=0.8.0", default-features = false, features = ["rustls-no-provider"] }
 # Wraps authkestra-op's handler functions into axum routes for the OP
 # itself (#20). Only the `op` feature: this deployment never uses the
 # `session`/`resource` extractors this crate also offers, since #21's
 # AuthProvider validates tokens directly through authkestra-resource
 # instead of authkestra-axum's own session/guard machinery. Same
 # `rustls-no-provider` reasoning as authkestra-op above.
-authkestra-axum = { version = "=0.5.4", default-features = false, features = ["op", "rustls-no-provider"] }
-# RSA signing keys for the OP (#20) — same rsa/rand versions authkestra-op
-# itself resolves to (verified against Cargo.lock), so this doesn't grow a
-# second copy of either crate's dependency tree.
+authkestra-axum = { version = "=0.8.0", default-features = false, features = ["op", "rustls-no-provider"] }
+# RSA signing keys for the OP (#20). `rsa` genuinely shares one resolved
+# copy with authkestra-op's own dependency (both are caret `0.9.x`
+# requirements — this pin's `0.9` and authkestra-engine 0.8.0's own
+# `rsa = "0.9.6"` — semver-unified by Cargo into the single `rsa 0.9.10`
+# entry in this workspace's own Cargo.lock, confirmed by grep, not
+# assumed). `rand` does not: this pin resolves to `rand 0.8.7`, while
+# authkestra-op/-engine 0.8.0 resolve to `rand 0.9.5` (their own
+# `[dependencies.rand] version = "0.9.2"`) — two real, separate copies in
+# this dependency tree, not the "same versions... doesn't grow a second
+# copy" this comment used to claim for both crates alike (true once, back
+# when authkestra was on an 0.8-compatible rand itself; stale since the
+# authkestra 0.8.0 bump moved only their pin, not this one). Moving this
+# pin to `"0.9"` to collapse the duplicate is a real, plausible follow-up —
+# not done here, since rand 0.9's own breaking `RngCore`/`CryptoRng`
+# changes need their own verification against `rsa` 0.9.10's actual trait
+# bounds before trusting `RsaPrivateKey::new(&mut OsRng, ...)` still
+# compiles unchanged, and a dependency-bump PR is not where that
+# verification belongs.
 rsa = "0.9"
 rand = "0.8"
 # #194: sms-auth::login's password hashing for human console logins — the

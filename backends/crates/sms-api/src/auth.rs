@@ -145,6 +145,41 @@ impl GatewayAuth {
     /// flow registers under (see [`GatewayAuth`]'s own field doc).
     #[must_use]
     pub fn new(db: Cratestack, jwks_url: String, issuer: String, human_client_id: String) -> Self {
+        // Found live while upgrading authkestra to 0.8.0 (AGENTS.md's
+        // authkestra-0.8 section): `JwksCache` gained an eagerly-built
+        // `client: reqwest::Client` field — `JwksCache::new` now calls
+        // `reqwest::Client::new()` directly, where 0.5.4's own `JwksCache`
+        // had no `client` field at all and never touched `reqwest` before
+        // an actual fetch. `reqwest::Client::new()` panics immediately,
+        // during construction, if `rustls-no-provider`'s crypto provider
+        // was never installed (AGENTS.md's "aws-lc-rs enters this tree
+        // from authkestra alone" section has the full mechanism) — so
+        // constructing a `JwksCache` now carries that precondition, not
+        // just *using* one. Both real production binaries already satisfy
+        // it (`rustls::crypto::ring::default_provider().install_default()`
+        // is the literal first line of each `main`), but nothing does for
+        // an in-process test — like this crate's own `auth::tests`/
+        // `router::tests` — that constructs a `GatewayAuth` without going
+        // through either `main`, which is exactly how this was found:
+        // `cargo test -p sms-api --lib` panicked on five tests that never
+        // perform an HTTP call at all, purely from building the
+        // `JwksCache` below.
+        //
+        // Installed here rather than fixed per test file, for the same
+        // reason `cratestack-client-rust`'s own `CratestackClient::new`
+        // already does this defensively (AGENTS.md, same section): a
+        // library that itself constructs a `reqwest::Client` internally
+        // should not depend on every caller remembering to install a
+        // provider first. Idempotent, not a `Once`/`OnceLock` — matching
+        // `sms_test_support::install_default_crypto_provider`'s own doc on
+        // why `let _ =`, never `.unwrap()`/`.expect(...)`: whichever of
+        // this call and a binary's own `main`-line call runs first wins,
+        // and every later call (by this same function running again, by a
+        // second `GatewayAuth` in the same process, or in principle by
+        // `reqwest`'s own lazy install happening first) is a harmless
+        // no-op `Err`, never a reason to fail.
+        let _ = rustls::crypto::ring::default_provider().install_default();
+
         // `require_kid(true)`: §5.4's own reasoning, re-verified against
         // 0.3.2 — the default `false` falls back to `jwks.keys[0]` on a
         // missing `kid`, which the moment two keys are published during

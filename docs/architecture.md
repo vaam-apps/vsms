@@ -1832,7 +1832,7 @@ The discriminator is worth noting: a client_credentials token has `identity: Non
 
 **#194 built this, and two things above turned out not to match the real, vendored `authkestra-op` 0.3.3 library** — recorded here rather than silently editing the prose above into agreement, per this file's own standing practice of naming a divergence rather than erasing it:
 
-- **`handle_authorization_code` never calls `issue_user_token_with_extra`.** It calls plain `issue_user_token`, which stamps no `extra` claims at all — so a human access token carries no `kind`, `role`, or `perms` claim, only the standard OIDC set plus `identity`. The discriminator above still holds (`claims.identity.is_some()` reliably means "human"), but role/perms cannot be read off the token. `sms_api::auth::GatewayAuth`'s real human path resolves them with a per-request, TTL-cached `User`/`Role` lookup instead (`backends/crates/sms-api/src/auth.rs`'s `authenticate_human`) — a deliberate, documented departure from "baked in at issuance," not an oversight, and arguably better: a role change or deactivation now takes effect within one cache TTL (60s) rather than the access token's full 15-minute lifetime.
+- **`handle_authorization_code` stamps no role-bearing `extra` claims.** At the vendored 0.3.3 it called plain `issue_user_token`; at 0.8.0 it calls `issue_user_token_with_extra`, but the only `extra` it ever populates is the DPoP `cnf` binding (`merge_dpop_cnf`) — never `kind`, `role`, or `perms`. So a human access token carries only the standard OIDC set plus `identity` (and, for a DPoP-bound client, `cnf`). The discriminator above still holds (`claims.identity.is_some()` reliably means "human"), but role/perms cannot be read off the token. `sms_api::auth::GatewayAuth`'s real human path resolves them with a per-request, TTL-cached `User`/`Role` lookup instead (`backends/crates/sms-api/src/auth.rs`'s `authenticate_human`) — a deliberate, documented departure from "baked in at issuance," not an oversight, and arguably better: a role change or deactivation now takes effect within one cache TTL (60s) rather than the access token's full 15-minute lifetime.
 - **A human token's `aud` is real** (`Some(client_id)`, i.e. `sms-console`) **and must be validated** — unlike a service-account token's self-referential `aud == sub == client_id`, which is why §4.2's own "disable audience validation" guidance exists. `GatewayAuth`'s single shared `jsonwebtoken::Validation` still carries `validate_aud = false` (it decodes both realms), so the human-only audience check is a manual, post-decode comparison in `authenticate_human` against a fixed `human_client_id` — not the library's own validation path.
 
 `sms_auth::login` (`backends/crates/sms-auth/src/login.rs`) is the piece this section never specified: what actually authenticates a human before `handle_authorize` can run. §4.3's own prose was silent on the mechanism; #194 settled it as local Argon2id password authentication against a new `UserCredential` model (deliberately *not* a field on `User` — see that model's own `schema.cstack` comment for why: §2.0's "no field-level read masking" means a password hash living on `User` would come back verbatim from `GET /users/{id}`), not a federated external IdP. See `sms_auth::login`'s own module doc for the full weighing of that decision, and the PR that landed #194 for the Risk Assessment this new password-storage surface deserves.
@@ -2035,7 +2035,7 @@ Access token 15 minutes; `admin`'s own session cookie caps a human session at 8 
 - **Disable audience validation** for service-account tokens, since `aud == sub == client_id`.
 - `Jwk` carries only `kty/alg/kid/n/e` — **RSA only**.
 
-Pin `authkestra` to `=0.2.3`.
+Pin `authkestra` to the exact version in the root `Cargo.toml` (currently `=0.8.0` — see AGENTS.md's own authkestra-bump sections for the version history; this line used to hardcode `=0.2.3` as a live instruction, which drifted the moment the pin first moved).
 
 ---
 
@@ -2774,7 +2774,7 @@ vsms/
 │   │   ├── src/procedures.rs       # ProcedureRegistry
 │   │   ├── src/router.rs           # generated router assembly
 │   │   └── src/cache.rs            # R1 exception: LISTEN for opt-out invalidation
-│   ├── sms-auth/         # authkestra-op =0.2.3 + delegate-backed ClientStore
+│   ├── sms-auth/         # authkestra-op, pinned to the root Cargo.toml's exact version (currently =0.8.0) + delegate-backed ClientStore
 │   └── sms-worker/       # the worker as a library; the binary is backends/apps/sms-worker
 │       ├── src/lease.rs            # R1 exception: pg_try_advisory_lock
 │       ├── src/notify.rs           # R1 exception: NOTIFY

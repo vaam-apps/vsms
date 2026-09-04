@@ -413,6 +413,22 @@ fn parse_code_and_state(redirect: &str) -> (String, String) {
     )
 }
 
+/// Reads the `nonce` claim straight out of an `id_token`'s payload segment
+/// — deliberately **unverified**, no signature check, matching `sms-api`'s
+/// own `router::tests::jwt_sub_unverified_reads_the_sub_claim_with_no_
+/// signature_check` precedent for the identical reason: the token's
+/// *authenticity* is already proven elsewhere in this file (the `GET
+/// /roles` call succeeding with `bearer_auth` is what proves that); this
+/// helper exists only to prove the `nonce` *value* survived the `/login`
+/// -> `/token` round trip, which reading the claim answers regardless of
+/// whether the signature is re-checked here too.
+fn id_token_nonce_claim(id_token: &str) -> Option<String> {
+    let payload_segment = id_token.split('.').nth(1)?;
+    let payload_bytes = URL_SAFE_NO_PAD.decode(payload_segment).ok()?;
+    let payload: serde_json::Value = serde_json::from_slice(&payload_bytes).ok()?;
+    payload["nonce"].as_str().map(str::to_owned)
+}
+
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_correct_login_completes_the_full_authorization_code_pkce_round_trip() {
@@ -490,9 +506,25 @@ async fn a_correct_login_completes_the_full_authorization_code_pkce_round_trip()
     let access_token = token_body["access_token"]
         .as_str()
         .expect("a successful exchange returns access_token");
-    assert!(
-        token_body["id_token"].as_str().is_some(),
-        "requesting the openid scope must yield an id_token: {token_body}"
+    let id_token = token_body["id_token"]
+        .as_str()
+        .expect("requesting the openid scope must yield an id_token");
+
+    // --- nonce round-trips byte-for-byte too, the same way `state` was
+    // already asserted above — sent at `/login`, present on the AGENTS.md
+    // authkestra-0.8 section's own `AuthorizeRequest`/`Claims`
+    // `serde_json::from_value` rebuild (both a field this repo's own code
+    // could silently drop, since `AuthorizeRequest::nonce` is `Option<String>`
+    // with no `#[serde(deny_unknown_fields)]` on the struct — a renamed key
+    // deserializes to `None`, not an `Err`), and finally stamped onto the
+    // real `id_token` by unmodified library code. `state`/`code_challenge`
+    // were already loud (state via the redirect assertion above,
+    // code_challenge via the wrong-verifier refusal test) — `nonce` was
+    // the one of the three this file sent but never read back until now. ---
+    assert_eq!(
+        id_token_nonce_claim(id_token).as_deref(),
+        Some(nonce.as_str()),
+        "the nonce this test sent to /login must come back on the id_token unchanged"
     );
 
     // --- The resulting access token authenticates for real, through

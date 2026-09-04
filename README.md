@@ -65,7 +65,7 @@ That brings up a scratch Postgres, the gateway, the worker, a fake Orange, and t
 ## Stack
 
 - **Rust** for the gateway and worker, on [CrateStack](https://cratestack.dev/) `=0.11.0` — schema-first, `.cstack` generates the model layer, policies, audit, events and REST surface. Pinned exactly, and the installed CLI must match the pin; see `AGENTS.md`.
-- **[Authkestra](https://github.com/marcjazz/authkestra)** `=0.5.4` as the OIDC provider. Machine callers use OAuth `client_credentials` with `private_key_jwt` — no shared secrets anywhere in the system. Humans sign in with `authorization_code` + PKCE against a local Argon2id-backed user store.
+- **[Authkestra](https://github.com/marcjazz/authkestra)** `=0.8.0` as the OIDC provider. Machine callers use OAuth `client_credentials` with `private_key_jwt` — no shared secrets anywhere in the system. Humans sign in with `authorization_code` + PKCE against a local Argon2id-backed user store.
 - **PostgreSQL 16** as the only coordination mechanism — system of record, claim loops via optimistic CAS on `@version` (`SKIP LOCKED` isn't expressible through the framework), leader election via advisory locks, and the state machines enforced by triggers. No broker, no Redis, no consensus library.
 - **TypeScript / Next.js 15** for the admin console — messages and state timelines, an operator dashboard, jobs, workers, providers, routes, and a route simulator. Partly built; see [the roadmap](docs/roadmap.md).
 
