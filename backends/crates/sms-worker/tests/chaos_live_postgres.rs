@@ -88,6 +88,21 @@ const CHAOS_SENDER_NUMBER: &str = "+2370000";
 const CHAOS_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const CHAOS_REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 
+/// How long after the fake accepts a submit its scripted DLR fires, for
+/// every test whose DLR is meant to land *after* `write_submitted` has
+/// stamped `providerMessageRef`. The correlation window `dlr.rs` documents
+/// is real: a DLR that beats that write is dropped (the deliberate
+/// `a_dlr_racing_the_submit_response…` test below is built on exactly that,
+/// and sets its own timings). The first cut used 20–30 ms, which is a race
+/// against the worker's own post-submit write — fine on an idle machine and
+/// lost under the full `just ci` gate (`a_rate_limited_submit_recovers_on_retry`
+/// saw `submitted`, not `delivered`, because its DLR had been dropped as
+/// unknown). `wait_for_dlrs_to_settle`'s 2 s bound leaves ample room.
+const DLR_AFTER_SUBMIT: Duration = Duration::from_millis(250);
+/// The spacing between two scripted DLRs for the same message (duplicate and
+/// out-of-order cases); only their relative order matters.
+const DLR_SECOND_STEP: Duration = Duration::from_millis(350);
+
 /// Serializes every test in this file — the same "intra-binary" reasoning
 /// `dispatch_live_postgres.rs`'s own `TEST_MUTEX` documents: `dispatch`'s
 /// claim loop selects candidates system-wide, and this test binary's
@@ -729,8 +744,8 @@ async fn a_dlr_racing_the_submit_response_is_dropped_then_the_message_expires() 
 async fn a_duplicate_delivered_dlr_is_idempotent() {
     let _guard = TEST_MUTEX.lock().await;
     let dlrs = vec![
-        DlrStep::after(Duration::from_millis(30), DlrStatus::Delivered),
-        DlrStep::after(Duration::from_millis(120), DlrStatus::Delivered),
+        DlrStep::after(DLR_AFTER_SUBMIT, DlrStatus::Delivered),
+        DlrStep::after(DLR_SECOND_STEP, DlrStatus::Delivered),
     ];
     let harness = build_harness(
         FaultPolicy::scripted([SubmitDecision::accepted_with_dlrs(dlrs)]),
@@ -787,8 +802,8 @@ async fn a_duplicate_delivered_dlr_is_idempotent() {
 async fn an_out_of_order_dlr_proposing_an_illegal_transition_is_refused() {
     let _guard = TEST_MUTEX.lock().await;
     let dlrs = vec![
-        DlrStep::after(Duration::from_millis(30), DlrStatus::Failed),
-        DlrStep::after(Duration::from_millis(120), DlrStatus::Delivered),
+        DlrStep::after(DLR_AFTER_SUBMIT, DlrStatus::Failed),
+        DlrStep::after(DLR_SECOND_STEP, DlrStatus::Delivered),
     ];
     let harness = build_harness(
         FaultPolicy::scripted([SubmitDecision::accepted_with_dlrs(dlrs)]),
@@ -831,7 +846,7 @@ async fn an_out_of_order_dlr_proposing_an_illegal_transition_is_refused() {
 async fn a_dlr_for_an_unknown_reference_is_dropped_then_the_message_expires() {
     let _guard = TEST_MUTEX.lock().await;
     let dlrs = vec![DlrStep::for_unknown_ref(
-        Duration::from_millis(30),
+        DLR_AFTER_SUBMIT,
         DlrStatus::Delivered,
         "not-a-real-message-id",
     )];
@@ -888,7 +903,7 @@ async fn a_rate_limited_submit_recovers_on_retry() {
     let decisions = [
         SubmitDecision::rate_limited(),
         SubmitDecision::accepted_with_dlrs(vec![DlrStep::after(
-            Duration::from_millis(20),
+            DLR_AFTER_SUBMIT,
             DlrStatus::Delivered,
         )]),
     ];
@@ -1138,11 +1153,11 @@ async fn an_undelivered_message_is_retried_and_reaches_delivered_on_the_next_att
     let harness = build_harness(
         FaultPolicy::scripted([
             SubmitDecision::accepted_with_dlrs(vec![DlrStep::after(
-                Duration::from_millis(30),
+                DLR_AFTER_SUBMIT,
                 DlrStatus::Failed,
             )]),
             SubmitDecision::accepted_with_dlrs(vec![DlrStep::after(
-                Duration::from_millis(30),
+                DLR_AFTER_SUBMIT,
                 DlrStatus::Delivered,
             )]),
         ]),
@@ -1219,7 +1234,7 @@ async fn an_undelivered_message_at_max_attempts_fails_instead_of_retrying_foreve
     let _guard = TEST_MUTEX.lock().await;
     let harness = build_harness(
         FaultPolicy::scripted([SubmitDecision::accepted_with_dlrs(vec![DlrStep::after(
-            Duration::from_millis(30),
+            DLR_AFTER_SUBMIT,
             DlrStatus::Failed,
         )])]),
         TokenPolicy::Always,
