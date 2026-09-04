@@ -11,7 +11,7 @@ use sms_api::schema::{
 };
 use sms_api::{Principal, PrincipalKind};
 
-use crate::commands::common::system_context;
+use sms_api::system_context;
 
 /// `Command::ProvisionUser`'s flags. See `Command::ProvisionUser`'s own
 /// doc comment in `main.rs` — the enum variant carries the "why", this
@@ -268,7 +268,7 @@ pub(crate) async fn provision_user_command(args: ProvisionUserArgs) -> Result<()
         .await
         .context("connecting to Postgres")?;
     let db = Cratestack::builder(pool).build();
-    let sys = system_context();
+    let sys = system_context("sms-gateway:op");
 
     let Some((user_id, password)) =
         create_console_user_if_absent(&db, &sys, &email, &display_name, &role_key).await?

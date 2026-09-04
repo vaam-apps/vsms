@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::schema::{ClientAuthMethod, Cratestack, CreateOauthClientInput};
 
-use crate::commands::common::system_context;
+use sms_api::system_context;
 
 /// `Command::SeedConsoleClient`'s flags. See `Command::SeedConsoleClient`'s
 /// own doc comment in `main.rs` — the enum variant carries the "why",
@@ -52,7 +52,7 @@ pub(crate) async fn seed_console_client_command(args: SeedConsoleClientArgs) -> 
         .await
         .context("connecting to Postgres")?;
     let db = Cratestack::builder(pool).build();
-    let sys = system_context();
+    let sys = system_context("sms-gateway:op");
 
     seed_console_client_core(&db, &sys, &client_id, &redirect_uri).await
 }

@@ -1,7 +1,6 @@
 #![doc = include_str!("commands.md")]
 
 pub(crate) mod bootstrap;
-pub(crate) mod common;
 pub(crate) mod create_app;
 pub(crate) mod healthcheck;
 pub(crate) mod provision_client;

@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::schema::Cratestack;
 
-use crate::commands::common::system_context;
+use sms_api::system_context;
 
 /// `Command::RotateSigningKey`'s flags.
 #[derive(Debug, clap::Args)]
@@ -42,10 +42,13 @@ pub(crate) async fn rotate_signing_key_command(database_url: String) -> Result<(
         .context("connecting to Postgres")?;
     let db = Cratestack::builder(pool).build();
 
-    let id =
-        sms_auth::op::rotate_signing_key(&db, &system_context(), sms_auth::op::ROTATION_OVERLAP)
-            .await
-            .context("rotating the OP signing key")?;
+    let id = sms_auth::op::rotate_signing_key(
+        &db,
+        &system_context("sms-gateway:op"),
+        sms_auth::op::ROTATION_OVERLAP,
+    )
+    .await
+    .context("rotating the OP signing key")?;
     println!("rotated: new signing key {id} is now active");
     println!(
         "the previous key keeps publishing in JWKS for {} minutes",

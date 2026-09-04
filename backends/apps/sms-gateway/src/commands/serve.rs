@@ -13,8 +13,8 @@ use sms_api::schema::{Cratestack, provider as provider_filter};
 use sms_provider::SmsProvider;
 use tracing::info;
 
-use crate::commands::common::system_context;
 use crate::{dlr, health, login, op, token_rate_limit};
+use sms_api::system_context;
 
 /// `Command::Serve`'s flags. See `Command::Serve`'s own doc comment in
 /// `main.rs` — the enum variant carries the "why", this struct only
@@ -361,7 +361,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
         .context("connecting to Postgres")?;
 
     let db = Cratestack::builder(pool).build();
-    let sys = system_context();
+    let sys = system_context("sms-gateway:op");
 
     // #38/#39: this process's `Message` writes (`sendMessage`, DLR
     // ingestion) are the only ones this milestone wires a webhook

@@ -12,9 +12,10 @@ out of `main.rs` and into the file that owns the corresponding logic,
 without touching where clap actually reads a subcommand's own "why does
 this exist" prose from.
 
-Helpers used by more than one subcommand (`system_context`, the
-`system`-role context every OP-adjacent write runs under) live in
-`common.rs`. Everything used by exactly one subcommand stays private to
+There is no `common.rs`: the one helper more than one subcommand needs —
+the `system`-role context every OP-adjacent write runs under — is
+`sms_api::system_context`, shared with the worker rather than duplicated
+here. Everything used by exactly one subcommand stays private to
 that subcommand's own file — `seed_dispatch::seed_dispatch_core` and
 `seed_console_client::seed_console_client_core` are the two exceptions,
 `pub(crate)` because `bootstrap::bootstrap_command` reuses them directly

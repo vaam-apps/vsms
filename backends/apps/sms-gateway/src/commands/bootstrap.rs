@@ -10,10 +10,10 @@ use sms_api::schema::{
 };
 use sms_api::{Principal, PrincipalKind};
 
-use crate::commands::common::system_context;
 use crate::commands::provision_user::create_console_user_if_absent;
 use crate::commands::seed_console_client::seed_console_client_core;
 use crate::commands::seed_dispatch::seed_dispatch_core;
+use sms_api::system_context;
 
 /// `Command::Bootstrap`'s flags. See `Command::Bootstrap`'s own doc
 /// comment in `main.rs` — the enum variant carries the "why", this struct
@@ -232,7 +232,7 @@ pub(crate) async fn bootstrap_command(args: BootstrapArgs) -> Result<()> {
         .await
         .context("connecting to Postgres")?;
     let db = Cratestack::builder(pool).build();
-    let sys = system_context();
+    let sys = system_context("sms-gateway:op");
 
     bootstrap_step_signing_key(&db, &sys).await?;
     bootstrap_step_seed_dispatch(&db).await?;
