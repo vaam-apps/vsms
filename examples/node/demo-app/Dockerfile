@@ -36,9 +36,23 @@ COPY examples/node/demo-app/tsconfig.json ./
 # section). `--prod`: no build step exists to need devDependencies at
 # runtime (Node's native TypeScript support runs `src/index.ts`
 # directly) — typecheck/lint/test only ever run in CI, against a full
-# (non `--prod`) install.
+# (non `--prod`) install. `--trust-lockfile`: pnpm 11's minimumReleaseAge
+# supply-chain check re-verifies every lockfile entry's publish date on
+# every install, and `--ignore-workspace` (needed above, for the reason
+# just given) makes it ignore this directory's own `pnpm-workspace.yaml`
+# too, so there is no scoped `minimumReleaseAgeExclude` this file could
+# read even if one existed here — confirmed live, not assumed: a local
+# `minimumReleaseAgeExclude`/`minimumReleaseAge: 0` in this directory's
+# own `pnpm-workspace.yaml` has no effect at all under `--ignore-workspace`,
+# only without it. `--trust-lockfile` is pnpm's own documented answer for
+# exactly this shape ("CI runs against an already-verified lockfile") —
+# this Dockerfile installs from a lockfile already committed and reviewed
+# in this repo's own PR process, never one an attacker could substitute
+# at build time, so re-verifying each entry's age against the registry on
+# every image build buys nothing a newly-bumped dependency wouldn't
+# already trip regardless of how recently it was reviewed here.
 RUN corepack prepare pnpm@11.18.0 --activate \
-    && pnpm install --ignore-workspace --frozen-lockfile --prod
+    && pnpm install --ignore-workspace --frozen-lockfile --trust-lockfile --prod
 
 RUN chown -R demoapp:demoapp /app
 USER demoapp

@@ -2051,22 +2051,33 @@ unconditionally, so `v0.3.0` lands under `ghcr.io/vaam-store/...`.
 Compose/chart defaults (`VSMS_IMAGE_OWNER`, `repositoryOwner`) now default
 to `vaam-store`/`v0.3.0`; showcasing an older release means setting the
 owner together with *every* tag knob a file has (`compose.demo.yaml` has
-three, `deploy/docker-compose.yml` one), never a subset. The npm package name
+four, as of the post-tag follow-up below; `deploy/docker-compose.yml` one),
+never a subset. The npm package name
 (`@vymalo/vsms-node`) and the crates.io crate (`vsms-sdk-rust`) do **not**
 change — an npm scope, not the GitHub owner.
 
-**Ordering constraint:** `examples/node/demo-app/package.json`'s
-`@vymalo/vsms-node` dependency stays `^0.2.1` here, on purpose. The first
-draft of this paragraph gave the wrong mechanism ("0.3.0 doesn't exist on
-npm when the image builds") — the demo app's own committed
-`pnpm-lock.yaml` pins exactly 0.2.1 and its Dockerfile installs with
-`--frozen-lockfile`, so the image resolves 0.2.1 regardless of what npm
-holds. The real constraint is the converse: the specifier cannot be
-bumped *now* because regenerating that lockfile needs 0.3.0 resolvable
-from npm, and a hand-edited lock fails `--frozen-lockfile`. Nothing is
-lost by waiting: `git diff v0.2.1..HEAD -- sdks/node/vsms-sdk-node/src`
-is a rename of a non-exported interface, no API or wire change. Bumped
-after the release, as a follow-up.
+**Ordering constraint (resolved by the post-tag follow-up below):**
+`examples/node/demo-app/package.json`'s `@vymalo/vsms-node` dependency
+stayed `^0.2.1` at merge time, on purpose. The first draft of this
+paragraph gave the wrong mechanism ("0.3.0 doesn't exist on npm when the
+image builds") — the demo app's own committed `pnpm-lock.yaml` pins
+exactly 0.2.1 and its Dockerfile installs with `--frozen-lockfile`, so
+the image resolves 0.2.1 regardless of what npm holds. The real
+constraint was the converse: the specifier couldn't be bumped *at merge
+time* because regenerating that lockfile needed 0.3.0 resolvable from
+npm, and a hand-edited lock fails `--frozen-lockfile`. Nothing was lost
+by waiting: `git diff v0.2.1..HEAD -- sdks/node/vsms-sdk-node/src` was a
+rename of a non-exported interface, no API or wire change. Bumped once
+`v0.3.0` published, as the follow-up below records — and the bump
+surfaced a real, separate blocker of its own: pnpm 11's default
+`minimumReleaseAge` supply-chain check rejects a lockfile entry
+published under 24h ago, and does so even under `--ignore-workspace`
+with a local `minimumReleaseAgeExclude` present (confirmed live — that
+setting is silently unread once `--ignore-workspace` is passed). Fixed
+with `--trust-lockfile` on this Dockerfile's install line, pnpm's own
+documented answer for "CI runs against an already-verified lockfile" —
+exactly this case, since the lockfile is committed and PR-reviewed, not
+attacker-supplied at build time.
 
 **Registry-side, not in this tree:** npm Trusted Publishing for
 `@vymalo/vsms-node` is configured on npmjs.com against an `owner/repo` +
@@ -2078,9 +2089,12 @@ job also now refuses a tag whose version differs from the workspace,
 Rust SDK and Node SDK manifests — nothing had compared them before.
 
 **Accepted:** compose/chart defaults point at images that don't exist
-until the `v0.3.0` tag runs, minutes after this merges. Two post-tag
-follow-ups, neither attempted here: `demo-app`'s `build:` stanza switching
-to `image:`, and the npm dependency bump above.
+until the `v0.3.0` tag runs, minutes after this merges. Both post-tag
+follow-ups landed in a later PR: `compose.demo.yaml`'s `demo-app` switched
+from `build:` to `image:`, pinned via a fourth tag knob
+(`VSMS_DEMO_APP_IMAGE_TAG`, default `v0.3.0`), and the npm dependency
+bumped to `^0.3.0`. `just demo` (`compose.dev.yaml`) is unaffected — it
+still builds `demo-app` from source, by design.
 
 ## Conventions
 
