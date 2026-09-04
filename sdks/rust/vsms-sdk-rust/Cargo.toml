@@ -2,7 +2,7 @@
 name = "vsms-sdk-rust"
 version = "0.2.1"
 edition = "2021"
-rust-version = "1.95.0"
+rust-version = "1.98.0"
 license = "MIT"
 description = "Rust client for vsms: owns the private_key_jwt credential lifecycle so integrators stop hand-rolling token acquisition."
 repository = "https://github.com/vymalo/vsms"
@@ -36,7 +36,7 @@ path = "src/lib.rs"
 # just a lighter facade underneath. Confirmed via `cargo tree --depth 1`:
 # `axum`/`tower`/`hyper`/`tower-http`/`cratestack-axum` are gone from this
 # crate's dependency tree — see the PR description for the before/after.
-cratestack = { package = "cratestack-client", version = "=0.8.10", default-features = false, features = [
+cratestack = { package = "cratestack-client", version = "=0.11.0", default-features = false, features = [
   "codec-json",
   "decimal-rust-decimal",
 ] }

@@ -19,7 +19,7 @@
 # Same base and reasoning as every other Dockerfile in this workspace:
 # Alpine's own libc is musl, so a plain `cargo build` here produces a
 # static musl binary natively, no cross-compilation, no cross-linker.
-FROM rust:1.95-alpine3.22 AS builder
+FROM rust:1.98-alpine3.22 AS builder
 
 # musl-dev + build-base: `ring` (pulled in transitively through sms-api ->
 # authkestra/cratestack-sqlx) needs a C compiler and libc headers to build

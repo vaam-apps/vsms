@@ -336,12 +336,32 @@ each row.** None of the fixes were adopted (removing a workaround is a real
 schema/code change with its own risk, out of scope for a pure dependency
 bump), but the blocking reason for each is gone.
 
-**Re-checked 2026-08-23 (the cratestack 0.8.10 bump): every row below is
-still unchanged.** `auth().isSystem()` and `.upsert().do_nothing()` are named
-nowhere in `v0.8.3...v0.8.10` — both landed back in 0.7.10 and have had no
-upstream work since, so seven further releases moved neither. The three closed
-bugs' workarounds stay in place here for the same reason as before: removing one
-is a real schema/code change, not a dependency bump's business.
+**Re-checked 2026-09-04 (the cratestack 0.11.0 bump): unlike every prior
+re-check, this range is not a flat "unchanged" for either primitive — read
+both rows below, not just this paragraph.** `auth().isSystem()` gained a
+real capability in 0.11.0 itself: it now works in a `procedure`/`query`
+`@allow`, not only a model's read policy (previously compiled with a
+string-literal-argument error there) — additive, and `ProcedurePredicate`
+gaining the `AuthIsSystem` variant is the one breaking edge, for an
+exhaustive external `match` this repo has never written (grepped: nothing
+in `backends/`/`sdks/`/`ci/`/`examples/` references `ProcedurePredicate`
+at all). `.upsert(..).do_nothing()` also moved, in 0.8.14: `ConflictTarget`
+gained `.where_index("<predicate>")` for targeting a **partial** unique
+index (additive, `ConflictTarget` also went `#[non_exhaustive]` — same
+"no exhaustive match exists in this repo" check applies, confirmed empty),
+and a real bug that used to 500 every `.do_nothing()` upsert whose conflict
+predicate referenced an `@default(...)`-excluded column (Postgres `42703`)
+is fixed. `.upsert(..).run(..)`'s own race-condition fix in the same
+release (#745, Created-vs-Updated no longer lies when the `DO UPDATE` path
+loses a race) is explicitly **not** shared by `.do_nothing()` — that path
+"already resolved its outcome from the database," per the changelog's own
+words — so #177's actual candidate primitive is unaffected by that half.
+Net effect on both rows: still not evaluated, still not adopted (a
+dependency bump's budget, not a schema/code-change budget), but `.upsert
+(..).do_nothing()`'s case got measurably stronger — the specific footgun
+this repo's own `ClientAssertion`/seed-dispatch/scheduler-dedupe pattern
+would have needed to route around (a predicate touching a defaulted
+column) no longer 500s.
 
 **Re-checked 2026-08-18 (the cratestack 0.8.3 bump): every row below is
 unchanged.** Nothing in `v0.7.16...v0.8.3` touches `auth().isSystem()` or
@@ -355,8 +375,8 @@ than something a dependency bump should spend its budget on.
 |---|---|---|
 | Does `cratestack studio`'s direct-DB mode intend to bypass `@version` and `@@emit`? | [cratestack#507](https://github.com/cratestack/cratestack/issues/507) | **Closed 2026-08-13, cratestack 0.7.13** (PR [cratestack#553](https://github.com/cratestack/cratestack/pull/553): `[target.db]` writes now route through the same descriptor path every other write does, rather than being refused outright; PR [cratestack#557](https://github.com/cratestack/cratestack/pull/557) fixed a related no-payload SQL-preview duplication in the same window). Not verified live against `cratestack studio` by this PR — `docs/roadmap.md`'s own #46 section already disqualified Studio from any deployed vsms surface for unrelated reasons (no procedure surface, bypasses `@@allow`), so nothing here currently depends on the fix. |
 | Should `@length` on a nullable field compile? | [cratestack#537](https://github.com/cratestack/cratestack/issues/537) | **Closed 2026-08-13, cratestack 0.7.13** (PR [cratestack#546](https://github.com/cratestack/cratestack/pull/546)). The two workarounds this repo carries — `AuditAnchor.prevChainHash`'s non-null sentinel, `RouteValidation.notes`'s dropped `@length` bound (#64) — are now removable in principle, but reverting either is a real `schema.cstack` edit with its own migration-regeneration and re-verification cost, not attempted in this dependency-bump PR. Left for a follow-up that wants to spend that budget deliberately. |
-| Should `auth().isSystem()` replace the `hasRole('system')` convention? | [#176](https://github.com/vymalo/vsms/issues/176) | Not evaluated. Would touch the gap this codebase has hit **eleven times**. **Unchanged by 0.7.16** — no commit in `v0.7.10...v0.7.16` touches `isSystem` (it landed in cratestack 0.7.10 itself, per cratestack#500; nothing in the six releases since built on it further). |
-| Should `.upsert().do_nothing()` replace create-then-catch-`23505`? | [#177](https://github.com/vymalo/vsms/issues/177) | Not evaluated. Affects `ClientAssertion`, seed-dispatch, and scheduler dedupe. **Unchanged by 0.7.16** — same as above: landed in cratestack 0.7.10 (cratestack#501), no further work on it in `v0.7.10...v0.7.16`. |
+| Should `auth().isSystem()` replace the `hasRole('system')` convention? | [#176](https://github.com/vymalo/vsms/issues/176) | Not evaluated. Would touch the gap this codebase has hit **fifteen times**. **Moved in 0.11.0** — `auth().isSystem()` now also works in a `procedure`/`query` `@allow`, not only a model's `@@allow` (which is what #176 itself is actually about, and which has worked since 0.7.10/cratestack#500). The model-level calculus this question asks about is unchanged; the primitive itself is no longer static. |
+| Should `.upsert().do_nothing()` replace create-then-catch-`23505`? | [#177](https://github.com/vymalo/vsms/issues/177) | Not evaluated. Affects `ClientAssertion`, seed-dispatch, and scheduler dedupe. **Strengthened in 0.8.14** (#741) — `.do_nothing()` no longer 500s when its conflict predicate references an `@default(...)`-excluded column (Postgres `42703`), and can now target a partial unique index via `.where_index(...)`. #745 (0.8.14, the `.upsert(..).run(..)` Created-vs-Updated race fix) explicitly does not touch `.do_nothing()`. |
 | Can a generated `PATCH` route clear a nullable field at all? | [cratestack#567](https://github.com/cratestack/cratestack/issues/567) | **Closed 2026-08-13, cratestack 0.7.15** (PR [cratestack#574](https://github.com/cratestack/cratestack/pull/574), "distinguish PATCH null-clear from omitted field on nullable columns" — marked breaking upstream). `@vsms/gateway/senders.ts`'s `foldClearedSentinel` empty-string workaround for `SenderId.notes`/`SenderIdRegistration.reference`/`rejectionReason` is now removable in principle, but the fixed wire shape has not been verified live against this exact schema, and the workaround lives in `frontends/packages/gateway` (adjacent to `frontends/apps/admin/`, which a concurrent console redesign is actively touching) — reverting it is left as a deliberate follow-up, not attempted here. |
 
 ---

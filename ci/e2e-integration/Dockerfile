@@ -11,7 +11,7 @@
 # has to be inside the build context too. Build with:
 #   docker build -f ci/e2e-integration/Dockerfile .
 
-FROM rust:1.95-alpine3.22 AS builder
+FROM rust:1.98-alpine3.22 AS builder
 
 RUN apk add --no-cache musl-dev build-base
 

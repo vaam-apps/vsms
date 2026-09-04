@@ -12,7 +12,7 @@
 # --- builder -----------------------------------------------------------
 # Same base, same reasoning as backends/apps/sms-gateway/Dockerfile: Alpine's own
 # libc is musl, so this produces a static musl binary natively.
-FROM rust:1.95-alpine3.22 AS builder
+FROM rust:1.98-alpine3.22 AS builder
 
 # musl-dev + build-base: this binary's own dependency tree still resolves
 # `ring` (via cratestack-sqlx's TLS feature — see AGENTS.md's "aws-lc-rs

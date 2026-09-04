@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::sqlx::{query, query_scalar};
+use cratestack::sqlx::{AssertSqlSafe, query, query_scalar};
 use tokio::process::Command;
 use tokio::sync::OnceCell;
 
@@ -459,19 +459,35 @@ async fn ensure_binary_database(base_url: &str) -> String {
 
     let stale = stored_fingerprint.as_deref() != Some(current_fingerprint.as_str());
 
+    // sqlx 0.9.0 (#3723, pulled in transitively by the cratestack 0.11.0
+    // bump) narrowed every `query*()`/`raw_sql()` entry point to `impl
+    // SqlSafeStr`, implemented only for `&'static str` and the
+    // `AssertSqlSafe` wrapper — a runtime `String` no longer satisfies it
+    // on its own. Every dynamic string below is genuinely audited, not
+    // just silenced: Postgres has no bind-parameter form for an
+    // identifier (`CREATE`/`DROP DATABASE "<name>"` can't parameterise the
+    // database name), which is the actual reason this harness builds SQL
+    // strings at all rather than the R1 exception being casual about it.
+    // `TEMPLATE_DB_NAME` is a compile-time constant; `name` is this
+    // binary's own crate-name-derived database name (`database_name()`,
+    // below); `current_fingerprint` is documented at its own call site as
+    // always exactly 16 lowercase hex digits. None crosses a trust
+    // boundary this harness doesn't already own.
     if stale {
         if template_exists {
-            query(&format!(
+            query(AssertSqlSafe(format!(
                 "DROP DATABASE IF EXISTS \"{TEMPLATE_DB_NAME}\" WITH (FORCE)"
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .expect("dropping the stale template database before remigrating it");
         }
-        query(&format!("CREATE DATABASE \"{TEMPLATE_DB_NAME}\""))
-            .execute(&mut *conn)
-            .await
-            .expect("creating the template database");
+        query(AssertSqlSafe(format!(
+            "CREATE DATABASE \"{TEMPLATE_DB_NAME}\""
+        )))
+        .execute(&mut *conn)
+        .await
+        .expect("creating the template database");
 
         // Connects to (and fully disconnects from) the template on its
         // own — Postgres refuses `CREATE DATABASE ... TEMPLATE x` while
@@ -487,21 +503,23 @@ async fn ensure_binary_database(base_url: &str) -> String {
         // is always exactly 16 lowercase hex digits (see
         // `migrations_fingerprint`), so it can never contain a `'` or
         // otherwise break out of the literal.
-        query(&format!(
+        query(AssertSqlSafe(format!(
             "COMMENT ON DATABASE \"{TEMPLATE_DB_NAME}\" IS '{current_fingerprint}'"
-        ))
+        )))
         .execute(&mut *conn)
         .await
         .expect("stamping the template database with its migration fingerprint");
     }
 
-    query(&format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"))
-        .execute(&mut *conn)
-        .await
-        .unwrap_or_else(|e| panic!("dropping this binary's own stale database {name}: {e}"));
-    query(&format!(
+    query(AssertSqlSafe(format!(
+        "DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"
+    )))
+    .execute(&mut *conn)
+    .await
+    .unwrap_or_else(|e| panic!("dropping this binary's own stale database {name}: {e}"));
+    query(AssertSqlSafe(format!(
         "CREATE DATABASE \"{name}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
-    ))
+    )))
     .execute(&mut *conn)
     .await
     .unwrap_or_else(|e| panic!("creating this binary's own database {name} from template: {e}"));
@@ -516,15 +534,22 @@ async fn ensure_binary_database(base_url: &str) -> String {
     set_database_name(base_url, &name)
 }
 
-/// A deterministic fingerprint of every `up.sql` this run would apply —
-/// both path and byte content, in [`migration_dirs`]'s own lexical order —
-/// so renaming, reordering, or editing a migration all change the result.
-/// FNV-1a rather than a cryptographic hash: nothing here is
-/// security-sensitive, this only needs to detect "did the input change"
-/// for a throwaway test database, and FNV-1a needs no extra dependency.
-/// Not guaranteed stable across changes to *this function* itself, which
-/// is fine — a fingerprint-algorithm change just forces one extra
-/// template rebuild on the next run, not a correctness gap.
+/// A deterministic fingerprint of every `up.sql`/`up.pre.sql` this run
+/// would apply — both path and byte content, in [`migration_dirs`]'s own
+/// lexical order — so renaming, reordering, or editing a migration (or
+/// its optional pre-script) all change the result. `up.pre.sql` is
+/// conditional (only cratestack migrate diff >=0.11.0 scaffolds one, and
+/// only for a blocking migration), folded in immediately before its own
+/// `up.sql` when present — matching the order [`run_psql_migrations`]
+/// actually applies them in, so a template database can never go stale
+/// against an `up.pre.sql` edit the way #87/#102's own fingerprint gap
+/// this function already exists to close would otherwise allow. FNV-1a
+/// rather than a cryptographic hash: nothing here is security-sensitive,
+/// this only needs to detect "did the input change" for a throwaway test
+/// database, and FNV-1a needs no extra dependency. Not guaranteed stable
+/// across changes to *this function* itself, which is fine — a
+/// fingerprint-algorithm change just forces one extra template rebuild on
+/// the next run, not a correctness gap.
 fn migrations_fingerprint() -> String {
     const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
@@ -536,15 +561,23 @@ fn migrations_fingerprint() -> String {
             hash = hash.wrapping_mul(FNV_PRIME);
         }
     };
+    let mut fold_file = |path: &Path| {
+        fold(path.to_string_lossy().as_bytes());
+        let bytes =
+            std::fs::read(path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        fold(&bytes);
+    };
 
     for dir in migration_dirs() {
         let up = dir.join("up.sql");
         if !up.exists() {
             continue;
         }
-        fold(up.to_string_lossy().as_bytes());
-        let bytes = std::fs::read(&up).unwrap_or_else(|e| panic!("reading {}: {e}", up.display()));
-        fold(&bytes);
+        let up_pre = dir.join("up.pre.sql");
+        if up_pre.exists() {
+            fold_file(&up_pre);
+        }
+        fold_file(&up);
     }
 
     format!("{hash:016x}")
@@ -569,20 +602,41 @@ async fn run_psql_migrations(url: &str) {
         if !up.exists() {
             continue;
         }
-        let output = Command::new("psql")
-            .arg(url)
-            .args(["-v", "ON_ERROR_STOP=1", "-q", "-f"])
-            .arg(&up)
-            .output()
-            .await
-            .expect("spawning `psql` — is the postgresql-client package installed?");
-        assert!(
-            output.status.success(),
-            "applying {} failed: {}",
-            up.display(),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        // `up.pre.sql` (cratestack migrate diff >=0.11.0, scaffolded for a
+        // blocking migration) runs first, matching the order
+        // `backends/apps/sms-migrate`'s own production runner applies
+        // them in — see that binary's own "up.pre.sql" doc section for
+        // the full contract. This harness doesn't reproduce that
+        // runner's single-transaction guarantee (two separate `psql`
+        // invocations, not one), which is fine for a test fixture: every
+        // committed `up.pre.sql` is comment-only, and this function's job
+        // is getting a schema into a scratch database, not proving
+        // production transactional behaviour a second time.
+        let up_pre = dir.join("up.pre.sql");
+        if up_pre.exists() {
+            apply_one_sql_file(url, &up_pre).await;
+        }
+        apply_one_sql_file(url, &up).await;
     }
+}
+
+/// One `psql -f <file>` invocation against `url` — the shared body behind
+/// both `up.pre.sql` and `up.sql` in [`run_psql_migrations`], so the two
+/// don't duplicate the same `Command` plumbing and drift.
+async fn apply_one_sql_file(url: &str, file: &Path) {
+    let output = Command::new("psql")
+        .arg(url)
+        .args(["-v", "ON_ERROR_STOP=1", "-q", "-f"])
+        .arg(file)
+        .output()
+        .await
+        .expect("spawning `psql` — is the postgresql-client package installed?");
+    assert!(
+        output.status.success(),
+        "applying {} failed: {}",
+        file.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Every subdirectory of `backends/migrations/postgres`, sorted lexically —

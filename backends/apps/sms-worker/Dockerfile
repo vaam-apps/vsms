@@ -16,7 +16,7 @@
 # sibling package because it needs a second, differently-featured `reqwest`
 # dev-dependency, but it proves the exact mechanism both binaries' `main.rs`
 # rely on).
-FROM rust:1.95-alpine3.22 AS builder
+FROM rust:1.98-alpine3.22 AS builder
 
 # musl-dev + build-base: `ring` needs a C compiler and libc headers — see
 # backends/apps/sms-gateway/Dockerfile's own comment; identical dependency graph

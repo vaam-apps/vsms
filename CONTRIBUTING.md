@@ -143,9 +143,17 @@ Full statement, with the layer table and the reasoning, is in `AGENTS.md`'s own 
 ```bash
 # 1. edit schemas/vsms.cstack
 
-# 2. regenerate the framework migration
+# 2. regenerate the framework migration — --out-dir is the *parent* of the
+#    backend directory `migrate diff` writes into (it writes
+#    "<out-dir>/postgres/<timestamp>_<name>/{up,up.pre,down}.sql", never
+#    "<out-dir>/<timestamp>_<name>/..."; passing backends/migrations/postgres
+#    here would double-nest it as .../postgres/postgres/...)
 cratestack migrate diff --schema schemas/vsms.cstack \
-  --out-dir backends/migrations/postgres --backend postgres --name <change_name>
+  --out-dir backends/migrations --backend postgres --name <change_name>
+# copy the output over backends/migrations/postgres/0001_init/{up,up.pre,down}.sql
+# — up.pre.sql only exists when the generator scaffolds one for a blocking
+# migration — then: rm -f backends/migrations/postgres/schema.snapshot.json
+# (this repo doesn't commit it — see AGENTS.md's "Regenerating migrations")
 
 # 3. if you touched §2.10 of the design doc, regenerate the bootstrap SQL
 cargo xtask bootstrap-sql backends/migrations/postgres/0002_bootstrap/up.sql

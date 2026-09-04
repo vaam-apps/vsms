@@ -34,7 +34,13 @@
 # the whole repository the way `backends/apps/*/Dockerfile` copies the root
 # workspace. `--locked` still applies against this crate's own committed
 # `Cargo.lock`.
-FROM rust:1.95-alpine3.22 AS builder
+#
+# `1.98`, matching every other Rust-building Dockerfile in this repo, even
+# though `deploy/backup-tool` has no `cratestack` dependency and therefore
+# no MSRV of its own that requires it (confirmed: grepped its `Cargo.toml`)
+# — bumped anyway so this image doesn't sit on a stale toolchain nobody has
+# a reason to track separately from the other six.
+FROM rust:1.98-alpine3.22 AS builder
 
 RUN apk add --no-cache musl-dev build-base
 

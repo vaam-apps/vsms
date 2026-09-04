@@ -1,7 +1,19 @@
--- WARNING: this migration contains blocking operations.
--- A required column was added without a default. The migration
--- will fail on a non-empty table unless an `up.pre.sql` backfills
--- the affected columns before this statement runs.
+-- WARNING: this migration contains blocking operations. It cannot
+-- succeed against a table that already has rows until the existing
+-- data is prepared first:
+--
+--   - audit_anchors.range_hash: new CHECK constraint `audit_anchors_range_hash_length_check`; existing rows must already satisfy it
+--     UPDATE audit_anchors SET range_hash = <value> WHERE NOT (<the check predicate>);
+--   - audit_anchors.prev_chain_hash: new CHECK constraint `audit_anchors_prev_chain_hash_length_check`; existing rows must already satisfy it
+--     UPDATE audit_anchors SET prev_chain_hash = <value> WHERE NOT (<the check predicate>);
+--   - audit_anchors.chain_hash: new CHECK constraint `audit_anchors_chain_hash_length_check`; existing rows must already satisfy it
+--     UPDATE audit_anchors SET chain_hash = <value> WHERE NOT (<the check predicate>);
+--   - sender_ids.value: new CHECK constraint `sender_ids_value_length_check`; existing rows must already satisfy it
+--     UPDATE sender_ids SET value = <value> WHERE NOT (<the check predicate>);
+--
+-- Put that preparation in `up.pre.sql`, alongside this file — it has
+-- been scaffolded for you. It runs immediately before this file, in
+-- the same transaction, and is checksummed with it.
 
 -- NOTE: the following column(s) use `@default(dbgenerated())`, a
 -- marker meaning the value is expected to come from a real

@@ -12,11 +12,20 @@
 //! silently skips anything that isn't a file — so it cannot see this
 //! repo's `<name>/up.sql` layout at all (confirmed by reading that
 //! resolver's source, not assumed). That layout is fixed by
-//! `cratestack migrate diff --out-dir backends/migrations/postgres --name
-//! <name>`'s own output shape and by `AGENTS.md`'s "never hand-edit"
+//! `cratestack migrate diff --out-dir backends/migrations --backend postgres
+//! --name <name>`'s own output shape and by `AGENTS.md`'s "never hand-edit"
 //! rule, so the fix is a small build script that reads the same directory
 //! shape our own tooling already produces, not a reshape to fit sqlx's
 //! convention.
+//!
+//! `up.pre.sql`, when a directory has one, is embedded too, as a second,
+//! optional `include_str!` on the same `Migration` literal — cratestack
+//! migrate diff (>=0.11.0) scaffolds one whenever it detects a blocking
+//! operation (`cratestack-migrate-0.11.0/src/emit/postgres/up_pre.rs`'s
+//! own doc: "The runner executes this file immediately before `up.sql`,
+//! inside the SAME transaction... both halves land or neither does").
+//! `main.rs` is the runner referred to there — see its own doc for how it
+//! honours that.
 //!
 //! Each `include_str!` call embeds the file's content into the binary at
 //! *compile* time, same as the hand-written version this replaced — the
@@ -62,6 +71,30 @@ fn main() {
             .canonicalize()
             .unwrap_or_else(|e| panic!("resolving the path to {name}/up.sql: {e}"));
         println!("cargo:rerun-if-changed={}", up_sql_path.display());
+
+        // `up.pre.sql` is conditional — most migrations don't have one.
+        // `pre_sql: None` when the file is absent; `rerun-if-changed` is
+        // already registered on the *directory* itself (above, before
+        // this loop), so adding one later still triggers a rebuild even
+        // though this specific file didn't exist to watch at that point.
+        let up_pre_sql_path = migrations_root.join(name).join("up.pre.sql");
+        let pre_sql_literal = if up_pre_sql_path.is_file() {
+            let up_pre_sql_path = up_pre_sql_path
+                .canonicalize()
+                .unwrap_or_else(|e| panic!("resolving the path to {name}/up.pre.sql: {e}"));
+            println!("cargo:rerun-if-changed={}", up_pre_sql_path.display());
+            // A statement, not a bare tail expression, so the attribute
+            // below actually attaches to something — rustc ignores an
+            // outer attribute on a macro invocation used as a tail
+            // expression (confirmed live: it built with a warning until
+            // this was changed).
+            #[allow(clippy::unnecessary_debug_formatting)]
+            let literal = format!("Some(include_str!({up_pre_sql_path:?}))");
+            literal
+        } else {
+            "None".to_owned()
+        };
+
         // `include_str!` resolves a relative path against the file it
         // appears in — which, once this is written to `$OUT_DIR`, is not
         // this crate's own `src/` — so the embedded path must be absolute.
@@ -73,7 +106,7 @@ fn main() {
         #[allow(clippy::unnecessary_debug_formatting)]
         writeln!(
             generated,
-            "    crate::Migration {{ name: {name:?}, sql: include_str!({up_sql_path:?}) }},",
+            "    crate::Migration {{ name: {name:?}, pre_sql: {pre_sql_literal}, sql: include_str!({up_sql_path:?}) }},",
         )
         .expect("writing to an in-memory String");
     }

@@ -126,8 +126,10 @@ So: when the schema changes, **regenerate `0001_init` wholesale** with the exact
 
 ```bash
 cratestack migrate diff --schema schemas/vsms.cstack --out-dir backends/migrations --backend postgres --name init
-# copy the output over backends/migrations/postgres/0001_init/{up,down}.sql
-python3 ci/gen-bootstrap-sql.py backends/migrations/postgres/0002_bootstrap/up.sql
+# copy the output over backends/migrations/postgres/0001_init/{up,up.pre,down}.sql
+# — up.pre.sql only exists when the generator scaffolds one for a blocking
+# migration; delete the committed copy if a regeneration stops emitting one
+cargo xtask bootstrap-sql backends/migrations/postgres/0002_bootstrap/up.sql
 ```
 
 The tool also writes `backends/migrations/postgres/schema.snapshot.json` as a side effect. Delete it — this repo doesn't use snapshot-based incremental diffing, and a stale one committed by accident would be misleading.
@@ -790,6 +792,364 @@ Neither vsms issue's calculus moved: `grep`ing the six release bodies (v0.7.11 t
 
 `just check`/`just lint` (`cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings`) both clean. `cargo test --workspace` (in-process): 391 passed, 0 failed. **Full live-Postgres suite, foreground, to completion**: `cargo test --workspace --no-fail-fast --tests -- --ignored` — **212 passed, 0 failed**, across all suites this file's own "The live suites run in CI now" section names (including the process-spawning gates: `kill9_reclaim_live.rs`, `m1_acceptance_gate_live_postgres.rs`, `kill_orange_gate_live_postgres.rs`, and `hooks_node_receiver_live.rs`, the last needing a one-time `pnpm install --ignore-workspace --frozen-lockfile` in `examples/node/webhook-receiver` in this environment — a pre-existing local-environment gap this file's own #64 section already names, not a regression). `cargo deny check`: `advisories ok, bans ok, licenses ok, sources ok` — one new informational duplicate-version warning (`winnow` 0.7.15/1.0.4, via `cratestack-proto`'s new `toml` dependency), not a `deny.toml` violation. `cargo tree -i aws-lc-rs`: no match, workspace and SDK both — `ring`, still the only provider, unchanged. On the TypeScript side: `pnpm --filter @vsms/gateway typecheck`/`biome check` both clean, `pnpm --filter @vsms/gateway test` — 52 passed, 0 failed — and the `deleteResource` fix itself verified live against a real `just demo` gateway (both directions — see "A real regression, found and fixed" above), not merely by the mocked unit tests.
 
+## cratestack bumped to `=0.11.0` (from `=0.8.10`)
+
+`v0.8.10...v0.11.0` is 41 releases over twelve days. Two of them (0.9.0 and 0.10.0) cross
+minor boundaries; unlike the 0.8.3 bump, this range genuinely reaches this repo's Rust code
+in ways well beyond what a pre-bump scoping pass over the vendored 0.11.0 source alone found —
+two of the four fixes below were found live, by actually running `cargo check`, not by reading
+changelog prose first. **The isolated CLI matched the pin at every step**
+(`/home/ubuntu/cs011/bin/cratestack --version` → `0.11.0`).
+
+### MSRV: 1.98.0
+
+`cratestack-pg` 0.11.0 declares `rust_version = "1.98.0"` on crates.io (checked against the
+registry API directly — `curl .../api/v1/crates/cratestack-pg/0.11.0` → `"rust_version":
+"1.98.0"` — not the CHANGELOG prose, which doesn't mention it at all). The workspace
+`rust-version` is raised to match; `cargo +1.98.0 check --workspace --all-targets` is clean.
+Seven Rust-building Dockerfiles in this repo moved `rust:1.95-alpine3.22` →
+`rust:1.98-alpine3.22`: the five under `backends/apps/*/Dockerfile`
+(`sms-gateway`, `sms-worker`, `sms-migrate`, `sms-fake-orange`, `vsms-demo-seed`), plus
+`ci/e2e-integration/Dockerfile` (the sixth — a Rust-building Dockerfile this repo's own MSRV
+section had never previously had to touch) and `deploy/backup.Dockerfile` (the seventh, bumped
+for consistency even though `deploy/backup-tool` carries no `cratestack` dependency and
+therefore no MSRV of its own that requires it — see that Dockerfile's own comment). Confirmed
+`rust:1.98-alpine3.22` exists on Docker Hub (`docker manifest inspect rust:1.98-alpine3.22`,
+both `amd64`/`arm64` manifests present) before switching any of the seven, not assumed.
+`sdks/rust/vsms-sdk-rust/Cargo.toml`'s own `rust-version` field moved too, for the same reason.
+
+**An eighth Dockerfile was missed at the time and fixed in a follow-up commit once found:** `ci/runner/Dockerfile` (the `just ci` gate's own build environment, `rust:1.95-bookworm`) lives on `prod/test-runner`, a sibling branch that hadn't merged with this one yet when the seven-Dockerfile sweep above ran, so it was invisible to the grep that found the other seven — bumped to `rust:1.98-bookworm` the moment the two branches were rebased together, before either reached `main`, rather than leaving a runner that would fail every `cargo` invocation outright the instant this PR's `rust-version = "1.98.0"` landed beside it.
+
+**The same Dockerfile carried a second miss, found only by running `just ci` on the linearized stack: `ARG CRATESTACK_VERSION=0.8.10`.** The toolchain line above was bumped; the CLI pin two lines below it was not, so `just ci` built a runner whose own step 1 (`cratestack CLI matches the pin`) refused to continue — the correct outcome, one image build too late. A build `ARG` default is a literal, so this line is a second copy of the `Cargo.toml` pin with nothing holding the two together, the shape `cargo xtask cratestack-pin` was written to end for the *readers* of that pin. `cargo xtask runner-pin` (`.xtask/src/runner_pin.rs`) now asserts the Dockerfile default equals `read_pin`'s value; it runs in `all-checks`, `ci-inner` and the `xtask` CI job, and was proven to fail on the drifted Dockerfile (`defaults CRATESTACK_VERSION to 0.8.10, but Cargo.toml pins 0.11.0`, exit 1) before the default was corrected and it passed. The justfile's own `(currently =0.8.10)` comment on `cratestack_bin` had drifted the same way and now names the command instead of a number.
+
+### DDL: byte-identical statements, a changed *comment* — verified two ways, not assumed from one
+
+`cargo xtask migrations-current` reported drift, and the naive positional diff it prints (this
+file's own `diff.rs` section already documents why that diff is noisy on an inserted block) made
+the actual change look like a wholesale rewrite — every line of the file appeared to move. It
+didn't: diffing the regenerated `up.sql` against the committed one with real `diff -u` (re-measured
+against the actual commit, not recalled) shows **20 changed lines — 16 insertions, 4 deletions
+(`git diff --stat`) — every one of them inside the file's own leading comment block**, and
+`down.sql` diffs to **zero lines**. The blocking-migration *detector itself is not new* — the
+previously-committed `up.sql` already carried its own "WARNING: this migration contains blocking
+operations" header, naming a generic "a required column was added without a default" and
+already mentioning `up.pre.sql` by name as the remedy. What changed is that the warning now
+names the *specific* new `CHECK` constraints instead of that generic line — the four it names
+(`audit_anchors_range_hash_length_check`, `_prev_chain_hash_length_check`,
+`_chain_hash_length_check`, `sender_ids_value_length_check`) already exist, byte-for-byte, in the
+previously-committed migration; nothing about the schema changed, only how the tool explains a
+migration that was already "blocking" in its own sense. That prior header's own "unless an
+up.pre.sql backfills..." line is, in hindsight, a live instance of the exact bug
+`cratestack-migrate-0.11.0/src/emit/postgres/up_pre.rs`'s own module doc names as cratestack#843:
+"the warning named `up.pre.sql` as the remedy while nothing wrote or read such a file." This
+bump is what actually closes that gap for this repo, not merely reworded a warning that was
+already correct.
+
+**A new file, `up.pre.sql`, is scaffolded alongside `up.sql`/`down.sql` for the first time and
+is committed too** — `cratestack migrate diff` now writes a third file per migration whenever it
+detects a blocking operation, containing (as comments) the `UPDATE` statements an operator would
+need to backfill before applying to a non-empty table. Correct to commit as-is here: `0001_init`
+only ever applies to a brand-new, empty database (this repo's own standing "no live database
+anywhere yet" fact), so the backfill this file describes can never actually be needed — its own
+header says leaving it as comments-only is a valid choice, "then treated as absent."
+
+**Found in review, before merge, not shipped as a latent trap: neither `sms-migrate` nor
+`sms-test-support` read `up.pre.sql` at all when it was first committed.** Wiring the file up as
+a real dependency, not a decorative one, needed three coordinated changes, all closed in the same
+PR:
+
+- `cargo xtask migrations-current` now compares `up.pre.sql` too, whenever either side has one —
+  a missing side reads as empty rather than erroring, so "this migration used to need a backfill
+  and no longer does" is itself a detected drift, not a silent pass.
+- `backends/apps/sms-migrate` — the production runner — embeds `up.pre.sql` as
+  `Migration::pre_sql: Option<&'static str>` and applies it, when present, immediately before
+  `up.sql`, inside one real `conn.begin()` transaction that also covers the `schema_migrations`
+  bookkeeping `INSERT` — matching `cratestack-migrate-0.11.0/src/emit/postgres/up_pre.rs`'s own
+  contract ("runs immediately before `up.sql`, inside the SAME transaction... both halves land or
+  neither does") literally, not just in spirit. Two separate `raw_sql` calls against a bare
+  connection would each open and close their own implicit transaction and only *happen* to
+  satisfy that guarantee today because every committed `up.pre.sql` is comment-only.
+- `backends/crates/sms-test-support`'s own `migrations_fingerprint`/`run_psql_migrations` (the
+  live-test harness's template-database mechanism) fold and apply `up.pre.sql` the same way, so a
+  template database can't silently go stale against an edited pre-script the way it could before.
+
+**Proven, not just implemented — a temporary, non-comment `CREATE TABLE up_pre_probe(x int);`
+was appended to the committed `up.pre.sql`, applied end to end, then removed.** `cargo run -p
+sms-migrate` against a fresh scratch Postgres genuinely created `up_pre_probe` (`psql`'s own
+`\d up_pre_probe` confirmed the column), and `pg_stat_activity` caught the migration mid-flight
+executing `up.sql`'s own text on the *same* backend PID that had just run the probe — direct
+proof of same-connection, same-transaction ordering, not inferred from reading the code. A second
+proof, independent of the first, for the harness: `cargo test -p sms-api --test
+errors_live_postgres -- --ignored` (which goes through `sms-test-support`'s template-database
+path) picked up the fingerprint change, rebuilt the template, and the rebuilt `vsms_template`
+database was confirmed via `psql` to contain `up_pre_probe` too. The probe was then removed and
+the file restored byte-for-byte (`md5sum` verified against the pre-probe copy), and `cargo xtask
+migrations-current` reported `OK` again — proof the restoration, and the new comparison logic
+covering the restored state, both actually work.
+
+Verified live, not just diffed: the regenerated `0001_init` (plus the unchanged `0002_bootstrap`/
+`0003_idempotency_table`) applied cleanly via `cargo run -p sms-migrate` against a real, disposable
+Postgres 16, and `ci/test-state-machine.sql` passed in full (`ALL ASSERTIONS PASSED`) before
+either file was trusted. `cargo xtask bootstrap-sql-check` reports no drift — `0002_bootstrap` is
+generated from the design doc, not from the CLI, so a CLI-only bump had nothing to change there.
+
+### `schema::axum::router()` gained a required `resolvers` parameter — found by `cargo check`, not by reading the changelog first
+
+Not on the pre-bump scoping list — the compiler found it. `router<R, CR, C, Auth>(db, registry,
+resolvers, codec, auth_provider, body_limit_bytes)` (`cratestack-macros-0.11.1/src/include/
+server/axum_module/router_fn.rs`, cratestack#328) inserted a new, required `resolvers: CR where
+CR: ComputedFieldResolver` parameter between `registry` and `codec`. Every argument after it
+shifted one slot, which is why the actual compiler errors named `JsonCodec: ComputedFieldResolver`,
+`GatewayAuth: HttpTransport`, and `usize: AuthProvider` — three unrelated-looking trait-bound
+failures that were really one missing argument. `schemas/vsms.cstack` declares no `@computed`
+field anywhere (grepped, not assumed), so `()` — the same trivial resolver
+`cratestack-pg`'s own `tests/include_schema.rs::test_combined_router` passes at this exact call
+site for a non-computed schema — is the correct value, not a placeholder. One call site,
+`backends/crates/sms-api/src/router.rs`; every other caller in this workspace (`sms_api::router`
+in `sms-auth`'s and `sms-gateway`'s own tests/binary) goes through this crate's own 6-argument
+wrapper, whose public signature is unchanged, so nothing downstream needed an edit.
+
+### sqlx 0.9.0 narrowed every `query()`/`raw_sql()` call to `impl SqlSafeStr` — found by `cargo check`, fixed with `AssertSqlSafe`
+
+Also not on the pre-bump scoping list, also found by the compiler: `cratestack-sqlx` 0.11.1
+transitively pulls `sqlx-core`/`sqlx-postgres` 0.9.0 (sqlx#3723), which narrowed `query`/
+`query_scalar`/`raw_sql`'s argument type from a bare string to `impl SqlSafeStr` —
+implemented only for `&'static str` and the new `AssertSqlSafe<T>` wrapper, so a runtime
+`String` (anything built with `format!`) no longer satisfies it on its own.
+`cratestack::sqlx`'s own module doc (`cratestack-sqlx-0.11.1/src/lib.rs`) confirms this is a
+deliberate, anticipated shim boundary — "that design paid off at the 0.8→0.9 boundary... landed
+as additions to this list... with no downstream path changing" — and re-exports
+`AssertSqlSafe`/`SqlSafeStr`/`SqlStr` at the same `cratestack::sqlx::*` paths this repo already
+imports from.
+
+**Every dynamic-SQL-string call site in this workspace was grepped, not assumed to be exactly
+where the compiler first complained.** All five live in `backends/crates/sms-test-support/src/
+lib.rs` — a designated R1 exception (`ci/assert-no-raw-sqlx.sh`'s successor,
+`cargo xtask no-raw-sqlx`, allowlists this file) — and all five are genuinely audited, not merely
+silenced: Postgres has no bind-parameter form for an identifier, so
+`CREATE`/`DROP DATABASE "<name>"` can't parameterise the database name at all, which is the
+actual reason this harness builds SQL strings in the first place. Every dynamic value is either a
+compile-time constant (`TEMPLATE_DB_NAME`) or this harness's own crate-derived database name, and
+the one value with real content (`current_fingerprint`) was already documented at its own call
+site as "always exactly 16 lowercase hex digits... can never contain a `'`." Fixed by wrapping
+each with `AssertSqlSafe(format!(...))` and adding a comment recording the audit reasoning in one
+place rather than five. No other file in `backends/` (checked: `drain.rs`, `reap_outbox.rs`,
+`lease.rs`, `dlr.rs`'s test fixtures, `sms-migrate`'s own `raw_sql` calls) constructs a dynamic
+SQL string at all — every other `query`/`raw_sql` call already passes a literal `&'static str`,
+unaffected by the narrowing.
+
+### `RateLimitLayer` gained `StoreErrorPolicy` (cratestack#846) — set to `Deny` on both layers
+
+`with_store_error_policy(...)`, defaulting to `StoreErrorPolicy::Allow`: serve a request
+unthrottled when the backing store fails in a way classified transport-class
+(`CratestackError::Unavailable`), refuse otherwise — closing a real upstream-found bug where a
+blanket fail-open let an unauthenticated caller who rotates their own `Authorization` header
+past `maxmemory` on a Redis-backed store bypass the limiter for every caller, not just itself.
+`Allow` is the right default for a limiter used as a *capacity* control; both of this repo's
+layers are wired in as a *security* control (#163/#168 — bounding how many forged identities one
+caller can spend), which is exactly the shape the changelog's own advice names: "Set
+`StoreErrorPolicy::Deny` to keep the previous behaviour... that is what deployments using the
+limiter as a security control... want." Set explicitly on both `RateLimitLayer`s in
+`backends/crates/sms-api/src/router.rs`, with a comment recording that it's currently a no-op
+for the *specific* store this repo runs — `InMemoryRateLimitStore::consume`'s only failure mode
+is a poisoned `Mutex` (`CratestackError::Internal`), which `Allow` already refuses too, verified
+by reading `cratestack-axum-0.11.0/src/ratelimit/store.rs` directly rather than trusted from the
+changelog's Redis-focused framing — set anyway so the choice survives a future switch off
+`InMemoryRateLimitStore` rather than needing to be rediscovered then.
+
+**The keyspace-amplification bound this same #846 review named as unclosed ("tracked separately
+as #871") is real, but it ships in cratestack-axum `0.11.1` — one patch past this repo's `=0.11.0`
+pin — and is not adopted here.** Confirmed directly against the vendored 0.11.0 source, not
+inferred from a version number: `RateLimitService::call` (`ratelimit/layer.rs`) calls the
+store's plain `consume`, never `consume_bounded`, so nothing bounds the keyspace for the
+*default* key function either at this pin — the `BucketBudget`/`consume_bounded` machinery
+exists in `cratestack-core` (pulled in transitively at 0.11.1 regardless, since it isn't
+exactly-pinned) but the middleware that would call it doesn't exist in `cratestack-axum` until
+the next patch. `router.rs`'s own doc now records this precisely: `with_key_fn` overrides aren't
+bounded by anything upstream provides at this pin, and when 0.11.1+ is eventually adopted, its
+default bound's own shape (a `ConnectInfo`-scoped `auth:`/`ip:` split) doesn't match either of
+this router's own key functions, so adopting it needs an explicit `with_bucket_budget` call
+matched to this router's real keys — not a bare version bump.
+
+### Checked and found inert, with the reason
+
+- **Typed, codec-negotiated error bodies for throttled/idempotency-conflict responses**
+  (`CratestackError::TooManyRequests`, both middleware layers' error paths now going through the
+  same `Accept`-negotiated envelope the generated handlers use, rather than a bare `text/plain`
+  string) — checked against every place this repo could plausibly have assumed the old shape:
+  `router.rs`'s own live-server rate-limit test asserts HTTP status codes only
+  (`vec![404, 404, 404, 429, 429]`), never a response body; `frontends/packages/gateway/src/
+  errors.ts` already treats any non-`CratestackErrorResponse`-shaped body as a generic failure
+  and never special-cased `429`'s old string body. Nothing broke; nothing needed to change.
+  (A real body-shape improvement was left on the table, not a regression: `errors.ts`'s
+  `trpcCodeForStatus` still maps `429` into the generic `INTERNAL_SERVER_ERROR` bucket rather
+  than a dedicated code, unaffected either way by this bump — flagged, not fixed, since it's a
+  UX improvement outside a dependency bump's scope.)
+- **A misspelled field-position attribute is now a parse error** (part of the same schema-error
+  hardening `cratestack#666`-adjacent work in this range) — inert here, confirmed the same way
+  every schema-validity claim in this file is: `cargo xtask migrations-current` succeeded end to
+  end against the unmodified `schemas/vsms.cstack`, which it could not have done had any
+  attribute in this schema been misspelled in the newly-caught shape.
+- **`router()`'s other parameters, `if_match` on update/delete, `invoke_with_db`/`Authorized`,
+  `decimal = RustDecimal`** — all unchanged in behaviour at this pin; the one real signature
+  change (`resolvers`) is covered above, not folded into this list.
+- **No `@@unique`/`@@index`, no `@no_idempotency`/`@no_rate_limit` anywhere in `schemas/
+  vsms.cstack`** — grepped before relying on it — so nothing in the 0.8.11...0.11.0 range
+  touching those attributes' semantics reaches this schema.
+- **`sms-migrate` defines its own local `Migration { name, sql }` struct, never cratestack's
+  own** (which gained an `up_pre` field somewhere in this range for its `Migrator`/
+  `MigrationSource` machinery) — this repo's migrator was already a from-scratch, directory-
+  scanning port (see the "rustls, musl, and distroless" section above for why sqlx's own
+  `Migrator` was rejected in the first place), so an upstream `Migration` shape change reaches
+  nothing here. This is exactly what makes the `up.pre.sql` gap above real: this crate's own
+  independent `Migration` type has no field for it either, by construction, not oversight.
+
+### `auth().isSystem()` and `.upsert(..).do_nothing()` — re-checked per this bump's own brief, and neither is flatly "unchanged" this time
+
+Both named explicitly in the task that produced this bump, both actually moved somewhere in
+`v0.8.11...v0.11.0` — unlike every prior re-check in `OPEN_QUESTIONS.md` §4, which could
+truthfully say "nothing touches either name." `auth().isSystem()` gained procedure/query-level
+`@allow` support in 0.11.0 itself (previously model-read-policy-only since 0.7.10/cratestack#500,
+which is what #176 is actually asking about — the model-level calculus is unchanged, but the
+primitive is no longer static). `.upsert(..).do_nothing()` gained a real capability in 0.8.14
+(cratestack#741): it can now target a partial unique index via `.where_index(...)`, and a bug
+that unconditionally 500'd every `.do_nothing()` upsert whose conflict predicate touched an
+`@default(...)`-excluded column is fixed. The same release's `.upsert(..).run(..)`
+Created-vs-Updated race fix (#745) explicitly does not extend to `.do_nothing()` — "it already
+resolved its outcome from the database," per the changelog's own words. Neither primitive is
+adopted here (a schema/code-change budget, not a dependency-bump one, same standing reasoning as
+every prior re-check) — full detail and the updated table rows are in `OPEN_QUESTIONS.md` §4,
+re-checked and rewritten for this bump rather than left as a stale "unchanged." That table's
+own #176 row also carries a housekeeping fix riding along with this re-check: its "eleven
+times" count of this file's own repeated `hasRole('system')` gap was stale — this file's own
+`#72`/`ConsentRecord` entry above already records the real, current count as fifteen — corrected
+to match while the row was already being touched for the `isSystem()` finding, not a separate
+audit.
+
+### The installer action ref, and the three manifests `cargo check --workspace` cannot see
+
+`.github/workflows/ci.yml`'s `install-cratestack-cli@v0.8.3` ref is **unchanged, on purpose** —
+same reasoning this file's own prior bump sections already give (the ref names which revision of
+the installer script runs, not which CLI version it installs; only `cargo xtask cratestack-pin`
+controls that). Re-verified rather than assumed still true: the action file is byte-identical at
+both `v0.8.3` and `v0.11.0` (`sha256 fe959390747a0aa3…`, the same hash the 0.8.10 bump section
+already recorded), fetched fresh from both tags for this bump rather than trusted from memory.
+
+`sdks/rust/vsms-sdk-rust`, `examples/rust`, and `ci/e2e-integration/vsms-e2e-integration` are all
+outside the root workspace (`Cargo.toml`'s own `exclude`), so a bump that left any one of them on
+the old pin would show green everywhere in this repo's own CI — the exact gap #328 was filed
+against. All three bumped to `=0.11.0` (`examples/rust` inherits it by path, no direct pin of its
+own); all three individually `cargo check --all-targets`/`clippy --all-targets -- -D warnings`/
+`test`/`deny check` clean, and `cargo tree -i aws-lc-rs` reports no match in any of the four
+lockfiles (root plus these three) — `ring` remains the only provider. `deploy/backup-tool` was
+checked and carries no `cratestack` dependency at all (confirmed by grep, not assumed from its
+own module doc), so it is out of scope for this bump — nothing to bump, nothing to re-verify.
+`cargo xtask sdk-schema-check` reports no drift, so the vendored SDK schema needed no
+re-vendoring — a pure CLI-version bump with an unchanged `.cstack` file has nothing to re-copy.
+
+**One real, unrelated finding surfaced while running `cargo deny check` for the bump: `chacha20
+0.10.1` (transitive via `rand 0.10.2` → `sqlx-postgres 0.9.0` → `cratestack-sqlx`) was yanked.**
+`cargo update -p chacha20` moved it to `0.10.2` (still satisfying the same `rand` requirement,
+confirmed by the successful re-resolve) — a one-line `Cargo.lock` fix, unrelated to the version
+pin itself, applied because leaving a known-yanked crate in a freshly-touched lockfile is worse
+than the one-line fix, not because `cargo deny check` failed outright over it (yanked crates are
+`warn`, not `deny`, in this repo's `deny.toml`, and the job still exited 0 either way).
+
+### `just client-gen`/`just client-check` — verified without a `pnpm install`, because neither script needs one
+
+Both `ci/postprocess-sms-client-readme.mjs` and `ci/assert-client-routes-match-server.mjs`
+import only Node built-ins (`node:fs`, `node:child_process`, `node:path`, `node:url` — checked by
+reading each file's own `import` lines, not assumed from the recipe) — the entire JS half of
+`client-gen`/`client-check` runs with a bare `node` binary and the pinned `cratestack` CLI, no
+`frontends/` `node_modules` involved at all. `just client-gen` (CRATESTACK_BIN pointed at the
+isolated 0.11.0 install) left `frontends/packages/sms-client/package.json`/`README.md` — the two
+tracked files in that otherwise-generated, gitignored package — byte-identical (`git status`
+reports nothing), confirming `--tanstack` still produces the same output eight releases later.
+`just client-check` (needing `cargo build -p sms-gateway` first, which the recipe's own hardcoded
+`target/debug/sms-gateway` path requires building with the default, unset `CARGO_TARGET_DIR`
+rather than this session's own `/home/ubuntu/target-cs011` override — cleaned up afterward, see
+below) reports **133 client call(s) match routes served by the pinned sms-gateway binary (133
+routes total)** — the same count the 0.8.10 bump's own verification recorded.
+
+### The JS/TypeScript side (`pnpm biome ci .`, `pnpm turbo run typecheck build`/`test`) could not be run — a pre-existing VM/mount limitation, not a regression from this bump
+
+**This worktree's own mount refuses every `symlink()` syscall, unconditionally — confirmed
+directly, not inferred from a failed install.** `ln -s /tmp/foo ./anything` inside the worktree
+fails `Permission denied`; `mount` shows the backing filesystem is `fuse.sshfs`. `pnpm install`
+needs symlinks for at least three independent purposes, and each was hit and confirmed in turn
+before giving up: the per-project workspace-state registration symlink inside `.pnpm-store`
+(worked around by moving `--store-dir` off the mounted path, to `/home/ubuntu/pnpm-store-local`);
+every package's own `node_modules/.bin/*` entry (attempted `--config.node-linker=hoisted` plus a
+`bin-links=false` `.npmrc` override — pnpm still needs `.bin` links, or fails outright,
+regardless of linker mode); and, decisively, the **package-internal** symlinks pnpm's own content-
+addressable store needs for a package to see its own nested dependencies at all
+(`node_modules/.pnpm/express@5.2.1/node_modules/accepts` → the shared `accepts` package) — this
+one is not a linker-mode or config choice, it is how the store works, and it was reproduced even
+against `examples/node/webhook-receiver`'s own trivial, `express`-only dependency tree, not just
+the full nine-project monorepo. Three independent symlink classes, three independent failures,
+zero successes — this is exhaustive enough to call a hard blocker of this specific worktree's
+mount, not a configuration this session failed to find.
+
+**Not a consequence of anything this PR changed.** No `.npmrc`, `pnpm-lock.yaml`, or
+`pnpm-workspace.yaml` edit was made or needed for the cratestack bump itself; the temporary
+`.npmrc` probe used to confirm the `.bin`-link failure mode was reverted (`git checkout -- .npmrc`)
+before this PR's own diff was finalized, and both partial `node_modules` trees (root,
+`examples/node/webhook-receiver`) were removed rather than left half-installed. Because of this,
+the `js` CI job's own commands — `pnpm biome ci .`, `just client-gen`/`client-check` (JS half
+covered above, needing no install), `pnpm turbo run typecheck build`, `pnpm turbo run test`, the
+`examples/node/webhook-receiver` leg — were not run for this bump beyond the two that don't need
+`node_modules` at all. This is the one piece of this bump's own verification checklist left
+genuinely incomplete, and it's an environment gap, not a code gap: nothing in the diff touches
+`frontends/` at all (checked: `git status --porcelain` shows zero files under `frontends/` for
+this PR), so there is no TypeScript-side change for those commands to have caught regardless.
+
+**The same mount limitation is very likely why `hooks_node_receiver_live` failed in the full
+live-Postgres run below** — it needs `pnpm install` to have already succeeded in
+`examples/node/webhook-receiver`, which this session confirmed cannot happen on this specific
+mount for any dependency tree deeper than zero packages. This matches this file's own
+already-documented pattern for that exact test (see the `#64`/grey-route-watch section's
+"one failure encountered... was a pre-existing local environment gap, unrelated to this PR") —
+not a new finding, just a new instance of an old, named one, with a more specific root cause
+identified this time than "pnpm install hasn't been run."
+
+### Verification
+
+`cargo +1.98.0 fmt --all --check` and `cargo +1.98.0 clippy --workspace --all-targets -- -D
+warnings` both clean. `cargo +1.98.0 test --workspace` (in-process): **415 passed, 0 failed**
+across 81 test-result blocks — matching the 0.8.10 bump's own recorded baseline almost exactly.
+`cargo +1.98.0 deny check`: `advisories ok, bans ok, licenses ok, sources ok` (after the chacha20
+fix above; a stale run before it showed the same four-category pass with one additional `warn`).
+All eight `cargo xtask` guards pass: `no-raw-sqlx`, `parity` (`message`: 25 edges, `job`: 9 edges,
+`attempt`: 7 edges, diagram and table agree on all three), `workflow-paths` (36 checked),
+`docs-drift`, `r6` (35 view files scanned), `sdk-schema-check`, `migrations-current`,
+`bootstrap-sql-check` — plus `cratestack-pin` printing exactly `0.11.0`, the value CI feeds
+straight into the installer action. `cargo tree -i aws-lc-rs`: no match, root workspace and all
+three excluded manifests.
+
+**Full live-Postgres suite, to completion: `cargo test --workspace --no-fail-fast -- --ignored`
+— 210 passed, 2 failed** out of 212 total, both failures independently investigated rather than
+waved through:
+
+- `rbac_layer2_live_postgres::provider_write_route_denies_a_token_that_is_correctly_scoped_for_something_else`
+  failed with `Database("error communicating with database: expected to read 5 bytes, got 0
+  bytes at EOF")` — a dropped-connection error, not an assertion failure, and this file's own
+  "the live suites run in CI now" section already documents this VM as shared and prone to
+  exactly this shape of flake under load (a concurrent `vsms-ci-runner` container was genuinely
+  running at the same time). Re-run in isolation immediately after: **13 passed, 0 failed**,
+  59.19s, no flakiness reproduced a second time.
+- `hooks_node_receiver_live` failed exactly as documented above — the environment gap this
+  section's own "JS/TypeScript side" paragraph explains in full, confirmed not fixable in this
+  session.
+
+Combined, that is 210 + 13 (the isolated re-run's own count for the one genuinely flaky test) =
+223 individual pass observations against 212 distinct tests, with exactly one test
+(`hooks_node_receiver_live`) failing for a reason this session could not close — reconciling
+cleanly against this file's own previously-recorded 212-total baseline.
+
+**Housekeeping**: this worktree's own `target/` (2.4GB, built once with `CARGO_TARGET_DIR` unset
+so `just client-check`'s hardcoded `target/debug/sms-gateway` path would resolve) was removed
+before finishing, per this file's own standing instruction for a non-default build location.
+
 ## cratestack bumped to `=0.8.10` (from `=0.8.3`)
 
 `v0.8.3...v0.8.10` is seven releases in six days. Most of it is Dart packaging, `cratestack_cbor`
@@ -1029,7 +1389,7 @@ The maintainer's direction — testing as simple as possible, `just` + `docker c
 - **A persistent Postgres volume made the migrations step a no-op from the second run on** — `sms-migrate` logged "already applied" for all three and `ci/test-state-machine.sql` asserted against a stale schema, so a regenerated `0001_init` with a psql-time error would pass locally and fail CI. Step 11 creates a per-run scratch database, trap-dropped on any exit, proven by two consecutive runs each applying all three and a mid-way failure leaving no database behind. `$$` is not unique across concurrent containers (two separate runners both printed `1`), so the name carries a timestamp and `RANDOM`.
 - **`CARGO_BUILD_JOBS` in the environment never reached cargo**: the justfile's `_cargo` prefix assignment used a literal `jobs := "4"`, which beats the environment. `env_var_or_default` now; proven with `just --evaluate _cargo` under `CARGO_BUILD_JOBS=9`, and proven load-bearing by reverting it and watching the 9 get discarded.
 
-**Two limits, stated where a contributor will read them.** `just ci` cannot run from a linked git worktree: `.git` is a file naming an absolute host path the container cannot see, so `docs-drift`'s `git ls-files` and Turborepo's root detection both fail; the `ci` recipe now refuses with that explanation and exit 2 before touching Docker, and `testing.adoc` documents the clone or two-mount workaround. And the runner pins `rust:1.95` (the MSRV) while CI's `rust` job uses `stable`, so a lint added after 1.95 can pass locally and fail CI — deliberate, since it enforces the floor, and now written down. Pinned moving parts, per this file's standing allergy: the cargo-binstall installer at `v1.22.0`, `cargo-deny` at 0.20.2, the cratestack CLI at the value `cargo xtask cratestack-pin` prints, checked for equality as step 1.
+**Two limits, stated where a contributor will read them.** `just ci` cannot run from a linked git worktree: `.git` is a file naming an absolute host path the container cannot see, so `docs-drift`'s `git ls-files` and Turborepo's root detection both fail; the `ci` recipe now refuses with that explanation and exit 2 before touching Docker, and `testing.adoc` documents the clone or two-mount workaround. And the runner pins `rust:1.98` (the MSRV, raised from 1.95 by the cratestack 0.11.0 bump — this file's own "cratestack bumped to `=0.11.0`" section missed this Dockerfile at the time, since it lives on a different, concurrently landing branch; fixed in the same PR that rebased the two together) while CI's `rust` job uses `stable`, so a lint added after 1.98 can pass locally and fail CI — deliberate, since it enforces the floor, and now written down. Pinned moving parts, per this file's standing allergy: the cargo-binstall installer at `v1.22.0`, `cargo-deny` at 0.20.2, the cratestack CLI at the value `cargo xtask cratestack-pin` prints, checked for equality as step 1.
 
 **`cargo xtask node-sdk-types-check` (#252) landed alongside.** `sdks/node/vsms-sdk-node/src/types.ts` hand-curates four enum unions out of `schemas/vsms.cstack`, and nothing checked the copy against its source — the package is published, so a drift ships to integrators. Proven both directions before being trusted: deleting `cancelled` from `types.ts` reproduced `in the schema but missing from types.ts: cancelled`; adding a bogus variant reproduced `in types.ts but not in the schema: bogus7`.
 
@@ -1096,12 +1456,12 @@ Retained because they are cheap and still correct, not because they are load-bea
 
 | | |
 |---|---|
-| [CrateStack](https://cratestack.dev/) `=0.8.10` | Schema-first. `.cstack` generates models, policies, audit, events, REST. Pre-1.0 and moving fast — pin exactly, and **keep the installed CLI on the same version**: a mismatched CLI emits DDL the compiled library never produces. Never below 0.6.0 (see `#87`) and never below 0.5.0 (see the build-cost section). |
+| [CrateStack](https://cratestack.dev/) `=0.11.0` | Schema-first. `.cstack` generates models, policies, audit, events, REST. Pre-1.0 and moving fast — pin exactly, and **keep the installed CLI on the same version**: a mismatched CLI emits DDL the compiled library never produces. Never below 0.6.0 (see `#87`) and never below 0.5.0 (see the build-cost section). |
 | [Authkestra](https://github.com/marcjazz/authkestra) `=0.5.1` | OIDC provider. 0.3.2 fixed the `GrantType` serde bug that shaped early M1 design (#6). Pin exactly — still moving fast, and `authkestra-macros` is transitive, so `cargo update -p authkestra-macros` is needed to keep the family in true lockstep. |
 | PostgreSQL 16 | The only coordination mechanism. Queues (`SKIP LOCKED`), leader election (advisory locks), state machines (triggers). No broker, no Redis. |
 | Rust 2021, TypeScript / Next.js 15 | |
 
-`sms-api` depends on `cratestack = { package = "cratestack-pg", version = "=0.8.10" }` — the rename is mandatory, generated code emits absolute `::cratestack::*` paths. `JsonCodec` lives in the separate `cratestack-codec-json` crate. (An earlier revision of this line said `=0.5.0` — stale even before the 0.7.10 bump, and never the actual root `Cargo.toml` pin; corrected while touching this section for that bump, and the version number itself kept current at every bump since.)
+`sms-api` depends on `cratestack = { package = "cratestack-pg", version = "=0.11.0" }` — the rename is mandatory, generated code emits absolute `::cratestack::*` paths. `JsonCodec` lives in the separate `cratestack-codec-json` crate. (An earlier revision of this line said `=0.5.0` — stale even before the 0.7.10 bump, and never the actual root `Cargo.toml` pin; corrected while touching this section for that bump, and the version number itself kept current at every bump since.)
 
 ## The three rules
 
@@ -1231,7 +1591,9 @@ dropdb vsms_check
 # an installed CLI newer than the pin emits DDL the pinned library never does,
 # and a policy-only @@allow change must not be regenerated at all
 cratestack migrate diff --schema schemas/vsms.cstack \
-  --out-dir backends/migrations/postgres --backend postgres --name <change>
+  --out-dir backends/migrations --backend postgres --name <change>
+# (the CLI nests its output under <out-dir>/postgres/<timestamp>_<name>/;
+#  copy {up,up.pre,down}.sql over 0001_init/ — see "Regenerating migrations")
 
 # after editing §2.10 of the design doc
 cargo xtask bootstrap-sql backends/migrations/postgres/0002_bootstrap/up.sql

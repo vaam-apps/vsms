@@ -1026,6 +1026,12 @@ cratestack migrate diff --schema schemas/vsms.cstack \
   --out-dir backends/migrations --backend postgres --name init
 ```
 
+Copy the output over `backends/migrations/postgres/0001_init/{up,up.pre,down}.sql` —
+`up.pre.sql` only exists when the generator scaffolds one, which it does whenever
+it detects a blocking operation (a `CHECK`/`NOT NULL` addition it can't prove is
+safe against an existing table's rows); delete the committed copy if a
+regeneration stops emitting one.
+
 then append the following. Without it, every insert fails and the state machines don't exist.
 
 **Defaults and identifiers.**
@@ -2866,7 +2872,7 @@ Milestone 0 still comes first. The encoding crate has the highest ratio of busin
 | System context sets `kind` but not `role = "system"` → all message writes deny | Integration test on the first send |
 | SMPP hex/decimal `message_id` mismatch | `providerMessageRef` + `providerMessageRefAlt`, both indexed |
 | Grey route silently replaces sender ID | Monthly handset validation per route; alert on delivery-rate divergence |
-| CrateStack pre-1.0, 23 releases in 11 weeks | Pin `=0.5.0`; `cratestack diff` CI gate catches wire breaks |
+| CrateStack pre-1.0, 23 releases in 11 weeks | Pin exactly (see the root `Cargo.toml`'s `cratestack` line, or run `cargo xtask cratestack-pin` for the current value — this table doesn't hardcode a version that's certain to be stale by the next bump); `cratestack diff` CI gate catches wire breaks |
 | Only in-memory rate-limit store ships | Implement `RateLimitStore` against Redis/Postgres before the second API replica |
 
 ---
