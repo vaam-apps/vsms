@@ -147,6 +147,29 @@
 {$SMS_GATEWAY_DOMAIN} {
 	# tls internal
 
+	# Production-readiness audit N3: baseline security headers on every
+	# response this edge sends, not just the API's own JSON error bodies.
+	# `Strict-Transport-Security` matters most on the two origins Caddy
+	# terminates TLS for (this file's own header explains why they're
+	# two separate domains, not path-routed) — a browser that has ever
+	# loaded either over HTTPS refuses a downgraded HTTP connection to
+	# the same host for a year afterward, closing the classic
+	# strip-to-HTTP MITM window. `X-Content-Type-Options: nosniff` stops
+	# a browser from MIME-sniffing a response into executing as
+	# something other than what `Content-Type` says (relevant here since
+	# this route also serves `/jwks.json`/`/.well-known/openid-configuration`,
+	# not just `application/json` API bodies). `Referrer-Policy` caps
+	# what a cross-origin link leaks about this deployment's own URLs
+	# (message ids, `client_id`s in a query string, if any ever end up
+	# in one) to `strict-origin-when-cross-origin` — a conservative,
+	# commonly-recommended default (OWASP Secure Headers Project), not
+	# copied from anywhere else in this repo.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
 	rate_limit {
 		# Per-IP budget on /token. Sized against real caller behaviour,
 		# not a round number: `frontends/packages/gateway/src/token.ts` and
@@ -257,5 +280,14 @@
 
 {$SMS_ADMIN_DOMAIN} {
 	# tls internal
+
+	# Production-readiness audit N3 — see {$SMS_GATEWAY_DOMAIN}'s own
+	# identical block above for the full reasoning.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
 	reverse_proxy admin:8080
 }

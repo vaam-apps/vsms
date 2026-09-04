@@ -35,6 +35,18 @@ deploy/.env
 deploy/.env.*
 !deploy/.env.example
 
+# Production-readiness audit (review round 1, item 4): deploy/secrets/
+# holds the real console-private-key.pem/console-client-id/rclone.conf
+# every deployed operator provisions locally — every image in this repo
+# builds with `context: ..` (the repo root), so without this rule those
+# real secrets would enter the build context (and, worse, any image
+# layer that happens to COPY the context wholesale) the moment they
+# exist on disk. `.gitignore` already keeps them out of the repository
+# itself; this keeps them out of a build context too.
+deploy/secrets/*
+!deploy/secrets/.gitkeep
+!deploy/secrets/*.example
+
 # Docs and CI artifacts not needed inside a build context
 docs/
 .github/

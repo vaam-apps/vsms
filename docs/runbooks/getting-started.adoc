@@ -68,6 +68,13 @@ Runs the live-Postgres suites against the scratch database from step 2 -- these 
 
 == 5. Run the gateway and worker for real
 
+*`sms-gateway bootstrap` chains everything this whole section walks
+through by hand into one idempotent call* (production-readiness audit
+N2) -- this section stays the long way on purpose, since the point here
+is understanding each individual step, not just running one command;
+see `docs/runbooks/deployment.adoc`'s own step 3 for the one-liner once
+you already know what it's doing.
+
 Two one-time steps before either binary will start. First, an OP signing key -- `sms-gateway serve` refuses to start without one:
 
 [,bash]
@@ -248,7 +255,10 @@ directory, not the shell's.
 
 Then register the console's OIDC client and create an account to sign in with --
 without both, the console starts and immediately redirects every page back to
-`/login` with nothing able to satisfy it:
+`/login` with nothing able to satisfy it. (`sms-gateway bootstrap
+--console-redirect-uri ... --owner-email ... --owner-display-name ...`
+does both of these plus step 5's own rotate-signing-key/seed-dispatch in
+one call, if you don't need the individual steps below spelled out.)
 
 [,bash]
 ----

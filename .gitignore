@@ -18,12 +18,18 @@ sdks/node/*/dist/
 *.pem
 *.key
 /secrets/
-# deploy/secrets/rclone.conf (#69) — rclone remote credentials for
-# backups; same gitignored/chmod-600/mounted-read-only convention as
-# deploy/secrets/console-private-key.pem (already covered by *.pem above;
-# rclone.conf needs its own entry since it isn't a .pem/.key file, and
-# `/secrets/` above only anchors to the repo root, not deploy/secrets/).
-deploy/secrets/rclone.conf
+# deploy/secrets/ holds real, host-specific credentials at runtime
+# (console-private-key.pem, console-client-id, rclone.conf — see
+# docs/runbooks/deployment.adoc's "Secrets" section) — `*.pem`/`*.key`
+# above already cover the private key, but a plain-text file like
+# rclone.conf or a client id needs its own rule, and `/secrets/` above
+# only anchors to the repo root, not `deploy/secrets/`. Ignore everything
+# in the directory except the two example/placeholder files this repo
+# ships, so `deploy/secrets/` itself still exists (and is browsable) in a
+# fresh clone without any real secret ever being committed by accident.
+deploy/secrets/*
+!deploy/secrets/.gitkeep
+!deploy/secrets/rclone.conf.example
 .DS_Store
 node_modules/
 /pgdata

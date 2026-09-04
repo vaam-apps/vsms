@@ -14,25 +14,30 @@ under Law No. 2024/017) blocks that decision, not this runbook.
 
 == Known seams -- read this before you start
 
-Both gaps this section used to name are closed, and this file was left
-saying otherwise for longer than it should have -- the same "documentation
-asserts something the code does not do" shape `AGENTS.md` keeps
-rediscovering, found here while writing the backend-only section below:
+All three gaps this section used to name are closed, and this file was
+left saying otherwise for longer than it should have -- the same
+"documentation asserts something the code does not do" shape `AGENTS.md`
+keeps rediscovering, found here while writing the backend-only section
+below:
 
 * *`sms-gateway provision-client` exists* (`backends/apps/sms-gateway/src/main.rs`,
 `Command::ProvisionClient`) and mints a real, HTTP-usable
-`private_key_jwt` client -- step 6 below uses it directly rather than
-hand-rolling a keypair and registering it against the schema. There is
-still no CLI path to create the very first `App` a real production
-deployment sends through: ``App.create``'s own `@@allow` is
-`hasRole('owner') || hasRole('admin')`, and nothing this deployment can
-mint over HTTP carries either role until a human has logged into the
-console at least once (#194) -- a chicken-and-egg step §9.2 doesn't
-automate, and `seed-demo-app` (below) is explicitly not a substitute
-(see its own `--help` text: "demo-only... not part of any production
-bootstrap sequence"). Track this the same way this file already tracks
-the rate-limiting and secrets gaps below, rather than treating it as
-solved.
+`private_key_jwt` client -- step 5 below uses it directly rather than
+hand-rolling a keypair and registering it against the schema.
+* *`sms-gateway create-app` exists* (`Command::CreateApp`, production-readiness
+audit N1) and closes what used to be a real chicken-and-egg gap: creating
+the very first `App` a real production deployment sends through --
+``App.create``'s own `@@allow` is `hasRole('owner') || hasRole('admin')`,
+and nothing this deployment can mint over HTTP carries either role until
+a human has logged into the console at least once (#194), which itself
+needs `sms-gateway bootstrap`/`seed-console-client`/`provision-user` to
+have already run. `create-app` writes through the same hand-built
+`owner`-role context every other bootstrap subcommand in this file uses
+-- see step 5's own "before provisioning the console client" note.
+`vsms-demo-seed` (`ghcr.io/vymalo/vsms/demo`, a separate binary/image --
+see that crate's own module doc) is explicitly not a substitute for this
+in a real deployment: it's demo-only, seeds fixture data no production
+`App` should carry, and isn't referenced anywhere below.
 * *`backends/apps/sms-fake-orange` exists* as a real binary/image, and
 `compose.demo.yaml` (repo root, not this file's own
 `deploy/docker-compose.yml`) wires it in for a GHCR-only showcase -- see
@@ -58,7 +63,8 @@ Placeholder credentials get you through migrations and a running stack,
 but every submit attempt fails at Orange's own OAuth endpoint -- the
 same boundary xref:36-handset-gate.adoc[`36-handset-gate.adoc`] documents.
 * `openssl` on your workstation, for generating a Postgres password and
-(until `provision-client` lands) an RSA keypair by hand.
+the `SMS_HASH_PEPPER` step 1 below needs. No RSA keypair by hand any
+longer -- `sms-gateway provision-client` (step 5) mints one server-side.
 
 == 1. Clone and configure
 
@@ -68,6 +74,15 @@ git clone https://github.com/vymalo/vsms.git
 cd vsms/deploy
 cp .env.example .env
 chmod 600 .env
+
+# Production-readiness audit B2: deploy/docker-compose.yml's `backup`
+# service mounts this as a `configs:` reference, which fails `docker
+# compose up` outright ("bind source path does not exist") if the file
+# is missing — required even when BACKUP_RCLONE_REMOTE ends up being a
+# bare local path with no real credentials to fill in. See the "Secrets"
+# section below for the full reasoning.
+cp secrets/rclone.conf.example secrets/rclone.conf
+chmod 600 secrets/rclone.conf
 ----
 
 Fill in `.env` -- every var traces to a real `+#[arg(long, env = ...)]+` in
@@ -111,53 +126,106 @@ under a Postgres advisory lock. It never regenerates anything; the two
 time (`include_str!`), from what's committed. If it exits non-zero,
 nothing downstream is safe to start -- fix this before continuing.
 
-== 3. Create the first OP signing key -- before sms-gateway's first start
+== 3. Bootstrap: OP signing key, orange_cm Provider/Route, console OIDC client, first operator
 
-``AGENTS.md``'s M1 notes describe `sms-gateway serve` as failing "loudly on
-the first `/token` request... not at process start" if no active OP
-signing key exists. *That's stale relative to the code as of this PR* --
-found live, not by reading the doc: `Command::Serve` in
-`backends/apps/sms-gateway/src/main.rs` calls `sms_auth::op::load_signing_keys`
-_before_ binding the listener, so a fresh database makes the container
-exit immediately and crash-loop under `restart: unless-stopped`. Worth
-fixing upstream (either the doc or the eager check), not done here --
-out of scope for a deploy PR, and the practical consequence is what
-matters for this runbook: *you cannot `docker compose exec` into a
-container that never stays up.* Use `run --rm` instead, which starts a
-fresh one-off container from the same image and env rather than reusing
-the (not-yet-running) `sms-gateway` service container:
+`sms-gateway serve` calls `sms_auth::op::load_signing_keys` and
+`resolve_provider_row_id` (`backends/apps/sms-gateway/src/main.rs`)
+_before_ binding its listener, so a fresh database makes the container
+exit immediately and crash-loop under `restart: unless-stopped` if
+either an active OP signing key or an `active` `Provider` row is
+missing -- *you cannot `docker compose exec` into a container that never
+stays up.* `admin` has the equivalent gap one layer up: it starts fine,
+but nobody can log in without a registered console OIDC client and at
+least one operator account. `sms-gateway bootstrap` (production-readiness
+audit N2) closes all four in one idempotent call, chaining exactly the
+four steps `docs/runbooks/deployment.adoc` used to walk through one at a
+time -- see "What `bootstrap` does" below if you need to run, or
+understand, any one of them individually.
+
+*R4 (`CONTRIBUTING.md`: "the admin console is optional, the backend
+must run without it") -- review round 1, blocker 1: the command below
+is for a deployment bringing up the console.* For a genuinely
+backend-only deployment, omit `--console-redirect-uri`/`--owner-email`/
+`--owner-display-name` entirely -- `bootstrap` still creates the
+signing key and the `orange_cm` `Provider`/`Route` (everything
+`sms-gateway`/`sms-worker` themselves need to start), and explicitly
+skips the console-client and owner-account steps rather than either
+attempting them with nothing to configure them from or silently doing
+nothing. Passing `--owner-email` without `--console-redirect-uri` is
+refused with a named error, not silently accepted -- an operator
+account with no console `redirect_uri` registered has nothing to sign
+into.
 
 [,bash]
 ----
 docker compose --env-file .env build sms-gateway
+docker compose --env-file .env run --rm sms-gateway bootstrap \
+  --console-redirect-uri "https://console.example.com/api/auth/callback" \
+  --owner-email you@example.com \
+  --owner-display-name "Your Name"
+----
+
+(Not `sms-gateway bootstrap` as the second argument -- the image's
+`ENTRYPOINT` is already the binary; only the subcommand goes after the
+service name.) `run --rm`, not `exec`, for the same reason every
+one-off command in this runbook uses it: there is no running
+`sms-gateway` service container to exec into yet. Safe to re-run against
+an already-bootstrapped deployment -- see `Command::Bootstrap`'s own doc
+comment for why re-running never rotates an already-active signing key
+(unlike every other step here, key rotation is not something a re-run
+should do silently) while every other step stays a clean no-op.
+
+`--console-client-id` (default `sms-console`) and `--owner-role-key`
+(default `owner`) are also available if this deployment needs either
+non-default -- see `Command::Bootstrap`'s own `--help` for the full flag
+list.
+
+=== What `bootstrap` does, step by step
+
+Read this if you need one of the four steps on its own -- routine key
+rotation later (`docker compose exec sms-gateway rotate-signing-key`,
+once `sms-gateway` is already up), registering a second console client,
+or debugging a partially-bootstrapped database.
+
+==== The first OP signing key
+
+`Command::Serve` calls `sms_auth::op::load_signing_keys` before binding
+the listener, so a fresh database makes the container exit immediately
+and crash-loop. `bootstrap` skips this step outright (not just
+idempotently re-running it) whenever an `active` `OauthSigningKey`
+already exists -- see this file's own AGENTS.md-corrected history: an
+earlier revision claimed `serve` instead fails "loudly on the first
+`/token` request," which was wrong; it fails at process start, before
+binding, every time. On its own:
+
+[,bash]
+----
 docker compose --env-file .env run --rm sms-gateway rotate-signing-key
 ----
 
-(Not `sms-gateway rotate-signing-key` as the second argument -- the image's
-`ENTRYPOINT` is already the binary; only the subcommand goes after the
-service name.) Run this once, on a fresh database, before ever bringing
-`sms-gateway` up as a long-running service. Re-running it later rotates
-the key with an overlap window (`sms_auth::op::ROTATION_OVERLAP`) -- safe
-to do as routine key hygiene, not just a bootstrap step, but only once
+Run this once, on a fresh database, before ever bringing `sms-gateway`
+up as a long-running service. Re-running it later rotates the key with
+an overlap window (`sms_auth::op::ROTATION_OVERLAP`) -- safe to do as
+routine key hygiene, not just a bootstrap step, but only once
 `sms-gateway` is already up (`docker compose exec` works fine against an
-already-running container).
+already-running container). *Unlike `bootstrap` itself, this standalone
+command always rotates* -- it has no "skip if one already exists" check,
+since routine rotation is exactly what an operator running it by hand
+wants.
 
-== 4. Seed the `orange_cm` Provider row and a catch-all Route -- before sms-gateway's first start
+==== The `orange_cm` Provider row and a catch-all Route
 
-`sms-gateway serve` resolves an `active` `Provider` row keyed `orange_cm`
-at startup -- `resolve_provider_row_id` in `backends/apps/sms-gateway/src/main.rs` --
-_before_ binding its listener, the same ordering trap step 3 above already
-documents for the OP signing key. Nothing seeded this row until
+`resolve_provider_row_id` in `backends/apps/sms-gateway/src/main.rs`
+runs before the listener binds too -- the identical crash-loop trap,
+this time for a missing `Provider` row. Nothing seeded this row until
 https://github.com/vymalo/vsms/issues/148[#148]: a fresh database made
 the container exit immediately and crash-loop under
-`restart: unless-stopped`, exactly like a missing signing key does, and
-this runbook used to work around it with a raw `psql` `INSERT` run
-_after_ bringing the containers up -- which meant watching `sms-gateway`
-crash-loop, then fixing it by hand. `sms-gateway seed-dispatch` closes
-that gap: a real CLI subcommand, going through the CrateStack delegate
-under a hand-built `owner` context (never raw SQL -- R1), idempotent by
-construction. Same `run --rm` reasoning as step 3 -- this needs a fresh
-one-off container, not the not-yet-running `sms-gateway` service:
+`restart: unless-stopped`, and this runbook used to work around it with
+a raw `psql` `INSERT` run _after_ bringing the containers up -- which
+meant watching `sms-gateway` crash-loop, then fixing it by hand.
+`sms-gateway seed-dispatch` closes that gap: a real CLI subcommand,
+going through the CrateStack delegate under a hand-built `owner` context
+(never raw SQL -- R1), idempotent by construction. On its own:
 
 [,bash]
 ----
@@ -184,7 +252,8 @@ against an already-seeded deployment is a clean no-op on both.
 Its own defaults already match the row this runbook used to hand-write --
 `--key orange_cm`, `--kind orange_cm_http`, `--credential-ref
 env:ORANGE_CM_CLIENT_SECRET`, `--max-tps 10`, `--max-daily-submissions
-100000`, `--cost-per-segment-xaf 0` -- so no flags are required here.
+100000`, `--cost-per-segment-xaf 0` -- so no flags are required here, and
+`bootstrap` itself exposes no flags for this step either (same defaults).
 `config`/`credential-ref` stay placeholders regardless of what's passed:
 confirmed against ``send_test_message.rs``'s own doc comment, neither
 binary reads this row's `config`/`credentialRef` to construct the real
@@ -194,11 +263,11 @@ end up `state = 'active'`, which the subcommand also guarantees (a fresh
 row is created `disabled` -- ``Provider.state``'s own `@default` -- and
 activated in a second write).
 
-== 4b. Register the console's OIDC client and create the first operator
+==== Register the console's OIDC client and create the first operator
 
 Without this, the console starts, reports healthy, and nobody can log
 into it -- the human-login half of the same failure mode `seed-dispatch`
-above exists to prevent on the traffic half.
+above exists to prevent on the traffic half. On their own:
 
 [,bash]
 ----
@@ -245,7 +314,7 @@ console's own -- any signed-in human, regardless of role, can see across
 `App` boundaries, per ``Message``'s own row policy. See
 https://github.com/vymalo/vsms/issues/211[#211].
 
-== 5. Bring up sms-gateway and sms-worker
+== 4. Bring up sms-gateway and sms-worker
 
 [,bash]
 ----
@@ -262,40 +331,100 @@ touches every 15s (see ``backends/apps/sms-worker/Dockerfile``'s own comment for
 that's a more meaningful signal than a bare "is the process running"
 check). Give both `--start-period` a few seconds before checking status.
 `sms-gateway` should now report `(healthy)` on the first attempt -- both
-the signing key from step 3 and the `Provider` row from step 4 already
+the signing key and the `Provider` row from step 3's bootstrap already
 exist, so neither startup dependency is missing this time.
 
-== 6. Provision the admin console's OAuth client
+== 5. Provision the admin console's OAuth client
 
 `sms-gateway provision-client` mints a real, HTTP-usable `private_key_jwt`
 client through the real `provisionAppClient` procedure -- no more manual
 keypair/JWK hand-rolling. It needs an `App` for the console's client to
 act on behalf of; a real deployment's first `App` is a business decision
 (quota, IP allowlist, a `SenderId` actually approved by a real provider
-account) this runbook cannot make for you -- create it once you have a way
-to (the console itself, once you can log into it with the account from
-step 4b, or a direct `psql`/generated-CRUD write under a bootstrapped
-`owner` context) and pass its id below as `--app-id`:
+account) this runbook cannot fully make for you, but it no longer has to
+be a raw `psql`/generated-CRUD write either -- `sms-gateway create-app
+--slug <slug> --name "<display name>"` (production-readiness audit N1)
+writes the row through the same idempotent create-then-catch-`23505`
+pattern `seed-dispatch` already uses for `Provider`, under a hand-built
+`owner` context:
 
 [,bash]
 ----
-docker compose --env-file .env run --rm sms-gateway provision-client \
-  --app-id <the App id> \
-  --label "admin console" \
-  --scope sms:send --scope sms:read \
-  --scope job:read --scope job:enqueue --scope worker:read \
-  --scope provider:read --scope route:read --scope dashboard:read \
-  --key-out secrets/console-private-key.pem \
-  --client-id-out /tmp/console-client-id
+docker compose --env-file .env run --rm sms-gateway create-app \
+  --slug my-app --name "My App"
 ----
 
-`--key-out` writes the private key exactly once, `0600`, and refuses to
-overwrite an existing file (`ProvisionClientResult::privateKeyPem` is
-returned exactly once and never stored anywhere else -- #23/#111). Set
-`SMS_CONSOLE_CLIENT_ID` in `.env` to the value `--client-id-out` wrote
-(or that the command printed as `provisioned client: <id>`).
+`monthlyQuota`/`ipAllowlist`/`transliterateToGsm7` are fixed placeholders
+this command doesn't expose flags for (see `Command::CreateApp`'s own doc
+comment) -- adjust the row afterward, once you have a way to (the console
+itself, once you can log into it with the account step 3 created, or a
+direct generated-CRUD write). Pass the printed app id below as
+`--app-id`:
 
-== 7. Bring up admin and Caddy
+[,bash]
+----
+mkdir -p secrets && chmod 711 secrets
+----
+
+*Production-readiness audit B2 (review round 1, blocker 2): the private
+key now gets provisioned by two dedicated one-shot compose services,*
+`provision-console-client` and `secrets-fix-perms`, *not a runbook
+incantation an operator has to get exactly right by hand.* Two real bugs
+in the previous revision of this step were found live, by actually
+running it end to end, not by inspection:
+
+* `sms-gateway` itself runs as the distroless image's own uid `65532`; a
+  freshly `mkdir -p secrets && chmod 700 secrets`'d host directory (this
+  file's own earlier revision) is owned by the operator's own host user,
+  which `65532` cannot write into at all.
+* `chmod 0644` on the resulting private key -- this file's own earlier
+  fix -- is *wrong on its own terms*, not just unreachable: world-readable
+  is not an acceptable mode for a private key, regardless of who could
+  actually run the command to set it.
+
+`provision-console-client` runs as `user: '0:0'` (root bypasses
+host-side Unix permission checks on a bind mount entirely, confirmed
+live), so it can write into `secrets/` regardless of who owns it.
+`secrets-fix-perms` then `chown`s the key to admin's own runtime uid
+(`10001` -- `frontends/apps/admin/Dockerfile`'s `useradd --uid 10001`)
+and locks it to `0400` -- readable by that uid alone, not `0644`.
+`chmod 711` on the directory itself (not `700`) matters just as much:
+verified live, a directory with no execute ("search") bit for "other"
+blocks *any* other uid from even traversing into it, regardless of what
+mode the file inside has -- `711` allows traversal without allowing
+directory listing.
+
+`SMS_CONSOLE_APP_ID` (the App id from step 5's own `create-app` above)
+has to be set for the first command below to succeed -- either export it
+inline, or add it to `.env`:
+
+[,bash]
+----
+SMS_CONSOLE_APP_ID=<the App id> \
+  docker compose --env-file .env --profile console up secrets-fix-perms
+----
+
+*Run this exactly once* -- `secrets-fix-perms` depends on
+`provision-console-client`, and a *second* `up secrets-fix-perms`
+re-attempts `provision-console-client` too, which refuses to overwrite
+an already-existing `--key-out` (a real, intentional safety property --
+see `ProvisionClientResult::privateKeyPem`'s own doc: it's returned
+exactly once and never stored anywhere else, #23/#111) and fails the
+whole chain. To redo this step, remove
+`secrets/console-private-key.pem`/`secrets/console-client-id` by hand
+first.
+
+Set `SMS_CONSOLE_CLIENT_ID` in `.env` to `$(cat secrets/console-client-id)`
+(or the `provisioned client: <id>` line in `docker compose logs
+provision-console-client`).
+
+*Proven live, not just described:* a `busybox` container run as uid
+`10001` (through the same `configs:` mechanism `admin` itself uses) can
+read the resulting key; the same container run as `65532` (sms-gateway's
+own uid) or any other uid gets `Permission denied` on both the file and
+listing the directory itself.
+
+== 6. Bring up admin and Caddy
 
 [,bash]
 ----
@@ -329,7 +458,7 @@ never corrected to match -- found while writing this file's own
 "Backend-only deployment" section below, the same "documentation asserts
 something the code does not do" shape `AGENTS.md` keeps rediscovering.
 
-== 8. Verify
+== 7. Verify
 
 [,bash]
 ----
@@ -418,10 +547,19 @@ unset, which is the property that matters (a `:?` anywhere in the file
 would have failed this same command). `postgres`, `migrate`,
 `sms-gateway`, `sms-worker` were then brought up for real
 (`docker compose up -d`, plus the one-shot `rotate-signing-key` and
-`seed-dispatch` steps 3/4 above already cover) -- both reported `healthy`.
+`seed-dispatch` sub-steps of step 3 above, see its own "What `bootstrap`
+does" subsection) -- both reported `healthy`.
 
 Provisioning and sending went entirely through ``sms-gateway``'s own CLI and
-the real HTTP API, never a browser:
+the real HTTP API, never a browser. *`seed-demo-app` below is what this
+proof actually ran at the time (#233) -- it no longer exists as an
+`sms-gateway` subcommand* (production-readiness audit S1: its logic moved
+to its own crate/image, `vsms-demo-seed`, `ghcr.io/vymalo/vsms/demo`,
+demo-only by its own `--help` text either way). A real backend-only
+production deployment reaching this same point today uses
+`sms-gateway create-app --slug vsms-demo --name "vsms demo"` instead (see
+step 5 above) -- transcript kept verbatim as a historical record of what
+was actually run, not as a command to copy-paste today:
 
 ----
 $ docker compose run --rm sms-gateway seed-demo-app
@@ -478,21 +616,17 @@ host.
 
 *Every operator action this proof needed had a CLI subcommand -- nothing
 required a browser.* `rotate-signing-key`, `seed-dispatch`,
-`seed-demo-app`, `provision-client`: all four are plain `sms-gateway`
-subcommands. The one real gap, not hit by this proof but worth recording
-here rather than only in "Known seams" above: *a real production
-deployment's first `App` still has no CLI path.* `seed-demo-app` (used
-above) is explicitly demo-only by its own `--help` text; the only other
-route to `App.create` is a human token from a console login (#194), which
-a genuinely backend-only deployment has no console to obtain from. Either
-this needs a real `create-app`-shaped subcommand, or the very first `App`
-has to be written by hand (`psql`, or the generated REST route under a
-manually-bootstrapped `owner` context) the same way the very first `owner`
-`User` already is (step 4b above). Filing this precisely rather than
-declaring R4 fully closed: the _deployment_ layer's own gap (#233) is
-closed by this PR; this is a distinct, narrower gap one layer up, in
-what a backend-only _operator_ can bootstrap without ever touching a
-browser.
+`seed-demo-app` (demo-only, see above), `provision-client`: all four were
+plain `sms-gateway` subcommands at the time. The one real gap this proof
+found, not closed by #233 itself: *a real production deployment's first
+`App` had no CLI path.* `seed-demo-app` was explicitly demo-only by its
+own `--help` text; the only other route to `App.create` was a human
+token from a console login (#194), which a genuinely backend-only
+deployment has no console to obtain from. *Closed by `sms-gateway
+create-app`* (production-readiness audit N1, step 5 above) -- the same
+hand-built `owner`-role-context write every other bootstrap subcommand in
+this file already uses, not a raw `psql`/generated-CRUD write under a
+manually-bootstrapped context any more.
 
 == Rate limiting (#156) -- what was actually proven, against a real stack
 
@@ -606,15 +740,15 @@ cannot reach.
 
 | `sms-gateway`
 | `postgres` healthy, `migrate` completed
-| *will not even start* without step 3's signing key or step 4's `orange_cm` `Provider` row -- both are resolved before the listener ever binds, so either one missing crash-loops the container the same way (#148)
+| *will not even start* without step 3's signing key or `orange_cm` `Provider` row -- both are resolved before the listener ever binds, so either one missing crash-loops the container the same way (#148)
 
 | `sms-worker`
 | `postgres` healthy, `migrate` completed
-| starts fine with no signing key (only `sms-gateway` loads one) and fine with no `Provider`/`Route` either -- `dispatch` role specifically needs step 4's `Provider` row _and_ its catch-all `Route` (#62) to route anything, other roles don't, and none of them crash-loop on the absence of either the way `sms-gateway` does on a missing `Provider`: a `dispatch` role with nothing to route to just rejects every message it claims, silently, forever
+| starts fine with no signing key (only `sms-gateway` loads one) and fine with no `Provider`/`Route` either -- `dispatch` role specifically needs step 3's `Provider` row _and_ its catch-all `Route` (#62) to route anything, other roles don't, and none of them crash-loop on the absence of either the way `sms-gateway` does on a missing `Provider`: a `dispatch` role with nothing to route to just rejects every message it claims, silently, forever
 
 | `admin`
 | `sms-gateway` healthy
-| starts; token exchange fails until step 6's client is provisioned
+| starts; token exchange fails until step 5's client is provisioned
 
 | `caddy`
 | `sms-gateway` and `admin` healthy
@@ -631,11 +765,36 @@ exists only in this deploy path, not in the committed
 == Secrets -- the decision, and what it doesn't protect against
 
 *No `sops` here*, despite §9.2 mentioning it. This deployment's secrets
-are: `POSTGRES_PASSWORD`, `ORANGE_CM_CLIENT_SECRET`, and the admin
-console's `console-private-key.pem`. All three live in `deploy/.env`
-(`chmod 600`, never committed -- `.gitignore`/`.dockerignore` both exclude
-it) and a `deploy/secrets/` directory (also never committed) mounted
-read-only into the one container that needs it.
+are: `POSTGRES_PASSWORD`, `ORANGE_CM_CLIENT_SECRET`, `SMS_HASH_PEPPER`,
+the admin console's `console-private-key.pem`, and the backup service's
+`rclone.conf`. The first three live in `deploy/.env` (`chmod 600`, never
+committed -- `.gitignore`/`.dockerignore` both exclude it); the last two
+live in `deploy/secrets/` (also never committed -- `.gitignore` ignores
+everything in that directory except the two example/placeholder files
+this repo ships) mounted read-only into the one container that needs
+each.
+
+*`deploy/secrets/rclone.conf` must exist before the first `up`* -- even
+when `BACKUP_RCLONE_REMOTE` (`.env`) is a bare local path and rclone
+needs no real credentials at all. Production-readiness audit B2: a
+`volumes:` bind mount onto a not-yet-existing host path used to be
+created *silently as an empty directory* by the Docker daemon, and
+`backup` would then fail obscurely against a directory where it expected
+a config file. `deploy/docker-compose.yml`'s `backup`/`admin` services
+now reference both files as `configs:` instead, which fails `docker
+compose up` outright ("bind source path does not exist") if either is
+missing -- so this step is no longer optional busywork, it's what keeps
+`up` from either silently misbehaving or refusing to start at all:
+
+[,bash]
+----
+cp secrets/rclone.conf.example secrets/rclone.conf
+chmod 600 secrets/rclone.conf
+# then fill in a real remote's credentials — see that file's own header,
+# or docs/runbooks/backup-restore.adoc — unless BACKUP_RCLONE_REMOTE is a
+# bare local path, in which case the copied-verbatim empty file is
+# already a valid, working config.
+----
 
 That is genuinely less than §9.2's own aspiration, and the honest
 threat model is: this protects against the secrets ending up in git
@@ -672,20 +831,50 @@ tags images `:branch-<slug>` / `:sha-<12 hex>` and the chart
 own PR used this to prove the pipeline works before this section existed
 to document it -- see that PR for the exact GHCR references it produced.
 
-On the VM (compose path):
+On the VM (compose path), two ways to upgrade -- production-readiness
+audit S6 closed the gap where only the first of these actually worked:
+
+*Build from source* (unchanged, still the default -- `build:` is still
+present on every service that has one):
 
 [,bash]
 ----
 cd deploy
+git pull
+docker compose --env-file .env up -d --build
+----
+
+*Pull pre-built GHCR images* -- `migrate`/`sms-gateway`/`sms-worker`/`admin`
+now also carry a matching `image:` (`docker-compose.yml`'s own header
+comment has the full reasoning), so `pull` has something real to fetch
+instead of silently no-op'ing against a locally-built, untagged image:
+
+[,bash]
+----
+cd deploy
+export VSMS_IMAGE_TAG=v0.2.1   # or the tag you're upgrading to
 docker compose --env-file .env pull
 docker compose --env-file .env up -d
 ----
 
-No image tag pinning in `docker-compose.yml` today -- it always builds
-locally from source (`build:`, not `image:`). Pulling pre-built GHCR images
-instead of building on the VM is a reasonable follow-up once release
-cadence picks up; not done here since it wasn't needed to get a first
-deploy working.
+`VSMS_IMAGE_OWNER` (default `vymalo`) is the second half of that
+reference -- every image through `v0.2.1` published under
+`ghcr.io/vymalo/...`; this repository's own GitHub owner has since moved
+to `vaam-store`, and `release.yml` already publishes to
+`ghcr.io/${{ github.repository_owner }}/...` unconditionally (correct,
+untouched by this PR), so the *next* tagged release lands under the new
+owner. Set both together once one exists:
+
+[,bash]
+----
+export VSMS_IMAGE_OWNER=vaam-store
+export VSMS_IMAGE_TAG=v0.3.0   # whatever the next real tag turns out to be
+----
+
+Either path is a real, working upgrade mechanism now; before this PR,
+`docker compose pull` was a documented no-op against a compose file with
+no `image:` anywhere, silently leaving `up -d` to build (or reuse) a
+local image regardless of what had actually been pulled.
 
 == Kubernetes (Helm)
 
@@ -757,7 +946,7 @@ genuinely idempotent: `migrate` via ``backends/apps/sms-migrate``'s own
 advisory-lock-guarded `schema_migrations` tracking table, `seedDispatch`
 via ``sms-gateway seed-dispatch``'s own dedupe on both halves (`Provider`:
 `create` + catch-`23505`; `Route`: look up an existing one for the
-provider first -- see step 4 above). `rotateSigningKey` (weight `-10`,
+provider first -- see step 3 above). `rotateSigningKey` (weight `-10`,
 last in the chain) is deliberately *not* hooked to `pre-upgrade`:
 unlike the other two, it is not idempotent -- every run mints a
 brand-new signing key with an overlap window, so hooking it to every
@@ -797,9 +986,17 @@ helm install vsms deploy/charts/vsms \
   --set existingSecrets.database.name=vsms-database \
   --set existingSecrets.hashPepper.name=vsms-hash-pepper \
   --set existingSecrets.orange.name=vsms-orange \
-  --set existingSecrets.dashboardBasicUsers.name=vsms-dashboard-users \
+  --set existingSecrets.consoleSessionSecret.name=vsms-console-session \
   --set existingSecrets.consolePrivateKey.name=vsms-console-key
 ----
+
+(Production-readiness audit: an earlier revision of this example named
+`existingSecrets.dashboardBasicUsers`, which stopped existing when #194
+replaced the `DASHBOARD_AUTH` Basic gate with a real
+`authorization_code` + PKCE login -- `values.yaml`'s own
+`existingSecrets` block is the source of truth for the real five:
+`database`, `hashPepper`, `orange`, `consoleSessionSecret`,
+`consolePrivateKey`.)
 
 Every one of `image.tag`, `oidcIssuer`, `orange.clientId`,
 `orange.senderNumber`, `admin.consoleClientId`, and all five

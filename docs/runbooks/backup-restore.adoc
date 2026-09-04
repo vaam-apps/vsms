@@ -37,7 +37,8 @@ assumed to work because the command exits zero.
 * *The upgrade path is documented, not foreclosed.* When real traffic
 and a real RPO requirement exist, `+archive_command = 'rclone copyto %p
 ...'+` (or a dedicated tool -- `pgbackrest`, `wal-g`) layers on top of
-this without touching `backup.sh`/`restore.sh`: the manifest format
+this without touching `vsms-backup`'s own `backup`/`restore` subcommands
+(`deploy/backup-tool` -- see "The mechanism" below): the manifest format
 here (`taken_at`, `schema_migrations_applied`, a pepper fingerprint) is
 a base-backup metadata scheme PITR tooling would reuse, not replace.
 Revisit this decision when the recovery-point objective actually
@@ -61,7 +62,7 @@ not a local directory with "move it to S3 later" as a TODO.
 *The bucket is the operator's choice, not a hardcoded vendor.* The
 `backup` service (added to `deploy/docker-compose.yml` by this PR) uses
 https://rclone.org[`rclone`] rather than a vendor-specific CLI, so the
-same `deploy/backup.sh`/`deploy/restore.sh` work unmodified against AWS
+same `vsms-backup backup`/`vsms-backup restore` work unmodified against AWS
 S3, Backblaze B2, Google Cloud Storage, Azure Blob, MinIO, or (for a drill
 only -- see below) a bare local path. That is a required, documented
 configuration, not a silently-local default:
@@ -79,6 +80,19 @@ convention ``docs/runbooks/deployment.adoc``'s "Secrets" section already
 uses for `deploy/secrets/console-private-key.pem`, including its
 documented threat model (protects against git history / image layers /
 `docker inspect`; does not protect against host filesystem access).
+* *This file must exist before the first `docker compose up`, full
+stop* -- production-readiness audit B2: `deploy/docker-compose.yml`'s
+`backup` service mounts it as a `configs:` reference, not a plain
+`volumes:` bind mount, specifically because a bind mount onto a
+not-yet-existing host path used to be created *silently as an empty
+directory* by the Docker daemon (reproduced live), which made `rclone`
+fail obscurely against a directory where it expected a config file.
+`configs:` fails `docker compose up` outright ("bind source path does
+not exist") instead. `deploy/secrets/rclone.conf.example` is committed
+specifically so `cp`-ing it to `deploy/secrets/rclone.conf` (empty is a
+valid, working config for the local-path drill case above) is always
+step 1 of ``docs/runbooks/deployment.adoc``, not conditional on which
+remote you end up using.
 
 *Cameroon hosting note.* ``AGENTS.md``'s open question #1 (Law No.
 2024/017, cross-border personal-data transfer) applies to backups exactly
@@ -98,9 +112,11 @@ section) reached this last corner of `deploy/`.* `deploy/backup.sh`,
 a hard cutover, not a parallel path. `deploy/backup-tool` (a small,
 separate Cargo workspace -- see its own `Cargo.toml`/`src/main.rs` module
 doc for why it isn't part of the root workspace or `backends/apps/`) is one binary,
-`vsms-backup`, with four subcommands: `backup`, `restore`,
-`restore-drill`, `schedule`. Same mechanism, same manifest shape, same
-guarantees -- the shell orchestration is what changed, not what it does.
+`vsms-backup`, with five subcommands: `backup`, `restore`,
+`restore-drill`, `schedule`, `healthcheck` (production-readiness audit
+S10, added after this section was first written). Same mechanism, same
+manifest shape, same guarantees -- the shell orchestration is what
+changed, not what it does.
 
 Still shipped inside `deploy/backup.Dockerfile` (`postgres:16-alpine` +
 `rclone` -- the exact `pg_dump`/`pg_restore` this stack's own Postgres
@@ -152,6 +168,23 @@ unrelated reason. Requires an explicit
 `--yes-i-understand-this-destroys-the-target-database` flag and reads
 `$DATABASE_URL` -- there is no default target, on purpose. Run it
 against a scratch database, never production.
+* *`vsms-backup healthcheck`* -- `deploy/backup.Dockerfile`'s own
+`HEALTHCHECK`, run against the long-running `schedule` container every
+15 minutes. A real signal that backups are actually landing, not just
+"is the process alive": fails once the last *successful* backup's own
+health-file mtime is older than 2x the schedule's own period (derived
+empirically from the next two upcoming cron occurrences, not parsed off
+the expression's syntax). One missed backup alone doesn't fail this --
+`schedule` already retries on the very next tick -- two in a row past
+the cadence is the real, actionable signal. Review round 1, item 15: a
+second start-marker file, touched unconditionally the instant
+`schedule` starts (before the very first backup even begins), gives
+this the same 2x-period grace on *every* restart, not just the first --
+without it, `BACKUP_RUN_ON_START=false` (or a container still running a
+genuinely slow first backup) reported unhealthy on every single
+restart, indistinguishable from backups having actually stopped
+working. See `deploy/backup-tool/src/schedule.rs`'s own module doc for
+the full mechanism.
 
 Why `DROP SCHEMA public CASCADE; CREATE SCHEMA public;` rather than a real
 `dropdb`/`createdb` as the drill's destructive step: it needs only the one
@@ -162,7 +195,7 @@ where the application's own role can never hold `DROP DATABASE` -- an
 honest stand-in for "destroy the database," not a shortcut around it. A
 production incident restoring after a genuinely lost VM or corrupted data
 directory is a different, larger procedure (provision a new Postgres,
-`CREATE DATABASE`, then `restore.sh --latest`) -- the drill proves the
+`CREATE DATABASE`, then `vsms-backup restore --latest`) -- the drill proves the
 `pg_dump`/`pg_restore` round trip is sound; it does not simulate losing
 the VM itself.
 
@@ -194,13 +227,14 @@ concrete instruction: *whatever backs up `deploy/.env`, back it up on
 the same cadence as the database, and treat "restore the database" and
 "restore the matching ``.env``" as one operation, not two.*
 . *Every backup carries a _verifiable_ fingerprint of the pepper it was
-taken under, never the pepper itself.* ``backup.sh``'s manifest stores
-`sha256(SMS_HASH_PEPPER)` in the clear. That is deliberately safe to
-leave unencrypted: ``HashPepper``'s own minimum is 32 bytes of `openssl
-rand` output, so -- unlike a raw MSISDN hash, brute-forceable in seconds
-over Cameroon's ~10{caret}7-candidate numbering space (``AGENTS.md``'s #134
-section) -- a fingerprint of 256 real bits of entropy is not
-meaningfully brute-forceable. `restore.sh` hashes the caller's own
+taken under, never the pepper itself.* `vsms-backup backup`'s manifest
+(`deploy/backup-tool/src/manifest.rs`) stores `sha256(SMS_HASH_PEPPER)`
+in the clear. That is deliberately safe to leave unencrypted:
+``HashPepper``'s own minimum is 32 bytes of `openssl rand` output, so --
+unlike a raw MSISDN hash, brute-forceable in seconds over Cameroon's
+~10{caret}7-candidate numbering space (``AGENTS.md``'s #134 section) --
+a fingerprint of 256 real bits of entropy is not meaningfully
+brute-forceable. `vsms-backup restore` hashes the caller's own
 `$SMS_HASH_PEPPER` the same way and compares; a mismatch *warns
 loudly and proceeds* rather than blocking, because restoring under a
 deliberately different pepper is a legitimate choice in some DR
@@ -249,7 +283,7 @@ against on a cadence.
 (`deploy/backup-tool`, this PR) -- the bash-era results this section used
 to report are superseded, not merely repeated.* Run exactly as shown
 above, against a real, network-isolated Postgres 16 migrated by the real
-`app/sms-migrate` binary (not `./ci/apply-migrations.sh`, deleted in the
+`backends/apps/sms-migrate` binary (not `./ci/apply-migrations.sh`, deleted in the
 same PR), with a real domain row (a `providers` row with recognisable,
 non-default field values: `key='orange_cm_drill'`,
 `cost_per_segment_xaf=12.5`, `max_tps=10`, `healthy=true`) inserted before

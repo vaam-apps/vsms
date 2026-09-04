@@ -57,3 +57,10 @@ base64 = "0.23"
 # because `exec crond -f` replaced this container's PID 1 with `crond`
 # itself, which installs its own signal handling.
 signal-hook = "0.4"
+
+[dev-dependencies]
+# schedule.rs's own healthcheck tests need a real, throwaway file on disk
+# to backdate an mtime against — `std::env::temp_dir()` plus a hand-rolled
+# unique name was considered and rejected in favour of a well-vetted,
+# self-cleaning scratch directory.
+tempfile = "3"
