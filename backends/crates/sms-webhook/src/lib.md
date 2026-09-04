@@ -5,9 +5,9 @@ event freshness. Pure, with one deliberate exception
 no clock reads — every function that needs "now" takes it as a
 parameter rather than calling one.
 
-`backends/crates/sms-worker`'s `hooks` role (#40) is the intended sender-side
-caller of [`sign_header`]; `backends/crates/sms-api`'s `rotate_webhook_secret`
-procedure (#41) is the intended caller of [`generate_secret`].
+`backends/crates/sms-worker`'s `hooks` role is the sender-side caller of
+[`sign_header`]; `backends/crates/sms-api`'s `rotate_webhook_secret`
+procedure is the caller of [`generate_secret`].
 `examples/node/webhook-receiver` is the reference *receiver* — an
 independent, from-scratch Node/TypeScript implementation of the exact
 scheme below, kept deliberately separate so this module's own tests
@@ -63,10 +63,10 @@ against every candidate secret, first match wins — order of
 [`sign_header`]'s caller-facing convention is "current first"). §4.4,
 in its own words: "a job clears `prevSecret` after 24 hours" — that job
 is out of this crate's scope (see `rotate_webhook_secret`'s own doc
-comment in `backends/crates/sms-api/src/procedures.rs` for the current, narrower
-scope cut this PR ships). Once it runs, `prevSecret` naturally stops
-being a candidate because it is no longer stored anywhere — not because
-of anything in this module.
+comment in `backends/crates/sms-api/src/procedures.rs` for the current
+scope cut). Once it runs, `prevSecret` naturally stops being a
+candidate because it is no longer stored anywhere — not because of
+anything in this module.
 
 # Public API (the contract `hooks` and `rotate_webhook_secret` code against)
 
