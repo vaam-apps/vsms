@@ -1,0 +1,24 @@
+-- up.pre.sql — preparatory SQL for the migration in this directory.
+--
+-- The runner executes this file immediately before `up.sql`, inside
+-- the SAME transaction, and folds it into the migration checksum.
+-- Both halves land or neither does.
+--
+-- cratestack generated this file because `up.sql` contains a blocking
+-- operation: it cannot succeed against a table that already has rows
+-- until the existing data is prepared first. On an empty table — a
+-- fresh CI database, say — it will pass with this file left as-is,
+-- which is exactly why the problem tends to surface first in
+-- production. Fill it in before deploying anywhere with data.
+--
+-- This file is yours to edit; `up.sql` is generated. Leaving it as
+-- comments only is a valid choice — it is then treated as absent.
+--
+--   - audit_anchors.range_hash: new CHECK constraint `audit_anchors_range_hash_length_check`; existing rows must already satisfy it
+--     UPDATE audit_anchors SET range_hash = <value> WHERE NOT (<the check predicate>);
+--   - audit_anchors.prev_chain_hash: new CHECK constraint `audit_anchors_prev_chain_hash_length_check`; existing rows must already satisfy it
+--     UPDATE audit_anchors SET prev_chain_hash = <value> WHERE NOT (<the check predicate>);
+--   - audit_anchors.chain_hash: new CHECK constraint `audit_anchors_chain_hash_length_check`; existing rows must already satisfy it
+--     UPDATE audit_anchors SET chain_hash = <value> WHERE NOT (<the check predicate>);
+--   - sender_ids.value: new CHECK constraint `sender_ids_value_length_check`; existing rows must already satisfy it
+--     UPDATE sender_ids SET value = <value> WHERE NOT (<the check predicate>);
