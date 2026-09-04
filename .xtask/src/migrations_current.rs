@@ -68,8 +68,9 @@ pub fn run(root: &Path) -> Result<(), String> {
     let scratch = ScratchDir::new()?;
 
     // `--out-dir` is the *parent* of the backend directory `migrate diff`
-    // writes into: it writes "<out>/postgres/<timestamp>_init/{up,down}.sql",
-    // never "<out>/<timestamp>_init/...". A scratch directory outside the
+    // writes into: it writes "<out>/postgres/<timestamp>_init/{up,up.pre,down}.sql"
+    // (up.pre.sql only when a blocking operation is detected), never
+    // "<out>/<timestamp>_init/...". A scratch directory outside the
     // repo means `migrate diff`'s own `schema.snapshot.json` side effect —
     // which this repo deliberately never commits — never touches the
     // working tree, so there is nothing to clean up and nothing to confuse
@@ -104,6 +105,19 @@ pub fn run(root: &Path) -> Result<(), String> {
             )
         })?;
 
+    // `up.pre.sql` is conditional — `cratestack migrate diff` only
+    // scaffolds one when it detects a blocking operation (a `CHECK`/`NOT
+    // NULL` addition on a column with no way to prove an existing table
+    // has no rows) — so it is compared only when at least one side
+    // actually has one, and a missing side reads as empty rather than a
+    // hard error: that is precisely the "this migration used to need a
+    // backfill and no longer does, or vice versa" drift this check exists
+    // to catch, not a broken invocation. `up`/`down` stay hard errors on a
+    // missing file, since both are unconditionally emitted every time and
+    // a missing one means something else is already broken.
+    let up_pre_relevant = regenerated.join("up.pre.sql").is_file()
+        || root.join(COMMITTED_DIR).join("up.pre.sql").is_file();
+
     let mut mismatches = Vec::new();
     for f in ["up", "down"] {
         let committed_path = root.join(COMMITTED_DIR).join(format!("{f}.sql"));
@@ -114,6 +128,15 @@ pub fn run(root: &Path) -> Result<(), String> {
             .map_err(|e| format!("{}: {e}", regenerated_path.display()))?;
         if committed != fresh {
             mismatches.push((f, crate::diff::line_diff(&committed, &fresh)));
+        }
+    }
+    if up_pre_relevant {
+        let committed_path = root.join(COMMITTED_DIR).join("up.pre.sql");
+        let regenerated_path = regenerated.join("up.pre.sql");
+        let committed = fs::read_to_string(&committed_path).unwrap_or_default();
+        let fresh = fs::read_to_string(&regenerated_path).unwrap_or_default();
+        if committed != fresh {
+            mismatches.push(("up.pre", crate::diff::line_diff(&committed, &fresh)));
         }
     }
 
@@ -134,11 +157,12 @@ pub fn run(root: &Path) -> Result<(), String> {
     }
     let _ = write!(
         msg,
-        "\nmigrations-current: {COMMITTED_DIR}/{{up,down}}.sql has drifted from what \
+        "\nmigrations-current: {COMMITTED_DIR}/{{up,up.pre,down}}.sql has drifted from what \
          `cratestack migrate diff` produces from the current {SCHEMA} (diff above).\n\
          Regenerate it (see AGENTS.md's 'Regenerating migrations' section):\n  \
          cratestack migrate diff --schema {SCHEMA} --out-dir backends/migrations --backend postgres --name init\n  \
-         # then copy the output over {COMMITTED_DIR}/{{up,down}}.sql\n  \
+         # then copy the output over {COMMITTED_DIR}/{{up,up.pre,down}}.sql — up.pre.sql only exists\n  \
+         # when the generator scaffolds one; delete the committed copy if it stops emitting one\n  \
          rm -f backends/migrations/postgres/schema.snapshot.json   # this repo does not commit it"
     );
     Err(msg)
