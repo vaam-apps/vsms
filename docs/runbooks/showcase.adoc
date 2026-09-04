@@ -57,12 +57,12 @@ _genuinely fresh_ database's catalog concurrently can race Postgres's own
 seconds of extra startup time for never hitting that race instead of
 hoping not to.
 
-NOTE: `seed-demo-webhook`'s `--webhook-url`/`--webhook-secret-out` flags,
-and `demo-app` itself, need a `VSMS_DEMO_IMAGE_TAG`/`VSMS_IMAGE_TAG` that
-includes them -- ``compose.demo.yaml``'s own header comment already
-documents this exact kind of gap for `provision-client`'s newer flags,
-and this is the same shape: until a tag publishes them, override both to
-a tag that does.
+NOTE: `seed-demo-webhook`'s `--webhook-url`/`--webhook-secret-out` flags
+need a tag that includes them -- they land in `v0.3.0`, this file's
+default, so no override is needed at the default. Showcasing a tag
+before `v0.3.0` hits this gap directly (see "Bumping the showcased
+version" below) and, separately, cannot run `demo-app` at all: no
+`demo-app` image was ever published before `v0.3.0`.
 
 Watch it settle:
 
@@ -211,11 +211,12 @@ same machine) so every `up` after a `down -v` starts genuinely fresh.
 
 == Bumping the showcased version
 
-`compose.demo.yaml` now defaults every image (all six -- the four
-production images plus `sms-fake-orange`/the demo seeder) to `v0.3.0`,
-so `docker compose -f compose.demo.yaml --profile console up -d` with no
-override already showcases a real, working release. To pin a different
-one:
+`compose.demo.yaml` now defaults every image (all seven -- the four
+production images plus `sms-fake-orange`, the demo seeder, and
+`demo-app`) to `v0.3.0`, so `docker compose -f compose.demo.yaml
+--profile console --profile demo up -d` with no override already
+showcases a real, working release, `demo-app` included. To pin a
+different one:
 
 [,bash]
 ----
@@ -224,12 +225,13 @@ VSMS_IMAGE_TAG=v0.3.0 docker compose -f compose.demo.yaml --profile console --pr
 
 `sms-gateway`/`sms-worker`/`admin`/`migrate` are published together on
 every `v*.*.*` tag; `VSMS_IMAGE_TAG` is the one thing this file expects
-you to change. `sms-fake-orange` (`VSMS_FAKE_ORANGE_IMAGE_TAG`) and
-`seed-demo-app` (`VSMS_DEMO_IMAGE_TAG`) are published on the same
-`v*.*.*` cadence too (`.github/workflows/release.yml`'s build-images
-matrix shares one `tag_primary`/`tag_secondary` across every image on a
-given trigger, this repo's nested pair included), so both env vars now
-default to `v0.3.0` as well rather than being required with no default.
+you to change. `sms-fake-orange` (`VSMS_FAKE_ORANGE_IMAGE_TAG`),
+`seed-demo-app` (`VSMS_DEMO_IMAGE_TAG`), and `demo-app`
+(`VSMS_DEMO_APP_IMAGE_TAG`) are published on the same `v*.*.*` cadence
+too (`.github/workflows/release.yml`'s build-images matrix shares one
+`tag_primary`/`tag_secondary` across every image on a given trigger,
+this repo's nested pair included), so all three env vars now default to
+`v0.3.0` as well rather than being required with no default.
 
 *`v0.2.0` was not usable* -- that tag's own release run failed
 (`.github/workflows/release.yml`, tag `v0.2.0`); confirmed against the
@@ -239,18 +241,25 @@ every image reference here -- this repository's own GitHub owner as of
 `v0.3.0`. Every image through `v0.2.1` published under the prior owner,
 `ghcr.io/vymalo/...` -- showcasing one of those older releases means
 setting the owner together with EVERY tag knob this file has (there are
-three: `VSMS_IMAGE_TAG` for the four production images,
+four: `VSMS_IMAGE_TAG` for the four production images,
 `VSMS_DEMO_IMAGE_TAG` for `vsms/demo`, `VSMS_FAKE_ORANGE_IMAGE_TAG` for
-`vsms/sms-fake-orange`), never a subset -- a knob left at its `v0.3.0`
-default resolves to `ghcr.io/vymalo/...:v0.3.0`, an image that was never
-published under that owner, and the pull fails with `manifest unknown`:
+`vsms/sms-fake-orange`, `VSMS_DEMO_APP_IMAGE_TAG` for `vsms/demo-app`),
+never a subset -- a knob left at its `v0.3.0` default resolves to
+`ghcr.io/vymalo/...:v0.3.0`, an image that was never published under
+that owner, and the pull fails with `manifest unknown`:
 
 [,bash]
 ----
 VSMS_IMAGE_OWNER=vymalo VSMS_IMAGE_TAG=v0.2.1 \
 VSMS_DEMO_IMAGE_TAG=v0.2.1 VSMS_FAKE_ORANGE_IMAGE_TAG=v0.2.1 \
-  docker compose -f compose.demo.yaml --profile console --profile demo up -d
+  docker compose -f compose.demo.yaml --profile console up -d
 ----
+
+Note the missing `--profile demo`: `demo-app` first exists as a
+published image at `v0.3.0` -- there is no `v0.2.1` tag for
+`VSMS_DEMO_APP_IMAGE_TAG` to name, so showcasing any tag before
+`v0.3.0` means `--profile demo` cannot be used at all, not merely a
+knob left at its default.
 
 `VSMS_DEMO_IMAGE_TAG` is one variable shared by two services, and used
 to have different requirements between them: `seed-demo-webhook`
@@ -258,24 +267,18 @@ to have different requirements between them: `seed-demo-webhook`
 image, `--webhook-url`/`--webhook-secret-out`) needs flags that did not
 exist in `v0.2.1`. They land in `v0.3.0`, this file's default tag, for
 the first time, so the default now works for both services without any
-override. Showcasing `v0.2.1` (all four knobs, as above) still hits the
-old gap: `--profile demo` at that tag fails loudly at that one-shot
-(`unexpected argument '--webhook-url'`) -- accepted, since the fix is
-"use a newer tag," not something this file papers over for an older
-one. `demo-app` is a THIRD non-production image, and still
-doesn't fit either pattern: no
-`ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app` has been
-published yet (the `.github/workflows/release.yml` matrix entry that
-will publish one, on the `v0.3.0` tag itself, is new in the same PR that
-added this section), so ``compose.demo.yaml``'s own `demo-app` service
-still builds from source (`build:`, its one flagged exception to "every
-image pulled from GHCR") rather than reading a `VSMS_DEMO_APP_IMAGE_TAG`
-that doesn't exist to read yet -- switching it over is a post-`v0.3.0`
-follow-up. See ``compose.demo.yaml``'s own comments on all three
-services (`seed-demo-app`/`seed-demo-webhook`, `sms-fake-orange`,
-`demo-app`) for the current state and why, and this repo's PR
-description for exactly which published tags this runbook was verified
-against.
+override -- moot at `v0.2.1` regardless, since `--profile demo` is
+already unusable there for the reason above. `demo-app` is a THIRD
+non-production image, published at
+`ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app` since `v0.3.0`
+(confirmed live with `docker manifest inspect`) -- it now follows the
+identical pattern `sms-fake-orange`/`seed-demo-app` already use,
+`VSMS_DEMO_APP_IMAGE_TAG` included, and ``compose.demo.yaml``'s own
+`demo-app` service carries no `build:` stanza any more. See
+``compose.demo.yaml``'s own comments on all four services
+(`seed-demo-app`/`seed-demo-webhook`, `sms-fake-orange`, `demo-app`) for
+the current state and why, and this repo's PR description for exactly
+which published tags this runbook was verified against.
 
 == No Postgres port, on purpose
 

@@ -16,7 +16,7 @@
     "node": ">=23.6.0"
   },
   "dependencies": {
-    "@vymalo/vsms-node": "^0.2.1",
+    "@vymalo/vsms-node": "^0.3.0",
     "express": "^5.1.0"
   },
   "devDependencies": {

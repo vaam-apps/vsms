@@ -1,7 +1,5 @@
 # A one-command showcase of the whole system, pulling every vsms image from
-# GHCR — no `build:` stanza anywhere, with ONE flagged exception
-# (`demo-app`, below, until its own GHCR image exists — see that
-# service's own comment). This is a *third*, distinct compose
+# GHCR — no `build:` stanza anywhere. This is a *third*, distinct compose
 # file, alongside two that already exist for different purposes:
 #
 #   - `compose.yml` (repo root) — Postgres alone, for `cargo run`/a live test
@@ -112,21 +110,17 @@ name: vsms-demo
 # `v0.3.0` too instead of being required with no default.
 #
 # `demo-app` (near the bottom of this file) is a THIRD non-production
-# image, and does not fit either pattern above yet: no
-# `ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app` image has ever
-# been published (its own `.github/workflows/release.yml` matrix entry is
-# new in this PR — the next `v*.*.*` tag is the first one that will
-# actually publish it), so this file builds it from source (`build:`,
-# that service's own comment explains why this is the one deliberate
-# exception to "every image pulled from GHCR"). Once a tag exists, its
-# `image:` line should follow the identical
-# `ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:?...}`
-# shape `VSMS_DEMO_IMAGE_TAG`/`VSMS_FAKE_ORANGE_IMAGE_TAG` already use —
-# not introduced here as a real variable, since nothing in this file
-# reads it yet and an unused required variable would just be a second
-# kind of dangling reference. Switching this service from `build:` to
-# `image:` is a post-`v0.3.0` follow-up (AGENTS.md's own "Release v0.3.0"
-# section), not attempted in this change.
+# image, published at
+# `ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app` since `v0.3.0`
+# (`.github/workflows/release.yml`'s matrix entry for it — confirmed
+# live with `docker manifest inspect`, not assumed). It follows the
+# identical `image:` shape `VSMS_DEMO_IMAGE_TAG`/`VSMS_FAKE_ORANGE_IMAGE_TAG`
+# already use, with its own `VSMS_DEMO_APP_IMAGE_TAG` knob, also
+# defaulting to `v0.3.0`. Showcasing a tag before `v0.3.0` means
+# `--profile demo` cannot be used at all — no `demo-app` image was ever
+# published under an older tag, and this file has no `build:` fallback
+# to fall back to (AGENTS.md's own "Release v0.3.0" section records this
+# switch from `build:` to `image:` as the follow-up that landed it).
 
 services:
   postgres:
@@ -737,24 +731,15 @@ services:
   # the `hooks` role's own signed webhook for it — the one piece of this
   # showcase nothing else exercises end to end.
   #
-  # **`build:`, this file's ONE deliberate exception to its own "every
-  # image pulled from GHCR, no `build:` stanza anywhere" header claim.**
-  # No `ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app` image
-  # exists yet — `.github/workflows/release.yml`'s matrix entry for it
-  # publishes on the `v0.3.0` tag, cut immediately after this PR merges
-  # (see AGENTS.md's own "Release v0.3.0" section), at which point this
-  # should switch to
-  # `image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:?...}`
-  # the same shape `sms-fake-orange`/`seed-demo-app` already use — a
-  # post-`v0.3.0` follow-up, not attempted in this change. Until then,
-  # building it is the only way this showcase can include it at all, and
-  # the source it
-  # builds from (`examples/node/demo-app`, a fully standalone package
-  # with no path dependency into this checkout) is exactly what an
-  # evaluator running `docker build` here would get regardless. Requires
-  # `docker compose ... build demo-app` (or plain `up`, which builds
-  # missing images automatically) before `up`, unlike every other
-  # service in this file.
+  # Published at `ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app`
+  # since `v0.3.0` (`.github/workflows/release.yml`'s matrix entry for it,
+  # confirmed live with `docker manifest inspect` — see AGENTS.md's own
+  # "Release v0.3.0" section) — the same `image:` shape
+  # `sms-fake-orange`/`seed-demo-app` already use, pinned via its own
+  # `VSMS_DEMO_APP_IMAGE_TAG` knob (default `v0.3.0`). There is no
+  # `build:` fallback in this file for a tag before `v0.3.0` — showcasing
+  # one means `--profile demo` cannot be used at all, since no
+  # `demo-app` image was ever published under an older tag.
   #
   # `profiles: [demo]` — its OWN profile, deliberately never `console`:
   # this is a backend proof (it talks to `sms-gateway` directly, the
@@ -777,9 +762,8 @@ services:
   # used while the process is up so `docker compose ps` can show
   # `healthy` mid-run) — that's a liveness signal, not a restart policy.
   demo-app:
-    build:
-      context: .
-      dockerfile: examples/node/demo-app/Dockerfile
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:-v0.3.0}
+    platform: linux/amd64
     profiles: [demo]
     restart: 'no'
     environment:
