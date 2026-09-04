@@ -68,6 +68,28 @@ pub fn canonical_string(timestamp: i64, event_id: &str, body: &[u8]) -> String {
 /// key length an algorithm structurally can't accept, which SHA-256's
 /// HMAC has none of. Same reasoning as
 /// `backends/crates/sms-api/src/pepper.rs`'s `hmac_sha256_hex`.
+///
+/// ```
+/// use sms_webhook::sign_v1;
+///
+/// let sig = sign_v1(
+///     "test-secret",
+///     1_700_000_000,
+///     "11111111-1111-4111-8111-111111111111",
+///     br#"{"hello":"world"}"#,
+/// );
+///
+/// // Independently computed — not with this crate's own code — via:
+/// //   printf 'v1\n1700000000\n11111111-1111-4111-8111-111111111111\n<sha256 of the body>' \
+/// //     | openssl dgst -sha256 -hmac "test-secret" -r
+/// // (see this module's own test suite for the full derivation). Agreement
+/// // with an independent tool is what makes this a real cross-check, not
+/// // just proof the function is consistent with itself.
+/// assert_eq!(
+///     sig,
+///     "d1af37fc05412e9917cc0418d41500571bdb698cc37205f7786e36267065cb93"
+/// );
+/// ```
 #[must_use]
 pub fn sign_v1(secret: &str, timestamp: i64, event_id: &str, body: &[u8]) -> String {
     sign_canonical(secret, &canonical_string(timestamp, event_id, body))
@@ -94,6 +116,25 @@ fn new_mac(secret: &str) -> HmacSha256 {
 /// second — "oldest last" per §4.4). Computes the canonical string once
 /// and reuses it across every secret, rather than re-hashing `body` once
 /// per secret.
+///
+/// ```
+/// use sms_webhook::sign_header;
+///
+/// let header = sign_header(
+///     &["test-secret", "old-secret"],
+///     1_700_000_000,
+///     "11111111-1111-4111-8111-111111111111",
+///     br#"{"hello":"world"}"#,
+/// );
+///
+/// // "v1=<current>,v1=<prev>" — current secret first, on the wire exactly
+/// // as documented in `X-Sms-Signature` (see [`HEADER_SIGNATURE`]).
+/// assert_eq!(
+///     header,
+///     "v1=d1af37fc05412e9917cc0418d41500571bdb698cc37205f7786e36267065cb93,\
+///      v1=2e284cbe3a6183ac06cd381f56c3f037fecc738b3e8231d0f33f4f6f9d0629e4"
+/// );
+/// ```
 #[must_use]
 pub fn sign_header(secrets: &[&str], timestamp: i64, event_id: &str, body: &[u8]) -> String {
     let canonical = canonical_string(timestamp, event_id, body);
@@ -117,6 +158,35 @@ pub fn sign_header(secrets: &[&str], timestamp: i64, event_id: &str, body: &[u8]
 /// comparison against a computed HMAC goes through
 /// [`hmac::Mac::verify_slice`] (constant-time; see the module doc's own
 /// section on this) — never a `==` on hex strings or raw bytes.
+///
+/// ```
+/// use sms_webhook::verify;
+///
+/// let timestamp = 1_700_000_000;
+/// let event_id = "11111111-1111-4111-8111-111111111111";
+/// let body: &[u8] = br#"{"hello":"world"}"#;
+///
+/// // Signed with the OLD secret only — the sender hasn't rotated yet in
+/// // this scenario. A receiver holding BOTH secrets during the overlap
+/// // window (current first, then `prevSecret`) still accepts it.
+/// let header = "v1=2e284cbe3a6183ac06cd381f56c3f037fecc738b3e8231d0f33f4f6f9d0629e4";
+/// assert!(verify(
+///     &["test-secret", "old-secret"],
+///     timestamp,
+///     event_id,
+///     body,
+///     header,
+/// ));
+///
+/// // A tampered body never verifies, against any candidate secret.
+/// assert!(!verify(
+///     &["test-secret", "old-secret"],
+///     timestamp,
+///     event_id,
+///     br#"{"hello":"world!"}"#,
+///     header,
+/// ));
+/// ```
 #[must_use]
 pub fn verify(
     candidate_secrets: &[&str],
@@ -183,13 +253,24 @@ pub fn is_timestamp_fresh(timestamp: i64, now: i64, tolerance_secs: i64) -> bool
 ///
 /// The one function in this crate that isn't pure — everything else here
 /// is a deterministic function of its arguments. `rotate_webhook_secret`
-/// (`backends/crates/sms-api/src/procedures.rs`, #41) is the intended caller.
+/// (`backends/crates/sms-api/src/procedures.rs`) is the caller.
 ///
 /// # Panics
 ///
 /// Never: `OsRng::fill_bytes` (the infallible `RngCore` method, not the
 /// fallible `try_fill_bytes`) is what this calls, and it does not return a
 /// `Result`.
+///
+/// ```
+/// use sms_webhook::generate_secret;
+///
+/// let secret = generate_secret();
+/// assert!(secret.starts_with("whsec_"));
+/// assert_eq!(secret.strip_prefix("whsec_").unwrap().len(), 64); // 32 bytes, hex
+///
+/// // A fresh call never repeats the same secret.
+/// assert_ne!(secret, generate_secret());
+/// ```
 #[must_use]
 pub fn generate_secret() -> String {
     use rand::RngCore;

@@ -66,6 +66,23 @@ impl Gsm7Char {
 /// Look a character up in the GSM 03.38 tables.
 ///
 /// Returns `None` for anything that would force the whole message to UCS-2.
+///
+/// ```
+/// use sms_encoding::gsm7::{classify, Gsm7Char};
+///
+/// // ASCII `$` is NOT at its ASCII position in GSM 03.38 — it sits at 0x02,
+/// // and 0x24 (ASCII `$`'s own slot) is `¤` instead. One default-alphabet
+/// // septet either way.
+/// assert_eq!(classify('$'), Some(Gsm7Char::Basic(0x02)));
+/// assert_eq!(classify('¤'), Some(Gsm7Char::Basic(0x24)));
+///
+/// // `€` is not in the default alphabet at all — it's in the extension
+/// // table, reached via an ESC septet, so it costs two septets.
+/// assert_eq!(classify('€').map(Gsm7Char::septets), Some(2));
+///
+/// // The ASCII backtick has no GSM-7 representation whatsoever.
+/// assert_eq!(classify('`'), None);
+/// ```
 #[must_use]
 pub fn classify(c: char) -> Option<Gsm7Char> {
     // ESC is a control code, not a character a caller may send. Reject it here

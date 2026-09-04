@@ -64,6 +64,21 @@ pub(crate) fn substitute(c: char) -> Option<&'static str> {
 /// GSM 03.38 actually has — then applies [`SUBSTITUTIONS`].
 ///
 /// Runs on every outbound message unconditionally. It is not a policy decision.
+///
+/// ```
+/// use sms_encoding::normalise;
+///
+/// // A typographic right single quotation mark (U+2019) is not in GSM 03.38;
+/// // a straight apostrophe is.
+/// assert_eq!(normalise("l\u{2019}agence"), "l'agence");
+///
+/// // An em dash becomes a hyphen-minus, the same way.
+/// assert_eq!(normalise("code\u{2014}4821"), "code-4821");
+///
+/// // Perceptible characters are left alone — that is transliteration's job,
+/// // a separate, opt-in pass ([`sms_encoding::transliterate_to_gsm7`]).
+/// assert_eq!(normalise("reçu"), "reçu");
+/// ```
 #[must_use]
 pub fn normalise(body: &str) -> String {
     let mut out = String::with_capacity(body.len());

@@ -17,12 +17,14 @@ doc for exactly how the weighted-random half of §6.3 ("sort by priority
 then weighted-random within a priority band") is reconciled with
 "deterministic and explainable".
 
-`backends/crates/sms-worker/src/routing.rs` is the I/O glue: it fetches `Route`/
-`Provider` rows under a system context, converts the schema's own
-`OperatorCode`/`MessageClass` enums onto this crate's mirrored ones
+`backends/crates/sms-worker/src/routing.rs` is the I/O glue: it fetches
+`Route`/`Provider` rows under a system context, converts the schema's
+own `OperatorCode`/`MessageClass` enums onto this crate's mirrored ones
 (the same pattern `dispatch.rs`'s `decode_encoding` already uses for
 `Encoding`), draws the one random `f64` production needs, and applies
-the resulting [`Decision`] to a `Message` row. #54's future simulator
-procedure (`backends/crates/sms-api`) is expected to depend on this crate
-directly too, replaying the exact same [`select_route`] call with a
-caller-supplied draw instead of a random one.
+the resulting [`Decision`] to a `Message` row.
+`backends/crates/sms-api/src/route_simulator.rs` (#54) depends on this
+crate directly too, replaying the exact same [`select_route`] call with
+a caller-supplied draw instead of a random one — a second, necessarily
+separate copy of the fetch-and-convert glue above, since `sms-api`
+cannot depend on `sms-worker` (the dependency runs the other way).

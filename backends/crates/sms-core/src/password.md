@@ -1,7 +1,9 @@
 Argon2id password hashing, and the one-time-password generator every
 human-account provisioning path in this codebase uses.
 
-# Why this lives in `sms-core`, not `sms-auth` (where #194 first put it)
+# Why this lives in `sms-core`, not `sms-auth` (where #194 first put it —
+named here so a reader who remembers that original location isn't left
+wondering where it went)
 
 `sms-auth::login::authenticate_user` is not this module's only caller
 any more. #52/#58 add `provisionUser`, a `sms-api` procedure that lets an
@@ -13,10 +15,11 @@ depends on `sms-api`, confirmed by `backends/crates/sms-auth/Cargo.toml`'s own
 been the cheap fix — `backends/crates/sms-api/src/procedures.rs` already accepts
 that tradeoff for `CLIENT_RSA_KEY_BITS`, a bare constant — but a Argon2
 parameter choice is exactly the kind of security-sensitive logic this
-codebase's own convention argues against duplicating (see AGENTS.md's
-`#134` section on the `sha_of` test helper that hand-rolled a second
-copy of a hash algorithm and silently drifted from the real one the
-moment it changed). `sms-core` is the one crate already sitting below
+codebase's own convention argues against duplicating — cited as
+precedent for the general rule, not as this module's own history: see
+AGENTS.md's `#134` section, where a test's own `sha_of` helper
+hand-rolled a second copy of a hash algorithm and silently drifted from
+the real one the moment it changed. `sms-core` is the one crate already sitting below
 both `sms-api` and `sms-auth` — confirmed by both crates' own
 `sms-core.workspace = true` — so moving the hashing here, rather than
 duplicating it, removes the drift risk entirely instead of accepting it.

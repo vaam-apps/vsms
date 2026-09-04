@@ -24,6 +24,18 @@ pub fn hash_password(password: &str) -> Result<String, argon2::password_hash::Er
 /// Verify `password` against a stored Argon2id PHC string. `false` on any
 /// parse failure of `hash` too — a corrupt stored hash must never verify,
 /// the fail-closed default every caller of this function leans on.
+///
+/// ```
+/// use sms_core::password::{hash_password, verify_password};
+///
+/// let hash = hash_password("correct horse battery staple").unwrap();
+/// assert!(verify_password("correct horse battery staple", &hash));
+/// assert!(!verify_password("wrong password entirely", &hash));
+///
+/// // A corrupt/non-PHC stored hash never verifies — it does not panic or
+/// // propagate a parse error, it fails closed.
+/// assert!(!verify_password("anything", "not a valid phc string"));
+/// ```
 #[must_use]
 pub fn verify_password(password: &str, hash: &str) -> bool {
     let Ok(parsed) = PasswordHash::new(hash) else {
@@ -47,6 +59,14 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
 /// account and the console's own `provisionUser` procedure (#58) generate a
 /// password the identical way — one function, not two copies that could
 /// silently drift in length or character set.
+/// ```
+/// use sms_core::password::generate_password;
+///
+/// let password = generate_password(24);
+/// assert_eq!(password.len(), 24);
+/// assert!(password.chars().all(|c| c.is_ascii_alphanumeric()));
+/// assert_ne!(password, generate_password(24)); // not a fixed string
+/// ```
 #[must_use]
 pub fn generate_password(len: usize) -> String {
     rand::thread_rng()

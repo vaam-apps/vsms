@@ -102,6 +102,25 @@ impl Msisdn {
     ///
     /// Everything [`Msisdn::parse`] accepts, minus fixed lines and toll-free
     /// numbers. This is what the API boundary calls.
+    ///
+    /// ```
+    /// use sms_msisdn::{Msisdn, MsisdnError, LineType};
+    ///
+    /// // Any input shape reaches the same canonical E.164 form.
+    /// let m = Msisdn::parse_mobile("+237 677 12 34 56").unwrap();
+    /// assert_eq!(m.as_e164(), "+237677123456");
+    /// assert_eq!(m.national(), "677123456");
+    ///
+    /// // A fixed line parses under `Msisdn::parse`, but `parse_mobile`
+    /// // refuses it — nothing can reach it by SMS.
+    /// assert_eq!(
+    ///     Msisdn::parse_mobile("+237222123456"),
+    ///     Err(MsisdnError::NotMobile {
+    ///         national: "222123456".to_owned(),
+    ///         line_type: LineType::FixedLine,
+    ///     })
+    /// );
+    /// ```
     pub fn parse_mobile(input: &str) -> Result<Self, MsisdnError> {
         let m = Self::parse(input)?;
         if m.line_type.is_addressable() {
@@ -142,6 +161,13 @@ impl Msisdn {
     /// number would otherwise land in a log.
     ///
     /// Keeps the country code and the last two digits: `+237*******56`.
+    ///
+    /// ```
+    /// use sms_msisdn::Msisdn;
+    ///
+    /// let m = Msisdn::parse("677123456").unwrap();
+    /// assert_eq!(m.masked(), "+237*******56");
+    /// ```
     #[must_use]
     pub fn masked(&self) -> String {
         let national = self.national();

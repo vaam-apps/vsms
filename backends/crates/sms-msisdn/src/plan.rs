@@ -47,6 +47,25 @@ impl std::fmt::Display for LineType {
 /// `digits` must already be ASCII digits only. Returns `None` when the number
 /// is outside the national plan entirely — wrong length, or a leading digit the
 /// plan does not use.
+///
+/// ```
+/// use sms_msisdn::{classify, LineType};
+///
+/// // The ordinary, 9-digit mobile case.
+/// assert_eq!(classify("677123456"), Some(LineType::Mobile));
+///
+/// // `88x` is the one legitimate 8-digit number in the plan — the short
+/// // form of the shared-cost/toll-free range, not a truncated 9-digit one.
+/// assert_eq!(classify("88123456"), Some(LineType::TollFree));
+///
+/// // `63x` is 9 digits and syntactically well-formed, but in no assigned
+/// // block — a distinct outcome from both "wrong length" and "known but
+/// // not mobile".
+/// assert_eq!(classify("637123456"), Some(LineType::Unallocated));
+///
+/// // Any other length is entirely outside the plan.
+/// assert_eq!(classify("67712345"), None); // 8 digits, not 88x
+/// ```
 #[must_use]
 pub fn classify(digits: &str) -> Option<LineType> {
     if !digits.bytes().all(|b| b.is_ascii_digit()) {

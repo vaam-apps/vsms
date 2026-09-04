@@ -1,4 +1,4 @@
-//! [`select_route`] — the whole engine, one function.
+#![doc = include_str!("engine.md")]
 
 use std::collections::HashMap;
 
@@ -68,6 +68,67 @@ use crate::types::{
 /// documents an invariant this function itself establishes just before
 /// calling it (e.g. "the winning band is non-empty because it was only
 /// ever populated with eligible routes").
+///
+/// # Example
+///
+/// A two-route weighted draw, and the replay determinism the whole
+/// `draw`-injection design exists for: the exact same inputs and `draw`
+/// always produce the exact same [`Decision`].
+///
+/// ```
+/// use sms_routing::{
+///     select_route, ExcludedRouteIds, MessageClass, Operator, ProviderRow, RouteRow,
+///     RoutingCandidate,
+/// };
+/// use std::collections::HashMap;
+///
+/// fn route(id: &str, weight: i64) -> RouteRow {
+///     RouteRow {
+///         id: id.to_owned(),
+///         name: id.to_owned(),
+///         priority: 0,
+///         weight,
+///         enabled: true,
+///         match_operator: None,
+///         match_class: None,
+///         match_app_id: None,
+///         match_prefix: None,
+///         provider_id: "p1".to_owned(),
+///         failover_route_id: None,
+///     }
+/// }
+///
+/// // Weight 1 vs weight 3 splits [0.0, 1.0) into [0, 0.25) and [0.25, 1.0).
+/// let routes = vec![route("light", 1), route("heavy", 3)];
+/// let providers = HashMap::from([(
+///     "p1".to_owned(),
+///     ProviderRow { id: "p1".to_owned(), available: true, reason: None },
+/// )]);
+/// let candidate = RoutingCandidate {
+///     operator: Operator::Mtn,
+///     class: MessageClass::Otp,
+///     app_id: "app1",
+///     msisdn_national: "677123456",
+/// };
+///
+/// let first = select_route(&routes, &providers, &candidate, &ExcludedRouteIds::new(), 0.1);
+/// assert_eq!(first.winner.as_ref().unwrap().route_id, "light");
+///
+/// // The band boundary itself, checked exactly rather than only
+/// // statistically — an off-by-one in the cumulative-range arithmetic
+/// // would show up as one of these two flipping.
+/// let just_below = select_route(&routes, &providers, &candidate, &ExcludedRouteIds::new(), 0.24);
+/// assert_eq!(just_below.winner.as_ref().unwrap().route_id, "light");
+/// let at_boundary = select_route(&routes, &providers, &candidate, &ExcludedRouteIds::new(), 0.25);
+/// assert_eq!(at_boundary.winner.as_ref().unwrap().route_id, "heavy");
+///
+/// // Replaying with the identical draw reproduces the identical decision —
+/// // nothing in this function ever touches an RNG, a clock, or ambient
+/// // state, so a replay (the admin route simulator, or a test) can trust
+/// // this equality.
+/// let replay = select_route(&routes, &providers, &candidate, &ExcludedRouteIds::new(), 0.1);
+/// assert_eq!(first, replay);
+/// ```
 #[must_use]
 #[allow(clippy::implicit_hasher)]
 pub fn select_route(
