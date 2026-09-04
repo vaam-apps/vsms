@@ -299,7 +299,7 @@ Policy-only, no DDL: confirmed byte-identical, not assumed — `cratestack migra
 
 **No new external dependency.** Every crate `sms-provider-mtn` depends on (`sms-provider`, `async-trait`, `chrono`, `reqwest`, `rust_decimal`, `serde`, `serde_json`, `thiserror`, `tracing`; `sms-encoding`/`tokio`/`wiremock` as dev-dependencies) was already in the workspace graph via `sms-provider-orange-cm`. `cargo tree -i aws-lc-rs` still reports no match, `cargo deny check` stays clean, and `./ci/assert-no-raw-sqlx.sh` passes untouched — this crate makes no database call of any kind, matching `sms-provider-orange-cm`'s own R1-exempt status (never touches R1 in the first place: it's a pure HTTP adapter).
 
-**One real duplication worth naming rather than fixing here:** `classify_transport_error`'s connect-vs-read logic is now byte-for-byte the same reasoning in two crates (`sms-provider-orange-cm` and `sms-provider-mtn`), because it's provider-agnostic `reqwest` behaviour, not provider-specific. Not factored into a shared helper in `sms-provider` itself in this PR — two instances isn't yet a rule, and #61's scope is "build the adapter," not "refactor the trait crate." Worth doing the moment a third HTTP adapter (the config-driven `AggregatorHttpProvider` §6.2 also names, or SMPP's own connect/write distinction) needs the same logic a third time.
+**One real duplication worth naming rather than fixing here:** `classify_transport_error`'s connect-vs-read logic is now byte-for-byte the same reasoning in two crates (`sms-provider-orange-cm` and `sms-provider-mtn`), because it's provider-agnostic `reqwest` behaviour, not provider-specific. Not factored into a shared helper in `sms-provider` itself in this PR — two instances isn't yet a rule, and #61's scope is "build the adapter," not "refactor the trait crate." Worth doing the moment a third HTTP adapter (the config-driven `AggregatorHttpProvider` §6.2 also names, or SMPP's own connect/write distinction) needs the same logic a third time. **Superseded 2026-09-04: this duplication is gone.** A standalone cleanup (not a third adapter — the trigger this paragraph named never actually arrived) extracted both `classify_transport_error` and the provider-agnostic half of `classify_submit_error` into a new crate, `sms-provider-http`, rather than into `sms-provider` itself — see this file's own "Cleanup: one transport classifier for every HTTP adapter" section for the crate-placement reasoning and the guard-failure proof. This paragraph is kept as written because the "worth doing the moment a third HTTP adapter... needs the same logic a third time" framing turned out not to be the actual trigger; read it as the historical record of why the duplication was accepted at the time, not as still-current status.
 
 ## Milestone 5: the routing rules engine landed (#62)
 
@@ -1282,11 +1282,25 @@ recorded.
 
 **Adding a field to two widely-constructed enum variants touched every construction site in the
 workspace, and the compiler found every one of them** — the same mechanical-but-real blast radius
-this file's own "Cool*/CratestackError rename" section already normalises for a widely-used type: 42
-occurrences across 6 files (`sms-provider-orange-cm`'s `lib.rs`/`token.rs`, `sms-provider-mtn`'s
-`lib.rs`, `sms-provider`'s own `error.rs` tests, `sms-worker`'s `dispatch.rs` and
-`tests/dispatch_live_postgres.rs`). Two match arms in `dispatch.rs::terminal_outcome` needed `, ..`
-added to their patterns (named-field destructuring without a rest pattern is exactly what a new field
+this file's own "Cool*/CratestackError rename" section already normalises for a widely-used type.
+**Re-measured after review** (the first pass at this paragraph said "42 occurrences across 6
+files," which turned out to be raw `grep -c` hits for `ProviderError::(Unavailable|Indeterminate)
+\{` — a count that doesn't distinguish a real construction from a `{ .. }` pattern match or a
+named-field match-arm destructuring, so it overcounted): by the precise rule "a line that builds a
+`ProviderError::Unavailable`/`Indeterminate` value, excluding any `{ .. }` match and any
+named-field destructuring arm," the pre-cleanup baseline (`sms-provider-orange-cm`'s `lib.rs`/
+`token.rs`, `sms-provider-mtn/src/lib.rs`, `sms-provider/src/error.rs`'s own tests, `sms-worker`'s
+`dispatch.rs` and `tests/dispatch_live_postgres.rs` — 6 files) had **29 construction sites**. Of
+those: **21 were edited in place** (`source:` added, same site, same file); **6 were deleted
+outright** — each adapter's own `classify_transport_error` (3 constructions apiece) collapsed into
+one shared implementation of 3 constructions in `sms-provider-http/src/transport.rs`, a real 6→3
+deduplication, not a move; **2 more** (one `5xx` branch per adapter) collapsed the same way into
+`submit_status.rs`'s single shared construction. The final code has **27 construction sites across
+8 files** carrying an explicit `source:` field: the 21 edited-in-place, the 3 in `transport.rs`,
+the 1 in `submit_status.rs`, and 2 new ones in `error.rs`'s own new
+`source_reaches_the_real_cause_when_one_was_recorded` test (genuinely new coverage, not a
+consolidation). Separately, **2 match arms** in `dispatch.rs::terminal_outcome` needed `, ..` added
+to their patterns (named-field destructuring without a rest pattern is exactly what a new field
 breaks); every construction site needed either `source: Some(Box::new(error))` (a real error object
 existed — a `reqwest::Error`, a `url::ParseError`) or `source: None` (a status-code-and-body response,
 or a `Url::path_segments_mut()` failure that reports `()`, has nothing real to chain). `cargo check`
