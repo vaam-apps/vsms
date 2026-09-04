@@ -27,15 +27,14 @@
 # publishes, so `docker compose pull && docker compose up -d` (no
 # `--build`) is also a real, working path once a tagged release exists —
 # see the "Releasing a new version" section of `docs/runbooks/deployment.adoc`
-# for both paths spelled out. `VSMS_IMAGE_OWNER` defaults to `vymalo`,
-# where every image through `v0.2.1` was published; this repository's own
-# GitHub owner has since moved to `vaam-store`
+# for both paths spelled out. `VSMS_IMAGE_OWNER` defaults to `vaam-store`,
+# this repository's own GitHub owner as of `v0.3.0`
 # (`.github/workflows/release.yml` publishes to
 # `ghcr.io/${{ github.repository_owner }}/...` unconditionally, which is
-# correct and untouched here), so the next tagged release will land under
-# the new owner — bump `VSMS_IMAGE_OWNER` (and `VSMS_IMAGE_TAG`) together
-# once one exists, rather than assuming today's default keeps working
-# forever.
+# correct and untouched here). Every image through `v0.2.1` was published
+# under the prior owner, `vymalo` — pulling an older release means setting
+# BOTH `VSMS_IMAGE_OWNER=vymalo` and `VSMS_IMAGE_TAG` together, never one
+# without the other.
 
 name: vsms
 
@@ -87,7 +86,7 @@ services:
     build:
       context: ..
       dockerfile: backends/apps/sms-migrate/Dockerfile
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.3.0}
     logging: *default-logging
     mem_limit: 512m
     cpus: 1.0
@@ -102,7 +101,7 @@ services:
     build:
       context: ..
       dockerfile: backends/apps/sms-gateway/Dockerfile
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.3.0}
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 512m
@@ -231,7 +230,7 @@ services:
     build:
       context: ..
       dockerfile: backends/apps/sms-worker/Dockerfile
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.3.0}
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 512m
@@ -303,7 +302,7 @@ services:
     build:
       context: ..
       dockerfile: backends/apps/sms-gateway/Dockerfile
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.3.0}
     profiles: [console]
     user: '0:0'
     command:
@@ -403,7 +402,7 @@ services:
     build:
       context: ..
       dockerfile: frontends/apps/admin/Dockerfile
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-admin:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-admin:${VSMS_IMAGE_TAG:-v0.3.0}
     restart: unless-stopped
     profiles: [console]
     environment:

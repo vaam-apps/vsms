@@ -64,57 +64,69 @@ name: vsms-demo
 # not assumed. Compose's own `${VAR:-default}` interpolation has no such
 # restriction.)
 #
-# VSMS_IMAGE_OWNER (default `vymalo`) is the other half of every image
+# VSMS_IMAGE_OWNER (default `vaam-store`) is the other half of every image
 # reference below — every image through `v0.2.1` published under
-# `ghcr.io/vymalo/...`. This repository's own GitHub owner has since
-# moved to `vaam-store`, and `.github/workflows/release.yml` already
-# publishes to `ghcr.io/${{ github.repository_owner }}/...`
-# unconditionally (correct, untouched by this change), so the *next*
-# tagged release lands under the new owner — bump `VSMS_IMAGE_OWNER`
-# alongside `VSMS_IMAGE_TAG` once one exists, rather than assuming
-# today's default keeps working forever.
+# `ghcr.io/vymalo/...`; this repository's own GitHub owner moved to
+# `vaam-store` for this release, and `.github/workflows/release.yml`
+# already publishes to `ghcr.io/${{ github.repository_owner }}/...`
+# unconditionally (correct, untouched by this change), so `v0.3.0` and
+# every tag after it lands under the new owner. Showcasing an older
+# release means setting the owner together with EVERY tag knob in this
+# file — `VSMS_IMAGE_TAG`, `VSMS_DEMO_IMAGE_TAG` and
+# `VSMS_FAKE_ORANGE_IMAGE_TAG` — never a subset: no image was ever
+# published under a mismatched pair, so a knob left at its `v0.3.0`
+# default under `VSMS_IMAGE_OWNER=vymalo` fails at pull time with
+# `manifest unknown`. docs/runbooks/showcase.adoc has the full command.
 #
-# **`v0.2.1` (this file's own default, production-readiness audit S2) is
-# a real, working release — verified live, not assumed.** `v0.2.0`'s own
-# release run failed (`.github/workflows/release.yml`, tag `v0.2.0` —
-# confirmed against the GHCR API); `v0.2.1`'s succeeded, and all six
-# images this file references (the four production images plus
-# `sms-fake-orange` and the demo seeder, both below) were confirmed to
-# exist at that tag with `docker manifest inspect` before this default
-# was changed from the earlier `v0.1.0` (which predated
-# `provision-client`'s `--app-slug`/`--client-id-out` flags this file's
-# own bootstrap sequence depends on, and so never actually worked as
-# written).
+# **`v0.3.0` (this file's own default) is the release this PR prepares —
+# the tag is cut immediately after this change merges, so at merge time
+# these images do not exist under the new default until that tag
+# workflow finishes (accepted; see AGENTS.md's own "Release v0.3.0" section
+# for why this ordering is fine).** `v0.2.1` (the prior default,
+# production-readiness audit S2) was verified live before it became the
+# default: `v0.2.0`'s own release run failed
+# (`.github/workflows/release.yml`, tag `v0.2.0` — confirmed against the
+# GHCR API); `v0.2.1`'s succeeded, and all six images this file
+# references (the four production images plus `sms-fake-orange` and the
+# demo seeder, both below) were confirmed to exist at that tag with
+# `docker manifest inspect` before it replaced the earlier `v0.1.0`
+# default (which predated `provision-client`'s
+# `--app-slug`/`--client-id-out` flags this file's own bootstrap
+# sequence depends on, and so never actually worked as written). Repeat
+# that same `docker manifest inspect` check against `v0.3.0` once the tag
+# workflow has actually run, rather than trusting this default blind.
 #
 # `seed-demo-app` (below) no longer shares `sms-gateway`'s own image at
 # all — an image-hygiene PR moved its logic out of `sms-gateway` (it used
 # to be `Command::SeedDemoApp`) into its own binary and its own image,
-# `ghcr.io/vymalo/vsms/demo`, so that no demo-only fixture-seeding code
-# ships inside the production gateway image any more. See that binary's
-# own module doc (`backends/apps/vsms-demo-seed/src/main.rs`) for the full
-# reasoning. It (`VSMS_DEMO_IMAGE_TAG`) and `sms-fake-orange`
+# `ghcr.io/vaam-store/vsms/demo`, so that no demo-only fixture-seeding
+# code ships inside the production gateway image any more. See that
+# binary's own module doc (`backends/apps/vsms-demo-seed/src/main.rs`)
+# for the full reasoning. It (`VSMS_DEMO_IMAGE_TAG`) and `sms-fake-orange`
 # (`VSMS_FAKE_ORANGE_IMAGE_TAG`) are still versioned independently of the
 # four production images — both are published on the identical `v*.*.*`
 # cadence now (`release.yml`'s build-images matrix shares one
 # `tag_primary`/`tag_secondary` across every matrix entry on a given
 # trigger, this repo's nested pair included, confirmed live rather than
 # assumed from reading the workflow alone), so both now default to
-# `v0.2.1` too instead of being required with no default.
+# `v0.3.0` too instead of being required with no default.
 #
 # `demo-app` (near the bottom of this file) is a THIRD non-production
 # image, and does not fit either pattern above yet: no
-# `ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo-app` image has ever been
-# published (its own `.github/workflows/release.yml` matrix entry is new
-# in this PR — the next `v*.*.*` tag is the first one that will actually
-# publish it), so this file builds it from source (`build:`, that
-# service's own comment explains why this is the one deliberate
+# `ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app` image has ever
+# been published (its own `.github/workflows/release.yml` matrix entry is
+# new in this PR — the next `v*.*.*` tag is the first one that will
+# actually publish it), so this file builds it from source (`build:`,
+# that service's own comment explains why this is the one deliberate
 # exception to "every image pulled from GHCR"). Once a tag exists, its
 # `image:` line should follow the identical
-# `ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:?...}`
+# `ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:?...}`
 # shape `VSMS_DEMO_IMAGE_TAG`/`VSMS_FAKE_ORANGE_IMAGE_TAG` already use —
 # not introduced here as a real variable, since nothing in this file
 # reads it yet and an unused required variable would just be a second
-# kind of dangling reference.
+# kind of dangling reference. Switching this service from `build:` to
+# `image:` is a post-`v0.3.0` follow-up (AGENTS.md's own "Release v0.3.0"
+# section), not attempted in this change.
 
 services:
   postgres:
@@ -147,7 +159,7 @@ services:
   # this is the same image `deploy/docker-compose.yml`'s `migrate` service
   # runs, just pulled from GHCR instead of built from source.
   migrate:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.3.0}
     # release.yml's build-and-push matrix publishes one architecture
     # (whatever the ubuntu-latest runner is, amd64) with no multi-arch
     # manifest — pin every vsms image to it explicitly so this file
@@ -170,7 +182,7 @@ services:
   # to complete before `sms-gateway` is ever started, not just before it's
   # expected to serve traffic.
   seed-signing-key:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     command: ['rotate-signing-key']
     environment:
@@ -200,7 +212,7 @@ services:
   # trading a few seconds of startup time for never hitting this race
   # instead of hoping not to.
   seed-dispatch:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     command: ['seed-dispatch']
     environment:
@@ -231,7 +243,7 @@ services:
   # sibling that seeds the endpoint, only when `demo-app` is actually
   # part of the stack.
   seed-demo-app:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
@@ -259,22 +271,20 @@ services:
   # `provision-client`'s own `--client-id-out` already solves the same
   # way.
   #
-  # **A real, still-open bootstrap gap, same shape as the one this
-  # file's own header used to name for `provision-client`'s
-  # `--app-slug`/`--client-id-out` (fixed as of `v0.2.1` — see the
-  # header) but not yet fixed here:** `--webhook-url`/
-  # `--webhook-secret-out` don't exist in `v0.2.1` — they land in the
-  # first tag that publishes this `vsms-demo-seed` change. The default
-  # below is still `v0.2.1`, deliberately: Compose interpolates every
-  # service's `image:` regardless of which profiles are active, so a
-  # `:?`-required value here would break the bare, backend-only
-  # `docker compose -f compose.demo.yaml up -d` — the one command the
-  # showcase promises — for a service that command never starts. The
-  # cost is that `--profile demo` at the default tag fails loudly at
-  # this one-shot (`unexpected argument '--webhook-url'`) rather than at
-  # interpolation time, until the next release moves the default.
+  # A real bootstrap gap through `v0.2.1`, closed as of `v0.3.0`, same
+  # shape as the one this file's own header used to name for
+  # `provision-client`'s `--app-slug`/`--client-id-out` (fixed as of
+  # `v0.2.1` — see the header): `--webhook-url`/`--webhook-secret-out`
+  # did not exist in `v0.2.1` — they land in `v0.3.0`, this file's
+  # default tag, for the first time, so no default-tag special-casing is
+  # needed here any more. Showcasing `v0.2.1` (`VSMS_IMAGE_OWNER=vymalo`
+  # plus every tag knob — see the header) still hits the old gap:
+  # `--profile demo` at that tag fails loudly at this one-shot
+  # (`unexpected argument '--webhook-url'`) rather than at interpolation
+  # time — accepted, since the fix is "use a newer tag," not something
+  # this file can paper over for an older one.
   seed-demo-webhook:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo:${VSMS_DEMO_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     profiles: [demo]
     command:
@@ -322,7 +332,7 @@ services:
   # anything `profiles: [console]`-gated, so it still runs to completion in
   # backend-only mode.)
   provision-client:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     user: '0:0'
     command:
@@ -431,7 +441,7 @@ services:
   # chains sequentially, console-only steps included, rather than racing a
   # sibling container's first touch of the same catalog.
   seed-console-client:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     command:
       - seed-console-client
@@ -459,7 +469,7 @@ services:
   # as that service's own comment, chaining the last of the seed/provision
   # one-shots.
   provision-user:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     command:
       - provision-user
@@ -488,17 +498,17 @@ services:
   # sms-fake-orange`, not the flat `vsms-sms-fake-orange` this image
   # published under before the image-hygiene PR that renamed it): every
   # non-production image (this one, and `vsms-demo-seed` above) now lives
-  # under `ghcr.io/vymalo/vsms/<name>`, so a glance at the registry
+  # under `ghcr.io/vaam-store/vsms/<name>`, so a glance at the registry
   # namespace tells you whether an image is a real release artifact
-  # (`ghcr.io/vymalo/vsms-<name>`, flat) or a dev/demo tool (`ghcr.io/
-  # vymalo/vsms/<name>`, nested) — the four production images
+  # (`ghcr.io/vaam-store/vsms-<name>`, flat) or a dev/demo tool (`ghcr.io/
+  # vaam-store/vsms/<name>`, nested) — the four production images
   # (`sms-gateway`/`sms-worker`/`admin`/`migrate`) were deliberately left
   # on the flat naming, unrenamed: they published at `v0.1.0` before this
   # convention existed and are already referenced by `compose.demo.yaml`
   # (below), the Helm chart, and `deploy/`, so renaming them is a separate
   # decision with real blast radius the maintainer hasn't made yet.
   sms-fake-orange:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/sms-fake-orange:${VSMS_FAKE_ORANGE_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/sms-fake-orange:${VSMS_FAKE_ORANGE_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     restart: unless-stopped
     command:
@@ -510,7 +520,7 @@ services:
       - '+2370000'
 
   sms-gateway:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     restart: unless-stopped
     environment:
@@ -569,7 +579,7 @@ services:
       - 127.0.0.1:${VSMS_DEMO_GATEWAY_PORT:-8280}:8080
 
   sms-worker:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     restart: unless-stopped
     environment:
@@ -609,7 +619,7 @@ services:
   # healthy with this service never started at all
   # (`docker compose -f compose.demo.yaml up -d`, no `--profile console`).
   admin:
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms-admin:${VSMS_IMAGE_TAG:-v0.2.1}
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms-admin:${VSMS_IMAGE_TAG:-v0.3.0}
     platform: linux/amd64
     restart: unless-stopped
     profiles: [console]
@@ -729,14 +739,16 @@ services:
   #
   # **`build:`, this file's ONE deliberate exception to its own "every
   # image pulled from GHCR, no `build:` stanza anywhere" header claim.**
-  # No `ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo-app` image exists
-  # yet — this PR's own `.github/workflows/release.yml` matrix entry is
-  # what will publish one on the next `v*.*.*` tag, at which point this
+  # No `ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app` image
+  # exists yet — `.github/workflows/release.yml`'s matrix entry for it
+  # publishes on the `v0.3.0` tag, cut immediately after this PR merges
+  # (see AGENTS.md's own "Release v0.3.0" section), at which point this
   # should switch to
-  # `image: ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:?...}`
-  # the same shape `sms-fake-orange`/`seed-demo-app` already use, not
-  # left building from source indefinitely — until then, building it is
-  # the only way this showcase can include it at all, and the source it
+  # `image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app:${VSMS_DEMO_APP_IMAGE_TAG:?...}`
+  # the same shape `sms-fake-orange`/`seed-demo-app` already use — a
+  # post-`v0.3.0` follow-up, not attempted in this change. Until then,
+  # building it is the only way this showcase can include it at all, and
+  # the source it
   # builds from (`examples/node/demo-app`, a fully standalone package
   # with no path dependency into this checkout) is exactly what an
   # evaluator running `docker build` here would get regardless. Requires

@@ -1,6 +1,6 @@
 # vsms-sdk-rust
 
-A Rust client for [vsms](https://github.com/vymalo/vsms) that owns the
+A Rust client for [vsms](https://github.com/vaam-store/vsms) that owns the
 `private_key_jwt` credential lifecycle, so a caller writes
 `client.send_message(...)` and never touches a JWT.
 

@@ -86,7 +86,7 @@ global:
 # ---------------------------------------------------------------------------
 image:
   registry: ghcr.io
-  repositoryOwner: vymalo
+  repositoryOwner: vaam-store
   # Required. One of: a semver release tag without the leading "v" (e.g.
   # "0.4.0"), "main" (mutable, moves with every push to main), or
   # "sha-<12-hex>" (immutable, pinned to one commit) — see release.yml's

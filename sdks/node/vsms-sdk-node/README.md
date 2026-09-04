@@ -1,6 +1,6 @@
 # @vymalo/vsms-node
 
-Official Node.js SDK for [vsms](https://github.com/vymalo/vsms).
+Official Node.js SDK for [vsms](https://github.com/vaam-store/vsms).
 
 Owns the `private_key_jwt` credential lifecycle, so a caller writes `client.sendMessage(...)` and never touches a JWT.
 

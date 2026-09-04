@@ -212,14 +212,14 @@ same machine) so every `up` after a `down -v` starts genuinely fresh.
 == Bumping the showcased version
 
 `compose.demo.yaml` now defaults every image (all six -- the four
-production images plus `sms-fake-orange`/the demo seeder) to `v0.2.1`,
+production images plus `sms-fake-orange`/the demo seeder) to `v0.3.0`,
 so `docker compose -f compose.demo.yaml --profile console up -d` with no
 override already showcases a real, working release. To pin a different
 one:
 
 [,bash]
 ----
-VSMS_IMAGE_TAG=v0.2.1 docker compose -f compose.demo.yaml --profile console --profile demo up -d
+VSMS_IMAGE_TAG=v0.3.0 docker compose -f compose.demo.yaml --profile console --profile demo up -d
 ----
 
 `sms-gateway`/`sms-worker`/`admin`/`migrate` are published together on
@@ -229,38 +229,51 @@ you to change. `sms-fake-orange` (`VSMS_FAKE_ORANGE_IMAGE_TAG`) and
 `v*.*.*` cadence too (`.github/workflows/release.yml`'s build-images
 matrix shares one `tag_primary`/`tag_secondary` across every image on a
 given trigger, this repo's nested pair included), so both env vars now
-default to `v0.2.1` as well rather than being required with no default.
+default to `v0.3.0` as well rather than being required with no default.
 
-*`v0.2.0` (the tag this section used to recommend) is not usable --
-that tag's own release run failed* (`.github/workflows/release.yml`, tag
-`v0.2.0`); confirmed against the GHCR API, not assumed, before writing
-this. `VSMS_IMAGE_OWNER` (default `vymalo`) is the other half of every
-image reference here -- see `compose.demo.yaml`'s own header comment for
-why the default may need to move to `vaam-store` alongside a future
-`VSMS_IMAGE_TAG` bump.
+*`v0.2.0` was not usable* -- that tag's own release run failed
+(`.github/workflows/release.yml`, tag `v0.2.0`); confirmed against the
+GHCR API, not assumed, before this section first recommended `v0.2.1`
+instead. `VSMS_IMAGE_OWNER` (default `vaam-store`) is the other half of
+every image reference here -- this repository's own GitHub owner as of
+`v0.3.0`. Every image through `v0.2.1` published under the prior owner,
+`ghcr.io/vymalo/...` -- showcasing one of those older releases means
+setting the owner together with EVERY tag knob this file has (there are
+three: `VSMS_IMAGE_TAG` for the four production images,
+`VSMS_DEMO_IMAGE_TAG` for `vsms/demo`, `VSMS_FAKE_ORANGE_IMAGE_TAG` for
+`vsms/sms-fake-orange`), never a subset -- a knob left at its `v0.3.0`
+default resolves to `ghcr.io/vymalo/...:v0.3.0`, an image that was never
+published under that owner, and the pull fails with `manifest unknown`:
 
-`VSMS_DEMO_IMAGE_TAG` is one variable shared by two services with
-different requirements, though: `seed-demo-app` genuinely works at the
-`v0.2.1` default above, but `seed-demo-webhook` (`--profile demo` --
-covers the `WebhookEndpoint` half of the same image, `--webhook-url`/
-`--webhook-secret-out`) does not -- those flags don't exist in `v0.2.1`.
-It keeps the same `v0.2.1` default anyway, because Compose interpolates
-every service's `image:` whether or not its profile is active, and a
-required-with-no-default value there would break the bare backend-only
-`up -d` for a service that command never starts. So at the default tag
-`--profile demo` fails loudly at that one-shot (`unexpected argument
-'--webhook-url'`); override `VSMS_DEMO_IMAGE_TAG` to a tag that has the
-flags until the next release moves the default. `demo-app` is a THIRD non-production image, and
-doesn't fit either pattern yet: no
-`ghcr.io/${VSMS_IMAGE_OWNER:-vymalo}/vsms/demo-app` has ever been
-published (the `.github/workflows/release.yml` matrix entry that will
-publish one, on the next `v*.*.*` tag, is new in the same PR that added
-this section), so ``compose.demo.yaml``'s own `demo-app` service still
-builds from source (`build:`, its one flagged exception to "every image
-pulled from GHCR") rather than reading a `VSMS_DEMO_APP_IMAGE_TAG` that
-doesn't exist to read yet. See ``compose.demo.yaml``'s own comments on
-all three services (`seed-demo-app`/`seed-demo-webhook`, `sms-fake-
-orange`, `demo-app`) for the current state and why, and this repo's PR
+[,bash]
+----
+VSMS_IMAGE_OWNER=vymalo VSMS_IMAGE_TAG=v0.2.1 \
+VSMS_DEMO_IMAGE_TAG=v0.2.1 VSMS_FAKE_ORANGE_IMAGE_TAG=v0.2.1 \
+  docker compose -f compose.demo.yaml --profile console --profile demo up -d
+----
+
+`VSMS_DEMO_IMAGE_TAG` is one variable shared by two services, and used
+to have different requirements between them: `seed-demo-webhook`
+(`--profile demo` -- covers the `WebhookEndpoint` half of the same
+image, `--webhook-url`/`--webhook-secret-out`) needs flags that did not
+exist in `v0.2.1`. They land in `v0.3.0`, this file's default tag, for
+the first time, so the default now works for both services without any
+override. Showcasing `v0.2.1` (all four knobs, as above) still hits the
+old gap: `--profile demo` at that tag fails loudly at that one-shot
+(`unexpected argument '--webhook-url'`) -- accepted, since the fix is
+"use a newer tag," not something this file papers over for an older
+one. `demo-app` is a THIRD non-production image, and still
+doesn't fit either pattern: no
+`ghcr.io/${VSMS_IMAGE_OWNER:-vaam-store}/vsms/demo-app` has been
+published yet (the `.github/workflows/release.yml` matrix entry that
+will publish one, on the `v0.3.0` tag itself, is new in the same PR that
+added this section), so ``compose.demo.yaml``'s own `demo-app` service
+still builds from source (`build:`, its one flagged exception to "every
+image pulled from GHCR") rather than reading a `VSMS_DEMO_APP_IMAGE_TAG`
+that doesn't exist to read yet -- switching it over is a post-`v0.3.0`
+follow-up. See ``compose.demo.yaml``'s own comments on all three
+services (`seed-demo-app`/`seed-demo-webhook`, `sms-fake-orange`,
+`demo-app`) for the current state and why, and this repo's PR
 description for exactly which published tags this runbook was verified
 against.
 

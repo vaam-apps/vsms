@@ -34,7 +34,7 @@ needs `sms-gateway bootstrap`/`seed-console-client`/`provision-user` to
 have already run. `create-app` writes through the same hand-built
 `owner`-role context every other bootstrap subcommand in this file uses
 -- see step 5's own "before provisioning the console client" note.
-`vsms-demo-seed` (`ghcr.io/vymalo/vsms/demo`, a separate binary/image --
+`vsms-demo-seed` (`ghcr.io/vaam-store/vsms/demo`, a separate binary/image --
 see that crate's own module doc) is explicitly not a substitute for this
 in a real deployment: it's demo-only, seeds fixture data no production
 `App` should carry, and isn't referenced anywhere below.
@@ -70,7 +70,7 @@ longer -- `sms-gateway provision-client` (step 5) mints one server-side.
 
 [,bash]
 ----
-git clone https://github.com/vymalo/vsms.git
+git clone https://github.com/vaam-store/vsms.git
 cd vsms/deploy
 cp .env.example .env
 chmod 600 .env
@@ -554,7 +554,7 @@ Provisioning and sending went entirely through ``sms-gateway``'s own CLI and
 the real HTTP API, never a browser. *`seed-demo-app` below is what this
 proof actually ran at the time (#233) -- it no longer exists as an
 `sms-gateway` subcommand* (production-readiness audit S1: its logic moved
-to its own crate/image, `vsms-demo-seed`, `ghcr.io/vymalo/vsms/demo`,
+to its own crate/image, `vsms-demo-seed`, `ghcr.io/vaam-store/vsms/demo`,
 demo-only by its own `--help` text either way). A real backend-only
 production deployment reaching this same point today uses
 `sms-gateway create-app --slug vsms-demo --name "vsms demo"` instead (see
@@ -852,23 +852,23 @@ instead of silently no-op'ing against a locally-built, untagged image:
 [,bash]
 ----
 cd deploy
-export VSMS_IMAGE_TAG=v0.2.1   # or the tag you're upgrading to
+export VSMS_IMAGE_TAG=v0.3.0   # or the tag you're upgrading to
 docker compose --env-file .env pull
 docker compose --env-file .env up -d
 ----
 
-`VSMS_IMAGE_OWNER` (default `vymalo`) is the second half of that
-reference -- every image through `v0.2.1` published under
-`ghcr.io/vymalo/...`; this repository's own GitHub owner has since moved
-to `vaam-store`, and `release.yml` already publishes to
-`ghcr.io/${{ github.repository_owner }}/...` unconditionally (correct,
-untouched by this PR), so the *next* tagged release lands under the new
-owner. Set both together once one exists:
+`VSMS_IMAGE_OWNER` (default `vaam-store`) is the second half of that
+reference -- `release.yml` publishes to
+`ghcr.io/${{ github.repository_owner }}/...` unconditionally, and this
+repository's own GitHub owner is `vaam-store` as of `v0.3.0`. Every image
+through `v0.2.1` published under the prior owner, `ghcr.io/vymalo/...` --
+pulling one of those older releases means setting BOTH together, never
+one without the other:
 
 [,bash]
 ----
-export VSMS_IMAGE_OWNER=vaam-store
-export VSMS_IMAGE_TAG=v0.3.0   # whatever the next real tag turns out to be
+export VSMS_IMAGE_OWNER=vymalo
+export VSMS_IMAGE_TAG=v0.2.1
 ----
 
 Either path is a real, working upgrade mechanism now; before this PR,

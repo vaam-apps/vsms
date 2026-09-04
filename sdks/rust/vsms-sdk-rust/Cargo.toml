@@ -1,11 +1,11 @@
 [package]
 name = "vsms-sdk-rust"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.98.0"
 license = "MIT"
 description = "Rust client for vsms: owns the private_key_jwt credential lifecycle so integrators stop hand-rolling token acquisition."
-repository = "https://github.com/vymalo/vsms"
+repository = "https://github.com/vaam-store/vsms"
 readme = "README.md"
 # Kept separate from the product workspace (see the root Cargo.toml's
 # `exclude` and this crate's own module doc) so it can be published to
