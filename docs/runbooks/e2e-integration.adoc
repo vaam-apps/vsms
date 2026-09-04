@@ -19,17 +19,30 @@ just e2e-integration
 `openssl dgst -sign`, `curl`, `jq`) is gone, replaced by link:../../ci/e2e-integration[`ci/e2e-integration`],
 a small Rust binary reusing ``vsms-sdk-rust``'s own `private_key_jwt` token exchange rather
 than hand-signing RFC 7523 assertions in shell a second time. `just e2e-integration` is
-self-contained and safely rerunnable -- it brings up `compose.dev.yaml` fresh (`just demo`,
-which itself wipes and recreates every named volume) before every run, so running it twice
-in a row with no manual cleanup in between is the normal way to use it, not a special
-"cold reset" mode. It exits non-zero at the first broken link, naming the step.
+self-contained and safely rerunnable -- it brings up `compose.dev.yaml` fresh (`just
+demo-up`, which itself wipes and recreates every named volume) before every run, so
+running it twice in a row with no manual cleanup in between is the normal way to use it,
+not a special "cold reset" mode. It exits non-zero at the first broken link, naming the
+step.
+
+`demo-up`, not `demo`: this recipe brings the stack up with `--profile console --profile
+demo` (so `demo-app` and its own `WebhookEndpoint` genuinely exist, the same shape a real
+run has) but never touches `demo-app` itself and doesn't wait on it -- `demo` (`just
+demo`'s own recipe) additionally waits for `demo-app` to finish and propagates its exit
+code, which this runbook's own assertion has nothing to do with. Splitting them was a
+direct fix for a real bug: an earlier revision had `e2e-integration` depend on `demo`
+itself, which meant a `demo-app` failure -- real or a flaky run, unrelated to what this
+runbook checks -- could fail `just e2e-integration` too, for a reason this runbook's own
+assertion never touched.
 
 == What it does
 
-. *Brings the stack up* via `just demo` -- every service as a container built from this
+. *Brings the stack up* via `just demo-up` -- every service as a container built from this
 checkout's own source (`compose.dev.yaml`), including a scratch Postgres,
-`sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs`), `sms-fake-orange`, and the
-admin console, plus one `App` (`vsms-demo`) and a "demo console" `AppClient`.
+`sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs,drain,hooks`), `sms-fake-orange`, the
+admin console, and `demo-app` (started, per the `--profile demo` this recipe now passes,
+but never waited on or asserted against here -- see this file's own opening section), plus
+one `App` (`vsms-demo`) and a "demo console" `AppClient`.
 that same `App`, via `docker compose run --rm sms-gateway provision-client`. Two real
 credentials: different `clientId`, different RSA keypair, each provisioned separately.
 See "Why the same ``App``" below for why this is the right design, not a shortcut.
@@ -127,7 +140,7 @@ JWTs), so it needed re-proving, not just re-describing. Two full runs, both clea
     [14:57:55] state=delivered
 ----
 
-*Run 2* (immediately after Run 1, ``just e2e-integration``'s own `just demo` prerequisite
+*Run 2* (immediately after Run 1, ``just e2e-integration``'s own `just demo-up` prerequisite
 did the teardown-and-rebuild, no manual cleanup) -- message id `cfae30185525385c9e40056`,
 `clientRef=e2e-1786719791`:
 
@@ -150,7 +163,7 @@ visibility held in both passes, not just once. Both ended `PASSED`, printing the
 -- xref:36-handset-gate.adoc[`36-handset-gate.adoc`]'s own scope, unaffected by this work.
 * Cross-`App` (cross-tenant) visibility under a genuine human-login role -- that role does
 not exist in this deployment yet (see "Why the same ``App``" above).
-* Concurrent runs of `just e2e-integration` on one machine -- like `just demo` itself, the
+* Concurrent runs of `just e2e-integration` on one machine -- like `just demo`/`just demo-up` themselves, the
 Compose project name and ports are fixed; don't run two copies of this scenario against
 each other on the same host.
 * A real browser confirmation via the console UI (the bash-era version of this doc reported

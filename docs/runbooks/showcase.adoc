@@ -25,7 +25,7 @@ Docker Desktop's own emulation handles it transparently; expect the first
 
 [,bash]
 ----
-docker compose -f compose.demo.yaml --profile console up -d
+docker compose -f compose.demo.yaml --profile console --profile demo up -d
 ----
 
 This runs, in order, entirely sequentially -- Postgres, `migrate` (applies
@@ -33,25 +33,42 @@ both migrations), `seed-signing-key` (an active OP signing key --
 `sms-gateway` refuses to bind its listener without one), `seed-dispatch`
 (a `Provider` + `Route`, same reason), `seed-demo-app` (an `App` +
 approved `SenderId`, seeded by the dedicated `vsms-demo-seed` binary/image
--- see ``backends/apps/vsms-demo-seed/src/main.rs``'s own doc for why this step exists
-only for this showcase and isn't compiled into the production
+-- see ``backends/apps/vsms-demo-seed/src/main.rs``'s own doc for why this
+step exists only for this showcase and isn't compiled into the production
 `sms-gateway` image), `provision-client` (a real, HTTP-usable machine
-credential), and, because `--profile console` is present,
-`seed-console-client` and `provision-user` (the account you'll sign in
-with) -- before finally starting `sms-gateway`, `sms-worker`,
-`sms-fake-orange`, and `admin`. Every one of those seed/provision steps is
-chained onto the previous one's completion, not just onto `migrate` --
-found live, twice: two of them touching a _genuinely fresh_ database's
-catalog concurrently can race Postgres's own `pg_type` unique index
-(``compose.demo.yaml``'s own comment on `seed-dispatch` has the full
-mechanism), so this file trades a few seconds of extra startup time for
-never hitting that race instead of hoping not to.
+credential), and, because both profiles are present, `seed-console-client`
+and `provision-user` (the account you'll sign in with, `--profile console`)
+alongside `seed-demo-webhook` (a `WebhookEndpoint` pointed at `demo-app`,
+`--profile demo` -- deliberately a SEPARATE step from `seed-demo-app`,
+not a flag it always passes: R4 means a backend-only `up -d` with no
+profiles at all must not seed an endpoint aimed at a container that will
+never exist, since `hooks` would then mark every delivery attempt `dead`
+forever against a host that never resolves) -- before finally starting
+`sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs,drain,hooks`,
+unconditionally -- see that service's own comment for why an idle
+`drain`/`hooks` on a profile-less run is the *correct* shape, not a gap),
+`sms-fake-orange`, `admin` (`--profile console`), and `demo-app`
+(`--profile demo` -- see "The demo app" below). Every one of those
+seed/provision steps is chained onto the previous one's completion, not
+just onto `migrate` -- found live, twice: two of them touching a
+_genuinely fresh_ database's catalog concurrently can race Postgres's own
+`pg_type` unique index (``compose.demo.yaml``'s own comment on
+`seed-dispatch` has the full mechanism), so this file trades a few
+seconds of extra startup time for never hitting that race instead of
+hoping not to.
+
+NOTE: `seed-demo-webhook`'s `--webhook-url`/`--webhook-secret-out` flags,
+and `demo-app` itself, need a `VSMS_DEMO_IMAGE_TAG`/`VSMS_IMAGE_TAG` that
+includes them -- ``compose.demo.yaml``'s own header comment already
+documents this exact kind of gap for `provision-client`'s newer flags,
+and this is the same shape: until a tag publishes them, override both to
+a tag that does.
 
 Watch it settle:
 
 [,bash]
 ----
-docker compose -f compose.demo.yaml --profile console ps
+docker compose -f compose.demo.yaml --profile console --profile demo ps
 ----
 
 Everything with a `restart: unless-stopped` service should show `Up
@@ -97,6 +114,45 @@ module doc for the mechanism and #243/#244 for the fix. A `VSMS_IMAGE_TAG`
 built from a commit before 2026-08-14 still has the bug -- pin to a newer
 tag if the Composer's Send button 403s.)
 
+== The demo app
+
+You don't have to open a browser to watch a message go end to end --
+`demo-app` (link:../../examples/node/demo-app[`examples/node/demo-app`],
+own README there) already did, as one of the containers `up -d` just
+started. It authenticates over `private_key_jwt` with `@vymalo/vsms-node`
+(the same published SDK an integrator would use, reusing
+`provision-client`'s own credential -- no second client is provisioned),
+sends one real `otp`-class message, polls it to a terminal state, and
+verifies the `hooks` worker role's own signed webhook for it against a
+receiver it runs itself. Read its timeline and verdict with:
+
+[,bash]
+----
+docker compose -f compose.demo.yaml --profile console --profile demo logs demo-app
+----
+
+A line reading `[demo-app] SUCCESS: ... reached delivered with N verified
+webhook(s)` is the whole story. If it instead shows `[demo-app] FAILURE:
+...`, the reason is printed right there -- and `docker compose ... wait
+demo-app` would report the same failure via its own exit code, since
+nothing propagates it automatically the way `just demo` does for the
+from-source stack.
+
+`demo-app` lives in its own `demo` Compose profile, deliberately never
+`console` -- it's a backend proof (real HTTP against `sms-gateway`
+directly, never through the admin console), so it has to be runnable
+without ever starting `admin`:
+
+[,bash]
+----
+docker compose -f compose.demo.yaml --profile demo up -d
+docker compose -f compose.demo.yaml --profile demo logs demo-app
+----
+
+is a complete, console-free end-to-end proof on its own -- no sign-in, no
+browser, nothing but `sms-gateway`/`sms-worker`/`sms-fake-orange`/
+`demo-app` and the seed/provision steps each of those needs.
+
 == Backend-only (no console)
 
 [,bash]
@@ -104,12 +160,28 @@ tag if the Composer's Send button 403s.)
 docker compose -f compose.demo.yaml up -d
 ----
 
-Omitting `--profile console` skips `admin`, `seed-console-client`,
-`provision-user`, and the permission-fix step between them entirely -- not
-started-then-idle, not present-but-misconfigured. `sms-gateway` and
-`sms-worker` still come up healthy, and `provision-client` still runs (a
-working machine credential is exactly what a backend-only deployment should
-be able to prove it has), so you can drive the gateway directly:
+Omitting both `--profile console` and `--profile demo` skips `admin`,
+`seed-console-client`, `provision-user`, the permission-fix step between
+them, `demo-app`, and `seed-demo-webhook` entirely -- not
+started-then-idle, not present-but-misconfigured. That last pair matters
+specifically: `seed-demo-app` (unconditional) seeds only the `App` +
+`SenderId` `sendMessage` needs, never a `WebhookEndpoint` -- only
+`seed-demo-webhook`, gated behind `--profile demo`, does that, precisely
+because a `WebhookEndpoint` pointed at a `demo-app` container that will
+never exist would otherwise leave `hooks` marking every delivery attempt
+`dead` and logging an error every tick, forever, on a deployment that
+never asked for any of it. `sms-worker`'s `drain`/`hooks` roles still run
+unconditionally (see that service's own comment) -- with no
+`WebhookEndpoint` in the database at all on this profile-less run, they
+simply have nothing to find, which is the verified, not just claimed,
+shape: `docker ps` (project `vsms-demo`, not `vsms-dev`/`vsms-ci` --
+never `down` a project that isn't yours) and `sms-worker`'s own logs after
+about a minute show no delivery-attempt errors, and a query against the
+gateway or `psql` on the compose Postgres confirms zero `WebhookEndpoint`
+rows. `sms-gateway` and `sms-worker` still come up healthy, and
+`provision-client` still runs (a working machine credential is exactly
+what a backend-only deployment should be able to prove it has), so you
+can drive the gateway directly:
 
 [,bash]
 ----
@@ -124,8 +196,8 @@ is optional, the backend must run without it."
 
 [,bash]
 ----
-docker compose -f compose.demo.yaml --profile console down -v
-docker compose -f compose.demo.yaml --profile console up -d
+docker compose -f compose.demo.yaml --profile console --profile demo down -v
+docker compose -f compose.demo.yaml --profile console --profile demo up -d
 ----
 
 `-v` matters: `provision-client` refuses to overwrite an existing private
@@ -141,19 +213,27 @@ same machine) so every `up` after a `down -v` starts genuinely fresh.
 
 [,bash]
 ----
-VSMS_IMAGE_TAG=v0.2.0 docker compose -f compose.demo.yaml --profile console up -d
+VSMS_IMAGE_TAG=v0.2.0 docker compose -f compose.demo.yaml --profile console --profile demo up -d
 ----
 
 `sms-gateway`/`sms-worker`/`admin`/`migrate` are published together on
 every `v*.*.*` tag; `VSMS_IMAGE_TAG` is the one thing this file expects you
 to change. `sms-fake-orange` (`VSMS_FAKE_ORANGE_IMAGE_TAG`) and the demo
-seeder (`VSMS_DEMO_IMAGE_TAG`) are both non-production images, versioned
-independently -- neither is yet published on the `v*.*.*` cadence, so both
-env vars are required (no default) rather than silently falling back to
-something that doesn't exist. See ``compose.demo.yaml``'s own comments on
-those two services for the current state and why, and this repo's PR
-description for exactly which published tags this runbook was verified
-against.
+seeder (`VSMS_DEMO_IMAGE_TAG`, covering both `seed-demo-app` and
+`seed-demo-webhook` -- they share one image) are non-production images,
+versioned independently -- neither is yet published on the `v*.*.*`
+cadence, so both env vars are required (no default) rather than silently
+falling back to something that doesn't exist. `demo-app` is a THIRD
+non-production image, and doesn't fit either pattern yet: no
+`ghcr.io/vymalo/vsms/demo-app` has ever been published (the
+`.github/workflows/release.yml` matrix entry that will publish one, on
+the next `v*.*.*` tag, is new in the same PR that added this section), so
+``compose.demo.yaml``'s own `demo-app` service still builds from source
+(`build:`, its one flagged exception to "every image pulled from GHCR")
+rather than reading a `VSMS_DEMO_APP_IMAGE_TAG` that doesn't exist to
+read yet. See ``compose.demo.yaml``'s own comments on all three services
+for the current state and why, and this repo's PR description for
+exactly which published tags this runbook was verified against.
 
 == No Postgres port, on purpose
 

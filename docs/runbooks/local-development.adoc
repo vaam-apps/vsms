@@ -13,7 +13,7 @@ This is the runbook for daily development, whether you are working on vsms or ag
 just demo
 ----
 
-Everything runs as a container, built from this checkout's own source -- `compose.dev.yaml` (see that file's own header for the full design, including why it's a third, separate compose file alongside `compose.yml` and `compose.demo.yaml` rather than a reuse of either). From a cold start this takes a few minutes (it builds every image). It brings up, in order: a scratch Postgres, both migrations, an OP signing key, an `App` + `Provider` + `Route` + `SenderId`, a machine client, the `sms-console` OIDC client, a human operator account, `sms-fake-orange`, `sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs`), and the admin console.
+Everything runs as a container, built from this checkout's own source -- `compose.dev.yaml` (see that file's own header for the full design, including why it's a third, separate compose file alongside `compose.yml` and `compose.demo.yaml` rather than a reuse of either). From a cold start this takes a few minutes (it builds every image). It brings up, in order: a scratch Postgres, both migrations, an OP signing key, an `App` + `Provider` + `Route` + `SenderId`, a machine client, the `sms-console` OIDC client, a human operator account, `sms-fake-orange`, `sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs,drain,hooks`), the admin console, and (since `just demo` passes both `--profile console` and `--profile demo`) a `WebhookEndpoint` and `demo-app` -- see "The demo app" below for why that pair is its own, separately-gated profile rather than unconditional.
 
 [,bash]
 ----
@@ -50,6 +50,48 @@ VSMS_DEMO_GATEWAY_PORT=18080 just demo
 ----
 
 `just demo` resets to a genuinely fresh state on every `up` -- ``compose.dev.yaml``'s own named volumes are wiped first (`down -v`), not a targeted `DROP DATABASE`/`CREATE DATABASE` the way the pre-containerisation version of this script used to do it. It is meant to be re-run, not kept alive for days.
+
+== The demo app
+
+`just demo` ends by waiting for `demo-app` (link:../../examples/node/demo-app[`examples/node/demo-app`] -- own README there) to run to completion and printing its log. It runs under its own `demo` Compose profile, not `console` -- `just demo`/`just demo-app` pass `--profile console --profile demo` together, and `--profile demo` alone (no console at all) is itself a legitimate way to run this proof, since `demo-app` talks to `sms-gateway` directly and never through the admin console. It is not another fixture-seeding step: it authenticates over `private_key_jwt` with `@vymalo/vsms-node` (the same published SDK an integrator would use), sends one real `otp`-class message, polls it to a terminal state, and verifies the `hooks` worker role's own signed webhook for it against a receiver it runs itself -- the one thing nothing else in this stack proves end to end. Real output from an actual run (only the client id and message id shortened):
+
+[,text]
+----
+[demo-app] webhook receiver listening on :9000 (POST /webhooks)
+[demo-app] issuer=http://sms-gateway:8080 clientId=appc_9b8f... to=+237677123456 senderId=VSMS
+[demo-app] accepted messageId=cca64c4c... state=accepted encoding=gsm7 segments=1 operator=mtn estimatedCostXaf=0
+[demo-app] state=accepted  (+3ms)
+[webhook] VERIFIED  type=message.accepted messageId=cca64c4c... state=accepted
+[demo-app] state=queued  (+1009ms)
+[demo-app] state=submitted  (+2013ms)
+[webhook] VERIFIED  type=message.submitted messageId=cca64c4c... state=submitted
+[demo-app] state=delivered  (+4021ms)
+[webhook] VERIFIED  type=message.delivered messageId=cca64c4c... state=delivered
+
+=== timeline ===
+  +     3ms  accepted
+  +  1009ms  queued
+  +  2013ms  submitted
+  +  4021ms  delivered
+
+=== webhook events received ===
+  +   255ms  message.accepted messageId=cca64c4c... — verified
+  +  2251ms  message.submitted messageId=cca64c4c... — verified
+  +  4250ms  message.delivered messageId=cca64c4c... — verified
+
+[demo-app] SUCCESS: messageId=cca64c4c... reached delivered with 3 verified webhook(s) of 3 received
+----
+
+(`routed` isn't guaranteed to show up as its own line -- `dispatch` polls every second, and a fast submit can move `accepted -> queued -> routed -> submitted` between two polls, same as this real run did.)
+
+Exit code `0` means exactly that: `delivered` *and* at least one signature-verified webhook. A non-zero exit -- and `just demo` itself then fails, loudly, on that exit code -- means one of the two didn't happen, and the printed reason says which. Re-run it against an already-running stack with:
+
+[,bash]
+----
+just demo-app
+----
+
+To see signature verification genuinely fail closed rather than trust it: run `demo-app` with a deliberately wrong `DEMO_WEBHOOK_SECRET` (its own README has the exact override). The message still reaches `delivered` -- sending has no idea this receiver exists -- but every received webhook logs `[webhook] SIGNATURE VERIFICATION FAILED` and the process exits non-zero.
 
 == Why there is no carrier
 

@@ -27,7 +27,7 @@ cd vsms
 just demo
 ```
 
-That brings up a scratch Postgres, the gateway, the worker, a fake Orange, and the admin console, wired together with a provisioned client — and a message reaches `delivered` without a single real SMS being sent.
+That brings up a scratch Postgres, the gateway, the worker, a fake Orange, and the admin console, wired together with a provisioned client — and a message reaches `delivered` without a single real SMS being sent. `docker compose -f compose.dev.yaml --profile console logs demo-app` shows the whole round trip proved for you, end to end, including a real signed webhook that verifies (`examples/node/demo-app`).
 
 ## What's here
 

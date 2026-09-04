@@ -265,15 +265,20 @@ client-check: client-gen
 # blocking `docker compose build <service>` invocations, one at a time —
 # so below.
 #
-# Six loop entries, not all fourteen `--profile console` services: the
+# Seven loop entries, not all fifteen `--profile console` services: the
 # other eight (`provision-client`, `provision-user`, `seed-console-client`,
 # `seed-dispatch`, `seed-signing-key`, plus non-building services) either
 # share `sms-gateway`'s own explicit `image: vsms-dev/sms-gateway:local`
 # tag (building `sms-gateway` once already produces the image every one
 # of those needs — confirmed via `docker compose ... config --format
-# json`) or build nothing at all. This list can drift if a *new*, image-
-# distinct build target is ever added to `compose.dev.yaml` without a
-# matching entry here — re-derive it with the `config --format json`
+# json`) or build nothing at all. `demo-app` joined this list as its own,
+# image-distinct entry (a genuinely separate Dockerfile, `examples/node/
+# demo-app/Dockerfile` — Node, not Rust, so it never shares the cargo
+# cache-mount ids the race above is actually about, but the sequential
+# loop costs it nothing and keeps this list's own reasoning uniform
+# rather than special-casing one entry). This list can drift if a *new*,
+# image-distinct build target is ever added to `compose.dev.yaml` without
+# a matching entry here — re-derive it with the `config --format json`
 # query above if a build ever silently skips a service's own image.
 #
 # `down -v` first, every time — not just on request: `provision-client`
@@ -286,23 +291,155 @@ client-check: client-gen
 # named *volumes* only, not the BuildKit cache — a cache already warmed
 # by a previous `just demo` doesn't hit the race above (nothing new to
 # extract), so this mainly costs time on the very first run.
-demo:
-	docker compose -f compose.dev.yaml --profile console down -v --remove-orphans
-	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-worker admin; do \
-		COMPOSE_BAKE=false docker compose -f compose.dev.yaml --profile console build "$svc"; \
+#
+# `up -d` — deliberately WITHOUT `--wait`, and as a SINGLE invocation for
+# the whole `--profile console` set. Two real bugs were found live,
+# in this order, getting here:
+#
+# 1. Plain `up -d --wait` (no service names) makes `--wait` poll
+#    `demo-app` too, and `demo-app` is a one-shot evaluator
+#    (`restart: 'no'`, no healthcheck) that can genuinely finish — with
+#    exit 0, a real SUCCESS — before `--wait`'s own convergence check
+#    next runs. The instant it observes an Exited container in its wait
+#    set, Compose fails the whole `up -d --wait` invocation (exit 1),
+#    regardless of that container's own exit code. Reproduced on a real
+#    run: `demo-app` printed a genuine `SUCCESS: ... reached delivered
+#    with 2 verified webhook(s)`, and `just demo` still reported
+#    failure, because `up -d --wait`'s own line failed before the `wait
+#    demo-app`/`logs demo-app` lines below it ever ran.
+#
+# 2. The first fix for (1) split this into TWO separate `docker compose
+#    up` invocations — `up -d --wait <the four long-running services>`,
+#    then a second `up -d demo-app` to actually start it. That is worse,
+#    not better: two independent CLI processes against the same project,
+#    started moments apart, do not share one atomic view of "has this
+#    one-shot dependency already run" — reproduced live, not assumed:
+#    the second `up -d demo-app` call (demo-app depends on
+#    `secrets-fix-perms`, which depends on `provision-client`) caused
+#    Compose to recreate and RE-RUN `provision-client` a second time,
+#    even though the first `up` call had already run it to a clean
+#    success moments earlier. `provision-client` refuses to overwrite an
+#    existing private key (by design — see that command's own doc), so
+#    the second run's own log shows the bizarre-looking shape of a
+#    genuine success (a real `provisioned client:`/`private key written
+#    to:` — a SECOND, real `AppClient` row, a real side effect) followed
+#    immediately by `Error: ... already exists — refusing to overwrite`,
+#    and the whole recipe failed on a completely different line.
+#
+# The actual fix needs neither trick: `depends_on: condition:
+# service_healthy`/`service_completed_successfully` (already correct,
+# already how every other one-shot step in this file gets sequenced)
+# blocks a dependent container's own START regardless of `--wait` —
+# `--wait` only ever added "also block the CLI and report readiness",
+# which this recipe doesn't need from `up` itself, because the very next
+# line (`docker compose wait demo-app`) already blocks for real
+# completion and hands back demo-app's own real exit code. One plain
+# `up -d`, one Compose invocation, the same dependency graph deciding
+# everything exactly as it already did for migrate/seed-signing-key/
+# seed-dispatch/provision-client/etc. — no race between two CLI
+# processes, and no service whose "Exited" state `--wait` could
+# misread as a failure.
+#
+# `--profile console --profile demo`, everywhere in this section (not
+# just `--profile console`): `demo-app` and its own `seed-demo-webhook`
+# dependency moved to a dedicated `demo` profile, deliberately never
+# `console` — R4 (CONTRIBUTING.md): `demo-app` is a *backend* proof (it
+# talks to `sms-gateway` directly, never through the console), so it has
+# to be reachable without ever starting `admin`, and a genuinely
+# backend-only `up -d` (no profiles at all) must not seed a
+# `WebhookEndpoint` pointed at a container that will never exist. See
+# `compose.dev.yaml`'s own `demo-app`/`seed-demo-webhook`/
+# `secrets-fix-perms` comments for the full mechanism; `docker compose
+# --profile demo config --services` (no `console`) lists `demo-app` and
+# not `admin`, confirming the split holds on its own, not just combined.
+#
+# `demo-up` is split out from `demo` (below) specifically so
+# `e2e-integration` can depend on "the stack is up" without also
+# inheriting `demo`'s own "then wait for demo-app and propagate its exit
+# code" behaviour — `e2e-integration` doesn't touch `demo-app` at all,
+# and a `demo-app` failure (a real one, or a flaky run) has nothing to
+# do with what `e2e-integration` is trying to prove.
+demo-up:
+	docker compose -f compose.dev.yaml --profile console --profile demo down -v --remove-orphans
+	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-worker admin demo-app; do \
+		COMPOSE_BAKE=false docker compose -f compose.dev.yaml --profile console --profile demo build "$svc"; \
 	done
-	docker compose -f compose.dev.yaml --profile console up -d --wait
+	docker compose -f compose.dev.yaml --profile console --profile demo up -d
 
-# Stop everything `just demo` started and remove its volumes (scratch
-# Postgres data, provisioned secrets) — by exact Compose project name
-# (`vsms-dev`) only, never touching `compose.yml`'s own `vsms` project or
-# anything unrelated on the machine.
+# `; demo_exit=$?; ... ; exit $demo_exit`, not `&&`/separate recipe
+# lines: `just` aborts a recipe the moment any line exits non-zero,
+# which would skip the `logs demo-app` line entirely on the one run
+# where seeing those logs matters most — a failed demo.
+#
+# `up -d` (inside `demo-up`) is deliberately WITHOUT `--wait`, and as a
+# SINGLE invocation for the whole profile set. Two real bugs were found
+# live, in this order, getting here:
+#
+# 1. Plain `up -d --wait` (no service names) makes `--wait` poll
+#    `demo-app` too, and `demo-app` is a one-shot evaluator
+#    (`restart: 'no'`) that can genuinely finish — with exit 0, a real
+#    SUCCESS — before `--wait`'s own convergence check next runs. The
+#    instant it observes an Exited container in its wait set, Compose
+#    fails the whole `up -d --wait` invocation (exit 1), regardless of
+#    that container's own exit code. Reproduced on a real run: `demo-app`
+#    printed a genuine `SUCCESS: ... reached delivered with 2 verified
+#    webhook(s)`, and `just demo` still reported failure, because `up -d
+#    --wait`'s own line failed before the `wait demo-app`/`logs demo-app`
+#    lines below it ever ran.
+#
+# 2. The first fix for (1) split this into TWO separate `docker compose
+#    up` invocations — `up -d --wait <the four long-running services>`,
+#    then a second `up -d demo-app` to actually start it. That is worse,
+#    not better: two independent CLI processes against the same project,
+#    started moments apart, do not share one atomic view of "has this
+#    one-shot dependency already run" — reproduced live, not assumed:
+#    the second `up -d demo-app` call (demo-app depends on
+#    `secrets-fix-perms`, which depends on `provision-client`) caused
+#    Compose to recreate and RE-RUN `provision-client` a second time,
+#    even though the first `up` call had already run it to a clean
+#    success moments earlier. `provision-client` refuses to overwrite an
+#    existing private key (by design — see that command's own doc), so
+#    the second run's own log shows the bizarre-looking shape of a
+#    genuine success (a real `provisioned client:`/`private key written
+#    to:` — a SECOND, real `AppClient` row, a real side effect) followed
+#    immediately by `Error: ... already exists — refusing to overwrite`,
+#    and the whole recipe failed on a completely different line.
+#
+# The actual fix needs neither trick: `depends_on: condition:
+# service_healthy`/`service_completed_successfully` (already correct,
+# already how every other one-shot step in this file gets sequenced)
+# blocks a dependent container's own START regardless of `--wait` —
+# `--wait` only ever added "also block the CLI and report readiness",
+# which this recipe doesn't need from `up` itself, because the very next
+# line (`docker compose wait demo-app`) already blocks for real
+# completion and hands back demo-app's own real exit code. One plain
+# `up -d`, one Compose invocation, the same dependency graph deciding
+# everything exactly as it already did for migrate/seed-signing-key/
+# seed-dispatch/provision-client/etc. — no race between two CLI
+# processes, and no service whose "Exited" state `--wait` could
+# misread as a failure.
+#
+# No `--timeout` on `docker compose wait` below — checked, not assumed:
+# `docker compose wait --help` on this VM's Compose (v5.5.1) lists only
+# `--down-project`/`--dry-run`, no timeout flag. The real bound is
+# `demo-app`'s own `DEMO_TIMEOUT_MS` (default 90s — see its own README),
+# which the process enforces internally and always exits on, one way or
+# the other; `wait` here just blocks for however long that takes.
+demo: demo-up
+	docker compose -f compose.dev.yaml --profile console --profile demo wait demo-app; demo_exit=$?; \
+	docker compose -f compose.dev.yaml --profile console --profile demo logs demo-app; \
+	exit $demo_exit
+
+# Stop everything `just demo`/`demo-up` started and remove its volumes
+# (scratch Postgres data, provisioned secrets) — by exact Compose project
+# name (`vsms-dev`) only, never touching `compose.yml`'s own `vsms`
+# project or anything unrelated on the machine.
 demo-down:
-	docker compose -f compose.dev.yaml --profile console down -v --remove-orphans
+	docker compose -f compose.dev.yaml --profile console --profile demo down -v --remove-orphans
 
 # What's currently running from `just demo`.
 demo-status:
-	docker compose -f compose.dev.yaml --profile console ps
+	docker compose -f compose.dev.yaml --profile console --profile demo ps
 
 # The generated password `just demo` provisioned for `demo@vsms.local` —
 # printed once, to `provision-user`'s own container log, never stored
@@ -310,7 +447,27 @@ demo-status:
 demo-login:
 	docker compose -f compose.dev.yaml logs provision-user
 
-# #160: the joined integration story — brings up `just demo`'s stack,
+# Re-run `demo-app` (`examples/node/demo-app`) against an ALREADY-RUNNING
+# `just demo` stack, without tearing anything else down — the fast loop
+# for iterating on the evaluator itself (or re-proving the end-to-end
+# story after `sendMessage` traffic has already flowed once) rather than
+# a full `just demo`. `--no-deps`: everything `demo-app` depends on is
+# already up; re-resolving dependencies here would at best be a no-op and
+# at worst race `seed-demo-app`'s own one-shot `restart: 'no'` container
+# into trying to run again. `--force-recreate`: a bare `up -d` would
+# no-op on a service whose image/config hasn't changed, even though the
+# whole point of rerunning is a fresh attempt (a new message, a fresh
+# webhook exchange) — recreating is what actually restarts it.
+demo-app:
+	docker compose -f compose.dev.yaml --profile console --profile demo build demo-app
+	docker compose -f compose.dev.yaml --profile console --profile demo up -d --no-deps --force-recreate demo-app
+	docker compose -f compose.dev.yaml --profile console --profile demo wait demo-app; demo_exit=$?; \
+	docker compose -f compose.dev.yaml --profile console --profile demo logs demo-app; \
+	exit $demo_exit
+
+# #160: the joined integration story — brings up the stack (`demo-up`,
+# not `demo`: this recipe never touches `demo-app` and doesn't want a
+# `demo-app` outcome, real or flaky, deciding its own exit code),
 # provisions a SECOND client against the same App ("external integrator"),
 # then runs `ci/e2e-integration` (a small Rust tool, not a bash script —
 # see its own module doc for why it has to run *inside* the Compose
@@ -327,7 +484,7 @@ demo-login:
 # there is no `docker compose cp` source for it the way `provision-client`'s
 # own long-lived container (from `up`, still present) is for the console's
 # credential two lines below.
-e2e-integration: demo
+e2e-integration: demo-up
 	mkdir -p .e2e
 	rm -f .e2e/integrator-key.pem .e2e/integrator-client-id
 	docker compose -f compose.dev.yaml run --rm -v "{{justfile_directory()}}/.e2e:/out" sms-gateway \

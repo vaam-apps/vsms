@@ -3981,6 +3981,8 @@ dependencies = [
  "cratestack-pg",
  "dotenvy",
  "sms-api",
+ "sms-core",
+ "sms-webhook",
  "tokio",
  "tracing",
  "tracing-subscriber",

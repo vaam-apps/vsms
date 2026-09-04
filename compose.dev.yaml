@@ -172,16 +172,23 @@ services:
     restart: 'no'
 
   # The one `App` + approved `SenderId` this file's own demo message needs
-  # to exist before `sendMessage` will accept anything. Not an `sms-gateway`
+  # before `sendMessage` will accept anything. Not an `sms-gateway`
   # subcommand any more — #258 moved this fixture-seeding logic out of the
   # production gateway image into its own crate/image, `vsms-demo-seed`
   # (`backends/apps/vsms-demo-seed/src/main.rs`'s own module doc has the full
   # reasoning), the same binary `compose.demo.yaml`'s own `seed-demo-app`
   # service pulls pre-built from GHCR. This file builds it from source
-  # instead, like every other service here. Every flag defaults to what the
-  # old `sms-gateway seed-demo-app` command used (`--app-slug vsms-demo` in
-  # particular, matching `provision-client`'s own `--app-slug` below), so no
-  # `command:` override is needed — only `DATABASE_URL`.
+  # instead, like every other service here. Every flag defaults to what
+  # the old `sms-gateway seed-demo-app` command used (`--app-slug
+  # vsms-demo` in particular, matching `provision-client`'s own
+  # `--app-slug` below), so no `command:` override is needed — only
+  # `DATABASE_URL`. Deliberately unconditional (never gated behind a
+  # profile, and never passes `--webhook-url`) — R4: a backend-only
+  # deployment needs the `App`/`SenderId` `sendMessage` requires, but
+  # must NOT get a `WebhookEndpoint` pointed at a `demo-app` container
+  # that will never exist. `seed-demo-webhook`, below, is the
+  # `--profile demo`-gated sibling that seeds the endpoint, only when
+  # `demo-app` is actually part of the stack.
   seed-demo-app:
     build:
       context: .
@@ -190,6 +197,45 @@ services:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
     depends_on:
       seed-dispatch:
+        condition: service_completed_successfully
+    restart: 'no'
+
+  # The `WebhookEndpoint` `demo-app` (below) needs — split out of
+  # `seed-demo-app` into its own, separate, `--profile demo`-gated
+  # service rather than a flag `seed-demo-app` always passes. Found
+  # live, not assumed: an unconditional `WebhookEndpoint` pointed at
+  # `http://demo-app:9000/webhooks` breaks R4 the moment a backend-only
+  # `up -d` (no profiles at all) runs — `demo-app` never starts, that
+  # hostname never resolves, and `hooks` marks every attempt `dead`,
+  # opens the circuit, and logs an error every tick, forever, contrary
+  # to `docs/runbooks/showcase.adoc`'s own documented "not
+  # present-but-misconfigured" claim about a profile-skipped service.
+  # Same binary as `seed-demo-app` (idempotent — this run's own
+  # App/SenderId lookups just find what that service already created),
+  # invoked a second time with `--webhook-url`/`--webhook-secret-out`
+  # instead. `--webhook-secret-out` is what lets `demo-app` (`--profile
+  # demo` too) read the freshly-generated `WebhookEndpoint.secret` — the
+  # identical "one container's computed output, a sibling's input"
+  # problem `provision-client`'s own `--client-id-out` already solves
+  # the same way.
+  seed-demo-webhook:
+    build:
+      context: .
+      dockerfile: backends/apps/vsms-demo-seed/Dockerfile
+    profiles: [demo]
+    command:
+      - --webhook-url
+      - http://demo-app:9000/webhooks
+      - --webhook-secret-out
+      - /secrets/webhook-secret
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
+    volumes:
+      - vsms_dev_secrets:/secrets
+    depends_on:
+      seed-demo-app:
+        condition: service_completed_successfully
+      secrets-init:
         condition: service_completed_successfully
     restart: 'no'
 
@@ -256,9 +302,16 @@ services:
     restart: 'no'
 
   # Makes the key/id `provision-client` wrote (owned by uid 0) readable by
-  # `admin`'s own non-root uid — same trade `compose.demo.yaml` documents
-  # at length on its own identically-named service. `--client-id-out`'s
-  # output has no restrictive mode to begin with, only the PEM does.
+  # `admin`'s AND `demo-app`'s own non-root uids — same trade
+  # `compose.demo.yaml` documents at length on its own identically-named
+  # service. `--client-id-out`'s output has no restrictive mode to begin
+  # with, only the PEM does. `profiles: [console, demo]` — Compose starts
+  # a service the moment ANY one of its own profiles is active (verified
+  # directly: `docker compose --profile demo config --services` lists
+  # this service, and so does `--profile console`), so this stays skipped
+  # on a genuinely backend-only `up -d` (no profiles at all) while
+  # running for either `admin` (`console`) or `demo-app` (`demo`) alone,
+  # not just when both are requested together.
   secrets-fix-perms:
     image: busybox:1.36
     command: ['sh', '-c', 'chmod 0644 /secrets/console-client-key.pem /secrets/console-client-id']
@@ -268,7 +321,7 @@ services:
       provision-client:
         condition: service_completed_successfully
     restart: 'no'
-    profiles: [console]
+    profiles: [console, demo]
 
   # Registers the `sms-console` OauthClient row #194's human login needs.
   # `--redirect-uri` must equal `${ADMIN_BASE_URL}/api/auth/callback`
@@ -413,8 +466,17 @@ services:
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
       # dispatch/scheduler/jobs — the same three roles `scripts/demo.sh`
-      # ran. drain/hooks omitted: this stack seeds no `WebhookEndpoint`.
-      SMS_WORKER_ROLES: dispatch,scheduler,jobs
+      # used to run — plus drain/hooks, unconditionally, regardless of
+      # which profiles (if any) are active: `drain`/`hooks` both poll
+      # `WebhookEndpoint`/`WebhookAttempt` rows that simply don't exist
+      # on a backend-only or `--profile console`-only run (only
+      # `--profile demo`'s own `seed-demo-webhook` ever creates one, see
+      # that service's own comment) — an empty poll loop, not an error
+      # loop. That's the R4-correct shape: the *role* is unconditional,
+      # like every other role this worker runs, and what it finds to do
+      # is a function of what's actually in the database, not of a
+      # profile flag threaded into `SMS_WORKER_ROLES` itself.
+      SMS_WORKER_ROLES: dispatch,scheduler,jobs,drain,hooks
       ORANGE_CM_CLIENT_ID: placeholder
       ORANGE_CM_CLIENT_SECRET: placeholder
       ORANGE_CM_SENDER_NUMBER: '+2370000'
@@ -495,6 +557,58 @@ services:
         condition: service_completed_successfully
     ports:
       - '127.0.0.1:${VSMS_DEMO_CONSOLE_PORT:-3100}:8080'
+
+  # The demo showcase's own evaluator — `examples/node/demo-app`'s own
+  # module doc has the full reasoning. Sends one OTP through
+  # `@vymalo/vsms-node`, watches it reach a terminal state, and verifies
+  # the `hooks` role's own signed webhook for it — the one piece of this
+  # stack nothing else exercises end to end.
+  #
+  # `profiles: [demo]` — its OWN profile, deliberately never `console`:
+  # this is a backend proof (it talks to `sms-gateway` directly, the
+  # same way `admin` itself does, never through the console), not a
+  # console-only extra, so it must be reachable without ever starting
+  # `admin`. `just demo`/`just demo-app` pass `--profile console
+  # --profile demo` together; `--profile demo` alone (no console) is
+  # itself a legitimate, documented way to run this proof — see
+  # `docs/runbooks/showcase.adoc`'s own "The demo app" section. It still
+  # needs `secrets-fix-perms`'s output (the console-client PEM,
+  # `0600`/root-owned until that step loosens it) to read the credential
+  # it reuses from `provision-client` — that service is `profiles:
+  # [console, demo]` for exactly this reason, so it runs for either
+  # profile alone.
+  #
+  # `restart: 'no'` — explicit, matching this file's own convention for
+  # every other one-shot step, even though it's also Compose's default
+  # when unspecified: this container is meant to run once and exit,
+  # never be restarted by Compose itself. It DOES define a real
+  # `HEALTHCHECK` in its own Dockerfile (`node -e ...:9000/healthz`,
+  # used while the process is up so `docker compose ps` can show
+  # `healthy` mid-run) — that's a liveness signal, not a restart policy.
+  demo-app:
+    build:
+      context: .
+      dockerfile: examples/node/demo-app/Dockerfile
+    profiles: [demo]
+    restart: 'no'
+    environment:
+      VSMS_ISSUER: http://sms-gateway:8080
+      VSMS_CLIENT_ID_PATH: /secrets/console-client-id
+      VSMS_PRIVATE_KEY_PATH: /secrets/console-client-key.pem
+      VSMS_SCOPE: sms:send sms:read
+      DEMO_WEBHOOK_SECRET_PATH: /secrets/webhook-secret
+      DEMO_WEBHOOK_PORT: '9000'
+    volumes:
+      - vsms_dev_secrets:/secrets:ro
+    depends_on:
+      sms-gateway:
+        condition: service_healthy
+      sms-worker:
+        condition: service_started
+      seed-demo-webhook:
+        condition: service_completed_successfully
+      secrets-fix-perms:
+        condition: service_completed_successfully
 
 volumes:
   vsms_dev_pgdata:

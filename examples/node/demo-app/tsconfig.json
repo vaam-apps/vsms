@@ -1,0 +1,18 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "types": ["node"],
+    // This app runs directly via `node src/index.ts` (Node's native
+    // TypeScript support — no build step, no ts-node/tsx dependency),
+    // same convention `examples/node/webhook-receiver`'s own tsconfig
+    // documents — which only resolves relative imports whose extension
+    // matches a real file on disk. Explicit `.ts` extensions in source,
+    // permitted for type-check purposes by this flag, are what makes
+    // that work.
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
