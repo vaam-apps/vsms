@@ -5,8 +5,12 @@
 # and `node_modules/` alone turn a multi-second `docker build` context
 # upload into a multi-minute one.
 
-# Rust
-target/
+# Rust — `target/` alone matches only the root; the four workspace-excluded
+# manifests (sdks/rust, examples/rust, ci/e2e-integration, deploy/backup-tool)
+# each keep their own `target/` one level down, and a plain `COPY . .` in
+# every builder stage dragged all of them into the image. Found when
+# `just demo` filled a 96 GB disk copying `examples/rust/target/debug/deps`.
+**/target/
 **/*.rs.bk
 
 # Node / pnpm — node_modules can exist at the root and per-package
