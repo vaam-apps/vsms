@@ -27,6 +27,7 @@ mod node_sdk_types;
 mod parity;
 mod r6_ui_layers;
 mod raw_sqlx;
+mod runner_pin;
 mod sdk_schema;
 mod workflow_paths;
 
@@ -62,6 +63,7 @@ fn main() -> ExitCode {
         "sdk-schema-check" => sdk_schema::check(&root),
         "sdk-schema-vendor" => sdk_schema::vendor(&root),
         "cratestack-pin" => cratestack_pin::read_pin(&root).map(|v| println!("{v}")),
+        "runner-pin" => runner_pin::run(&root),
         "migrations-current" => migrations_current::run(&root),
         "node-sdk-types-check" => node_sdk_types::run(&root),
         "help" | "--help" | "-h" => {
@@ -95,6 +97,7 @@ fn help_text() -> &'static str {
      sdk-schema-check      fail if the vendored SDK schema has drifted\n  \
      sdk-schema-vendor     refresh the vendored SDK schema copy\n  \
      cratestack-pin         print the pinned cratestack version from Cargo.toml\n  \
+     runner-pin             ci/runner/Dockerfile's CRATESTACK_VERSION default matches that pin\n  \
      migrations-current    fail if 0001_init has drifted from `cratestack migrate diff`\n  \
      workflow-paths        fail if a workflow names a path that does not exist\n  \
      docs-drift            fail if a doc, config or string names a missing path\n  \

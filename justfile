@@ -25,9 +25,11 @@ _cargo := "CARGO_BUILD_JOBS=" + jobs + " cargo"
 # client-gen`. Requires >=0.7.8 — cratestack#456 fixed `Decimal` scalar TS
 # emission (cratestack#455); anything older regenerates a client that fails
 # to compile (`Cannot find name 'Decimal'`). Must match the pin read by
-# `cargo xtask cratestack-pin` (currently =0.8.10) — CI installs exactly
-# that version via cratestack's own composite action (see ci.yml's
-# `schema-drift`/`js` jobs), not a hardcoded literal here.
+# `cargo xtask cratestack-pin` (read it; a version quoted in this comment
+# has drifted before) — CI installs exactly that version via cratestack's
+# own composite action (see ci.yml's `schema-drift`/`js` jobs), not a
+# hardcoded literal here. `cargo xtask runner-pin` holds
+# ci/runner/Dockerfile's own copy of the pin to the same value.
 cratestack_bin := env_var_or_default("CRATESTACK_BIN", "cratestack")
 
 # Show available recipes
@@ -126,6 +128,7 @@ all-checks: lint test
 	{{_cargo}} xtask no-raw-sqlx
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask workflow-paths
+	{{_cargo}} xtask runner-pin
 	{{_cargo}} xtask docs-drift
 	{{_cargo}} xtask r6
 	{{_cargo}} xtask node-sdk-types-check
@@ -154,6 +157,12 @@ workflow-paths:
 # pointing at nothing — see .xtask/src/docs_drift.rs for the incident list.
 docs-drift:
 	{{_cargo}} xtask docs-drift
+
+# ci/runner/Dockerfile's CRATESTACK_VERSION default is a second copy of the
+# Cargo.toml pin; it drifted once (0.8.10 against a 0.11.0 pin) and just ci
+# built a runner its own first step then refused.
+runner-pin:
+	{{_cargo}} xtask runner-pin
 # R6: no CSS classes or raw markup in page/*-screen view files
 r6:
 	{{_cargo}} xtask r6
@@ -670,6 +679,7 @@ ci-inner:
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask sdk-schema-check
 	{{_cargo}} xtask workflow-paths
+	{{_cargo}} xtask runner-pin
 	{{_cargo}} xtask docs-drift
 	{{_cargo}} xtask r6
 	{{_cargo}} xtask node-sdk-types-check

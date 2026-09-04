@@ -106,7 +106,7 @@ RUN curl -L --proto '=https' --tlsv1.2 -sSf \
 # cratestack pin by hand. `ci-inner` below re-derives the pin from the
 # checked-out repo at run time and fails loudly, before running anything
 # else, if the two disagree — see that recipe's first step.
-ARG CRATESTACK_VERSION=0.8.10
+ARG CRATESTACK_VERSION=0.11.0
 RUN cargo install cratestack-cli --version "=${CRATESTACK_VERSION}" --locked
 
 # `runner` in compose.test.yaml runs as a non-root uid:gid — a container
