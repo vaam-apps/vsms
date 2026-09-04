@@ -10,10 +10,15 @@
 # crate's own `cargo test`), not one of the release Dockerfiles under
 # `backends/apps/*/Dockerfile`, which build musl-static binaries onto
 # `distroless` for a different reason (see AGENTS.md's "rustls, musl, and
-# distroless" section). `rust:1.95-bookworm` matches the MSRV this repo
-# pins (`rust-version = "1.95.0"`, root Cargo.toml) and the Dockerfiles'
-# own `rust:1.95-bookworm` builder stage.
-FROM rust:1.95-bookworm
+# distroless" section). `rust:1.98-bookworm` matches the MSRV this repo
+# pins (`rust-version = "1.98.0"`, root Cargo.toml) — the release
+# Dockerfiles pin the same floor on `rust:1.98-alpine3.22` instead, not
+# `-bookworm` (a stale claim in an earlier revision of this comment).
+# Bumped from 1.95 to 1.98 here because the cratestack 0.11.0 PR raised
+# the workspace MSRV but this file was added by a different, concurrently
+# landing branch and missed the bump — see AGENTS.md's cratestack 0.11.0
+# section.
+FROM rust:1.98-bookworm
 
 # CARGO_BUILD_JOBS default matches AGENTS.md's own "Build cost" warning:
 # `include_server_schema!` expansion is memory-hungry enough to OOM at
