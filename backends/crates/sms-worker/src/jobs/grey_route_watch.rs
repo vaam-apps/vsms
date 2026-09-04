@@ -10,7 +10,7 @@ use sms_api::schema::{
 };
 use tracing::warn;
 
-use crate::jobs::JobHandler;
+use crate::jobs::{JobError, JobHandler};
 
 /// #64's issue text, restated as a number: below this many terminal
 /// messages, a route's own delivery rate is not trusted enough to serve as
@@ -44,6 +44,13 @@ const FETCH_LIMIT: i64 = 20_000;
 /// §6.4's own cadence, verbatim: "re-validate monthly." A route with no
 /// `RouteValidation` row inside this window is overdue.
 pub const VALIDATION_INTERVAL: Duration = Duration::days(30);
+
+/// Context wording for [`JobError::Database`] — see
+/// `expire_stale::CTX_SUBMITTED`'s own doc for why this is a
+/// `pub(crate) const`, not an inline literal.
+pub(crate) const CTX_DIVERGENCE: &str = "checking route delivery-rate divergence";
+/// See [`CTX_DIVERGENCE`].
+pub(crate) const CTX_OVERDUE: &str = "checking overdue route validations";
 
 /// One route's aggregated terminal outcomes within the window, for one
 /// `(operator, class)` peer group. `delivered`/`failed` are counts, not
@@ -322,18 +329,24 @@ impl GreyRouteWatch {
         db: &Cratestack,
         sys: &CratestackContext,
         now: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         let flagged = self
             .check_divergence(db, sys, now)
             .await
-            .map_err(|error| format!("checking route delivery-rate divergence: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: CTX_DIVERGENCE,
+                source,
+            })?;
         sms_metrics::ROUTE_DELIVERY_DIVERGENCE_FLAGGED
             .set(i64::try_from(flagged).unwrap_or(i64::MAX));
 
         let overdue = self
             .check_overdue_validations(db, sys, now)
             .await
-            .map_err(|error| format!("checking overdue route validations: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: CTX_OVERDUE,
+                source,
+            })?;
         sms_metrics::ROUTE_VALIDATION_OVERDUE.set(i64::try_from(overdue).unwrap_or(i64::MAX));
 
         Ok(())
@@ -455,7 +468,7 @@ impl JobHandler for GreyRouteWatch {
         db: &Cratestack,
         sys: &CratestackContext,
         _job: &Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         self.run_at(db, sys, Utc::now()).await
     }
 }

@@ -14,7 +14,7 @@ use cratestack::sqlx;
 use sms_api::schema::{Cratestack, Job};
 use tracing::{debug, info, warn};
 
-use crate::jobs::JobHandler;
+use crate::jobs::{JobError, JobHandler};
 
 /// §7.5's own retention: a delivered row survives this long before this
 /// job deletes it.
@@ -36,6 +36,12 @@ const DELETE_BATCH: i64 = 1000;
 /// alerted on again next run.
 const ALERT_BATCH: i64 = 200;
 
+/// Context wording for [`JobError::Sql`] — see `expire_stale::CTX_SUBMITTED`'s
+/// own doc for why this is a `pub(crate) const`, not an inline literal.
+pub(crate) const CTX_POISON_SCAN: &str = "scanning the event outbox for poison rows";
+/// See [`CTX_POISON_SCAN`].
+pub(crate) const CTX_REAP_DELIVERED: &str = "reaping delivered event outbox rows";
+
 /// The `reap_outbox` [`JobHandler`] — see the module doc for what "reap"
 /// means here and why poison rows are alarmed on rather than deleted.
 pub struct ReapOutbox;
@@ -52,10 +58,13 @@ impl ReapOutbox {
     /// "elapsed" relative to that virtual clock, exactly the trick
     /// `ExpireStale`'s own `uncertain`-grace test already uses for
     /// `Message.updatedAt`.
-    pub async fn run_at(&self, db: &Cratestack, now: DateTime<Utc>) -> Result<(), String> {
+    pub async fn run_at(&self, db: &Cratestack, now: DateTime<Utc>) -> Result<(), JobError> {
         let poisoned = alert_poison_rows(db)
             .await
-            .map_err(|error| format!("scanning the event outbox for poison rows: {error}"))?;
+            .map_err(|source| JobError::Sql {
+                context: CTX_POISON_SCAN,
+                source,
+            })?;
         // #70: the one writer of `sms_event_outbox_poison_rows` — see
         // `sms_metrics`'s own module doc for why this gauge doesn't need
         // the absent-vs-zero treatment the two per-role gauges do (this
@@ -73,7 +82,10 @@ impl ReapOutbox {
         let cutoff = now - DELIVERED_RETENTION;
         let reaped = reap_delivered(db, cutoff)
             .await
-            .map_err(|error| format!("reaping delivered event outbox rows: {error}"))?;
+            .map_err(|source| JobError::Sql {
+                context: CTX_REAP_DELIVERED,
+                source,
+            })?;
 
         if reaped > 0 {
             info!(reaped, "reaped delivered event outbox rows past retention");
@@ -96,7 +108,7 @@ impl JobHandler for ReapOutbox {
         db: &Cratestack,
         _sys: &CratestackContext,
         _job: &Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         self.run_at(db, Utc::now()).await
     }
 }

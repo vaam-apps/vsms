@@ -7,7 +7,7 @@ use sms_api::schema::{Cratestack, Job, MessageState, UpdateMessageInput, message
 use sms_api::{is_illegal_transition, map_database_error};
 use tracing::warn;
 
-use crate::jobs::JobHandler;
+use crate::jobs::{JobError, JobHandler};
 
 /// How long `uncertain` waits before expiring, per §7.4.
 const UNCERTAIN_GRACE: Duration = Duration::hours(6);
@@ -16,6 +16,19 @@ const UNCERTAIN_GRACE: Duration = Duration::hours(6);
 /// so a backlog beyond this batch is picked up by the very next run rather
 /// than this one invocation trying to drain an unbounded queue.
 const BATCH: i64 = 500;
+
+/// Context wording for [`JobError::Database`] — a `pub(crate) const`, not an
+/// inline literal, so the one live test that pins these thirteen wordings
+/// (`jobs::tests::every_context_literal_matches_the_documented_wording`)
+/// shares the exact value the real call site below writes into
+/// `Job.lastError`, rather than an independent copy that could silently
+/// drift from it. See that test's own doc for why the independent-copy
+/// shape was the actual bug this replaces.
+pub(crate) const CTX_SUBMITTED: &str = "expiring stale submitted messages";
+/// See [`CTX_SUBMITTED`].
+pub(crate) const CTX_UNCERTAIN: &str = "expiring stale uncertain messages";
+/// See [`CTX_SUBMITTED`].
+pub(crate) const CTX_UNDELIVERED: &str = "expiring stale undelivered messages";
 
 /// The `expire_stale` [`JobHandler`] — see the module doc for its two
 /// rules.
@@ -35,7 +48,7 @@ impl ExpireStale {
         db: &Cratestack,
         sys: &CratestackContext,
         now: chrono::DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         expire_matching(
             db,
             sys,
@@ -43,7 +56,10 @@ impl ExpireStale {
                 .and(message::expiresAt().lte(now)),
         )
         .await
-        .map_err(|error| format!("expiring stale submitted messages: {error}"))?;
+        .map_err(|source| JobError::Database {
+            context: CTX_SUBMITTED,
+            source,
+        })?;
 
         expire_matching(
             db,
@@ -52,7 +68,10 @@ impl ExpireStale {
                 .and(message::updatedAt().lte(now - UNCERTAIN_GRACE)),
         )
         .await
-        .map_err(|error| format!("expiring stale uncertain messages: {error}"))?;
+        .map_err(|source| JobError::Database {
+            context: CTX_UNCERTAIN,
+            source,
+        })?;
 
         expire_matching(
             db,
@@ -61,7 +80,10 @@ impl ExpireStale {
                 .and(message::expiresAt().lte(now)),
         )
         .await
-        .map_err(|error| format!("expiring stale undelivered messages: {error}"))?;
+        .map_err(|source| JobError::Database {
+            context: CTX_UNDELIVERED,
+            source,
+        })?;
 
         Ok(())
     }
@@ -78,7 +100,7 @@ impl JobHandler for ExpireStale {
         db: &Cratestack,
         sys: &CratestackContext,
         _job: &Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         self.run_at(db, sys, Utc::now()).await
     }
 }

@@ -8,7 +8,7 @@ use sms_api::schema::{
 };
 use tracing::warn;
 
-use crate::jobs::JobHandler;
+use crate::jobs::{JobError, JobHandler};
 
 /// §7.5's own retention for both halves of this job — `Message` and
 /// `DeliveryReceipt` each carry their own `@@retain(days: 90)` in
@@ -32,6 +32,13 @@ const MESSAGE_BATCH: i64 = 500;
 /// `DeliveryReceipt` rows are deleted in batches this size per run, same
 /// reasoning as [`MESSAGE_BATCH`].
 const RECEIPT_BATCH: i64 = 500;
+
+/// Context wording for [`JobError::Database`] — see
+/// `expire_stale::CTX_SUBMITTED`'s own doc for why this is a
+/// `pub(crate) const`, not an inline literal.
+pub(crate) const CTX_PURGE_MESSAGES: &str = "purging retained messages";
+/// See [`CTX_PURGE_MESSAGES`].
+pub(crate) const CTX_PURGE_RECEIPTS: &str = "purging retained delivery receipts";
 
 /// §7.4's terminal `Message` states — the ones with no outgoing row in
 /// `message_state_transitions`, i.e. nothing can move a message out of one
@@ -62,19 +69,25 @@ impl PurgeRetention {
         db: &Cratestack,
         sys: &CratestackContext,
         now: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         let cutoff = now - RETENTION;
 
         let purged = purge_messages(db, sys, cutoff, now)
             .await
-            .map_err(|error| format!("purging retained messages: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: CTX_PURGE_MESSAGES,
+                source,
+            })?;
         if purged > 0 {
             tracing::info!(purged, "purged messages past the 90-day retention window");
         }
 
         let deleted = purge_delivery_receipts(db, sys, cutoff)
             .await
-            .map_err(|error| format!("purging retained delivery receipts: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: CTX_PURGE_RECEIPTS,
+                source,
+            })?;
         if deleted > 0 {
             tracing::info!(
                 deleted,
@@ -97,7 +110,7 @@ impl JobHandler for PurgeRetention {
         db: &Cratestack,
         sys: &CratestackContext,
         _job: &Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         self.run_at(db, sys, Utc::now()).await
     }
 }

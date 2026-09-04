@@ -19,3 +19,12 @@ question that used to block `purge_retention` (§7.5's own table, issue
 exists regardless. The remaining five `kind`s §7.5's own table names are
 real, tracked gaps, not a silently dropped scope — see the module's own
 issue for the follow-up.
+
+[`JobHandler::run`] returns a typed [`JobError`], not a bare `String` —
+see that type's own doc for the full reasoning (cleanup PR A, AGENTS.md's
+own "`JobError` replaces the `String` job boundary" section). The short
+version: `Job.lastError` is still a plain `String` column (unchanged —
+this is a Rust-side typed-boundary cleanup, not a schema change), and
+[`apply_outcome`] is still the one place a `JobError` is ever collapsed
+back into one, via its own `Display`, reproducing the exact wording every
+handler used to build by hand.
