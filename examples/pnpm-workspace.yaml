@@ -1,5 +1,13 @@
 packages:
   - "node/*"
+  # demo-app is deliberately NOT a member: it is the demo stack's own
+  # evaluator, installed and gated standalone (`--ignore-workspace
+  # --frozen-lockfile`, its own pnpm-lock.yaml) exactly like the CI job
+  # does, so an integrator can copy it out. Without this exclusion a plain
+  # `pnpm install`/`pnpm update -r` here auto-discovers it through the
+  # glob and merges its whole dependency tree into this lockfile as a new
+  # importer (found live while fixing the qs advisory).
+  - "!node/demo-app"
 
 # Same trap the root pnpm-workspace.yaml documents (see AGENTS.md): pnpm 11
 # blocks postinstall scripts unless allowed here, and pnpm 10's
