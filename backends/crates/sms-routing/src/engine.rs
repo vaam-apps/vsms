@@ -114,6 +114,14 @@ use crate::types::{
 /// let first = select_route(&routes, &providers, &candidate, &ExcludedRouteIds::new(), 0.1);
 /// assert_eq!(first.winner.as_ref().unwrap().route_id, "light");
 ///
+/// // The band boundary itself, checked exactly rather than only
+/// // statistically — an off-by-one in the cumulative-range arithmetic
+/// // would show up as one of these two flipping.
+/// let just_below = select_route(&routes, &providers, &candidate, &ExcludedRouteIds::new(), 0.24);
+/// assert_eq!(just_below.winner.as_ref().unwrap().route_id, "light");
+/// let at_boundary = select_route(&routes, &providers, &candidate, &ExcludedRouteIds::new(), 0.25);
+/// assert_eq!(at_boundary.winner.as_ref().unwrap().route_id, "heavy");
+///
 /// // Replaying with the identical draw reproduces the identical decision —
 /// // nothing in this function ever touches an RNG, a clock, or ambient
 /// // state, so a replay (the admin route simulator, or a test) can trust

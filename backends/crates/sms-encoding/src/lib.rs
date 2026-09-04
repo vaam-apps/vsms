@@ -104,9 +104,25 @@ impl EncodingReport {
 /// assert_eq!(euro.escapes, 1);
 ///
 /// // `É` is in the default alphabet, but `À` is not — a body that is fine
-/// // in sentence case can break the moment it is shouted.
-/// assert_eq!(analyse("ÉTÉ").encoding, SmsEncoding::Gsm7);
-/// assert_eq!(analyse("À BIENTÔT").encoding, SmsEncoding::Ucs2);
+/// // in sentence case can break the moment it is shouted. Compared as
+/// // single characters, not whole words, so neither side is confounded by
+/// // some *other* unencodable letter in the same body (`Ô`, say).
+/// assert_eq!(analyse("É").encoding, SmsEncoding::Gsm7);
+/// assert_eq!(analyse("à").encoding, SmsEncoding::Gsm7);
+/// assert_eq!(analyse("À").encoding, SmsEncoding::Ucs2);
+///
+/// // Segment counting is a packing loop, not division: a GSM-7 escape pair
+/// // (`€`, two septets) must not straddle a segment boundary. 152 single-
+/// // septet characters, then `€`, then 152 more — 306 septets total, which
+/// // plain division says fits two 153-septet concatenated parts exactly.
+/// // It doesn't: the escape pair can't start at septet 153, so it moves
+/// // whole into the second part, the first part ends one septet short, and
+/// // the tail spills into a third part division never predicted.
+/// let straddling = format!("{}€{}", "a".repeat(152), "a".repeat(152));
+/// let report = analyse(&straddling);
+/// assert_eq!(report.length, 306);
+/// assert_eq!(306_usize.div_ceil(153), 2, "division alone would say two parts");
+/// assert_eq!(report.segments, 3, "the straddle costs a third part");
 /// ```
 #[must_use]
 pub fn analyse(body: &str) -> EncodingReport {

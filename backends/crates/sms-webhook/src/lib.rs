@@ -253,7 +253,7 @@ pub fn is_timestamp_fresh(timestamp: i64, now: i64, tolerance_secs: i64) -> bool
 ///
 /// The one function in this crate that isn't pure — everything else here
 /// is a deterministic function of its arguments. `rotate_webhook_secret`
-/// (`backends/crates/sms-api/src/procedures.rs`, #41) is the intended caller.
+/// (`backends/crates/sms-api/src/procedures.rs`) is the caller.
 ///
 /// # Panics
 ///
