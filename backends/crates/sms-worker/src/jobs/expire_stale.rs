@@ -7,7 +7,7 @@ use sms_api::schema::{Cratestack, Job, MessageState, UpdateMessageInput, message
 use sms_api::{is_illegal_transition, map_database_error};
 use tracing::warn;
 
-use crate::jobs::JobHandler;
+use crate::jobs::{JobError, JobHandler};
 
 /// How long `uncertain` waits before expiring, per §7.4.
 const UNCERTAIN_GRACE: Duration = Duration::hours(6);
@@ -35,7 +35,7 @@ impl ExpireStale {
         db: &Cratestack,
         sys: &CratestackContext,
         now: chrono::DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         expire_matching(
             db,
             sys,
@@ -43,7 +43,10 @@ impl ExpireStale {
                 .and(message::expiresAt().lte(now)),
         )
         .await
-        .map_err(|error| format!("expiring stale submitted messages: {error}"))?;
+        .map_err(|source| JobError::Database {
+            context: "expiring stale submitted messages",
+            source,
+        })?;
 
         expire_matching(
             db,
@@ -52,7 +55,10 @@ impl ExpireStale {
                 .and(message::updatedAt().lte(now - UNCERTAIN_GRACE)),
         )
         .await
-        .map_err(|error| format!("expiring stale uncertain messages: {error}"))?;
+        .map_err(|source| JobError::Database {
+            context: "expiring stale uncertain messages",
+            source,
+        })?;
 
         expire_matching(
             db,
@@ -61,7 +67,10 @@ impl ExpireStale {
                 .and(message::expiresAt().lte(now)),
         )
         .await
-        .map_err(|error| format!("expiring stale undelivered messages: {error}"))?;
+        .map_err(|source| JobError::Database {
+            context: "expiring stale undelivered messages",
+            source,
+        })?;
 
         Ok(())
     }
@@ -78,7 +87,7 @@ impl JobHandler for ExpireStale {
         db: &Cratestack,
         sys: &CratestackContext,
         _job: &Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         self.run_at(db, sys, Utc::now()).await
     }
 }

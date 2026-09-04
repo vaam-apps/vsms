@@ -10,7 +10,7 @@ use sms_api::schema::{
 };
 use tracing::warn;
 
-use crate::jobs::JobHandler;
+use crate::jobs::{JobError, JobHandler};
 
 /// #64's issue text, restated as a number: below this many terminal
 /// messages, a route's own delivery rate is not trusted enough to serve as
@@ -322,18 +322,24 @@ impl GreyRouteWatch {
         db: &Cratestack,
         sys: &CratestackContext,
         now: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         let flagged = self
             .check_divergence(db, sys, now)
             .await
-            .map_err(|error| format!("checking route delivery-rate divergence: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: "checking route delivery-rate divergence",
+                source,
+            })?;
         sms_metrics::ROUTE_DELIVERY_DIVERGENCE_FLAGGED
             .set(i64::try_from(flagged).unwrap_or(i64::MAX));
 
         let overdue = self
             .check_overdue_validations(db, sys, now)
             .await
-            .map_err(|error| format!("checking overdue route validations: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: "checking overdue route validations",
+                source,
+            })?;
         sms_metrics::ROUTE_VALIDATION_OVERDUE.set(i64::try_from(overdue).unwrap_or(i64::MAX));
 
         Ok(())
@@ -455,7 +461,7 @@ impl JobHandler for GreyRouteWatch {
         db: &Cratestack,
         sys: &CratestackContext,
         _job: &Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         self.run_at(db, sys, Utc::now()).await
     }
 }

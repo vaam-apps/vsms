@@ -10,7 +10,7 @@ use sms_api::audit_log::{
 use sms_api::schema::{Cratestack, CreateAuditAnchorInput, Job};
 use tracing::{debug, error, info, warn};
 
-use crate::jobs::JobHandler;
+use crate::jobs::{JobError, JobHandler};
 
 /// Safety margin subtracted from "now" before drawing an anchor's upper
 /// boundary — see the module doc's "the race this design accepts" section.
@@ -35,14 +35,20 @@ impl AnchorAudit {
         db: &Cratestack,
         sys: &CratestackContext,
         now: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         let latest = latest_anchor(db, sys)
             .await
-            .map_err(|error| format!("loading the most recent audit anchor: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: "loading the most recent audit anchor",
+                source,
+            })?;
 
         let breaks = verify_chain_linkage(db, sys)
             .await
-            .map_err(|error| format!("verifying the audit anchor chain's own linkage: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: "verifying the audit anchor chain's own linkage",
+                source,
+            })?;
         for detail in &breaks {
             error!(
                 detail,
@@ -82,7 +88,10 @@ impl AnchorAudit {
 
         let rows = rows_in_period(db, period_start, period_end)
             .await
-            .map_err(|error| format!("reading cratestack_audit for the new period: {error}"))?;
+            .map_err(|source| JobError::Sql {
+                context: "reading cratestack_audit for the new period",
+                source,
+            })?;
         let row_count = i64::try_from(rows.len()).unwrap_or(i64::MAX);
         let range_hash_hex = hex::encode(fold_rows(&rows));
         let prev_chain_hash_hex = latest
@@ -107,7 +116,10 @@ impl AnchorAudit {
             })
             .run(sys)
             .await
-            .map_err(|error| format!("writing the new audit anchor: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: "writing the new audit anchor",
+                source,
+            })?;
 
         info!(row_count, "anchored audit rows");
         Ok(())
@@ -125,7 +137,7 @@ impl JobHandler for AnchorAudit {
         db: &Cratestack,
         sys: &CratestackContext,
         _job: &Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         self.run_at(db, sys, Utc::now()).await
     }
 }

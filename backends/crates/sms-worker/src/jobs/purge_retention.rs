@@ -8,7 +8,7 @@ use sms_api::schema::{
 };
 use tracing::warn;
 
-use crate::jobs::JobHandler;
+use crate::jobs::{JobError, JobHandler};
 
 /// §7.5's own retention for both halves of this job — `Message` and
 /// `DeliveryReceipt` each carry their own `@@retain(days: 90)` in
@@ -62,19 +62,25 @@ impl PurgeRetention {
         db: &Cratestack,
         sys: &CratestackContext,
         now: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         let cutoff = now - RETENTION;
 
         let purged = purge_messages(db, sys, cutoff, now)
             .await
-            .map_err(|error| format!("purging retained messages: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: "purging retained messages",
+                source,
+            })?;
         if purged > 0 {
             tracing::info!(purged, "purged messages past the 90-day retention window");
         }
 
         let deleted = purge_delivery_receipts(db, sys, cutoff)
             .await
-            .map_err(|error| format!("purging retained delivery receipts: {error}"))?;
+            .map_err(|source| JobError::Database {
+                context: "purging retained delivery receipts",
+                source,
+            })?;
         if deleted > 0 {
             tracing::info!(
                 deleted,
@@ -97,7 +103,7 @@ impl JobHandler for PurgeRetention {
         db: &Cratestack,
         sys: &CratestackContext,
         _job: &Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         self.run_at(db, sys, Utc::now()).await
     }
 }

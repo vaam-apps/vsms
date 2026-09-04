@@ -1,10 +1,13 @@
 #![doc = include_str!("jobs.md")]
 
 pub mod anchor_audit;
+mod error;
 pub mod expire_stale;
 pub mod grey_route_watch;
 pub mod purge_retention;
 pub mod reap_outbox;
+
+pub use error::JobError;
 
 use std::collections::HashMap;
 use std::time::Duration as StdDuration;
@@ -65,12 +68,21 @@ pub trait JobHandler: Send + Sync + 'static {
     /// keys on it.
     fn kind(&self) -> &'static str;
 
-    /// Do the work. `Err`'s `String` becomes `Job.lastError` verbatim — no
-    /// retryable/permanent distinction like [`sms_provider::ProviderError`]
-    /// makes, because §7.5's diagram draws exactly one failure edge
-    /// (`running -> failed`) regardless of cause; every failure gets the
-    /// same backoff-then-`dead` treatment.
-    async fn run(&self, db: &Cratestack, sys: &CratestackContext, job: &Job) -> Result<(), String>;
+    /// Do the work. `Err`'s [`JobError::to_string`] becomes `Job.lastError`
+    /// verbatim — no retryable/permanent distinction like
+    /// [`sms_provider::ProviderError`] makes, because §7.5's diagram draws
+    /// exactly one failure edge (`running -> failed`) regardless of cause;
+    /// every failure gets the same backoff-then-`dead` treatment. See
+    /// [`JobError`]'s own doc for why the *type* is still worth having when
+    /// every failure is handled identically: a caller (a live test, a
+    /// future dashboard) that wants to match on the real cause rather than
+    /// string-match `Job.lastError` now can.
+    async fn run(
+        &self,
+        db: &Cratestack,
+        sys: &CratestackContext,
+        job: &Job,
+    ) -> Result<(), JobError>;
 }
 
 /// `kind` string to handler, built once at startup.
@@ -173,7 +185,9 @@ pub async fn tick(
 async fn run_one(db: &Cratestack, sys: &CratestackContext, job: &Job, registry: &Registry) {
     let outcome = match registry.get(&job.kind) {
         Some(handler) => handler.run(db, sys, job).await,
-        None => Err(format!("no handler registered for kind {:?}", job.kind)),
+        None => Err(JobError::NoHandler {
+            kind: job.kind.clone(),
+        }),
     };
 
     if let Err(error) = apply_outcome(db, sys, job, outcome).await {
@@ -186,11 +200,17 @@ async fn run_one(db: &Cratestack, sys: &CratestackContext, job: &Job, registry: 
 /// (with backoff) or `failed -> dead` (attempts exhausted) — both legal
 /// single-tick hops, same "propose several transitions from one outcome"
 /// shape `backends/crates/sms-api/src/dlr.rs`'s `ingest_one` already uses.
+///
+/// `outcome`'s `Err` is converted to `Job.lastError` via
+/// [`std::string::ToString::to_string`] (i.e. [`JobError`]'s own
+/// `Display`), the one place a [`JobError`] is ever collapsed back to a
+/// plain `String` — see [`JobError`]'s own doc for why that string is
+/// byte-identical to what this crate wrote before the type existed.
 async fn apply_outcome(
     db: &Cratestack,
     sys: &CratestackContext,
     job: &Job,
-    outcome: Result<(), String>,
+    outcome: Result<(), JobError>,
 ) -> Result<(), CratestackError> {
     let message = match outcome {
         Ok(()) => {
@@ -209,7 +229,7 @@ async fn apply_outcome(
                 Err(error) => swallow_stale_write(job, error),
             };
         }
-        Err(message) => message,
+        Err(error) => error.to_string(),
     };
     apply_failure(db, sys, job, message).await
 }

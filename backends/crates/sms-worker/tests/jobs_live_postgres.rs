@@ -30,7 +30,7 @@ use sms_api::schema::{
 };
 use sms_worker::WorkerContext;
 use sms_worker::jobs::expire_stale::ExpireStale;
-use sms_worker::jobs::{self, JobHandler, Registry};
+use sms_worker::jobs::{self, JobError, JobHandler, Registry};
 use sms_worker::scheduler::{self, RecurringJobSpec};
 
 /// #102, found live: `jobs::tick`/`scheduler::tick`'s own candidate
@@ -184,12 +184,16 @@ impl JobHandler for ScriptedHandler {
         _db: &Cratestack,
         _sys: &CratestackContext,
         _job: &Job,
-    ) -> Result<(), String> {
+    ) -> Result<(), JobError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.succeed {
             Ok(())
         } else {
-            Err("scripted failure".to_owned())
+            // `JobError::Other`: this handler's whole point is exercising
+            // the generic backoff/`dead` machinery with an arbitrary
+            // failure, independent of any real job's own database calls —
+            // see that variant's own doc for why it exists at all.
+            Err(JobError::Other("scripted failure".to_owned()))
         }
     }
 }
