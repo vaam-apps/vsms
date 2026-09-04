@@ -93,6 +93,7 @@ pub(crate) async fn fetch(
         .await
         .map_err(|error| ProviderError::Unavailable {
             message: format!("token request failed: {error}"),
+            source: Some(Box::new(error)),
         })?;
 
     let status = response.status();
@@ -101,6 +102,9 @@ pub(crate) async fn fetch(
         return Err(if status.is_server_error() {
             ProviderError::Unavailable {
                 message: format!("token endpoint returned {status}: {body}"),
+                // A real response was received and read as text — there is
+                // no leftover `reqwest::Error`/parse failure to chain here.
+                source: None,
             }
         } else {
             // A 4xx acquiring a token is almost always bad credentials, not
@@ -121,6 +125,7 @@ pub(crate) async fn fetch(
         .await
         .map_err(|error| ProviderError::Unavailable {
             message: format!("token response was not valid JSON: {error}"),
+            source: Some(Box::new(error)),
         })
 }
 

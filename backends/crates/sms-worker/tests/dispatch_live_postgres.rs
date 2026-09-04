@@ -1241,6 +1241,7 @@ async fn an_indeterminate_submit_never_fails_over_even_with_a_healthy_alternativ
     let (provider_a, a_calls) =
         AlwaysErr::new(fixture.a_key.clone(), || ProviderError::Indeterminate {
             message: "read timeout after the request was sent".to_owned(),
+            source: None,
         });
     let (provider_b, b_calls) = AlwaysOk::new(fixture.b_key.clone());
 
@@ -1409,6 +1410,7 @@ async fn an_open_circuit_routes_new_messages_to_the_alternative_instead_of_rejec
     let (provider_a, a_calls) =
         AlwaysErr::new(fixture.a_key.clone(), || ProviderError::Unavailable {
             message: "connection refused".to_owned(),
+            source: None,
         });
     let (provider_b, b_calls) = AlwaysOk::new(fixture.b_key.clone());
 

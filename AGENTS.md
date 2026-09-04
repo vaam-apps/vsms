@@ -299,7 +299,7 @@ Policy-only, no DDL: confirmed byte-identical, not assumed — `cratestack migra
 
 **No new external dependency.** Every crate `sms-provider-mtn` depends on (`sms-provider`, `async-trait`, `chrono`, `reqwest`, `rust_decimal`, `serde`, `serde_json`, `thiserror`, `tracing`; `sms-encoding`/`tokio`/`wiremock` as dev-dependencies) was already in the workspace graph via `sms-provider-orange-cm`. `cargo tree -i aws-lc-rs` still reports no match, `cargo deny check` stays clean, and `./ci/assert-no-raw-sqlx.sh` passes untouched — this crate makes no database call of any kind, matching `sms-provider-orange-cm`'s own R1-exempt status (never touches R1 in the first place: it's a pure HTTP adapter).
 
-**One real duplication worth naming rather than fixing here:** `classify_transport_error`'s connect-vs-read logic is now byte-for-byte the same reasoning in two crates (`sms-provider-orange-cm` and `sms-provider-mtn`), because it's provider-agnostic `reqwest` behaviour, not provider-specific. Not factored into a shared helper in `sms-provider` itself in this PR — two instances isn't yet a rule, and #61's scope is "build the adapter," not "refactor the trait crate." Worth doing the moment a third HTTP adapter (the config-driven `AggregatorHttpProvider` §6.2 also names, or SMPP's own connect/write distinction) needs the same logic a third time.
+**One real duplication worth naming rather than fixing here:** `classify_transport_error`'s connect-vs-read logic is now byte-for-byte the same reasoning in two crates (`sms-provider-orange-cm` and `sms-provider-mtn`), because it's provider-agnostic `reqwest` behaviour, not provider-specific. Not factored into a shared helper in `sms-provider` itself in this PR — two instances isn't yet a rule, and #61's scope is "build the adapter," not "refactor the trait crate." Worth doing the moment a third HTTP adapter (the config-driven `AggregatorHttpProvider` §6.2 also names, or SMPP's own connect/write distinction) needs the same logic a third time. **Superseded 2026-09-04: this duplication is gone.** A standalone cleanup (not a third adapter — the trigger this paragraph named never actually arrived) extracted both `classify_transport_error` and the provider-agnostic half of `classify_submit_error` into a new crate, `sms-provider-http`, rather than into `sms-provider` itself — see this file's own "Cleanup: one transport classifier for every HTTP adapter" section for the crate-placement reasoning and the guard-failure proof. This paragraph is kept as written because the "worth doing the moment a third HTTP adapter... needs the same logic a third time" framing turned out not to be the actual trigger; read it as the historical record of why the duplication was accepted at the time, not as still-current status.
 
 ## Milestone 5: the routing rules engine landed (#62)
 
@@ -1237,6 +1237,153 @@ cleanly against this file's own previously-recorded 212-total baseline.
 **Housekeeping**: this worktree's own `target/` (2.4GB, built once with `CARGO_TARGET_DIR` unset
 so `just client-check`'s hardcoded `target/debug/sms-gateway` path would resolve) was removed
 before finishing, per this file's own standing instruction for a non-default build location.
+
+## Cleanup: one transport classifier for every HTTP adapter
+
+The `#61` section above named this explicitly, before it was built: *"`classify_transport_error`'s
+connect-vs-read logic is now byte-for-byte the same reasoning in two crates... Worth doing the
+moment a third HTTP adapter... needs the same logic a third time."* No third adapter has landed —
+this is a standalone cleanup, not one riding along with a new adapter — but the duplication was
+already fully proven correct in both crates, so extracting it carries no behavioural risk and no
+reason to wait for a third instance to force the question.
+
+**`backends/crates/sms-provider-http` is a new crate, not a module inside `sms-provider`.**
+`sms-provider`'s own module doc is explicit: *"Pure, like `sms-encoding` and `sms-msisdn`: no
+`cratestack` dependency, no schema types"* — and the trait it defines is deliberately described as
+*"HTTP or SMPP"*, not HTTP-only. `reqwest` is an HTTP client; adding it to `sms-provider` itself
+would mean every future SMPP-only adapter (and every consumer of the trait, including `sms-worker`,
+which will eventually hold both kinds of adapter behind the same `Arc<dyn SmsProvider>` registry)
+pulls in an HTTP client and its TLS stack it has no use for. `reqwest::Error`-shaped classification
+is an HTTP-transport concern, not a generic provider-abstraction one — SMPP's own connect/write
+distinction (the other case `#61`'s own section names for "a third HTTP adapter... or SMPP's own
+connect/write distinction needs the same logic a third time") needs a *different* classifier over a
+*different* error type entirely, so it earns its own crate (`sms-provider-smpp`, when it exists)
+rather than a second function bolted onto this one. Two modules: `transport::classify_transport_error`
+(the connect-vs-read distinction from `.send()` failing outright, ported verbatim — predicate order,
+branches, and every word of the non-parameterised message text unchanged) and
+`submit_status::classify_common_submit_status` (the HTTP-status → `ProviderError` mapping that
+turned out, on inspection, to also be identical between both adapters for `429`/`5xx`/everything-else
+— see below).
+
+**What stays in `sms-provider` itself, and why it costs that crate nothing: `ProviderError::{Unavailable,Indeterminate}`
+gained a `source: Option<BoxDynError>` field** (`BoxDynError = Box<dyn std::error::Error + Send + Sync
++ 'static>`, `#[source]` via `thiserror`, `Display` text unchanged). Before this, both variants were
+constructed straight from a real `std::error::Error` — a `reqwest::Error` failing to connect, to
+finish a body, to parse a JSON response, a `url::ParseError` — and immediately flattened it into a
+`message: String`, discarding the original error and its own `source()` chain. `Permanent`/`Transient`/
+`Rejected` already had a structured surface (`code`/`retry_after` separate from `message`) and needed
+no change — this only touches the two variants that were genuinely stringly. `std::error::Error` is
+`core`/`std` only, so naming it in `sms-provider` costs nothing in dependencies; the crate's own "no
+cratestack, no schema types" purity claim stays true even though the error surface got strictly
+better. This is real, working machinery, not decorative: `error.rs`'s own new
+`source_reaches_the_real_cause_when_one_was_recorded` test asserts `std::error::Error::source()`
+genuinely returns the boxed cause for a real error and genuinely returns `None` when none was
+recorded.
+
+**Adding a field to two widely-constructed enum variants touched every construction site in the
+workspace, and the compiler found every one of them** — the same mechanical-but-real blast radius
+this file's own "Cool*/CratestackError rename" section already normalises for a widely-used type.
+**Re-measured after review** (the first pass at this paragraph said "42 occurrences across 6
+files," which turned out to be raw `grep -c` hits for `ProviderError::(Unavailable|Indeterminate)
+\{` — a count that doesn't distinguish a real construction from a `{ .. }` pattern match or a
+named-field match-arm destructuring, so it overcounted): by the precise rule "a line that builds a
+`ProviderError::Unavailable`/`Indeterminate` value, excluding any `{ .. }` match and any
+named-field destructuring arm," the pre-cleanup baseline (`sms-provider-orange-cm`'s `lib.rs`/
+`token.rs`, `sms-provider-mtn/src/lib.rs`, `sms-provider/src/error.rs`'s own tests, `sms-worker`'s
+`dispatch.rs` and `tests/dispatch_live_postgres.rs` — 6 files) had **29 construction sites**. Of
+those: **21 were edited in place** (`source:` added, same site, same file); **6 were deleted
+outright** — each adapter's own `classify_transport_error` (3 constructions apiece) collapsed into
+one shared implementation of 3 constructions in `sms-provider-http/src/transport.rs`, a real 6→3
+deduplication, not a move; **2 more** (one `5xx` branch per adapter) collapsed the same way into
+`submit_status.rs`'s single shared construction. The final code has **27 construction sites across
+8 files** carrying an explicit `source:` field: the 21 edited-in-place, the 3 in `transport.rs`,
+the 1 in `submit_status.rs`, and 2 new ones in `error.rs`'s own new
+`source_reaches_the_real_cause_when_one_was_recorded` test (genuinely new coverage, not a
+consolidation). Separately, **2 match arms** in `dispatch.rs::terminal_outcome` needed `, ..` added
+to their patterns (named-field destructuring without a rest pattern is exactly what a new field
+breaks); every construction site needed either `source: Some(Box::new(error))` (a real error object
+existed — a `reqwest::Error`, a `url::ParseError`) or `source: None` (a status-code-and-body response,
+or a `Url::path_segments_mut()` failure that reports `()`, has nothing real to chain). `cargo check`
+turned every missed site into a compile error naming the exact field and line — the same "the
+compiler cannot see this gap the same way it cannot see a misspelled `@@allow` action" caveat this
+file already gives for `if_match` does *not* apply here: this one, the compiler catches completely.
+
+**`classify_submit_error`'s HTTP-status mapping turned out to be more duplicated than the connect/read
+classifier alone — `429` → `Transient`, `5xx` → `Unavailable`, everything else → `Rejected` were
+byte-for-byte identical logic in both crates, differing only in the retry delay (1s Orange, 5s MTN —
+both negotiated commercial facts, now parameters) and the provider noun in the `5xx` message
+(`"orange"`/`"aggregator"`, both lowercase, preserved verbatim rather than normalised).** Extracted as
+`classify_common_submit_status`. What stayed local, per this cleanup's own instruction to extract only
+what's genuinely provider-agnostic: MTN's `401`/`403` → `Permanent` (the API key itself is bad — Orange's
+submit endpoint has no equivalent, since it authenticates via a separately-fetched bearer token, so a
+`401` there would fall through to the shared `Rejected` default exactly as it always has); Orange's own
+already-documented inability to distinguish an unapproved-sender `400` from any other `400`. Both
+adapters' own `classify_submit_error` are now thin wrappers — Orange's has no special case at all
+before delegating; MTN's checks `401`/`403` first, then delegates.
+
+**Found while reviewing `classify_submit_error` for the DRY-up, not changed:** `sms-provider-mtn`'s
+own pre-extraction doc comment claimed the `429` retry delay was *"parsed opportunistically"* from a
+`Retry-After` header — it never was; the implementation has always been the fixed 5s constant. Another
+instance of this file's own repeated "documentation asserts something the code does not do" pattern,
+found this time in a crate's own doc comment rather than this file. Fixed at the doc (it no longer
+claims header parsing), not the code — a real header-parsing implementation is a behavioural change
+this cleanup's own scope doesn't include, and is recorded here so it isn't silently re-discovered as
+a "bug" later without this context.
+
+**The provider-noun parameterisation preserves message text exactly, not approximately.** Orange's
+`Indeterminate` message always said `"Orange may have received it"` (capital O); MTN's always said
+`"the aggregator may have received it"`. The shared function takes `provider: &str` and each adapter
+passes its own noun verbatim (`"Orange"`, `"the aggregator"`) — a deliberate case/article mismatch
+between the two crates, preserved rather than normalised, since normalising it would be exactly the
+silent text change this cleanup was told not to make. Both adapters' own tests assert the substituted
+text contains the original phrase verbatim, not just that the variant matches.
+
+**Guard-failure proof, run for real against the shared function and both adapters' own integration
+tests, output captured, then reverted.** The two branches of `transport::classify_transport_error`
+were swapped (a connect refusal reporting `Indeterminate`, a post-connect timeout/body error reporting
+`Unavailable` — the exact regression #119 exists to prevent) and all three crates' relevant tests were
+re-run:
+
+```
+sms-provider-http:  3 passed; 3 failed
+  transport::tests::a_connect_refusal_is_still_unavailable
+    assertion failed: matches!(classified, ProviderError::Unavailable { .. })
+  transport::tests::a_post_connect_timeout_is_indeterminate
+    expected Indeterminate, got Unavailable { message: "...the aggregator may have received it...", .. }
+  transport::tests::connect_and_post_connect_failures_classify_to_different_variants
+    assertion failed: matches!(classify_transport_error(connect_error, "x"), ProviderError::Unavailable { .. })
+
+sms-provider-orange-cm: 25 passed; 2 failed
+  tests::a_connect_refusal_is_still_unavailable
+    assertion failed: matches!(classify_transport_error(error, PROVIDER_NOUN_INDETERMINATE), ProviderError::Unavailable { .. })
+  tests::a_post_connect_timeout_is_indeterminate
+    expected Indeterminate, got Unavailable { message: "...Orange may have received it...", .. }
+
+sms-provider-mtn: 20 passed; 2 failed
+  tests::a_connect_refusal_is_still_unavailable
+    assertion failed: matches!(classify_transport_error(error, PROVIDER_NOUN_INDETERMINATE), ProviderError::Unavailable { .. })
+  tests::a_post_connect_timeout_is_indeterminate
+    expected Indeterminate, got Unavailable { message: "...the aggregator may have received it...", .. }
+```
+
+Every adapter's own guard test still exists (kept, not replaced by the shared crate's copy) precisely
+so this sabotage proves the integration point — the adapter's own import and provider noun — not just
+the classifier in isolation. Reverted; all four crates' tests (11 + 6 + 22 + 27 = 66) passed again, and
+`grep -rn SABOTAGE` confirmed nothing was left behind.
+
+**Live consumers re-verified, not just the unit-level guard.** `sms-worker`'s `dispatch_live_postgres`
+(11 tests, including `an_indeterminate_submit_lands_in_uncertain_and_is_never_resubmitted` and
+`an_open_circuit_routes_new_messages_to_the_alternative_instead_of_rejecting`, both directly downstream
+of this classification) and `kill_orange_gate_live_postgres`'s own real-`ECONNREFUSED` gate (#65) both
+pass unchanged against the new shared crate.
+
+**Verification, in the multipass VM (`+1.98.0`, matching the workspace's declared floor), never on
+the host.** `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` both
+clean. `cargo test --workspace` (in-process, 15 crates' worth of `test result: ok`, zero failures).
+`cargo test -p sms-worker --test dispatch_live_postgres --test kill_orange_gate_live_postgres --
+--ignored --test-threads=1` — 12 passed, 0 failed. `cargo tree -i aws-lc-rs` — no match, unchanged.
+`cargo xtask no-raw-sqlx` / `docs-drift` / `r6` all clean (R6's own report is the pre-existing
+`useState` note across 10 unrelated view files, untouched by this PR).
 
 ## cratestack bumped to `=0.8.10` (from `=0.8.3`)
 

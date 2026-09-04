@@ -5,7 +5,7 @@ mod error;
 mod types;
 
 pub use capabilities::Capabilities;
-pub use error::{ProviderError, RoutingConsequence};
+pub use error::{BoxDynError, ProviderError, RoutingConsequence};
 pub use types::{DeliveryOutcome, DeliveryUpdate, Health, RawCallback, SubmitAck, SubmitRequest};
 
 use async_trait::async_trait;

@@ -20,3 +20,11 @@ one step further still — §6.2 doesn't mention it at all; it's grounded
 in the public `OneAPI` SMS Messaging REST binding this whole shape
 belongs to, not this repo's own design doc. The DLR callback shape
 ([`dlr`]) is the same distance from §6.2 — see that module's doc.
+
+The connect-vs-read transport classification and the provider-agnostic
+half of the HTTP-status → `ProviderError` mapping live in
+`sms-provider-http` now, not in this crate — this crate's own
+`classify_transport_error`/`classify_submit_error` are thin wrappers
+supplying Orange's own provider noun and rate-limit delay. See that
+crate's module doc for why the DRY-up landed in a sibling crate rather
+than a module here or in `sms-provider` itself.

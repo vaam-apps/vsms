@@ -13,6 +13,13 @@ members = [
   "backends/crates/sms-auth",
   "backends/crates/sms-worker",
   "backends/crates/sms-provider",
+  # Cleanup PR B: the connect-vs-read transport classification and the
+  # provider-agnostic half of the HTTP-status mapping, factored out of
+  # sms-provider-orange-cm and sms-provider-mtn once a second adapter
+  # proved the duplication AGENTS.md's #61 section already named was real
+  # — see this crate's own module doc for why it isn't a module inside
+  # sms-provider itself.
+  "backends/crates/sms-provider-http",
   "backends/crates/sms-provider-orange-cm",
   "backends/crates/sms-provider-mtn",
   "backends/crates/sms-routing",
@@ -99,6 +106,10 @@ sms-api = { path = "./backends/crates/sms-api" }
 sms-auth = { path = "./backends/crates/sms-auth" }
 sms-worker = { path = "./backends/crates/sms-worker" }
 sms-provider = { path = "./backends/crates/sms-provider" }
+# Cleanup PR B: the connect-vs-read transport classifier and the
+# provider-agnostic half of the HTTP-status mapping, shared by every HTTP
+# adapter below rather than duplicated per crate — see its own module doc.
+sms-provider-http = { path = "./backends/crates/sms-provider-http" }
 sms-provider-orange-cm = { path = "./backends/crates/sms-provider-orange-cm" }
 # #61: MTN Cameroon capacity bought through a licensed aggregator, not a
 # direct interconnect — see the crate's own module doc for exactly which

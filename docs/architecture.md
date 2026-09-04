@@ -2082,7 +2082,7 @@ pub enum ProviderError {
 }
 ```
 
-The error taxonomy is the important part. Most gateway failover bugs are really error-classification bugs: a provider returns a 400 that actually means "your sender ID isn't approved" and the router faithfully retries it on three more providers, burning credit each time. Six variants, each with exactly one routing consequence — five of the six map onto §7.4's `routed` failure edges the way you'd expect; `Indeterminate` is the odd one out, because none of "retry," "fail over," or "fail the message" is safe when the provider might have already sent the SMS. See `backends/crates/sms-provider/src/error.rs` for the full reasoning and `backends/crates/sms-provider-orange-cm/src/lib.rs`'s `classify_transport_error` for how a real transport failure gets sorted into `Unavailable` vs `Indeterminate`.
+The error taxonomy is the important part. Most gateway failover bugs are really error-classification bugs: a provider returns a 400 that actually means "your sender ID isn't approved" and the router faithfully retries it on three more providers, burning credit each time. Six variants, each with exactly one routing consequence — five of the six map onto §7.4's `routed` failure edges the way you'd expect; `Indeterminate` is the odd one out, because none of "retry," "fail over," or "fail the message" is safe when the provider might have already sent the SMS. See `backends/crates/sms-provider/src/error.rs` for the full reasoning and `backends/crates/sms-provider-http/src/transport.rs`'s `classify_transport_error` — shared by every HTTP adapter, not duplicated per crate — for how a real transport failure gets sorted into `Unavailable` vs `Indeterminate`.
 
 ### 6.2 Adapters
 
@@ -2765,6 +2765,7 @@ vsms/
 │   ├── sms-encoding/     # GSM-7/UCS-2 — build this first
 │   ├── sms-msisdn/       # E.164 +237, operator inference
 │   ├── sms-provider/     # SmsProvider trait, Capabilities, ProviderError
+│   ├── sms-provider-http/          # shared reqwest transport/status classification for every HTTP adapter
 │   ├── sms-provider-orange-cm/
 │   ├── sms-provider-mtn/
 │   ├── sms-provider-aggregator/
