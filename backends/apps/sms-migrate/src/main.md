@@ -21,8 +21,7 @@ only reads flat files directly inside one directory, named
 `<VERSION>_<DESCRIPTION>.sql`, and silently skips anything that isn't a
 file — confirmed by reading that resolver's own source, not assumed.
 It cannot see this repo's `<name>/up.sql` layout at all, and that
-layout isn't ours to change: `cratestack migrate diff --out-dir
-backends/migrations/postgres --name <name>` is what produces it, and
+layout isn't ours to change: `cratestack migrate diff --out-dir backends/migrations --backend postgres --name <name>` is what produces it, and
 `AGENTS.md`'s "never hand-edit" rule means the fix is not reshaping
 generated output to fit a library's convention. Instead this ports
 `deploy/migrate.sql`'s own `schema_migrations` bookkeeping logic

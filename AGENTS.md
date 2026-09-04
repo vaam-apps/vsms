@@ -1587,7 +1587,9 @@ dropdb vsms_check
 # an installed CLI newer than the pin emits DDL the pinned library never does,
 # and a policy-only @@allow change must not be regenerated at all
 cratestack migrate diff --schema schemas/vsms.cstack \
-  --out-dir backends/migrations/postgres --backend postgres --name <change>
+  --out-dir backends/migrations --backend postgres --name <change>
+# (the CLI nests its output under <out-dir>/postgres/<timestamp>_<name>/;
+#  copy {up,up.pre,down}.sql over 0001_init/ — see "Regenerating migrations")
 
 # after editing §2.10 of the design doc
 cargo xtask bootstrap-sql backends/migrations/postgres/0002_bootstrap/up.sql

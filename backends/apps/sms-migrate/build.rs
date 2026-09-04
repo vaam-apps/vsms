@@ -12,8 +12,8 @@
 //! silently skips anything that isn't a file — so it cannot see this
 //! repo's `<name>/up.sql` layout at all (confirmed by reading that
 //! resolver's source, not assumed). That layout is fixed by
-//! `cratestack migrate diff --out-dir backends/migrations/postgres --name
-//! <name>`'s own output shape and by `AGENTS.md`'s "never hand-edit"
+//! `cratestack migrate diff --out-dir backends/migrations --backend postgres
+//! --name <name>`'s own output shape and by `AGENTS.md`'s "never hand-edit"
 //! rule, so the fix is a small build script that reads the same directory
 //! shape our own tooling already produces, not a reshape to fit sqlx's
 //! convention.
