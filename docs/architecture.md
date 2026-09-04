@@ -2035,7 +2035,7 @@ Access token 15 minutes; `admin`'s own session cookie caps a human session at 8 
 - **Disable audience validation** for service-account tokens, since `aud == sub == client_id`.
 - `Jwk` carries only `kty/alg/kid/n/e` — **RSA only**.
 
-Pin `authkestra` to `=0.2.3`.
+Pin `authkestra` to the exact version in the root `Cargo.toml` (currently `=0.8.0` — see AGENTS.md's own authkestra-bump sections for the version history; this line used to hardcode `=0.2.3` as a live instruction, which drifted the moment the pin first moved).
 
 ---
 
@@ -2774,7 +2774,7 @@ vsms/
 │   │   ├── src/procedures.rs       # ProcedureRegistry
 │   │   ├── src/router.rs           # generated router assembly
 │   │   └── src/cache.rs            # R1 exception: LISTEN for opt-out invalidation
-│   ├── sms-auth/         # authkestra-op =0.2.3 + delegate-backed ClientStore
+│   ├── sms-auth/         # authkestra-op, pinned to the root Cargo.toml's exact version (currently =0.8.0) + delegate-backed ClientStore
 │   └── sms-worker/       # the worker as a library; the binary is backends/apps/sms-worker
 │       ├── src/lease.rs            # R1 exception: pg_try_advisory_lock
 │       ├── src/notify.rs           # R1 exception: NOTIFY

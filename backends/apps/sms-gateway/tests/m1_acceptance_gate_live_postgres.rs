@@ -425,6 +425,23 @@ fn sign_developer_stand_in_token(
     // public constructor leaves open, and it produces the real `Claims`
     // type `GatewayAuth` will decode this signed token back into, not a
     // local stand-in shape that could drift from it.
+    //
+    // Same silent-field-loss shape `login.rs::build_authorize_request`'s
+    // own doc comment names, worth repeating here rather than assuming:
+    // `Claims` carries no `#[serde(deny_unknown_fields)]`, `iss`/`aud`/
+    // `nbf`/`jti`/`scope` are all `Option`, and `extra` is
+    // `#[serde(flatten)]` — a future authkestra rename of any of those
+    // named fields wouldn't fail this `from_value` call at all, it would
+    // silently produce `None` for the renamed field and stash the
+    // now-unrecognised original key inside `extra` instead, `Ok`. Lower
+    // stakes here than in production code (`sign_developer_stand_in_token`
+    // is test-only, building a fixture whose shape this test itself
+    // controls completely, and every field this test's own assertions
+    // actually depend on — `perms`, via `extra`'s flatten catch-all, which
+    // ignores field renames entirely — is unaffected either way), so this
+    // stays `.expect(...)` rather than a graceful `Result` the way
+    // `login.rs`'s real production version is. Named here rather than
+    // silently relied on.
     let mut claims_value = serde_json::json!({
         "iss": issuer,
         "sub": sub,

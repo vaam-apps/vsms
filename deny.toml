@@ -33,7 +33,9 @@ allow = [
 # 0.8.0 source directly, not re-stated from memory):
 #
 #   - `rsa` enters through `authkestra-engine 0.8.0`'s own direct dependency
-#     (`rsa = "0.9.6"`, pinned in authkestra-engine's own Cargo.toml) and
+#     (`rsa = "0.9.6"` in authkestra-engine's own Cargo.toml — a caret
+#     requirement, not a pin; resolves to `rsa 0.9.10` in this workspace's
+#     own Cargo.lock, verified rather than assumed) and
 #     transitively through `jsonwebtoken 11.0.0`'s `rust_crypto` backend —
 #     both reached via `authkestra-op`/`authkestra-axum`/`authkestra-resource`,
 #     which all depend on `authkestra-engine` as of 0.8.0's restructuring

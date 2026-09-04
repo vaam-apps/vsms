@@ -169,9 +169,24 @@ authkestra-resource = { version = "=0.8.0", default-features = false, features =
 # instead of authkestra-axum's own session/guard machinery. Same
 # `rustls-no-provider` reasoning as authkestra-op above.
 authkestra-axum = { version = "=0.8.0", default-features = false, features = ["op", "rustls-no-provider"] }
-# RSA signing keys for the OP (#20) — same rsa/rand versions authkestra-op
-# itself resolves to (verified against Cargo.lock), so this doesn't grow a
-# second copy of either crate's dependency tree.
+# RSA signing keys for the OP (#20). `rsa` genuinely shares one resolved
+# copy with authkestra-op's own dependency (both are caret `0.9.x`
+# requirements — this pin's `0.9` and authkestra-engine 0.8.0's own
+# `rsa = "0.9.6"` — semver-unified by Cargo into the single `rsa 0.9.10`
+# entry in this workspace's own Cargo.lock, confirmed by grep, not
+# assumed). `rand` does not: this pin resolves to `rand 0.8.7`, while
+# authkestra-op/-engine 0.8.0 resolve to `rand 0.9.5` (their own
+# `[dependencies.rand] version = "0.9.2"`) — two real, separate copies in
+# this dependency tree, not the "same versions... doesn't grow a second
+# copy" this comment used to claim for both crates alike (true once, back
+# when authkestra was on an 0.8-compatible rand itself; stale since the
+# authkestra 0.8.0 bump moved only their pin, not this one). Moving this
+# pin to `"0.9"` to collapse the duplicate is a real, plausible follow-up —
+# not done here, since rand 0.9's own breaking `RngCore`/`CryptoRng`
+# changes need their own verification against `rsa` 0.9.10's actual trait
+# bounds before trusting `RsaPrivateKey::new(&mut OsRng, ...)` still
+# compiles unchanged, and a dependency-bump PR is not where that
+# verification belongs.
 rsa = "0.9"
 rand = "0.8"
 # #194: sms-auth::login's password hashing for human console logins — the
