@@ -9,6 +9,7 @@ use sms_api::schema::Cratestack;
 use sms_provider::SmsProvider;
 use tokio_util::sync::CancellationToken;
 
+pub mod breaker;
 pub mod claim;
 pub mod dispatch;
 pub mod drain;

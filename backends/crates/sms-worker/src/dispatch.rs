@@ -13,6 +13,7 @@ use sms_encoding::SmsEncoding;
 use sms_provider::{ProviderError, RoutingConsequence, SmsProvider, SubmitRequest};
 use tracing::{error, info, warn};
 
+use crate::breaker::{self, BreakerPolicy};
 use crate::claim::claim_batch;
 use crate::{ProviderRegistry, WorkerContext};
 
@@ -33,13 +34,15 @@ const UNAVAILABLE_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_FAILOVER_HOPS: usize = 2;
 
 /// §6.3, verbatim: "five consecutive `Unavailable` opens it for 60s."
-const PROVIDER_CIRCUIT_FAILURE_THRESHOLD: i64 = 5;
-
-/// §6.3, verbatim: "opens it for 60s." Unlike `hooks::CIRCUIT_OPEN_DURATION`
-/// (webhook endpoints, 15 minutes) — different subsystem, different
-/// spec'd number, same *shape* of breaker. See this module's own doc on
-/// why the shape is shared but the constants are not.
-const PROVIDER_CIRCUIT_OPEN_DURATION: chrono::Duration = chrono::Duration::seconds(60);
+/// Unlike `hooks::ENDPOINT_BREAKER` (webhook endpoints, 20 failures /
+/// 15 minutes) — different subsystem, different spec'd numbers, same
+/// *shape* of breaker; the shared decision itself lives in
+/// `crate::breaker`, see that module's own doc for why the numbers stay
+/// here rather than there.
+const PROVIDER_BREAKER: BreakerPolicy = BreakerPolicy {
+    failure_threshold: 5,
+    open_duration: chrono::Duration::seconds(60),
+};
 
 /// The `system` context this role does all its work under — `kind` and
 /// `role` both set, per the trap `#21`/`Principal::into_context`'s own doc
@@ -650,10 +653,11 @@ async fn write_transition(
 }
 
 /// §6.3: "five consecutive `Unavailable` opens it for 60s." Same shape as
-/// `hooks::record_endpoint_failure` — see this module's own doc for why a
-/// second breaker with different semantics here would be worse than a
-/// consistent one, and why the constants still differ (a different
-/// spec'd subsystem, not an inconsistency). Only ever called for
+/// `hooks::record_endpoint_failure` — the decision itself is
+/// `breaker::on_failure`, shared with that function; see `breaker.md` for
+/// why a second, independently-derived breaker here would be worse than a
+/// shared one, and why the constants still differ (a different spec'd
+/// subsystem, not an inconsistency). Only ever called for
 /// `RoutingConsequence::OpenCircuitAndTryNextRoute` (i.e. `Unavailable`) —
 /// never `Permanent`/`Transient`/anything else, matching
 /// `backends/crates/sms-provider/src/error.rs`'s own
@@ -670,19 +674,17 @@ async fn record_provider_failure(
     provider: &Provider,
 ) {
     let now = chrono::Utc::now();
-    let consecutive = provider.consecutiveFailures + 1;
-    let opening_circuit = consecutive >= PROVIDER_CIRCUIT_FAILURE_THRESHOLD;
-    let next_consecutive = if opening_circuit { 0 } else { consecutive };
+    let decision = breaker::on_failure(&PROVIDER_BREAKER, provider.consecutiveFailures, now);
 
     let mut set = UpdateProviderInput {
-        consecutiveFailures: Some(next_consecutive),
+        consecutiveFailures: Some(decision.consecutive_failures),
         ..Default::default()
     };
-    if opening_circuit {
-        set.circuitOpenUntil = Some(Some(now + PROVIDER_CIRCUIT_OPEN_DURATION));
+    if decision.opened_circuit() {
+        set.circuitOpenUntil = Some(decision.circuit_open_until);
         warn!(
             provider_id = %provider.id,
-            threshold = PROVIDER_CIRCUIT_FAILURE_THRESHOLD,
+            threshold = PROVIDER_BREAKER.failure_threshold,
             "provider circuit breaker opened after consecutive Unavailable failures"
         );
     }
@@ -709,7 +711,7 @@ async fn reset_provider_failures(
     sys: &CratestackContext,
     provider: &Provider,
 ) {
-    if provider.consecutiveFailures == 0 && provider.circuitOpenUntil.is_none() {
+    if !breaker::needs_reset(provider.consecutiveFailures, provider.circuitOpenUntil) {
         return;
     }
     if let Err(error) = ctx
