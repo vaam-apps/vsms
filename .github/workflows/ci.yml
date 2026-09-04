@@ -190,6 +190,20 @@ jobs:
           cargo clippy --all-targets -- -D warnings
         working-directory: examples/rust
 
+      # deploy/backup-tool (vsms-backup) is also excluded from the root
+      # workspace (see its own Cargo.toml comment) and, like the SDK and
+      # examples above it, needs its own explicit check/clippy/test here —
+      # until this step existed, `cargo deny` (the `deny` job, below) was
+      # the *only* CI coverage this crate had: it compiles, lints, and its
+      # own tests (including manifest.rs's wire-shape pin) had never once
+      # run in CI, only ever by hand.
+      - name: Backup tool (deploy/backup-tool) — cargo check, clippy, and test
+        run: |
+          cargo check --all-targets
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+        working-directory: deploy/backup-tool
+
   deny:
     name: cargo deny (advisories, bans, licenses, sources)
     runs-on: ubuntu-latest

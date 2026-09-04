@@ -564,7 +564,7 @@ ci-build:
 # reuse the named volumes (cargo registry, pnpm store, target dir) and are
 # much faster. `--build` keeps the image current with ci/runner/Dockerfile
 # without needing a separate `ci-build` step first.
-# Run the entire CI gate (all 22 steps) inside the container.
+# Run the entire CI gate (all 23 steps) inside the container.
 ci:
 	#!/usr/bin/env bash
 	set -euo pipefail
@@ -581,8 +581,8 @@ ci:
 	docker compose -f compose.test.yaml run --build --rm runner just ci-inner
 
 # The fast-iteration subset: everything in `ci` except the live-Postgres
-# suites (steps 13, the slowest single step by a wide margin) and the JS
-# typecheck+build+test (steps 17-18, skipped together — turbo.json's own
+# suites (step 14, the slowest single step by a wide margin) and the JS
+# typecheck+build+test (steps 18-19, skipped together — turbo.json's own
 # "test" task depends on "build", so skipping only the build step saves
 # nothing; `pnpm turbo run test` would just trigger the identical build as
 # one of its own dependency tasks). Good for "did I break something
@@ -625,17 +625,17 @@ ci-clean:
 # The actual gate script, run INSIDE the container by `ci`/`ci-quick` above
 # — never call this directly on a bare host, it assumes the runner image's
 # toolchain and `VSMS_TEST_DATABASE_URL`. Set VSMS_CI_QUICK=1 (as `ci-quick`
-# does) to skip the live-Postgres suites (step 13) and the JS
-# typecheck+build+test steps (17-18, together — see `ci-quick`'s own
+# does) to skip the live-Postgres suites (step 14) and the JS
+# typecheck+build+test steps (18-19, together — see `ci-quick`'s own
 # comment for why splitting them saves nothing).
-# The 22-step gate script itself — run inside the container, not directly.
+# The 23-step gate script itself — run inside the container, not directly.
 ci-inner:
 	#!/usr/bin/env bash
 	set -euo pipefail
 	step() { echo; echo "=== STEP $1/$2: $3 ==="; }
 	quick="${VSMS_CI_QUICK:-}"
 
-	step 1 22 "cratestack CLI matches the pin"
+	step 1 23 "cratestack CLI matches the pin"
 	pinned="$(cargo xtask cratestack-pin)"
 	installed="$(cratestack --version | awk '{print $2}')"
 	if [ "$pinned" != "$installed" ]; then
@@ -645,16 +645,16 @@ ci-inner:
 	fi
 	echo "cratestack $installed matches the pin"
 
-	step 2 22 "lint (fmt --check, clippy -D warnings)"
+	step 2 23 "lint (fmt --check, clippy -D warnings)"
 	just lint
 
-	step 3 22 "cargo test --workspace (unit + in-process)"
+	step 3 23 "cargo test --workspace (unit + in-process)"
 	{{_cargo}} test --workspace
 
-	step 4 22 "Cargo.lock is up to date"
+	step 4 23 "Cargo.lock is up to date"
 	cargo metadata --locked --format-version 1 > /dev/null
 
-	step 5 22 "Rust SDK (vsms-sdk-rust) — check, clippy, test, aws-lc-rs absence, publish dry-run"
+	step 5 23 "Rust SDK (vsms-sdk-rust) — check, clippy, test, aws-lc-rs absence, publish dry-run"
 	# --allow-dirty: this recipe runs against whatever the caller's actual
 	# working tree looks like, which — being a local run, not a CI
 	# checkout — is routinely mid-PR-review or otherwise not committed.
@@ -668,13 +668,16 @@ ci-inner:
 	  && ( cargo tree -i aws-lc-rs && exit 1 || true ) \
 	  && cargo publish --dry-run --allow-dirty )
 
-	step 6 22 "Examples (Rust) — check, clippy"
+	step 6 23 "Examples (Rust) — check, clippy"
 	( cd examples/rust && cargo check --all-targets && cargo clippy --all-targets -- -D warnings )
 
-	step 7 22 "cargo deny — advisories, bans, licenses, sources (all five manifests)"
+	step 7 23 "Backup tool (deploy/backup-tool) — check, clippy, test"
+	( cd deploy/backup-tool && cargo check --all-targets && cargo clippy --all-targets -- -D warnings && cargo test )
+
+	step 8 23 "cargo deny — advisories, bans, licenses, sources (all five manifests)"
 	just deny
 
-	step 8 22 "R1/R2/R6 and drift guards (cargo xtask)"
+	step 9 23 "R1/R2/R6 and drift guards (cargo xtask)"
 	{{_cargo}} xtask no-raw-sqlx
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask sdk-schema-check
@@ -684,13 +687,13 @@ ci-inner:
 	{{_cargo}} xtask r6
 	{{_cargo}} xtask node-sdk-types-check
 
-	step 9 22 "0001_init matches \`cratestack migrate diff\`"
+	step 10 23 "0001_init matches \`cratestack migrate diff\`"
 	{{_cargo}} xtask migrations-current
 
-	step 10 22 "0002_bootstrap matches the design doc"
+	step 11 23 "0002_bootstrap matches the design doc"
 	{{_cargo}} xtask bootstrap-sql-check
 
-	step 11 22 "Apply migrations to a fresh scratch database, then the state-machine SQL assertions"
+	step 12 23 "Apply migrations to a fresh scratch database, then the state-machine SQL assertions"
 	# A fresh, per-run scratch database, not the persistent `vsms_ci_pgdata`
 	# volume's own `vsms` database — found in review, and real: that volume
 	# survives across `just ci` runs (it's the whole point of caching it),
@@ -716,42 +719,42 @@ ci-inner:
 	cleanup_scratch_db
 	trap - EXIT
 
-	step 12 22 "Sample Node receiver's dependencies (for the live gate suite)"
+	step 13 23 "Sample Node receiver's dependencies (for the live gate suite)"
 	( cd examples/node/webhook-receiver && pnpm install --ignore-workspace --frozen-lockfile )
 
 	if [ -n "$quick" ]; then
-		echo; echo "VSMS_CI_QUICK set — skipping the live-Postgres suites (step 13)."
+		echo; echo "VSMS_CI_QUICK set — skipping the live-Postgres suites (step 14)."
 	else
-		step 13 22 "Live-Postgres suites (sms-test-support, against this container's own postgres)"
+		step 14 23 "Live-Postgres suites (sms-test-support, against this container's own postgres)"
 		{{_cargo}} test --workspace --no-fail-fast -- --ignored
 	fi
 
-	step 14 22 "pnpm install (workspace)"
+	step 15 23 "pnpm install (workspace)"
 	pnpm install --frozen-lockfile
 
-	step 15 22 "Biome (format + lint)"
+	step 16 23 "Biome (format + lint)"
 	pnpm biome ci .
 
-	step 16 22 "Generate the client and check its routes against the server"
+	step 17 23 "Generate the client and check its routes against the server"
 	just client-check
 
-	# Steps 17 and 18 are skipped together under VSMS_CI_QUICK, not
+	# Steps 18 and 19 are skipped together under VSMS_CI_QUICK, not
 	# independently — found in review: turbo.json's own "test" task
-	# `dependsOn: ["build"]`, so skipping only step 17 saves nothing at
+	# `dependsOn: ["build"]`, so skipping only step 18 saves nothing at
 	# all. `pnpm turbo run test` would simply trigger the identical build
 	# as one of its own dependency tasks, just folded silently into step
-	# 18's own timing instead of appearing as step 17's.
+	# 19's own timing instead of appearing as step 18's.
 	if [ -n "$quick" ]; then
-		echo; echo "VSMS_CI_QUICK set — skipping JS typecheck+build and tests (steps 17-18)."
+		echo; echo "VSMS_CI_QUICK set — skipping JS typecheck+build and tests (steps 18-19)."
 	else
-		step 17 22 "Typecheck and build (pnpm turbo)"
+		step 18 23 "Typecheck and build (pnpm turbo)"
 		pnpm turbo run typecheck build
 
-		step 18 22 "Tests (pnpm turbo)"
+		step 19 23 "Tests (pnpm turbo)"
 		pnpm turbo run test
 	fi
 
-	step 19 22 "Sample Node receiver — cross-language signature vectors"
+	step 20 23 "Sample Node receiver — cross-language signature vectors"
 	( cd examples/node/webhook-receiver && node --test )
 
 	# examples/node/demo-app carries a byte-for-byte copy of
@@ -764,15 +767,15 @@ ci-inner:
 	# check resolves against the ROOT workspace lockfile, which knows
 	# nothing about this standalone package, and fails with
 	# ERR_PNPM_OUTDATED_LOCKFILE.
-	step 20 22 "Demo app — typecheck and cross-language signature vectors"
+	step 21 23 "Demo app — typecheck and cross-language signature vectors"
 	( cd examples/node/demo-app && pnpm install --ignore-workspace --frozen-lockfile && node_modules/.bin/tsc --noEmit && node --test )
 
-	step 21 22 "Official Node SDK (@vymalo/vsms-node) — build, typecheck, test, pack dry-run"
+	step 22 23 "Official Node SDK (@vymalo/vsms-node) — build, typecheck, test, pack dry-run"
 	pnpm --filter @vymalo/vsms-node run build
 	pnpm --filter @vymalo/vsms-node run typecheck
 	( cd sdks/node/vsms-sdk-node && node --test && npm pack --dry-run )
 
-	step 22 22 "Mermaid diagrams parse (no browser)"
+	step 23 23 "Mermaid diagrams parse (no browser)"
 	( cd ci/mermaid-parse && npm ci )
 	node ci/mermaid-parse/parse.mjs docs/architecture.md
 	node ci/mermaid-parse/parse.mjs docs/roadmap.md
