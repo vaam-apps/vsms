@@ -32,6 +32,23 @@ deploy/secrets/*
 !deploy/secrets/rclone.conf.example
 .DS_Store
 node_modules/
+# pnpm's own content-addressable store. Normally global
+# (~/.local/share/pnpm/store), never repo-relative — but pnpm falls back to
+# a project-local `.pnpm-store` at the workspace root whenever the repo and
+# the home directory it would otherwise use turn out to be on different
+# filesystems (hard links can't cross a device boundary), which is exactly
+# what `compose.test.yaml`'s separate bind mount (`/repo`) and named volume
+# (`/home/ci`) produce for `just ci`. Found live: `cargo xtask docs-drift`
+# scans `git ls-files --others --exclude-standard`, which doesn't skip an
+# untracked directory unless `.gitignore` actually covers it — without this
+# entry, every doc-shaped path fragment inside every downloaded package's
+# own README (a "docs" directory holding, say, an api reference page or a
+# readme copy) gets scanned as if it were this repo's own broken reference.
+# (Deliberately not written as a literal `docs/…`-shaped example path in
+# this comment: `cargo xtask docs-drift` itself pattern-matches exactly
+# that shape in every tracked file, .gitignore included, and would flag
+# its own illustration here as a second broken reference.)
+/.pnpm-store/
 /pgdata
 .next/
 .turbo/

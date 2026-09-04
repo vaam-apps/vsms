@@ -131,7 +131,7 @@ Worth knowing so it isn't rebuilt. None of this appears complete in the mileston
 - **A working demo, with an evaluator** — `just demo` brings up Postgres, a signing key, a provisioned client, a fake Orange, the gateway, the worker (all six roles, `hooks` included) and the console, then runs `examples/node/demo-app`, which sends an OTP over `private_key_jwt`, receives the signed webhooks, verifies them, and exits non-zero unless the message reached `delivered` with at least one verified webhook (2026-09-04). `--profile demo` alone gives the same proof without the console.
 - **A GHCR-only showcase** — `compose.demo.yaml` runs the same shape of demo from published images alone (no `cargo build`, no host binaries), with a `console` Compose profile keeping the admin console optional per R4. See that file's own header for how it differs from `compose.yml` and `deploy/docker-compose.yml`.
 - **Integration surface** — `sdks/rust/vsms-sdk-rust`, `@vymalo/vsms-node` (`sdks/node/vsms-sdk-node`), a generated TypeScript client, and runnable Rust/Node examples including a webhook receiver.
-- **CI that actually gates** — the live-Postgres suites run on every PR (they were silently skipped until #118), plus `cargo deny`, R1/R2 rule checks, three-machine state-machine parity, and browserless mermaid parsing.
+- **CI that actually gates** — the live-Postgres suites run on every PR (they were silently skipped until #118), plus `cargo deny`, R1/R2 rule checks, three-machine state-machine parity, and browserless mermaid parsing. Since 2026-09-04 the same 22-step gate runs locally as `just ci` on a host with only docker, compose and just (`docs/runbooks/testing.adoc`).
 
 ---
 

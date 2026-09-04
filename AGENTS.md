@@ -143,7 +143,7 @@ The tool also writes `backends/migrations/postgres/schema.snapshot.json` as a si
 Five things about it are load-bearing, each learned by something breaking:
 
 - **Never cache a container handle in a `static`.** The first attempt held `testcontainers::ContainerAsync` in a `OnceCell`, reasoning that `Drop` would clean up. **Rust never runs `Drop` for a `static`'s contents on any process-exit path**, so every run leaked its container — 56 orphaned Postgres instances filled a 32 GB laptop before anyone noticed. There is no Ryuk reaper installed to catch what `Drop` misses. Nothing here may depend on a destructor running at exit.
-- **Cleanup is scoped by the harness's own label (`dev.vsms.test-harness=true`), never by image or name.** A sweep filtered by `ancestor=postgres:16-alpine` would cheerfully destroy a developer's unrelated running database. Never `docker prune` in any form.
+- **Cleanup is scoped by the harness's own fixed Compose project name (`vsms-test-harness`), never by image or a bare name pattern.** (Corrected: an earlier revision of this line named a `dev.vsms.test-harness=true` label from a pre-Compose `docker run` design; the harness moved onto `docker compose -p vsms-test-harness -f compose.yml` and Compose's own project-scoped labelling instead — see `backends/crates/sms-test-support/src/lib.rs`'s own module doc.) A sweep filtered by `ancestor=postgres:16-alpine` would cheerfully destroy a developer's unrelated running database. Never `docker prune` in any form.
 - **One database per test *binary*, not one shared database.** All 14 sharing one database let `kill9_reclaim_live`'s real `sms-worker --roles dispatch` subprocess claim *other suites'* leftover messages — the claim loop deliberately selects any eligible row, as it must in production. Passed alone, timed out under the full sweep.
 - **The migration check fingerprints migration *content*** (stamped via `COMMENT ON DATABASE`), not merely whether `public.messages` exists. The existence check silently served a **stale schema** from a pre-existing container after a bootstrap-only change, so tests reported `ok` against migrations that had never been applied.
 - **The container name is fixed and global**, so two concurrent `cargo test` invocations on one machine fight over it and corrupt each other's runs. This is real, not theoretical — it cost one investigation a stress run. Don't run overlapping live-test processes; scoping that name is tracked follow-up work.
@@ -1017,6 +1017,22 @@ A read-only audit ahead of a first real deployment produced a numbered list (B1�
 
 `.dockerignore` now excludes `deploy/secrets/` (every image builds with the repo root as context), `backup-restore.adoc` lost five references to shell scripts that no longer exist, and `deployment.adoc` steps 3/4/4b are one command with the granular commands kept as "what bootstrap does".
 
+## `just ci` — the whole gate on a host with only docker and just — landed 2026-09-04
+
+The maintainer's direction — testing as simple as possible, `just` + `docker compose`, clear steps — had no answer before this. `just all-checks` was the closest thing, and its own comment claimed "everything CI runs, in CI's order" while running neither `cargo deny`, nor the live-Postgres suites, nor anything on the TypeScript side; the real gate was eight CI jobs reproducible locally only by someone who had installed Rust, Node 26, `psql` 16, `cargo-deny` and a pin-matching `cratestack` CLI by hand. `just ci` runs all 22 steps in `compose.test.yaml`'s `runner` container (`ci/runner/Dockerfile`, Compose project `vsms-ci`) against its own disposable Postgres, reached through `sms-test-support`'s existing `VSMS_TEST_DATABASE_URL` override — so no docker socket enters the container, and the harness still provisions one database per test binary and still checks the migration fingerprint. The steps are CI's own commands, not a reimplementation; a reviewer built the ci.yml-versus-`ci-inner` table and found no missing command and no weaker flag. `just ci-quick` skips the live suites and the JS build+test (both, because `turbo test` depends on `build`), `just ci-shell` drops into the image for one suite, `just ci-clean` removes the project and its volumes. `docs/runbooks/testing.adoc` is the walkthrough; `all-checks` now says what it is, the fast host-toolchain subset.
+
+**Found by running it, none by reading:**
+
+- **corepack is no longer bundled with Node 26.** `corepack enable` right after installing `nodejs` fails `not found`; `npm install -g corepack` first.
+- **A named volume's mount point is created by the daemon as root regardless of the container's `user:`**, and is seeded from the *image's* content at that path. Reproduced twice: a `target/` volume (`Permission denied` creating `/repo/target/debug`) and the cargo registry, root-owned because `cargo install cratestack-cli` ran as root before the volume seeded from it. Fixed for the caches with a `chown` in the image; fixed for `target/` by not using a volume at all — it lives in the bind-mounted repo, which is also what `ci/assert-client-routes-match-server.mjs` already assumes. Corollary found in review: the image's uid is a build `ARG` (`CI_UID`/`CI_GID`, plumbed from compose), because a runtime `user:` override alone reproduces the same permission error on any host whose uid is not 1000 — GitHub runners are 1001 — and a uid change on an existing environment needs `ci-clean` too.
+- **pnpm silently falls back to a project-local `.pnpm-store`** when the repo and `$HOME` are on different filesystems (hard links cannot cross devices, which a bind-mounted `/repo` and a volume-backed home guarantee); it then made `cargo xtask docs-drift` scan every downloaded package's README. Now gitignored.
+- **A persistent Postgres volume made the migrations step a no-op from the second run on** — `sms-migrate` logged "already applied" for all three and `ci/test-state-machine.sql` asserted against a stale schema, so a regenerated `0001_init` with a psql-time error would pass locally and fail CI. Step 11 creates a per-run scratch database, trap-dropped on any exit, proven by two consecutive runs each applying all three and a mid-way failure leaving no database behind. `$$` is not unique across concurrent containers (two separate runners both printed `1`), so the name carries a timestamp and `RANDOM`.
+- **`CARGO_BUILD_JOBS` in the environment never reached cargo**: the justfile's `_cargo` prefix assignment used a literal `jobs := "4"`, which beats the environment. `env_var_or_default` now; proven with `just --evaluate _cargo` under `CARGO_BUILD_JOBS=9`, and proven load-bearing by reverting it and watching the 9 get discarded.
+
+**Two limits, stated where a contributor will read them.** `just ci` cannot run from a linked git worktree: `.git` is a file naming an absolute host path the container cannot see, so `docs-drift`'s `git ls-files` and Turborepo's root detection both fail; the `ci` recipe now refuses with that explanation and exit 2 before touching Docker, and `testing.adoc` documents the clone or two-mount workaround. And the runner pins `rust:1.95` (the MSRV) while CI's `rust` job uses `stable`, so a lint added after 1.95 can pass locally and fail CI — deliberate, since it enforces the floor, and now written down. Pinned moving parts, per this file's standing allergy: the cargo-binstall installer at `v1.22.0`, `cargo-deny` at 0.20.2, the cratestack CLI at the value `cargo xtask cratestack-pin` prints, checked for equality as step 1.
+
+**`cargo xtask node-sdk-types-check` (#252) landed alongside.** `sdks/node/vsms-sdk-node/src/types.ts` hand-curates four enum unions out of `schemas/vsms.cstack`, and nothing checked the copy against its source — the package is published, so a drift ships to integrators. Proven both directions before being trusted: deleting `cancelled` from `types.ts` reproduced `in the schema but missing from types.ts: cancelled`; adding a bogus variant reproduced `in types.ts but not in the schema: bogus7`.
+
 ## The demo got an evaluator: `examples/node/demo-app` — landed 2026-09-04
 
 `just demo` used to prove a message reaches `delivered` by having a human read the console or `docker compose logs` and believe it. Nothing in either compose stack asserted it, and nothing exercised the inbound half against the real stack: `examples/node/webhook-receiver` verifies §4.4 signatures against fixtures, never against a signature `hooks.rs` actually produced. `examples/node/demo-app` closes both. It authenticates over `private_key_jwt` with the published `@vymalo/vsms-node` SDK (reusing `provision-client`'s credential — no second `AppClient`), sends one `otp`, polls `GET /messages/{id}` to a terminal state, and runs its own Express receiver that the `hooks` role really POSTs to. **The exit code is the whole point**: `0` only if the message reached `delivered` *and* at least one webhook verified. `signature.ts` is a byte-for-byte copy of the webhook-receiver's, and `verbatim-copy.test.ts` fails the moment they drift — both gated in the `js` job with `--ignore-workspace --frozen-lockfile`, the pattern `#192` established after the webhook-receiver's own CI gate turned out never to have run.
@@ -1183,15 +1199,19 @@ db.message().update(id).set(UpdateMessageInput { ..Default::default() })
 just check          # cargo check --workspace --all-targets
 just test           # unit + in-process only; the live suites stay #[ignore]d here
 just lint           # fmt --check, then clippy -D warnings
-just all-checks     # everything CI runs, in CI's order
+just all-checks     # fast host-toolchain subset — NOT the whole gate; see `just ci`
+just ci             # the ENTIRE CI gate, in one command — needs only docker/compose/just
 just routes         # print the generated route table; no database needed
 just jobs=8 check   # raise the concurrency cap on a big machine
 
-# the 14 live-Postgres suites. sms-test-support starts (or reuses) its own
-# container and applies migrations — no manual docker run, no DATABASE_URL.
-# Don't run two of these concurrently: the container name is global.
+# the live-Postgres suites (42 test files, 214 #[ignore]d tests as of this
+# writing — grep -rc '#\[ignore' backends/ to recount). sms-test-support
+# starts (or reuses) its own Postgres via `docker compose -p
+# vsms-test-harness -f compose.yml` and applies migrations — no manual
+# docker run, no DATABASE_URL. Don't run two of these concurrently: the
+# Compose project name is fixed and shared across every invocation.
 just test-live
-just test-live-clean   # remove the harness container (label-scoped; never prune)
+just test-live-clean   # remove the harness container (Compose-project-scoped; never prune)
 
 # the full demo, one command: scratch Postgres, migrations, a signing key, a
 # freshly provisioned client, sms-fake-orange, the gateway, the worker, and the
@@ -1203,7 +1223,7 @@ just demo-down
 # apply migrations to a scratch database by hand — still what the psql-side
 # CI job does; NOT needed for the Rust live suites any more
 createdb vsms_check
-DATABASE_URL=postgres://localhost/vsms_check ./ci/apply-migrations.sh
+DATABASE_URL=postgres://localhost/vsms_check cargo run -p sms-migrate
 psql postgres://localhost/vsms_check -v ON_ERROR_STOP=1 -f ci/test-state-machine.sql
 dropdb vsms_check
 

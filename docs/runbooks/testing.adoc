@@ -1,0 +1,170 @@
+= Runbook: running the whole CI gate locally
+:idprefix:
+:idseparator: -
+
+The maintainer's standing direction: testing should be as simple as possible. This is that -- a contributor with only `docker`, `docker compose` and `just` on the host can run the entire CI gate (every job `.github/workflows/ci.yml` runs) with one command, no Rust/Node/psql/cratestack toolchain installed locally.
+
+If you already have the full host toolchain (Rust, Node 26 + pnpm, `psql` 16, the pinned `cratestack` CLI) and would rather run things natively, skip to <<host-toolchain-path>> below -- this runbook's `just ci` is not the only way to test, just the simplest one.
+
+== Prerequisites
+
+* `docker` and `docker compose` (v2.20+ -- this uses `depends_on: condition: service_healthy` and Compose's own `run --build`, both need a reasonably current Compose).
+* `https://github.com/casey/just[just]`.
+* A normal, non-worktree `git clone` of this repo. See <<worktree-symptom>> below if that doesn't describe your checkout.
+
+Nothing else. `ci/runner/Dockerfile` builds one image with everything else this gate needs: the pinned Rust toolchain, `rustfmt`/`clippy`, `postgresql-client-16`, Node 26 + pnpm (via corepack, pinned from `packageManager` in `package.json`), `cargo-deny`, and the `cratestack` CLI pinned to the exact version `cargo xtask cratestack-pin` reads from the root `Cargo.toml`.
+
+== The one command
+
+[,bash]
+----
+just ci
+----
+
+This builds (or reuses) the runner image, starts a disposable Postgres 16 for it, and runs `just ci-inner` inside the container -- the same 22 steps `.github/workflows/ci.yml`'s eight jobs run, in the same order, against the same pinned toolchain:
+
+. cratestack CLI matches the pin (fails loudly, with the exact rebuild command, if the image has drifted from `Cargo.toml`)
+. `cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings`
+. `cargo test --workspace` (unit + in-process)
+. `cargo metadata --locked` (the committed `Cargo.lock` must be current)
+. The Rust SDK (`sdks/rust/vsms-sdk-rust`) -- check, clippy, test, `aws-lc-rs` absence, `cargo publish --dry-run --allow-dirty` (local runs are routinely against an uncommitted tree; `--allow-dirty` is deliberately NOT in ci.yml's own copy of this step, which runs on a clean checkout and treats a dirty one there as a real problem)
+. `examples/rust` -- check, clippy
+. `cargo deny check` against all five manifests (root, the Rust SDK, `ci/e2e-integration`, `examples/rust/sms-send`, `deploy/backup-tool`)
+. R1/R2/R6 and every drift guard -- `cargo xtask no-raw-sqlx parity sdk-schema-check workflow-paths docs-drift r6 node-sdk-types-check`
+. `0001_init` matches `cratestack migrate diff`
+. `0002_bootstrap` matches the design doc
+. Apply migrations for real (`cargo run -p sms-migrate`) to a **fresh, per-run scratch database** created on the `postgres` service and dropped again afterward (even on failure -- see that step's own comment in `justfile` for why it can't just reuse the persistent database the rest of the gate shares: that database survives across runs by design, so reapplying migrations against it a second time is a silent no-op, "already applied -- skipping" for all three, which would let a genuinely broken `0001_init` pass `just ci` while still failing CI's own fresh-container `migrations` job), then `ci/test-state-machine.sql`'s assertions against that same scratch database
+. Install the sample Node webhook receiver's own dependencies (needed by one of the live suites below)
+. Every live-Postgres suite (`cargo test --workspace --no-fail-fast -- --ignored`) -- by far the slowest single step
+. `pnpm install --frozen-lockfile`
+. `pnpm biome ci .`
+. Generate the TypeScript client and check its routes against the pinned server (`just client-check`)
+. Typecheck and build (`pnpm turbo run typecheck build`)
+. Test (`pnpm turbo run test`)
+. The sample Node receiver's cross-language HMAC signature vectors
+. The demo app (`examples/node/demo-app`) -- typecheck, plus its own copy of the same cross-language HMAC signature vectors (it carries a byte-for-byte copy of `signature.ts`/`cross-language-vectors.test.ts` from the step above, per that package's own README)
+. The official Node SDK (`@vymalo/vsms-node`) -- build, typecheck, test, `npm pack --dry-run`
+. Every mermaid diagram in `docs/architecture.md`/`docs/roadmap.md` parses (no browser)
+
+A failing step stops the gate there (`set -euo pipefail`), with a `=== STEP n/22: ... ===` banner printed before each one so the log says exactly where it got to.
+
+=== A real, deliberate divergence from CI: the Rust toolchain
+
+`ci/runner/Dockerfile` pins `rust:1.95-bookworm` -- the MSRV this repo declares in its root `Cargo.toml` (`rust-version = "1.95.0"`). `.github/workflows/ci.yml`'s own `rust`/`rules` jobs use `dtolnay/rust-toolchain@stable` instead, which floats to whatever the current stable release is on the day CI runs. This is intentional, not an oversight: `just ci` is what proves the MSRV floor this repo declares is actually honoured, which a floating `stable` toolchain can never do (it can only prove "works on today's stable"). The real, practical consequence: a clippy lint or a language feature that landed in a stable release *after* 1.95 can pass in `just ci` and fail in CI (the reverse of the usual worry), or vice versa if a lint was later relaxed. If `just ci` and CI ever disagree specifically at the `lint`/`rust` step, check which toolchain each ran before assuming either result is wrong.
+
+=== How long, and how much disk
+
+First run is slow -- a full toolchain image build, then a cold `cargo`/`pnpm` fetch into the named volumes `compose.test.yaml` reserves for the cargo/pnpm caches (`cargo_registry`, `cargo_git`, `pnpm_store`), plus a cold `target/`/`node_modules` build inside the bind-mounted repo itself (deliberately not a named volume -- see that file's own comment on `CARGO_TARGET_DIR`). Expect a good chunk of an hour on a modest machine. Every run after that reuses those caches and the built image, and is close to what `.github/workflows/ci.yml` itself takes.
+
+Disk cost, measured after one full run, not guessed: `target/` in the bind-mounted repo alone runs **6-8 GB** (`include_server_schema!`'s own expansion is the bulk of it -- see AGENTS.md's "Build cost" section); `node_modules/` and pnpm's own project-local store (see <<pnpm-store-note>> below) add roughly 650 MB each; the named volumes (`cargo_registry`, `cargo_git`, `ci_home`, plus Postgres's own data volume) add on the order of another 1-1.5 GB. Call it **~9-10 GB total** for a full first run, on top of the built image itself. `just ci-clean` does **NOT** reclaim any of `target/`, `node_modules/`, or the pnpm store -- those live in the bind-mounted repo, exactly like a native build's would, and `ci-clean` only ever touches Compose-managed containers/networks/volumes. `cargo clean` and `rm -rf node_modules .pnpm-store` reclaim those, on the host, the same way they would for any local Rust/Node project.
+
+[[pnpm-store-note]]
+NOTE: pnpm's content-addressable store normally lives outside any project (`~/.local/share/pnpm/store`), and `compose.test.yaml` reserves a named volume (`pnpm_store`) at the container-user equivalent of that path for exactly that reason -- but pnpm falls back to a project-local `.pnpm-store` at the repo root whenever the repo and that home directory turn out to be on different filesystems (hard links can't cross a device boundary), which is exactly what a bind-mounted repo plus a separately-volumed `$HOME` produces here. `.gitignore` covers it; the `pnpm_store` named volume ends up unused in practice, which is harmless (just a reserved volume with nothing in it), not a bug to chase.
+
+=== Fast iteration
+
+[,bash]
+----
+just ci-quick
+----
+
+Everything above except the live-Postgres suites (step 13) and the JS typecheck+build+test steps (17-18, skipped together -- `turbo.json`'s own `test` task `dependsOn: ["build"]`, so skipping only step 17 saves nothing at all: `pnpm turbo run test` would just trigger the identical build as one of its own dependency tasks, folded silently into step 18's own timing instead of appearing as step 17's). These are the slowest steps in the gate and the least likely to catch a mistake in a small, focused change. Not a substitute for `just ci` before opening a PR; a genuine "did I break something obvious" loop while iterating.
+
+=== Running one suite by hand
+
+[,bash]
+----
+just ci-shell
+# now inside the container, with the same mounted repo and the same
+# Postgres reachable at postgres:5432 (VSMS_TEST_DATABASE_URL is already set):
+cargo test -p sms-worker --no-fail-fast -- --ignored
+cargo test --test hooks_live_postgres -- --ignored --nocapture
+----
+
+=== Rebuilding the image
+
+[,bash]
+----
+just ci-build
+----
+
+Builds (or rebuilds) the runner image without also running the gate -- useful after editing `ci/runner/Dockerfile` itself, or after changing `VSMS_CI_UID`/`VSMS_CI_GID` (see <<what-s-actually-running>> below): both `just ci` and `just ci-quick` already pass `--build` on every invocation, so they pick up a Dockerfile or build-arg change automatically on the next run regardless -- this recipe just lets you pay for that rebuild up front, on its own, rather than waiting through it as the first thing `just ci` does.
+
+=== Resetting
+
+[,bash]
+----
+just ci-clean
+----
+
+Removes the `vsms-ci` Compose project entirely -- containers, network, and every named volume (Postgres data, cargo registry/git caches, pnpm store). Scoped to this project's own name only; it never touches `compose.yml`'s `vsms` project, `compose.dev.yaml`'s `vsms-dev`, `compose.demo.yaml`'s `vsms-demo`, or `sms-test-support`'s own `vsms-test-harness`. Doesn't remove `target/`/`node_modules`/`.pnpm-store` -- those live in the bind-mounted repo itself, like a native build's would (see "How long, and how much disk" above for what does reclaim them). Not required for correctness between runs -- only useful to reclaim disk or force a clean rebuild.
+
+[[what-s-actually-running]]
+== What's actually running
+
+`compose.test.yaml` (Compose project `vsms-ci`) is two services:
+
+* `postgres` -- a plain, disposable `postgres:16`, no host port published (nothing outside the Compose network needs to reach it).
+* `runner` -- built from `ci/runner/Dockerfile`, the repo bind-mounted read-write at `/repo`, running as a non-root uid:gid (default 1000:1000 -- see that compose file's own comment for why running as root would be worse: a root-owned file written into the bind-mounted working tree would be unreadable/undeletable by a non-root host user afterward). `VSMS_TEST_DATABASE_URL` points it at the `postgres` service, which is `backends/crates/sms-test-support`'s own override hook -- the harness skips trying to start its own nested `docker compose` (this container has no Docker socket to do that with anyway) and instead provisions its per-binary scratch databases directly against this URL's server.
+
+If your host user isn't uid/gid 1000:1000 (GitHub-hosted runners, for one real example, use 1001), override it -- and note this needs the image **rebuilt**, not just re-run: the uid/gid the container runs as (`user:` in `compose.test.yaml`) has to match the uid/gid `ci/runner/Dockerfile`'s own `useradd`/`chown` step baked into the image at build time (`CI_UID`/`CI_GID` build args), or you reproduce the exact Permission-denied failure this whole non-root design exists to prevent, just for a different uid.
+
+[,bash]
+----
+VSMS_CI_UID=$(id -u) VSMS_CI_GID=$(id -g) just ci-build
+VSMS_CI_UID=$(id -u) VSMS_CI_GID=$(id -g) just ci
+----
+
+(`just ci`/`ci-quick` already pass `--build` on every run, so the explicit `ci-build` line above is for clarity and to fail fast on a build problem before paying for the rest of the gate -- not strictly required before the second line, which would rebuild with the same args on its own.)
+
+If you've already run `just ci` once at the default uid before switching, also run `just ci-clean` before (or after) changing `VSMS_CI_UID`/`VSMS_CI_GID` -- found live, not assumed: the named volumes (`cargo_registry`, `cargo_git`, `ci_home`, `pnpm_store`) are seeded from the image's own content only the *first* time each is created, not re-seeded on a later rebuild, so an *existing* `cargo_registry` volume already owned by the old uid stays owned by the old uid regardless of how many times the image itself is rebuilt with a new one -- reproduced exactly as a `Permission denied` writing into it, even with `id` correctly reporting the new uid inside the container. A completely fresh environment (no prior `just ci` run at any uid) doesn't hit this at all; it only matters when switching uids on an environment that already has state.
+
+== Verifying nothing leaked into the tree
+
+`just ci` must leave `git status` clean of anything but the change you actually made -- `frontends/packages/sms-client` (generated by step 16) is gitignored except its own `package.json`, which `--tanstack` (see the `client-gen` recipe's own comment) keeps byte-identical to the committed copy. If `git status` shows anything under that package other than an untracked, gitignored directory, something about the client generation has drifted -- see that recipe's own comment before assuming the fix is to just commit it.
+
+[[worktree-symptom]]
+== Troubleshooting: "fatal" / "git ls-files failed" / turbo cache errors from a linked git worktree
+
+**Symptom:** `just ci`/`just ci-quick` refuse to start at all, printing an explicit error naming `.git` as a file rather than a directory (a preflight check in the `ci`/`ci-quick` recipes catches this before touching Docker) -- or, if you bypass that preflight by calling `docker compose` directly, `cargo xtask docs-drift` fails with `xtask: git ["ls-files"] failed`, or step 17's `pnpm turbo run typecheck build` fails trying to create a `.turbo/cache` directory at some *other* absolute path than the one you're running from.
+
+**Cause:** this only happens from a **linked git worktree** (`git worktree add`), never from a plain `git clone`. A linked worktree's own `.git` is not a directory -- it's a one-line text file (`gitdir: /abs/path/to/main-repo/.git/worktrees/<name>`) pointing at the *main* checkout's real `.git` directory, which typically lives outside the worktree directory entirely. `compose.test.yaml` bind-mounts only the directory `just ci` is run from into the container as `/repo` -- so `git` commands run inside the container (`cargo xtask docs-drift`'s own `git ls-files`, and Turborepo's own root detection, which resolves via `git rev-parse --git-common-dir` rather than `--show-toplevel`) try to follow that `gitdir:` reference to a path the container was never given, and fail.
+
+**Fix, in order of preference:**
+
+. **Use a normal, non-worktree checkout.** This is the only fix that needs no extra flags, and it's what nearly every contributor already has.
+. If you specifically need to run `just ci` from a linked worktree (as this repo's own agent-driven CI verification does), bypass the `ci`/`ci-quick` preflight and add two extra bind mounts -- the main repo's real `.git` directory (read-only is enough), and, because Turborepo's root detection needs it too, the main repo's own working directory:
++
+[,bash]
+----
+main_git="$(git rev-parse --path-format=absolute --git-common-dir)"
+main_root="$(dirname "$main_git")"
+docker compose -f compose.test.yaml run --build --rm \
+  -v "$main_git:$main_git:ro" \
+  -v "$main_root:$main_root" \
+  runner just ci-inner
+----
++
+The second mount needs to be read-write (not `:ro`) -- Turborepo writes its own `.turbo/cache` directory under it.
+
+[[host-toolchain-path]]
+== The host-toolchain path
+
+If you already have Rust, Node 26 + pnpm, `psql` 16, and a pinned `cratestack` CLI installed natively:
+
+[,bash]
+----
+just check                # cargo check --workspace --all-targets
+just lint                 # fmt --check, then clippy -D warnings
+just test                 # unit + in-process only
+just test-live            # every live-Postgres suite -- brings up its own Postgres via `compose.yml`
+just deny                 # cargo deny check, against all five manifests
+just parity                # R2: state diagram and transition table agree
+just r6                   # R6: no CSS classes or raw markup in view files
+just node-sdk-types-check # #252: the Node SDK's enum unions match schema.cstack
+just all-checks            # lint, test, and every xtask guard that runs without Docker
+----
+
+`just all-checks` is a fast local subset, not the whole gate -- it does not run `cargo deny`, the live-Postgres suites, or anything on the TypeScript side (see that recipe's own comment in `justfile` for exactly what it does and doesn't cover, and why). `just ci`/`just ci-inner` above is the only single command that runs everything CI runs; the host-toolchain recipes are for iterating on one piece without paying for a container build.
+
+See xref:getting-started.adoc[`getting-started.adoc`] for first-time setup of that native toolchain, and `AGENTS.md`'s own "Repo automation moved to `xtask`" section for what each `cargo xtask <check>` actually does.

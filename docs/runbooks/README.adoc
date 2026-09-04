@@ -18,6 +18,9 @@ If you are integrating an application rather than running or operating vsms, lin
 | xref:getting-started.adoc[Getting started]
 | First-time setup, the long way: clone, build, apply migrations, run both binaries by hand, send a real message through the whole pipeline against a scratch database. Read this when something in `just demo` fails and you need to know which link broke.
 
+| xref:testing.adoc[Testing]
+| `just ci` runs the ENTIRE CI gate -- every job `.github/workflows/ci.yml` runs -- with nothing on the host but `docker`, `docker compose` and `just`. Start here to verify a change before opening a PR.
+
 | xref:deployment.adoc[Deployment]
 | Running it for real: the compose stack, the Caddy edge, the one-shot migration job, image builds and the GHCR release path.
 
@@ -28,7 +31,7 @@ If you are integrating an application rather than running or operating vsms, lin
 | The milestone 2 acceptance gate: a real SMS to a real Orange handset, and a `kill -9` lease-reclaim proof. Needs real Orange Cameroon credentials and a real phone -- not runnable in CI or by an agent.
 
 | xref:e2e-integration.adoc[#160 -- the joined integration story]
-| `scripts/e2e-integration.sh` / `just e2e-integration`: an external client (`examples/rust/sms-send`) sends over real HTTP, and that exact message id is read back through the admin console's own data path and credential, reaching `delivered`. Proves integration readiness, not carrier readiness -- #36 above is unaffected.
+| `just e2e-integration` (the `scripts/e2e-integration.sh` this used to be is gone -- see AGENTS.md's "containerize-tooling" section): an external client (`examples/rust/sms-send`) sends over real HTTP, and that exact message id is read back through the admin console's own data path and credential, reaching `delivered`. Proves integration readiness, not carrier readiness -- #36 above is unaffected.
 
 | xref:alerting.adoc[#70/#71 -- alerting]
 | What each of the five Prometheus alerts in `deploy/prometheus/alerts.yml` means and what to do when it fires, plus how to correlate one message across `sms-gateway` and ``sms-worker``'s logs end to end.
