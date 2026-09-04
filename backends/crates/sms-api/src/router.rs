@@ -1,4 +1,4 @@
-//! Assembling the generated router.
+#![doc = include_str!("router.md")]
 
 use std::net::SocketAddr;
 use std::sync::Arc;
