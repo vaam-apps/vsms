@@ -92,6 +92,22 @@ impl EncodingReport {
 ///
 /// `suggestion` is computed from `body` alone, so it is still useful on a body
 /// that has not been normalised.
+///
+/// ```
+/// use sms_encoding::{analyse, SmsEncoding};
+///
+/// // `€` is in the GSM-7 extension table, so it costs two septets — the
+/// // body stays GSM-7, but is 3 units long, not 2.
+/// let euro = analyse("5€");
+/// assert_eq!(euro.encoding, SmsEncoding::Gsm7);
+/// assert_eq!(euro.length, 3);
+/// assert_eq!(euro.escapes, 1);
+///
+/// // `É` is in the default alphabet, but `À` is not — a body that is fine
+/// // in sentence case can break the moment it is shouted.
+/// assert_eq!(analyse("ÉTÉ").encoding, SmsEncoding::Gsm7);
+/// assert_eq!(analyse("À BIENTÔT").encoding, SmsEncoding::Ucs2);
+/// ```
 #[must_use]
 pub fn analyse(body: &str) -> EncodingReport {
     let mut offending = Vec::new();

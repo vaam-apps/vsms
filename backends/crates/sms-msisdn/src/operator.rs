@@ -57,6 +57,19 @@ impl OperatorPrefixTable {
     }
 
     /// Infer the operator from a bare national number.
+    ///
+    /// ```
+    /// use sms_msisdn::OperatorPrefixTable;
+    ///
+    /// let table = OperatorPrefixTable::new([("6", "unknown"), ("67", "mtn"), ("655", "orange")]);
+    ///
+    /// // Longest prefix wins: "655" beats "6", even though "6" also matches.
+    /// assert_eq!(table.lookup_national("655123456"), Some("orange"));
+    /// // "67" beats the bare "6" fallback the same way.
+    /// assert_eq!(table.lookup_national("677123456"), Some("mtn"));
+    /// // No row starts this number at all.
+    /// assert_eq!(table.lookup_national("222123456"), None);
+    /// ```
     #[must_use]
     pub fn lookup_national(&self, national: &str) -> Option<&str> {
         self.entries

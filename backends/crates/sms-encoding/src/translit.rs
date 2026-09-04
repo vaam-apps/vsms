@@ -60,6 +60,24 @@ pub fn replacement_for(c: char) -> Option<String> {
 /// result is *not* guaranteed to be GSM-7 encodable — check it with
 /// [`crate::gsm7::is_gsm7_str`], or let [`crate::analyse`] decide whether the
 /// rewrite is worth offering.
+///
+/// ```
+/// use sms_encoding::transliterate_to_gsm7;
+///
+/// // `ç` has no GSM-7 representation on its own, but decomposes (NFD) into
+/// // `c` plus a combining cedilla — stripping the combining mark rescues it.
+/// let (out, replacements) = transliterate_to_gsm7("reçu");
+/// assert_eq!(out, "recu");
+/// assert_eq!(replacements.len(), 1);
+/// assert_eq!(replacements[0].from, 'ç');
+/// assert_eq!(replacements[0].to, "c");
+///
+/// // A character with no sensible GSM-7 equivalent (here, 好) is left
+/// // untouched — this function never invents a lossy replacement.
+/// let (out, replacements) = transliterate_to_gsm7("好");
+/// assert_eq!(out, "好");
+/// assert!(replacements.is_empty());
+/// ```
 #[must_use]
 pub fn transliterate_to_gsm7(body: &str) -> (String, Vec<Replacement>) {
     let mut out = String::with_capacity(body.len());
