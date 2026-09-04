@@ -21,7 +21,7 @@ Nothing else. `ci/runner/Dockerfile` builds one image with everything else this 
 just ci
 ----
 
-This builds (or reuses) the runner image, starts a disposable Postgres 16 for it, and runs `just ci-inner` inside the container -- the same 21 steps `.github/workflows/ci.yml`'s eight jobs run, in the same order, against the same pinned toolchain:
+This builds (or reuses) the runner image, starts a disposable Postgres 16 for it, and runs `just ci-inner` inside the container -- the same 22 steps `.github/workflows/ci.yml`'s eight jobs run, in the same order, against the same pinned toolchain:
 
 . cratestack CLI matches the pin (fails loudly, with the exact rebuild command, if the image has drifted from `Cargo.toml`)
 . `cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings`
@@ -42,10 +42,11 @@ This builds (or reuses) the runner image, starts a disposable Postgres 16 for it
 . Typecheck and build (`pnpm turbo run typecheck build`)
 . Test (`pnpm turbo run test`)
 . The sample Node receiver's cross-language HMAC signature vectors
+. The demo app (`examples/node/demo-app`) -- typecheck, plus its own copy of the same cross-language HMAC signature vectors (it carries a byte-for-byte copy of `signature.ts`/`cross-language-vectors.test.ts` from the step above, per that package's own README)
 . The official Node SDK (`@vymalo/vsms-node`) -- build, typecheck, test, `npm pack --dry-run`
 . Every mermaid diagram in `docs/architecture.md`/`docs/roadmap.md` parses (no browser)
 
-A failing step stops the gate there (`set -euo pipefail`), with a `=== STEP n/21: ... ===` banner printed before each one so the log says exactly where it got to.
+A failing step stops the gate there (`set -euo pipefail`), with a `=== STEP n/22: ... ===` banner printed before each one so the log says exactly where it got to.
 
 === A real, deliberate divergence from CI: the Rust toolchain
 

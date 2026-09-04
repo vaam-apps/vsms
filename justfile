@@ -555,7 +555,7 @@ ci-build:
 # reuse the named volumes (cargo registry, pnpm store, target dir) and are
 # much faster. `--build` keeps the image current with ci/runner/Dockerfile
 # without needing a separate `ci-build` step first.
-# Run the entire CI gate (all 21 steps) inside the container.
+# Run the entire CI gate (all 22 steps) inside the container.
 ci:
 	#!/usr/bin/env bash
 	set -euo pipefail
@@ -619,14 +619,14 @@ ci-clean:
 # does) to skip the live-Postgres suites (step 13) and the JS
 # typecheck+build+test steps (17-18, together — see `ci-quick`'s own
 # comment for why splitting them saves nothing).
-# The 21-step gate script itself — run inside the container, not directly.
+# The 22-step gate script itself — run inside the container, not directly.
 ci-inner:
 	#!/usr/bin/env bash
 	set -euo pipefail
 	step() { echo; echo "=== STEP $1/$2: $3 ==="; }
 	quick="${VSMS_CI_QUICK:-}"
 
-	step 1 21 "cratestack CLI matches the pin"
+	step 1 22 "cratestack CLI matches the pin"
 	pinned="$(cargo xtask cratestack-pin)"
 	installed="$(cratestack --version | awk '{print $2}')"
 	if [ "$pinned" != "$installed" ]; then
@@ -636,16 +636,16 @@ ci-inner:
 	fi
 	echo "cratestack $installed matches the pin"
 
-	step 2 21 "lint (fmt --check, clippy -D warnings)"
+	step 2 22 "lint (fmt --check, clippy -D warnings)"
 	just lint
 
-	step 3 21 "cargo test --workspace (unit + in-process)"
+	step 3 22 "cargo test --workspace (unit + in-process)"
 	{{_cargo}} test --workspace
 
-	step 4 21 "Cargo.lock is up to date"
+	step 4 22 "Cargo.lock is up to date"
 	cargo metadata --locked --format-version 1 > /dev/null
 
-	step 5 21 "Rust SDK (vsms-sdk-rust) — check, clippy, test, aws-lc-rs absence, publish dry-run"
+	step 5 22 "Rust SDK (vsms-sdk-rust) — check, clippy, test, aws-lc-rs absence, publish dry-run"
 	# --allow-dirty: this recipe runs against whatever the caller's actual
 	# working tree looks like, which — being a local run, not a CI
 	# checkout — is routinely mid-PR-review or otherwise not committed.
@@ -659,13 +659,13 @@ ci-inner:
 	  && ( cargo tree -i aws-lc-rs && exit 1 || true ) \
 	  && cargo publish --dry-run --allow-dirty )
 
-	step 6 21 "Examples (Rust) — check, clippy"
+	step 6 22 "Examples (Rust) — check, clippy"
 	( cd examples/rust && cargo check --all-targets && cargo clippy --all-targets -- -D warnings )
 
-	step 7 21 "cargo deny — advisories, bans, licenses, sources (all five manifests)"
+	step 7 22 "cargo deny — advisories, bans, licenses, sources (all five manifests)"
 	just deny
 
-	step 8 21 "R1/R2/R6 and drift guards (cargo xtask)"
+	step 8 22 "R1/R2/R6 and drift guards (cargo xtask)"
 	{{_cargo}} xtask no-raw-sqlx
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask sdk-schema-check
@@ -674,13 +674,13 @@ ci-inner:
 	{{_cargo}} xtask r6
 	{{_cargo}} xtask node-sdk-types-check
 
-	step 9 21 "0001_init matches \`cratestack migrate diff\`"
+	step 9 22 "0001_init matches \`cratestack migrate diff\`"
 	{{_cargo}} xtask migrations-current
 
-	step 10 21 "0002_bootstrap matches the design doc"
+	step 10 22 "0002_bootstrap matches the design doc"
 	{{_cargo}} xtask bootstrap-sql-check
 
-	step 11 21 "Apply migrations to a fresh scratch database, then the state-machine SQL assertions"
+	step 11 22 "Apply migrations to a fresh scratch database, then the state-machine SQL assertions"
 	# A fresh, per-run scratch database, not the persistent `vsms_ci_pgdata`
 	# volume's own `vsms` database — found in review, and real: that volume
 	# survives across `just ci` runs (it's the whole point of caching it),
@@ -703,23 +703,23 @@ ci-inner:
 	cleanup_scratch_db
 	trap - EXIT
 
-	step 12 21 "Sample Node receiver's dependencies (for the live gate suite)"
+	step 12 22 "Sample Node receiver's dependencies (for the live gate suite)"
 	( cd examples/node/webhook-receiver && pnpm install --ignore-workspace --frozen-lockfile )
 
 	if [ -n "$quick" ]; then
 		echo; echo "VSMS_CI_QUICK set — skipping the live-Postgres suites (step 13)."
 	else
-		step 13 21 "Live-Postgres suites (sms-test-support, against this container's own postgres)"
+		step 13 22 "Live-Postgres suites (sms-test-support, against this container's own postgres)"
 		{{_cargo}} test --workspace --no-fail-fast -- --ignored
 	fi
 
-	step 14 21 "pnpm install (workspace)"
+	step 14 22 "pnpm install (workspace)"
 	pnpm install --frozen-lockfile
 
-	step 15 21 "Biome (format + lint)"
+	step 15 22 "Biome (format + lint)"
 	pnpm biome ci .
 
-	step 16 21 "Generate the client and check its routes against the server"
+	step 16 22 "Generate the client and check its routes against the server"
 	just client-check
 
 	# Steps 17 and 18 are skipped together under VSMS_CI_QUICK, not
@@ -731,22 +731,35 @@ ci-inner:
 	if [ -n "$quick" ]; then
 		echo; echo "VSMS_CI_QUICK set — skipping JS typecheck+build and tests (steps 17-18)."
 	else
-		step 17 21 "Typecheck and build (pnpm turbo)"
+		step 17 22 "Typecheck and build (pnpm turbo)"
 		pnpm turbo run typecheck build
 
-		step 18 21 "Tests (pnpm turbo)"
+		step 18 22 "Tests (pnpm turbo)"
 		pnpm turbo run test
 	fi
 
-	step 19 21 "Sample Node receiver — cross-language signature vectors"
+	step 19 22 "Sample Node receiver — cross-language signature vectors"
 	( cd examples/node/webhook-receiver && node --test )
 
-	step 20 21 "Official Node SDK (@vymalo/vsms-node) — build, typecheck, test, pack dry-run"
+	# examples/node/demo-app carries a byte-for-byte copy of
+	# signature.ts/cross-language-vectors.test.ts from the webhook-receiver
+	# step just above (per that package's own README) — gated the same way,
+	# plus a typecheck, mirroring ci.yml's "js" job step-for-step. `tsc` is
+	# invoked from node_modules directly rather than via `pnpm run
+	# typecheck`: pnpm verifies dependencies before every `run`, and from a
+	# directory under the repo root — without --ignore-workspace — that
+	# check resolves against the ROOT workspace lockfile, which knows
+	# nothing about this standalone package, and fails with
+	# ERR_PNPM_OUTDATED_LOCKFILE.
+	step 20 22 "Demo app — typecheck and cross-language signature vectors"
+	( cd examples/node/demo-app && pnpm install --ignore-workspace --frozen-lockfile && node_modules/.bin/tsc --noEmit && node --test )
+
+	step 21 22 "Official Node SDK (@vymalo/vsms-node) — build, typecheck, test, pack dry-run"
 	pnpm --filter @vymalo/vsms-node run build
 	pnpm --filter @vymalo/vsms-node run typecheck
 	( cd sdks/node/vsms-sdk-node && node --test && npm pack --dry-run )
 
-	step 21 21 "Mermaid diagrams parse (no browser)"
+	step 22 22 "Mermaid diagrams parse (no browser)"
 	( cd ci/mermaid-parse && npm ci )
 	node ci/mermaid-parse/parse.mjs docs/architecture.md
 	node ci/mermaid-parse/parse.mjs docs/roadmap.md
