@@ -33,6 +33,13 @@ const MESSAGE_BATCH: i64 = 500;
 /// reasoning as [`MESSAGE_BATCH`].
 const RECEIPT_BATCH: i64 = 500;
 
+/// Context wording for [`JobError::Database`] — see
+/// `expire_stale::CTX_SUBMITTED`'s own doc for why this is a
+/// `pub(crate) const`, not an inline literal.
+pub(crate) const CTX_PURGE_MESSAGES: &str = "purging retained messages";
+/// See [`CTX_PURGE_MESSAGES`].
+pub(crate) const CTX_PURGE_RECEIPTS: &str = "purging retained delivery receipts";
+
 /// §7.4's terminal `Message` states — the ones with no outgoing row in
 /// `message_state_transitions`, i.e. nothing can move a message out of one
 /// of these ever again. See the module doc for why only these are eligible.
@@ -68,7 +75,7 @@ impl PurgeRetention {
         let purged = purge_messages(db, sys, cutoff, now)
             .await
             .map_err(|source| JobError::Database {
-                context: "purging retained messages",
+                context: CTX_PURGE_MESSAGES,
                 source,
             })?;
         if purged > 0 {
@@ -78,7 +85,7 @@ impl PurgeRetention {
         let deleted = purge_delivery_receipts(db, sys, cutoff)
             .await
             .map_err(|source| JobError::Database {
-                context: "purging retained delivery receipts",
+                context: CTX_PURGE_RECEIPTS,
                 source,
             })?;
         if deleted > 0 {

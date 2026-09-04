@@ -17,6 +17,19 @@ const UNCERTAIN_GRACE: Duration = Duration::hours(6);
 /// than this one invocation trying to drain an unbounded queue.
 const BATCH: i64 = 500;
 
+/// Context wording for [`JobError::Database`] — a `pub(crate) const`, not an
+/// inline literal, so the one live test that pins these thirteen wordings
+/// (`jobs::tests::every_context_literal_matches_the_documented_wording`)
+/// shares the exact value the real call site below writes into
+/// `Job.lastError`, rather than an independent copy that could silently
+/// drift from it. See that test's own doc for why the independent-copy
+/// shape was the actual bug this replaces.
+pub(crate) const CTX_SUBMITTED: &str = "expiring stale submitted messages";
+/// See [`CTX_SUBMITTED`].
+pub(crate) const CTX_UNCERTAIN: &str = "expiring stale uncertain messages";
+/// See [`CTX_SUBMITTED`].
+pub(crate) const CTX_UNDELIVERED: &str = "expiring stale undelivered messages";
+
 /// The `expire_stale` [`JobHandler`] — see the module doc for its two
 /// rules.
 pub struct ExpireStale;
@@ -44,7 +57,7 @@ impl ExpireStale {
         )
         .await
         .map_err(|source| JobError::Database {
-            context: "expiring stale submitted messages",
+            context: CTX_SUBMITTED,
             source,
         })?;
 
@@ -56,7 +69,7 @@ impl ExpireStale {
         )
         .await
         .map_err(|source| JobError::Database {
-            context: "expiring stale uncertain messages",
+            context: CTX_UNCERTAIN,
             source,
         })?;
 
@@ -68,7 +81,7 @@ impl ExpireStale {
         )
         .await
         .map_err(|source| JobError::Database {
-            context: "expiring stale undelivered messages",
+            context: CTX_UNDELIVERED,
             source,
         })?;
 

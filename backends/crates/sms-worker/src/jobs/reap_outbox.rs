@@ -36,6 +36,12 @@ const DELETE_BATCH: i64 = 1000;
 /// alerted on again next run.
 const ALERT_BATCH: i64 = 200;
 
+/// Context wording for [`JobError::Sql`] — see `expire_stale::CTX_SUBMITTED`'s
+/// own doc for why this is a `pub(crate) const`, not an inline literal.
+pub(crate) const CTX_POISON_SCAN: &str = "scanning the event outbox for poison rows";
+/// See [`CTX_POISON_SCAN`].
+pub(crate) const CTX_REAP_DELIVERED: &str = "reaping delivered event outbox rows";
+
 /// The `reap_outbox` [`JobHandler`] — see the module doc for what "reap"
 /// means here and why poison rows are alarmed on rather than deleted.
 pub struct ReapOutbox;
@@ -56,7 +62,7 @@ impl ReapOutbox {
         let poisoned = alert_poison_rows(db)
             .await
             .map_err(|source| JobError::Sql {
-                context: "scanning the event outbox for poison rows",
+                context: CTX_POISON_SCAN,
                 source,
             })?;
         // #70: the one writer of `sms_event_outbox_poison_rows` — see
@@ -77,7 +83,7 @@ impl ReapOutbox {
         let reaped = reap_delivered(db, cutoff)
             .await
             .map_err(|source| JobError::Sql {
-                context: "reaping delivered event outbox rows",
+                context: CTX_REAP_DELIVERED,
                 source,
             })?;
 

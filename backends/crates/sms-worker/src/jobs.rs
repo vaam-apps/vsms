@@ -334,7 +334,10 @@ fn swallow_stale_write(job: &Job, error: CratestackError) -> Result<(), Cratesta
 
 #[cfg(test)]
 mod tests {
-    use super::{BACKOFF_SCHEDULE, backoff_for};
+    use super::{
+        BACKOFF_SCHEDULE, anchor_audit, backoff_for, expire_stale, grey_route_watch,
+        purge_retention, reap_outbox,
+    };
     use chrono::Duration;
 
     #[test]
@@ -356,5 +359,78 @@ mod tests {
         let len = i64::try_from(BACKOFF_SCHEDULE.len()).unwrap();
         assert_eq!(backoff_for(len + 1), last);
         assert_eq!(backoff_for(1000), last);
+    }
+
+    /// The guard `jobs/error.md`'s own doc names: `JobError::Database`'s
+    /// and `JobError::Sql`'s `Display` tests (in `jobs/error.rs`) each
+    /// supply their own `context` literal by hand, so on their own they
+    /// cannot catch a real call site's wording drifting out from under
+    /// them — a one-character edit to `expire_stale.rs`'s own inline
+    /// literal used to pass `cargo test -p sms-worker --lib` (54/54) and
+    /// both live job suites outright, because nothing tied that literal to
+    /// anything else. Each job module's own `pub(crate) const CTX_*` is
+    /// the single source of truth its real call site now uses; this test
+    /// is the one place that couples every one of those thirteen consts
+    /// to a hardcoded expected wording, so a retitled step must change
+    /// this table in the same diff or fail here.
+    #[test]
+    fn every_context_literal_matches_the_documented_wording() {
+        let table: &[(&str, &str)] = &[
+            (
+                expire_stale::CTX_SUBMITTED,
+                "expiring stale submitted messages",
+            ),
+            (
+                expire_stale::CTX_UNCERTAIN,
+                "expiring stale uncertain messages",
+            ),
+            (
+                expire_stale::CTX_UNDELIVERED,
+                "expiring stale undelivered messages",
+            ),
+            (
+                reap_outbox::CTX_POISON_SCAN,
+                "scanning the event outbox for poison rows",
+            ),
+            (
+                reap_outbox::CTX_REAP_DELIVERED,
+                "reaping delivered event outbox rows",
+            ),
+            (
+                purge_retention::CTX_PURGE_MESSAGES,
+                "purging retained messages",
+            ),
+            (
+                purge_retention::CTX_PURGE_RECEIPTS,
+                "purging retained delivery receipts",
+            ),
+            (
+                anchor_audit::CTX_LATEST_ANCHOR,
+                "loading the most recent audit anchor",
+            ),
+            (
+                anchor_audit::CTX_CHAIN_LINKAGE,
+                "verifying the audit anchor chain's own linkage",
+            ),
+            (
+                anchor_audit::CTX_ROWS_IN_PERIOD,
+                "reading cratestack_audit for the new period",
+            ),
+            (
+                anchor_audit::CTX_WRITE_ANCHOR,
+                "writing the new audit anchor",
+            ),
+            (
+                grey_route_watch::CTX_DIVERGENCE,
+                "checking route delivery-rate divergence",
+            ),
+            (
+                grey_route_watch::CTX_OVERDUE,
+                "checking overdue route validations",
+            ),
+        ];
+        for (actual, expected) in table {
+            assert_eq!(actual, expected);
+        }
     }
 }

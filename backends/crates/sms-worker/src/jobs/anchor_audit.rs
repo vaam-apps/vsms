@@ -18,6 +18,18 @@ use crate::jobs::{JobError, JobHandler};
 /// codebase, not a value tuned against any measured worst case.
 const ANCHOR_LAG: Duration = Duration::minutes(5);
 
+/// Context wording for [`JobError::Database`] — see
+/// `expire_stale::CTX_SUBMITTED`'s own doc for why this is a
+/// `pub(crate) const`, not an inline literal.
+pub(crate) const CTX_LATEST_ANCHOR: &str = "loading the most recent audit anchor";
+/// See [`CTX_LATEST_ANCHOR`].
+pub(crate) const CTX_CHAIN_LINKAGE: &str = "verifying the audit anchor chain's own linkage";
+/// Context wording for [`JobError::Sql`] — same reasoning as
+/// [`CTX_LATEST_ANCHOR`].
+pub(crate) const CTX_ROWS_IN_PERIOD: &str = "reading cratestack_audit for the new period";
+/// See [`CTX_LATEST_ANCHOR`].
+pub(crate) const CTX_WRITE_ANCHOR: &str = "writing the new audit anchor";
+
 /// The `anchor_audit` [`JobHandler`] — see the module doc for the design
 /// this implements and exactly what it proves.
 pub struct AnchorAudit;
@@ -39,14 +51,14 @@ impl AnchorAudit {
         let latest = latest_anchor(db, sys)
             .await
             .map_err(|source| JobError::Database {
-                context: "loading the most recent audit anchor",
+                context: CTX_LATEST_ANCHOR,
                 source,
             })?;
 
         let breaks = verify_chain_linkage(db, sys)
             .await
             .map_err(|source| JobError::Database {
-                context: "verifying the audit anchor chain's own linkage",
+                context: CTX_CHAIN_LINKAGE,
                 source,
             })?;
         for detail in &breaks {
@@ -89,7 +101,7 @@ impl AnchorAudit {
         let rows = rows_in_period(db, period_start, period_end)
             .await
             .map_err(|source| JobError::Sql {
-                context: "reading cratestack_audit for the new period",
+                context: CTX_ROWS_IN_PERIOD,
                 source,
             })?;
         let row_count = i64::try_from(rows.len()).unwrap_or(i64::MAX);
@@ -117,7 +129,7 @@ impl AnchorAudit {
             .run(sys)
             .await
             .map_err(|source| JobError::Database {
-                context: "writing the new audit anchor",
+                context: CTX_WRITE_ANCHOR,
                 source,
             })?;
 

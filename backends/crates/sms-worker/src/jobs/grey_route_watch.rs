@@ -45,6 +45,13 @@ const FETCH_LIMIT: i64 = 20_000;
 /// `RouteValidation` row inside this window is overdue.
 pub const VALIDATION_INTERVAL: Duration = Duration::days(30);
 
+/// Context wording for [`JobError::Database`] — see
+/// `expire_stale::CTX_SUBMITTED`'s own doc for why this is a
+/// `pub(crate) const`, not an inline literal.
+pub(crate) const CTX_DIVERGENCE: &str = "checking route delivery-rate divergence";
+/// See [`CTX_DIVERGENCE`].
+pub(crate) const CTX_OVERDUE: &str = "checking overdue route validations";
+
 /// One route's aggregated terminal outcomes within the window, for one
 /// `(operator, class)` peer group. `delivered`/`failed` are counts, not
 /// rates, so [`detect_divergent_routes`] can re-derive both a rate and a
@@ -327,7 +334,7 @@ impl GreyRouteWatch {
             .check_divergence(db, sys, now)
             .await
             .map_err(|source| JobError::Database {
-                context: "checking route delivery-rate divergence",
+                context: CTX_DIVERGENCE,
                 source,
             })?;
         sms_metrics::ROUTE_DELIVERY_DIVERGENCE_FLAGGED
@@ -337,7 +344,7 @@ impl GreyRouteWatch {
             .check_overdue_validations(db, sys, now)
             .await
             .map_err(|source| JobError::Database {
-                context: "checking overdue route validations",
+                context: CTX_OVERDUE,
                 source,
             })?;
         sms_metrics::ROUTE_VALIDATION_OVERDUE.set(i64::try_from(overdue).unwrap_or(i64::MAX));

@@ -189,11 +189,11 @@ impl JobHandler for ScriptedHandler {
         if self.succeed {
             Ok(())
         } else {
-            // `JobError::Other`: this handler's whole point is exercising
+            // `JobError::Injected`: this handler's whole point is exercising
             // the generic backoff/`dead` machinery with an arbitrary
             // failure, independent of any real job's own database calls —
             // see that variant's own doc for why it exists at all.
-            Err(JobError::Other("scripted failure".to_owned()))
+            Err(JobError::Injected("scripted failure".to_owned()))
         }
     }
 }
