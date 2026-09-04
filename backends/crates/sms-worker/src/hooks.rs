@@ -5,7 +5,7 @@ use std::time::Duration as StdDuration;
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use reqwest::StatusCode;
-use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::auth::system_context;
 use sms_api::map_database_error;
 use sms_api::schema::{
     AttemptState, UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, WebhookAttempt,
@@ -14,6 +14,7 @@ use sms_api::schema::{
 use tracing::{error, warn};
 
 use crate::WorkerContext;
+use crate::breaker::{self, BreakerPolicy};
 use crate::claim::claim_batch;
 
 /// How often this loop polls for claimable attempts. Same order of
@@ -36,11 +37,14 @@ const BUDGET: i64 = 20;
 /// connection that hangs forever is worse than one that fails fast).
 const REQUEST_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
-/// §8.5: "20 consecutive failures sets `circuitOpenUntil`."
-const CIRCUIT_FAILURE_THRESHOLD: i64 = 20;
-
-/// §8.5: "`circuitOpenUntil = now + 15min`."
-const CIRCUIT_OPEN_DURATION: Duration = Duration::minutes(15);
+/// §8.5, verbatim: "20 consecutive failures sets `circuitOpenUntil`" for
+/// 15 minutes. See `breaker.md` for why this and `dispatch::PROVIDER_
+/// BREAKER` each declare their own `BreakerPolicy` rather than sharing a
+/// value defined in that module.
+const ENDPOINT_BREAKER: BreakerPolicy = BreakerPolicy {
+    failure_threshold: 20,
+    open_duration: Duration::minutes(15),
+};
 
 /// §8.5, verbatim: "1s, 5s, 25s, 2m, 10m, 1h, 6h, 24h — eight attempts, then
 /// `dead`." The schedule is fixed and shared; how many entries into it a
@@ -69,15 +73,11 @@ fn backoff_for(attempts: i64) -> Duration {
     BACKOFF_SCHEDULE[index.min(BACKOFF_SCHEDULE.len() - 1)]
 }
 
-/// The `system` context this role does all its work under.
+/// The `system` context this role does all its work under — see
+/// [`sms_api::auth::system_context`] for the shared constructor and the
+/// invariant it documents.
 fn sys(worker: &str) -> CratestackContext {
-    Principal {
-        sub: format!("sms-worker:hooks:{worker}"),
-        kind: PrincipalKind::App,
-        role: "system".to_owned(),
-        app_id: String::new(),
-    }
-    .into_context()
+    system_context(format!("sms-worker:hooks:{worker}"))
 }
 
 /// A client with §8.5's own 10s timeout — `reqwest::Client::new()` sets
@@ -521,8 +521,10 @@ async fn write_dead(
 
 /// A failed delivery's endpoint-side bookkeeping — `consecutiveFailures`
 /// incremented, and the circuit opened (with the counter reset to zero) the
-/// moment it crosses [`CIRCUIT_FAILURE_THRESHOLD`]. By construction this is
-/// never called for an endpoint whose circuit is already open —
+/// moment it crosses [`ENDPOINT_BREAKER`]'s own threshold (the decision
+/// itself lives in [`breaker::on_failure`], shared with `dispatch.rs`'s
+/// identically-shaped provider breaker — see `breaker.md`). By construction
+/// this is never called for an endpoint whose circuit is already open —
 /// `claim.rs`'s own `filter_by_endpoint_health` excludes such an endpoint's
 /// attempts from ever being claimed, so `hooks` never attempts, and
 /// therefore never records a failure against, a breaker that has already
@@ -545,19 +547,17 @@ async fn record_endpoint_failure(
     endpoint: &WebhookEndpoint,
     now: DateTime<Utc>,
 ) {
-    let consecutive = endpoint.consecutiveFailures + 1;
-    let opening_circuit = consecutive >= CIRCUIT_FAILURE_THRESHOLD;
-    let next_consecutive = if opening_circuit { 0 } else { consecutive };
+    let decision = breaker::on_failure(&ENDPOINT_BREAKER, endpoint.consecutiveFailures, now);
 
     let mut set = UpdateWebhookEndpointInput {
-        consecutiveFailures: Some(next_consecutive),
+        consecutiveFailures: Some(decision.consecutive_failures),
         ..Default::default()
     };
-    if opening_circuit {
-        set.circuitOpenUntil = Some(Some(now + CIRCUIT_OPEN_DURATION));
+    if decision.opened_circuit() {
+        set.circuitOpenUntil = Some(decision.circuit_open_until);
         warn!(
             endpoint_id = %endpoint.id,
-            threshold = CIRCUIT_FAILURE_THRESHOLD,
+            threshold = ENDPOINT_BREAKER.failure_threshold,
             "circuit breaker opened after consecutive failures"
         );
     }
@@ -588,7 +588,7 @@ async fn reset_endpoint_failures(
     sys: &CratestackContext,
     endpoint: &WebhookEndpoint,
 ) {
-    if endpoint.consecutiveFailures == 0 && endpoint.circuitOpenUntil.is_none() {
+    if !breaker::needs_reset(endpoint.consecutiveFailures, endpoint.circuitOpenUntil) {
         return;
     }
     if let Err(error) = ctx

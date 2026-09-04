@@ -29,7 +29,7 @@ use clap::Parser;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, FilterExpr};
 use sms_api::Procedures;
-use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::auth::{Principal, PrincipalKind, system_context};
 use sms_api::schema::{
     self, Cratestack, SenderIdRegistrationStatus, procedures::ProcedureRegistry,
     procedures::send_message, provider, route, sender_id, sender_id_registration,
@@ -73,13 +73,7 @@ fn owner() -> CratestackContext {
 }
 
 fn sys() -> CratestackContext {
-    Principal {
-        sub: "send-test-message-tool".to_owned(),
-        kind: PrincipalKind::App,
-        role: "system".to_owned(),
-        app_id: String::new(),
-    }
-    .into_context()
+    system_context("send-test-message-tool")
 }
 
 /// #24: `sendMessage` now gates on `require_permission(ctx, "sms:send")`

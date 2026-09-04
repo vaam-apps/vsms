@@ -5,7 +5,7 @@ use std::time::Duration as StdDuration;
 
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
-use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::auth::system_context;
 use sms_api::errors::UNIQUE_VIOLATION;
 use sms_api::schema::{Cratestack, CreateJobInput, job};
 use tracing::{error, warn};
@@ -88,14 +88,11 @@ pub fn schedule() -> Vec<RecurringJobSpec> {
     ]
 }
 
+/// The `system` context this role does all its work under — see
+/// [`sms_api::auth::system_context`] for the shared constructor and the
+/// invariant it documents.
 fn sys(worker: &str) -> CratestackContext {
-    Principal {
-        sub: format!("sms-worker:scheduler:{worker}"),
-        kind: PrincipalKind::App,
-        role: "system".to_owned(),
-        app_id: String::new(),
-    }
-    .into_context()
+    system_context(format!("sms-worker:scheduler:{worker}"))
 }
 
 /// Never returns on its own, matching [`crate::run`]'s contract.

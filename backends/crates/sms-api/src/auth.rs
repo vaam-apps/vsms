@@ -230,17 +230,47 @@ impl GatewayAuth {
             user_cache: std::sync::Arc::new(TtlCache::new(Duration::from_mins(1))),
             human_client_id,
             db,
-            sys: system_context(),
+            sys: system_context("sms-api:auth"),
         }
     }
 }
 
-/// The `system`-role context this provider's own `AppClient` lookup runs
-/// under — never handed to a caller, only used internally the same way
-/// `Procedures::sys()` is.
-fn system_context() -> CratestackContext {
+/// The one place that mints the `system`-role context — the most
+/// privileged construct in this system (it is what `OauthSigningKey.
+/// privateKeyPem` and every `UserCredential.passwordHash` are gated
+/// behind). Every internal system-context write in this workspace —
+/// `Procedures::sys()`, `webhooks.rs`'s own subscriber context, this
+/// provider's `AppClient` lookup, `sms-worker`'s `jobs` role,
+/// `sms-gateway`'s OP-adjacent writes, and `send_test_message.rs`'s
+/// standalone tool — calls this function rather than hand-rolling the
+/// same [`Principal`] literal, so the invariant below has exactly one
+/// place to hold, not six independently-drifting copies of it.
+///
+/// **The invariant: this must never be reachable from an HTTP request.**
+/// Nothing in [`GatewayAuth::authenticate`] ever produces `role: "system"`
+/// for a real bearer token — [`authenticate_app`] hardcodes `role: "app"`
+/// (see that function's own comment on why `"system"` specifically must
+/// never slip there), and [`load_human_principal`] refuses a human
+/// account whose `Role.key` is `"system"` (or `"app"`) before a
+/// `Principal` is ever built from it, backed a second, independent way by
+/// the database itself (`roles_key_not_reserved_check`, a `CHECK`
+/// constraint on `roles.key` — see [`RESERVED_ROLE_KEYS`]'s own doc for
+/// both layers). This function is the only source of a `role: "system"`
+/// context anywhere in this codebase; it exists in a process's own
+/// internal wiring, never behind a route a token can reach.
+///
+/// `sub` is the one thing that legitimately differs per caller — a
+/// human-readable label naming which subsystem is acting, not a secret or
+/// a policy input. It shows up verbatim in `cratestack_audit.actor.sub`
+/// on every write this context makes, which is the entire reason each
+/// call site passes its own value (`"sms-api:procedures"`,
+/// `"sms-worker:jobs:{worker}"`, …) rather than a shared constant — an
+/// audit row naming which caller performed a system-level write is worth
+/// more than one fewer function argument.
+#[must_use]
+pub fn system_context(sub: impl Into<String>) -> CratestackContext {
     Principal {
-        sub: "sms-api:auth".to_owned(),
+        sub: sub.into(),
         kind: PrincipalKind::App,
         role: "system".to_owned(),
         app_id: String::new(),
@@ -407,12 +437,12 @@ async fn authenticate_app(
     let mut ctx = Principal {
         sub: client_id,
         kind: PrincipalKind::App,
-        // Never "system" — that role is constructed exactly once, inside
-        // `Procedures::sys()`, never from a token. `"app"` is a sentinel
-        // that matches no `hasRole(...)` clause on any model in the
-        // schema: a machine caller's only access is the seven procedures,
-        // never generated CRUD. See `OauthSigningKey`'s own schema comment
-        // for why this specifically must never slip.
+        // Never "system" — that role is minted only by `system_context`,
+        // above, never from a token. `"app"` is a sentinel that matches no
+        // `hasRole(...)` clause on any model in the schema: a machine
+        // caller's only access is the seven procedures, never generated
+        // CRUD. See `OauthSigningKey`'s own schema comment for why this
+        // specifically must never slip.
         role: "app".to_owned(),
         app_id: app_client.appId,
     }
@@ -602,10 +632,10 @@ async fn load_human_principal(
 /// generated from `docs/architecture.md` §2.10 — never hand-edited).
 ///
 /// - `"system"` is the one that matters: it's the literal `hasRole(...)`
-///   compares against for the synthetic internal context every procedure's
-///   own `sys()`/`system_context()` constructs — see this file's own
-///   [`PrincipalKind`] doc and §5.2 of the design doc. A `Role` row keyed
-///   `"system"` would let `hasRole('system')` match for a real human.
+///   compares against for the synthetic internal context [`system_context`]
+///   constructs — see this file's own [`PrincipalKind`] doc and §5.2 of
+///   the design doc. A `Role` row keyed `"system"` would let
+///   `hasRole('system')` match for a real human.
 /// - `"app"` is reserved too, defensively, even though it is not
 ///   currently a privilege escalation: [`authenticate_app`]'s own
 ///   `role: "app"` sentinel matches no `hasRole(...)` clause in the schema

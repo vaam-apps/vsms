@@ -4,7 +4,7 @@ use chrono::Utc;
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use tracing::error;
 
-use crate::auth::{Principal, PrincipalKind};
+use crate::auth::system_context;
 use crate::errors::UNIQUE_VIOLATION;
 use crate::schema::{
     Cratestack, CreateWebhookAttemptInput, Message, MessageState,
@@ -14,16 +14,11 @@ use crate::schema::{
 
 /// The `system` context every subscriber in this module reads/writes
 /// under. No real caller's token ever carries this identity — see
-/// `Principal::into_context`'s own doc for why setting only `kind` or only
-/// `role` denies every write instead of granting one.
+/// [`crate::auth::system_context`]'s own doc for the invariant and why
+/// every internal system-context write in this workspace shares that one
+/// constructor.
 fn sys() -> CratestackContext {
-    Principal {
-        sub: "sms-api:webhooks".to_owned(),
-        kind: PrincipalKind::App,
-        role: "system".to_owned(),
-        app_id: String::new(),
-    }
-    .into_context()
+    system_context("sms-api:webhooks")
 }
 
 /// §8.4's event catalogue, restricted to the `Message` states it actually
