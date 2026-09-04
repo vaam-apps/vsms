@@ -4,7 +4,7 @@ can run at all.
 
 **This used to be `sms-gateway seed-demo-app` (`Command::SeedDemoApp`,
 `app/sms-gateway/src/main.rs`).** Moved out into its own binary, its own
-crate, and its own image (`ghcr.io/vaam-store/vsms/demo`) — the maintainer's
+crate, and its own image (`ghcr.io/vaam-apps/vsms/demo`) — the maintainer's
 own words on the image-hygiene PR that did this: "Images should be tiny
 and have ONLY the core business logic. Demo stuffs, never! Unless it's
 rust -> binary, it should never be in production images." Roughly 200

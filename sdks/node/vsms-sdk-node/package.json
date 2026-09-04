@@ -1,11 +1,11 @@
 {
   "name": "@vymalo/vsms-node",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Official Node.js SDK for vsms: owns the private_key_jwt credential lifecycle so integrators stop hand-rolling token acquisition.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/vaam-store/vsms.git",
+    "url": "https://github.com/vaam-apps/vsms.git",
     "directory": "sdks/node/vsms-sdk-node"
   },
   "publishConfig": {

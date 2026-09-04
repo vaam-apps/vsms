@@ -17,7 +17,7 @@ Nothing else: every repo-owned check (the R1 lint, the R2 parity check, bootstra
 
 [,bash]
 ----
-git clone https://github.com/vaam-store/vsms.git
+git clone https://github.com/vaam-apps/vsms.git
 cd vsms
 just check
 ----

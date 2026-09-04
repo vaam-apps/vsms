@@ -2096,6 +2096,32 @@ from `build:` to `image:`, pinned via a fourth tag knob
 bumped to `^0.3.0`. `just demo` (`compose.dev.yaml`) is unaffected — it
 still builds `demo-app` from source, by design.
 
+## Release v0.3.1 — owner flip to `vaam-apps`
+
+This repository's GitHub owner moved a second time, the day after the
+first flip: `vaam-store` -> `vaam-apps`. `v0.3.0` itself stays published
+under `ghcr.io/vaam-store/...` and on npm/crates.io exactly as it
+shipped -- a repository transfer does not retroactively move an
+already-published package or image. `release.yml`'s
+`ghcr.io/${{ github.repository_owner }}/...` publish target needs no
+code change for this; it already tracks the owner dynamically.
+
+**Why `0.3.1` and not a `v0.3.0` retag under the new owner:** `0.3.0` is
+already published on npm (`@vymalo/vsms-node`) and crates.io
+(`vsms-sdk-rust`), and neither registry lets a version be republished
+with different contents. So the workspace, the Rust SDK and the Node SDK
+all move to `0.3.1` together (`release.yml`'s own `version` job already
+refuses a tag whose value disagrees across the three manifests), and
+every compose/chart default that points at a tag moves with it.
+
+**Registry-side, not in this tree, and a prerequisite for the tag:** npm
+Trusted Publishing for `@vymalo/vsms-node` was pointed at
+`vaam-store/vsms` by the previous flip's own follow-up; it must be
+re-pointed to `vaam-apps/vsms` *before* the `v0.3.1` tag runs, or
+`publish-node-sdk` fails with the same masked `E404` this file already
+recorded for the `vymalo` -> `vaam-store` move. The maintainer's step,
+not this PR's.
+
 ## Conventions
 
 - Commits: imperative subject, body explaining *why*. Record framework surprises in the commit body and in §2.0 — that table is the most valuable thing here for whoever comes next.
