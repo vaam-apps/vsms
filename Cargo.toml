@@ -57,7 +57,7 @@ members = [
 exclude = ["examples/rust", "sdks/rust"]
 
 [workspace.package]
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 # Raised to 1.98.0 for the cratestack 0.11.0 bump: crates.io's own
 # `rust_version` field for `cratestack-pg` 0.11.0 declares that floor
@@ -83,7 +83,7 @@ edition = "2024"
 # switching, rather than assumed.
 rust-version = "1.98.0"
 license = "MIT"
-repository = "https://github.com/vymalo/vsms"
+repository = "https://github.com/vaam-store/vsms"
 authors = ["Vymalo"]
 publish = false
 

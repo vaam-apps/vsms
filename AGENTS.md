@@ -2040,6 +2040,29 @@ Inline classes in a view make three problems at once: the same treatment drifts 
 
 **Proof this was a pure move:** `cargo check -p sms-gateway --all-targets`, `cargo clippy -p sms-gateway --all-targets -- -D warnings`, and `cargo fmt --all --check` are all clean (workspace-wide, not just this crate). `sms-gateway --help`, `sms-gateway bootstrap --help`, and all nine other subcommands' `--help` output are byte-identical to `origin/prod/deploy-readiness`, captured and diffed before and after, not eyeballed. All six of `backends/apps/sms-gateway/tests/*_live_postgres.rs`/`*_live.rs` suites pass against a real Postgres (`cargo test -p sms-gateway --tests --no-fail-fast -- --ignored`): `bootstrap_and_create_app_live_postgres.rs` (5), `login_flow_live_postgres.rs` (4), `m1_acceptance_gate_live_postgres.rs` (1), `provision_client_cli_live_postgres.rs` (1), `tls_no_provider_live.rs` (1), `webhook_outbox_kill_mid_drain_live.rs` (1) — 13 tests, 0 failures, exercising every subcommand this PR touched (`bootstrap` chains `rotate-signing-key`/`seed-dispatch`/`seed-console-client`/`provision-user` internally, so its own suite alone re-proves four of the eleven). `cargo xtask no-raw-sqlx`/`docs-drift`/`r6` all pass unchanged.
 
+## Release v0.3.0 — owner flip to `vaam-store`
+
+This repository's GitHub owner moved from `vymalo` to `vaam-store`.
+Every image through `v0.2.1` published under `ghcr.io/vymalo/...`;
+`release.yml` already publishes to `ghcr.io/${{ github.repository_owner }}/...`
+unconditionally, so `v0.3.0` lands under `ghcr.io/vaam-store/...`.
+Compose/chart defaults (`VSMS_IMAGE_OWNER`, `repositoryOwner`) now default
+to `vaam-store`/`v0.3.0`; showcasing an older release means setting the
+owner and tag knobs together, never one alone. The npm package name
+(`@vymalo/vsms-node`) and the crates.io crate (`vsms-sdk-rust`) do **not**
+change — an npm scope, not the GitHub owner.
+
+**Ordering constraint:** `examples/node/demo-app/package.json`'s
+`@vymalo/vsms-node` dependency stays `^0.2.1` here, on purpose — the
+demo-app image is built by the same tag workflow that publishes `0.3.0`
+to npm, so at build time `0.3.0` doesn't exist there yet. Bumped to
+`^0.3.0` after the release, as a follow-up.
+
+**Accepted:** compose/chart defaults point at images that don't exist
+until the `v0.3.0` tag runs, minutes after this merges. Two post-tag
+follow-ups, neither attempted here: `demo-app`'s `build:` stanza switching
+to `image:`, and the npm dependency bump above.
+
 ## Conventions
 
 - Commits: imperative subject, body explaining *why*. Record framework surprises in the commit body and in §2.0 — that table is the most valuable thing here for whoever comes next.

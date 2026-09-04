@@ -23,7 +23,7 @@ Which door you want depends on what you're doing:
 The short version, for a developer who just wants it running:
 
 ```bash
-git clone https://github.com/vymalo/vsms.git
+git clone https://github.com/vaam-store/vsms.git
 cd vsms
 just demo
 ```
