@@ -13,7 +13,7 @@ use cratestack::axum::middleware::{Next, from_fn_with_state};
 use cratestack::axum::response::Response;
 use cratestack::idempotency::{IdempotencyLayer, IdempotencyStore};
 use cratestack::ratelimit::{
-    InMemoryRateLimitStore, RateLimitConfig, RateLimitLayer, RateLimitStore,
+    InMemoryRateLimitStore, RateLimitConfig, RateLimitLayer, RateLimitStore, StoreErrorPolicy,
 };
 use cratestack::{AuthProvider, RequestContext, SqlxIdempotencyStore, Value};
 use cratestack_codec_json::JsonCodec;
@@ -684,6 +684,31 @@ fn verified_idempotency_fingerprint(req: &Request) -> String {
 /// [`verify_idempotency_principal`]'s *verified* `sub`) — see that
 /// function's own doc for why `IdempotencyLayer` specifically cannot
 /// tolerate the cheaper, unverified version `RateLimitLayer` still uses.
+///
+/// **Neither `with_key_fn` override is bounded by cratestack's own
+/// keyspace-amplification defense — and at this pin, nothing is.**
+/// `cratestack-axum`'s own changelog names the exact attack these two
+/// layers exist to blunt (rotate an unverified `Authorization`/identity
+/// per request, mint one fresh bucket each) and says explicitly, in the
+/// entry for this pin, that the fix "closes the bypass but not the
+/// primitive underneath it... tracked separately as #871." The keyspace
+/// bound itself (`RateLimitBucketBudget`, `DEFAULT_MAX_BUCKETS = 100_000`,
+/// `with_bucket_budget`/`with_max_buckets`) shipped the same day in
+/// `cratestack-axum` **0.11.1** — one patch past this repo's `=0.11.0`
+/// pin — and is not adopted here. Confirmed directly against the vendored
+/// 0.11.0 source, not inferred from the version number: `RateLimitService
+/// ::call` (`ratelimit/layer.rs`) calls the store's plain `consume`, never
+/// `consume_bounded`, so nothing bounds the keyspace for the *default* key
+/// function either at this pin — "bounding it is the consumer's job" is
+/// not yet a real knob to reach for here, only an upstream-acknowledged
+/// gap this repo inherits unchanged from every version before it. Worth
+/// noting for whoever adopts 0.11.1+ later: that mechanism's own default
+/// shape (scope by `ConnectInfo` peer, cap the `Authorization`-derived
+/// buckets it admits) is built around the *default* key function's
+/// `auth:`/`ip:` split — [`client_id_fingerprint`] and
+/// [`source_fingerprint`] use different key shapes entirely, so adopting
+/// the bound later needs an explicit `with_bucket_budget` matched to this
+/// router's own keys, not a bare version bump.
 // No `#[must_use]`: axum's `Router` already carries one, and doubling it is
 // what `clippy::double_must_use` objects to.
 pub fn router(
@@ -742,9 +767,25 @@ pub fn router(
     // provably a no-op on this upgrade, not a new restriction. No message
     // body, webhook payload, or provider response this system handles is
     // remotely close to 2 MiB.
+    //
+    // cratestack 0.11.0 (cratestack#328): `router()` gained a second new,
+    // required parameter — `resolvers`, a `ComputedFieldResolver` —
+    // inserted between `registry` and `codec` (checked directly against
+    // the generator: `cratestack-macros-0.11.1/src/include/server/
+    // axum_module/router_fn.rs`'s `router<R, CR, C, Auth>(db, registry,
+    // resolvers, codec, auth_provider, body_limit_bytes)`, not inferred
+    // from the compiler's own trait-bound errors alone, though those
+    // errors — `JsonCodec: ComputedFieldResolver`, `GatewayAuth:
+    // HttpTransport`, `usize: AuthProvider` — are what surfaced the shift
+    // in the first place). `schemas/vsms.cstack` declares no `@computed`
+    // field anywhere (grepped before assuming), so `()` — the trivial
+    // resolver every non-computed schema in cratestack's own test suite
+    // passes at this call site — is the correct, no-op value here, not a
+    // placeholder for something this router should build later.
     schema::axum::router(
         db,
         Procedures::new(pepper),
+        (),
         JsonCodec,
         auth,
         cratestack::DEFAULT_BODY_LIMIT_BYTES,
@@ -767,10 +808,34 @@ pub fn router(
         idempotency_auth_state,
         verify_idempotency_principal,
     ))
-    .layer(RateLimitLayer::new(rate_limit_store, rate_limit).with_key_fn(client_id_fingerprint))
+    // cratestack 0.11.0 (cratestack#846): `RateLimitLayer` gained
+    // `with_store_error_policy`, defaulting to `StoreErrorPolicy::Allow` —
+    // serve a request unthrottled when the backing store fails in a way
+    // classified transport-class (`CratestackError::Unavailable`), refuse
+    // otherwise. That default is right for a limiter used as a *capacity*
+    // control, where a store outage shouldn't cascade into a second
+    // outage of every rate-limited route. It is wrong here: per #163/#168
+    // both these layers are wired in as a *security* control (bounding
+    // how many forged identities/`client_id`s one caller can spend), and
+    // the changelog's own advice for that shape of deployment is explicit
+    // — "Set `StoreErrorPolicy::Deny` to keep the previous behaviour...
+    // that is what deployments using the limiter as a security control...
+    // want." Set explicitly on both layers so the choice survives a
+    // future switch away from `InMemoryRateLimitStore`, not because it
+    // changes anything today: `InMemoryRateLimitStore::consume`'s only
+    // failure mode is a poisoned `Mutex` (`CratestackError::Internal`),
+    // which `Allow` already refuses too — verified by reading
+    // `cratestack-axum-0.11.0/src/ratelimit/store.rs` directly, not
+    // assumed from the changelog's Redis-focused framing.
+    .layer(
+        RateLimitLayer::new(rate_limit_store, rate_limit)
+            .with_key_fn(client_id_fingerprint)
+            .with_store_error_policy(StoreErrorPolicy::Deny),
+    )
     .layer(
         RateLimitLayer::new(source_rate_limit_store, source_rate_limit)
-            .with_key_fn(source_fingerprint),
+            .with_key_fn(source_fingerprint)
+            .with_store_error_policy(StoreErrorPolicy::Deny),
     )
 }
 
