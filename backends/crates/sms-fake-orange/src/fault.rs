@@ -319,9 +319,14 @@ impl FaultPolicy {
 /// `routed -> uncertain` write has time to land before the DLR arrives —
 /// otherwise the DLR races a write that hasn't happened yet for a second,
 /// uninteresting reason (test timing, not the real race this suite exists
-/// to prove).
-const NORMAL_DLR_DELAY_MIN_MS: u64 = 10;
-const NORMAL_DLR_DELAY_MAX_MS: u64 = 90;
+/// to prove). The normal DLR window is bounded below for the same reason,
+/// against a different write: a DLR that lands before `write_submitted`
+/// has stamped `providerMessageRef` is dropped as unknown, and the seeded
+/// sweeps absorb that loss silently (`expire_stale` still reaps the row),
+/// so at 10–90 ms a loaded machine quietly turned them into expiry tests.
+/// 250 ms is `chaos_live_postgres.rs`'s own `DLR_AFTER_SUBMIT`.
+const NORMAL_DLR_DELAY_MIN_MS: u64 = 250;
+const NORMAL_DLR_DELAY_MAX_MS: u64 = 340;
 const TIMEOUT_RESPONSE_DELAY_MS: u64 = 300;
 const RESOLVING_DLR_DELAY_MS: u64 = 450;
 const RACE_RESPONSE_DELAY_MS: u64 = 80;

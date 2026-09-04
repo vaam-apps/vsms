@@ -533,9 +533,10 @@ jobs:
       # restructure left five stale Dockerfile paths there and main built
       # no images at all for four merges before anyone looked.
       - run: cargo xtask workflow-paths
-      # ci/runner/Dockerfile's CRATESTACK_VERSION default is a second copy
-      # of the Cargo.toml pin, and drifted once — see .xtask/src/runner_pin.rs.
-      - run: cargo xtask runner-pin
+      # The cratestack pin has four more copies no single cargo invocation
+      # sees (codec-json, two excluded client manifests, ci/runner/Dockerfile's
+      # ARG); the last drifted once — see .xtask/src/pin_copies.rs.
+      - run: cargo xtask cratestack-pin-check
       # R6: pages compose, smart components decide, dumb components style.
       # Prose alone does not hold — the `hasRole('system')` gap was found
       # seven times before it got a golden test, and seven more after. This

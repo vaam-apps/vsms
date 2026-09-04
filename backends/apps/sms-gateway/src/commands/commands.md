@@ -16,7 +16,8 @@ There is no `common.rs`: the one helper more than one subcommand needs —
 the `system`-role context every OP-adjacent write runs under — is
 `sms_api::system_context`, shared with the worker rather than duplicated
 here. Everything used by exactly one subcommand stays private to
-that subcommand's own file — `seed_dispatch::seed_dispatch_core` and
-`seed_console_client::seed_console_client_core` are the two exceptions,
+that subcommand's own file — `seed_dispatch::seed_dispatch_core`,
+`seed_console_client::seed_console_client_core` and
+`provision_user::create_console_user_if_absent` are the three exceptions,
 `pub(crate)` because `bootstrap::bootstrap_command` reuses them directly
 rather than re-deriving their logic (see `bootstrap.rs`'s own doc for why).

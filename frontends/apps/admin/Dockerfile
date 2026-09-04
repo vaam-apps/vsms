@@ -27,7 +27,8 @@ RUN pnpm install --frozen-lockfile
 # this Dockerfile, and confirmed empirically: `pnpm turbo run build
 # --filter=admin...` succeeds without it. Generating it would mean
 # compiling `cratestack-cli` from source (`cargo install cratestack-cli
-# --version 0.7.8 --locked`, a full Rust build — see ci.yml's own `js` job)
+# --version "$(cargo xtask cratestack-pin)" --locked`, a full Rust build —
+# see ci.yml's own `js` job)
 # inside every admin image build, for zero runtime benefit today. The
 # moment admin code actually imports it, this stage needs that install
 # step ahead of `pnpm install` — not before, per this repo's own "no

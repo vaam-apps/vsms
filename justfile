@@ -28,8 +28,8 @@ _cargo := "CARGO_BUILD_JOBS=" + jobs + " cargo"
 # `cargo xtask cratestack-pin` (read it; a version quoted in this comment
 # has drifted before) — CI installs exactly that version via cratestack's
 # own composite action (see ci.yml's `schema-drift`/`js` jobs), not a
-# hardcoded literal here. `cargo xtask runner-pin` holds
-# ci/runner/Dockerfile's own copy of the pin to the same value.
+# hardcoded literal here. `cargo xtask cratestack-pin-check` holds every
+# other copy of the pin (ci/runner/Dockerfile's ARG included) to that value.
 cratestack_bin := env_var_or_default("CRATESTACK_BIN", "cratestack")
 
 # Show available recipes
@@ -128,7 +128,7 @@ all-checks: lint test
 	{{_cargo}} xtask no-raw-sqlx
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask workflow-paths
-	{{_cargo}} xtask runner-pin
+	{{_cargo}} xtask cratestack-pin-check
 	{{_cargo}} xtask docs-drift
 	{{_cargo}} xtask r6
 	{{_cargo}} xtask node-sdk-types-check
@@ -158,11 +158,12 @@ workflow-paths:
 docs-drift:
 	{{_cargo}} xtask docs-drift
 
-# ci/runner/Dockerfile's CRATESTACK_VERSION default is a second copy of the
-# Cargo.toml pin; it drifted once (0.8.10 against a 0.11.0 pin) and just ci
+# The cratestack pin is written in five places (Cargo.toml twice, the two
+# workspace-excluded client manifests, ci/runner/Dockerfile's ARG default);
+# the Dockerfile copy drifted once (0.8.10 against a 0.11.0 pin) and just ci
 # built a runner its own first step then refused.
-runner-pin:
-	{{_cargo}} xtask runner-pin
+cratestack-pin-check:
+	{{_cargo}} xtask cratestack-pin-check
 # R6: no CSS classes or raw markup in page/*-screen view files
 r6:
 	{{_cargo}} xtask r6
@@ -682,7 +683,7 @@ ci-inner:
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask sdk-schema-check
 	{{_cargo}} xtask workflow-paths
-	{{_cargo}} xtask runner-pin
+	{{_cargo}} xtask cratestack-pin-check
 	{{_cargo}} xtask docs-drift
 	{{_cargo}} xtask r6
 	{{_cargo}} xtask node-sdk-types-check
