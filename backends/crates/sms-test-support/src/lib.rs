@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::sqlx::{query, query_scalar};
+use cratestack::sqlx::{AssertSqlSafe, query, query_scalar};
 use tokio::process::Command;
 use tokio::sync::OnceCell;
 
@@ -459,19 +459,35 @@ async fn ensure_binary_database(base_url: &str) -> String {
 
     let stale = stored_fingerprint.as_deref() != Some(current_fingerprint.as_str());
 
+    // sqlx 0.9.0 (#3723, pulled in transitively by the cratestack 0.11.0
+    // bump) narrowed every `query*()`/`raw_sql()` entry point to `impl
+    // SqlSafeStr`, implemented only for `&'static str` and the
+    // `AssertSqlSafe` wrapper — a runtime `String` no longer satisfies it
+    // on its own. Every dynamic string below is genuinely audited, not
+    // just silenced: Postgres has no bind-parameter form for an
+    // identifier (`CREATE`/`DROP DATABASE "<name>"` can't parameterise the
+    // database name), which is the actual reason this harness builds SQL
+    // strings at all rather than the R1 exception being casual about it.
+    // `TEMPLATE_DB_NAME` is a compile-time constant; `name` is this
+    // binary's own crate-name-derived database name (`database_name()`,
+    // below); `current_fingerprint` is documented at its own call site as
+    // always exactly 16 lowercase hex digits. None crosses a trust
+    // boundary this harness doesn't already own.
     if stale {
         if template_exists {
-            query(&format!(
+            query(AssertSqlSafe(format!(
                 "DROP DATABASE IF EXISTS \"{TEMPLATE_DB_NAME}\" WITH (FORCE)"
-            ))
+            )))
             .execute(&mut *conn)
             .await
             .expect("dropping the stale template database before remigrating it");
         }
-        query(&format!("CREATE DATABASE \"{TEMPLATE_DB_NAME}\""))
-            .execute(&mut *conn)
-            .await
-            .expect("creating the template database");
+        query(AssertSqlSafe(format!(
+            "CREATE DATABASE \"{TEMPLATE_DB_NAME}\""
+        )))
+        .execute(&mut *conn)
+        .await
+        .expect("creating the template database");
 
         // Connects to (and fully disconnects from) the template on its
         // own — Postgres refuses `CREATE DATABASE ... TEMPLATE x` while
@@ -487,21 +503,23 @@ async fn ensure_binary_database(base_url: &str) -> String {
         // is always exactly 16 lowercase hex digits (see
         // `migrations_fingerprint`), so it can never contain a `'` or
         // otherwise break out of the literal.
-        query(&format!(
+        query(AssertSqlSafe(format!(
             "COMMENT ON DATABASE \"{TEMPLATE_DB_NAME}\" IS '{current_fingerprint}'"
-        ))
+        )))
         .execute(&mut *conn)
         .await
         .expect("stamping the template database with its migration fingerprint");
     }
 
-    query(&format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"))
-        .execute(&mut *conn)
-        .await
-        .unwrap_or_else(|e| panic!("dropping this binary's own stale database {name}: {e}"));
-    query(&format!(
+    query(AssertSqlSafe(format!(
+        "DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)"
+    )))
+    .execute(&mut *conn)
+    .await
+    .unwrap_or_else(|e| panic!("dropping this binary's own stale database {name}: {e}"));
+    query(AssertSqlSafe(format!(
         "CREATE DATABASE \"{name}\" TEMPLATE \"{TEMPLATE_DB_NAME}\""
-    ))
+    )))
     .execute(&mut *conn)
     .await
     .unwrap_or_else(|e| panic!("creating this binary's own database {name} from template: {e}"));
