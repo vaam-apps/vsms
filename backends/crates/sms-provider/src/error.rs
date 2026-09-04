@@ -1,5 +1,19 @@
 use std::time::Duration;
 
+/// A type-erased, real cause behind a [`ProviderError`] — a `reqwest::Error`,
+/// a `url::ParseError`, whatever the transport underneath happened to
+/// return — so `Unavailable`/`Indeterminate` don't reduce a real error chain
+/// to a formatted string the moment they cross into this crate's own
+/// vocabulary. `dyn Error + Send + Sync + 'static`, not a generic parameter:
+/// this crate stays adapter-agnostic (one `ProviderError` enum shared by
+/// every HTTP adapter, and eventually SMPP), so it cannot name a concrete
+/// transport error type without coupling itself to one adapter's transport
+/// — see the crate's own module doc on staying pure. Boxing costs one
+/// allocation per real failure, never per success; that's the trade this
+/// crate already makes for `code`/`message` being `String` rather than a
+/// borrowed `&str`.
+pub type BoxDynError = Box<dyn std::error::Error + Send + Sync + 'static>;
+
 /// What went wrong submitting to, or asking about, a provider.
 ///
 /// §6.1's own framing is the reason there are exactly four real variants,
@@ -10,6 +24,23 @@ use std::time::Duration;
 /// exactly one [`RoutingConsequence`] — see [`ProviderError::routing`] —
 /// so that mapping is a match a compiler checks, not a comment a future
 /// adapter author has to remember to honour.
+///
+/// `code`/`retry_after`/`message` already give `Permanent`, `Transient` and
+/// `Rejected` a structured surface — a caller reads `code` without parsing
+/// `message`. `Unavailable` and `Indeterminate` had no such structure before
+/// the DRY-up that consolidated every HTTP adapter's transport-error
+/// classification into one place (`sms-provider-http`): both were
+/// constructed straight from a real `std::error::Error` (a `reqwest::Error`
+/// failing to connect, to finish a body, or to parse a response) and
+/// immediately flattened it into `message`, discarding the original error
+/// and its own `source()` chain. `source` on both fixes that — `#[source]`,
+/// so `std::error::Error::source()` on a `ProviderError` genuinely returns
+/// it, and a caller building a `tracing`/`anyhow` report gets the real chain
+/// rather than a second copy of the same text `message` already holds.
+/// `None` where no real error object exists (a status-code-and-body
+/// response, or a purely local check like "this URL parsed but isn't a
+/// base") — there's nothing to chain to, so the field says so honestly
+/// rather than being forced to hold a synthetic placeholder.
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     /// This specific submission cannot succeed on this provider, ever, but
@@ -45,6 +76,11 @@ pub enum ProviderError {
     Unavailable {
         /// A human-readable description, for logs.
         message: String,
+        /// The real error behind `message`, when one exists — see the enum's
+        /// own doc on why this is `Option<BoxDynError>` rather than a bare
+        /// `BoxDynError`.
+        #[source]
+        source: Option<BoxDynError>,
     },
 
     /// The request itself is invalid in a way no retry or failover fixes —
@@ -89,6 +125,10 @@ pub enum ProviderError {
     Indeterminate {
         /// A human-readable description, for logs.
         message: String,
+        /// The real error behind `message`, when one exists — same
+        /// reasoning as [`Self::Unavailable`]'s own `source` field.
+        #[source]
+        source: Option<BoxDynError>,
     },
 }
 
@@ -165,6 +205,7 @@ mod tests {
             (
                 ProviderError::Unavailable {
                     message: "connection refused".to_owned(),
+                    source: None,
                 },
                 RoutingConsequence::OpenCircuitAndTryNextRoute,
             ),
@@ -179,6 +220,7 @@ mod tests {
             (
                 ProviderError::Indeterminate {
                     message: "read timeout after the request was sent".to_owned(),
+                    source: None,
                 },
                 RoutingConsequence::HoldIndeterminate,
             ),
@@ -212,6 +254,7 @@ mod tests {
     fn indeterminate_never_retries_or_fails_over() {
         let error = ProviderError::Indeterminate {
             message: "x".to_owned(),
+            source: None,
         };
         assert_eq!(error.routing(), RoutingConsequence::HoldIndeterminate);
         assert_ne!(error.routing(), RoutingConsequence::TryNextRoute);
@@ -224,5 +267,33 @@ mod tests {
             RoutingConsequence::RetryThisProvider { .. }
         ));
         assert_ne!(error.routing(), RoutingConsequence::FailMessage);
+    }
+
+    /// `#[source]` is only useful if `std::error::Error::source()` genuinely
+    /// returns the boxed cause, not merely if the field compiles — thiserror
+    /// generates that impl, but nothing else here proves it wires up
+    /// correctly for a field typed `Option<BoxDynError>` rather than a bare
+    /// `BoxDynError`. `Unavailable` and `Indeterminate` are both checked:
+    /// one real underlying error, one `None`, so both branches of the
+    /// `Option` are exercised.
+    #[test]
+    fn source_reaches_the_real_cause_when_one_was_recorded() {
+        let underlying = std::io::Error::other("socket reset");
+        let with_source = ProviderError::Unavailable {
+            message: "submit request failed: socket reset".to_owned(),
+            source: Some(Box::new(underlying)),
+        };
+        let cause = std::error::Error::source(&with_source)
+            .expect("a recorded source must be returned by source()");
+        assert_eq!(cause.to_string(), "socket reset");
+
+        let without_source = ProviderError::Indeterminate {
+            message: "no resource id in the response".to_owned(),
+            source: None,
+        };
+        assert!(
+            std::error::Error::source(&without_source).is_none(),
+            "a None source must not be reported as a cause"
+        );
     }
 }

@@ -11,6 +11,21 @@ use sms_provider::{
     Capabilities, DeliveryUpdate, Health, ProviderError, RawCallback, SmsProvider, SubmitAck,
     SubmitRequest,
 };
+use sms_provider_http::{classify_common_submit_status, classify_transport_error};
+
+/// The noun `classify_transport_error`'s `Indeterminate` message and
+/// `classify_submit_error`'s `Unavailable` message both name this provider
+/// as — preserved verbatim from this crate's own pre-consolidation text
+/// (`"Orange may have received it"`, `"orange returned {status}"`; note
+/// the case difference between the two is original, not a typo introduced
+/// here — see `sms-provider-http`'s own module doc on why it was kept
+/// rather than normalised).
+const PROVIDER_NOUN_INDETERMINATE: &str = "Orange";
+const PROVIDER_NOUN_UNAVAILABLE: &str = "orange";
+
+/// §6.2 names no `Retry-After` for this endpoint; this is unchanged from
+/// this crate's own pre-consolidation constant.
+const RATE_LIMIT_RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
 
 const KEY: &str = "orange_cm";
 
@@ -190,11 +205,16 @@ impl OrangeCmProvider {
         let mut url = reqwest::Url::parse(&self.config.base_url).map_err(|error| {
             ProviderError::Unavailable {
                 message: format!("invalid base_url: {error}"),
+                source: Some(Box::new(error)),
             }
         })?;
         url.path_segments_mut()
             .map_err(|()| ProviderError::Unavailable {
                 message: "base_url cannot be a base for path segments".to_owned(),
+                // `()` on the `Err` side — `Url::path_segments_mut` reports
+                // failure with no error object at all, so there is nothing
+                // real to chain here.
+                source: None,
             })?
             .extend([
                 "smsmessaging",
@@ -309,7 +329,7 @@ impl SmsProvider for OrangeCmProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|error| classify_transport_error(&error))?;
+            .map_err(|error| classify_transport_error(error, PROVIDER_NOUN_INDETERMINATE))?;
 
         let status = response.status();
         if status != StatusCode::CREATED {
@@ -332,6 +352,7 @@ impl SmsProvider for OrangeCmProvider {
                         "submit returned 201 (accepted) but the response body was not valid \
                          JSON, so no provider_ref could be recovered: {error}"
                     ),
+                    source: Some(Box::new(error)),
                 })?;
 
         let resource_url = parsed
@@ -344,6 +365,9 @@ impl SmsProvider for OrangeCmProvider {
                     "submit returned 201 (accepted) but no resource id was found in \
                      resourceURL {resource_url:?}"
                 ),
+                // No real error object — the body parsed as valid JSON,
+                // it just lacked the field this adapter needed.
+                source: None,
             })?
             .to_owned();
 
@@ -383,62 +407,6 @@ impl SmsProvider for OrangeCmProvider {
     }
 }
 
-/// Classifies a *transport*-level failure from `.send()` itself — the
-/// network call never produced an HTTP response at all, as distinct from a
-/// well-formed response carrying a non-`201` status
-/// ([`classify_submit_error`]'s job).
-///
-/// The connect-vs-post-connect distinction is the whole point — a submit
-/// that times out after the request was already sent must never be
-/// resubmitted, since the provider may have already sent the SMS.
-/// [`reqwest::Error::is_connect`] is `true` only for a failure establishing
-/// the connection itself — DNS resolution, TCP handshake, TLS handshake,
-/// including a *connect-phase* timeout. At that point this adapter has not
-/// written a single byte of the request onto a socket Orange controls, so
-/// retrying — this provider or the next — is exactly as safe as it always
-/// was. Checked first, and returns early, so nothing below it re-examines
-/// a connect-phase error.
-///
-/// [`reqwest::Error::is_timeout`] is `true` for a timeout at *either*
-/// phase; by construction (`is_connect` already handled and returned
-/// above) reaching this check with `is_timeout() == true` means the
-/// connection was already established and the timeout fired while writing
-/// the request body or waiting on Orange's response. `req.json(&body)`
-/// fully buffers the request body before `.send()` starts writing it, so
-/// by the time any of this fires, the socket write of that buffer is
-/// either complete or in progress — Orange's server may already have the
-/// full request and be acting on it. Genuinely unknown, not safe to retry.
-///
-/// [`reqwest::Error::is_body`] covers the same "past the connect phase"
-/// territory from a different failure shape — the connection was reset or
-/// closed while a body (ours going out, or Orange's coming back) was being
-/// transferred, rather than the client's own timeout firing. Same
-/// reasoning applies, so it's grouped with the timeout case rather than
-/// falling through to the conservative default.
-///
-/// Anything else — a `Builder`/`Request`-kind error, a bad `Url`, a
-/// redirect-policy violation — never got as far as writing to a socket at
-/// all, so it stays `Unavailable`, matching this function's behaviour
-/// before this variant existed.
-fn classify_transport_error(error: &reqwest::Error) -> ProviderError {
-    if error.is_connect() {
-        return ProviderError::Unavailable {
-            message: format!("submit request failed to connect: {error}"),
-        };
-    }
-    if error.is_timeout() || error.is_body() {
-        return ProviderError::Indeterminate {
-            message: format!(
-                "submit request timed out or was interrupted after the connection was \
-                 already established; Orange may have received it: {error}"
-            ),
-        };
-    }
-    ProviderError::Unavailable {
-        message: format!("submit request failed: {error}"),
-    }
-}
-
 /// §6.2: 429 is the 5 TPS ceiling being hit — transient, retry, do not fail
 /// over. 5xx is Orange's own backend — unavailable, fail over and count
 /// toward the circuit breaker. Everything else 4xx, conservatively,
@@ -448,30 +416,29 @@ fn classify_transport_error(error: &reqwest::Error) -> ProviderError {
 /// different provider" — see the module doc. `Rejected` is the safer
 /// default of the two: it fails this one message rather than risking a
 /// failover storm across every provider for a systematically bad sender ID.
+///
+/// All three of those mappings turned out identical to `sms-provider-mtn`'s
+/// own (see `sms-provider-http::classify_common_submit_status`'s module
+/// doc), so this function is now a thin, Orange-specific wrapper rather
+/// than a second copy of the mapping itself: Orange has no status this
+/// crate treats as a special case ahead of the shared mapping (unlike
+/// MTN's `401`/`403` — see that crate's own `classify_submit_error`), so
+/// every status this function was ever asked to classify already falls
+/// straight through to the shared function.
 fn classify_submit_error(status: StatusCode, body: &str) -> ProviderError {
-    if status == StatusCode::TOO_MANY_REQUESTS {
-        return ProviderError::Transient {
-            // Orange doesn't document a Retry-After for this endpoint;
-            // one full TPS-cap window is a reasonable, conservative wait.
-            retry_after: std::time::Duration::from_secs(1),
-            message: format!("rate limited: {body}"),
-        };
-    }
-    if status.is_server_error() {
-        return ProviderError::Unavailable {
-            message: format!("orange returned {status}: {body}"),
-        };
-    }
-    ProviderError::Rejected {
-        code: format!("http_{}", status.as_u16()),
-        message: body.to_owned(),
-    }
+    classify_common_submit_status(
+        status,
+        body,
+        PROVIDER_NOUN_UNAVAILABLE,
+        RATE_LIMIT_RETRY_AFTER,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        KEY, OrangeCmConfig, OrangeCmProvider, classify_transport_error, resource_id_from_url,
+        KEY, OrangeCmConfig, OrangeCmProvider, PROVIDER_NOUN_INDETERMINATE,
+        classify_transport_error, resource_id_from_url,
     };
     use sms_encoding::SmsEncoding;
     use sms_provider::{ProviderError, SmsProvider, SubmitRequest};
@@ -884,12 +851,18 @@ mod tests {
         );
     }
 
-    /// Proves `classify_transport_error`'s safe branch directly, with a
-    /// real connection-refused error rather than a mocked one: bind an
+    /// Proves `sms_provider_http::classify_transport_error`'s safe branch
+    /// *through this adapter's own call site* — with a real
+    /// connection-refused error rather than a mocked one: bind an
     /// ephemeral port, then drop the listener so the address is valid but
     /// refuses every connection. Nothing about a submission could have
     /// reached whatever might eventually listen there, so this must stay
-    /// exactly as safe to retry as it always was.
+    /// exactly as safe to retry as it always was. `sms-provider-http`'s own
+    /// crate carries the same proof against the shared function directly
+    /// (`AGENTS.md`'s "Cleanup: one transport classifier for every HTTP
+    /// adapter" section explains why both levels are kept: this one proves
+    /// Orange's own import and provider noun are wired correctly, not just
+    /// that the underlying classifier works in isolation).
     #[tokio::test]
     async fn a_connect_refusal_is_still_unavailable() {
         let listener =
@@ -912,16 +885,17 @@ mod tests {
             "test setup: expected a connect-level failure, got {error:?}"
         );
         assert!(matches!(
-            classify_transport_error(&error),
+            classify_transport_error(error, PROVIDER_NOUN_INDETERMINATE),
             ProviderError::Unavailable { .. }
         ));
     }
 
-    /// Proves `classify_transport_error`'s unsafe branch directly: a
-    /// connection that *does* establish, against a server that then never
-    /// answers before the client's own timeout fires. This is exactly the
-    /// shape a slow/hung Orange endpoint produces — the request may already
-    /// be sitting on Orange's side.
+    /// Proves `sms_provider_http::classify_transport_error`'s unsafe branch
+    /// *through this adapter's own call site*: a connection that *does*
+    /// establish, against a server that then never answers before the
+    /// client's own timeout fires. This is exactly the shape a slow/hung
+    /// Orange endpoint produces — the request may already be sitting on
+    /// Orange's side.
     #[tokio::test]
     async fn a_post_connect_timeout_is_indeterminate() {
         let server = MockServer::start().await;
@@ -953,9 +927,16 @@ mod tests {
             "test setup: the connection must already be established when the timeout fires, \
              or this isn't testing the branch it claims to"
         );
-        assert!(matches!(
-            classify_transport_error(&error),
-            ProviderError::Indeterminate { .. }
-        ));
+        let classified = classify_transport_error(error, PROVIDER_NOUN_INDETERMINATE);
+        assert!(
+            matches!(classified, ProviderError::Indeterminate { .. }),
+            "expected Indeterminate, got {classified:?}"
+        );
+        if let ProviderError::Indeterminate { message, .. } = classified {
+            assert!(
+                message.contains("Orange may have received it"),
+                "the provider noun must survive verbatim from before this was shared: {message}"
+            );
+        }
     }
 }

@@ -217,7 +217,10 @@ async fn submit_one(ctx: &WorkerContext, sys: &CratestackContext, message: Messa
                 sys,
                 &message,
                 None,
-                &ProviderError::Unavailable { message: reason },
+                &ProviderError::Unavailable {
+                    message: reason,
+                    source: None,
+                },
             )
             .await;
             return;
@@ -400,7 +403,7 @@ fn terminal_outcome(err: &ProviderError) -> (MessageState, String, Option<Durati
             format!("transient: {msg}"),
             Some(*retry_after),
         ),
-        ProviderError::Unavailable { message: msg } => (
+        ProviderError::Unavailable { message: msg, .. } => (
             MessageState::queued,
             format!("provider unavailable: {msg}"),
             Some(UNAVAILABLE_BACKOFF),
@@ -418,7 +421,7 @@ fn terminal_outcome(err: &ProviderError) -> (MessageState, String, Option<Durati
             "operation not supported by this provider".to_owned(),
             None,
         ),
-        ProviderError::Indeterminate { message: msg } => (
+        ProviderError::Indeterminate { message: msg, .. } => (
             MessageState::uncertain,
             format!("submission outcome unknown, possibly already sent; not retrying: {msg}"),
             None,
@@ -780,6 +783,7 @@ mod tests {
     fn unavailable_backs_off_with_a_fixed_delay_and_stays_queued_once_failover_is_exhausted() {
         let (state, _, backoff) = terminal_outcome(&ProviderError::Unavailable {
             message: "connection refused".to_owned(),
+            source: None,
         });
         assert_eq!(state, MessageState::queued);
         assert_eq!(backoff, Some(UNAVAILABLE_BACKOFF));
@@ -823,6 +827,7 @@ mod tests {
     fn indeterminate_lands_in_uncertain_with_no_backoff_and_no_retry() {
         let (state, reason, backoff) = terminal_outcome(&ProviderError::Indeterminate {
             message: "read timeout after the request was sent".to_owned(),
+            source: None,
         });
         assert_eq!(state, MessageState::uncertain);
         assert_eq!(backoff, None);

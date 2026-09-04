@@ -23,7 +23,13 @@ shape vs. the DLR shape), here is the honesty ledger for this crate:
   aggregator-specific claim. It is exactly as trustworthy here as it is
   in `sms-provider-orange-cm`, because it follows from what `reqwest`
   itself guarantees about `is_connect`/`is_timeout`/`is_body`, not from
-  any aggregator's documentation.
+  any aggregator's documentation — which is exactly what let it move,
+  unchanged, into `sms-provider-http` once this crate proved a second
+  adapter needed the identical reasoning. Same for the provider-agnostic
+  half of the HTTP-status mapping (`429` → `Transient`, `5xx` →
+  `Unavailable`, everything else → `Rejected`) — see
+  `classify_submit_error` in this crate's own source for what stays
+  local (`401`/`403`) and why.
 - **The request/response JSON shape below (`POST /v1/messages`, Bearer
   API-key auth, a `messageId` in a `201` response, a `POST` DLR callback
   carrying that same `messageId`) is an invented, best-guess shape**,

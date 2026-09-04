@@ -11,6 +11,7 @@ publish.workspace = true
 
 [dependencies]
 sms-provider.workspace = true
+sms-provider-http.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 reqwest.workspace = true
