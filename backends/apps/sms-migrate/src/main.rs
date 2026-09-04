@@ -5,9 +5,12 @@ use cratestack::sqlx::{Connection, PgConnection};
 use tracing::info;
 
 /// A single named migration to check for and, if missing, apply — mirrors
-/// one `\if`/`\else` block of `deploy/migrate.sql` exactly.
+/// one `\if`/`\else` block of `deploy/migrate.sql` exactly, plus the
+/// optional `up.pre.sql` cratestack migrate diff scaffolds for a blocking
+/// migration (see this module's own "up.pre.sql" doc section).
 struct Migration {
     name: &'static str,
+    pre_sql: Option<&'static str>,
     sql: &'static str,
 }
 
@@ -94,26 +97,51 @@ async fn run_migrations(conn: &mut PgConnection) -> Result<()> {
         }
 
         info!(migration = migration.name, "applying");
-        // Wrapped in an implicit transaction by `raw_sql` itself when the
-        // text contains more than one statement (sqlx's own documented
-        // behaviour) — stricter than the old `psql \i` path, which
-        // auto-committed each statement individually unless the script
-        // opened its own `BEGIN`. None of the committed migrations use
-        // anything transaction-incompatible (no `CREATE INDEX
-        // CONCURRENTLY` — checked directly, not assumed, and worth
-        // rechecking if a future migration ever needs one), so this is a
-        // strict improvement: a failure partway through a migration now
-        // rolls back cleanly instead of leaving that migration half-applied.
+        // A real, explicit transaction — see this module's own
+        // "up.pre.sql" doc for why: cratestack's own generator promises
+        // up.pre.sql "runs immediately before up.sql, inside the SAME
+        // transaction... both halves land or neither does"
+        // (cratestack-migrate-0.11.0/src/emit/postgres/up_pre.rs). Two
+        // separate `raw_sql` calls against a bare connection would each
+        // open and close their own implicit transaction (sqlx's own
+        // documented behaviour for a multi-statement string), which
+        // satisfies that guarantee only by accident today — every
+        // committed `up.pre.sql` is comment-only — and would silently
+        // stop satisfying it the moment a real one exists. Folding the
+        // bookkeeping `INSERT` into the same transaction too is a step
+        // further than upstream's own guarantee (which only covers the
+        // two SQL files): free to do here, and it means a crash right
+        // after a migration applies can never leave it un-recorded.
+        // None of the committed migrations use anything
+        // transaction-incompatible (no `CREATE INDEX CONCURRENTLY` —
+        // checked directly, not assumed, and worth rechecking if a
+        // future migration ever needs one).
+        let mut tx = conn
+            .begin()
+            .await
+            .with_context(|| format!("opening a transaction for {}", migration.name))?;
+
+        if let Some(pre_sql) = migration.pre_sql {
+            cratestack::sqlx::raw_sql(pre_sql)
+                .execute(&mut *tx)
+                .await
+                .with_context(|| format!("applying {}/up.pre.sql", migration.name))?;
+        }
+
         cratestack::sqlx::raw_sql(migration.sql)
-            .execute(&mut *conn)
+            .execute(&mut *tx)
             .await
             .with_context(|| format!("applying migration {}", migration.name))?;
 
         cratestack::sqlx::query("INSERT INTO public.schema_migrations (name) VALUES ($1)")
             .bind(migration.name)
-            .execute(&mut *conn)
+            .execute(&mut *tx)
             .await
             .with_context(|| format!("recording {} as applied", migration.name))?;
+
+        tx.commit()
+            .await
+            .with_context(|| format!("committing {}", migration.name))?;
     }
 
     Ok(())

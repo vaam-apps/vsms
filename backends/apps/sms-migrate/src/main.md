@@ -46,6 +46,25 @@ fourth entry has relocated to `backends/migrations/postgres/
 file's own header for why it belongs in this directory at all despite
 not being `cratestack`-generated.
 
+# up.pre.sql
+
+`cratestack migrate diff` (>=0.11.0) scaffolds an `up.pre.sql` alongside
+`up.sql` whenever it detects a blocking operation — a `CHECK`/`NOT NULL`
+addition it cannot prove is safe against an existing table's rows.
+[`cratestack-migrate-0.11.0/src/emit/postgres/up_pre.rs`]'s own doc states
+the contract plainly: "The runner executes this file immediately before
+`up.sql`, inside the SAME transaction... both halves land or neither
+does." `run_migrations` honours that literally — `conn.begin()` opens one
+real `Transaction` per migration, `pre_sql` (if present) runs first,
+`up.sql` second, and the `schema_migrations` bookkeeping `INSERT` third,
+all inside it, committed together. `build.rs` embeds `up.pre.sql` as
+`Migration::pre_sql: Option<&'static str>` — `None` when a migration
+directory has no such file, which is the common case; every committed
+`up.pre.sql` so far is comment-only (cratestack's own loader convention:
+"a file with no executable statement is treated as absent" — this
+runner doesn't literally special-case that, since a comment-only script
+is a correct, harmless no-op SQL statement either way).
+
 # R1
 
 Raw `sqlx` calls, not a `CrateStack` delegate — `cargo xtask no-raw-sqlx`
