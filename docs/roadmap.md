@@ -86,6 +86,8 @@ What does block it:
 
    This is the item most likely to be mistaken for done, because every milestone gate that *can* be automated has been. It cannot, and nothing in CI will ever turn it green.
 
+   **Status 2026-09-04: blocked on physical presence, not on engineering.** `v0.3.0` shipped with #36 and #65 deliberately open. The maintainer is in Germany; Orange's SMS Cameroon product delivers only to Cameroon numbers, so nothing can be tested toward a German phone, and a German SIM roaming in Cameroon receives via its home operator and proves nothing about MTN or Orange delivery. What can be done remotely is the Orange developer-portal app registration; what cannot is the Orange Money bundle top-up and the handset observation. The runbook is written to be handed to a person in Cameroon with a phone and a terminal — that is the intended way to close it. #65 has a second, engineering-side precondition on top of the same one: `sms-provider-mtn`'s request/response shape is a documented placeholder, so the adapter must be rewritten against the chosen aggregator's real contract before any credential for it is useful.
+
 5. **Decision #4 below** — though note it gates M7 only, not first traffic.
 
 Deliberately *not* on that list: **#187** (webhook secrets readable by every human role) is latent, because no human-login flow exists yet to hold such a token. It becomes live exactly when M4 ships real logins, which is why it sits on M4 rather than M3.
