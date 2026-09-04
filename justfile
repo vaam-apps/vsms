@@ -689,12 +689,15 @@ ci-inner:
 	# skipping" for all three and do nothing at all. A regenerated
 	# 0001_init with a genuine psql-time error (a column type CI's own
 	# `migrations` job — a real fresh-container `postgres:16` service, every
-	# single run — would catch) would then pass `just ci` silently. `$$`
-	# (this script's own PID) keeps the name unique across a `ci-quick`/`ci`
-	# rerun that overlaps a slow teardown; the `trap` guarantees the scratch
-	# database is dropped even if `sms-migrate` or the SQL assertions fail
-	# partway through, not just on the happy path.
-	scratch_db="vsms_ci_migrate_$$"
+	# single run — would catch) would then pass `just ci` silently. The
+	# name carries a timestamp plus a random suffix rather than `$$`: a PID
+	# inside a container's own PID namespace is low and deterministic
+	# (two concurrent runners both got `1` — found in review), so two
+	# overlapping `ci`/`ci-quick` runs against the shared `postgres`
+	# service would have collided on the same name. The `trap` guarantees
+	# the scratch database is dropped even if `sms-migrate` or the SQL
+	# assertions fail partway through, not just on the happy path.
+	scratch_db="vsms_ci_migrate_$(date +%s)_${RANDOM}"
 	cleanup_scratch_db() { dropdb -h postgres -U vsms --if-exists "$scratch_db" >/dev/null 2>&1 || true; }
 	trap cleanup_scratch_db EXIT
 	createdb -h postgres -U vsms "$scratch_db"

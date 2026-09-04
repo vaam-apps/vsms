@@ -35,7 +35,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f ci/test-state-machine.sql
 ----
 
 `cargo run -p sms-migrate` is the same binary a real deployment's `migrate`
-step runs (`app/sms-migrate`) -- `ci/apply-migrations.sh`, a shell wrapper
+step runs (`backends/apps/sms-migrate`) -- `ci/apply-migrations.sh`, a shell wrapper
 that used to do this by shelling `psql \i` out per migration file, is gone
 (no bash script survives in this repo -- see ``AGENTS.md``'s xtask section).
 
