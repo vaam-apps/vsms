@@ -126,8 +126,10 @@ So: when the schema changes, **regenerate `0001_init` wholesale** with the exact
 
 ```bash
 cratestack migrate diff --schema schemas/vsms.cstack --out-dir backends/migrations --backend postgres --name init
-# copy the output over backends/migrations/postgres/0001_init/{up,down}.sql
-python3 ci/gen-bootstrap-sql.py backends/migrations/postgres/0002_bootstrap/up.sql
+# copy the output over backends/migrations/postgres/0001_init/{up,up.pre,down}.sql
+# — up.pre.sql only exists when the generator scaffolds one for a blocking
+# migration; delete the committed copy if a regeneration stops emitting one
+cargo xtask bootstrap-sql backends/migrations/postgres/0002_bootstrap/up.sql
 ```
 
 The tool also writes `backends/migrations/postgres/schema.snapshot.json` as a side effect. Delete it — this repo doesn't use snapshot-based incremental diffing, and a stale one committed by accident would be misleading.
@@ -805,27 +807,39 @@ changelog prose first. **The isolated CLI matched the pin at every step**
 registry API directly — `curl .../api/v1/crates/cratestack-pg/0.11.0` → `"rust_version":
 "1.98.0"` — not the CHANGELOG prose, which doesn't mention it at all). The workspace
 `rust-version` is raised to match; `cargo +1.98.0 check --workspace --all-targets` is clean.
-Every `backends/apps/*/Dockerfile` builder stage, plus `ci/e2e-integration/Dockerfile` (a fifth
-Rust-building Dockerfile this repo's own MSRV section had never previously had to touch), moved
-`rust:1.95-alpine3.22` → `rust:1.98-alpine3.22` — confirmed to exist on Docker Hub
-(`docker manifest inspect rust:1.98-alpine3.22`, both `amd64`/`arm64` manifests present) before
-switching, not assumed. `sdks/rust/vsms-sdk-rust/Cargo.toml`'s own `rust-version` field moved
-too, for the same reason.
+Seven Rust-building Dockerfiles in this repo moved `rust:1.95-alpine3.22` →
+`rust:1.98-alpine3.22`: the five under `backends/apps/*/Dockerfile`
+(`sms-gateway`, `sms-worker`, `sms-migrate`, `sms-fake-orange`, `vsms-demo-seed`), plus
+`ci/e2e-integration/Dockerfile` (the sixth — a Rust-building Dockerfile this repo's own MSRV
+section had never previously had to touch) and `deploy/backup.Dockerfile` (the seventh, bumped
+for consistency even though `deploy/backup-tool` carries no `cratestack` dependency and
+therefore no MSRV of its own that requires it — see that Dockerfile's own comment). Confirmed
+`rust:1.98-alpine3.22` exists on Docker Hub (`docker manifest inspect rust:1.98-alpine3.22`,
+both `amd64`/`arm64` manifests present) before switching any of the seven, not assumed.
+`sdks/rust/vsms-sdk-rust/Cargo.toml`'s own `rust-version` field moved too, for the same reason.
 
 ### DDL: byte-identical statements, a changed *comment* — verified two ways, not assumed from one
 
 `cargo xtask migrations-current` reported drift, and the naive positional diff it prints (this
 file's own `diff.rs` section already documents why that diff is noisy on an inserted block) made
 the actual change look like a wholesale rewrite — every line of the file appeared to move. It
-didn't: diffing the regenerated `up.sql` against the committed one with real `diff -u` shows
-**26 changed lines, every one of them inside the file's own leading comment block**, and
-`down.sql` diffs to **zero lines**. `cratestack migrate diff`'s blocking-migration detector
-(new since 0.8.10, unrelated to this schema having actually changed) now names the specific new
-`CHECK` constraints in its warning header instead of a generic "a required column was added"
-line — the four constraints it names (`audit_anchors_range_hash_length_check`,
-`_prev_chain_hash_length_check`, `_chain_hash_length_check`, `sender_ids_value_length_check`)
-already exist, byte-for-byte, in the previously-committed migration; nothing about the schema
-changed, only how the tool explains a migration that was already "blocking" in its own sense.
+didn't: diffing the regenerated `up.sql` against the committed one with real `diff -u` (re-measured
+against the actual commit, not recalled) shows **20 changed lines — 16 insertions, 4 deletions
+(`git diff --stat`) — every one of them inside the file's own leading comment block**, and
+`down.sql` diffs to **zero lines**. The blocking-migration *detector itself is not new* — the
+previously-committed `up.sql` already carried its own "WARNING: this migration contains blocking
+operations" header, naming a generic "a required column was added without a default" and
+already mentioning `up.pre.sql` by name as the remedy. What changed is that the warning now
+names the *specific* new `CHECK` constraints instead of that generic line — the four it names
+(`audit_anchors_range_hash_length_check`, `_prev_chain_hash_length_check`,
+`_chain_hash_length_check`, `sender_ids_value_length_check`) already exist, byte-for-byte, in the
+previously-committed migration; nothing about the schema changed, only how the tool explains a
+migration that was already "blocking" in its own sense. That prior header's own "unless an
+up.pre.sql backfills..." line is, in hindsight, a live instance of the exact bug
+`cratestack-migrate-0.11.0/src/emit/postgres/up_pre.rs`'s own module doc names as cratestack#843:
+"the warning named `up.pre.sql` as the remedy while nothing wrote or read such a file." This
+bump is what actually closes that gap for this repo, not merely reworded a warning that was
+already correct.
 
 **A new file, `up.pre.sql`, is scaffolded alongside `up.sql`/`down.sql` for the first time and
 is committed too** — `cratestack migrate diff` now writes a third file per migration whenever it
@@ -833,16 +847,41 @@ detects a blocking operation, containing (as comments) the `UPDATE` statements a
 need to backfill before applying to a non-empty table. Correct to commit as-is here: `0001_init`
 only ever applies to a brand-new, empty database (this repo's own standing "no live database
 anywhere yet" fact), so the backfill this file describes can never actually be needed — its own
-header says leaving it as comments-only is a valid choice, "then treated as absent." **Found
-while wiring this up, not assumed:** neither `backends/apps/sms-migrate/build.rs` (which
-discovers migrations by scanning for an `up.sql` in each directory) nor
-`backends/crates/sms-test-support`'s own `migration_dirs()`/fingerprint logic reads `up.pre.sql`
-at all — both silently ignore it. Harmless for this migration specifically (nothing in it needs
-to run), but it is a real, latent gap: the day a future schema change produces a genuinely
-non-empty `up.pre.sql`, neither the production migrator nor the live-test harness will execute
-it, and nothing today would say so. Flagged, not fixed — teaching `sms-migrate` to run
-`up.pre.sql` immediately before its matching `up.sql`, in the same transaction, is real scope
-beyond a dependency bump.
+header says leaving it as comments-only is a valid choice, "then treated as absent."
+
+**Found in review, before merge, not shipped as a latent trap: neither `sms-migrate` nor
+`sms-test-support` read `up.pre.sql` at all when it was first committed.** Wiring the file up as
+a real dependency, not a decorative one, needed three coordinated changes, all closed in the same
+PR:
+
+- `cargo xtask migrations-current` now compares `up.pre.sql` too, whenever either side has one —
+  a missing side reads as empty rather than erroring, so "this migration used to need a backfill
+  and no longer does" is itself a detected drift, not a silent pass.
+- `backends/apps/sms-migrate` — the production runner — embeds `up.pre.sql` as
+  `Migration::pre_sql: Option<&'static str>` and applies it, when present, immediately before
+  `up.sql`, inside one real `conn.begin()` transaction that also covers the `schema_migrations`
+  bookkeeping `INSERT` — matching `cratestack-migrate-0.11.0/src/emit/postgres/up_pre.rs`'s own
+  contract ("runs immediately before `up.sql`, inside the SAME transaction... both halves land or
+  neither does") literally, not just in spirit. Two separate `raw_sql` calls against a bare
+  connection would each open and close their own implicit transaction and only *happen* to
+  satisfy that guarantee today because every committed `up.pre.sql` is comment-only.
+- `backends/crates/sms-test-support`'s own `migrations_fingerprint`/`run_psql_migrations` (the
+  live-test harness's template-database mechanism) fold and apply `up.pre.sql` the same way, so a
+  template database can't silently go stale against an edited pre-script the way it could before.
+
+**Proven, not just implemented — a temporary, non-comment `CREATE TABLE up_pre_probe(x int);`
+was appended to the committed `up.pre.sql`, applied end to end, then removed.** `cargo run -p
+sms-migrate` against a fresh scratch Postgres genuinely created `up_pre_probe` (`psql`'s own
+`\d up_pre_probe` confirmed the column), and `pg_stat_activity` caught the migration mid-flight
+executing `up.sql`'s own text on the *same* backend PID that had just run the probe — direct
+proof of same-connection, same-transaction ordering, not inferred from reading the code. A second
+proof, independent of the first, for the harness: `cargo test -p sms-api --test
+errors_live_postgres -- --ignored` (which goes through `sms-test-support`'s template-database
+path) picked up the fingerprint change, rebuilt the template, and the rebuilt `vsms_template`
+database was confirmed via `psql` to contain `up_pre_probe` too. The probe was then removed and
+the file restored byte-for-byte (`md5sum` verified against the pre-probe copy), and `cargo xtask
+migrations-current` reported `OK` again — proof the restoration, and the new comparison logic
+covering the restored state, both actually work.
 
 Verified live, not just diffed: the regenerated `0001_init` (plus the unchanged `0002_bootstrap`/
 `0003_idempotency_table`) applied cleanly via `cargo run -p sms-migrate` against a real, disposable
@@ -976,7 +1015,12 @@ Created-vs-Updated race fix (#745) explicitly does not extend to `.do_nothing()`
 resolved its outcome from the database," per the changelog's own words. Neither primitive is
 adopted here (a schema/code-change budget, not a dependency-bump one, same standing reasoning as
 every prior re-check) — full detail and the updated table rows are in `OPEN_QUESTIONS.md` §4,
-re-checked and rewritten for this bump rather than left as a stale "unchanged."
+re-checked and rewritten for this bump rather than left as a stale "unchanged." That table's
+own #176 row also carries a housekeeping fix riding along with this re-check: its "eleven
+times" count of this file's own repeated `hasRole('system')` gap was stale — this file's own
+`#72`/`ConsentRecord` entry above already records the real, current count as fifteen — corrected
+to match while the row was already being touched for the `isSystem()` finding, not a separate
+audit.
 
 ### The installer action ref, and the three manifests `cargo check --workspace` cannot see
 

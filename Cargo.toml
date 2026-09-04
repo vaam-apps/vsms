@@ -66,9 +66,12 @@ edition = "2024"
 # this field is a correct, verified declaration, not an enforced one.
 # Previously raised to 1.95.0 for the 0.7.10 bump (cratestack/cratestack#480),
 # and before that from a stale 1.85 in #139 (the committed `Cargo.lock`
-# needed 1.88, and nothing checked that claim either). The Dockerfiles
-# (`backends/apps/*/Dockerfile`, `ci/e2e-integration/Dockerfile`) moved
-# from `rust:1.95-alpine3.22` to `rust:1.98-alpine3.22` in the same PR —
+# needed 1.88, and nothing checked that claim either). All seven
+# Rust-building Dockerfiles in this repo (the five under
+# `backends/apps/*/Dockerfile`, plus `ci/e2e-integration/Dockerfile` and
+# `deploy/backup.Dockerfile` — the latter has no MSRV need of its own,
+# bumped only for consistency, see its own comment) moved from
+# `rust:1.95-alpine3.22` to `rust:1.98-alpine3.22` in the same PR —
 # checked to exist on Docker Hub (`docker manifest inspect`) before
 # switching, rather than assumed.
 rust-version = "1.98.0"
