@@ -19,12 +19,12 @@
 # `ring` before anything constructs an HTTP client, and
 # `tests/tls_no_provider_live.rs` proves that ordering against a real TLS
 # handshake, not just a mock. Same pin as the workspace's declared MSRV
-# floor (`rust-version = "1.95.0"`, root `Cargo.toml`) and the exact
+# floor (`rust-version = "1.98.0"`, root `Cargo.toml`) and the exact
 # release-line CI's `dtolnay/rust-toolchain@stable` currently resolves to;
 # `3.22` pinned rather than the floating `-alpine` tag so this build
 # doesn't silently pick up a new Alpine base (and therefore a new musl/gcc)
 # on an unrelated day.
-FROM rust:1.95-alpine3.22 AS builder
+FROM rust:1.98-alpine3.22 AS builder
 
 # musl-dev + build-base (gcc, make, ...): `ring` (the sole crypto provider
 # left in this graph now that `aws-lc-rs` is gone — see the pin comment

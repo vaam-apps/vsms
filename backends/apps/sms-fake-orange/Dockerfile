@@ -35,7 +35,7 @@
 # succeeding with the identical `musl-dev build-base` package set the
 # other two Dockerfiles use — no `cmake`/`pkg-config`, `aws-lc-sys` is not
 # in this graph either.
-FROM rust:1.95-alpine3.22 AS builder
+FROM rust:1.98-alpine3.22 AS builder
 
 RUN apk add --no-cache musl-dev build-base
 
