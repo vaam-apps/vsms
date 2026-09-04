@@ -5,7 +5,7 @@ use std::time::Duration as StdDuration;
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use reqwest::StatusCode;
-use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::auth::system_context;
 use sms_api::map_database_error;
 use sms_api::schema::{
     AttemptState, UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, WebhookAttempt,
@@ -73,15 +73,11 @@ fn backoff_for(attempts: i64) -> Duration {
     BACKOFF_SCHEDULE[index.min(BACKOFF_SCHEDULE.len() - 1)]
 }
 
-/// The `system` context this role does all its work under.
+/// The `system` context this role does all its work under — see
+/// [`sms_api::auth::system_context`] for the shared constructor and the
+/// invariant it documents.
 fn sys(worker: &str) -> CratestackContext {
-    Principal {
-        sub: format!("sms-worker:hooks:{worker}"),
-        kind: PrincipalKind::App,
-        role: "system".to_owned(),
-        app_id: String::new(),
-    }
-    .into_context()
+    system_context(format!("sms-worker:hooks:{worker}"))
 }
 
 /// A client with §8.5's own 10s timeout — `reqwest::Client::new()` sets

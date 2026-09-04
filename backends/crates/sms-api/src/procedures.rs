@@ -15,7 +15,7 @@ use sms_msisdn::{Msisdn, OperatorPrefixTable};
 use tracing::info;
 
 use crate::audit_log;
-use crate::auth::{Principal, PrincipalKind};
+use crate::auth::PrincipalKind;
 use crate::cache::TtlCache;
 use crate::errors::map_database_error;
 use crate::pepper::{HashPepper, hmac_sha256_hex};
@@ -188,15 +188,10 @@ impl Procedures {
     /// resolution and the send path's own reads and writes admit. Built
     /// fresh per call rather than cached: it carries no state worth
     /// reusing, and constructing it is a handful of `Value::String`
-    /// allocations, not a query.
+    /// allocations, not a query. See [`crate::auth::system_context`] for
+    /// the shared constructor and the invariant it documents.
     fn sys() -> CratestackContext {
-        Principal {
-            sub: "sms-api:procedures".to_owned(),
-            kind: PrincipalKind::App,
-            role: "system".to_owned(),
-            app_id: String::new(),
-        }
-        .into_context()
+        crate::auth::system_context("sms-api:procedures")
     }
 
     /// Analyse a body, and normalise a recipient if one was supplied.

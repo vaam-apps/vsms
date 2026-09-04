@@ -22,7 +22,7 @@ use sms_api::schema::{
     oauth_signing_key as oauth_signing_key_filter, provider as provider_filter,
     route as route_filter, user as user_filter, user_credential as user_credential_filter,
 };
-use sms_api::{GatewayAuth, Principal, PrincipalKind, Procedures};
+use sms_api::{GatewayAuth, Principal, PrincipalKind, Procedures, system_context};
 use sms_provider::SmsProvider;
 use tracing::info;
 
@@ -716,19 +716,6 @@ fn write_private_key_pem(path: &std::path::Path, pem: &str) -> Result<()> {
         .with_context(|| format!("flushing the private key to {}", path.display()))
 }
 
-/// The `system`-role context every OP-adjacent database write in this
-/// binary runs under — never handed to a caller, matching
-/// `Procedures::sys()`'s own convention.
-fn system_context() -> cratestack::CratestackContext {
-    Principal {
-        sub: "sms-gateway:op".to_owned(),
-        kind: PrincipalKind::App,
-        role: "system".to_owned(),
-        app_id: String::new(),
-    }
-    .into_context()
-}
-
 /// `Provider.id` for the row matching `provider.key()` — resolved once at
 /// startup, not re-checked per DLR callback. Safe to cache: a `Provider`
 /// row's own id is immutable once created, and if the row genuinely needs
@@ -1039,7 +1026,7 @@ async fn serve_command(command: Command) -> Result<()> {
         .context("connecting to Postgres")?;
 
     let db = Cratestack::builder(pool).build();
-    let sys = system_context();
+    let sys = system_context("sms-gateway:op");
 
     // #38/#39: this process's `Message` writes (`sendMessage`, DLR
     // ingestion) are the only ones this milestone wires a webhook
@@ -1190,10 +1177,13 @@ async fn rotate_signing_key_command(database_url: String) -> Result<()> {
         .context("connecting to Postgres")?;
     let db = Cratestack::builder(pool).build();
 
-    let id =
-        sms_auth::op::rotate_signing_key(&db, &system_context(), sms_auth::op::ROTATION_OVERLAP)
-            .await
-            .context("rotating the OP signing key")?;
+    let id = sms_auth::op::rotate_signing_key(
+        &db,
+        &system_context("sms-gateway:op"),
+        sms_auth::op::ROTATION_OVERLAP,
+    )
+    .await
+    .context("rotating the OP signing key")?;
     println!("rotated: new signing key {id} is now active");
     println!(
         "the previous key keeps publishing in JWKS for {} minutes",
@@ -1790,7 +1780,7 @@ async fn seed_console_client_command(command: Command) -> Result<()> {
         .await
         .context("connecting to Postgres")?;
     let db = Cratestack::builder(pool).build();
-    let sys = system_context();
+    let sys = system_context("sms-gateway:op");
 
     seed_console_client_core(&db, &sys, &client_id, &redirect_uri).await
 }
@@ -2056,7 +2046,7 @@ async fn provision_user_command(command: Command) -> Result<()> {
         .await
         .context("connecting to Postgres")?;
     let db = Cratestack::builder(pool).build();
-    let sys = system_context();
+    let sys = system_context("sms-gateway:op");
 
     let Some((user_id, password)) =
         create_console_user_if_absent(&db, &sys, &email, &display_name, &role_key).await?
@@ -2207,7 +2197,7 @@ async fn bootstrap_command(command: Command) -> Result<()> {
         .await
         .context("connecting to Postgres")?;
     let db = Cratestack::builder(pool).build();
-    let sys = system_context();
+    let sys = system_context("sms-gateway:op");
 
     bootstrap_step_signing_key(&db, &sys).await?;
     bootstrap_step_seed_dispatch(&db).await?;

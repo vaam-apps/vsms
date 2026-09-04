@@ -15,7 +15,7 @@ use std::time::Duration as StdDuration;
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use cratestack::{CratestackContext, CratestackError};
-use sms_api::auth::{Principal, PrincipalKind};
+use sms_api::auth::system_context;
 use sms_api::schema::{Cratestack, Job, JobState, UpdateJobInput};
 use sms_api::{is_illegal_transition, map_database_error};
 use tracing::{error, warn};
@@ -135,13 +135,7 @@ pub fn default_registry() -> Registry {
 }
 
 fn sys(worker: &str) -> CratestackContext {
-    Principal {
-        sub: format!("sms-worker:jobs:{worker}"),
-        kind: PrincipalKind::App,
-        role: "system".to_owned(),
-        app_id: String::new(),
-    }
-    .into_context()
+    system_context(format!("sms-worker:jobs:{worker}"))
 }
 
 /// Never returns on its own, matching [`crate::run`]'s contract.

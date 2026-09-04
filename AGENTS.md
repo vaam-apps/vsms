@@ -1515,6 +1515,28 @@ The first of a series of pure cleanup PRs (no schema change, no behaviour change
 
 No behaviour change, proven by rerunning `hooks_live_postgres.rs` (8/8) and `dispatch_live_postgres.rs` (11/11) unchanged. Guard-failure proof: the trip branch temporarily left the counter un-reset — both the new unit test and `hooks_live_postgres.rs::the_circuit_breaker_opens_and_the_endpoint_stops_being_claimed` failed with the exact `left: N / right: 0` mismatch the property exists to prevent, before being reverted.
 
+## One `system` constructor, replacing nine hand-rolled copies
+
+The synthetic `role: "system"` context — what `OauthSigningKey.privateKeyPem` and every `UserCredential.passwordHash` are gated behind — was hand-rolled independently at nine call sites: `Procedures::sys()`, `webhooks.rs`'s subscriber context, `auth.rs`'s own `AppClient`-lookup context (cached once per `GatewayAuth`, unlike the other eight, which build fresh per call — a call-pattern difference, not an observable-value one, since the function is pure), `sms-gateway`'s OP-adjacent writes, `send_test_message.rs`'s standalone tool, and four in `sms-worker` — `jobs.rs`, `dispatch.rs`, `hooks.rs`, and `scheduler.rs` — each a `fn sys(worker: &str)` parameterised by which worker instance is acting. All nine agreed on every field (`kind: PrincipalKind::App`, `role: "system"`, `app_id: ""`) except `sub` — a human-readable label naming which subsystem is acting, which shows up verbatim in `cratestack_audit.actor.sub` on every write, and is worth more than one fewer function argument to lose. `sms_api::auth::system_context(sub: impl Into<String>)` is the one constructor now; every call site passes its own pre-existing `sub` literal unchanged, so no caller's audit trail changed shape. Its own doc comment is now the one place the invariant lives: never reachable from a real bearer token — `authenticate_app` hardcodes `role: "app"`, and `load_human_principal` refuses a human account keyed `system`/`app` before a `Principal` is ever built from it, backed a second, independent way by `roles_key_not_reserved_check`, a database `CHECK` constraint.
+
+Nine-way table of the original `sub` literals, preserved exactly:
+
+| site | `sub` |
+|---|---|
+| `procedures.rs::Procedures::sys()` | `"sms-api:procedures"` |
+| `webhooks.rs::sys()` | `"sms-api:webhooks"` |
+| `auth.rs::system_context()` (cached in `GatewayAuth.sys`) | `"sms-api:auth"` |
+| `sms-gateway/main.rs::system_context()` (4 call sites) | `"sms-gateway:op"` |
+| `send_test_message.rs::sys()` | `"send-test-message-tool"` |
+| `sms-worker/jobs.rs::sys(worker)` | `format!("sms-worker:jobs:{worker}")` |
+| `sms-worker/dispatch.rs::sys(worker)` | `format!("sms-worker:dispatch:{worker}")` |
+| `sms-worker/hooks.rs::sys(worker)` | `format!("sms-worker:hooks:{worker}")` |
+| `sms-worker/scheduler.rs::sys(worker)` | `format!("sms-worker:scheduler:{worker}")` |
+
+The three `sms-worker` sites (`dispatch.rs`, `hooks.rs`, `scheduler.rs`) were originally found while grepping for the pattern and deliberately left untouched in the first cut of this consolidation, on the reasoning that a security-sensitive commit shouldn't expand its own blast radius beyond what was scoped, unprompted, even where the DRY case is identical. Folded in as an explicit follow-up decision once flagged rather than silently — the consolidation's whole point is that there is exactly one place this principal is built, and leaving three near-identical copies standing beside it would have undercut that.
+
+Guard-failure proof, run twice — once for the original six, once again after folding in the three `sms-worker` sites. The second run found something the first didn't: `system_context`'s `role` was temporarily corrupted in `auth.rs` alone, and `dispatch_live_postgres.rs`/`jobs_live_postgres.rs` (which exercise `dispatch.rs::sys()` and `scheduler.rs::sys()`, both in `sms-worker` — a different crate from where the sabotage lived) did not fail fast. They hung: the real `dispatch`/`scheduler` loops kept retrying against a `system_context` that could no longer write anything, spinning forever with no timeout of their own, and the test process had to be killed by hand. That is still real evidence of wiring — the loops were provably driven by the shared, corrupted function, not by an independent copy that happened to keep working — just a worse failure mode than a quick assertion, worth naming so a future "it hung, is that from my change" moment isn't a surprise. Reverted; `dispatch_live_postgres.rs` (11/11), `hooks_live_postgres.rs` (8/8), and `jobs_live_postgres.rs` (11/11, including both `scheduler_tick_*` tests) all passed clean afterward. The original six-site proof (`send_message_live_postgres.rs` failing 15/17 with a fast, clean `Unauthorized`, and `system_context_golden_list_live_postgres.rs`'s live half *not* catching the same sabotage, since it hand-rolls its own fixture context) stands unchanged.
+
 ## Invariants that fail the build rather than production
 
 Five silent failure modes are now loud. Do not delete these without reading why they exist:
