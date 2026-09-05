@@ -161,7 +161,11 @@ docs-drift:
 # The cratestack pin is written in five places (Cargo.toml twice, the two
 # workspace-excluded client manifests, ci/runner/Dockerfile's ARG default);
 # the Dockerfile copy drifted once (0.8.10 against a 0.11.0 pin) and just ci
-# built a runner its own first step then refused.
+# built a runner its own first step then refused. Four are exact; the fifth,
+# sdks/rust/vsms-sdk-rust, is the one published library here and carries a
+# `~` range instead — its floor still has to track the pin, but an exact
+# requirement in a published library vetoes every consumer's own patch
+# choice. See .xtask/src/pin_copies.rs for the incident.
 cratestack-pin-check:
 	{{_cargo}} xtask cratestack-pin-check
 # R6: no CSS classes or raw markup in page/*-screen view files

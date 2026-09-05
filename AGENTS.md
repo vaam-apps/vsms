@@ -1736,6 +1736,41 @@ Run and counted, not assumed: `cargo test --doc -p sms-core -p sms-encoding -p s
 
 Roadmap: no edit. This PR is doc/test infrastructure cleanup — none of `docs/roadmap.md`'s own four update triggers (milestone/gate completion, a blocker or decision resolved, a dependency change, infrastructure landing ahead of its milestone) apply.
 
+## `vsms-sdk-rust`'s `=0.11.0` was an exact pin in a *published library* — and that is a different thing
+
+`sdks/rust/vsms-sdk-rust` is the only crate in this repository published to crates.io, and it inherited the same `cratestack = { package = "cratestack-client", version = "=0.11.0" }` spelling every other manifest here uses. Everywhere else that spelling is correct. Here it was not, and the difference is not stylistic.
+
+**Cargo resolves exactly one version per semver-compatible line for the entire dependency graph.** So an `=` requirement inside a published library is not a statement about that library at all — it is a veto over every *other* crate in the consumer's graph, forbidding 0.11.1 and every later patch of the 0.11 line, for code the SDK will never see. An application can pin exactly and bind only itself; `Cargo.lock` is where an application records "this exact version", and the root `Cargo.toml`'s `=0.11.0` for `cratestack-pg` stays exactly as it is for that reason. A library has no lockfile of its own once published, and the requirement it ships is a constraint on strangers.
+
+This was not hypothetical. Reproduced against the real registry, in a scratch `cargo new` project depending on the published 0.3.1:
+
+```toml
+[dependencies]
+vsms-sdk-rust = "0.3.1"
+cratestack-client = "=0.11.1"
+```
+
+```
+$ cargo generate-lockfile
+error: failed to select a version for `cratestack-client`.
+    ... required by package `vsms-sdk-rust v0.3.1`
+versions that meet the requirements `=0.11.0` are: 0.11.0
+
+all possible versions conflict with previously selected packages
+
+  previously selected package `cratestack-client v0.11.1`
+```
+
+The consumer that hit this (the `vaam-store/mobile-v3` workspace, 2026-09-05) had no way to satisfy both and downgraded its whole cratestack pin from `=0.11.1` to `=0.11.0` to adopt the SDK — an SDK dictating a downstream downgrade of a dependency it shares but does not own. Note that 0.11.1 is a version this repository already knows exists: `backends/crates/sms-api/src/router.rs`'s own comment discusses `cratestack-axum` **0.11.1** as "one patch past this repo's `=0.11.0`".
+
+The fix is `~0.11.0` (`>=0.11.0, <0.12.0`) on that one manifest — the honest statement of what the crate needs, which is the 0.11 generated-client surface and any patch of it, with the choice of patch left to the consumer's lockfile where it belongs. Same shape `sdks/node/vsms-sdk-node` already ships (`"jose": "^5.9.6"` — a floor and the next release line as ceiling), arrived at there without anyone having to be bitten first.
+
+**`cargo xtask cratestack-pin-check` had to learn the distinction, because it was the thing enforcing the defect.** Its `CLIENT_PREFIX` matched `version = "=` literally, so the correct requirement would have failed the guard — a check asserting the bug. It now carries the required *operator* per manifest alongside the version (`~` for the published SDK, `=` for `ci/e2e-integration/vsms-e2e-integration`, which is `publish = false` and binds nothing downstream), so both halves are held: the floor of every copy still tracks the root pin, which is what a missed bump breaks, and neither manifest can silently drift back to the other's spelling. Proven to fail before it passed: with the SDK reverted to `=0.11.0`, `cargo xtask cratestack-pin-check` exits 1 naming that manifest; restored, it passes.
+
+The general rule, worth more than this instance: **an exact `=` requirement is right for a binary and wrong for a library, and this repository contains both.** Before copying a dependency line from the root `Cargo.toml` into a crate, check whether that crate has `publish = true`.
+
+Roadmap: no edit. A dependency requirement widening on one published SDK changes no milestone, gate, dependency choice or decision — the cratestack version this repo builds against is unchanged at 0.11.0.
+
 ## Invariants that fail the build rather than production
 
 Five silent failure modes are now loud. Do not delete these without reading why they exist:
