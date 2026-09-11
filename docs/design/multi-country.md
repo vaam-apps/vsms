@@ -223,13 +223,19 @@ market and none is fixed by the staging below.
 
 Each stage is independently shippable and independently useful.
 
-| stage | change | breaks |
-|---|---|---|
-| 1 | `sms-msisdn` parses every country, Cameroon stays the default region | nothing |
-| 2 | country as a column: `App.defaultCountry`, `Message.destinationCountry`, `Route.matchCountry` | schema |
-| 3 | money carries its currency | schema and published wire, v0.4.0 |
-| 4 | operator becomes a `MobileNetwork` reference | schema |
-| 5 | per-country policy table replaces the WAT constants | schema |
+| stage | change | breaks | tracked |
+|---|---|---|---|
+| 1 | `sms-msisdn` parses every country, Cameroon stays the default region | nothing | — |
+| 2 | country as a column, and the globally-unique prefix index | schema | #356 |
+| 3 | money carries its currency, and provider selection stops comparing across them | schema and published wire, v0.4.0 | #357 |
+| 4 | operator becomes a `MobileNetwork` reference | schema | #358 |
+| 5 | per-country policy, on a real timezone database | schema | #359 |
 
 Stage 1 alone lets a customer's numbers be parsed and validated correctly, which is the gate
 everything else sits behind.
+
+Two things outside the stages are tracked because no stage fixes them: the unbuilt
+`AggregatorHttpProvider` (#360), which gates every market outside Cameroon and is the one obstacle
+here that gates revenue rather than correctness, and `Message.costXaf` having no writer at all
+(#361), which makes two documents wrong today and is worth correcting before stage 3 renames the
+field.
