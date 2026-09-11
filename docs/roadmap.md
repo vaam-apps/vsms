@@ -104,6 +104,35 @@ Deliberately *not* on that list: **#187** (webhook secrets readable by every hum
 
 ---
 
+## Multi-country: a new dimension across every phase, decided 2026-09-11
+
+The scope this roadmap was written against was Cameroon alone. It is now Cameroon-first and
+extensible, because prospective customers sit in Europe, the USA, Canada, South Asia and elsewhere
+in Africa. `docs/design/multi-country.md` is the decision record; this is what it does to sequencing.
+
+**It does not reopen a closed milestone.** M0–M4 and M6 stay done. What changes is that four of
+their artefacts carry a Cameroonian assumption in a place that is expensive to move later and cheap
+to move now, while no database anywhere holds data: a closed `OperatorCode` enum of four Cameroonian
+carriers, three money fields with the currency in the field name, a numbering plan compiled into
+`sms-msisdn`, and marketing quiet hours as a UTC+1 constant. Three of those four are schema changes
+and one breaks the published SDK wire contract, so this lands as its own staged program rather than
+as edits folded into whatever PR touches them next.
+
+**The genuinely new blocker it surfaces is not code.** Serving a European or North American customer
+needs an aggregator with coverage there, and vsms has two adapters: one Cameroon-specific, one whose
+wire shape is still an unverified placeholder. §6.2's config-driven `AggregatorHttpProvider` was
+specified and never built, and it is now on the critical path for every market outside Cameroon.
+Sender-ID regimes (10DLC in the USA, TRAI DLT in India) and data-residency conflicts are the other
+two, and none of the three is fixed by the five staged schema changes.
+
+**What it unblocks immediately.** Stage 1 alone, replacing the hand-rolled Cameroon numbering plan
+with libphonenumber metadata, lets any customer's numbers be parsed, validated and masked correctly.
+It breaks nothing and every later stage sits behind it. Verified before deciding: libphonenumber
+reproduces today's Cameroon behaviour exactly, including the `63x` unallocated blocks and the
+8-digit `88x` toll-free range, and it builds static under the musl toolchain the images use.
+
+---
+
 ## Where the unknowns live
 
 `OPEN_QUESTIONS.md` at the repo root collects what this system does not know
