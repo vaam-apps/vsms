@@ -76,6 +76,13 @@ and `FixedLine` for `2xx`, so a Cameroonian fixed line is still refused exactly 
 This is the kind of change that ships looking correct and fails on the first American customer, which
 is why it is recorded as its own decision rather than folded into decision 1.
 
+**A second, quieter rejection sits beside it.** `Message.msisdn` is bounded `@length(min: 12, max: 15)`,
+a floor derived from `+237` plus nine digits. It excludes real E.164 countries outright: Denmark,
+Norway and Iceland all produce 11-character numbers. A Danish customer's traffic is refused before it
+reaches a provider, for a reason that has nothing to do with Denmark. The bound carries no
+`@db_enforce`, so it is a schema edit with no migration, and it belongs with stage 1 rather than
+later. `PURGED_MSISDN_PLACEHOLDER` is sized to satisfy that same bound and moves with it.
+
 ## Decision 3 — there is no global number-to-operator mapping, and the design stops implying one
 
 The `phonenumber` crate ships no carrier mapper or geocoder; its `Carrier` type is a carrier-selection
@@ -109,6 +116,18 @@ real blocker.
 - `Route.matchCountry` — the primary routing predicate, alongside the existing operator and class
   predicates.
 
+**`OperatorPrefixRule.prefix` is globally `@unique`, and that is the hardest schema obstacle in the
+inventory.** The prefix table is the entire operator-classification mechanism, and a national prefix
+may exist exactly once across a deployment. Cameroon's MTN `67` and a French `67` cannot coexist,
+regardless of how country-agnostic the lookup code is, and the lookup code genuinely is: it takes
+untyped string pairs and does longest-prefix matching with no country concept. The model needs a
+country discriminator and the unique index needs to become composite. Both ends of that mechanism are
+bound while its middle is already portable, which is the clearest illustration in the codebase of
+what this whole program is doing.
+
+`SenderId.value` is globally `@unique` too, so two customers in two countries cannot both register
+`INFO`. That one is listed under what is not solved, because it is entangled with sender-ID regimes.
+
 ## Decision 5 — money carries its currency
 
 `costXaf`, `costPerSegmentXaf` and `estimatedCostXaf` encode the currency in the **field name**, so it
@@ -122,12 +141,28 @@ product decision nobody has made.
 
 **This breaks the published wire contract**, so it lands as v0.4.0. That suits this repository's
 standing preference for a hard cutover over a parallel path, and it is cheapest now: there is still
-no live database anywhere, and the Node and Rust SDKs have no third-party consumers.
+no live database anywhere, and the Node and Rust SDKs have no third-party consumers. The Rust SDK
+vendors the schema byte-for-byte, so the enum and every `*Xaf` name are in its published typed
+surface, not merely adjacent to it.
+
+**It is also a smaller change than it looks, because the billing path does not exist.** `Message.costXaf`
+has no writer anywhere in the repository. It defaults to zero, stays zero, and serialises into every
+webhook as `"0"`, while `procedures.rs` claims it "is the number that bills" and `docs/integrating.md`
+advertises `"costXaf": "22.00"`. Both are wrong and are corrected as part of this work. So currency is
+close to greenfield rather than a migration, and money precision was never the problem: amounts are
+`Decimal` over unbounded `NUMERIC` end to end, with no zero-decimal assumption anywhere.
+
+**The real defect the audit found here is a comparison, not a precision loss.** Provider selection
+orders by `costPerSegmentXaf` ascending to pick the cheapest active provider. That comparison is
+currency-blind, so the moment a second currency exists it ranks XAF against EUR as though the numbers
+were commensurate and routes traffic to whichever currency happens to have smaller numerals. Adding a
+currency column without fixing that ordering would be worse than leaving it alone.
 
 ## Decision 6 — operator becomes data rather than a DDL enum
 
 `OperatorCode` is a closed enum of four Cameroonian carriers plus `unknown`, enforced by a `CHECK`
-constraint on four columns. Globally there are over a thousand networks. It becomes a nullable key
+constraint on five columns, and mirrored again as a hand-copied enum in the pure `sms-routing` crate
+and four more times across the console and SDKs. Globally there are over a thousand networks. It becomes a nullable key
 into a `MobileNetwork` table scoped by country; Cameroon keeps `mtn`, `orange`, `camtel` and
 `nexttel` as its keys, so existing semantics carry over unchanged.
 
@@ -147,6 +182,14 @@ These become seeded reference data carrying, per country, a timezone, a quiet-ho
 applies, and the sender-ID regime. Code keeps a conservative fallback for a country with no row, so
 an unseeded country fails closed rather than sending at 03:00 local time.
 
+**The window is the easy half; the arithmetic is the trap.** Today the hour is computed by adding a
+fixed `+1` to UTC, which is right for Cameroon because it observes WAT year-round with no DST. A
+per-country table of fixed offsets inherits the bug rather than fixing it: it is wrong twice a year
+for the EU, the USA and Canada, and wrong always for India, which sits at UTC+5:30. This needs a real
+IANA timezone database, which is a new dependency rather than a constant swap. The same absence shows
+up in the monthly quota window, which uses UTC and says so in its own comment, because nothing in the
+schema carries a timezone.
+
 ## Explicitly not solved here
 
 Naming these matters more than the decisions above, because each is a real obstacle for a specific
@@ -156,7 +199,13 @@ market and none is fixed by the staging below.
   effectively unusable in the USA without 10DLC, toll-free or short-code registration, and require
   TRAI DLT pre-registration of both sender and template in India. `SenderId` and
   `SenderIdRegistration` are already per-(sender, provider); they gain a country dimension, but the
-  registration workflows themselves are per-market projects.
+  registration workflows themselves are per-market projects. Three concrete obstacles, all verified:
+  `SenderId.value` is bounded 3 to 11 characters by a real database `CHECK`, so a US 10DLC long code
+  structurally cannot be stored; `SenderIdKind` is read by nothing, so the alphanumeric-versus-shortcode
+  distinction is a label rather than a control; and the `supports*` capability columns on `Provider`
+  are written by three seed paths and read by none, so nothing could refuse an alphanumeric sender for
+  a country that bans it even if the value fit. India additionally pre-registers message *templates*,
+  and no template model exists.
 - **Providers with real coverage.** `sms-provider-orange-cm` is Cameroon-specific, and
   `sms-provider-mtn`'s wire shape is still an unverified placeholder. Serving Europe or North America
   means a real aggregator, which is the config-driven `AggregatorHttpProvider` that §6.2 specified
