@@ -32,14 +32,14 @@ enum Command {
     /// upload both to `BACKUP_RCLONE_REMOTE`, prune anything past
     /// `BACKUP_RETENTION_DAYS`.
     Backup {
-        #[arg(long, env = "DATABASE_URL")]
+        #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
         database_url: String,
 
         /// #134: real secret material — must match whatever `sms-gateway`
         /// is running with right now, or this backup's own manifest
         /// records a fingerprint restoring under a different pepper will
         /// visibly disagree with (see `restore`'s own pepper check).
-        #[arg(long, env = "SMS_HASH_PEPPER")]
+        #[arg(long, env = "SMS_HASH_PEPPER", hide_env_values = true)]
         hash_pepper: String,
 
         #[arg(long, env = "BACKUP_RCLONE_REMOTE")]
@@ -59,13 +59,13 @@ enum Command {
             .required(true)
     ))]
     Restore {
-        #[arg(long, env = "DATABASE_URL")]
+        #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
         database_url: String,
 
         #[arg(long, env = "BACKUP_RCLONE_REMOTE")]
         rclone_remote: Option<String>,
 
-        #[arg(long, env = "SMS_HASH_PEPPER")]
+        #[arg(long, env = "SMS_HASH_PEPPER", hide_env_values = true)]
         hash_pepper: Option<String>,
 
         #[arg(long, env = "RESTORE_CONFIRM_OVERWRITE")]
@@ -90,10 +90,10 @@ enum Command {
     /// you care about** — requires the confirmation flag for exactly
     /// that reason, and there is no default target.
     RestoreDrill {
-        #[arg(long, env = "DATABASE_URL")]
+        #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
         database_url: String,
 
-        #[arg(long, env = "SMS_HASH_PEPPER")]
+        #[arg(long, env = "SMS_HASH_PEPPER", hide_env_values = true)]
         hash_pepper: Option<String>,
 
         /// Omit to use a throwaway local directory (zero external
@@ -111,10 +111,10 @@ enum Command {
     /// `BACKUP_RUN_ON_START=false`), then blocks, backing up again on
     /// every `BACKUP_CRON_SCHEDULE` tick, forever, until `SIGTERM`/`SIGINT`.
     Schedule {
-        #[arg(long, env = "DATABASE_URL")]
+        #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
         database_url: String,
 
-        #[arg(long, env = "SMS_HASH_PEPPER")]
+        #[arg(long, env = "SMS_HASH_PEPPER", hide_env_values = true)]
         hash_pepper: String,
 
         #[arg(long, env = "BACKUP_RCLONE_REMOTE")]

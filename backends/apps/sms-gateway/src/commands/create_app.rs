@@ -13,7 +13,7 @@ use sms_api::{Principal, PrincipalKind};
 /// only carries the flags themselves.
 #[derive(Debug, clap::Args)]
 pub(crate) struct CreateAppArgs {
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub(crate) database_url: String,
 
     /// `App.slug`'s own `@regex` — lowercase alphanumeric and `-`

@@ -522,6 +522,14 @@ jobs:
       # R1: all data access goes through CrateStack delegates.
       - run: cargo xtask no-raw-sqlx
 
+      # No clap argument bound to a credential-bearing env var may render
+      # its current value into `--help`. clap does exactly that by default,
+      # which put a live Postgres password on screen for anyone running
+      # `sms-gateway <subcommand> --help` inside a pod. The defect is
+      # introduced by adding an argument, in any crate, so it needs a
+      # workspace-wide check and not only the one binary's own test.
+      - run: cargo xtask secret-env-args
+
       # R2: the diagram everyone reads and the transition table the trigger
       # enforces must agree. Drift shows up in production as an SM001 on an
       # edge that looks legal in the documentation.

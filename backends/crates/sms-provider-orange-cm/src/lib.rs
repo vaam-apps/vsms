@@ -58,7 +58,7 @@ fn capabilities() -> Capabilities {
 /// What this adapter needs to talk to Orange. Never a secret in the
 /// database (§2.4: `Provider.credentialRef` is a pointer) — the worker
 /// resolves `client_id`/`client_secret` at startup and constructs this.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OrangeCmConfig {
     /// The `OAuth2` `client_credentials` client ID.
     pub client_id: String,
@@ -91,6 +91,25 @@ pub struct OrangeCmConfig {
     /// wiremock response delayed past this value is what produces a
     /// genuine, deterministic read timeout.
     pub request_timeout: std::time::Duration,
+}
+
+impl std::fmt::Debug for OrangeCmConfig {
+    /// Hand-written, not derived — `client_secret` must never reach a
+    /// `{:?}` log line. Same discipline as `sms_api::pepper::HashPepper`
+    /// and the Rust SDK's own `PrivateKeyJwtConfig`; this struct was the
+    /// one config type in the workspace still holding real credential
+    /// material behind a derived `Debug`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OrangeCmConfig")
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"<redacted>")
+            .field("sender_number", &self.sender_number)
+            .field("base_url", &self.base_url)
+            .field("dlr_notify_url", &self.dlr_notify_url)
+            .field("connect_timeout", &self.connect_timeout)
+            .field("request_timeout", &self.request_timeout)
+            .finish()
+    }
 }
 
 impl OrangeCmConfig {
@@ -444,6 +463,25 @@ mod tests {
     use sms_provider::{ProviderError, SmsProvider, SubmitRequest};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn debug_redacts_the_client_secret() {
+        let config = OrangeCmConfig::production(
+            "test-client-id".to_owned(),
+            "NEVER-PRINT-THIS".to_owned(),
+            "+2370000".to_owned(),
+        );
+        let rendered = format!("{config:?}");
+        assert!(
+            !rendered.contains("NEVER-PRINT-THIS"),
+            "client_secret reached a Debug rendering: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+        // The non-secret fields must still be readable — a redacting
+        // Debug that hides everything is useless for diagnosis.
+        assert!(rendered.contains("test-client-id"), "{rendered}");
+        assert!(rendered.contains("+2370000"), "{rendered}");
+    }
 
     /// Generous enough that no existing test (all fast, local wiremock
     /// responses) ever brushes against it, short enough that the

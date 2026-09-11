@@ -54,7 +54,7 @@ struct Cli {
     /// Every role's queries run against this, not just singleton roles'
     /// leases — required unconditionally, the same way `sms-gateway`
     /// requires it.
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     database_url: String,
 
     /// #70/#71: `GET /metrics`, this process's own Prometheus text
@@ -92,7 +92,7 @@ struct Cli {
     /// required. Never logged; `OrangeCmConfig` holds it only long enough
     /// to fetch and cache a bearer token (`sms-provider-orange-cm`'s own
     /// `token` module).
-    #[arg(long, env = "ORANGE_CM_CLIENT_SECRET")]
+    #[arg(long, env = "ORANGE_CM_CLIENT_SECRET", hide_env_values = true)]
     orange_client_secret: Option<String>,
 
     /// E.164 without the `tel:` scheme — see `OrangeCmConfig::sender_number`

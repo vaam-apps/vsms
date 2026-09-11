@@ -126,6 +126,7 @@ deny:
 # Run the fast, host-toolchain subset of checks — NOT the whole CI gate.
 all-checks: lint test
 	{{_cargo}} xtask no-raw-sqlx
+	{{_cargo}} xtask secret-env-args
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask workflow-paths
 	{{_cargo}} xtask cratestack-pin-check
@@ -147,6 +148,13 @@ parity:
 # R1: all data access goes through CrateStack delegates
 no-raw-sqlx:
 	{{_cargo}} xtask no-raw-sqlx
+
+# No clap argument bound to a credential-bearing env var may print its
+# current value in `--help`. clap does that by default, which is how
+# `sms-gateway provision-user --help` inside a pod printed the whole
+# DATABASE_URL, password included. See .xtask/src/secret_env_args.rs.
+secret-env-args:
+	{{_cargo}} xtask secret-env-args
 
 # Every path a workflow names must exist (release.yml never runs on a PR)
 workflow-paths:

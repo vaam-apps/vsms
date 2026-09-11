@@ -42,7 +42,7 @@ const DEMO_WEBHOOK_EVENT_TYPES: &[&str] = &[
     about = "Demo-only: seeds the App/SenderId fixtures compose.demo.yaml needs. Never point this at a production database."
 )]
 struct Cli {
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     database_url: String,
 
     #[arg(long, default_value = "vsms demo app")]

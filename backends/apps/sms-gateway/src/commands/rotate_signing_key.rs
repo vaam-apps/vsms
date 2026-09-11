@@ -11,7 +11,7 @@ use sms_api::system_context;
 /// `Command::RotateSigningKey`'s flags.
 #[derive(Debug, clap::Args)]
 pub(crate) struct RotateSigningKeyArgs {
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub(crate) database_url: String,
 }
 

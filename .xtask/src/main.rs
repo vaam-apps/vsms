@@ -29,6 +29,7 @@ mod pin_copies;
 mod r6_ui_layers;
 mod raw_sqlx;
 mod sdk_schema;
+mod secret_env_args;
 mod workflow_paths;
 
 use std::env;
@@ -47,6 +48,7 @@ fn main() -> ExitCode {
         "docs-drift" => docs_drift::run(&root),
         "workflow-paths" => workflow_paths::run(&root),
         "r6" => r6_ui_layers::run(&root),
+        "secret-env-args" => secret_env_args::run(&root),
         "bootstrap-sql" => {
             let Some(out) = args.next() else {
                 eprintln!("usage: cargo xtask bootstrap-sql <output-path>");
@@ -92,6 +94,7 @@ fn help_text() -> &'static str {
      no-raw-sqlx          R1 — no raw sqlx outside the named exceptions\n  \
      parity                R2 — state diagrams and transition tables agree\n  \
      r6                    R6 — no CSS classes or raw markup in view files\n  \
+     secret-env-args       no clap arg bound to a secret env var prints its value in --help\n  \
      bootstrap-sql <out>   regenerate 0002_bootstrap/up.sql from docs/architecture.md §2.10\n  \
      bootstrap-sql-check   fail if 0002_bootstrap/up.sql has drifted from the design doc\n  \
      sdk-schema-check      fail if the vendored SDK schema has drifted\n  \

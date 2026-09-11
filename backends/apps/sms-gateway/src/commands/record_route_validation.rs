@@ -13,7 +13,7 @@ use sms_api::{Principal, PrincipalKind};
 /// themselves.
 #[derive(Debug, clap::Args)]
 pub(crate) struct RecordRouteValidationArgs {
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub(crate) database_url: String,
 
     /// The `Route.id` this validation covers.

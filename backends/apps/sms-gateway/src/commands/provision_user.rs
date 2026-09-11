@@ -18,7 +18,7 @@ use sms_api::system_context;
 /// struct only carries the flags themselves.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ProvisionUserArgs {
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub(crate) database_url: String,
 
     #[arg(long)]
