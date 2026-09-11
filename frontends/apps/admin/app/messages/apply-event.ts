@@ -15,7 +15,7 @@
 
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@vsms/api";
-import type { MessageState } from "@vsms/ui";
+import type { MessageState } from "@/components/status";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 

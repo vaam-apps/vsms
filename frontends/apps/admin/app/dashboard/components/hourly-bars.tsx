@@ -7,14 +7,14 @@
 // divs sized by percentage height, themed with the same CSS variables
 // every other screen already uses (`frontends/packages/ui/src/styles/theme.css`).
 //
-// Deliberately not in `@vsms/ui`: this has exactly one consumer today
+// Deliberately not in `@vaam-apps/ui`: this has exactly one consumer today
 // (`dashboard-screen.tsx`), and promoting it to the shared package before
 // a second screen needs it would be speculative reuse — the opposite of
 // this repo's own "composition over re-implementation" rule, which is
 // about reusing what already exists, not about pre-building for a future
 // that may not arrive the same shape.
 
-import { cn } from "@vsms/ui";
+import { cn } from "@vaam-apps/ui";
 
 export interface HourlyBar {
   /** 0–1. A bar at `null` renders hollow/muted — "no data", not "zero". */

@@ -12,7 +12,7 @@
 //
 // Three layers, each honest about its own limits:
 //
-// 1. `StateTimeline` (`@vsms/ui`, wrapped by `MessageTimelineCard` below)
+// 1. `StateTimeline` (`@vaam-apps/ui`, wrapped by `MessageTimelineCard` below)
 //    renders only the transitions `buildTimeline` can point a real
 //    timestamp at — `accepted`, `submitted` (if it happened), and the
 //    current state. It never shows `queued`/`routed` as dated steps,
@@ -36,8 +36,9 @@
 // `delivered` changes nothing) — see `backends/crates/sms-api/src/dlr.rs`'s
 // own `next_state`.
 
+import { Separator } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
-import { isTerminalMessageState, Separator } from "@vsms/ui";
+import { isTerminalMessageState } from "@/components/status";
 import { MessageDetailHeader } from "./components/message-detail-header";
 import { MessageDetailLayout } from "./components/message-detail-layout";
 import { MessageLoadingCard } from "./components/message-loading-card";

@@ -1,7 +1,7 @@
 // Dumb component (R6): the quick-detail drawer's field list, moved verbatim
 // out of `workers-screen.tsx` (`WorkerDetailField` included).
 
-import { DetailList, DetailRow, TimestampDisplay } from "@vsms/ui";
+import { DetailList, DetailRow, TimestampDisplay } from "@vaam-apps/ui";
 import { roleLabel } from "../role-labels";
 import { StatusIndicator, type WorkerLockInfo } from "./workers-table";
 

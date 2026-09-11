@@ -56,8 +56,8 @@
 // screen now needs its own `Suspense` boundary in `page.tsx` (previously
 // none, since nothing here read `useSearchParams()`).
 
+import { InlineBanner, QuickDetailDrawer, ScreenHeader, ScreenStack } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
-import { InlineBanner, QuickDetailDrawer, ScreenHeader, ScreenStack } from "@vsms/ui";
 import { parseAsString, useQueryState } from "nuqs";
 import {
   WorkerDetailFields,

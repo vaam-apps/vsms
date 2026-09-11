@@ -23,7 +23,7 @@ import { cn } from "../../lib/cn";
  * rather than rewriting every call site to track an index.
  *
  * Every consumer's own JSX is untouched: only the import line changes, via
- * aliasing (`import { ValueTabs as Tabs, ... } from "@vsms/ui"`) — the one
+ * aliasing (`import { ValueTabs as Tabs, ... } from "@vaam-apps/ui"`) — the one
  * genuinely necessary API break this bucket owns (see each updated file's
  * own import for the one-line diff).
  */

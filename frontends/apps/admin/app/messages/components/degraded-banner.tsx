@@ -1,4 +1,4 @@
-import { InlineBanner } from "@vsms/ui";
+import { InlineBanner } from "@vaam-apps/ui";
 // Dumb — route-local to messages (R6). Shown while the live-poll loop is
 // reporting `degraded` frames; no props, fixed copy.
 

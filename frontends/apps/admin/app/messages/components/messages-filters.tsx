@@ -7,15 +7,13 @@ import {
   Button,
   FormField,
   Input,
-  MESSAGE_STATES,
-  MESSAGE_STATUS_META,
-  type MessageState,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import { MESSAGE_STATES, MESSAGE_STATUS_META, type MessageState } from "@/components/status";
 
 export interface MessagesFiltersProps {
   state: MessageState | null;

@@ -5,7 +5,7 @@
 // one frame after `open` flips `false`. `entry` is nullable so this can
 // render (closed) before any row has ever been clicked.
 
-import { DetailList, DetailRow, QuickDetailDrawer, TimestampDisplay } from "@vsms/ui";
+import { DetailList, DetailRow, QuickDetailDrawer, TimestampDisplay } from "@vaam-apps/ui";
 import { prettyJson } from "../audit-log-format";
 import type { AuditLogEntry } from "../types";
 import { JsonBlock } from "./json-block";

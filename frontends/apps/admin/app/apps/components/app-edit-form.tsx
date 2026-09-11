@@ -1,7 +1,7 @@
 // Dumb view: the app-edit form fields. Receives an already-configured
 // `react-hook-form` instance; owns no mutation, no data fetching.
 
-import { FormField, Input, StaleWriteBanner, Textarea } from "@vsms/ui";
+import { FormField, Input, StaleWriteBanner, Textarea } from "@vaam-apps/ui";
 import type { UseFormReturn } from "react-hook-form";
 import type { AppEditValues } from "../app-forms";
 import { ErrorBanner } from "./error-banner";

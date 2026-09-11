@@ -14,7 +14,7 @@ import {
   SelectValue,
   Separator,
   Textarea,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { Section } from "./section";
 
 export function FormGallery() {

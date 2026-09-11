@@ -68,10 +68,7 @@
 // unit-testable without mounting React).
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { trpc } from "@vsms/hooks";
 import {
-  ATTEMPT_STATES,
-  type AttemptState,
   Button,
   IdDisplay,
   MoreDetailDrawer,
@@ -80,10 +77,12 @@ import {
   ScreenHeader,
   ScreenStack,
   toast,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import { trpc } from "@vsms/hooks";
 import { parseAsString, parseAsStringEnum, useQueryState, useQueryStates } from "nuqs";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { ATTEMPT_STATES, type AttemptState } from "@/components/status";
 import { AttemptQuickDetailBody } from "./components/attempt-quick-detail-body";
 import { AttemptQuickDetailFooter } from "./components/attempt-quick-detail-footer";
 import { AttemptReplayConfirm } from "./components/attempt-replay-confirm";

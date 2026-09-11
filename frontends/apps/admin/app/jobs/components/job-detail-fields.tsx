@@ -1,7 +1,8 @@
 // Dumb component (R6): the quick-detail drawer's field list, moved verbatim
 // out of `jobs-screen.tsx` (`JobDetailField` included).
 
-import { DetailList, DetailRow, IdDisplay, JobStatusPill, TimestampDisplay } from "@vsms/ui";
+import { DetailList, DetailRow, IdDisplay, TimestampDisplay } from "@vaam-apps/ui";
+import { JobStatusPill } from "@/components/status";
 import type { JobListItem } from "./jobs-table";
 
 export interface JobDetailFieldsProps {

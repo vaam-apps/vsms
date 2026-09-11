@@ -1,4 +1,5 @@
-import { AttemptStatusPill, DetailList, DetailRow, FieldError, TimestampDisplay } from "@vsms/ui";
+import { DetailList, DetailRow, FieldError, TimestampDisplay } from "@vaam-apps/ui";
+import { AttemptStatusPill } from "@/components/status";
 import type { AttemptListItem } from "../webhook-domain";
 
 // Dumb (R6): the `QuickDetailDrawer`'s summary `dl` for one delivery

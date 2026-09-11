@@ -2,7 +2,7 @@
 // from "routes exist, none matched" (`EvaluationsTable`'s own empty state).
 // Static content, no props. Moved verbatim out of `simulator-screen.tsx`.
 
-import { InlineBanner } from "@vsms/ui";
+import { InlineBanner } from "@vaam-apps/ui";
 
 export function NoRoutesBanner() {
   return (

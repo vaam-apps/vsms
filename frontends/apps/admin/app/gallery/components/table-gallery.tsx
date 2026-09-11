@@ -8,17 +8,16 @@ import {
   InlineBanner,
   InlineEmptyState,
   LiveRow,
-  type MessageState,
   Skeleton,
-  StatusPill,
   Table,
   TableBody,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { useState } from "react";
+import { type MessageState, StatusPill } from "@/components/status";
 import { Section } from "./section";
 
 const DEMO_ROWS: Array<{ id: string; state: MessageState; recipient: string; version: number }> = [

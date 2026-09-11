@@ -1,4 +1,4 @@
-import { Button, InlineBanner } from "@vsms/ui";
+import { Button, InlineBanner } from "@vaam-apps/ui";
 
 // Dumb (R6): the role-scope notice, the "Endpoints" section heading with
 // its "New endpoint" action, and a list read-error banner.

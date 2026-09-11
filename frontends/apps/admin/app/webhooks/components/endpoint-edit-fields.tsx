@@ -1,4 +1,4 @@
-import { FormField, InlineBanner, Input } from "@vsms/ui";
+import { FormField, InlineBanner, Input } from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import type { EndpointFormValues, EventType } from "../webhook-domain";
 import { EventTypeToggles } from "./event-type-toggles";

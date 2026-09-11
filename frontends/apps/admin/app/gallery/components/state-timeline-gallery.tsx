@@ -2,7 +2,8 @@
 
 // Route-local (R6): moved verbatim out of `page.tsx`.
 
-import { Card, CardBody, CardHeader, StateTimeline } from "@vsms/ui";
+import { Card, CardBody, CardHeader, StateTimeline } from "@vaam-apps/ui";
+import { MESSAGE_STATE_ANNOTATIONS, MESSAGE_STATUS_META } from "@/components/status";
 import { Section } from "./section";
 
 export function StateTimelineGallery() {
@@ -16,6 +17,8 @@ export function StateTimelineGallery() {
           <CardHeader title="cs_msg_002" meta="+237 6 91 22 10 09 · MTN" />
           <CardBody>
             <StateTimeline
+              system={MESSAGE_STATUS_META}
+              annotations={MESSAGE_STATE_ANNOTATIONS}
               currentState="uncertain"
               isTerminal={false}
               transitions={[
@@ -46,6 +49,8 @@ export function StateTimelineGallery() {
           <CardHeader title="cs_msg_001" meta="+237 6 77 12 34 56 · MTN" />
           <CardBody>
             <StateTimeline
+              system={MESSAGE_STATUS_META}
+              annotations={MESSAGE_STATE_ANNOTATIONS}
               currentState="delivered"
               isTerminal
               transitions={[
@@ -74,7 +79,12 @@ export function StateTimelineGallery() {
         <p className="text-caption text-muted-foreground">Loading skeleton (no transitions yet):</p>
         <Card>
           <CardBody className="pt-4">
-            <StateTimeline currentState="accepted" isTerminal={false} transitions={[]} />
+            <StateTimeline
+              system={MESSAGE_STATUS_META}
+              currentState="accepted"
+              isTerminal={false}
+              transitions={[]}
+            />
           </CardBody>
         </Card>
       </div>

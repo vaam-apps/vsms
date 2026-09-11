@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 // Two independent sets of pure unit tests live under `frontends/apps/admin/` now, and
@@ -6,7 +7,7 @@ import { defineConfig } from "vitest/config";
 //
 //   - `lib/oidc.ts` (#194) is pure — no `@vsms/env` import at module
 //     scope, no `server-only` guard.
-//   - `app/messages/[id]/timeline.ts` (#50) needs `@vsms/ui`'s
+//   - `app/messages/[id]/timeline.ts` (#50) needs `@vaam-apps/ui`'s
 //     `StateTransition`, but only ever as `import type`, which Vitest's
 //     esbuild transform erases entirely — so no React or Next runtime is
 //     pulled in either.
@@ -16,6 +17,14 @@ import { defineConfig } from "vitest/config";
 // file rather than folded into a shared root config because this
 // workspace has no shared vitest config today.
 export default defineConfig({
+  // Mirrors tsconfig.json's own `paths`. Vitest resolves imports itself
+  // and never reads `tsconfig`, so an `@/…` import that typechecks would
+  // otherwise fail at test time with a bare module-not-found.
+  resolve: {
+    alias: {
+      "@": fileURLToPath(new URL(".", import.meta.url)),
+    },
+  },
   test: {
     include: ["app/**/*.test.ts", "lib/**/*.test.ts"],
   },

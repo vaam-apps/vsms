@@ -2,14 +2,14 @@ import {
   FormField,
   InlineBanner,
   Input,
-  MESSAGE_CLASSES,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
+import { MESSAGE_CLASSES } from "@/components/status";
 import {
   ANY_PREDICATE,
   OPERATOR_CODES,

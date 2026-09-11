@@ -9,7 +9,7 @@ import {
   Input,
   MoreDetailDrawer,
   QuickDetailDrawer,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { useState } from "react";
 import { Section } from "./section";
 

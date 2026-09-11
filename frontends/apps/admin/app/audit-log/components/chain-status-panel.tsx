@@ -3,7 +3,7 @@
 // collapses it into one of the five states below; this component only
 // renders whichever one it is handed.
 
-import { InlineBanner, Skeleton, TimestampDisplay } from "@vsms/ui";
+import { InlineBanner, Skeleton, TimestampDisplay } from "@vaam-apps/ui";
 
 export type ChainStatusPanelProps =
   | { kind: "loading" }

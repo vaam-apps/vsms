@@ -1,4 +1,4 @@
-import { Button } from "@vsms/ui";
+import { Button } from "@vaam-apps/ui";
 
 // Dumb (R6): the sender id `QuickDetailDrawer`'s own footer.
 export function SenderQuickDetailFooter({

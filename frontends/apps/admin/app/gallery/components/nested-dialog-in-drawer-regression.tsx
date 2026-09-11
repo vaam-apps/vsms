@@ -103,7 +103,7 @@
 // the same reason the fix below wasn't a primitive-level one: the actual
 // fix is a *screen-level* pattern change, not a smarter nested overlay.
 //
-// **The fix, shipped:** `@vsms/ui`'s `InlineConfirm`
+// **The fix, shipped:** `@vaam-apps/ui`'s `InlineConfirm`
 // (`components/primitives/inline-confirm.tsx`) renders the confirmation
 // **inline, inside the drawer's own DOM subtree** — no portal, no second
 // `FocusScope`, nothing for vaul's own trap to fight. The caller swaps the
@@ -162,7 +162,7 @@
 //    trial found a second bug (confirming also closed the outer drawer) —
 //    is foreclosed for a reason that has nothing to do with focus traps:
 //    it requires importing `@radix-ui/react-dialog` directly into
-//    `@vsms/ui`, which is the exact dependency `console-redesign.md`'s own
+//    `@vaam-apps/ui`, which is the exact dependency `console-redesign.md`'s own
 //    decision ledger (D3) already replaced with Headless UI, deliberately,
 //    for every primitive that has a Headless UI equivalent. Making this
 //    one case an exception would mean carrying two competing modal/focus-
@@ -174,7 +174,7 @@
 // package's own architecture. `InlineConfirm` is not a stopgap standing in
 // for a primitive fix that might still land later — it is the fix.
 
-import { Button, InlineConfirm, MoreDetailDrawer } from "@vsms/ui";
+import { Button, InlineConfirm, MoreDetailDrawer } from "@vaam-apps/ui";
 import { useState } from "react";
 import { Section } from "./section";
 

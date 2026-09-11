@@ -11,7 +11,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { type AuditOperation, OPERATIONS } from "../types";
 
 export function AuditFilters({

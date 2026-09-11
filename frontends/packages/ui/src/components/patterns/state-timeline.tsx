@@ -3,11 +3,11 @@ import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
 import { Skeleton } from "../primitives/skeleton";
 import { StateMark } from "../status/state-mark";
-import { MESSAGE_STATUS_META, type MessageState } from "../status/status-tokens";
+import type { StatusSystem } from "../status/status-tokens";
 import { type PayloadExchange, PayloadInspector } from "./payload-inspector";
 
-export interface StateTransition {
-  toState: MessageState;
+export interface StateTransition<S extends string = string> {
+  toState: S;
   /** ISO 8601 timestamp. */
   at: string;
   actor?: string;
@@ -18,18 +18,53 @@ export interface StateTransition {
   payload?: PayloadExchange[];
 }
 
-export interface StateTimelineProps {
-  transitions: StateTransition[];
-  currentState: MessageState;
+export interface StateTimelineProps<S extends string = string> {
+  transitions: StateTransition<S>[];
+  /** The state machine's presentation table — the same one its
+   * `createStatusPill` is bound to, so a timeline and a pill can never
+   * disagree about what a state looks like. */
+  system: StatusSystem<S>;
+  currentState: S;
+  /** Whether the timeline has stopped. Passed in rather than derived from
+   * `system[currentState].family`: terminality is the server's fact, and
+   * a presentational table is the wrong place to learn it from — see
+   * `status-tokens.ts`'s own warning. */
   isTerminal: boolean;
-  timezone?: "UTC" | "Africa/Douala";
+  /**
+   * Any IANA zone name, e.g. `"UTC"`, `"Africa/Douala"`, `"America/New_York"`.
+   * The UTC-offset suffix is derived from the zone and the instant, so it
+   * stays correct across DST and for zones this library has never heard
+   * of. (It used to be a two-value union with the suffix hard-coded as
+   * `"Z"` or `"+01"` — correct only for the two zones that union named.)
+   */
+  timezone?: string;
+  /**
+   * Per-state explanatory notes, rendered beneath the node that entered
+   * that state.
+   *
+   * The point is states that look like bugs to anyone who does not
+   * already know the product decision behind them — "we never learned the
+   * outcome, and deliberately will not retry". Without the note the
+   * operator's next move is to open a SQL client, which is the outcome a
+   * timeline exists to prevent. Supplied by the caller because the
+   * explanation is domain knowledge, not presentation.
+   */
+  annotations?: Partial<Record<S, string>> | undefined;
 }
 
-function formatAbsolute(iso: string, timezone: "UTC" | "Africa/Douala"): string {
+/**
+ * `2026-09-11 14:03:07 +01` — sortable, unambiguous, and carrying its own
+ * offset so a screenshot pasted into a ticket is still interpretable.
+ *
+ * The offset is read out of `Intl`'s own `shortOffset` part rather than
+ * assumed from the zone name: it is the only way to be right across DST
+ * and across zones this component has never been told about. `UTC` keeps
+ * its conventional `Z` rather than the `GMT` that `shortOffset` yields.
+ */
+function formatAbsolute(iso: string, timezone: string): string {
   const date = new Date(iso);
-  const tz = timezone === "UTC" ? "UTC" : "Africa/Douala";
-  const formatted = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -37,11 +72,20 @@ function formatAbsolute(iso: string, timezone: "UTC" | "Africa/Douala"): string 
     minute: "2-digit",
     second: "2-digit",
     hourCycle: "h23",
-  })
-    .format(date)
-    .replace(",", "");
-  const suffix = timezone === "UTC" ? "Z" : "+01";
-  return `${formatted} ${suffix}`;
+    timeZoneName: "shortOffset",
+  });
+  const parts = formatter.formatToParts(date);
+  const stamp = parts
+    .filter((part) => part.type !== "timeZoneName" && part.type !== "literal")
+    .reduce<string[]>((acc, part) => {
+      acc.push(part.value);
+      return acc;
+    }, []);
+  const [year, month, day, hour, minute, second] = stamp;
+  // "GMT+1" / "GMT-05:00" / "GMT" → "+01" / "-05:00" / "Z".
+  const raw = parts.find((part) => part.type === "timeZoneName")?.value ?? "";
+  const offset = raw === "GMT" ? "Z" : raw.replace(/^GMT/, "").replace(/^([+-])(\d)$/, "$10$2");
+  return `${year}-${month}-${day} ${hour}:${minute}:${second} ${offset}`;
 }
 
 function formatElapsed(ms: number): string {
@@ -54,19 +98,6 @@ function formatElapsed(ms: number): string {
   const hours = Math.floor(minutes / 60);
   return `+${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
-
-/**
- * The two states that look exactly like bugs to anyone who doesn't already
- * know the product decision behind them (design doc §5.3, quoting §4.7
- * verbatim). Without this annotation, the operator's next move is to open
- * psql — precisely the outcome the epic gate (#45/#50) forbids.
- */
-const ANNOTATIONS: Partial<Record<MessageState, string>> = {
-  uncertain:
-    "The outcome was never learned. providerMessageRefAlt was stamped with the message id so a late DLR can still correlate. This message will not be resubmitted — a deliberate trade against sending a duplicate OTP.",
-  undelivered:
-    'The provider said "not delivered", not "never". undelivered -> queued is a legal edge, but no retry driver runs today (#122) — this message will stay here until someone acts.',
-};
 
 function AnnotationNode({ text }: { text: string }) {
   return (
@@ -82,16 +113,23 @@ function AnnotationNode({ text }: { text: string }) {
 }
 
 /**
- * The message detail's transition history (design doc §5.3) — the epic
- * gate's own component: "an operator can diagnose a failed message
- * without touching SQL."
+ * A record's transition history: one node per state entered, with elapsed
+ * time between them, optional per-transition metadata, and an optional
+ * payload inspector.
+ *
+ * Generic over the state machine — pass the same [`StatusSystem`] its
+ * pill is bound to. It used to be hard-wired to one application's message
+ * states, including that application's own explanatory notes and a
+ * two-value timezone union; all three are now the caller's.
  */
-export function StateTimeline({
+export function StateTimeline<S extends string>({
   transitions,
+  system,
   currentState,
   isTerminal,
   timezone = "UTC",
-}: StateTimelineProps) {
+  annotations,
+}: StateTimelineProps<S>) {
   if (transitions.length === 0) {
     return (
       <ol className="flex flex-col gap-0">
@@ -112,7 +150,7 @@ export function StateTimeline({
     const elapsedMs = previous
       ? new Date(transition.at).getTime() - new Date(previous.at).getTime()
       : null;
-    const meta = MESSAGE_STATUS_META[transition.toState];
+    const meta = system[transition.toState];
     const isLast = i === transitions.length - 1;
 
     rows.push(
@@ -121,7 +159,7 @@ export function StateTimeline({
         className="relative flex gap-3 pb-6 last:pb-0"
       >
         <div className="flex w-4 shrink-0 flex-col items-center">
-          <StateMark state={transition.toState} size={16} className="text-foreground" />
+          <StateMark meta={meta} size={16} className="text-foreground" />
           {!isLast && <span className="mt-1 w-px flex-1 bg-[var(--state-mark-rail,var(--edge))]" />}
         </div>
         <div className="min-w-0 flex-1">
@@ -163,7 +201,7 @@ export function StateTimeline({
       </li>,
     );
 
-    const annotation = ANNOTATIONS[transition.toState];
+    const annotation = annotations?.[transition.toState];
     if (annotation != null) {
       rows.push(<AnnotationNode key={`${transition.toState}-annotation`} text={annotation} />);
     }
@@ -180,7 +218,7 @@ export function StateTimeline({
           <span className="h-6 w-px border-edge-strong border-l border-dashed" aria-hidden="true" />
         </div>
         <div className="flex items-center gap-2 text-caption text-subtle-foreground">
-          <StateMark state={currentState} size={12} className="text-muted-foreground" />
+          <StateMark meta={system[currentState]} size={12} className="text-muted-foreground" />
           <span>still moving</span>
         </div>
       </li>,

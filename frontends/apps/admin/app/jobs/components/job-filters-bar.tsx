@@ -6,15 +6,13 @@ import {
   Button,
   FormField,
   Input,
-  JOB_STATES,
-  JOB_STATUS_META,
-  type JobState,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import { JOB_STATES, JOB_STATUS_META, type JobState } from "@/components/status";
 
 export interface JobFiltersBarProps {
   state: JobState | null;

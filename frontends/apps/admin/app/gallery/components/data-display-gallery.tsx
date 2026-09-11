@@ -2,7 +2,8 @@
 
 // Route-local (R6): moved verbatim out of `page.tsx`.
 
-import { IdDisplay, MsisdnDisplay, TimestampDisplay } from "@vsms/ui";
+import { IdDisplay, TimestampDisplay } from "@vaam-apps/ui";
+import { MsisdnDisplay } from "@/components/msisdn-display";
 import { GallerySwatch } from "./gallery-swatch";
 import { Section } from "./section";
 
@@ -39,7 +40,7 @@ export function DataDisplayGallery() {
               live in the console before this fix). `TimestampDisplay`'s own component is fine — it
               already renders the identical absolute string on both passes and only upgrades to
               relative after mounting; the bug was in this gallery's own inline `Date.now()` call,
-              not in `@vsms/ui`.
+              not in `@vaam-apps/ui`.
             </>
           }
         >

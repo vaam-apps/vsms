@@ -4,7 +4,7 @@
 // `jobs/page.tsx`/`messages/page.tsx` already establish for their own
 // `useQueryStates` calls (Next.js requires this for `useSearchParams()`).
 
-import { RouteSkeleton } from "@vsms/ui";
+import { RouteSkeleton } from "@vaam-apps/ui";
 import { Suspense } from "react";
 import { AppsScreen } from "./apps-screen";
 

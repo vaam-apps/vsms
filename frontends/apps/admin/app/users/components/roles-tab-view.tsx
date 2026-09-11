@@ -1,7 +1,7 @@
 // Dumb view: the "Roles" tab body — permission note, "New role" button,
 // and table.
 
-import { Button, Code, InlineBanner } from "@vsms/ui";
+import { Button, Code, InlineBanner } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import type { RoleRecord } from "../types";
 import { ErrorBanner } from "./error-banner";

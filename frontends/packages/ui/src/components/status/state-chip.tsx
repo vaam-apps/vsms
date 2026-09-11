@@ -1,6 +1,6 @@
-import { cva, type VariantProps } from "class-variance-authority";
 import type { HTMLAttributes } from "react";
 import { cn } from "../../lib/cn";
+import { HUE_CLASSES, type StatusHue } from "./status-tokens";
 
 /**
  * A compact, state-toned chip for a single word or short phrase rendered
@@ -33,29 +33,38 @@ import { cn } from "../../lib/cn";
  * not render one concept two ways because two people typed a different
  * padding.
  *
- * `StatusPill`/`JobStatusPill`/`AttemptStatusPill` are **not** replaced by
- * this. Those map a specific state machine's variants onto a fixed
- * vocabulary and carry a glyph; this is the generic chip for everything
- * that is state-toned but not one of those three machines.
+ * `StatusPill` is **not** replaced by this. It maps a whole state
+ * machine's variants onto a fixed vocabulary and carries a glyph; this is
+ * the generic chip for everything that is state-toned but is not a state
+ * machine — a capability flag, a derived verdict, a one-word qualifier.
+ *
+ * # Tone
+ *
+ * Tone comes from the shared [`StatusHue`] vocabulary rather than a second
+ * private list. Before this, `StateChip` carried its own four-tone table
+ * whose class strings were transcribed by hand from the same tokens
+ * `HUE_CLASSES` already held — two copies of one mapping, and the chip's
+ * copy was missing three of the hues, so a caller wanting `expired` or
+ * `parked` had no way to ask for it and reached for `className` instead.
  */
-export const stateChipVariants = cva("rounded-sm border px-1.5 py-0.5 text-caption", {
-  variants: {
-    tone: {
-      success: "border-state-success-border bg-state-success-bg text-state-success-fg",
-      danger: "border-state-danger-border bg-state-danger-bg text-state-danger-fg",
-      warning: "border-state-warning-border bg-state-warning-bg text-state-warning-fg",
-      uncertain: "border-state-uncertain-border bg-state-uncertain-bg text-state-uncertain-fg",
-    },
-  },
-  defaultVariants: { tone: "uncertain" },
-});
+export type StateChipTone = StatusHue;
 
-export type StateChipTone = NonNullable<VariantProps<typeof stateChipVariants>["tone"]>;
+export interface StateChipProps extends HTMLAttributes<HTMLSpanElement> {
+  tone?: StateChipTone | undefined;
+}
 
-export interface StateChipProps
-  extends HTMLAttributes<HTMLSpanElement>,
-    VariantProps<typeof stateChipVariants> {}
-
-export function StateChip({ className, tone, ...props }: StateChipProps) {
-  return <span className={cn(stateChipVariants({ tone }), className)} {...props} />;
+export function StateChip({ className, tone = "uncertain", ...props }: StateChipProps) {
+  const hue = HUE_CLASSES[tone];
+  return (
+    <span
+      className={cn(
+        "rounded-sm border px-1.5 py-0.5 text-caption",
+        hue.border,
+        hue.bg,
+        hue.fg,
+        className,
+      )}
+      {...props}
+    />
+  );
 }

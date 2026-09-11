@@ -1,59 +1,67 @@
 /**
- * The eleven-state status system (design doc §0.1, §4). Every message state
- * `messages_state_enum_check` can actually produce, transcribed verbatim —
- * `rejected` included, which an earlier brief omitted.
+ * The vocabulary of a status-glyph system — types and shared classes only,
+ * no domain data.
  *
- * `family` and every other field here are PRESENTATIONAL ONLY (design doc
- * §0.2: "terminality is data, not code"). Never use this table to decide
- * whether an action (cancel, re-enqueue, replay) is permitted — that
- * decision belongs to the API and its `SM001` response. The UI proposes,
- * Postgres decides.
+ * # What this is
  *
- * Job states (`job_state_transitions`: pending/running/succeeded/failed/
- * dead/cancelled) deliberately are NOT mapped here yet. The design doc
- * marks that mapping `OPEN` pending exactly this schema read (done — see
- * `backends/migrations/postgres/0002_bootstrap/up.sql`), but assigns the
- * actual glyph/hue judgement calls to its own follow-up task (§8, B3) —
- * notably, a job's `failed` is *retryable* (`failed -> pending` is a legal
- * edge) and is therefore not equivalent to a message's terminal `failed`,
- * which needs its own reasoning rather than a silent copy-paste here.
+ * A *status system* is one state machine's presentation: a table mapping
+ * every state that machine can be in to a glyph, a hue, an attention level
+ * and human copy. This module owns the vocabulary and the rendering; the
+ * table itself belongs to whoever owns the state machine, which is never
+ * this package.
  *
- * English only (console-redesign.md D10, English-only constraint 1):
- * `labelFr` is deleted outright, not merely unused, and `labelEn`/
- * `tooltipEn` are renamed to plain `label`/`tooltip` — with the French
- * fields gone, a stray reader is a compile error rather than silently-dead
- * code. This does not foreclose localisation forever: #231 tracks a real
- * `react-i18next` layer for the console later, still English-only by
- * default with additional languages opted into via env-var config — a
- * proper mechanism, not two ad hoc string fields on a domain-semantics
- * table that nothing ever rendered.
+ * ```tsx
+ * const ORDER_STATUS = defineStatusSystem({
+ *   pending:  { family: "in-flight", silhouette: "circle", mark: "pie-1",
+ *               hue: "neutral", filled: false, attention: "quiet",
+ *               label: "Pending", tooltip: "Awaiting payment." },
+ *   paid:     { family: "terminal", silhouette: "circle", mark: "check",
+ *               hue: "success", filled: true, attention: "quiet",
+ *               label: "Paid", tooltip: "Settled." },
+ *   refunded: { family: "terminal", silhouette: "circle", mark: "bar",
+ *               hue: "neutral", filled: true, attention: "quiet",
+ *               label: "Refunded", tooltip: "Returned to the payer." },
+ * });
+ *
+ * const OrderStatusPill = createStatusPill(ORDER_STATUS);
+ * <OrderStatusPill state="paid" />
+ * ```
+ *
+ * # Every field here is PRESENTATIONAL
+ *
+ * Never use `family` — or anything else in a `StatusMeta` — to decide
+ * whether an action is permitted. Terminality is data, and the server
+ * owns it: a UI that greys out "cancel" because its own table says
+ * `terminal` will be wrong the first time the state machine changes and
+ * nobody remembers this table exists. Propose the action and let the
+ * server refuse it.
+ *
+ * # Why a glyph and not just colour
+ *
+ * Colour alone fails for the ~8% of men with a colour-vision deficiency,
+ * and fails completely in a screenshot pasted into a monochrome ticket.
+ * Each state therefore differs in *silhouette* (circle / diamond /
+ * square), *interior mark*, and *fill* as well as hue — three redundant
+ * channels, so no single one is load-bearing.
  */
 
-export const MESSAGE_STATES = [
-  "accepted",
-  "queued",
-  "routed",
-  "submitted",
-  "delivered",
-  "uncertain",
-  "undelivered",
-  "failed",
-  "expired",
-  "rejected",
-  "cancelled",
-] as const;
-
-export type MessageState = (typeof MESSAGE_STATES)[number];
-
+/**
+ * The three-way split every state machine this system has met so far
+ * reduces to: still moving, stopped somewhere that needs a human, or done.
+ *
+ * `unresolved` is the one worth naming explicitly — it is not a failure
+ * and not a success, and systems that only model two outcomes end up
+ * calling it whichever is more convenient, which is how "we never learned
+ * the outcome" gets reported to a user as "delivered".
+ */
 export type StatusFamily = "in-flight" | "unresolved" | "terminal";
 
 export type StatusSilhouette = "circle" | "diamond" | "square";
 
 /**
  * The interior mark drawn inside the silhouette. `pie-1`..`pie-3` are the
- * quarter-fill progress wedge (design doc §4.3, borrowed from Linear's
- * issue-state glyph); `ring` is a completed stroke with a hollow centre
- * (handed off, awaiting an external answer).
+ * quarter-fill progress wedge; `ring` is a completed stroke with a hollow
+ * centre (handed off, awaiting an external answer).
  */
 export type StatusMark =
   | "pie-1"
@@ -68,7 +76,23 @@ export type StatusMark =
   | "question"
   | "pause";
 
-export type StatusHue = "neutral" | "success" | "danger" | "uncertain" | "expired" | "parked";
+/**
+ * The saturated hues a status may take.
+ *
+ * `warning` and `uncertain` are deliberately distinct despite both reading
+ * as "attention": `uncertain` means the outcome is unknown, `warning`
+ * means a recoverable condition needs a human. `expired` and `parked` are
+ * separated from `neutral` for the same reason — a state nobody needs to
+ * act on and a state waiting for someone should not look identical.
+ */
+export type StatusHue =
+  | "neutral"
+  | "success"
+  | "warning"
+  | "danger"
+  | "uncertain"
+  | "expired"
+  | "parked";
 
 /** Quiet: glyph only, no fill. Loud: tinted background + border. */
 export type StatusAttention = "quiet" | "loud";
@@ -81,343 +105,69 @@ export interface StatusMeta {
   /** Terminal marks sit on a filled silhouette; in-flight/unresolved marks are stroked-only. */
   filled: boolean;
   attention: StatusAttention;
+  /** Human-facing name. Sentence case, not the raw enum literal. */
   label: string;
+  /** One or two sentences saying what this state means and what happens next. */
   tooltip: string;
 }
 
+/** One state machine's complete presentation table. */
+export type StatusSystem<S extends string> = Readonly<Record<S, StatusMeta>>;
+
 /**
- * design doc §4.2, with the owner override applied: `delivered` gets a
- * green pill (§4.5 originally left it untinted; DECISIONS §5 overrides
- * that — "the owner has chosen otherwise"). It stays `quiet` (no
- * background) so a healthy, mostly-`delivered` table doesn't become a wall
- * of green that makes the one red row harder to find — only its glyph and
- * label take the green hue, matching the design doc's own reasoning for
- * why `delivered` is quiet, just with colour restored.
+ * Identity at runtime; exists for inference. Without it a caller must
+ * write `const X: StatusSystem<"a" | "b"> = {…}` and repeat every key in
+ * the type annotation; with it, `S` is inferred from the object's own keys
+ * and `createStatusPill(X)` then accepts exactly those keys and no others.
  */
-export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
-  accepted: {
-    family: "in-flight",
-    silhouette: "circle",
-    mark: "pie-1",
-    hue: "neutral",
-    filled: false,
-    attention: "quiet",
-    label: "Accepted",
-    tooltip: "Received and validated. Not yet queued.",
+export function defineStatusSystem<S extends string>(system: StatusSystem<S>): StatusSystem<S> {
+  return system;
+}
+
+/**
+ * Whether a state is terminal *according to its own table* — a
+ * presentational question ("should this row stop animating"), never an
+ * authorisation one. See this module's own warning above.
+ */
+export function isTerminalStatus<S extends string>(system: StatusSystem<S>, state: S): boolean {
+  return system[state].family === "terminal";
+}
+
+/** Hue → the token classes every status surface renders through. */
+export const HUE_CLASSES: Record<StatusHue, { fg: string; bg: string; border: string }> = {
+  neutral: {
+    fg: "text-state-neutral-fg",
+    bg: "bg-state-neutral-bg",
+    border: "border-state-neutral-border",
   },
-  queued: {
-    family: "in-flight",
-    silhouette: "circle",
-    mark: "pie-2",
-    hue: "neutral",
-    filled: false,
-    attention: "quiet",
-    label: "Queued",
-    tooltip: "Waiting for a dispatch worker to claim it.",
+  success: {
+    fg: "text-state-success-fg",
+    bg: "bg-state-success-bg",
+    border: "border-state-success-border",
   },
-  routed: {
-    family: "in-flight",
-    silhouette: "circle",
-    mark: "pie-3",
-    hue: "neutral",
-    filled: false,
-    attention: "quiet",
-    label: "Routed",
-    tooltip: "A route and provider were chosen. Not yet submitted.",
+  warning: {
+    fg: "text-state-warning-fg",
+    bg: "bg-state-warning-bg",
+    border: "border-state-warning-border",
   },
-  submitted: {
-    family: "in-flight",
-    silhouette: "circle",
-    mark: "ring",
-    hue: "neutral",
-    filled: false,
-    attention: "quiet",
-    label: "Submitted",
-    tooltip: "Handed to the provider. Awaiting a delivery receipt.",
-  },
-  delivered: {
-    family: "terminal",
-    silhouette: "circle",
-    mark: "check",
-    hue: "success",
-    filled: true,
-    attention: "quiet",
-    label: "Delivered",
-    tooltip: "The provider confirmed delivery to the handset.",
-  },
-  cancelled: {
-    family: "terminal",
-    silhouette: "circle",
-    mark: "bar",
-    hue: "neutral",
-    filled: true,
-    attention: "quiet",
-    label: "Cancelled",
-    tooltip: "Cancelled before delivery, on request.",
-  },
-  expired: {
-    family: "terminal",
-    silhouette: "circle",
-    mark: "clock",
-    hue: "expired",
-    filled: true,
-    attention: "loud",
-    label: "Expired",
-    tooltip: "Passed its validity window before it could be delivered.",
-  },
-  rejected: {
-    family: "terminal",
-    silhouette: "circle",
-    mark: "slash",
-    hue: "danger",
-    filled: true,
-    attention: "loud",
-    label: "Rejected",
-    tooltip: "Refused at acceptance — opt-out, quota, bad sender ID, or malformed.",
-  },
-  failed: {
-    family: "terminal",
-    silhouette: "circle",
-    mark: "cross",
-    hue: "danger",
-    filled: true,
-    attention: "loud",
-    label: "Failed",
-    tooltip: "Permanently failed. The provider error is on the timeline.",
+  danger: {
+    fg: "text-state-danger-fg",
+    bg: "bg-state-danger-bg",
+    border: "border-state-danger-border",
   },
   uncertain: {
-    family: "unresolved",
-    silhouette: "diamond",
-    mark: "question",
-    hue: "uncertain",
-    filled: false,
-    attention: "loud",
-    label: "Uncertain",
-    tooltip:
-      "Sent, but the outcome was never learned. It will not be retried automatically — this deliberately avoids sending a duplicate. Re-send manually only if a duplicate is acceptable.",
+    fg: "text-state-uncertain-fg",
+    bg: "bg-state-uncertain-bg",
+    border: "border-state-uncertain-border",
   },
-  undelivered: {
-    family: "unresolved",
-    silhouette: "square",
-    mark: "pause",
-    hue: "parked",
-    filled: false,
-    attention: "loud",
-    label: "Undelivered",
-    tooltip:
-      "The provider could not deliver it. Retryable in principle — but no retry driver is running today (#122), so it will stay here until someone acts.",
+  expired: {
+    fg: "text-state-expired-fg",
+    bg: "bg-state-expired-bg",
+    border: "border-state-expired-border",
+  },
+  parked: {
+    fg: "text-state-parked-fg",
+    bg: "bg-state-parked-bg",
+    border: "border-state-parked-border",
   },
 };
-
-export function isTerminalMessageState(state: MessageState): boolean {
-  return MESSAGE_STATUS_META[state].family === "terminal";
-}
-
-/**
- * #56: the follow-up this file's own module doc named — `job_state_
- * transitions` (`backends/migrations/postgres/0002_bootstrap/up.sql`),
- * verbatim: `pending`, `running`, `succeeded`, `failed`, `dead`,
- * `cancelled`. `dead` replaces what would otherwise be a second
- * `failed`-shaped terminal state — see [`JOB_STATUS_META`]'s own comment
- * on `failed` for why the two are deliberately not styled the same way a
- * naive copy from [`MESSAGE_STATUS_META`] would.
- */
-export const JOB_STATES = [
-  "pending",
-  "running",
-  "succeeded",
-  "failed",
-  "dead",
-  "cancelled",
-] as const;
-
-export type JobState = (typeof JOB_STATES)[number];
-
-/**
- * Job states are not equivalent to message states, even where the names
- * match — reusing [`MESSAGE_STATUS_META`]'s glyph choices verbatim would
- * be the same "silent copy-paste" this file's own module doc already
- * warns against for `dead`/`failed`:
- *
- * - **`failed` is retryable, not terminal.** `failed -> pending` is a
- *   legal edge (`jobs::apply_failure`'s own automatic backoff) — a job
- *   only reaches `dead` once `maxAttempts` is exhausted. Styled
- *   `unresolved`/`uncertain`, the same family `undelivered` (a message
- *   state that *is* retryable, just with no driver yet) already uses,
- *   never `danger`/terminal the way a message's own `failed` is. In
- *   practice this state is close to unobservable — `apply_failure` writes
- *   `running -> failed` and then, within the same function call, `failed
- *   -> {pending, dead}` — but the table has to classify every state
- *   `JobState` admits, not just the ones a poll is likely to catch mid-
- *   flight.
- * - **`dead` is the real terminal failure** — attempts exhausted, and
- *   (#56) the one state `requeueJob` accepts. Styled `danger`/loud, the
- *   analogue of a message's own `failed`.
- */
-export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
-  pending: {
-    family: "in-flight",
-    silhouette: "circle",
-    mark: "pie-1",
-    hue: "neutral",
-    filled: false,
-    attention: "quiet",
-    label: "Pending",
-    tooltip: "Waiting to be claimed, or waiting out a retry backoff.",
-  },
-  running: {
-    family: "in-flight",
-    silhouette: "circle",
-    mark: "pie-3",
-    hue: "neutral",
-    filled: false,
-    attention: "quiet",
-    label: "Running",
-    tooltip: "Claimed by a worker and currently executing.",
-  },
-  succeeded: {
-    family: "terminal",
-    silhouette: "circle",
-    mark: "check",
-    hue: "success",
-    filled: true,
-    attention: "quiet",
-    label: "Succeeded",
-    tooltip: "Completed without error.",
-  },
-  failed: {
-    family: "unresolved",
-    silhouette: "diamond",
-    mark: "clock",
-    hue: "uncertain",
-    filled: false,
-    attention: "loud",
-    label: "Failed (retrying)",
-    tooltip:
-      "The last attempt errored. Not terminal — it will retry automatically after a backoff, unless attempts are exhausted (then it moves to Dead).",
-  },
-  dead: {
-    family: "terminal",
-    silhouette: "circle",
-    mark: "cross",
-    hue: "danger",
-    filled: true,
-    attention: "loud",
-    label: "Dead",
-    tooltip: "Every attempt failed and the retry budget is exhausted. Requeue to try again.",
-  },
-  cancelled: {
-    family: "terminal",
-    silhouette: "circle",
-    mark: "bar",
-    hue: "neutral",
-    filled: true,
-    attention: "quiet",
-    label: "Cancelled",
-    tooltip: "Cancelled before it ran.",
-  },
-};
-
-export function isTerminalJobState(state: JobState): boolean {
-  return JOB_STATUS_META[state].family === "terminal";
-}
-
-/**
- * #55: `attempt_state_transitions` (`backends/migrations/postgres/
- * 0002_bootstrap/up.sql`), verbatim — `pending`, `delivering`, `succeeded`,
- * `failed`, `dead`. Same "not equivalent to `MessageState` even where a
- * name matches" caution `JOB_STATUS_META`'s own doc gives: `failed` here is
- * `hooks.rs`'s own retry-with-backoff state, not a terminal one — the same
- * shape `JobState.failed` already has, and styled identically to it for
- * that reason (`unresolved`/`uncertain`, not `danger`).
- */
-export const ATTEMPT_STATES = ["pending", "delivering", "succeeded", "failed", "dead"] as const;
-
-export type AttemptState = (typeof ATTEMPT_STATES)[number];
-
-/**
- * - **`pending`** — claimable on the next `hooks` tick (a fresh attempt, or
- *   one whose backoff has elapsed).
- * - **`delivering`** — currently being POSTed. A row can also sit here
- *   because a worker crashed mid-attempt with a stale lease — `claim.rs`'s
- *   own crash-reclaim resumes it without double-counting `attempts`
- *   (AGENTS.md's #40 section) — this table has no separate state for that,
- *   the same way `Message.routed` covers both "in flight" and "reclaimable".
- * - **`succeeded`** — the endpoint returned 2xx. Terminal.
- * - **`failed`** — the last attempt errored and it will retry automatically
- *   after a backoff, unless `attempts` is exhausted (then `dead`). Not
- *   terminal, exactly the retry-with-backoff shape `JOB_STATUS_META.failed`
- *   already documents for `Job`.
- * - **`dead`** — `maxAttempts` exhausted, or an immediate 410 Gone
- *   (`hooks.rs`'s own doc). Terminal, and (#43) the one state
- *   `replayWebhookAttempt` accepts alongside `failed`.
- */
-export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = {
-  pending: {
-    family: "in-flight",
-    silhouette: "circle",
-    mark: "pie-1",
-    hue: "neutral",
-    filled: false,
-    attention: "quiet",
-    label: "Pending",
-    tooltip: "Claimable on the next delivery tick, or waiting out a retry backoff.",
-  },
-  delivering: {
-    family: "in-flight",
-    silhouette: "circle",
-    mark: "pie-3",
-    hue: "neutral",
-    filled: false,
-    attention: "quiet",
-    label: "Delivering",
-    tooltip: "Currently being POSTed to the endpoint.",
-  },
-  succeeded: {
-    family: "terminal",
-    silhouette: "circle",
-    mark: "check",
-    hue: "success",
-    filled: true,
-    attention: "quiet",
-    label: "Succeeded",
-    tooltip: "The endpoint returned 2xx.",
-  },
-  failed: {
-    family: "unresolved",
-    silhouette: "diamond",
-    mark: "clock",
-    hue: "uncertain",
-    filled: false,
-    attention: "loud",
-    label: "Failed (retrying)",
-    tooltip:
-      "The last attempt errored. Not terminal — it will retry automatically after a backoff, unless attempts are exhausted (then it moves to Dead).",
-  },
-  dead: {
-    family: "terminal",
-    silhouette: "circle",
-    mark: "cross",
-    hue: "danger",
-    filled: true,
-    attention: "loud",
-    label: "Dead",
-    tooltip: "Every attempt failed and the retry budget is exhausted. Replay to try again.",
-  },
-};
-
-export function isTerminalAttemptState(state: AttemptState): boolean {
-  return ATTEMPT_STATUS_META[state].family === "terminal";
-}
-
-/**
- * `Message.class`'s four values (`schema.cstack`'s `MessageClass` enum),
- * verbatim. Hoisted here (R6, AGENTS.md) because it was duplicated
- * byte-for-byte in three screens independently (`app/page.tsx`'s composer,
- * `app/simulator/simulator-screen.tsx`, `app/routes/routes-screen.tsx`) —
- * the domain vocabulary belongs beside the rest of the status/domain
- * tables in this file, not copy-pasted per screen.
- */
-export const MESSAGE_CLASSES = ["otp", "transactional", "notification", "marketing"] as const;
-
-export type MessageClass = (typeof MESSAGE_CLASSES)[number];

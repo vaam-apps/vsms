@@ -1,6 +1,6 @@
 // The component gallery (T6 / console-redesign.md §7 Phase 2) — the LAST
 // screen built in this redesign, deliberately: it imports and exercises
-// every `@vsms/ui` export, so it doubles as the console's own visual-QA
+// every `@vaam-apps/ui` export, so it doubles as the console's own visual-QA
 // surface (Phase 3's manual pass runs through this page plus one screen
 // per IA group). A gallery that silently drops an export is a QA surface
 // with a blind spot.
@@ -39,9 +39,11 @@
 // `./components/nested-dialog-in-drawer-regression.tsx`, next to the demo
 // it documents.
 
-import { Separator } from "@vsms/ui";
+import { Separator } from "@vaam-apps/ui";
 import { ButtonGallery } from "./components/button-gallery";
+import { ControlsGallery } from "./components/controls-gallery";
 import { DataDisplayGallery } from "./components/data-display-gallery";
+import { DatePickerGallery } from "./components/date-picker-gallery";
 import { DetailDrawerGallery } from "./components/detail-drawer-gallery";
 import { EncodingPreviewGallery } from "./components/encoding-preview-gallery";
 import { FormGallery } from "./components/form-gallery";
@@ -55,6 +57,7 @@ import { StateTimelineGallery } from "./components/state-timeline-gallery";
 import { StatusPillGallery } from "./components/status-pill-gallery";
 import { TableGallery } from "./components/table-gallery";
 import { TabsGallery } from "./components/tabs-gallery";
+import { ValueDisplayGallery } from "./components/value-display-gallery";
 
 export default function GalleryPage() {
   return (
@@ -70,6 +73,12 @@ export default function GalleryPage() {
       <FormGallery />
       <Separator />
       <DataDisplayGallery />
+      <Separator />
+      <ValueDisplayGallery />
+      <Separator />
+      <DatePickerGallery />
+      <Separator />
+      <ControlsGallery />
       <Separator />
       <TableGallery />
       <Separator />

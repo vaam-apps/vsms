@@ -10,7 +10,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { RoleRecord } from "../types";
 
 export function RolesTable({

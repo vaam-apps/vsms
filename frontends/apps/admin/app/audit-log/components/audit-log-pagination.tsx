@@ -1,6 +1,6 @@
 // Dumb view: the offset pager beneath the audit log table.
 
-import { Button } from "@vsms/ui";
+import { Button } from "@vaam-apps/ui";
 
 export function AuditLogPagination({
   shownCount,

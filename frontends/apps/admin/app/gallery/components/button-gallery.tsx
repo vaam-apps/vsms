@@ -2,7 +2,7 @@
 
 // Route-local (R6): moved verbatim out of `page.tsx`.
 
-import { Button, buttonVariants } from "@vsms/ui";
+import { Button, buttonVariants } from "@vaam-apps/ui";
 import { Section } from "./section";
 
 export function ButtonGallery() {

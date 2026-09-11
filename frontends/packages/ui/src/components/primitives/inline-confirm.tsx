@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { cn } from "../../lib/cn";
-import { InlineBanner } from "../bespoke/inline-banner";
+import { InlineBanner } from "../patterns/inline-banner";
 import { Button } from "./button";
 
 /**

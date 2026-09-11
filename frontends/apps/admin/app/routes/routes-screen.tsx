@@ -42,20 +42,20 @@
 // mounting React).
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { trpc } from "@vsms/hooks";
 import {
   Button,
   IdDisplay,
-  type MessageClass,
   MoreDetailDrawer,
   QuickDetailDrawer,
   ScreenHeader,
   ScreenStack,
   toast,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import { trpc } from "@vsms/hooks";
 import { parseAsString, useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import type { MessageClass } from "@/components/status";
 import { RouteDeleteConfirm } from "./components/route-delete-confirm";
 import { RouteEditFooter } from "./components/route-edit-footer";
 import { RouteForm } from "./components/route-form";

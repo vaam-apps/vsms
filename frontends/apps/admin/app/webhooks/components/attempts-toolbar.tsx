@@ -1,6 +1,4 @@
 import {
-  ATTEMPT_STATES,
-  type AttemptState,
   Button,
   FormField,
   InlineBanner,
@@ -9,7 +7,8 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import { ATTEMPT_STATES, type AttemptState } from "@/components/status";
 import type { EndpointListItem } from "../webhook-domain";
 
 // Dumb (R6): the delivery-attempts section heading, its refresh cadence

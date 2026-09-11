@@ -1,4 +1,4 @@
-import { DetailList, DetailRow } from "@vsms/ui";
+import { DetailList, DetailRow } from "@vaam-apps/ui";
 import { type EndpointListItem, EVENT_TYPES } from "../webhook-domain";
 import { SecretField } from "./secret-field";
 

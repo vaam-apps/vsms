@@ -1,19 +1,17 @@
 // Dumb — route-local to the message detail screen (R6). Wraps
-// `@vsms/ui`'s `StateTimeline` with the card chrome and the disclaimer
+// `@vaam-apps/ui`'s `StateTimeline` with the card chrome and the disclaimer
 // explaining what it does and doesn't prove — see `timeline.ts`'s own
 // module doc for the full reasoning this disclaimer is a summary of.
 
+import { Card, CardBody, CardHeader, StateTimeline, type StateTransition } from "@vaam-apps/ui";
 import {
-  Card,
-  CardBody,
-  CardHeader,
+  MESSAGE_STATE_ANNOTATIONS,
+  MESSAGE_STATUS_META,
   type MessageState,
-  StateTimeline,
-  type StateTransition,
-} from "@vsms/ui";
+} from "@/components/status";
 
 export interface MessageTimelineCardProps {
-  transitions: StateTransition[];
+  transitions: StateTransition<MessageState>[];
   currentState: MessageState;
   isTerminal: boolean;
 }
@@ -40,6 +38,8 @@ export function MessageTimelineCard({
         </p>
         <StateTimeline
           transitions={transitions}
+          system={MESSAGE_STATUS_META}
+          annotations={MESSAGE_STATE_ANNOTATIONS}
           currentState={currentState}
           isTerminal={isTerminal}
         />

@@ -1,6 +1,6 @@
 "use client";
 
-import { Button } from "@vsms/ui";
+import { Button } from "@vaam-apps/ui";
 import { useState } from "react";
 import { maskSecret } from "../webhook-domain";
 

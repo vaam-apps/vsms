@@ -1,4 +1,4 @@
-import { Button } from "@vsms/ui";
+import { Button } from "@vaam-apps/ui";
 
 // Dumb, route-local (R6): the more-detail drawer's own footer for the
 // create/edit form (not shown while the inline delete confirmation is

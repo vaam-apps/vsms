@@ -1,5 +1,5 @@
 /*
- * @vsms/ui design tokens (T6), redesigned per docs/design/console-redesign.md
+ * @vaam-apps/ui design tokens (T6), redesigned per docs/design/console-redesign.md
  * (the admin console redesign, Phase 0).
  *
  * Source of truth: docs/design/console-redesign.md §2 (decision ledger,
@@ -182,6 +182,25 @@
   --state-parked-fg: #c4b5fd;
   --state-parked-bg: rgb(167 139 250 / 0.1);
   --state-parked-border: rgb(167 139 250 / 0.28);
+
+  /* `warning` was referenced by `StateChip`'s own `warning` tone and by
+     `InlineBanner`'s `warning` variant (and therefore by every
+     `StaleWriteBanner` in the console) from the day both shipped, but the
+     trio was never declared here — so `text-state-warning-fg` &c.
+     generated no utility at all and those surfaces rendered with no
+     colour. Exactly the failure this file's own `--color-surface-1`
+     comment above describes, found the same way: by checking the token
+     list against what components actually reference, not by looking at a
+     screen. `theme-tokens.test.ts` now fails the build on a recurrence.
+
+     Deliberately distinct from `uncertain` (amber) even though both read
+     as "attention": `uncertain` means the outcome is unknown, `warning`
+     means a recoverable condition needs a human. Orange keeps them
+     separable at a glance without introducing a sixth saturated hue's
+     worth of visual noise. */
+  --state-warning-fg: #fbbf24;
+  --state-warning-bg: rgb(245 158 11 / 0.1);
+  --state-warning-border: rgb(245 158 11 / 0.28);
 }
 
 /*
@@ -254,6 +273,10 @@
   --color-state-parked-fg: var(--state-parked-fg);
   --color-state-parked-bg: var(--state-parked-bg);
   --color-state-parked-border: var(--state-parked-border);
+
+  --color-state-warning-fg: var(--state-warning-fg);
+  --color-state-warning-bg: var(--state-warning-bg);
+  --color-state-warning-border: var(--state-warning-border);
 }
 
 /*

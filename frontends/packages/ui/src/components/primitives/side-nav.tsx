@@ -7,7 +7,7 @@ import { cn } from "../../lib/cn";
 
 /**
  * The console's information architecture (console-redesign.md §4), as data.
- * `@vsms/ui` owns the shape; `frontends/apps/admin/app/nav-groups.ts` owns the actual
+ * `@vaam-apps/ui` owns the shape; `frontends/apps/admin/app/nav-groups.ts` owns the actual
  * content (routes, groupings, icons) — this file never hardcodes a route.
  */
 export interface NavItem {

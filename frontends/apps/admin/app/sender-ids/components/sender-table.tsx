@@ -8,7 +8,7 @@ import {
   TableHeader,
   TableRow,
   TimestampDisplay,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { SenderIdListItem } from "../sender-id-domain";
 
 // Dumb (R6): the sender ID list table. `summaryFor` is a small

@@ -3,11 +3,9 @@
 // no tRPC.
 
 import type { inferRouterOutputs } from "@trpc/server";
-import type { AppRouter } from "@vsms/api";
 import {
   Button,
   InlineEmptyState,
-  MsisdnDisplay,
   Skeleton,
   Table,
   TableBody,
@@ -16,8 +14,10 @@ import {
   TableHeader,
   TableRow,
   TimestampDisplay,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import type { AppRouter } from "@vsms/api";
 import { ChevronRight } from "lucide-react";
+import { MsisdnDisplay } from "@/components/msisdn-display";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 export type OptOutListItem = RouterOutputs["optOuts"]["list"][number];

@@ -6,7 +6,7 @@
 // already-tested pure functions in `apply-event.ts`; this file adds no
 // merge logic of its own.
 
-import type { MessageState } from "@vsms/ui";
+import type { MessageState } from "@/components/status";
 import type { MessageListItem, MessageStreamEvent, ReconcileState } from "./apply-event";
 import { applyEvent, insertPendingIntoRows, resetReconcileState } from "./apply-event";
 

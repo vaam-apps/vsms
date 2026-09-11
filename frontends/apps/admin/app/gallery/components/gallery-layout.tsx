@@ -15,12 +15,12 @@
 // prose plus small demo blocks, not a dense table). `<Toaster />` is
 // dropped entirely — see `page.tsx`'s own header comment for why.
 //
-// Not built on `ScreenStack`/`ScreenHeader` (`@vsms/ui`) — this page's own
+// Not built on `ScreenStack`/`ScreenHeader` (`@vaam-apps/ui`) — this page's own
 // masthead carries an eyebrow line and a max-w-5xl reading width, both
 // genuinely different from the standard console screen chrome those two
 // components give every other route, and this is the one screen in the
 // console that isn't a real product surface (it's the visual-QA page for
-// `@vsms/ui` itself). Route-local per R6's own "encodes this screen's own
+// `@vaam-apps/ui` itself). Route-local per R6's own "encodes this screen's own
 // shape" test, not a case of reinventing the standard pair.
 
 import type { ReactNode } from "react";
@@ -31,7 +31,7 @@ export function GalleryLayout({ children }: { children: ReactNode }) {
       <header className="flex items-start justify-between gap-4 border-edge border-b pb-6">
         <div>
           <p className="font-mono text-micro text-subtle-foreground tracking-[0.03em]">
-            @vsms/ui — T6
+            @vaam-apps/ui — T6
           </p>
           <h1 className="mt-1 font-medium text-foreground text-title">Component gallery</h1>
           <p className="mt-1 max-w-2xl text-body text-muted-foreground">

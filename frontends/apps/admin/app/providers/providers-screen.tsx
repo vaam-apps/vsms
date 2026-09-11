@@ -53,9 +53,9 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import type { inferRouterOutputs } from "@trpc/server";
+import { toast } from "@vaam-apps/ui";
 import type { AppRouter } from "@vsms/api";
 import { trpc } from "@vsms/hooks";
-import { toast } from "@vsms/ui";
 import { parseAsString, useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";

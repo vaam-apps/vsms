@@ -2,7 +2,7 @@
 // (in `apps-screen.tsx`) owns the query, the form, both mutations and the
 // delete-confirm boolean; this component only lays it out.
 
-import { Button, IdDisplay, MoreDetailDrawer, Skeleton } from "@vsms/ui";
+import { Button, IdDisplay, MoreDetailDrawer, Skeleton } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import type { UseFormReturn } from "react-hook-form";
 import type { AppEditValues } from "../app-forms";

@@ -6,7 +6,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { UseFormReturn } from "react-hook-form";
 import type { CreateEndpointFormValues, EventType } from "../webhook-domain";
 import { CreateEndpointFields } from "./create-endpoint-fields";

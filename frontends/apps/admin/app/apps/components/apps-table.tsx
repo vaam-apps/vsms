@@ -10,7 +10,7 @@ import {
   TableHeader,
   TableRow,
   TimestampDisplay,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { AppListItem } from "../types";
 
 export function AppsTable({

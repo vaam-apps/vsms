@@ -2,7 +2,7 @@
 // props — `poll_balance` (§7.5) was never built, so there is no number to
 // pass in. Moved verbatim out of `dashboard-screen.tsx`.
 
-import { Card, CardBody, CardHeader } from "@vsms/ui";
+import { Card, CardBody, CardHeader } from "@vaam-apps/ui";
 
 export function BalanceCard() {
   return (

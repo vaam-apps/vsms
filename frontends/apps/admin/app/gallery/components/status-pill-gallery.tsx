@@ -2,8 +2,9 @@
 
 // Route-local (R6): moved verbatim out of `page.tsx`.
 
-import { MESSAGE_STATES, StatusPill, toast } from "@vsms/ui";
+import { toast } from "@vaam-apps/ui";
 import { useState } from "react";
+import { MESSAGE_STATES, StatusPill } from "@/components/status";
 import { GallerySwatch } from "./gallery-swatch";
 import { Section } from "./section";
 

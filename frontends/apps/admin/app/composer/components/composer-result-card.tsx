@@ -1,7 +1,8 @@
 // Dumb — route-local to the composer (R6). The "message accepted" summary
 // shown after a successful `compose.send`.
 
-import { Card, CardBody, CardHeader, StatusPill } from "@vsms/ui";
+import { Card, CardBody, CardHeader } from "@vaam-apps/ui";
+import { StatusPill } from "@/components/status";
 import type { ComposeSendResult } from "../composer-types";
 
 export interface ComposerResultCardProps {

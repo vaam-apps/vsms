@@ -6,7 +6,7 @@
 // hands down, since the same comparison also feeds the UCS-2 card's own
 // "jumped" flag.
 
-import { Card, CardBody, CardHeader } from "@vsms/ui";
+import { Card, CardBody, CardHeader } from "@vaam-apps/ui";
 import { formatCount } from "../format";
 import { HourlyBars } from "./hourly-bars";
 

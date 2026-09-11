@@ -2,7 +2,7 @@
 
 // Route-local (R6): moved verbatim out of `page.tsx`.
 
-import { ATTEMPT_STATES, AttemptStatusPill, JOB_STATES, JobStatusPill } from "@vsms/ui";
+import { ATTEMPT_STATES, AttemptStatusPill, JOB_STATES, JobStatusPill } from "@/components/status";
 import { GallerySwatch } from "./gallery-swatch";
 import { Section } from "./section";
 
@@ -12,7 +12,7 @@ import { Section } from "./section";
  * message pill above (`status-tokens.ts`'s own module doc: a job's
  * `failed` is retryable, a message's `failed` is terminal). Neither was
  * mounted anywhere in this gallery before this pass — a real coverage gap,
- * found by cross-checking `@vsms/ui`'s index against this file's own
+ * found by cross-checking `@vaam-apps/ui`'s index against this file's own
  * imports rather than assumed complete.
  */
 export function JobAndAttemptPillGallery() {

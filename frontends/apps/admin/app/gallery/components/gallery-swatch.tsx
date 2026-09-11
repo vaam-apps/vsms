@@ -1,5 +1,5 @@
 // Route-local (R6): a labelled demo row — an eyebrow-style caption above
-// whatever the swatch is demonstrating. Not promoted to `@vsms/ui`, same
+// whatever the swatch is demonstrating. Not promoted to `@vaam-apps/ui`, same
 // reasoning `Section` in this same directory already gives: this is the
 // gallery's own scaffold, not a pattern any real screen reaches for.
 //

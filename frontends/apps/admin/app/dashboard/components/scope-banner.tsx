@@ -5,7 +5,7 @@
 // screen derives it from `summary.appId`'s presence/absence, matching
 // `messages-screen.tsx`'s own precedent.
 
-import { InlineBanner } from "@vsms/ui";
+import { InlineBanner } from "@vaam-apps/ui";
 
 export interface ScopeBannerProps {
   appScoped: boolean;

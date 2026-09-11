@@ -2,8 +2,8 @@
 
 // Route-local (R6): moved verbatim out of `page.tsx`.
 
-import { EncodingPreview } from "@vsms/ui";
 import { useState } from "react";
+import { EncodingPreview } from "@/components/encoding-preview";
 import { Section } from "./section";
 
 export function EncodingPreviewGallery() {

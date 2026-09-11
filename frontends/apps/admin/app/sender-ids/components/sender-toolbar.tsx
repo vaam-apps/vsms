@@ -1,4 +1,4 @@
-import { Button, InlineBanner } from "@vsms/ui";
+import { Button, InlineBanner } from "@vaam-apps/ui";
 
 // Dumb (R6): the role-scope notice, list read-error banner, and the "All
 // sender IDs" section heading with its "New sender ID" action.

@@ -9,7 +9,7 @@ import {
   ValueTabsContent as TabsContent,
   ValueTabsList as TabsList,
   ValueTabsTrigger as TabsTrigger,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import type { UsersRolesTab } from "../types";
 

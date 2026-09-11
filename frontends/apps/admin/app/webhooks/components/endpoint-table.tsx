@@ -8,7 +8,7 @@ import {
   TableHeader,
   TableRow,
   TimestampDisplay,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { type EndpointListItem, EVENT_TYPES } from "../webhook-domain";
 
 function isCircuitOpen(endpoint: Pick<EndpointListItem, "circuitOpenUntil">): boolean {

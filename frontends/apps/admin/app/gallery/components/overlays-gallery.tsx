@@ -36,7 +36,7 @@ import {
   PopoverTrigger,
   Tooltip,
   toast,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { Section } from "./section";
 
 export function OverlaysGallery() {

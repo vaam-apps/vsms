@@ -1,4 +1,4 @@
-import { Button, DetailList, DetailRow, InlineEmptyState } from "@vsms/ui";
+import { Button, DetailList, DetailRow, InlineEmptyState } from "@vaam-apps/ui";
 import type { ProviderListItem, RegistrationListItem, SenderIdListItem } from "../sender-id-domain";
 import { RegistrationStatusBadge } from "./registration-status-badge";
 

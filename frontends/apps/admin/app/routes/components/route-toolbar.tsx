@@ -1,4 +1,4 @@
-import { Button, InlineBanner } from "@vsms/ui";
+import { Button, InlineBanner } from "@vaam-apps/ui";
 
 // Dumb, route-local (R6): the role-scope notice, the "no routes at all"
 // danger banner (§62 — every message is refused while this is true), a list

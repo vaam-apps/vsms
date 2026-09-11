@@ -18,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
   Skeleton,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { FieldErrors, UseFormRegister } from "react-hook-form";
 import { type Control, Controller } from "react-hook-form";
 import type { EditFormValues } from "../edit-schema";

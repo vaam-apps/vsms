@@ -20,7 +20,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { JobListItem } from "./jobs-table";
 
 export interface RequeueConfirmDialogProps {

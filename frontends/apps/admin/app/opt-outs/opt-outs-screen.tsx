@@ -78,7 +78,6 @@
 // single-value presentational state."
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { trpc } from "@vsms/hooks";
 import {
   Button,
   InlineBanner,
@@ -86,7 +85,8 @@ import {
   ScreenHeader,
   ScreenStack,
   toast,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import { trpc } from "@vsms/hooks";
 import { parseAsBoolean, parseAsString, useQueryStates } from "nuqs";
 import { useState } from "react";
 import { useForm } from "react-hook-form";

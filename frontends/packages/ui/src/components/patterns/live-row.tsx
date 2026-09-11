@@ -15,6 +15,7 @@ export interface LiveRowProps extends TableRowProps {
 const WASH_BG_CLASS: Record<StatusHue, string> = {
   neutral: "bg-state-neutral-fg/10",
   success: "bg-state-success-fg/10",
+  warning: "bg-state-warning-fg/10",
   danger: "bg-state-danger-fg/10",
   uncertain: "bg-state-uncertain-fg/10",
   expired: "bg-state-expired-fg/10",

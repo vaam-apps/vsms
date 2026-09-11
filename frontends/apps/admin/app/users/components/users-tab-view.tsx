@@ -2,7 +2,7 @@
 // table. The provision dialog and detail drawer are rendered by the smart
 // `UsersTab` as `children`, since each owns its own mutation state.
 
-import { Button, Code, InlineBanner } from "@vsms/ui";
+import { Button, Code, InlineBanner } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import type { UserListItem } from "../types";
 import { ErrorBanner } from "./error-banner";

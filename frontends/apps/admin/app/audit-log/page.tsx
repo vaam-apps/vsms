@@ -7,8 +7,8 @@
 // `AUDIT_LOG_PAGE_SIZE` and handed down as a prop — the same shape
 // `messages/page.tsx` already establishes for `MESSAGE_STREAM_POLL_MS`.
 
+import { RouteSkeleton } from "@vaam-apps/ui";
 import { env } from "@vsms/env";
-import { RouteSkeleton } from "@vsms/ui";
 import { Suspense } from "react";
 import { AuditLogScreen } from "./audit-log-screen";
 

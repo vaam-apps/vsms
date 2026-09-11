@@ -26,7 +26,7 @@ import { ScreenStack } from "./screen-layout";
 // row, several table-row-shaped blocks), and `Skeleton` itself already
 // forbids shimmer (design doc §3.8/§5.2, see that primitive's own doc)
 // so there is no per-screen animation timing to keep in sync anyway. Per
-// R6, this lives in `@vsms/ui`, not duplicated per route.
+// R6, this lives in `@vaam-apps/ui`, not duplicated per route.
 
 export interface RouteSkeletonProps {
   /** How many table-row-shaped blocks to render. Doesn't need to match the

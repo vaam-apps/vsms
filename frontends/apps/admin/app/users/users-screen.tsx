@@ -85,8 +85,8 @@
 // enforced permission vocabulary.
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { InlineConfirm, ScreenHeader, ScreenStack, toast } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
-import { InlineConfirm, ScreenHeader, ScreenStack, toast } from "@vsms/ui";
 import { parseAsStringEnum, useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";

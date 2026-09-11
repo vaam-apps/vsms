@@ -37,7 +37,7 @@
 //
 // # Registration status is a plain `String`, not a governed enum
 //
-// `@vsms/ui`'s own `Badge` doc: "Never use `Badge` for a message or job
+// `@vaam-apps/ui`'s own `Badge` doc: "Never use `Badge` for a message or job
 // state — that's `StatusPill`'s job... mixing them is how the status
 // language erodes." `SenderIdRegistration.status` genuinely isn't part of
 // that governed vocabulary (`schema.cstack` declares it a bare `String`,
@@ -64,7 +64,6 @@
 // unit-testable without mounting React).
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { trpc } from "@vsms/hooks";
 import {
   IdDisplay,
   MoreDetailDrawer,
@@ -72,7 +71,8 @@ import {
   ScreenHeader,
   ScreenStack,
   toast,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import { trpc } from "@vsms/hooks";
 import { parseAsString, useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";

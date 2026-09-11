@@ -3,7 +3,7 @@
 // not business logic — kept beside the markup that uses it, the same way
 // `providers-screen.tsx`'s `StatePill` keeps its own state labels.
 
-import { Card, CardBody, CardHeader, InlineBanner } from "@vsms/ui";
+import { Card, CardBody, CardHeader, InlineBanner } from "@vaam-apps/ui";
 import { formatCount, formatPercent } from "../format";
 
 export type Operator = "mtn" | "orange" | "camtel" | "nexttel" | "unknown";

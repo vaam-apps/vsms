@@ -4,7 +4,7 @@
 // `AppClientsPanel` around this — passed in as `children` slots rather
 // than known about here.
 
-import { Button } from "@vsms/ui";
+import { Button } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import type { AppClientListItem } from "../types";
 import { AppClientsTable } from "./app-clients-table";

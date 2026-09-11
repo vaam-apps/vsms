@@ -3,7 +3,6 @@
 // included) — no data fetching, no tRPC.
 
 import type { inferRouterOutputs } from "@trpc/server";
-import type { AppRouter } from "@vsms/api";
 import {
   Badge,
   InlineEmptyState,
@@ -16,7 +15,8 @@ import {
   TableHeader,
   TableRow,
   TimestampDisplay,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import type { AppRouter } from "@vsms/api";
 import { ChevronRight } from "lucide-react";
 import { roleLabel } from "../role-labels";
 

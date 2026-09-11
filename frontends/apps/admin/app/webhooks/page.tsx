@@ -11,8 +11,8 @@
 // rather than keeping its own, separately named, same-value env var
 // (R6-reconcile).
 
+import { RouteSkeleton } from "@vaam-apps/ui";
 import { env } from "@vsms/env";
-import { RouteSkeleton } from "@vsms/ui";
 import { Suspense } from "react";
 import { WebhooksScreen } from "./webhooks-screen";
 

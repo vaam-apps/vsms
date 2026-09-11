@@ -2,7 +2,7 @@
 
 // Route-local (R6): moved verbatim out of `page.tsx`.
 
-import { PayloadInspector } from "@vsms/ui";
+import { PayloadInspector } from "@vaam-apps/ui";
 import { Section } from "./section";
 
 export function PayloadInspectorGallery() {

@@ -2,7 +2,8 @@
 // plus the tie-break bar when one exists. Markup moved verbatim out of
 // `simulator-screen.tsx`.
 
-import { Card, CardBody, CardHeader, IdDisplay, MsisdnDisplay } from "@vsms/ui";
+import { Card, CardBody, CardHeader, IdDisplay } from "@vaam-apps/ui";
+import { MsisdnDisplay } from "@/components/msisdn-display";
 import { TieBreakBars, type TieBreakRange } from "./tie-break-bars";
 
 export interface ResultWinner {
