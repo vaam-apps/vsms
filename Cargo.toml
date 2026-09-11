@@ -267,6 +267,18 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # turning it off keeps this dependency to the metric types themselves.
 # Apache-2.0, already on `deny.toml`'s allowed-license list.
 prometheus = { version = "0.14", default-features = false }
+# Multi-country stage 1: Google libphonenumber's own metadata, so
+# backends/crates/sms-msisdn validates every country's numbering plan instead
+# of one hand-written Cameroonian table. Apache-2.0, already on `deny.toml`'s
+# allowed-license list. No `-sys` crate and no C toolchain: `build.rs` turns
+# the bundled XML into Rust that the library `include_bytes!`es from
+# `OUT_DIR`, so there is no runtime file or network access and it links
+# statically under `rust:1.98-alpine3.22` into `gcr.io/distroless/static`,
+# which is what the sms-gateway and sms-worker images actually are. The `+`
+# half of the version is libphonenumber's own release (0.3.10+9.0.33), not a
+# semver field — the crate republishes on metadata updates, so a patch bump
+# here can genuinely change which numbers validate.
+phonenumber = "0.3.10"
 rust_decimal = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

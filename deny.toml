@@ -75,6 +75,54 @@ allow = [
 # bumps past `0.8.0` or `rsa` publishes a patched release — and, learning
 # from this entry's own history above, actually re-run it at the next bump
 # rather than carrying the pin number forward unchecked.
+# RUSTSEC-2023-0089 — `atomic-polyfill` is unmaintained (the author archived
+# the repository; the advisory's own "Solution: No safe upgrade is available!"
+# is accurate, there is no patched release to bump to).
+#
+# New with multi-country stage 1, which added `phonenumber` to
+# backends/crates/sms-msisdn. Reachability, measured rather than argued:
+#
+#   - The chain is `phonenumber 0.3.10` -> `postcard 1.1.3` -> `heapless
+#     0.7.17` -> `atomic-polyfill 1.0.3`, on both a build-dependency and a
+#     normal edge (phonenumber lists `postcard` in both sections; the
+#     build script serialises the libphonenumber metadata, the library
+#     deserialises it).
+#   - `heapless 0.7.17`'s own manifest makes `atomic-polyfill` a dependency
+#     **only** on targets without native atomic compare-and-swap, named one
+#     by one: `cfg(target_arch = "avr")`, `riscv32i-unknown-none-elf`,
+#     `riscv32imc-unknown-none-elf`, `thumbv6m-none-eabi` and
+#     `xtensa-esp32s2-none-elf`. Read out of the vendored manifest, not
+#     inferred from the crate's description.
+#   - This workspace builds x86_64/aarch64 Linux only: every shipped binary
+#     comes from `rust:1.98-alpine3.22` (musl) in `backends/apps/*/Dockerfile`,
+#     and CI and developer machines are gnu on the same two architectures.
+#     None is in that list, so the crate is never compiled here.
+#   - Confirmed empirically, both directions: `cargo tree -i atomic-polyfill`
+#     reports "nothing to print" for the host target, while
+#     `cargo tree -i atomic-polyfill --target all` prints the chain above.
+#     `cargo deny` evaluates every target by default, which is why it sees
+#     what no build of this repository ever will.
+#
+# There is no downstream fix. `postcard`'s default `heapless-cas` feature is
+# what enables `heapless/cas`, and Cargo features are additive — naming
+# `postcard` here with `default-features = false` would not remove a feature
+# `phonenumber` itself asks for. `heapless 0.8` replaced `atomic-polyfill`
+# with `portable-atomic`; closing this properly means `postcard` moving to
+# it upstream.
+#
+# Accepted, not silenced, and scoped to this one advisory id so any other
+# advisory — including any future one on `heapless` or `postcard`
+# themselves — still fails this job. Time-boxed: revisit by 2026-12-04
+# (alongside the RUSTSEC-2023-0071 entry above, so both are checked in one
+# pass), or sooner if `phonenumber` is bumped, since a bump is the moment
+# this chain could change shape. The alternative considered and not taken
+# was a `[graph] targets` list restricting cargo-deny to the platforms this
+# repository actually builds. That is arguably the more correct fix — it
+# states a true fact rather than excusing an advisory — but it silently
+# narrows advisory scope for the *whole* graph, which is a wider decision
+# than this one crate warrants and belongs to the maintainer, not to a
+# dependency addition.
 ignore = [
   { id = "RUSTSEC-2023-0071", reason = "Marvin Attack (timing sidechannel) only affects RSA PKCS#1v1.5 *decryption*. This graph's only `rsa` usage (via jsonwebtoken's RS256 backend and authkestra-engine's JWK derivation) is signing/verification and PEM parsing — no decrypt call exists anywhere in the reachable code. Re-verified against authkestra 0.8.0. See the comment above for the full analysis and revisit date." },
+  { id = "RUSTSEC-2023-0089", reason = "`atomic-polyfill` is unmaintained with no patched release. It enters only via phonenumber -> postcard -> heapless 0.7, and heapless gates it to AVR/RISC-V/thumbv6m/Xtensa targets — none of which this workspace builds (x86_64 and aarch64 Linux only). `cargo tree -i atomic-polyfill` finds nothing for the host target; only `--target all` reaches it. See the comment above for the full analysis and revisit date." },
 ]

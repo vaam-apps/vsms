@@ -9,9 +9,10 @@ authors.workspace = true
 publish.workspace = true
 
 [package.metadata]
-description = "E.164 normalisation and line-type classification for Cameroon (+237)"
+description = "E.164 normalisation and line-type classification, every country, Cameroon (+237) by default"
 
 [dependencies]
+phonenumber.workspace = true
 thiserror.workspace = true
 
 [lints]

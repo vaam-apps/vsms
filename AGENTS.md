@@ -2159,6 +2159,75 @@ re-pointed to `vaam-apps/vsms` *before* the `v0.3.1` tag runs, or
 recorded for the `vymalo` -> `vaam-store` move. The maintainer's step,
 not this PR's.
 
+## Multi-country stage 1: `sms-msisdn` parses every country
+
+[`docs/design/multi-country.md`](docs/design/multi-country.md) is the decision record; this is what
+landed. The hand-rolled Cameroon numbering plan (`COUNTRY_CODE = "237"`, the `classify_nine` block
+table) is replaced by Google libphonenumber's own metadata via the `phonenumber` crate. **Cameroon
+stays the default**: `parse`/`parse_mobile` keep their signatures and default to `CM`, so a bare
+`677123456` still resolves to `+237677123456` and every one of the nine existing call sites compiled
+unchanged.
+
+**libphonenumber reproduces the hand-rolled plan exactly, including the two cases this repo was most
+careful about** — the `63x`/`643`–`649` blocks are well-formed but unallocated, and the `88x`
+toll-free range is 8 digits where every other number is 9. Both agree unprompted, which made the swap
+a widening rather than a correction. Measured before deciding, not after.
+
+**Two things would have shipped looking correct and failed on the first foreign customer.**
+
+- **`parse_mobile` accepted only `LineType::Mobile`.** North American numbers classify as
+  `FixedLineOrMobile`, because the NANP does not encode the distinction at all — carried over
+  unchanged, that rejects **every US and Canadian number**, and a long tail of other countries
+  behaves the same way. Addressability replaces mobility: `is_addressable` is `Mobile |
+  FixedLineOrMobile`. Cameroon is unaffected, because CM metadata still returns `FixedLine` for
+  `2xx`.
+- **`Message.msisdn` was `@length(min: 12, max: 15)`** — a floor derived from `+237` plus nine
+  digits, which refuses Denmark, Norway and Iceland outright (11-character E.164 numbers). Lowered to
+  8. No `@db_enforce`, so no DDL consequence — confirmed by running `migrations-current` against the
+  **pin-matching 0.11.0 CLI**, not the VM's stale global 0.8.10, which is the documented skew trap
+  this file's own "Regenerating migrations" section warns about and which this work hit for real.
+
+**`Region` is a newtype wrapping `phonenumber::country::Id`, not a re-export.** `sms-msisdn`'s purity
+claim is about framework types, but leaking a *dependency's* type through a pure crate's public API
+is the same shape of coupling — a `phonenumber` major would become a breaking change for every
+caller. `parse_in`/`parse_mobile_in` take it; nothing calls them yet, and stage 2 (#356) is what
+threads `App.defaultCountry` through.
+
+**`national()` is computed, not sliced.** It was `&self.e164[1 + COUNTRY_CODE.len()..]` — a fixed
+4-character offset, correct only for `+237`. Same for `masked()`, which hardcoded "country code plus
+last two digits" at Cameroon's length; it generalises now, with CM output byte-identical.
+
+**A new advisory came with the dependency, accepted rather than silenced.** `RUSTSEC-2023-0089`
+(`atomic-polyfill`, unmaintained, no patched release) enters via `phonenumber` → `postcard` →
+`heapless 0.7`, whose own manifest gates it to `avr`, two `riscv32`, `thumbv6m` and `xtensa`
+targets — read out of the vendored manifest, not inferred. This workspace builds x86_64 and aarch64
+Linux only, so it is never compiled here, confirmed both directions: `cargo tree -i atomic-polyfill`
+reports nothing for the host target while `--target all` prints the chain. There is no downstream
+fix — `postcard`'s default `heapless-cas` feature is what enables it, and Cargo features are
+additive, so `default-features = false` on a crate *we* do not name would not remove a feature
+`phonenumber` itself asks for. Scoped to that one id, time-boxed to 2026-12-04. **The alternative —
+a `[graph] targets` list restricting cargo-deny to the platforms this repo builds — is arguably more
+correct (it states a true fact rather than excusing an advisory) but silently narrows advisory scope
+for the whole graph, so it was left to the maintainer rather than decided by a dependency addition.**
+
+**Guard-failure proof, house standard.** `is_addressable` narrowed back to `Mobile` alone failed
+`north_america_is_addressable_even_though_it_is_not_mobile`,
+`only_mobile_and_fixed_or_mobile_are_addressable` and `e164_length_fits_the_schema_column` — while
+`a_cameroon_fixed_line_is_still_refused_now_that_fixed_or_mobile_is_accepted` **passed throughout**,
+which is the part worth recording: it proves the Cameroon guard is independent of the change rather
+than coincidentally satisfied by it. Restored; 37 unit tests and 11 doctests green.
+
+**What stage 1 does not do**, so nobody reads it as more than it is: no country column anywhere
+(#356), no currency (#357), `OperatorCode` still a five-column DDL enum (#358), quiet hours still a
+fixed UTC+1 offset (#359). And `phonenumber` ships **no carrier mapper** — number portability
+destroys the premise — so `operator` is honestly `unknown` for foreign traffic, which is what makes
+§3.4's existing "prefix routing must never be load-bearing" caution mandatory rather than prudent.
+
+**A stale justification corrected while passing through:** `PURGED_MSISDN_PLACEHOLDER`'s doc claimed
+it cannot collide with a real MSISDN because no digit-run that long exists in the Cameroon prefix
+tables. True then, false the moment any country is parseable. The durable reason — it carries
+letters, which `sms_msisdn` refuses before consulting any numbering plan — replaces it.
+
 ## Conventions
 
 - Commits: imperative subject, body explaining *why*. Record framework surprises in the commit body and in §2.0 — that table is the most valuable thing here for whoever comes next.

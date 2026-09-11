@@ -225,14 +225,17 @@ Each stage is independently shippable and independently useful.
 
 | stage | change | breaks | tracked |
 |---|---|---|---|
-| 1 | `sms-msisdn` parses every country, Cameroon stays the default region | nothing | — |
+| 1 | `sms-msisdn` parses every country, Cameroon stays the default region | nothing | **landed** |
 | 2 | country as a column, and the globally-unique prefix index | schema | #356 |
 | 3 | money carries its currency, and provider selection stops comparing across them | schema and published wire, v0.4.0 | #357 |
 | 4 | operator becomes a `MobileNetwork` reference | schema | #358 |
 | 5 | per-country policy, on a real timezone database | schema | #359 |
 
 Stage 1 alone lets a customer's numbers be parsed and validated correctly, which is the gate
-everything else sits behind.
+everything else sits behind. It landed with two findings this document did not anticipate: the
+12-character floor on `Message.msisdn` refused Denmark, Norway and Iceland outright, and the
+`phonenumber` dependency brings an unmaintained-crate advisory that is unreachable on the targets
+this workspace builds. Both are recorded in `AGENTS.md`'s own stage 1 section.
 
 Two things outside the stages are tracked because no stage fixes them: the unbuilt
 `AggregatorHttpProvider` (#360), which gates every market outside Cameroon and is the one obstacle

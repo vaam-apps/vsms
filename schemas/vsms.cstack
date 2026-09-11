@@ -661,7 +661,14 @@ model Message {
   clientRef String?
   idempotencyKey String?
 
-  msisdn String @pii @length(min: 12, max: 15)
+  // The floor was 12 until multi-country stage 1 — `+237` plus nine digits,
+  // derived from the one country this gateway used to serve. It refused real
+  // E.164 countries outright: Denmark, Norway and Iceland all produce
+  // 11-character numbers, so a Danish customer's traffic was rejected before
+  // it reached a provider, for a reason with nothing to do with Denmark. 8 is
+  // deliberately conservative rather than clever; 15 is E.164's own maximum.
+  // No `@db_enforce`, so this is a schema edit with no DDL consequence.
+  msisdn String @pii @length(min: 8, max: 15)
   msisdnHash String
   operator OperatorCode
 

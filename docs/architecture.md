@@ -560,7 +560,7 @@ model Message {
   clientRef String?
   idempotencyKey String?
 
-  msisdn String @pii @length(min: 12, max: 15)
+  msisdn String @pii @length(min: 8, max: 15)
   msisdnHash String
   operator OperatorCode
 
@@ -1687,15 +1687,21 @@ Segment sizes: GSM-7 = 160 single / **153** concatenated; UCS-2 = 70 single / **
 
 ### 3.4 MSISDN normalisation
 
+`sms-msisdn` validates against Google libphonenumber's own metadata, embedded at compile time by the `phonenumber` crate — **every country, with Cameroon as the default region.** A bare national number with no country code of its own is read as Cameroonian, so `677123456` still means `+237677123456` with nothing to configure; `Msisdn::parse_in`/`parse_mobile_in` take an ISO 3166-1 alpha-2 region for everyone else. A leading `+` names the country itself and outranks the region either way. This is stage 1 of the multi-country program, implementing decisions 1 to 3 of that program's own design record.
+
+One trap worth knowing, verified against the metadata rather than assumed: an international prefix that is *not* `+` is the **dialling region's own**, not a universal `00`. Cameroon, most of Europe and much of Africa dial `00`; North America dials `011`; Nigeria dials `009`. So `00336…` is a French number when read against `CM` and is not one when read against `US`. Integrators should send `+`, which is unambiguous everywhere.
+
 Cameroon is a closed 9-digit plan since November 2014. E.164 is `+237` + 9 digits.
 
 ```
-mobile     (?:24[23]|6(?:[25-9]\d|4[0-2]))\d{6}
+mobile     (?:24[23]|6(?:[25-9]\d|4[01]))\d{6}
 fixedLine  2(?:22|33)\d{6}
 general    [26]\d{8}|88\d{6,7}
 ```
 
-Valid mobile leading pairs: **62, 65, 66, 67, 68, 69**, plus **640–642 only**. `63x` and `643`–`649` are not valid. Reject fixed-line and toll-free at the API boundary — a Twilio-style `21614` failure three seconds later is a worse experience than a synchronous `422`.
+Valid mobile leading pairs: **62, 65, 66, 67, 68, 69**, plus **640–641 only**. `63x` and `642`–`649` are not valid. This document and `sms-msisdn`'s own hand-written table both used to claim `642` was assigned; libphonenumber 9.0.33 assigns `640` and `641` only, and following the metadata rather than carrying a local override is the whole point of the swap. Reject fixed-line and toll-free at the API boundary — a Twilio-style `21614` failure three seconds later is a worse experience than a synchronous `422`.
+
+**Addressability, not mobility, is the send-path test.** `parse_mobile` accepts `Mobile` *and* `FixedLineOrMobile`, because the North American Numbering Plan does not encode the distinction at all and accepting only `Mobile` rejects every US and Canadian number. Cameroon is unaffected: its metadata returns `Mobile` for mobile ranges and `FixedLine` for `2xx`, so a Cameroonian fixed line is refused exactly as before.
 
 Operator inference is a **hint in a database table, never a hardcoded match**. Best current evidence: MTN = `67x`, `650–654`; Orange = `69x`, `655–659`. `68x` is genuinely contested between sources. Camtel = `62x` is unverified. Number portability is legally live (since Sept 2017) but commercially near-dead, and sources contradict each other on whether it works at all — so prefix routing is right almost always and must never be load-bearing. Record the delivering network from DLRs where reported, and let observed data correct the table.
 
@@ -2773,7 +2779,7 @@ vsms/
 ├── crates/               # libraries only
 │   ├── sms-core/         # domain types, transition tables, error taxonomy
 │   ├── sms-encoding/     # GSM-7/UCS-2 — build this first
-│   ├── sms-msisdn/       # E.164 +237, operator inference
+│   ├── sms-msisdn/       # E.164 every country, +237 default; operator inference
 │   ├── sms-provider/     # SmsProvider trait, Capabilities, ProviderError
 │   ├── sms-provider-http/          # shared reqwest transport/status classification for every HTTP adapter
 │   ├── sms-provider-orange-cm/
