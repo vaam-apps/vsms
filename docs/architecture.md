@@ -1,6 +1,16 @@
 # SMS Gateway — Architecture Design
 
-**Scope:** a self-hosted A2P SMS gateway for Cameroon (MTN + Orange), serving OTP and notification traffic for one organisation's own applications, with a Next.js admin console.
+**Scope:** a self-hosted A2P SMS gateway, Cameroon-first (MTN + Orange) and extensible to any
+country, serving OTP and notification traffic for one organisation's own applications, with a
+Next.js admin console.
+
+**On "Cameroon-first".** This document was written for Cameroon alone, and most of it still reads
+that way; treat a bare Cameroonian fact below as the default case rather than the only one.
+Cameroon stays the best-supported market and the default region, and a Cameroon deployment is not
+asked to configure anything it did not configure before. Every other country is reached through data
+and configuration rather than a code change. `docs/design/multi-country.md` records what that
+changed, what it deliberately did not, and which markets remain blocked on work nobody has done —
+sender-ID regimes, aggregator coverage and data-residency conflicts especially.
 
 **Stack (as chosen):** Rust + TypeScript · CrateStack (`.cstack` schema-first) · Authkestra OP (OIDC Provider) · full RBAC through JWT claims · single OIDC client for humans, one OAuth service account per calling app.
 

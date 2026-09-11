@@ -1,6 +1,8 @@
 # vsms — project context
 
-A2P SMS gateway for Cameroon (MTN + Orange). OTP and notification delivery, provider abstraction over HTTP APIs and SMPP, Next.js admin console.
+A2P SMS gateway, **Cameroon-first and extensible to any country**. OTP and notification delivery, provider abstraction over HTTP APIs and SMPP, Next.js admin console.
+
+**Read [`docs/design/multi-country.md`](docs/design/multi-country.md) before touching numbers, money, operators or quiet hours.** This file and the design doc were both written for Cameroon alone and most of them still read that way, so treat a bare Cameroonian fact in either as the default case rather than the only one. Cameroon stays the default region and the best-supported market; other countries are reached through data and configuration. The design doc also names what is *not* solved — sender-ID regimes, aggregator coverage, data-residency conflicts — so nobody reads "extensible" as "any market works today".
 
 **Read [`docs/architecture.md`](docs/architecture.md) before making design decisions.** It is the spec, and every claim in it was verified against the real toolchain rather than assumed. This file is the subset that must be in context for *every* session.
 
