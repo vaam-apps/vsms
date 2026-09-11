@@ -193,14 +193,25 @@
      list against what components actually reference, not by looking at a
      screen. `theme-tokens.test.ts` now fails the build on a recurrence.
 
-     Deliberately distinct from `uncertain` (amber) even though both read
-     as "attention": `uncertain` means the outcome is unknown, `warning`
-     means a recoverable condition needs a human. Orange keeps them
-     separable at a glance without introducing a sixth saturated hue's
-     worth of visual noise. */
-  --state-warning-fg: #fbbf24;
-  --state-warning-bg: rgb(245 158 11 / 0.1);
-  --state-warning-border: rgb(245 158 11 / 0.28);
+     Must stay visibly distinct from `uncertain` even though both read as
+     "attention": `uncertain` means the outcome is unknown, `warning`
+     means a recoverable condition needs a human. Two states that look
+     the same are exactly what the silhouette/mark/fill redundancy in
+     §4.3 exists to avoid, and a hue collision undoes it.
+
+     Measured, not eyeballed — the first value tried here was `#fbbf24`,
+     which is 3 degrees of hue and ΔE 13 from `uncertain`'s own
+     `#fcd34d`: the same colour, for practical purposes, inside a 14px
+     glyph, and the comment justifying it ("orange keeps them separable")
+     described a colour it was not. `#fdba74` (orange-300) is ΔE 29 from
+     `uncertain`, 35 from `danger` and 47 from `expired`, so it collides
+     with nothing, and it is built the way every sibling here is — a
+     300-level tint for the foreground, its 400-level neighbour at
+     10%/28% for the fill and border. Contrast against `--background` is
+     11.7:1, in line with the 10-13 the other foreground tokens carry. */
+  --state-warning-fg: #fdba74;
+  --state-warning-bg: rgb(251 146 60 / 0.1);
+  --state-warning-border: rgb(251 146 60 / 0.28);
 }
 
 /*

@@ -63,24 +63,48 @@ export function Calendar({
         weekdays: "flex",
         weekday: "w-8 font-normal text-caption text-subtle-foreground",
         week: "mt-1 flex w-full",
-        day: cn(
-          "relative size-8 p-0 text-center",
-          // Range fills must meet with no gap, so the tint sits on the
-          // cell and the button inside it stays transparent.
-          "[&:has([data-range-middle])]:bg-state-neutral-bg",
-          "[&:has([data-range-start])]:rounded-l-sm [&:has([data-range-end])]:rounded-r-sm",
-        ),
+        // Selection state lives on the CELL, not on the button inside it.
+        // Read off the real DOM, not guessed: react-day-picker puts
+        // `aria-selected` and `data-selected` on the `<td>` and leaves the
+        // `<button>` carrying only `type`/`tabindex`/`aria-label`. An
+        // earlier revision of this file styled the button with
+        // `aria-selected:bg-primary` and the cell with
+        // `[&:has([data-range-middle])]`, and BOTH silently matched
+        // nothing — no selected day had a fill and no range had a tint.
+        // Neither `tsc` nor the classNames-key test could see it: the keys
+        // were all real, and the class strings were valid CSS for a DOM
+        // shape that does not exist. Found by rendering it.
+        day: "relative size-8 p-0 text-center",
         day_button: cn(
           "inline-flex size-8 items-center justify-center rounded-sm font-mono text-caption tabular-nums",
           "text-foreground transition-colors hover:bg-surface-3",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-          "aria-selected:bg-primary aria-selected:text-primary-content aria-selected:hover:bg-primary",
         ),
+        // Fills the button from the cell's own state, which is where the
+        // state actually is. Covers single mode outright and both ends of
+        // a range; `range_middle` below overrides it for the interior.
+        selected:
+          "[&>button]:bg-primary [&>button]:text-primary-content [&>button]:hover:bg-primary",
         today: "font-semibold text-state-uncertain-fg",
         outside: "text-subtle-foreground opacity-50",
         disabled: "pointer-events-none opacity-30",
         hidden: "invisible",
-        range_middle: "[&>button]:bg-transparent [&>button]:text-foreground",
+        // The interior of a range: tint the CELL so consecutive days meet
+        // with no gap, and knock the button's own fill back out.
+        //
+        // Two things here were wrong on the first attempt and are worth
+        // keeping written down. The tint was `bg-state-neutral-bg`, which
+        // is a real token that resolves to `transparent` — `neutral` is
+        // the quiet hue and deliberately has no fill — so the interior
+        // rendered as nothing at all. It is a wash of the selection
+        // colour instead, which is also what it means. And the `!` is
+        // load-bearing: a middle day also carries `selected` above, and
+        // both rules are arbitrary variants of equal specificity, so
+        // without it the winner is whichever class Tailwind emits last.
+        range_middle:
+          "bg-primary/15 [&>button]:bg-transparent! [&>button]:text-foreground! [&>button]:hover:bg-surface-3!",
+        range_start: "rounded-l-sm",
+        range_end: "rounded-r-sm",
         week_number: "w-8 font-mono text-caption text-subtle-foreground",
         footer: "pt-2 text-caption text-muted-foreground",
         ...classNames,

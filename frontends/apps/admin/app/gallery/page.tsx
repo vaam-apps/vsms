@@ -40,6 +40,7 @@
 // it documents.
 
 import { Separator } from "@vaam-apps/ui";
+import { BannersGallery } from "./components/banners-gallery";
 import { ButtonGallery } from "./components/button-gallery";
 import { ControlsGallery } from "./components/controls-gallery";
 import { DataDisplayGallery } from "./components/data-display-gallery";
@@ -73,6 +74,8 @@ export default function GalleryPage() {
       <FormGallery />
       <Separator />
       <DataDisplayGallery />
+      <Separator />
+      <BannersGallery />
       <Separator />
       <ValueDisplayGallery />
       <Separator />
