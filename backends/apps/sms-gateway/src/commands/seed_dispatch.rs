@@ -16,7 +16,7 @@ use sms_api::{Principal, PrincipalKind};
 /// only carries the flags themselves.
 #[derive(Debug, clap::Args)]
 pub(crate) struct SeedDispatchArgs {
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub(crate) database_url: String,
 
     /// Must match `SmsProvider::key()` for whichever adapter is

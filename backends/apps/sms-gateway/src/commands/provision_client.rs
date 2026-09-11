@@ -15,7 +15,7 @@ use sms_api::{Principal, PrincipalKind, Procedures};
 /// this struct only carries the flags themselves.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ProvisionClientArgs {
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub(crate) database_url: String,
 
     /// The `App.id` this client acts on behalf of. Must already exist
@@ -91,7 +91,7 @@ pub(crate) struct ProvisionClientArgs {
     /// this alongside `serve` supplies the identical value once via
     /// their environment rather than learning two different names for
     /// the same secret.
-    #[arg(long, env = "SMS_HASH_PEPPER")]
+    #[arg(long, env = "SMS_HASH_PEPPER", hide_env_values = true)]
     pub(crate) hash_pepper: String,
 }
 

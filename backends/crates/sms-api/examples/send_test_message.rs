@@ -44,7 +44,7 @@ const PROVIDER_KEY: &str = "orange_cm";
 #[derive(Parser)]
 #[command(about = "Seed fixtures and send one real message for #36's acceptance gate")]
 struct Cli {
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     database_url: String,
     /// E.164, the real test handset.
     #[arg(long)]
@@ -58,7 +58,7 @@ struct Cli {
     /// #134: same pepper `sms-gateway serve` would need — this tool calls
     /// `sendMessage` directly rather than over HTTP, so it needs its own
     /// copy to construct a `Procedures`. See `sms_api::pepper`'s module doc.
-    #[arg(long, env = "SMS_HASH_PEPPER")]
+    #[arg(long, env = "SMS_HASH_PEPPER", hide_env_values = true)]
     hash_pepper: String,
 }
 

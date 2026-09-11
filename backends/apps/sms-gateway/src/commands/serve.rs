@@ -41,7 +41,7 @@ pub(crate) struct ServeArgs {
     )]
     pub(crate) metrics_listen: String,
 
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub(crate) database_url: String,
 
     /// Maximum pooled connections.
@@ -65,7 +65,7 @@ pub(crate) struct ServeArgs {
     pub(crate) orange_client_id: String,
 
     /// Paired with `orange_client_id`. Never logged.
-    #[arg(long, env = "ORANGE_CM_CLIENT_SECRET")]
+    #[arg(long, env = "ORANGE_CM_CLIENT_SECRET", hide_env_values = true)]
     pub(crate) orange_client_secret: String,
 
     /// E.164 without the `tel:` scheme.
@@ -90,7 +90,7 @@ pub(crate) struct ServeArgs {
     /// pepper fails loudly at startup — never silently at the first
     /// `sendMessage` call. Never logged: `HashPepper`'s own `Debug`
     /// impl redacts it even if this struct were ever printed.
-    #[arg(long, env = "SMS_HASH_PEPPER")]
+    #[arg(long, env = "SMS_HASH_PEPPER", hide_env_values = true)]
     pub(crate) hash_pepper: String,
 
     /// #153: how long a cached `Idempotency-Key` response stays

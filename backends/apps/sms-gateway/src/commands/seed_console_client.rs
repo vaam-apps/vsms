@@ -13,7 +13,7 @@ use sms_api::system_context;
 /// this struct only carries the flags themselves.
 #[derive(Debug, clap::Args)]
 pub(crate) struct SeedConsoleClientArgs {
-    #[arg(long, env = "DATABASE_URL")]
+    #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub(crate) database_url: String,
 
     /// Must match `sms-gateway serve --console-client-id` and
