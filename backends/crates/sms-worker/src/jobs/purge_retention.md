@@ -63,7 +63,7 @@ deletion" design:
 
 - **`msisdn`** — the plaintext recipient number. Purged: this is the
   decision's own explicit text ("content *and* plaintext MSISDN both").
-  The column is `String`, `NOT NULL`, `@length(min: 12, max: 15)` with no
+  The column is `String`, `NOT NULL`, `@length(min: 8, max: 15)` with no
   `@db_enforce` (so nothing enforces the length at the database layer —
   confirmed against `0001_init`, no `CHECK` on this column — but
   `UpdateMessageInput::validate()` still runs the length check in

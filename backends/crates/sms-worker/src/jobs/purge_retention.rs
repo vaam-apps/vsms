@@ -17,10 +17,11 @@ const RETENTION: Duration = Duration::days(90);
 
 /// Written over `Message.msisdn` on purge — see the module doc for why the
 /// column stays `NOT NULL` rather than becoming `Option<String>`. Exactly
-/// 13 characters: inside `@length(min: 12, max: 15)`, so
+/// 13 characters: inside `@length(min: 8, max: 15)`, so
 /// `UpdateMessageInput::validate()` accepts it, and unambiguously not an
-/// MSISDN (no digit-only run this long exists in `sms_msisdn`'s own
-/// Cameroon prefix tables).
+/// MSISDN — it carries letters, which `sms_msisdn` refuses outright before
+/// any numbering plan is consulted. (The dash does not help: that is one of
+/// the separators `sms_msisdn` strips.)
 const PURGED_MSISDN_PLACEHOLDER: &str = "purged-msisdn";
 
 /// `Message` rows are purged in batches this size per run — same reasoning
@@ -221,24 +222,36 @@ mod tests {
 
     #[test]
     fn the_msisdn_placeholder_satisfies_messages_own_length_validator() {
-        // `Message.msisdn @length(min: 12, max: 15)` — `UpdateMessageInput`'s
+        // `Message.msisdn @length(min: 8, max: 15)` — `UpdateMessageInput`'s
         // generated `validate()` runs this check against `Some`-wrapped
         // values regardless of the column's own nullability (update inputs
         // treat every field as present-or-absent, per
         // cratestack-macros' `validate_impl_tokens(&fields, true)`). A
         // placeholder outside this range would make every purge attempt
         // fail its own write.
+        //
+        // The floor was 12 until multi-country stage 1 lowered it to 8 for
+        // Denmark, Norway and Iceland, whose E.164 numbers are 11 characters.
+        // This placeholder is 13 and satisfied both bounds, so nothing about
+        // it had to move with the schema — checked rather than assumed,
+        // which is why the assertion names the live bound rather than a
+        // remembered one.
         let len = PURGED_MSISDN_PLACEHOLDER.len();
         assert!(
-            (12..=15).contains(&len),
-            "placeholder must satisfy Message.msisdn's own @length(min: 12, max: 15): got {len}"
+            (8..=15).contains(&len),
+            "placeholder must satisfy Message.msisdn's own @length(min: 8, max: 15): got {len}"
         );
     }
 
     #[test]
     fn the_msisdn_placeholder_is_not_a_plausible_msisdn() {
-        // Belt-and-braces: it must not parse as a Cameroon MSISDN, or a
-        // purged row would look like it still has a usable number.
+        // Belt-and-braces: it must not parse as an MSISDN at all, or a
+        // purged row would look like it still has a usable number. It holds
+        // for a stronger reason than digit ranges now that `sms-msisdn`
+        // covers every country: its own input sanitiser refuses letters
+        // outright, rather than letting libphonenumber map them onto keypad
+        // digits the way it would for `677abc456`. The dash is irrelevant —
+        // that is one of the separators the sanitiser strips.
         assert!(sms_msisdn::Msisdn::parse(PURGED_MSISDN_PLACEHOLDER).is_err());
     }
 }
