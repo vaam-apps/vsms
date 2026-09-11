@@ -24,6 +24,15 @@ export type CalendarProps = DayPickerProps & { className?: string | undefined };
  * component's colours come from, and it is the same place every other
  * component's come from.
  *
+ * # `selected` without `onSelect` is not a binding
+ *
+ * This component is a thin pass-through, so react-day-picker's own
+ * control semantics apply unchanged: given `selected` but no `onSelect`,
+ * it manages selection internally and treats `selected` as an initial
+ * value. A caller who expects a controlled component gets one that
+ * silently diverges from its own prop the first time someone clicks a
+ * day — found exactly that way, in a gallery demo. Pass both, or neither.
+ *
  * # Layout is deliberately not themed away
  *
  * The grid itself is a `<table>` and needs `border-collapse` plus fixed

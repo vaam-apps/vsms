@@ -24,6 +24,12 @@ export function DatePickerGallery() {
     to: "2026-09-11",
   });
   const [bounded, setBounded] = useState<IsoDate | undefined>();
+  // Controlled on purpose. `Calendar` passes props straight through to
+  // react-day-picker, which manages selection ITSELF when `onSelect` is
+  // omitted — so `selected` alone is an initial value, not a binding, and
+  // the demo would silently drift away from what this file says it shows
+  // the first time anyone clicked a day. Found by clicking one.
+  const [bare, setBare] = useState<Date | undefined>(new Date(2026, 8, 11));
 
   return (
     <Section
@@ -63,9 +69,14 @@ export function DatePickerGallery() {
             />
           </div>
         </GallerySwatch>
-        <GallerySwatch label="Calendar — the bare themed DayPicker, for a different shell">
+        <GallerySwatch label="Calendar — the bare themed DayPicker, for a different shell. Controlled: `selected` without `onSelect` leaves react-day-picker managing its own selection.">
           <div className="inline-block rounded-md border border-edge bg-surface-2">
-            <Calendar mode="single" selected={new Date(2026, 8, 11)} />
+            <Calendar
+              mode="single"
+              selected={bare}
+              onSelect={setBare}
+              defaultMonth={new Date(2026, 8, 1)}
+            />
           </div>
         </GallerySwatch>
       </div>
