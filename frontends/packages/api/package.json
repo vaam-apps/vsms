@@ -16,11 +16,11 @@
     "@vsms/gateway": "workspace:*",
     "server-only": "0.0.1",
     "superjson": "2.2.6",
-    "zod": "4.4.3"
+    "zod": "4.6.2"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26",
     "typescript": "5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^5"
   }
 }

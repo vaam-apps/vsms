@@ -17,12 +17,12 @@
   },
   "dependencies": {
     "@vymalo/vsms-node": "^0.3.0",
-    "express": "^5.1.0"
+    "express": "^5.2.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.7",
-    "@types/express": "^5.0.1",
-    "@types/node": "^24.0.0",
+    "@biomejs/biome": "2.5.13",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26",
     "typescript": "5.9.3"
   }
 }
