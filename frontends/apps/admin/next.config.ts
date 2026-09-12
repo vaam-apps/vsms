@@ -3,7 +3,14 @@ import type { NextConfig } from "next";
 
 const config: NextConfig = {
   reactStrictMode: true,
-  transpilePackages: ["@vsms/env", "@vaam-apps/ui", "@vsms/gateway", "@vsms/api", "@vsms/hooks"],
+  // The four `@vsms/*` entries are workspace packages whose `exports` point
+  // straight at `./src/index.ts`, so Next has to compile them itself.
+  // `@vaam-apps/ui` used to be listed here for exactly that reason and no
+  // longer needs to be: since it left the workspace it arrives from npm as
+  // pre-compiled ESM with an `exports` map and its `"use client"` prologues
+  // already in place. Verified by removing it and diffing a real `next build`
+  // against the previous one -- see the commit that made this change.
+  transpilePackages: ["@vsms/env", "@vsms/gateway", "@vsms/api", "@vsms/hooks"],
   // Traces the actual runtime dependency graph into `.next/standalone`
   // (a minimal server.js plus only the node_modules it really touches),
   // so the Docker runtime stage (frontends/apps/admin/Dockerfile) doesn't need to carry
