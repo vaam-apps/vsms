@@ -17,7 +17,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Skeleton,
+  SkeletonText,
 } from "@vaam-apps/ui";
 import type { FieldErrors, UseFormRegister } from "react-hook-form";
 import { type Control, Controller } from "react-hook-form";
@@ -82,7 +82,12 @@ export function ProviderEditDrawer({
         </>
       }
     >
-      {isLoadingDetail && <Skeleton className="h-32 w-full" />}
+      {/* SkeletonText, not a flat slab: the wiring grid plus the edit
+          form below it is several distinct fields, and a paragraph-shaped
+          placeholder with a short last line reads as that rather than as
+          one indistinct block. `lines={6}` approximates the same visual
+          weight the previous `h-32` slab held. */}
+      {isLoadingDetail && <SkeletonText lines={6} />}
 
       {detail !== undefined && (
         <form id={FORM_ID} onSubmit={onSubmit} className="flex flex-col gap-4">
