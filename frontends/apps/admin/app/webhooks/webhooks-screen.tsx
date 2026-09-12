@@ -64,7 +64,7 @@
 // This file holds data fetching, mutations, URL/local state, and handlers
 // only. Markup and classes live in `./components/*` (route-local — nothing
 // here is reused by another screen) and `./webhook-domain.ts` (event-type
-// vocabulary, form schemas, `maskSecret`/`payloadFor`, extracted so they're
+// vocabulary, form schemas, `payloadFor`, extracted so they're
 // unit-testable without mounting React).
 
 import { zodResolver } from "@hookform/resolvers/zod";
