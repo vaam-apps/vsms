@@ -4,7 +4,15 @@
 // beside the markup that uses it — the same convention
 // `dashboard/components/delivery-rate-card.tsx`'s `OPERATOR_LABELS` follows.
 
-import { StateChip, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@vsms/ui";
+import {
+  StateChip,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@vaam-apps/ui";
 import { type OutcomeKind, OutcomePill } from "./outcome-pill";
 
 export type PredicateKind = "operator" | "class" | "app_id" | "prefix";

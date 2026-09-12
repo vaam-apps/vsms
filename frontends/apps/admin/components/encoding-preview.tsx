@@ -1,15 +1,19 @@
 "use client";
 
+// GSM-7 vs UCS-2 segment counting is SMS domain knowledge, so this
+// component lives in the application rather than in `@vaam-apps/ui`. It
+// was in that package until the package was generalised for release: a
+// shared component library has no business shipping a septet-counting
+// escape-pair explainer to a consumer sending payments.
+
+import { Button, cn, Textarea } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
-import { cn } from "../../lib/cn";
-import { Button } from "../primitives/button";
-import { Textarea } from "../primitives/textarea";
 
 /**
  * Mirrors `@vsms/gateway`'s real `PreviewResult` (`frontends/packages/gateway/src/client.ts`,
  * transcribed from `schemas/vsms.cstack`'s `PreviewResult` type, verified
  * live against `backends/crates/sms-api/src/procedures.rs::preview`). Defined
- * locally, as a deliberate subset, rather than imported — `@vsms/ui` has
+ * locally, as a deliberate subset, rather than imported — `@vaam-apps/ui` has
  * zero internal dependencies (T6 package rule), so it cannot depend on
  * `@vsms/gateway`'s types. Callers may pass the full `PreviewResult`
  * straight through; TypeScript's structural typing accepts the extra

@@ -1,14 +1,14 @@
 // Dumb view: the screen title, "New app" button, and the reads-act-as-you
 // permission note.
 //
-// `ScreenHeader` (`@vsms/ui`) has no action-button slot, so the title/
+// `ScreenHeader` (`@vaam-apps/ui`) has no action-button slot, so the title/
 // description pair and the button share one flex row here — same layout
 // `sender-ids-screen.tsx`'s own `SenderToolbar` establishes for the
 // identical "title + description + button" shape, just inlined rather
 // than split into a second component since this route has only one
 // toolbar action.
 
-import { Button, Code, InlineBanner, ScreenHeader } from "@vsms/ui";
+import { Button, Code, InlineBanner, ScreenHeader } from "@vaam-apps/ui";
 
 export function AppsHeader({ onCreateClick }: { onCreateClick: () => void }) {
   return (

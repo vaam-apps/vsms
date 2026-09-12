@@ -1,33 +1,36 @@
 /**
- * The eleven-state status system (design doc §0.1, §4). Every message state
- * `messages_state_enum_check` can actually produce, transcribed verbatim —
- * `rejected` included, which an earlier brief omitted.
+ * vsms's own state machines, as status systems.
  *
- * `family` and every other field here are PRESENTATIONAL ONLY (design doc
- * §0.2: "terminality is data, not code"). Never use this table to decide
- * whether an action (cancel, re-enqueue, replay) is permitted — that
- * decision belongs to the API and its `SM001` response. The UI proposes,
- * Postgres decides.
+ * These three tables used to live in `@vaam-apps/ui` itself. They moved
+ * here when that package was generalised for public release: a table of
+ * SMS delivery-receipt tooltips is this application's domain knowledge,
+ * not a component library's, and shipping it to every consumer of the
+ * library would have put "Handed to the provider. Awaiting a delivery
+ * receipt." in the autocomplete of an unrelated product.
  *
- * Job states (`job_state_transitions`: pending/running/succeeded/failed/
- * dead/cancelled) deliberately are NOT mapped here yet. The design doc
- * marks that mapping `OPEN` pending exactly this schema read (done — see
- * `backends/migrations/postgres/0002_bootstrap/up.sql`), but assigns the
- * actual glyph/hue judgement calls to its own follow-up task (§8, B3) —
- * notably, a job's `failed` is *retryable* (`failed -> pending` is a legal
- * edge) and is therefore not equivalent to a message's terminal `failed`,
- * which needs its own reasoning rather than a silent copy-paste here.
+ * What stayed in the package is the *mechanism* — `StatusMeta`, the glyph
+ * geometry, the hue classes, and `createStatusPill`, which binds one of
+ * these tables to a pill component whose `state` prop accepts exactly
+ * that machine's literals. The three near-identical pill components that
+ * used to exist (`StatusPill`, `JobStatusPill`, `AttemptStatusPill`, one
+ * per machine, differing only in which table they indexed) are now three
+ * `createStatusPill` calls at the bottom of this file. Their own doc
+ * comments argued — correctly — that the machines differ in meaning even
+ * where a literal matches, and that distinction is preserved: each keeps
+ * its own table, its own component, and its own state type, so a
+ * `JobState` still cannot be passed to a message pill.
  *
- * English only (console-redesign.md D10, English-only constraint 1):
- * `labelFr` is deleted outright, not merely unused, and `labelEn`/
- * `tooltipEn` are renamed to plain `label`/`tooltip` — with the French
- * fields gone, a stray reader is a compile error rather than silently-dead
- * code. This does not foreclose localisation forever: #231 tracks a real
- * `react-i18next` layer for the console later, still English-only by
- * default with additional languages opted into via env-var config — a
- * proper mechanism, not two ad hoc string fields on a domain-semantics
- * table that nothing ever rendered.
+ * Every field in these tables is PRESENTATIONAL. Never read `family` to
+ * decide whether an action is permitted — the API and its `SM001`
+ * response own that. The UI proposes, Postgres decides.
  */
+
+import {
+  createStatusPill,
+  defineStatusSystem,
+  isTerminalStatus,
+  type StatusMeta,
+} from "@vaam-apps/ui";
 
 export const MESSAGE_STATES = [
   "accepted",
@@ -45,46 +48,6 @@ export const MESSAGE_STATES = [
 
 export type MessageState = (typeof MESSAGE_STATES)[number];
 
-export type StatusFamily = "in-flight" | "unresolved" | "terminal";
-
-export type StatusSilhouette = "circle" | "diamond" | "square";
-
-/**
- * The interior mark drawn inside the silhouette. `pie-1`..`pie-3` are the
- * quarter-fill progress wedge (design doc §4.3, borrowed from Linear's
- * issue-state glyph); `ring` is a completed stroke with a hollow centre
- * (handed off, awaiting an external answer).
- */
-export type StatusMark =
-  | "pie-1"
-  | "pie-2"
-  | "pie-3"
-  | "ring"
-  | "check"
-  | "bar"
-  | "clock"
-  | "slash"
-  | "cross"
-  | "question"
-  | "pause";
-
-export type StatusHue = "neutral" | "success" | "danger" | "uncertain" | "expired" | "parked";
-
-/** Quiet: glyph only, no fill. Loud: tinted background + border. */
-export type StatusAttention = "quiet" | "loud";
-
-export interface StatusMeta {
-  family: StatusFamily;
-  silhouette: StatusSilhouette;
-  mark: StatusMark;
-  hue: StatusHue;
-  /** Terminal marks sit on a filled silhouette; in-flight/unresolved marks are stroked-only. */
-  filled: boolean;
-  attention: StatusAttention;
-  label: string;
-  tooltip: string;
-}
-
 /**
  * design doc §4.2, with the owner override applied: `delivered` gets a
  * green pill (§4.5 originally left it untinted; DECISIONS §5 overrides
@@ -94,7 +57,7 @@ export interface StatusMeta {
  * label take the green hue, matching the design doc's own reasoning for
  * why `delivered` is quiet, just with colour restored.
  */
-export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
+export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = defineStatusSystem({
   accepted: {
     family: "in-flight",
     silhouette: "circle",
@@ -207,10 +170,10 @@ export const MESSAGE_STATUS_META: Record<MessageState, StatusMeta> = {
     tooltip:
       "The provider could not deliver it. Retryable in principle — but no retry driver is running today (#122), so it will stay here until someone acts.",
   },
-};
+});
 
 export function isTerminalMessageState(state: MessageState): boolean {
-  return MESSAGE_STATUS_META[state].family === "terminal";
+  return isTerminalStatus(MESSAGE_STATUS_META, state);
 }
 
 /**
@@ -254,7 +217,7 @@ export type JobState = (typeof JOB_STATES)[number];
  *   (#56) the one state `requeueJob` accepts. Styled `danger`/loud, the
  *   analogue of a message's own `failed`.
  */
-export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
+export const JOB_STATUS_META: Record<JobState, StatusMeta> = defineStatusSystem({
   pending: {
     family: "in-flight",
     silhouette: "circle",
@@ -316,10 +279,10 @@ export const JOB_STATUS_META: Record<JobState, StatusMeta> = {
     label: "Cancelled",
     tooltip: "Cancelled before it ran.",
   },
-};
+});
 
 export function isTerminalJobState(state: JobState): boolean {
-  return JOB_STATUS_META[state].family === "terminal";
+  return isTerminalStatus(JOB_STATUS_META, state);
 }
 
 /**
@@ -352,7 +315,7 @@ export type AttemptState = (typeof ATTEMPT_STATES)[number];
  *   (`hooks.rs`'s own doc). Terminal, and (#43) the one state
  *   `replayWebhookAttempt` accepts alongside `failed`.
  */
-export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = {
+export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = defineStatusSystem({
   pending: {
     family: "in-flight",
     silhouette: "circle",
@@ -404,10 +367,10 @@ export const ATTEMPT_STATUS_META: Record<AttemptState, StatusMeta> = {
     label: "Dead",
     tooltip: "Every attempt failed and the retry budget is exhausted. Replay to try again.",
   },
-};
+});
 
 export function isTerminalAttemptState(state: AttemptState): boolean {
-  return ATTEMPT_STATUS_META[state].family === "terminal";
+  return isTerminalStatus(ATTEMPT_STATUS_META, state);
 }
 
 /**
@@ -421,3 +384,29 @@ export function isTerminalAttemptState(state: AttemptState): boolean {
 export const MESSAGE_CLASSES = ["otp", "transactional", "notification", "marketing"] as const;
 
 export type MessageClass = (typeof MESSAGE_CLASSES)[number];
+
+/**
+ * The three bound pills. Each accepts only its own machine's literals, so
+ * `<JobStatusPill state="delivered" />` is a compile error — `delivered`
+ * is a message state, and a job never reaches it.
+ */
+export const StatusPill = createStatusPill(MESSAGE_STATUS_META);
+export const JobStatusPill = createStatusPill(JOB_STATUS_META);
+export const AttemptStatusPill = createStatusPill(ATTEMPT_STATUS_META);
+
+/**
+ * The two states that look exactly like bugs to anyone who does not
+ * already know the product decision behind them. Without this annotation
+ * on the timeline, the operator's next move is to open psql — precisely
+ * the outcome the message-detail screen exists to prevent.
+ *
+ * Passed to `StateTimeline`'s `annotations` prop. It used to be a
+ * hard-coded table inside that component; it is domain knowledge, so it
+ * lives with the state machine it explains.
+ */
+export const MESSAGE_STATE_ANNOTATIONS: Partial<Record<MessageState, string>> = {
+  uncertain:
+    "The outcome was never learned. providerMessageRefAlt was stamped with the message id so a late DLR can still correlate. This message will not be resubmitted — a deliberate trade against sending a duplicate OTP.",
+  undelivered:
+    'The provider said "not delivered", not "never". undelivered -> queued is a legal edge, but no retry driver runs today (#122) — this message will stay here until someone acts.',
+};

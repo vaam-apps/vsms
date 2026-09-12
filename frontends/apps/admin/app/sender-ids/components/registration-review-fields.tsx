@@ -1,4 +1,4 @@
-import { FormField, groupLabelId, InlineBanner, Input, RadioGroup, Textarea } from "@vsms/ui";
+import { FormField, groupLabelId, InlineBanner, Input, RadioGroup, Textarea } from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import { KNOWN_STATUSES, type RegistrationFormValues } from "../sender-id-domain";
 

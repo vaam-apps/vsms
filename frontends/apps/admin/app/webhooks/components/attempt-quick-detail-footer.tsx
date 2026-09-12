@@ -1,4 +1,4 @@
-import { Button } from "@vsms/ui";
+import { Button } from "@vaam-apps/ui";
 import type { AttemptListItem } from "../webhook-domain";
 
 // Dumb (R6): the attempt `QuickDetailDrawer`'s own footer (not shown while

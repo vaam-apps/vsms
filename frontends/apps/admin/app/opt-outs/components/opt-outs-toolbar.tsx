@@ -1,7 +1,7 @@
 // Dumb component (R6): the "Recent" section heading plus the "Record
 // opt-out" trigger, moved verbatim out of `opt-outs-screen.tsx`.
 
-import { Button } from "@vsms/ui";
+import { Button } from "@vaam-apps/ui";
 
 export interface OptOutsToolbarProps {
   onRecordClick: () => void;

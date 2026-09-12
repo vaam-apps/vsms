@@ -23,7 +23,7 @@ export interface AuditLogEntry {
   operation: string;
   /** JSON-encoded text, not parsed further — the same convention
    * `Provider.config`/`Route.config` already use for a JSON-shaped
-   * `String` column. Rendered through `@vsms/ui`'s `PayloadInspector`. */
+   * `String` column. Rendered through `@vaam-apps/ui`'s `PayloadInspector`. */
   primaryKey: string;
   actor: string;
   tenant?: string | undefined;

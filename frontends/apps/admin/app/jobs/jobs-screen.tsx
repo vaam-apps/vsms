@@ -91,17 +91,10 @@
 // opening a drawer or a confirm dialog while browsing the backlog
 // shouldn't grow a back-button trail one entry per row inspected.
 
+import { Button, InlineBanner, QuickDetailDrawer, ScreenHeader, ScreenStack } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
-import {
-  Button,
-  InlineBanner,
-  JOB_STATES,
-  type JobState,
-  QuickDetailDrawer,
-  ScreenHeader,
-  ScreenStack,
-} from "@vsms/ui";
 import { parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
+import { JOB_STATES, type JobState } from "@/components/status";
 import { JobDetailFields } from "./components/job-detail-fields";
 import { JobFiltersBar } from "./components/job-filters-bar";
 import { type JobListItem, JobsTable } from "./components/jobs-table";

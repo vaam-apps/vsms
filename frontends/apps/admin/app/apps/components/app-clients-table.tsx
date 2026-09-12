@@ -12,7 +12,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { AppClientListItem } from "../types";
 import { ErrorBanner } from "./error-banner";
 

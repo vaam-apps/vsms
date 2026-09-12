@@ -122,7 +122,7 @@ A view file contains **no CSS classes**. Not a `className`, not a `cn(...)`, not
 
 - **Pages** (`frontends/apps/admin/app/<route>/page.tsx`) compose smart and dumb components. No markup, no classes, no fetching.
 - **Smart components** (`<name>-screen.tsx`) hold data fetching, mutations, permissions, URL state and handlers — and render dumb components. No markup, no classes.
-- **Dumb components** (`frontends/packages/ui/**` when shared, `frontends/apps/admin/app/<route>/components/**` when route-local) own markup, classes, CVA variants and iteration — and know nothing about where their data came from.
+- **Dumb components** own markup, classes, CVA variants and iteration, and know nothing about where their data came from — three places, not one: the external `@vaam-apps/ui` package (published to npm, changed in its own repo, consumed here at a version range) when shared across products, `frontends/apps/admin/components/**` when app-wide but too vsms-specific for a public library (`status.ts`, `msisdn-display.tsx`, `encoding-preview.tsx`), or `frontends/apps/admin/app/<route>/components/**` when route-local. `cargo xtask r6` only scans `frontends/apps/admin/app`, so the app-wide middle layer is not mechanically guarded — enforced in review only.
 
 The stack exists to make this cheap: Tailwind supplies atoms, DaisyUI factorises them into semantic component classes, CVA turns variants into a typed table, and `clsx` + `tailwind-merge` compose the rest. A long class string means a DaisyUI component class or a CVA variant is missing, not that more atoms are needed.
 

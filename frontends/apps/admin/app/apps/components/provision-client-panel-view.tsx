@@ -12,7 +12,7 @@ import {
   Input,
   Textarea,
   toast,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import type { ProvisionClientValues } from "../app-forms";
 import { KNOWN_SCOPES, parseScopes, SCOPE_DESCRIPTIONS, serializeScopes } from "../scopes";

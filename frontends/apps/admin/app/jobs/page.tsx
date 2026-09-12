@@ -9,8 +9,8 @@
 // (`messages/page.tsx` established this exact pattern for
 // `MESSAGE_STREAM_POLL_MS`).
 
+import { RouteSkeleton } from "@vaam-apps/ui";
 import { env } from "@vsms/env";
-import { RouteSkeleton } from "@vsms/ui";
 import { Suspense } from "react";
 import { JobsScreen } from "./jobs-screen";
 

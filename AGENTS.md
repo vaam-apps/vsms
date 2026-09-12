@@ -503,7 +503,7 @@ To make "which node" answerable at all, `RoleLease::try_acquire` (`backends/crat
 
 Two Rust guard failures reproduced on purpose, not just asserted: `requeueJob`'s own `.if_match(existing.version)` removed entirely first — cratestack's own runtime refused the write outright (`PreconditionFailed("If-Match header required for versioned model")`), before any race could even matter; restored, then a *wrong* version substituted (`existing.version + 999`) to reach the actual race-losing path — `PreconditionFailed("version mismatch: expected 1002, found 3")`. Both restored, both confirmed passing again.
 
-The admin console gained two screens (`frontends/apps/admin/app/jobs`, `frontends/apps/admin/app/workers`) — plain `refetchInterval` polling, not a live stream hub like the messages list (§6.5's live-list rules are specific to that flagship screen, and a six-role or job-backlog diagnostics table doesn't warrant a second server-side hub). `@vsms/ui`'s `status-tokens.ts` closed its own long-standing "Job states deliberately are NOT mapped here yet" gap — a `JobStatusPill` alongside `StatusPill`, sharing the same glyph geometry (`StateMarkFromMeta`, extracted from `StateMark` without changing its existing public API) but its own `JOB_STATUS_META`: a job's `failed` is retryable, not terminal, and is deliberately not styled the way a message's own terminal `failed` is.
+The admin console gained two screens (`frontends/apps/admin/app/jobs`, `frontends/apps/admin/app/workers`) — plain `refetchInterval` polling, not a live stream hub like the messages list (§6.5's live-list rules are specific to that flagship screen, and a six-role or job-backlog diagnostics table doesn't warrant a second server-side hub). `@vaam-apps/ui`'s `status-tokens.ts` closed its own long-standing "Job states deliberately are NOT mapped here yet" gap — a `JobStatusPill` alongside `StatusPill`, sharing the same glyph geometry (`StateMarkFromMeta`, extracted from `StateMark` without changing its existing public API) but its own `JOB_STATUS_META`: a job's `failed` is retryable, not terminal, and is deliberately not styled the way a message's own terminal `failed` is.
 
 ## Milestone 4 started: the human login flow (#194)
 
@@ -559,7 +559,7 @@ The engine already existed (#62): `sms_routing::select_route` computes the whole
 
 **Two real bugs found live, in this PR's own new test file, not in production code — worth recording because both are the same "verify against live execution" shape this file keeps rediscovering.** `backends/crates/sms-api/tests/simulate_route_live_postgres.rs` first asserted `result.evaluations.len() == 1` for a single seeded route, reasoning that `matchAppId`-scoping a route makes it invisible to another candidate — wrong: `Decision.evaluations` covers *every* `Route` row in the table unconditionally by design (so a caller never has to re-derive "why wasn't route X picked" from anything else), and running the suite together (not just this file's own DB-free unit tests) surfaced another test's leftover, correctly-`predicate_failed` route sitting in the same list. Second, a determinism test asserting "the heavier-weighted route always wins at draw=0.9" failed intermittently — not because replay was non-deterministic (it wasn't: the same draw against the same route set reliably reproduced the same winner, the actual property under test), but because the test's own assumption that creation order determines which route gets the low vs. high share of `[0.0, 1.0)` was wrong. The band is ordered by `id` ascending (matching production, `fetch_routes_and_providers`'s own `.order_by(route::id().asc())`), and `Cuid` generation isn't correlated with creation order — confirmed by rerunning the same test repeatedly and watching which of two named routes sorted first vary. Both fixed by deriving expectations from the engine's own reported evaluations/tie-break ranges rather than from an assumption about row identity.
 
-The admin console gained three screens (`frontends/apps/admin/app/providers`, `frontends/apps/admin/app/routes`, `frontends/apps/admin/app/simulator`) — the first screens in this console to mount `@vsms/ui`'s `Toaster` (added to `frontends/apps/admin/app/providers.tsx`'s own provider tree) and the first to exercise a `PATCH`/`POST`/`DELETE` write path at all. `scripts/demo.sh` and `docs/runbooks/getting-started.adoc` both gained `provider:read`/`route:read` in the console's provisioned scopes; touching `getting-started.md` also surfaced and fixed a pre-existing drift its own `SMS_CONSOLE_SCOPE=sms:send sms:read` example line had carried since #56/#57 landed — three scopes short of what that same doc's own `provision-client` command two paragraphs above it already requested.
+The admin console gained three screens (`frontends/apps/admin/app/providers`, `frontends/apps/admin/app/routes`, `frontends/apps/admin/app/simulator`) — the first screens in this console to mount `@vaam-apps/ui`'s `Toaster` (added to `frontends/apps/admin/app/providers.tsx`'s own provider tree) and the first to exercise a `PATCH`/`POST`/`DELETE` write path at all. `scripts/demo.sh` and `docs/runbooks/getting-started.adoc` both gained `provider:read`/`route:read` in the console's provisioned scopes; touching `getting-started.md` also surfaced and fixed a pre-existing drift its own `SMS_CONSOLE_SCOPE=sms:send sms:read` example line had carried since #56/#57 landed — three scopes short of what that same doc's own `provision-client` command two paragraphs above it already requested.
 
 **A third real bug, found only by actually running `just demo` against a real gateway — TypeScript's own compiler cannot see this one at all.** A nullable optional column serialises as an explicit JSON `null`, not an omitted key — confirmed live, and a direct contradiction of `messages-screen.tsx`'s own documented claim for `Message.stateReason` ("a message with no `stateReason` simply has no `stateReason` key... all of them are, confirmed live"). `routes-screen.tsx`'s first draft rendered every wildcard route's predicates as `"operator=null, class=null, app-scoped, prefix=null"` instead of `"matches anything"`, because its own `!== undefined` check is `true` for a JSON `null`. Worse, `simulator-screen.tsx` crashed outright — `Cannot read properties of null (reading 'priority')` — the instant a single-route candidate (nothing to tie-break) sent `"tieBreak": null` and the screen's own `result.tieBreak !== undefined` guard let it through to `result.tieBreak.priority`. Neither `tsc` nor this repo's own `field?: T | undefined` convention catches this class of bug: the type annotations were internally consistent, just wrong about what the wire actually sends. Fixed at the one seam each affected value crosses — `frontends/packages/gateway/src/routes.ts::normalizeRoute`, `providers.ts::normalizeProvider`, `route-simulator.ts::normalizeResult` — each converting `null` to `undefined` exactly once, so every downstream consumer keeps the one convention this codebase already uses everywhere else, rather than every call site needing its own `!= null` check. Both crashes were reproduced for real (a genuine Next.js error overlay, a genuine mis-rendered predicate summary) before being fixed, not merely inferred from reading the code — the same "verify against live execution" discipline this file's own `#87` section is the reference example for, applied here to the TypeScript side of the seam rather than the Rust side for the first time.
 ## Milestone 6: audit log anchoring landed (#68)
@@ -1840,7 +1840,7 @@ Full reasoning in [CONTRIBUTING.md](CONTRIBUTING.md). In short:
 - **R3 — nothing that must be written can be `@server_only`.** It excludes a field from create *and* update, so such a field can never be populated.
 - **R4 — the admin console is optional; the backend must run without it.** Some deployments ship the backends only, with no admin surface — a supported configuration, not a degraded one. No server-side code may depend on the console existing; every operator action needs a `sms-gateway` subcommand, not only a screen; and both the Helm chart and the compose stack must be able to omit the console without a console-only value becoming a hard requirement. Review test: *if `frontends/apps/admin/` were deleted from this repo entirely, would this change still work?* Currently satisfied by the code layer and **violated by the deployment layer** — see `CONTRIBUTING.md` R4 for the specifics.
 - **R5 — Helm charts are built on `bjw-s` common ≥ v4, as one umbrella chart.** Not hand-written manifests, and not a chart per service: `sms-gateway`, `sms-worker`, `admin` and the migrate/seed jobs are one deployable unit sharing a database, a migration ordering and a secret set, so they ship as one release with several controllers. v4 is the floor because the `controllers`/`route` schema this chart is written against is v4's; earlier majors are an incompatible shape, not a bump. Currently pinned at `4.6.2`, via a **classic HTTP repo dependency — no OCI reference for the library chart exists** (verified against the GHCR API and bjw-s-labs' own release workflow, not assumed).
-- **R6 — UI architecture: pages compose, smart components decide, dumb components style.** A view file contains **no CSS classes** — not a `className`, not a `cn(...)`, not a hoisted `const COL_ID = "..."`, not a `styles.ts` of class strings. Classes live in dumb components only. Pages compose; smart components (`<name>-screen.tsx`) hold data fetching, permissions, URL state and handlers but no markup or classes; dumb components (`frontends/packages/ui/**` shared, `frontends/apps/admin/app/<route>/components/**` route-local) own markup, classes and iteration but know nothing about where the data came from. Also: **avoid `useState`** — URL state belongs in `nuqs`, server data in tRPC/react-query, forms in `react-hook-form`, non-rendering values in `useRef`, and grouped transitions in `useReducer`. Full statement, including the layer table and the reasoning, in the R6 section above.
+- **R6 — UI architecture: pages compose, smart components decide, dumb components style.** A view file contains **no CSS classes** — not a `className`, not a `cn(...)`, not a hoisted `const COL_ID = "..."`, not a `styles.ts` of class strings. Classes live in dumb components only. Pages compose; smart components (`<name>-screen.tsx`) hold data fetching, permissions, URL state and handlers but no markup or classes; dumb components — the external `@vaam-apps/ui` package (published to npm, changed in its own repo) for anything a second product could use, `frontends/apps/admin/components/**` for app-wide but vsms-specific ones too particular for a public library, `frontends/apps/admin/app/<route>/components/**` for route-local ones — own markup, classes and iteration but know nothing about where the data came from. Also: **avoid `useState`** — URL state belongs in `nuqs`, server data in tRPC/react-query, forms in `react-hook-form`, non-rendering values in `useRef`, and grouped transitions in `useReducer`. Full statement, including the layer table and the reasoning, in the R6 section above.
 
 ## Framework constraints that are not in any documentation
 
@@ -1992,7 +1992,7 @@ If a component needs a long class string, that is a signal DaisyUI already has a
 |---|---|---|---|
 | **Page** | `frontends/apps/admin/app/<route>/page.tsx` | Composition of smart and dumb components. Route params, metadata. | Any `className`. Any markup beyond composing components. Any data fetching. |
 | **Smart component** | `frontends/apps/admin/app/<route>/<name>-screen.tsx` | Data fetching, mutations, permissions, URL state, event handlers, derived values. Renders dumb components and passes them data. | Any `className`. Any raw `<div>`/`<span>`/`<table>` markup. |
-| **Dumb component** | `frontends/packages/ui/src/components/**` (shared) or `frontends/apps/admin/app/<route>/components/**` (route-local) | Markup, classes, CVA variants, iteration over the data it is handed, presentational state. | Data fetching. tRPC/gateway calls. Business rules. Knowledge of *why* it is rendering. |
+| **Dumb component** | the external `@vaam-apps/ui` package (published, shared across products) when a second product could use it; `frontends/apps/admin/components/**` (app-wide, vsms-specific — `status.ts`, `msisdn-display.tsx`, `encoding-preview.tsx`) when only this console needs it but more than one route does; `frontends/apps/admin/app/<route>/components/**` (route-local) otherwise | Markup, classes, CVA variants, iteration over the data it is handed, presentational state. | Data fetching. tRPC/gateway calls. Business rules. Knowledge of *why* it is rendering. |
 
 **No hardcoded configuration in a component either.** A tuning value is configuration, not code: `REFETCH_INTERVAL_MS` currently appears independently in `jobs-screen.tsx`, `workers-screen.tsx` and `webhooks-screen.tsx` — four copies of one decision, none of which an operator can change without a rebuild. The precedent already exists and should be followed: `MESSAGE_STREAM_POLL_MS` is a real `@vsms/env` entry (`z.coerce.number().int().min(500).default(2000)`), validated at boot, with a default in one place. Poll intervals, page sizes, timeouts and thresholds belong there, not in a view.
 
@@ -2000,7 +2000,9 @@ If a component needs a long class string, that is a signal DaisyUI already has a
 
 A dumb component is allowed to iterate and to branch on the props it is given — "dumb" means it does not know where the data came from or what happens next, not that it is trivial.
 
-**Route-local vs shared** is a judgement call with one test: if a second route would plausibly use it, it belongs in `frontends/packages/ui`. If it encodes this screen's own shape, it belongs in `frontends/apps/admin/app/<route>/components/`. Do not push a one-screen component into the shared library to feel tidy; do not copy the same component into three routes to avoid the move.
+**Route-local vs app-wide vs shared-across-products** is now a judgement call with two tests, not one. First: would a *second product*, not just a second route in this console, plausibly use it? If yes, it belongs in the external `@vaam-apps/ui` package — a change there means a version bump and a `pnpm install` here, not an edit in this repo. If no, but a second *route* in this console would use it, it belongs in `frontends/apps/admin/components/**`. If it encodes this screen's own shape, it belongs in `frontends/apps/admin/app/<route>/components/`. Do not push a one-screen component into `@vaam-apps/ui` to feel tidy; do not copy the same component into three routes to avoid the move.
+
+**The middle tier has no mechanical guard.** `cargo xtask r6` (`.xtask/src/r6_ui_layers.rs`) scans only `frontends/apps/admin/app` — the directory its own `ROOT` constant names — so a `className` or raw markup landing in `frontends/apps/admin/components/**` is invisible to it. That is a real gap, stated rather than left to be discovered: R6 for that directory is enforced in review only, the same as the "dumb component fetching its own data" case the guard's own module doc already admits it cannot see.
 
 ### A view file contains no helpers either
 
@@ -2227,6 +2229,156 @@ destroys the premise — so `operator` is honestly `unknown` for foreign traffic
 it cannot collide with a real MSISDN because no digit-run that long exists in the Cameroon prefix
 tables. True then, false the moment any country is parseable. The durable reason — it carries
 letters, which `sms_msisdn` refuses before consulting any numbering plan — replaces it.
+
+## `@vsms/ui` is `@vaam-apps/ui`, generalised and published
+
+The console's component library was renamed and prepared for npm as a
+standalone design system, shared with the sibling `vpay` payments repo.
+`frontends/packages/ui` is the same directory; `private: true` is gone.
+
+**The package no longer knows what a message is.** Three things moved out
+to `frontends/apps/admin/components/`, because a component library
+shipping SMS domain knowledge to an unrelated product is exactly the
+coupling a release forces you to notice:
+
+- `MESSAGE_STATUS_META` / `JOB_STATUS_META` / `ATTEMPT_STATUS_META`,
+  `MESSAGE_CLASSES` and the three `isTerminal*` helpers →
+  `components/status.ts`. What stayed is the mechanism: `StatusMeta`, the
+  glyph geometry, `HUE_CLASSES`, and `createStatusPill(system)`, which
+  binds one table to a pill whose `state` prop accepts exactly that
+  machine's literals. **The three near-identical pill components are now
+  one implementation and three one-line `createStatusPill` calls.** Their
+  own doc comments each argued for staying separate because the machines
+  differ in meaning — true, and preserved: each keeps its own table, its
+  own component and its own state type. What they did not need was three
+  copies of the rendering, and they had already drifted (one set
+  `role="img"`, one did not; one supported `interactive`, two did not).
+- `EncodingPreview` (GSM-7/UCS-2 segment counting) → `components/encoding-preview.tsx`.
+- `MsisdnDisplay` → `components/msisdn-display.tsx`, a thin wrapper over
+  the package's new generic `PhoneDisplay`, which takes a `format`
+  callback and a `tag` instead of compiling in Cameroon's digit grouping
+  and a four-entry carrier table.
+
+`StateTimeline` is generic over the state machine the same way, and takes
+its per-state `annotations` as a prop — the two "this looks like a bug
+but is a product decision" notes for `uncertain`/`undelivered` are
+`MESSAGE_STATE_ANNOTATIONS` in the admin app now. Its timezone prop was a
+two-value union (`"UTC" | "Africa/Douala"`) whose offset suffix was a
+literal `"Z"` or `"+01"`; it accepts any IANA zone and reads the offset
+out of `Intl`, so it is right across DST and for zones nobody has told it
+about.
+
+**Two live bugs were found doing this, neither by reading the code that
+contained them.**
+
+**`cn()` was silently deleting custom font sizes.** `tailwind-merge` only
+knows Tailwind's *default* theme, so it classified `text-caption` by its
+fallback rule — as a colour — and dropped it as conflicting with the
+colour beside it:
+
+```text
+twMerge("text-caption text-state-danger-fg")  → "text-state-danger-fg"
+twMerge("text-body text-foreground")          → "text-foreground"
+twMerge("text-title-sm text-foreground")      → "text-foreground"
+```
+
+Those three strings are, verbatim, `FieldError`, `DetailList` and
+`CardHeader`. Every one of them had been rendering at the browser default
+size since `cn()` was written. Found by probing real class strings from
+this package after the 3.x upgrade, then checked against 2.6.0 directly,
+which drops the same classes — a latent bug, not an upgrade regression.
+Fixed by registering the theme's own `text` and `radius` scales with
+`extendTailwindMerge`, alongside daisyUI's component modifiers (adapted
+from `@vpay/ui`, which had already derived them against daisyUI 5's
+compiled CSS — including its central finding that `btn`/`badge` *colour*
+and *style* must be separate groups, because `.btn-outline` reads the
+variable `.btn-primary` sets).
+
+**`--state-warning-*` was referenced but never declared.**
+`StateChip tone="warning"` and `InlineBanner variant="warning"` — and so
+every `StaleWriteBanner`, shown on every 412 stale write in the console —
+emitted `text-state-warning-fg` &c. against tokens that did not exist, so
+Tailwind generated no utility and those surfaces rendered with no colour
+at all. The identical failure this stylesheet's own `--color-surface-1`
+comment already records, two years of transparent dialogs later.
+
+Both are now build failures rather than promises to remember.
+`frontends/packages/ui/src/lib/theme-tokens.test.ts` scans every
+component for `bg-`/`text-`/`border-` tokens in the families this
+stylesheet owns and asserts each is declared — it names the referencing
+files in the failure message, which is exactly the diagnostic that was
+missing. `cn.test.ts` pins the merge behaviour. Both were proven to fail:
+dropping the `text` registration failed five `cn` cases, and undeclaring
+`--color-state-warning-fg` failed naming `inline-banner.tsx` and
+`state-chip.tsx`.
+
+**Publishing mechanics worth knowing before touching them.**
+
+- **`exports` points at `src` locally and `dist` on npm**, via
+  `publishConfig`. Workspace consumers get TypeScript source, so
+  `next dev` picks up a component edit with no rebuild and admin's
+  `@source` can keep scanning `src`; npm consumers get built ESM +
+  declarations. Verified rather than assumed — `pnpm pack` and reading
+  the packed `package.json`, which does carry the `dist` entry points.
+- **The build is plain `tsc`, not tsup.** tsup was tried: it preserves
+  `"use client"` correctly but, in non-bundle mode, leaves relative
+  imports extensionless exactly as `tsc` does — so it bought a dependency
+  and nothing else. `scripts/specify-extensions.mjs` appends the
+  extension that actually exists on disk (198 specifiers, all verified to
+  resolve), which is what makes the output valid Node ESM rather than
+  bundler-only.
+- **`@radix-ui/react-dialog` is a direct dependency for a type-emit
+  reason.** It arrives through `vaul` regardless, but declaration emit —
+  which `tsc --noEmit` never exercises, so CI was green on it — failed
+  `TS2742` on `drawer.tsx`'s re-exports, unable to name a type through
+  pnpm's virtual store. This is the class of bug that only appears the
+  first time a package is actually built for publication.
+- **`lucide-react` is `^1.44.0`, not `1.45.0`.** 1.45.0 was published
+  hours before this work and pnpm auto-added a `minimumReleaseAgeExclude`
+  entry bypassing this repo's own 24h supply-chain quarantine. The
+  exclusion was removed and the range widened instead, so the resolver
+  picks the newest version that clears the gate. Do not re-add it.
+
+New primitives, driven by what `vpay` hand-rolls or lacks: `Money` /
+`formatMoney` (it had **four** formatters, one dividing by a power of ten
+in floating point, all four wrong for the three-decimal currencies —
+exponents come from `Intl` now, scaling is string surgery, and an amount
+past 2^53 formats exactly), `Calendar` / `DatePicker` / `DateRangePicker`
+on `react-day-picker` (exchanging `YYYY-MM-DD`, never `Date` — an instant
+in another zone is a different calendar day), `Checkbox`, `Switch`,
+`Spinner`, `Progress`, `Pagination`, `ConfirmDialog`, `MaskedValue`,
+`StatTile`, and `CopyButton` (extracted from two byte-identical copies
+that both leaked their confirmation timer on unmount and both left a
+refused `navigator.clipboard` write as an unhandled rejection).
+
+`docs/roadmap.md` needs no edit: this is frontend packaging, not a
+milestone, gate, blocker, decision or backend dependency change.
+
+## `@vaam-apps/ui` leaves the workspace — the cutover the section above only prepared for
+
+The section above describes a *rename*: the package stayed in this repository, at the same path, with `private: true` removed so it could be published. What follows is the actual extraction. `frontends/packages/ui/` and `frontends/apps/admin/app/gallery/` were deleted outright, roughly 170 imports across the console were rewritten to pull from the npm package instead of a workspace link, and `@vsms/ui` became `@vaam-apps/ui` at `^0.1.1` in `frontends/apps/admin/package.json`. That move (`c710e4e`) left the tree looking finished — every rewritten import resolved to a name that genuinely existed on the registry — but it did not actually build. Four separate things had to be found and fixed before it did, none of them visible from reading the diff that did the move.
+
+**The lockfile had never been regenerated, and would have failed CI outright.** `c710e4e` deliberately left `pnpm-lock.yaml` untouched — defensible on its own terms, since rewriting imports needs no new dependency resolution to compile against whatever `node_modules` a developer's machine already had. But the lockfile still carried the workspace-link entry for the deleted package — `'@vaam-apps/ui': specifier: workspace:* version: link:../../packages/ui` — plus a full importer block for `frontends/packages/ui`, a directory that commit had already removed. `pnpm install --frozen-lockfile`, which is what CI and `frontends/apps/admin/Dockerfile` both actually run, refuses to proceed the moment a lockfile's own specifier disagrees with `package.json`'s, and a `workspace:*` link where `package.json` now says `^0.1.1` is exactly that disagreement. Regenerated; the diff is +39/-57, and nothing outside the `@vaam-apps/ui` entry moved — `lucide-react` in particular stayed pinned at `1.44.0`, the exact version the section above already argues for keeping.
+
+**pnpm's own 24-hour `minimumReleaseAge` quarantine then blocked the regenerated install outright — and did so as a hard failure, not a warning, unlike the earlier `lucide-react` incident.** `@vaam-apps/ui@0.1.1` published at `2026-09-12T03:28Z`, minutes before this work started. pnpm 11 defaults every install — `--frozen-lockfile` included — to refusing a dependency version less than 24h old, and with nothing else in range to fall back to, that refusal is `ERR_PNPM_NO_MATCHING_VERSION`: a failed install, not a printed caution. This is the opposite shape from the `lucide-react` case two sections up, where the fix was to widen the range so the resolver could pick an older, already-mature version instead of bypassing the gate. There is no mature alternative to widen to here, because `0.1.0` is the broken release this whole cutover is standing on `0.1.1` to fix. So the fix here is the gate's *other* documented escape hatch, used narrowly on purpose: a version-scoped `'@vaam-apps/ui@0.1.1'` entry in `minimumReleaseAgeExclude`, not a bare package-name entry, which would waive the 24h wait for every future release of this package too and quietly reopen the exact hole the quarantine exists to close. `0.1.2` and everything after it stays gated.
+
+**The Tailwind `@source` path was one directory short, and Tailwind does not error on a glob that matches nothing — the same silent-failure shape this file has now catalogued many times over, on the CSS side this time rather than a `@@allow` clause or a doc claim.** `frontends/apps/admin/app/globals.css` carried `@source "../../node_modules/@vaam-apps/ui/dist"`. `@source` resolves relative to the stylesheet it's written in, so that path is `frontends/apps/node_modules` as seen from `app/globals.css` — one level too shallow, since pnpm's isolated linker actually places the dependency at `frontends/apps/admin/node_modules`, a sibling of `app/` itself, not of `app/..`. `frontends/apps/node_modules` does not exist at all. Tailwind's scanner silently walks nothing and moves on; there is no error, no warning, and `next build` exits `0` either way.
+
+Proven by deliberately breaking it and rebuilding both ways, not inferred from reading the glob:
+
+| | correct path | wrong path |
+|---|---|---|
+| `gap:5px` in built CSS | 1 | 0 |
+| CSS bundle size | 157,349 B | 115,757 B |
+| `next build` exit code | 0 | 0 |
+
+Forty-one kilobytes of utility classes vanish and the build still reports success. `gap-[5px]` is the marker specifically because it is an arbitrary-value utility that appears in exactly one place in the built output, `dist/components/status/status-pill.js`, and nowhere in admin's own source — so its presence in the final CSS can only mean the scanner actually read into `@vaam-apps/ui/dist`, not admin's own files. `--state-parked-fg`, checked for the same purpose, is a false comfort: it stayed present in *both* builds, because it only proves the plain CSS `@import "@vaam-apps/ui/styles/theme.css"` resolved — unrelated to the `@source` glob — not that the class scan reached the package at all. The two checks test different things, and only the `gap:5px` count is the actual scan gate. Fixed to `"../node_modules/@vaam-apps/ui/dist"` — one `../` instead of two.
+
+**Five test files left the repository along with the package they tested, and nothing here replaced them.** `cn.test.ts`, `money.test.ts`, `theme-tokens.test.ts`, `calendar.test.ts` and `calendar.render.test.tsx` now live only in `vaam-apps/ui`'s own suite — including `theme-tokens.test.ts`, which the section above credits by name with catching the undeclared `--state-warning-*` tokens. That guard still exists and still runs, just never again inside `pnpm turbo run test` for this repository; a future undeclared token in a component this console imports would be caught, or missed, entirely by the upstream repo's own CI, not by anything that runs here. Recorded so nobody goes looking for these five files under `frontends/apps/admin` and concludes coverage regressed silently — it moved, on purpose, with the code it exercises.
+
+**One visible consequence of the upstream repo actually iterating, not a bug in this cutover:** `dist/styles/theme.css`'s `--subtle-foreground` moved from `#6b727d` to `#838a95` between the in-repo copy this console used to ship and the published `0.1.1` — a WCAG-AA contrast fix made upstream, visible at 38 call sites in this console the moment the version resolved. Nothing here needed to change for it; it is exactly the kind of drift a `^` range is supposed to deliver, worth naming so a reviewer diffing screenshots doesn't mistake it for a regression this PR introduced.
+
+**Verification, run to completion rather than assumed from a clean `git diff`:** `pnpm install` clean (295 packages resolved, "Lockfile passes supply-chain policies" — the quarantine exclusion above is exercised, not silently skipped); `pnpm biome ci .` clean across 339 files; `pnpm turbo run typecheck build` 9/9; `pnpm turbo run test` 7/7 (admin 129, gateway 56, api 5, vsms-node 5); `cargo xtask r6` OK across 34 view files (unaffected by any of this — its own `ROOT` never pointed at the deleted package); `cargo xtask docs-drift` OK; `cargo xtask workflow-paths` OK across 42 checked references.
 
 ## Conventions
 

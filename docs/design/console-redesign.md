@@ -254,7 +254,7 @@ choice is recorded so nobody re-litigates it from scratch.
 | D15 | Message detail (`/messages/[id]`) **stays a full page route**, not a drawer of either kind | Fold it into a "more details" drawer, since it is a per-record detail view like every other one | It already exceeds even a wide drawer's comfortable depth (full state timeline, raw payload inspector with per-exchange tabs, delivery-receipt list) and is the console's primary investigative destination, not a peek from a list — the rule that falls out of this (§3) is "if closing it should feel like leaving a page, it's a page" | §1.4 (Mercury contrast), existing `message-detail-screen.tsx` |
 | D16 | The `Table` primitive adopts DaisyUI's real `table`/`table-pin-rows` classes underneath the existing bespoke row/cell behavior (no zebra, `LiveRow` wash, mono cells), rather than staying pure hand-written Tailwind utility classes | Leave `Table` as-is — it already looks right | Constraint 7 ("DaisyUI does the work") is not satisfied by a component that never references a single DaisyUI class; today's `Table` is 100% Tailwind utilities reimplementing what `table`/`table-pin-rows` already provide | §5, constraint 7 |
 | D17 | Select uses Headless UI's `Listbox` (closed enumerated choice, e.g. state filter) for existing `Select` call sites; `cmdk`'s `CommandMenu` stays exactly as-is (fuzzy search / command palette, unrelated to Radix, no migration needed) | Migrate everything, including `cmdk` usage, "to be consistent" | `cmdk` was never a Radix component and constraint 6 only names Headless UI as the Radix replacement — `cmdk` already satisfies "standalone, owns its own keyboard nav/ARIA" the way the original T6 brief wanted; touching it is unnecessary churn | §5 |
-| D18 | Tabs: existing call sites use a **value-based, controlled API** (`Tabs value=/onValueChange=`, matching Radix); Headless UI's `TabGroup` is **index-based** (`selectedIndex`/`onChange(index)`). A small adapter component (`ValueTabs`) is built once, wrapping `TabGroup`, so `PayloadInspector`, `message-detail-screen.tsx`, `providers-screen.tsx`, and `webhooks-screen.tsx` need **zero call-site changes** beyond the import path | Rewrite every Tabs call site to index-based state | The value-based API is more resistant to bugs when tab order changes and is already threaded through four files; a thin, one-time adapter is far cheaper than four rewrites plus their tests, and keeps the public `@vsms/ui` API stable | §5, §6 (build order) |
+| D18 | Tabs: existing call sites use a **value-based, controlled API** (`Tabs value=/onValueChange=`, matching Radix); Headless UI's `TabGroup` is **index-based** (`selectedIndex`/`onChange(index)`). A small adapter component (`ValueTabs`) is built once, wrapping `TabGroup`, so `PayloadInspector`, `message-detail-screen.tsx`, `providers-screen.tsx`, and `webhooks-screen.tsx` need **zero call-site changes** beyond the import path | Rewrite every Tabs call site to index-based state | The value-based API is more resistant to bugs when tab order changes and is already threaded through four files; a thin, one-time adapter is far cheaper than four rewrites plus their tests, and keeps the public `@vaam-apps/ui` API stable | §5, §6 (build order) |
 
 ---
 
@@ -271,7 +271,7 @@ way:
 > sub-navigation (rename, confirm-requeue, "New X" from a toolbar). Always dims
 > the background. Never scrolls the page behind it. §1.7.
 >
-> **Inline confirmation** (`@vsms/ui`'s `InlineConfirm`, rendered as the
+> **Inline confirmation** (`@vaam-apps/ui`'s `InlineConfirm`, rendered as the
 > drawer's own body/footer, no portal) — the *same* two shapes as `Dialog`
 > above (yes/no confirm, or a short form with one or two fields), but
 > triggered from *inside* an already-open `QuickDetailDrawer`/
@@ -474,7 +474,7 @@ wraps every authenticated route; `frontends/apps/admin/app/layout.tsx` renders i
 "use client";
 
 import { NAV_GROUPS } from "./nav-groups"; // §4's structure, as data
-import { SideNav } from "@vsms/ui"; // DaisyUI .drawer-driven, D7
+import { SideNav } from "@vaam-apps/ui"; // DaisyUI .drawer-driven, D7
 
 export function ConsoleShell({ children }: { children: React.ReactNode }) {
   return (
@@ -669,7 +669,7 @@ Phase 1 starts):**
   one originally said "swap Radix packages for `@headlessui/react`" — that's
   wrong for this phase specifically: nine primitives still `import` from
   `@radix-ui/*` and aren't ported until Phase 1 (Bucket A), so removing the
-  dependencies now breaks `pnpm --filter @vsms/ui typecheck` for Phase 0 itself,
+  dependencies now breaks `pnpm --filter @vaam-apps/ui typecheck` for Phase 0 itself,
   which is exactly the gate this phase has to pass before Phase 1 can start.
   Every `@radix-ui/*` entry stays in `package.json` through Phase 0; Phase 1's
   Bucket A removes each one as it ports the primitive that uses it (D3–D6).
@@ -706,17 +706,17 @@ land and `frontends/packages/ui` typechecks clean):**
   audit-log/**`, `frontends/apps/admin/app/settings/**`.
 - **Agent "Dashboard+Gallery"** owns `frontends/apps/admin/app/dashboard/**` and `frontends/apps/admin/app/
   gallery/page.tsx` last, specifically because the gallery page is the one
-  file that imports and exercises *every* `@vsms/ui` export — it is the natural
+  file that imports and exercises *every* `@vaam-apps/ui` export — it is the natural
   final visual-QA surface, not a screen to build early.
 
-Each screen agent only ever imports from `@vsms/ui`/`@vsms/gateway`/`@vsms/hooks`
+Each screen agent only ever imports from `@vaam-apps/ui`/`@vsms/gateway`/`@vsms/hooks`
 — never from another screen file — so these five run with no collision risk
 once Phases 0–1 are stable. `console-nav.tsx`'s per-screen header block (the
 `LINKS` array duplicated ad hoc across files, per its own module doc) is deleted
 entirely in Phase 0/2 in favor of `ConsoleShell` — no screen should still
 hand-roll a `<header>` nav after Phase 2.
 
-**Phase 3 — gate.** `pnpm --filter admin --filter @vsms/ui typecheck`, `pnpm
+**Phase 3 — gate.** `pnpm --filter admin --filter @vaam-apps/ui typecheck`, `pnpm
 --filter admin build`, Biome check, and a manual pass through `/gallery` plus one
 screen per IA group against this document's §1 reference lock (does the sidebar
 match the LottieFiles structure? does the rounding match D8's register? does
@@ -778,7 +778,7 @@ redesign can silently regress if a screen gets rewritten instead of re-skinned:*
   about how far the number moved from 2px.
 - **D10's `locale` removal touches four components' public API**
   (`StatusPill`, `StateTimeline`, and transitively `JobStatusPill`/
-  `AttemptStatusPill`) — this is a breaking change to `@vsms/ui`'s exports.
+  `AttemptStatusPill`) — this is a breaking change to `@vaam-apps/ui`'s exports.
   Every call site across all five Phase-2 screen groups must be grepped and
   updated in the same change that removes the prop, not left to fail silently
   Deleting `labelFr`/`tooltipFr` from the tables in the same change is what
@@ -825,7 +825,7 @@ redesign can silently regress if a screen gets rewritten instead of re-skinned:*
   Headless UI's) checked and closed for good — see
   `frontends/apps/admin/app/gallery/components/nested-dialog-in-drawer-regression.tsx`
   for the full writeup, including why the Radix alternative is foreclosed
-  by D3 even apart from its own bugs. **The fix is `@vsms/ui`'s
+  by D3 even apart from its own bugs. **The fix is `@vaam-apps/ui`'s
   `InlineConfirm`** (§1.7, §3) — render the confirmation inline inside the
   drawer's own DOM subtree instead of nesting a second portaled, trapped
   overlay. `routes-screen.tsx`, `webhooks-screen.tsx`, `sender-ids-screen.tsx`,

@@ -1,7 +1,7 @@
 // Dumb — route-local to the message detail screen (R6). The loading
 // placeholder shown while `messages.byId` is in flight.
 
-import { Card, CardBody, Skeleton } from "@vsms/ui";
+import { Card, CardBody, Skeleton } from "@vaam-apps/ui";
 
 export function MessageLoadingCard() {
   return (

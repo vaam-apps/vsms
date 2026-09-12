@@ -5,8 +5,8 @@
 // now owns the query and hands the result down as `result`.
 
 import type { inferRouterOutputs } from "@trpc/server";
+import { Button, FieldError, FormField, Input, Skeleton, TimestampDisplay } from "@vaam-apps/ui";
 import type { AppRouter } from "@vsms/api";
-import { Button, FieldError, FormField, Input, Skeleton, TimestampDisplay } from "@vsms/ui";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 export type OptOutSearchResult = RouterOutputs["optOuts"]["search"];

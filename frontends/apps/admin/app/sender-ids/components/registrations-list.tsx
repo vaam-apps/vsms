@@ -1,4 +1,4 @@
-import { Button, FieldError, InlineEmptyState } from "@vsms/ui";
+import { Button, FieldError, InlineEmptyState } from "@vaam-apps/ui";
 import type { ProviderListItem, RegistrationListItem } from "../sender-id-domain";
 import { RegistrationStatusBadge } from "./registration-status-badge";
 

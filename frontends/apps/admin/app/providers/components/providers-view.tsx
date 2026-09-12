@@ -12,7 +12,7 @@
 // this screen just hadn't received the same cleanup yet. Fixed here to a
 // plain `<div>`, matching `DashboardView`'s own wrapper.
 
-import { ScreenStack } from "@vsms/ui";
+import { ScreenStack } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import { ErrorBanner } from "./error-banner";
 import { ProvidersHeader } from "./providers-header";

@@ -60,8 +60,8 @@
 // `MESSAGE_STREAM_POLL_MS` already sets a precedent for — read server-side
 // in `page.tsx` and passed down as `pageSize`.
 
+import { ScreenStack } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
-import { ScreenStack } from "@vsms/ui";
 import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
 import { useEffect, useState } from "react";
 import { AuditEntryDrawer } from "./components/audit-entry-drawer";

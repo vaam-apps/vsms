@@ -7,7 +7,7 @@
 // independent copies of one decision. This PR only owns the simulator, so
 // only this copy is extracted here; the other two are each another agent's
 // file and are left untouched, per this PR's own coordination notes. A
-// shared `@vsms/ui` (or a small domain package) module is the eventual fix,
+// shared `@vaam-apps/ui` (or a small domain package) module is the eventual fix,
 // once one PR can safely touch all three call sites.
 
 export const MESSAGE_CLASSES = ["otp", "transactional", "notification", "marketing"] as const;

@@ -5,12 +5,10 @@
 // out of `jobs-screen.tsx`, not rewritten — same classes, same structure.
 
 import type { inferRouterOutputs } from "@trpc/server";
-import type { AppRouter } from "@vsms/api";
 import {
   Button,
   IdDisplay,
   InlineEmptyState,
-  JobStatusPill,
   Skeleton,
   Table,
   TableBody,
@@ -19,15 +17,17 @@ import {
   TableHeader,
   TableRow,
   TimestampDisplay,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import type { AppRouter } from "@vsms/api";
 import { ChevronRight } from "lucide-react";
+import { JobStatusPill } from "@/components/status";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 export type JobListItem = RouterOutputs["jobs"]["list"]["items"][number];
 
 // Column visibility: Attempts hides below `sm`, Run at below `md`, Last
 // error/Id below `lg` — via `TableHead`/`TableCell`'s own `hideBelow` prop
-// (`@vsms/ui`'s `primitives/table.tsx`), so head and cell share one
+// (`@vaam-apps/ui`'s `primitives/table.tsx`), so head and cell share one
 // breakpoint decision per column instead of two copies of the same class
 // string that could silently drift apart. Mobile keeps
 // State/Kind/Updated/Action (the 3–4 columns an operator needs to triage

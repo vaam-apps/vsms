@@ -3,7 +3,7 @@
 // `settings-screen.tsx`'s own module doc for why there is nothing to fetch
 // or edit here.
 
-import { Code, InlineBanner, ScreenHeader, ScreenStack } from "@vsms/ui";
+import { Code, InlineBanner, ScreenHeader, ScreenStack } from "@vaam-apps/ui";
 
 export function SettingsPanel() {
   return (

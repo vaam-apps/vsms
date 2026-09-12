@@ -20,7 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
   toast,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import type { RoleRecord } from "../types";
 import type { ProvisionUserValues } from "../user-forms";

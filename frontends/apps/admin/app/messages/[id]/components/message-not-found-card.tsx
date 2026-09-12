@@ -3,7 +3,7 @@
 // different app this console's own credential can't see (see the
 // messages list's own scope banner).
 
-import { Card, CardBody, InlineEmptyState } from "@vsms/ui";
+import { Card, CardBody, InlineEmptyState } from "@vaam-apps/ui";
 
 export function MessageNotFoundCard() {
   return (

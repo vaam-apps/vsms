@@ -1,7 +1,8 @@
 // Dumb component (R6): the quick-detail drawer's field list, moved verbatim
 // out of `opt-outs-screen.tsx` (`OptOutDetailField` included).
 
-import { DetailList, DetailRow, IdDisplay, MsisdnDisplay, TimestampDisplay } from "@vsms/ui";
+import { DetailList, DetailRow, IdDisplay, TimestampDisplay } from "@vaam-apps/ui";
+import { MsisdnDisplay } from "@/components/msisdn-display";
 import type { OptOutListItem } from "./opt-outs-table";
 
 export interface OptOutDetailFieldsProps {

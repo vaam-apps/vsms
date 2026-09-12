@@ -76,10 +76,11 @@
 // 8. Connection loss is visible — a `degraded` frame flips `DegradedBanner`
 //    on; a `recovered` frame flips it off.
 
+import { ScreenStack } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
-import { MESSAGE_STATES, type MessageState, ScreenStack } from "@vsms/ui";
 import { parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { MESSAGE_STATES, type MessageState } from "@/components/status";
 import { CrossAppScopeBanner } from "./components/cross-app-scope-banner";
 import { DegradedBanner } from "./components/degraded-banner";
 import { ListErrorBanner } from "./components/list-error-banner";

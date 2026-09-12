@@ -16,7 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
   InlineBanner,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 
 export interface RemoveConfirmDialogProps {
   open: boolean;

@@ -1,5 +1,5 @@
 // #50: turning a `Message` row plus its `DeliveryReceipt` evidence into
-// the ordered `StateTransition[]` `@vsms/ui`'s `StateTimeline` component
+// the ordered `StateTransition[]` `@vaam-apps/ui`'s `StateTimeline` component
 // renders. This is the load-bearing decision the issue asked for — see
 // the module doc below for which of the three named options this is and
 // why, and for the two documented gaps a real timeline must not paper
@@ -88,7 +88,21 @@
 // See `timeline.test.ts` for the two verified gap cases and every
 // boundary this module doc claims.
 
-import type { StateTransition } from "@vsms/ui";
+import type { StateTransition } from "@vaam-apps/ui";
+import type { MessageState } from "@/components/status";
+
+/**
+ * The timeline entries this module produces, narrowed to this
+ * application's own message states.
+ *
+ * `StateTransition` is generic over the state machine now that
+ * `@vaam-apps/ui` no longer knows what a message is; binding it here is
+ * strictly tighter than before, when the package's own `MessageState`
+ * leaked in. Both imports stay `import type`, which Vitest's esbuild
+ * transform erases entirely — so this module still pulls in no React and
+ * no runtime dependency, which is what lets its tests run bare.
+ */
+type MessageTransition = StateTransition<MessageState>;
 
 /**
  * Only the fields `buildTimeline` actually reads, off `MessageRecord`.
@@ -124,7 +138,7 @@ import type { StateTransition } from "@vsms/ui";
  * `@vsms/gateway` entirely — a real regression test, not a hypothetical.
  */
 export interface TimelineMessageInput {
-  state: StateTransition["toState"];
+  state: MessageState;
   createdAt: string;
   submittedAt?: string | null | undefined;
   finalizedAt?: string | null | undefined;
@@ -133,8 +147,8 @@ export interface TimelineMessageInput {
   maxAttempts: number;
 }
 
-export function buildTimeline(message: TimelineMessageInput): StateTransition[] {
-  const transitions: StateTransition[] = [{ toState: "accepted", at: message.createdAt }];
+export function buildTimeline(message: TimelineMessageInput): MessageTransition[] {
+  const transitions: MessageTransition[] = [{ toState: "accepted", at: message.createdAt }];
 
   if (message.submittedAt != null) {
     transitions.push({

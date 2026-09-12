@@ -186,6 +186,9 @@ importers:
       '@trpc/server':
         specifier: 11.18.0
         version: 11.18.0(typescript@5.9.3)
+      '@vaam-apps/ui':
+        specifier: ^0.1.1
+        version: 0.1.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(daisyui@5.7.36)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(tailwindcss@4.3.3)
       '@vsms/api':
         specifier: workspace:*
         version: link:../../packages/api
@@ -198,15 +201,12 @@ importers:
       '@vsms/hooks':
         specifier: workspace:*
         version: link:../../packages/hooks
-      '@vsms/ui':
-        specifier: workspace:*
-        version: link:../../packages/ui
       jose:
         specifier: 6.2.12
         version: 6.2.12
       lucide-react:
-        specifier: ^0.469.0
-        version: 0.469.0(react@19.3.0)
+        specifier: ^1.44.0
+        version: 1.44.0(react@19.3.0)
       next:
         specifier: 16.3.5
         version: 16.3.5(@types/node@26.5.1)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -249,7 +249,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^5
-        version: 5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1))
+        version: 5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1)(jiti@2.7.0))
 
   frontends/packages/api:
     dependencies:
@@ -280,7 +280,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^5
-        version: 5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1))
+        version: 5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1)(jiti@2.7.0))
 
   frontends/packages/env:
     dependencies:
@@ -321,7 +321,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^5
-        version: 5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1))
+        version: 5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1)(jiti@2.7.0))
 
   frontends/packages/hooks:
     dependencies:
@@ -369,46 +369,6 @@ importers:
       '@tanstack/react-query':
         specifier: ^5.0.0
         version: 5.102.8(react@19.3.0)
-      typescript:
-        specifier: 5.9.3
-        version: 5.9.3
-
-  frontends/packages/ui:
-    dependencies:
-      '@headlessui/react':
-        specifier: ^2.2.10
-        version: 2.2.10(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      class-variance-authority:
-        specifier: ^0.7.1
-        version: 0.7.1
-      clsx:
-        specifier: ^2.1.1
-        version: 2.1.1
-      cmdk:
-        specifier: 1.1.1
-        version: 1.1.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-      lucide-react:
-        specifier: ^0.469.0
-        version: 0.469.0(react@19.3.0)
-      react:
-        specifier: ^19
-        version: 19.3.0
-      react-dom:
-        specifier: ^19
-        version: 19.3.0(react@19.3.0)
-      tailwind-merge:
-        specifier: ^2.6.0
-        version: 2.6.1
-      vaul:
-        specifier: 1.1.2
-        version: 1.1.2(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
-    devDependencies:
-      '@types/react':
-        specifier: ^19
-        version: 19.3.0
-      '@types/react-dom':
-        specifier: ^19
-        version: 19.3.0(@types/react@19.3.0)
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -497,6 +457,9 @@ packages:
 
   '@borewit/text-codec@0.2.2':
     resolution: {integrity: sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ==}
+
+  '@date-fns/tz@1.5.0':
+    resolution: {integrity: sha512-lwYN/vDPeNRULcepoE/LO2Pgx+7/RV+S9ARfbc9lr2DtGkOD7pAiruHvbR1RX3Qyf6ja47EWJDMsNK5vK08DJg==}
 
   '@emnapi/runtime@1.11.3':
     resolution: {integrity: sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA==}
@@ -1595,6 +1558,15 @@ packages:
   '@types/react@19.3.0':
     resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
 
+  '@vaam-apps/ui@0.1.1':
+    resolution: {integrity: sha512-7iHQTU2cV/YX7P4h4t3EdggVBof3o4T8qphUaAIlUojPgBt3O+2ZMFCIvEIQSDoiID8E9SczGtpe8E2WP81xNQ==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      daisyui: ^5
+      react: ^18.3.0 || ^19
+      react-dom: ^18.3.0 || ^19
+      tailwindcss: ^4.1.0
+
   '@vitest/mocker@5.0.0':
     resolution: {integrity: sha512-66PGTMIiVJP3t4a5yxU9qPtf7MdTBs8jmToMvy+HVflB3Yy13WJZTtPePdvU+wjRV02SKK5doLbSA6o9pwOmiA==}
     peerDependencies:
@@ -1762,6 +1734,9 @@ packages:
 
   daisyui@5.7.36:
     resolution: {integrity: sha512-/UkPPj1FeEOWA6I69Jno1SsSx6856E6A/w3b6eK/1i2a6xYiZ4AySsepsog3RR3feb0cyF94Lnzlq/CLOCS7Aw==}
+
+  date-fns@4.4.0:
+    resolution: {integrity: sha512-+1UMbeh68lH1SegH83CGWwpb6OHHbpSgr3+s5Eww5M4CAgswBpoWS0AjTOfEJ33HiYKz1hdj/KTFprzXHmq/6w==}
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
@@ -2097,8 +2072,8 @@ packages:
     resolution: {integrity: sha512-ozCC6gdQ+glXOQsveKD0YsDy8DSQFjDTz4zyzEHNV5+JP5D62LmfDZ6o1cycFx9ouG940M5dE8C8CTewdj2YWQ==}
     engines: {node: ^12.20.0 || ^14.13.1 || >=16.0.0}
 
-  lucide-react@0.469.0:
-    resolution: {integrity: sha512-28vvUnnKQ/dBwiCQtwJw7QauYnE7yd2Cyp4tTTJpvglX4EMpbflcdBgrgToX2j71B3YvugK/NH3BGUk+E/p/Fw==}
+  lucide-react@1.44.0:
+    resolution: {integrity: sha512-2egNApH4hX4j/qdCgRublh88+9u3mEhz9iSlW5ckm4kaQEqZbXbMr0l5u5JZLy8nmWRx2dbHGQkEDYz6C9aCgw==}
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
@@ -2255,6 +2230,16 @@ packages:
     peerDependencies:
       react: ^16.8.0 || ^17.0.0-rc.1 || ^18.0.0 || ^19.0.0-rc.1
       react-dom: ^16.8.0 || ^17.0.0-rc.1 || ^18.0.0 || ^19.0.0-rc.1
+
+  react-day-picker@10.0.1:
+    resolution: {integrity: sha512-eNh6BlwcYInWaJtRv18mXQ06Ys/H6rdTZAnTaSdOYJuTpwP1JMCHNd1FDRadA+gbeinq+psdULN5Xnowy9mV8w==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@types/react': '>=16.8.0'
+      react: '>=16.8.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
 
   react-dom@19.3.0:
     resolution: {integrity: sha512-JDk8dgif51OjFoDE70+OT9ICyYr+69HlmihNwp1+Nsfbna3t5sIiCa9ZJktDmQ4/1b/rn26hIAR2uYXDMr5r0Q==}
@@ -2437,8 +2422,8 @@ packages:
   tabbable@6.5.0:
     resolution: {integrity: sha512-wieBHXygIm7OyQOu5hQlkk62/WyCFYGlWg7L6/ZCUZwx0o398Zkn4pVmMyfYhfMG8kGrj/Krt8eIk6UKC6VzwA==}
 
-  tailwind-merge@2.6.1:
-    resolution: {integrity: sha512-Oo6tHdpZsGpkKG88HJ8RR1rg/RdnEkQEfMoEk2x1XRI3F1AxeU+ijRXpiVUF4UbLfcxxRGw6TbUINKYdWVsQTQ==}
+  tailwind-merge@3.6.0:
+    resolution: {integrity: sha512-uxL7qAVQriqRQPAyK3pj66VqskWqoZ37PW94jwOTwNfq/z9oyu1V+eqrZqtR2+fCiXdYOZe/Modt8GtvqNzu+w==}
 
   tailwindcss@4.3.3:
     resolution: {integrity: sha512-gOhV3P7ufE62QDGg1zVaTgCR+EtPv92k2nIhVcVKcLmxT1sUBsQGhnZj175j+MqRt4zLF7ic+sCYjfhxMxj7YQ==}
@@ -2689,6 +2674,8 @@ snapshots:
     optional: true
 
   '@borewit/text-codec@0.2.2': {}
+
+  '@date-fns/tz@1.5.0': {}
 
   '@emnapi/runtime@1.11.3':
     dependencies:
@@ -3436,7 +3423,26 @@ snapshots:
     dependencies:
       csstype: 3.2.3
 
-  '@vitest/mocker@5.0.0(vite@8.3.0(@types/node@26.5.1))':
+  '@vaam-apps/ui@0.1.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(daisyui@5.7.36)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(tailwindcss@4.3.3)':
+    dependencies:
+      '@headlessui/react': 2.2.10(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      '@radix-ui/react-dialog': 1.1.23(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      class-variance-authority: 0.7.1
+      clsx: 2.1.1
+      cmdk: 1.1.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+      daisyui: 5.7.36
+      lucide-react: 1.44.0(react@19.3.0)
+      react: 19.3.0
+      react-day-picker: 10.0.1(@types/react@19.3.0)(react@19.3.0)
+      react-dom: 19.3.0(react@19.3.0)
+      tailwind-merge: 3.6.0
+      tailwindcss: 4.3.3
+      vaul: 1.1.2(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
+    transitivePeerDependencies:
+      - '@types/react'
+      - '@types/react-dom'
+
+  '@vitest/mocker@5.0.0(vite@8.3.0(@types/node@26.5.1)(jiti@2.7.0))':
     dependencies:
       '@jridgewell/trace-mapping': 0.3.31
       '@vitest/spy': 5.0.0
@@ -3633,6 +3639,8 @@ snapshots:
   csstype@3.2.3: {}
 
   daisyui@5.7.36: {}
+
+  date-fns@4.4.0: {}
 
   debug@4.4.3:
     dependencies:
@@ -3907,7 +3915,7 @@ snapshots:
 
   lowercase-keys@3.0.0: {}
 
-  lucide-react@0.469.0(react@19.3.0):
+  lucide-react@1.44.0(react@19.3.0):
     dependencies:
       react: 19.3.0
 
@@ -4039,6 +4047,14 @@ snapshots:
       react-dom: 19.3.0(react@19.3.0)
       react-stately: 3.50.0(react@19.3.0)
       use-sync-external-store: 1.7.0(react@19.3.0)
+
+  react-day-picker@10.0.1(@types/react@19.3.0)(react@19.3.0):
+    dependencies:
+      '@date-fns/tz': 1.5.0
+      date-fns: 4.4.0
+      react: 19.3.0
+    optionalDependencies:
+      '@types/react': 19.3.0
 
   react-dom@19.3.0(react@19.3.0):
     dependencies:
@@ -4234,7 +4250,7 @@ snapshots:
 
   tabbable@6.5.0: {}
 
-  tailwind-merge@2.6.1: {}
+  tailwind-merge@3.6.0: {}
 
   tailwindcss@4.3.3: {}
 
@@ -4344,10 +4360,10 @@ snapshots:
       fsevents: 2.3.3
       jiti: 2.7.0
 
-  vitest@5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1)):
+  vitest@5.0.0(@types/node@26.5.1)(vite@8.3.0(@types/node@26.5.1)(jiti@2.7.0)):
     dependencies:
       '@types/chai': 5.2.3
-      '@vitest/mocker': 5.0.0(vite@8.3.0(@types/node@26.5.1))
+      '@vitest/mocker': 5.0.0(vite@8.3.0(@types/node@26.5.1)(jiti@2.7.0))
       chai: 6.2.2
       es-module-lexer: 2.3.2
       expect-type: 1.4.0

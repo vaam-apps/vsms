@@ -1,4 +1,4 @@
-import { InlineConfirm } from "@vsms/ui";
+import { InlineConfirm } from "@vaam-apps/ui";
 import type { AttemptListItem } from "../webhook-domain";
 
 // Dumb (R6): the replay confirmation, rendered *inline* inside the

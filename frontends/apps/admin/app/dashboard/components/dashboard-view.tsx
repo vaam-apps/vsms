@@ -4,7 +4,7 @@
 // Composes the smaller dumb components in this directory; owns no data
 // fetching or business rules of its own, only where things sit.
 
-import { InlineBanner } from "@vsms/ui";
+import { InlineBanner } from "@vaam-apps/ui";
 import { BalanceCard } from "./balance-card";
 import { DashboardHeader } from "./dashboard-header";
 import { DeliveryRateCard, type OperatorRow } from "./delivery-rate-card";

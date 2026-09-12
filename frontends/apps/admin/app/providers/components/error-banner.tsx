@@ -4,7 +4,7 @@
 // `quickDetail`/`editDrawer`/`table` slots already are — same reasoning
 // `dashboard/components/error-banner.tsx` gives for its own equivalent.
 
-import { InlineBanner } from "@vsms/ui";
+import { InlineBanner } from "@vaam-apps/ui";
 
 export interface ErrorBannerProps {
   message: string;

@@ -6,7 +6,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { ProviderListItem } from "../sender-id-domain";
 
 // Dumb (R6): "register with a provider" — a short *form*, not a yes/no

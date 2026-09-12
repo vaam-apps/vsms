@@ -1,7 +1,7 @@
 // Route-param validation for `/messages/[id]` (R6, AGENTS.md: "Pages
 // validate their inputs"). `Cuid` is format-guarded `[a-z0-9]{2,32}` on
 // every REST route that filters by id (`AGENTS.md`'s own "Framework
-// constraints" table, and `@vsms/ui`'s `IdDisplay` doc comment) — a
+// constraints" table, and `@vaam-apps/ui`'s `IdDisplay` doc comment) — a
 // malformed id 400s server-side rather than ever resolving to a real row.
 // Checking the same shape here, before rendering a screen, turns that into
 // a clean 404 instead of a screen built around a request that could never

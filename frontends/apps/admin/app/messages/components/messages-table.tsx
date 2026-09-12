@@ -7,10 +7,7 @@ import {
   IdDisplay,
   InlineEmptyState,
   LiveRow,
-  MESSAGE_STATUS_META,
-  MsisdnDisplay,
   Skeleton,
-  StatusPill,
   Table,
   TableBody,
   TableCell,
@@ -18,7 +15,9 @@ import {
   TableHeader,
   TableRow,
   TimestampDisplay,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import { MsisdnDisplay } from "@/components/msisdn-display";
+import { MESSAGE_STATUS_META, StatusPill } from "@/components/status";
 import type { MessageListItem } from "../apply-event";
 
 const SKELETON_ROW_COUNT = 8;

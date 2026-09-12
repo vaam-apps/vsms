@@ -1,4 +1,4 @@
-import { InlineConfirm } from "@vsms/ui";
+import { InlineConfirm } from "@vaam-apps/ui";
 import type { EndpointListItem } from "../webhook-domain";
 
 // Dumb (R6): the delete confirmation, rendered *inline* inside

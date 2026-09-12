@@ -4,7 +4,7 @@
 // wrapper is `InlineBanner variant="plain"`'s own class pair, so it renders
 // through that primitive rather than a second hand-rolled copy of it.
 
-import { InlineBanner } from "@vsms/ui";
+import { InlineBanner } from "@vaam-apps/ui";
 
 export function OutboxFootnote() {
   return (

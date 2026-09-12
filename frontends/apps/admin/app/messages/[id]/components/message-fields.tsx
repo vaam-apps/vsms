@@ -1,8 +1,9 @@
 // Dumb — route-local to the message detail screen (R6). The record's own
 // fields, laid out as a label/value grid.
 
-import { MsisdnDisplay, TimestampDisplay } from "@vsms/ui";
+import { TimestampDisplay } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
+import { MsisdnDisplay } from "@/components/msisdn-display";
 import type { MessageDetail } from "../message-record";
 
 function Field({ label, children }: { label: string; children: ReactNode }) {

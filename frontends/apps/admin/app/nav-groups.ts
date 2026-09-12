@@ -1,5 +1,5 @@
 // The console's information architecture (docs/design/console-redesign.md
-// §4), as data — `@vsms/ui`'s `SideNav` (§6.2) renders it, and owns nothing
+// §4), as data — `@vaam-apps/ui`'s `SideNav` (§6.2) renders it, and owns nothing
 // about *which* routes exist or how they're grouped. Eighteen route
 // directories, grouped per the operator's own mental model, not the
 // schema (§4's own rationale): MESSAGING is what you touch to send and
@@ -11,9 +11,8 @@
 // (§4), and `console-shell.tsx` renders it bare rather than looking it up
 // here. `/api/*` is not a page.
 
-import type { NavGroup, NavItem } from "@vsms/ui";
+import type { NavGroup, NavItem } from "@vaam-apps/ui";
 import {
-  Component,
   Cpu,
   Fingerprint,
   FlaskConical,
@@ -75,6 +74,4 @@ export const NAV_GROUPS: NavGroup[] = [
  * 'Invite members'") — the account row (§4's "Signed in as <email> · Sign
  * out") is not data, it depends on the signed-in session, so it is built
  * directly in `console-shell.tsx` instead of listed here. */
-export const NAV_FOOTER: NavItem[] = [
-  { label: "Component gallery", href: "/gallery", icon: Component },
-];
+export const NAV_FOOTER: NavItem[] = [];

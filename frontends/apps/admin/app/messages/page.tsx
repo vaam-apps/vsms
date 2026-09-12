@@ -5,8 +5,8 @@
 // server's actual `MessageStreamHub` interval without needing a second,
 // `NEXT_PUBLIC_*` copy of the same setting.
 
+import { RouteSkeleton } from "@vaam-apps/ui";
 import { env } from "@vsms/env";
-import { RouteSkeleton } from "@vsms/ui";
 import { Suspense } from "react";
 import { MessagesScreen } from "./messages-screen";
 

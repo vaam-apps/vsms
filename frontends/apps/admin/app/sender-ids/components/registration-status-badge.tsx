@@ -1,4 +1,4 @@
-import { Badge } from "@vsms/ui";
+import { Badge } from "@vaam-apps/ui";
 
 // `SenderIdRegistration.status` is a bare `String`, not part of the
 // governed `StatusPill` vocabulary (`schema.cstack` never closed it into an

@@ -12,7 +12,7 @@ import {
   TableHeader,
   TableRow,
   TimestampDisplay,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { AuditLogEntry } from "../types";
 
 export function AuditLogTable({

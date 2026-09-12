@@ -1,10 +1,10 @@
-import { Button, InlineBanner, Input, Label } from "@vsms/ui";
+import { Button, InlineBanner, Input, Label } from "@vaam-apps/ui";
 
 /**
  * The login screen's markup and classes — the dumb layer for
  * `frontends/apps/admin/app/login/page.tsx`.
  *
- * Route-local rather than shared (`@vsms/ui`), per R6's own test: no second
+ * Route-local rather than shared (`@vaam-apps/ui`), per R6's own test: no second
  * route would plausibly render a login form, and this encodes exactly one
  * screen's shape.
  *
@@ -26,8 +26,8 @@ import { Button, InlineBanner, Input, Label } from "@vsms/ui";
  *     `text-foreground`), so this screen follows the theme instead of
  *     fighting it.
  *  2. **It hand-rolled `<input>`, `<label>` and `<button>`** while
- *     `@vsms/ui` already exported `Input`, `Label` and `Button`. The
- *     original file's own doc comment claimed it "uses `@vsms/ui`'s
+ *     `@vaam-apps/ui` already exported `Input`, `Label` and `Button`. The
+ *     original file's own doc comment claimed it "uses `@vaam-apps/ui`'s
  *     existing primitives where they fit" — it did not use any. Now it
  *     does, which is also what makes the daisyUI focus/disabled states and
  *     the `--radius-field` token reach this screen for free.

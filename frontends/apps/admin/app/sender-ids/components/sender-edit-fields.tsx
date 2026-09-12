@@ -1,4 +1,4 @@
-import { FormField, groupLabelId, InlineBanner, Input, RadioGroup } from "@vsms/ui";
+import { FormField, groupLabelId, InlineBanner, Input, RadioGroup } from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import {
   SENDER_ID_KIND_HINTS,

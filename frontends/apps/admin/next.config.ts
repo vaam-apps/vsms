@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 
 const config: NextConfig = {
   reactStrictMode: true,
-  transpilePackages: ["@vsms/env", "@vsms/ui", "@vsms/gateway", "@vsms/api", "@vsms/hooks"],
+  transpilePackages: ["@vsms/env", "@vaam-apps/ui", "@vsms/gateway", "@vsms/api", "@vsms/hooks"],
   // Traces the actual runtime dependency graph into `.next/standalone`
   // (a minimal server.js plus only the node_modules it really touches),
   // so the Docker runtime stage (frontends/apps/admin/Dockerfile) doesn't need to carry

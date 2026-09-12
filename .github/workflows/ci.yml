@@ -352,7 +352,7 @@ jobs:
       id-token: write  # npm publish --provenance needs an OIDC token
 
     # The TypeScript half had NO automated gate at all until this job existed:
-    # six PRs of real application code (the workspace, @vsms/env, @vsms/ui, the
+    # six PRs of real application code (the workspace, @vsms/env, @vaam-apps/ui, the
     # gateway/tRPC/hooks spine, the composer, the messages list) landed with
     # nothing checking that they built, linted, typechecked, or passed their
     # own tests. The only Node step in this workflow installed mermaid-cli for

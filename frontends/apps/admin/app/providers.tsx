@@ -1,7 +1,7 @@
 "use client";
 
+import { Toaster } from "@vaam-apps/ui";
 import { TrpcProvider } from "@vsms/hooks";
-import { Toaster } from "@vsms/ui";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import type { ReactNode } from "react";
 

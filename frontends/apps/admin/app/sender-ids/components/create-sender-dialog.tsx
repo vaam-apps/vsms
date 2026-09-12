@@ -11,7 +11,7 @@ import {
   InlineBanner,
   Input,
   RadioGroup,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import {
   type CreateSenderIdFormValues,

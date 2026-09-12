@@ -35,7 +35,7 @@ export interface OptOutRecord {
   msisdnHash: string;
   /** `@pii` — see AGENTS.md §2.0: no field-level read masking exists in
    * this framework, so the API genuinely returns this in the clear to
-   * every role `OptOut.read` admits. Rendered through `@vsms/ui`'s own
+   * every role `OptOut.read` admits. Rendered through `@vaam-apps/ui`'s own
    * `MsisdnDisplay` (masked by default) rather than printed bare, the same
    * discipline `messages-screen.tsx` already applies to `Message.msisdn`. */
   msisdn: string;

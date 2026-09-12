@@ -5,7 +5,7 @@
 // `jumped` is a business decision (the 25-point threshold) computed by the
 // smart component; this component only renders what it's told.
 
-import { Card, CardBody, CardHeader, StateChip } from "@vsms/ui";
+import { Card, CardBody, CardHeader, StateChip } from "@vaam-apps/ui";
 import { formatPercent } from "../format";
 import { HourlyBars } from "./hourly-bars";
 

@@ -4,7 +4,7 @@
 // directory via slots the screen fills in, plus the loading/no-routes
 // branching that decides which of them actually render.
 
-import { Skeleton } from "@vsms/ui";
+import { Skeleton } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import { ErrorBanner } from "./error-banner";
 import { NoRoutesBanner } from "./no-routes-banner";

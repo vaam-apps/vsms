@@ -1,6 +1,6 @@
 // Dumb view: the role-edit form fields.
 
-import { FormField, Input, StaleWriteBanner, Textarea } from "@vsms/ui";
+import { FormField, Input, StaleWriteBanner, Textarea } from "@vaam-apps/ui";
 import type { UseFormReturn } from "react-hook-form";
 import { KNOWN_PERMISSIONS, type RoleEditValues } from "../role-forms";
 import { ErrorBanner } from "./error-banner";

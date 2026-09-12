@@ -1,5 +1,4 @@
 import {
-  AttemptStatusPill,
   InlineEmptyState,
   Skeleton,
   Table,
@@ -9,7 +8,8 @@ import {
   TableHeader,
   TableRow,
   TimestampDisplay,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
+import { AttemptStatusPill } from "@/components/status";
 import type { AttemptListItem } from "../webhook-domain";
 
 // Dumb (R6): the delivery-attempts table. `endpointUrlFor` is a small

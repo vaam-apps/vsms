@@ -12,7 +12,7 @@
 // to know the id exists.
 //
 // A prior revision of `console-shell.tsx` wrapped `SideNav` in
-// `next/dynamic({ ssr: false })`, working around a real bug (`@vsms/ui`'s
+// `next/dynamic({ ssr: false })`, working around a real bug (`@vaam-apps/ui`'s
 // `SideNav` used to call `@uidotdev/usehooks`' `useMediaQuery` (D12), and
 // that hook's own `getServerSnapshot` is a hard
 // `throw new Error("useMediaQuery is a client-only hook")` — every full
@@ -36,7 +36,7 @@
 // server-rendered page while `pnpm build` stays green, because every route
 // here is dynamic and build-time generation never executes them.
 
-import { type NavGroup, type NavItem, SideNav } from "@vsms/ui";
+import { type NavGroup, type NavItem, SideNav } from "@vaam-apps/ui";
 import { Menu } from "lucide-react";
 import type { ReactNode } from "react";
 

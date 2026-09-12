@@ -12,7 +12,7 @@ type RouterOutputs = inferRouterOutputs<AppRouter>;
 export type RouteListItem = RouterOutputs["routes"]["list"][number];
 export type ProviderListItem = RouterOutputs["providers"]["list"][number];
 
-// Not shared with `MessageClass` (`@vsms/ui`) — no second screen currently
+// Not shared with `MessageClass` (`@vaam-apps/ui`) — no second screen currently
 // needs this specific list, unlike `MESSAGE_CLASSES`.
 export const OPERATOR_CODES = ["mtn", "orange", "camtel", "nexttel", "unknown"] as const;
 export type OperatorCode = (typeof OPERATOR_CODES)[number];

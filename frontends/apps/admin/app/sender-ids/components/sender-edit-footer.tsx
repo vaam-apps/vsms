@@ -1,4 +1,4 @@
-import { Button } from "@vsms/ui";
+import { Button } from "@vaam-apps/ui";
 
 // Dumb (R6): the sender id more-detail drawer's own footer (not shown
 // while the inline "register with a provider" form is armed — the screen

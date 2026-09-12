@@ -1,7 +1,8 @@
 // Dumb — route-local to the message detail screen (R6). The record's own
 // status/id header plus its field grid.
 
-import { Card, CardBody, CardHeader, IdDisplay, StatusPill } from "@vsms/ui";
+import { Card, CardBody, CardHeader, IdDisplay } from "@vaam-apps/ui";
+import { StatusPill } from "@/components/status";
 import type { MessageDetail } from "../message-record";
 import { MessageFields } from "./message-fields";
 

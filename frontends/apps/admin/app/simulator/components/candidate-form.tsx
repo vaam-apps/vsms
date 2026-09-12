@@ -15,7 +15,7 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { type Control, Controller, type UseFormRegister } from "react-hook-form";
 import { MESSAGE_CLASSES } from "../message-classes";
 import type { SimulateFormValues } from "../simulate-form-values";

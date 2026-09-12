@@ -1,4 +1,4 @@
-import { DetailList, DetailRow, IdDisplay, TimestampDisplay } from "@vsms/ui";
+import { DetailList, DetailRow, IdDisplay, TimestampDisplay } from "@vaam-apps/ui";
 import type { RouteListItem } from "../route-domain";
 import { predicateSummary } from "../route-domain";
 

@@ -5,7 +5,7 @@
 // silently doubles the segment count of a send to 50,000 recipients.
 //
 // `to` and `body` feed a debounced `compose.preview` query as the operator
-// types, rendered through `@vsms/ui`'s `EncodingPreview`; submitting calls
+// types, rendered through `@vaam-apps/ui`'s `EncodingPreview`; submitting calls
 // `compose.send`, which triggers a real `sendMessage` against the gateway
 // on the console's own machine credential (`SMS_CONSOLE_CLIENT_ID` —
 // nothing here proves who the human at the keyboard was, see the
@@ -15,9 +15,9 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import { trpc } from "@vsms/hooks";
-import type { EncodingPreviewResult } from "@vsms/ui";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import type { EncodingPreviewResult } from "@/components/encoding-preview";
 import { ComposerForm } from "./components/composer-form";
 import { ComposerHeader } from "./components/composer-header";
 import { ComposerLayout } from "./components/composer-layout";

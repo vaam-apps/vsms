@@ -8,8 +8,8 @@
 // `DIAGNOSTICS_POLL_MS` from `@vsms/env` server-side and hands it down as
 // `pollMs`, the same pattern those two pages use.
 
+import { RouteSkeleton } from "@vaam-apps/ui";
 import { env } from "@vsms/env";
-import { RouteSkeleton } from "@vsms/ui";
 import { Suspense } from "react";
 import { WorkersScreen } from "./workers-screen";
 

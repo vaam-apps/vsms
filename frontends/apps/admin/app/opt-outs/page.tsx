@@ -6,7 +6,7 @@
 // `useSearchParams()` internally, which Next.js requires a `Suspense`
 // boundary around, so this file gained one where it previously had none.
 
-import { RouteSkeleton } from "@vsms/ui";
+import { RouteSkeleton } from "@vaam-apps/ui";
 import { Suspense } from "react";
 import { OptOutsScreen } from "./opt-outs-screen";
 

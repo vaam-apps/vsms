@@ -1,7 +1,7 @@
 // Dumb view: the screen title plus the "genuinely read-only" note. Static
 // copy — no props needed.
 
-import { InlineBanner, ScreenHeader } from "@vsms/ui";
+import { InlineBanner, ScreenHeader } from "@vaam-apps/ui";
 
 export function AuditLogHeader() {
   return (

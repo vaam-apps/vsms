@@ -4,7 +4,7 @@
 // verbatim alongside the grid that lays it out, since the two never render
 // independently.
 
-import { Card, CardBody, CardHeader, Skeleton } from "@vsms/ui";
+import { Card, CardBody, CardHeader, Skeleton } from "@vaam-apps/ui";
 
 interface StatCardProps {
   title: string;

@@ -11,7 +11,7 @@ import {
   IdDisplay,
   QuickDetailDrawer,
   TimestampDisplay,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import type { ProviderState } from "../provider-types";
 import { StatePill } from "./state-pill";
 

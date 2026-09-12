@@ -8,19 +8,18 @@
 
 import {
   Button,
-  EncodingPreview,
-  type EncodingPreviewResult,
   FormField,
   InlineBanner,
   Input,
-  MESSAGE_CLASSES,
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@vsms/ui";
+} from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
+import { EncodingPreview, type EncodingPreviewResult } from "@/components/encoding-preview";
+import { MESSAGE_CLASSES } from "@/components/status";
 import { type ComposerFormValues, MESSAGE_CLASS_LABELS } from "../composer-schema";
 
 export interface ComposerFormProps {

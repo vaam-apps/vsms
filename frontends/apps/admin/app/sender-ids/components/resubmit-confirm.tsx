@@ -1,4 +1,4 @@
-import { InlineConfirm } from "@vsms/ui";
+import { InlineConfirm } from "@vaam-apps/ui";
 import type { ProviderListItem, RegistrationListItem } from "../sender-id-domain";
 
 // Dumb (R6): the resubmit confirmation, rendered *inline* inside the

@@ -1,10 +1,10 @@
-import { Button, InlineBanner, TimestampDisplay } from "@vsms/ui";
+import { Button, InlineBanner, TimestampDisplay } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import type { EndpointListItem } from "../webhook-domain";
 import { SecretField } from "./secret-field";
 
 // Route-local (R6): the "grab it now" notice shown right after a secret is
-// created or rotated. `InlineBanner` (`@vsms/ui`) only ships `neutral` /
+// created or rotated. `InlineBanner` (`@vaam-apps/ui`) only ships `neutral` /
 // `danger` / `plain` variants — this is a distinct fourth hue
 // (`state-uncertain`, "a secret you should act on soon, not an error and
 // not routine") that doesn't fit any of them, so it's factored here rather

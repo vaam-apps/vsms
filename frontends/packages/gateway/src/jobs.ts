@@ -44,7 +44,7 @@ import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 /** `job_state_transitions` (`backends/migrations/postgres/0002_bootstrap/
- * up.sql`), verbatim — mirrors `@vsms/ui`'s own `JobState` (`status-
+ * up.sql`), verbatim — mirrors `@vaam-apps/ui`'s own `JobState` (`status-
  * tokens.ts`), duplicated rather than imported because `@vsms/gateway` is
  * server-only and has no reason to depend on the UI package. */
 export type JobState = "pending" | "running" | "succeeded" | "failed" | "dead" | "cancelled";

@@ -2,7 +2,7 @@
 // (in `users-screen.tsx`) owns the query, the form, both mutations and the
 // delete-confirm boolean.
 
-import { Button, MoreDetailDrawer, Skeleton } from "@vsms/ui";
+import { Button, MoreDetailDrawer, Skeleton } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import type { UseFormReturn } from "react-hook-form";
 import type { RoleEditValues } from "../role-forms";

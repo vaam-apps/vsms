@@ -1,4 +1,4 @@
-import { InlineConfirm } from "@vsms/ui";
+import { InlineConfirm } from "@vaam-apps/ui";
 
 // Dumb (R6): the secret-rotation confirmation, rendered *inline* inside
 // `MoreDetailDrawer`'s own body — never a nested `Dialog`. See

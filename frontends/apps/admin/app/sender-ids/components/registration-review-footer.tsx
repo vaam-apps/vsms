@@ -1,4 +1,4 @@
-import { Button } from "@vsms/ui";
+import { Button } from "@vaam-apps/ui";
 
 // Dumb (R6): the registration-review drawer's own footer (not shown while
 // the inline resubmit confirmation is armed).

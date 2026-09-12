@@ -9,8 +9,8 @@
 // real Cameroon-specific parsing is server-side and is the actual source
 // of truth; a value that passes here can still come back 422.
 
-import { MESSAGE_CLASSES } from "@vsms/ui";
 import { z } from "zod";
+import { MESSAGE_CLASSES } from "@/components/status";
 
 export const MESSAGE_CLASS_LABELS: Record<(typeof MESSAGE_CLASSES)[number], string> = {
   otp: "OTP",

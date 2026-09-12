@@ -1,7 +1,7 @@
 // Dumb component (R6): the #211 own-credential explainer banner. Static
 // content, no props — moved verbatim out of `providers-screen.tsx`.
 
-import { InlineBanner } from "@vsms/ui";
+import { InlineBanner } from "@vaam-apps/ui";
 
 export function ScopeBanner() {
   return (

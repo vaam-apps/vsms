@@ -1,14 +1,30 @@
 @import "tailwindcss";
 @plugin "daisyui";
 
-/* @source directive for frontends/packages/ui — required for proper styling
-   of all @vsms/ui components. Omitting it causes every @vsms/ui class
-   to render unstyled, a silent bug that is miserable to debug. */
-@source "../../../packages/ui/src";
+/* Tailwind v4 generates only the utilities it can see used, and it does
+   not scan `node_modules` on its own. Without this line every
+   @vaam-apps/ui component renders completely unstyled — no error, no
+   warning, just a page that looks broken in a way that is miserable to
+   debug.
 
-/* @vsms/ui's design tokens (T6): the two daisyUI theme blocks (dark
-   default, light peer) plus the eleven-state status system, surface
-   ladder, and type scale. Must come after `@plugin 'daisyui'` above so
+   `dist`, not `src`: the package is an npm dependency now rather than a
+   workspace sibling, and only `dist` is guaranteed present after a
+   plain install. The class strings are identical in both.
+
+   ONE level up, not two: `@source` resolves relative to this stylesheet
+   (`frontends/apps/admin/app/globals.css`), and pnpm's isolated linker
+   puts every dependency at `frontends/apps/admin/node_modules` — a
+   sibling of `app/`, not of `app/..` (`frontends/apps`, where
+   `node_modules` does not exist at all). Tailwind does NOT error on an
+   `@source` glob that matches nothing; it silently contributes zero
+   utility classes, so a path off by one directory produces a green build
+   and an unstyled app rather than a failure. Verified live: this exact
+   path is the one that puts `gap-[5px]` (a status-pill-only arbitrary
+   value that appears nowhere in admin's own source) into the built CSS. */
+@source "../node_modules/@vaam-apps/ui/dist";
+
+/* @vaam-apps/ui's design tokens: the one daisyUI theme block (dark) plus
+   the status-hue palette, surface ladder, and type scale. Must come after `@plugin 'daisyui'` above so
    its `@plugin "daisyui/theme"` blocks register against an already-loaded
    daisyUI plugin — confirmed live: reordering ahead of `@plugin 'daisyui'`
    to satisfy plain-CSS `@import` positioning is what daisyUI's own docs
@@ -16,7 +32,7 @@
    preprocessing step, not spec CSS, so the biome rule below doesn't apply
    to how this file actually builds. */
 /* biome-ignore lint/correctness/noInvalidPositionAtImportRule: Tailwind/daisyUI CSS-first directives are preprocessed, not spec CSS — see comment above */
-@import "../../../packages/ui/src/styles/theme.css";
+@import "@vaam-apps/ui/styles/theme.css";
 
 @layer base {
   :root {

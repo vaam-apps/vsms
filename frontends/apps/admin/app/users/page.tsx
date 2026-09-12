@@ -4,7 +4,7 @@
 // already establish for their own `useQueryStates` calls (Next.js requires
 // this for `useSearchParams()`).
 
-import { RouteSkeleton } from "@vsms/ui";
+import { RouteSkeleton } from "@vaam-apps/ui";
 import { Suspense } from "react";
 import { UsersScreen } from "./users-screen";
 

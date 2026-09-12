@@ -1,4 +1,4 @@
-import { InlineConfirm } from "@vsms/ui";
+import { InlineConfirm } from "@vaam-apps/ui";
 import type { RouteListItem } from "../route-domain";
 
 // Dumb, route-local (R6): the delete confirmation, rendered *inline* inside

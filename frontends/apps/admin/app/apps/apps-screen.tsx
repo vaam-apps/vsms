@@ -98,8 +98,8 @@
 // pure modules carry tests").
 
 import { zodResolver } from "@hookform/resolvers/zod";
+import { InlineConfirm, ScreenStack, toast } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
-import { InlineConfirm, ScreenStack, toast } from "@vsms/ui";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
