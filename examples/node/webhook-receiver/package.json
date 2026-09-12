@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Reference Express receiver for vsms delivery webhooks — the inbound half of #150. Signature scheme (HMAC-SHA256, #41) is confirmed against backends/crates/sms-webhook; see README.",
+  "description": "Reference Express receiver for vsms delivery webhooks \u2014 the inbound half of #150. Signature scheme (HMAC-SHA256, #41) is confirmed against backends/crates/sms-webhook; see README.",
   "scripts": {
     "start": "node src/index.ts",
     "start:gate": "node src/gate-receiver.ts",
@@ -16,12 +16,12 @@
     "node": ">=23.6.0"
   },
   "dependencies": {
-    "express": "^5.1.0"
+    "express": "^5.2.1"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.7",
-    "@types/express": "^5.0.1",
-    "@types/node": "^24.0.0",
+    "@biomejs/biome": "2.5.13",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26",
     "typescript": "5.9.3"
   }
 }

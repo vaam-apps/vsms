@@ -12,13 +12,13 @@
   },
   "dependencies": {
     "@vsms/env": "workspace:*",
-    "jose": "6.2.8",
+    "jose": "6.2.12",
     "server-only": "0.0.1",
-    "undici": "8.10.0"
+    "undici": "8.10.2"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26",
     "typescript": "5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^5"
   }
 }

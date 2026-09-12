@@ -1,7 +1,7 @@
 {
   "name": "vsms-workspace",
   "private": true,
-  "packageManager": "pnpm@11.18.0",
+  "packageManager": "pnpm@12.4.1",
   "engines": {
     "node": ">=26"
   },
@@ -13,7 +13,7 @@
     "test": "turbo run test"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.7",
-    "turbo": "2.10.9"
+    "@biomejs/biome": "2.5.13",
+    "turbo": "2.10.12"
   }
 }
