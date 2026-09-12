@@ -32,15 +32,15 @@ minimumReleaseAgeExclude:
   # postcss is forced past next's own exact pin by the override below, for
   # four advisories; the pinned version is the only one that clears them.
   - postcss@8.5.28
-  # @vaam-apps/ui@0.1.1 published 2026-09-12T03:28Z (minutes before this
-  # cutover) and is the only version in range (^0.1.1) admin's manifest asks
-  # for -- 0.1.0 is a broken release that shipped its whole source tree
-  # instead of a built `dist/`, so there is no older release to fall back to
-  # while pnpm's default 24h quarantine clears on its own. The age gate
-  # re-verifies on EVERY install, including `--frozen-lockfile`, so without
-  # this both CI and the admin Docker build fail until 2026-09-13T03:28Z.
-  # Version-scoped deliberately: a future 0.1.2 stays quarantined.
-  - '@vaam-apps/ui@0.1.1'
+  # @vaam-apps/ui@0.1.2 published 2026-09-12T13:57Z and is the only version
+  # in range (^0.1.2) admin's manifest asks for, so pnpm's default 24h
+  # quarantine has nothing older to fall back to and refuses the install
+  # outright -- a hard ERR_PNPM_NO_MATCHING_VERSION, not a warning. The gate
+  # re-verifies on EVERY install including `--frozen-lockfile`, so without
+  # this both CI and the admin Docker build fail until 2026-09-13T13:57Z.
+  # Version-scoped deliberately: 0.1.3 stays quarantined. The 0.1.1 entry
+  # this replaces is gone because nothing resolves to 0.1.1 any more.
+  - '@vaam-apps/ui@0.1.2'
   - '@next/env@16.3.5'
   - '@next/swc-darwin-arm64@16.3.5'
   - '@next/swc-darwin-x64@16.3.5'
