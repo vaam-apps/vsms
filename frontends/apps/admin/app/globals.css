@@ -1,5 +1,16 @@
 @import "tailwindcss";
-@plugin "daisyui";
+/* `themes: false` is load-bearing, not optional polish (the library's own
+   `pitfalls.md`, "The colours are *almost* right"): daisyUI's stock theme
+   blocks win at a higher specificity (0,3,1) than `@vaam-apps/ui`'s own
+   theme block (0,1,0) for `--color-base-100`/`-200`/`-300`/`-content`, so
+   leaving the built-ins on silently overrides the page background and
+   card surfaces with stock daisyUI colours no matter what this app's own
+   dark/light theme blocks declare. Safe to turn off entirely: the
+   library's dark and light theme blocks each declare all 28 daisyUI theme
+   keys, so nothing is left undeclared. */
+@plugin "daisyui" {
+  themes: false;
+}
 
 /* Tailwind v4 generates only the utilities it can see used, and it does
    not scan `node_modules` on its own. Without this line every
