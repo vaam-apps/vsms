@@ -37,18 +37,33 @@ const JOB = {
   runAt: "2026-08-14T12:00:00.000Z",
   lastError: null,
   version: 1,
+  // Non-nullable on the wire, and rendered unguarded by `JobDetailFields`
+  // (unlike `leaseUntil`/`startedAt`/`finishedAt`, which it `!= null`-checks).
+  // The `as unknown as` cast below means TypeScript never noticed they were
+  // missing, so `TimestampDisplay` was being handed `undefined` and rendering
+  // an invalid date -- silently, until @vaam-apps/ui 0.1.2 made
+  // `formatAbsolute` throw on one instead of formatting it. The fixture was
+  // always wrong; 0.1.2 is what made it say so.
+  createdAt: "2026-08-14T11:59:00.000Z",
+  updatedAt: "2026-08-14T12:00:00.000Z",
 } as unknown as JobListItem;
 
 const html = renderToStaticMarkup(createElement(JobDetailFields, { job: JOB }));
 
 describe("JobDetailFields", () => {
-  // Byte-for-byte the treatment the deleted private helper rendered.
+  // Pins the exact treatment `@vaam-apps/ui`'s `DetailRow` renders. That
+  // treatment is the package's to change, not this repo's: 0.1.2 added
+  // `min-w-0` to the row and `min-w-0 break-words` to the value cell, an
+  // overflow fix for long values. So a diff here on a version bump is
+  // expected and is read, not silenced -- what it must never show is the
+  // structure changing (a `<div>`/`<dt>`/`<dd>` disappearing), which is the
+  // half this test shares with the expression-source check below.
   it("keeps the divided row treatment unchanged", () => {
     expect(html).toContain(
-      'class="flex flex-col gap-0.5 border-edge-subtle border-b py-2 last:border-b-0"',
+      'class="flex min-w-0 flex-col gap-0.5 border-edge-subtle border-b py-2 last:border-b-0"',
     );
     expect(html).toContain('<dt class="text-caption text-subtle-foreground">');
-    expect(html).toContain('<dd class="text-body text-foreground">');
+    expect(html).toContain('<dd class="min-w-0 break-words text-body text-foreground">');
   });
 
   // The bug this file exists for: no expression source may reach the DOM.

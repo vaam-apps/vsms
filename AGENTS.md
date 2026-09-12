@@ -2380,6 +2380,56 @@ Forty-one kilobytes of utility classes vanish and the build still reports succes
 
 **Verification, run to completion rather than assumed from a clean `git diff`:** `pnpm install` clean (295 packages resolved, "Lockfile passes supply-chain policies" — the quarantine exclusion above is exercised, not silently skipped); `pnpm biome ci .` clean across 339 files; `pnpm turbo run typecheck build` 9/9; `pnpm turbo run test` 7/7 (admin 129, gateway 56, api 5, vsms-node 5); `cargo xtask r6` OK across 34 view files (unaffected by any of this — its own `ROOT` never pointed at the deleted package); `cargo xtask docs-drift` OK; `cargo xtask workflow-paths` OK across 42 checked references.
 
+## Bumping `@vaam-apps/ui`, and the two-step the quarantine forces
+
+`0.1.1` -> `0.1.2` is the first bump of this dependency, and two things about
+it are not guessable from the diff.
+
+**The `minimumReleaseAgeExclude` entry cannot be swapped in one step.** The
+obvious move — replace `'@vaam-apps/ui@0.1.1'` with `'@vaam-apps/ui@0.1.2'`
+and install — fails with `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`, naming the
+*old* version. pnpm re-verifies the entries already in `pnpm-lock.yaml`
+*before* it resolves the new manifest, so for the duration of that one install
+the lockfile still pins `0.1.1` while the policy no longer excuses it. Both
+entries have to be present for the install that moves the lockfile, and the
+dead one is removed afterwards — confirmed by then running
+`pnpm install --frozen-lockfile`, CI's own command, with only the `0.1.2`
+entry and getting exit 0.
+
+**A version bump can break a test that pins class strings, and that is the
+test working.** `job-detail-fields.test.ts` asserts `DetailRow`'s exact markup
+byte-for-byte. 0.1.2 added `min-w-0` to the row and `min-w-0 break-words` to
+the value cell — an upstream overflow fix for long values — so the assertions
+were updated to match. Read that diff rather than silencing it; what it must
+never show is the *structure* changing.
+
+The same test also failed a second, unrelated way, and that one was this
+repo's bug rather than the package's. Its fixture is built with
+`as unknown as JobListItem`, which meant nobody noticed it omitted `createdAt`
+and `updatedAt` — both non-nullable on the wire, and both rendered *unguarded*
+by `JobDetailFields` (unlike `leaseUntil`/`startedAt`/`finishedAt`, which it
+`!= null`-checks). So `TimestampDisplay` had been receiving `undefined` and
+rendering an invalid date since the test was written. 0.1.1's `formatAbsolute`
+degraded silently; 0.1.2's calls `Intl.DateTimeFormat.formatToParts`, which
+throws `RangeError: Invalid time value` on an invalid `Date`. Isolated
+directly against the installed package rather than inferred from the stack:
+`formatAbsolute(undefined)` and `formatAbsolute("not-a-date")` both throw,
+`formatAbsolute(null)` quietly returns the epoch. The fixture was always
+wrong; 0.1.2 is only what made it say so. Worth knowing for any *other*
+consumer: a component that throws rather than degrades takes the React tree
+with it, so a nullable timestamp reaching `TimestampDisplay` is now a crash,
+not a cosmetic defect.
+
+Checked and found inert: no export was removed (195 -> 217, purely additive),
+`peerDependencies`, `dependencies` and the `exports` map are all byte-identical
+to 0.1.1, and `dark` keeps `default: true` in the theme — the new light theme
+is opt-in via `data-theme`, so the console's appearance does not flip. The
+built CSS grows 171,236 -> 184,420 bytes (the light theme plus the
+`skeleton-chaos` keyframes), and the `gap:5px` scan marker this repo's styling
+gate depends on still exists in `dist/components/status/status-pill.js`, so
+that gate stays valid — verified before relying on it.
+
+
 ## Conventions
 
 - Commits: imperative subject, body explaining *why*. Record framework surprises in the commit body and in §2.0 — that table is the most valuable thing here for whoever comes next.
