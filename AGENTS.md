@@ -2429,6 +2429,27 @@ built CSS grows 171,236 -> 184,420 bytes (the light theme plus the
 gate depends on still exists in `dist/components/status/status-pill.js`, so
 that gate stays valid — verified before relying on it.
 
+**Corrected by the 0.2.0 bump below: "the console's appearance does not flip"
+was too strong a conclusion from too narrow a check.** What actually got
+checked here was the export list, the `dependencies`/`peerDependencies`/
+`exports`-map shape, and the theme's own *default* (`dark` stays
+`default: true`) — three real checks, each of which genuinely passed. None of
+them asks whether any individual *component*'s own internal default changed,
+and one had: `SideNav`'s `smallScreen` prop silently defaulted from the
+off-canvas tree this console's drawer chrome was built against to a `fixed`,
+portalled floating rail. `console-chrome.tsx` never passed `smallScreen`, so
+it inherited the new default and got both an empty drawer and a permanently
+floating rail below `lg` — including the loss of every reachable "Sign out"
+control below `1280px`. Live for a full release cycle (0.1.2 through the
+start of the 0.2.0 bump) before anyone noticed, because nothing in this
+console's own test suite renders `SideNav` at a real viewport width. The
+durable lesson: an identical export surface, an unchanged `exports` map, and
+a stable theme *default* are none of them evidence that nothing renders
+differently — they prove the package's *shape* didn't change, never its
+*behaviour*. 0.2.0's own changelog is explicit about exactly this gap: six
+rendering changes, no API change at all. See the section below for what that
+means in practice and the three defects it left live in this console.
+
 
 ## Conventions
 
@@ -2443,6 +2464,143 @@ that gate stays valid — verified before relying on it.
   - **lands infrastructure ahead of its milestone** — add it to "Already built, ahead of its milestone", which exists so the next person doesn't rebuild it after reading the milestone counts as complete.
 
   **Do not update it merely because a story closed.** GitHub owns live status and is always more current; the roadmap deliberately carries only a dated snapshot, and turning it into a changelog would recreate the drift problem it was written to avoid — this file has already recorded four separate incidents of documentation asserting something the code did not do. When you *do* touch the status column for one of the reasons above, move its date to the day you verified it, and verify against `gh`, not memory.
+
+## Bumping `@vaam-apps/ui` to `0.2.0` — three live defects, and one predates the bump entirely
+
+`0.2.0` (published `2026-09-12T15:37:37Z`) is releasing as a **minor**, not a
+patch — the library's own changelog says so explicitly, and names the reason:
+`0.1.2` shipped a real behaviour change (the `SideNav` default flip the
+correction above is about) under a patch number, and doing that twice
+knowingly is worse than doing it once by accident. Six rendering changes ship
+with no API change at all: `SideNav` stops taking width below `xl`,
+`RadioGroup`/`DropdownMenuCheckboxItem` change what an accessible name or
+`aria-checked` reports, `Tooltip`'s `position` starts actually positioning,
+`DialogTrigger`/`DialogClose` stop submitting an enclosing `<form>`, and the
+dark theme applies with no `data-theme` attribute at all. None of these touch
+`peerDependencies`, `dependencies`, the `exports` map, or the theme's own
+declared *default* — precisely the four things the 0.1.2 check above verified
+and rested its "appearance does not flip" conclusion on. This bump is the
+reason that conclusion is now corrected in place rather than left standing.
+
+**The two-step quarantine dance is unchanged and was followed exactly as the
+0.1.2 section above describes:** `minimumReleaseAgeExclude` gained a
+`'@vaam-apps/ui@0.2.0'` entry *alongside* the still-present `0.1.2` one
+first, `pnpm install` re-resolved the lockfile onto `0.2.0`, and only then was
+the dead `0.1.2` entry removed — proven safe by re-running
+`pnpm install --frozen-lockfile` (exit 0) against the post-removal state
+before trusting it, the same order CI's own gate would hit it in. Quarantine
+clears `2026-09-13T15:37Z`; `0.2.1` stays excluded until it, in turn, ages out
+or gets its own dated entry.
+
+**This bump did not just move a version number — it went looking for what the
+new default actually broke, and found three separate defects, only one of
+which the version bump itself introduced.**
+
+- **`SideNav`'s below-`xl` default landing unpassed** (the exact gap the
+  correction above names) meant this console had been running the wrong mode
+  since `0.1.2` merged — an entire release cycle live with no reachable
+  "Sign out" control below `1280px`, an empty drawer below `1024px`, and a
+  floating pill overlapping the last table rows below `640px`. Fixed by
+  passing `smallScreen="off-canvas"` on `console-chrome.tsx`'s one `SideNav`
+  call site — the mode the component's own doc names for exactly this shape
+  of caller: one that already owns a drawer and wants the component to fill
+  it rather than float over it.
+- **`@plugin "daisyui"` had no `themes: false`, and this one predates both
+  bumps — it has been silently wrong since the npm cutover (#366), not
+  introduced by `0.1.2` or `0.2.0`.** daisyUI's own built-in theme selectors
+  win at specificity `(0,3,1)` over `@vaam-apps/ui`'s theme block at
+  `(0,1,0)`, on every token both declare — `base-100`/`-200`/`-300`/
+  `-content` — regardless of import order. Measured in the actual built CSS
+  before touching anything: `--color-base-100` resolved to both `#0a0b0d`
+  (this library's dark) and `#1d232a` (daisyUI's stock dark), and to
+  `lab(13.3466% -1.2732 -5.67451)` (daisyUI's stock light-mode-computed
+  value) alongside the library's own `#fcfcfd` — four values for one token,
+  in one build, because nothing told daisyUI to stop registering its own.
+  After `themes: false`: exactly two values remain for every one of the four
+  affected tokens, the library's own dark and light figures and nothing
+  else. Safe because the library's dark and light theme blocks each declare
+  all 28 daisyUI theme keys, so `themes: false` leaves nothing undeclared —
+  confirmed, not assumed, by the before/after CSS grep rather than by reading
+  the theme block and trusting it covers everything.
+- **`success` and `neutral` are quiet hues** (`isQuietHue`, the library's own
+  predicate, added specifically because two of the library's *own*
+  components had gotten this wrong before) — their `--state-*-bg`/`-border`
+  tokens are `transparent` by design, so a state-toned pill that paints them
+  unconditionally renders the *good* outcome as the least visible one.
+  `state-pill.tsx`'s `"active"`, `outcome-pill.tsx`'s `"eligible"`, and
+  `registration-status-badge.tsx`'s `"approved"` all did exactly this — the
+  third case compounded it, since layering the transparent utilities on top
+  of `Badge variant="neutral"` let an unlayered Tailwind utility outrank
+  daisyUI's own layered `badge-neutral` background (the library's own
+  `pitfalls.md` names this exact interaction), knocking the badge's chrome
+  out entirely rather than tinting it. None of the three is new in `0.2.0` —
+  `isQuietHue` already existed and these three call sites already had the
+  bug — but nothing had checked for it here until this bump's own review
+  pass went looking, on the strength of the changelog naming `SideNav`
+  explicitly and the review asking what else that kind of miss could be
+  hiding. Fixed by importing `isQuietHue` and drawing the same achromatic
+  `border-edge`/`bg-surface-2` surface every quiet hue renders through,
+  keeping only the hue's own foreground colour — the exact shape the
+  library's own `state-chip.tsx` already uses internally.
+
+**The durable lesson, restated because it is the actual point of this
+section and not just this one bump:** checking the export list, the
+dependency shape, and a component's declared *default* is real verification,
+and every one of those checks genuinely passed for `0.1.2`. None of them can
+see a *default prop value* changing inside a component nobody re-rendered at
+a real viewport width, and none of them is the same question as "does an
+existing call site of this component still get the behaviour it was written
+against." An identical export surface is not identical behaviour. The
+changelog is the one place this library states behaviour changes explicitly
+by design — read it before bumping, not only after something breaks — and
+even then, grep the built output for the specific tokens/markers a screen
+actually depends on (the way `gap:5px` already got checked for `0.1.2`, and
+the way the `--color-base-100` before/after grep proved `themes: false`
+here) rather than trusting that "no API change" means "no rendering change."
+
+Verified before trusting any of the three fixes: `pnpm biome ci .` (339
+files, clean), `SKIP_ENV_VALIDATION=1 pnpm turbo run typecheck build` (9/9
+tasks, `admin:typecheck` included), `SKIP_ENV_VALIDATION=1 pnpm turbo run
+test` (129 admin tests across 20 files, including
+`job-detail-fields.test.ts`'s byte-exact `DetailRow variant="divided"`
+assertion, unmoved — that variant carries no change in `0.2.0`), `cargo xtask
+r6`/`docs-drift`/`workflow-paths` all clean, and a real Next.js production
+build both before and after the `themes: false` fix specifically to capture
+the `--color-base-100`/`-200`/`-300`/`-content` before/after grep above
+rather than asserting it from reading the theme block.
+
+**The `SideNav` fix was also checked against a real, logged-in console**
+(`just demo-up`, `demo@vsms.local`, four widths — 375/900/1100/1440) rather
+than resting on the component's own doc comment alone, since this console's
+own test suite has nothing that mounts `SideNav` at a real viewport width —
+precisely the gap that let the original regression through for a full
+release cycle unnoticed. At 375/900 the drawer opens the full off-canvas
+tree with "Sign out" reachable; at 1440 the full sidebar shows it directly;
+at 1100 the in-flow icon rail replaces what used to be a dead bordered
+gutter plus a floating rail on top of it. One real, narrower finding from
+that check, worth recording rather than smoothing over: **"Sign out" is
+still unreachable specifically in the `1024–1279px` band even after this
+fix**, confirmed both visually and via computed style
+(`getComputedStyle` on the rendered "Sign out" button showed
+`display: none` on its `px-3 lg:hidden xl:block` wrapper at `1100px`,
+`display: block`/visible at `375px` and `1440px`). This is not a
+regression this fix left behind — `SideNav`'s own doc says the icon rail
+"has always hidden" `accountSlot` in that band, `smallScreen` only ever
+changing what happens *below* `lg` — so it was equally true on `0.1.1`,
+before either bump. `console-chrome.tsx`'s own `accountSlot` doc already
+names the reason (`~52-64px` has no room for an email address or a
+sign-out control), and closing it is a real, separate design question for
+this console or the library — not something `smallScreen="off-canvas"`
+was ever going to touch, and not in this bump's scope.
+
+Also confirmed live, quickly, once the stack was up anyway: `Providers`'
+`active` pill, `Sender IDs`' `approved` badge (via its detail drawer — the
+list column renders a plain `"orange_cm: approved"` string, not this
+component, so the badge itself only appears once a row is opened), and
+`Simulator`'s `Eligible` outcome pill all render `border-edge bg-surface-2`
+with the hue's own foreground colour and a real, non-transparent
+`1px solid` border — not the invisible box the pre-fix build would have
+produced.
 
 ## Open questions blocking later milestones
 
