@@ -98,6 +98,17 @@ export function ConsoleChrome({
           footerItems={footerItems}
           currentPath={currentPath}
           accountSlot={accountSlot}
+          // `@vaam-apps/ui@0.1.2` changed the default from the off-canvas
+          // tree this shell was built against to a `fixed`, portalled
+          // floating rail — correct for a caller with no drawer of its
+          // own, but this shell already owns one (the `drawer`/
+          // `drawer-side` above), so the default left it with an empty
+          // drawer below `lg` and a permanently floating rail on top of
+          // it, with no `accountSlot`/"Sign out" reachable below `xl` at
+          // all. `"off-canvas"` is the single below-`lg` experience this
+          // shell was designed around: fully in-flow at every width, the
+          // full-label accordion tree inside the drawer.
+          smallScreen="off-canvas"
           className="min-h-dvh w-[260px] border-edge border-r lg:w-[64px] xl:w-[260px]"
         />
       </div>
