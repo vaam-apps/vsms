@@ -13,7 +13,6 @@
 
 import type { NavGroup, NavItem } from "@vaam-apps/ui";
 import {
-  Component,
   Cpu,
   Fingerprint,
   FlaskConical,
@@ -75,6 +74,4 @@ export const NAV_GROUPS: NavGroup[] = [
  * 'Invite members'") — the account row (§4's "Signed in as <email> · Sign
  * out") is not data, it depends on the signed-in session, so it is built
  * directly in `console-shell.tsx` instead of listed here. */
-export const NAV_FOOTER: NavItem[] = [
-  { label: "Component gallery", href: "/gallery", icon: Component },
-];
+export const NAV_FOOTER: NavItem[] = [];

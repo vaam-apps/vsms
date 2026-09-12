@@ -1,19 +1,16 @@
 @import "tailwindcss";
 @plugin "daisyui";
 
-/* @source directive for frontends/packages/ui — required for proper styling
-   of all @vaam-apps/ui components. Omitting it causes every @vaam-apps/ui class
-   to render unstyled, a silent bug that is miserable to debug.
+/* Tailwind v4 generates only the utilities it can see used, and it does
+   not scan `node_modules` on its own. Without this line every
+   @vaam-apps/ui component renders completely unstyled — no error, no
+   warning, just a page that looks broken in a way that is miserable to
+   debug.
 
-   Points at `src`, not `dist`: this app resolves the package through the
-   workspace, where `exports` is the TypeScript source (see that package's
-   own `publishConfig` for what npm consumers get instead). Scanning `src`
-   also means no build ordering — an edit to a component's classes is
-   picked up by `next dev` without rebuilding the package first. An
-   external consumer installing from npm points this at
-   `node_modules/@vaam-apps/ui/dist`, which carries the identical class
-   strings. */
-@source "../../../packages/ui/src";
+   `dist`, not `src`: the package is an npm dependency now rather than a
+   workspace sibling, and only `dist` is guaranteed present after a
+   plain install. The class strings are identical in both. */
+@source "../../node_modules/@vaam-apps/ui/dist";
 
 /* @vaam-apps/ui's design tokens: the one daisyUI theme block (dark) plus
    the status-hue palette, surface ladder, and type scale. Must come after `@plugin 'daisyui'` above so
@@ -24,7 +21,7 @@
    preprocessing step, not spec CSS, so the biome rule below doesn't apply
    to how this file actually builds. */
 /* biome-ignore lint/correctness/noInvalidPositionAtImportRule: Tailwind/daisyUI CSS-first directives are preprocessed, not spec CSS — see comment above */
-@import "../../../packages/ui/src/styles/theme.css";
+@import "@vaam-apps/ui/styles/theme.css";
 
 @layer base {
   :root {

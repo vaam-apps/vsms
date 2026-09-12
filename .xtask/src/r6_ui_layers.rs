@@ -63,9 +63,10 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
-/// Only the console is in scope. `frontends/packages/ui/**` is the dumb-
-/// component library — classes are precisely what belongs there — and
-/// `frontends/packages/{api,gateway,env}` render nothing at all.
+/// Only the console is in scope. The shared dumb-component library now
+/// lives in its own repository (`@vaam-apps/ui`), where classes are
+/// precisely what belongs; `frontends/packages/{api,gateway,env}` render
+/// nothing at all.
 const ROOT: &str = "frontends/apps/admin/app";
 
 /// Directory name marking route-local dumb components. R6's layer table
@@ -329,7 +330,7 @@ fn report_violations(violations: &[Violation], views: usize) -> Result<(), Strin
     }
     eprintln!();
     eprintln!("R6: pages compose, smart components decide, dumb components style.");
-    eprintln!("Classes belong in dumb components — frontends/packages/ui/src/components/**");
+    eprintln!("Classes belong in dumb components — the @vaam-apps/ui package");
     eprintln!("(shared) or frontends/apps/admin/app/<route>/components/** (route-local).");
     eprintln!("See AGENTS.md's R6 section for the layer table.");
     Err(format!("R6 violation ({} findings)", violations.len()))
