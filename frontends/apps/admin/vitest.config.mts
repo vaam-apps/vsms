@@ -16,6 +16,17 @@ import { defineConfig } from "vitest/config";
 // file rather than folded into a shared root config because this
 // workspace has no shared vitest config today.
 export default defineConfig({
+  // Next requires `jsx: "preserve"` in tsconfig.json, and from Vite 8 the
+  // transform honours that — so a test importing a `.tsx` component gets
+  // unprocessed JSX handed to the parser and fails with "content contains
+  // invalid JS syntax ... make sure to not set jsx to preserve". This
+  // overrides the tsconfig for the test transform only, leaving Next's
+  // own requirement untouched.
+  //
+  // `oxc`, not `esbuild`: Vite 8 transforms with Oxc, and the `esbuild`
+  // key is silently ignored — setting it changes nothing and the same
+  // parse error comes back, which is how this took two attempts.
+  oxc: { jsx: { runtime: "automatic" } },
   test: {
     include: ["app/**/*.test.ts", "lib/**/*.test.ts"],
   },

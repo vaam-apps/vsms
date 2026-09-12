@@ -1,3 +1,16 @@
+/*
+ * DEPRECATION, next@16: "The 'middleware' file convention is deprecated.
+ * Please use 'proxy' instead." — printed on every build since the Next 16
+ * bump. Still fully supported, so this file works as written.
+ *
+ * Not renamed in the same change that bumped the version, deliberately.
+ * This file is the console's entire authentication boundary — it mints
+ * and verifies the PKCE transaction, refreshes the access token ahead of
+ * expiry, and decides which pages a browser may open at all. Moving it
+ * deserves its own change and its own run through the real login flow,
+ * not a rename buried in a dependency sweep.
+ */
+
 /**
  * The dashboard's authentication gate (#194) — a human session, not
  * `DASHBOARD_AUTH=none|basic`.

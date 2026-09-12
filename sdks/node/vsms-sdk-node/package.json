@@ -31,12 +31,12 @@
     "test": "node --test"
   },
   "dependencies": {
-    "jose": "^5.9.6"
+    "jose": "^6.2.12"
   },
   "devDependencies": {
-    "@swc/cli": "^0.6.0",
-    "@swc/core": "^1.11.0",
-    "@types/node": "^24.0.0",
+    "@swc/cli": "^0.8.1",
+    "@swc/core": "^1.16.2",
+    "@types/node": "^26",
     "typescript": "5.9.3"
   },
   "engines": {

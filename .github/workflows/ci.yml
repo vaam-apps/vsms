@@ -28,7 +28,7 @@ jobs:
       PGPASSWORD: postgres
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Needed for two steps below: "Apply migrations" (`cargo run -p
       # sms-migrate`, replacing the deleted `ci/apply-migrations.sh` —
       # containerize-tooling PR, the maintainer's standing "no bash
@@ -79,7 +79,7 @@ jobs:
     # exactly what AGENTS.md/CONTRIBUTING.md already tell a human to do by
     # hand after every schema change.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
 
       # Matched to the pin in root Cargo.toml, read through
@@ -123,7 +123,7 @@ jobs:
       # v0.8.3 is the first tag carrying the installer's retry hardening
       # (cratestack#578/#618); v0.8.0 and earlier ship an older script.
       - name: Install cratestack CLI (matched to the library pin)
-        uses: cratestack/cratestack/.github/actions/install-cratestack-cli@v0.8.3
+        uses: cratestack/cratestack/.github/actions/install-cratestack-cli@v0.11.0
         with:
           version: ${{ steps.pin.outputs.version }}
 
@@ -145,7 +145,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -219,7 +219,7 @@ jobs:
     # *other* advisory, and on the accepted one only if the ignore entry is
     # ever removed.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
@@ -284,7 +284,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
@@ -315,7 +315,7 @@ jobs:
       # copied out and run standalone by an integrator — so it carries its
       # own committed pnpm-lock.yaml instead, and `--frozen-lockfile` keeps
       # a floating `express@^5.1.0` from silently changing under CI.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '26'
       - name: Enable corepack (pins pnpm from packageManager)
@@ -367,8 +367,8 @@ jobs:
       SKIP_ENV_VALIDATION: '1'
 
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '26'
       - name: Enable corepack (pins pnpm from packageManager)
@@ -411,7 +411,7 @@ jobs:
       # composite action, and why its `@v0.8.3` ref is independent of the
       # `version:` input rather than a duplicated value that can drift.
       - name: Install cratestack CLI (matched to the library pin)
-        uses: cratestack/cratestack/.github/actions/install-cratestack-cli@v0.8.3
+        uses: cratestack/cratestack/.github/actions/install-cratestack-cli@v0.11.0
         with:
           version: ${{ steps.pin.outputs.version }}
       # `just` is not preinstalled on GitHub runners, and no other job in this
@@ -513,7 +513,7 @@ jobs:
     name: R1, R2 and R6 — engineering rules
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # This job called plain bash/Python scripts before the `xtask` PR and
       # needed no Rust toolchain at all — now every check here is
       # `cargo xtask <check>`, so this step is new.
@@ -581,8 +581,8 @@ jobs:
     # package-lock.json, so nothing here can fail for a reason unrelated to
     # the diagrams themselves.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '26'
       - name: Install the parse-only checker

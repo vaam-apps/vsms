@@ -10,30 +10,30 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@hookform/resolvers": "5.7.1",
+    "@hookform/resolvers": "5.9.1",
     "@trpc/server": "11.18.0",
     "@vsms/api": "workspace:*",
     "@vsms/env": "workspace:*",
     "@vsms/gateway": "workspace:*",
     "@vsms/hooks": "workspace:*",
     "@vsms/ui": "workspace:*",
-    "jose": "6.2.8",
+    "jose": "6.2.12",
     "lucide-react": "^0.469.0",
-    "next": "15.5.25",
-    "nuqs": "^2.7.1",
-    "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "react-hook-form": "7.85.0",
-    "zod": "4.4.3"
+    "next": "16.3.5",
+    "nuqs": "^2.10.1",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-hook-form": "7.87.0",
+    "zod": "4.6.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
-    "@types/node": "^24.0.0",
+    "@types/node": "^26",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "daisyui": "^5",
     "tailwindcss": "^4.3.3",
     "typescript": "5.9.3",
-    "vitest": "^3.2.4"
+    "vitest": "^5"
   }
 }
