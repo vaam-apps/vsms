@@ -9,8 +9,19 @@
 
    `dist`, not `src`: the package is an npm dependency now rather than a
    workspace sibling, and only `dist` is guaranteed present after a
-   plain install. The class strings are identical in both. */
-@source "../../node_modules/@vaam-apps/ui/dist";
+   plain install. The class strings are identical in both.
+
+   ONE level up, not two: `@source` resolves relative to this stylesheet
+   (`frontends/apps/admin/app/globals.css`), and pnpm's isolated linker
+   puts every dependency at `frontends/apps/admin/node_modules` — a
+   sibling of `app/`, not of `app/..` (`frontends/apps`, where
+   `node_modules` does not exist at all). Tailwind does NOT error on an
+   `@source` glob that matches nothing; it silently contributes zero
+   utility classes, so a path off by one directory produces a green build
+   and an unstyled app rather than a failure. Verified live: this exact
+   path is the one that puts `gap-[5px]` (a status-pill-only arbitrary
+   value that appears nowhere in admin's own source) into the built CSS. */
+@source "../node_modules/@vaam-apps/ui/dist";
 
 /* @vaam-apps/ui's design tokens: the one daisyUI theme block (dark) plus
    the status-hue palette, surface ladder, and type scale. Must come after `@plugin 'daisyui'` above so
