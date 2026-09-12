@@ -187,8 +187,8 @@ importers:
         specifier: 11.18.0
         version: 11.18.0(typescript@5.9.3)
       '@vaam-apps/ui':
-        specifier: ^0.1.2
-        version: 0.1.2(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(daisyui@5.7.36)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(tailwindcss@4.3.3)
+        specifier: ^0.2.0
+        version: 0.2.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(daisyui@5.7.36)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(tailwindcss@4.3.3)
       '@vsms/api':
         specifier: workspace:*
         version: link:../../packages/api
@@ -1558,8 +1558,8 @@ packages:
   '@types/react@19.3.0':
     resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
 
-  '@vaam-apps/ui@0.1.2':
-    resolution: {integrity: sha512-8cJnZAqkOE5ZzsgmDji3OEL0dqZ3McYbJveckUfwq5D9hgtcUAVS/Ycsy8VoxdyYYPxZdnyvxJPRvcEvJU83iQ==}
+  '@vaam-apps/ui@0.2.0':
+    resolution: {integrity: sha512-yduLOz9kYvsPQlCyOp+GYu4IqT2Fv+8TjWKhGs9Ne53CJfs+kyGeTV6CBkcjF28/qUsP0ZpjzEt7/8LJzJKdwg==}
     engines: {node: '>=18'}
     peerDependencies:
       daisyui: ^5
@@ -3423,7 +3423,7 @@ snapshots:
     dependencies:
       csstype: 3.2.3
 
-  '@vaam-apps/ui@0.1.2(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(daisyui@5.7.36)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(tailwindcss@4.3.3)':
+  '@vaam-apps/ui@0.2.0(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(daisyui@5.7.36)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(tailwindcss@4.3.3)':
     dependencies:
       '@headlessui/react': 2.2.10(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
       '@radix-ui/react-dialog': 1.1.23(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
