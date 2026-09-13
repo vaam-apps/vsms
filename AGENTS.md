@@ -2473,6 +2473,90 @@ move to `.agents/` dropped it. **Currently synced from `v0.2.0`
 (commit `f48940b`).** Update this line and the copy together, or the next
 person has a hash that disagrees with something and no way to tell what.
 
+## CI runs only what a change can affect — and two ways that goes silently wrong
+
+`.github/workflows/ci.yml` gates each job behind a `changes` job
+(`dorny/paths-filter`), and cancels superseded PR runs. #385 is the case that
+prompted it: a one-file edit to this document ran workspace clippy, the
+live-Postgres suites, a Next.js build and a Postgres migration apply — about
+nineteen minutes of runner time to check that a paragraph of prose compiles,
+which it cannot.
+
+**Write the filters as positive lists. `'**'` followed by `'!'` exclusions
+does not do what it reads as.** The first attempt was subtractive, on the
+reasoning that a path nobody anticipated should default to *running* the job —
+the safe direction, if it worked. It does not: **paths-filter ORs its rules
+through picomatch**, so `'**'` matches every file and the negations never
+subtract. Every job runs always, and the configuration looks like it is
+filtering. Nothing fails; you simply never get the saving you think you
+configured. Caught by running the rules through picomatch directly against
+sixteen representative changesets rather than trusting the mental model, and
+worth re-running that way if these filters are ever rewritten. `'**/Cargo.toml'`
+is the safety net a positive list needs: a new crate in an unlisted directory
+cannot exist without a manifest.
+
+**`**/*.md` is compiled input in this workspace, not prose.** The same first
+attempt excluded it from the Rust jobs, which would have skipped `rust` for a
+change to a crate's `.md` doc sidecar — the files pulled in by
+`#![doc = include_str!("lib.md")]`, one of which has already broken
+`clippy -D warnings` (a `doc-lazy-continuation` in `sms-auth/src/op.md`, see
+the authkestra 0.8.0 section). Only root-level `*.md` and `docs/**` are safe
+to treat as prose.
+
+**Four couplings are non-obvious enough that each looks like an
+over-inclusion someone could tidy up.** They are commented at the filters for
+that reason: `schemas/**` reaches Rust (`include_server_schema!` generates it)
+and the TypeScript client; `backends/migrations/**` reaches Rust, because
+`sms-migrate`'s `build.rs` embeds every `up.sql` via `include_str!`;
+`docs/architecture.md` reaches the migrations job, because §2.10 is what
+`cargo xtask bootstrap-sql` generates `0002_bootstrap` from; and
+`**/Cargo.toml` reaches the `js` job, because `just client-check` regenerates
+the client with the cratestack CLI version read out of that file.
+
+`rules` is deliberately ungated — its eight xtask guards span backends,
+schemas, docs, frontends, sdks and the workflows themselves, so almost nothing
+is safe to exclude, and it finishes in about fifteen seconds.
+
+**Gate with a per-job `if:`, never `on.pull_request.paths`.** This repository
+has no named required status checks today, so both work. They stop being
+equivalent the moment one is added: a skipped job still *reports* (as skipped,
+which satisfies a required check), while a workflow that never triggers
+reports nothing at all and leaves the PR waiting forever on a check that will
+never arrive.
+
+### Concurrency: the setting that matters is which runs it is allowed to cancel
+
+Both workflows carry a concurrency group, with opposite cancellation
+behaviour, and both are keyed on `github.ref` rather than the workflow alone.
+
+`ci.yml` cancels superseded runs, but as an **expression, not a bare `true`**:
+`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`. On `main` the
+group key is identical for every merge (`github.ref` is `refs/heads/main` each
+time), so cancelling there would let one merge abort the run still verifying
+the merge before it, leaving a commit on main whose only check reads
+"cancelled".
+
+`release.yml` never cancels (`false`), because every job there either
+publishes — crates.io, npm, GHCR, the Helm chart — or gates something that
+does, and a publish interrupted halfway is the one failure in this repository
+that cannot be re-run into a clean state.
+
+**The reason `release.yml` is keyed per ref rather than globally is the part
+worth remembering**, because the obvious global lock is actively dangerous
+here: when a run is pending on a busy group and a newer one joins it, GitHub
+does not queue both — it **cancels the older pending run**. Under a global
+key, a routine push to `main` can therefore silently cancel a queued tag
+release, and the symptom is a release that simply never happened, with nothing
+failing anywhere to say so. Keyed per ref, `refs/tags/v0.3.1` is its own group
+and shares it with nothing.
+
+Two residues of that choice are accepted rather than solved, and are recorded
+at the group itself: three pushes to `main` in quick succession still drop the
+middle run while it is pending, so that commit gets no `:sha-<short>` image
+(correct enough for continuous delivery); and two *different* tags pushed
+close together still race for `:latest`, since they are in different groups by
+construction. Cut one release at a time.
+
 ## Conventions
 
 - Commits: imperative subject, body explaining *why*. Record framework surprises in the commit body and in §2.0 — that table is the most valuable thing here for whoever comes next.
