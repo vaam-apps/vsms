@@ -24,6 +24,39 @@ on:
       - 'v*.*.*'
   workflow_dispatch: {}
 
+# Serialise runs that would write the same image tag, and never cancel one.
+#
+# `cancel-in-progress: false` is the entire point — every job below either
+# publishes (crates.io, npm, GHCR, the Helm chart) or gates something that
+# does, and a publish interrupted halfway is the one failure in this repo
+# that cannot be re-run into a clean state.
+#
+# The group is keyed on `github.ref`, not the workflow alone, and that is a
+# deliberate narrowing rather than the obvious global lock. When a run is
+# pending on a busy group and a newer one joins it, GitHub does not queue
+# both — it CANCELS the older pending run. Under a global key that turns a
+# routine push to `main` into a mechanism that can silently cancel a queued
+# tag release, which would look exactly like a release that never happened.
+# Keyed per ref, a tag shares a group with nothing: `refs/tags/v0.3.1` is
+# its own key, so no release can ever be cancelled by anything else.
+#
+# What this does fix: repeated pushes to `main`, which all write the same
+# floating `:main` tag and could otherwise interleave and leave it pointing
+# at the older commit.
+#
+# Two residues, stated rather than papered over:
+#   - Three pushes to `main` in quick succession still drop the middle
+#     one's run while it is pending, so that commit gets no `:sha-<short>`
+#     image. Acceptable for continuous delivery, where the newest build is
+#     the one anybody wants — and much cheaper than the alternative above.
+#   - Two DIFFERENT tags pushed close together still race for `:latest`,
+#     because they are in different groups by construction. Fixing that
+#     needs the global key this comment just argued against, so it stays
+#     open on purpose. Cut one release at a time.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   packages: write
