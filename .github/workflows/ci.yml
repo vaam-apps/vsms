@@ -5,6 +5,24 @@ on:
     branches: [main]
   pull_request:
 
+# Pushing three commits to a pull request runs the whole gate three times,
+# and only the last result can matter — the first two are answering a
+# question about a tree that no longer exists.
+#
+# `cancel-in-progress` is an expression, not a bare `true`, and the
+# distinction is the point: on `main` the group key is the same for every
+# merge (`github.ref` is `refs/heads/main` each time), so cancelling there
+# would let one merge abort the run that was still verifying the merge
+# before it — leaving a commit on main whose only check is "cancelled".
+# PR runs are keyed per pull request and are safe to cancel.
+#
+# Deliberately not added to release.yml: it publishes to crates.io, npm and
+# GHCR, and a publish interrupted halfway is the one failure here that
+# cannot be re-run into a clean state.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   # Which of the jobs below actually need to run for this change.
   #
