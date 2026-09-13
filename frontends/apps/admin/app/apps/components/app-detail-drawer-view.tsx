@@ -2,7 +2,7 @@
 // (in `apps-screen.tsx`) owns the query, the form, both mutations and the
 // delete-confirm boolean; this component only lays it out.
 
-import { Button, IdDisplay, MoreDetailDrawer, Skeleton } from "@vaam-apps/ui";
+import { Button, IdDisplay, MoreDetailDrawer, SkeletonText } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import type { UseFormReturn } from "react-hook-form";
 import type { AppEditValues } from "../app-forms";
@@ -76,7 +76,12 @@ export function AppDetailDrawerView({
         </>
       }
     >
-      {isLoading && <Skeleton className="h-32 w-full" />}
+      {/* SkeletonText, not a flat slab: what's arriving is a multi-field
+          edit form (`AppEditForm`), and a paragraph-shaped placeholder
+          with a short last line reads as prose/form fields rather than a
+          single indistinct block. `lines={6}` approximates the same
+          visual weight the previous `h-32` slab held. */}
+      {isLoading && <SkeletonText lines={6} />}
       {loadError !== null && <ErrorBanner>Could not read this app: {loadError}</ErrorBanner>}
 
       {appId !== null && hasDetail && (

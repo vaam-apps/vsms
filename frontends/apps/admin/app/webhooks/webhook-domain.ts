@@ -1,6 +1,9 @@
 // Pure, React-free domain logic for the Webhooks screen (#55, R6): event
-// type vocabulary, form schemas, and the two small formatters
-// (`maskSecret`/`payloadFor`) that don't need a component to exist.
+// type vocabulary, form schemas, and `payloadFor`, the one small formatter
+// that doesn't need a component to exist. The secret-masking formatter
+// that used to live here (`maskSecret`) is gone — `secret-field.tsx` now
+// renders `@vaam-apps/ui`'s own `MaskedValue`, the component that library
+// was written to replace this exact hand-rolled mask with.
 // Extracted verbatim out of webhooks-screen.tsx per AGENTS.md's R6 — a
 // screen file should read as fetch + handlers + composition.
 
@@ -22,11 +25,6 @@ export const EVENT_TYPES = [
   "message.cancelled",
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
-
-export function maskSecret(value: string): string {
-  const tail = value.length > 4 ? value.slice(-4) : value;
-  return `whsec_${"•".repeat(10)}${tail}`;
-}
 
 export function payloadFor(attempt: Pick<AttemptListItem, "payload">): string {
   try {

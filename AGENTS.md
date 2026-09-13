@@ -2450,6 +2450,14 @@ differently — they prove the package's *shape* didn't change, never its
 rendering changes, no API change at all. See the section below for what that
 means in practice and the three defects it left live in this console.
 
+**A version bump also re-copies `.claude/skills/vaam-ui/`.** That directory
+is a copy of `skills/vaam-ui/` from the `vaam-apps/ui` repo at the tag this
+project consumes — not shipped in the npm tarball, so nothing here keeps it
+in sync automatically. Every defect this section records (the nav pitfall,
+`themes: false`, `isQuietHue`'s quiet-hue rule) was found *from* that skill,
+none of it derivable from `dist/`, so the next bump should re-copy the whole
+directory from the new tag rather than leave the old tag's copy in place —
+see the header this copy itself carries for the exact provenance to update.
 
 ## Conventions
 
