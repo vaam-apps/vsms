@@ -2450,14 +2450,28 @@ differently — they prove the package's *shape* didn't change, never its
 rendering changes, no API change at all. See the section below for what that
 means in practice and the three defects it left live in this console.
 
-**A version bump also re-copies `.claude/skills/vaam-ui/`.** That directory
-is a copy of `skills/vaam-ui/` from the `vaam-apps/ui` repo at the tag this
-project consumes — not shipped in the npm tarball, so nothing here keeps it
-in sync automatically. Every defect this section records (the nav pitfall,
-`themes: false`, `isQuietHue`'s quiet-hue rule) was found *from* that skill,
-none of it derivable from `dist/`, so the next bump should re-copy the whole
-directory from the new tag rather than leave the old tag's copy in place —
-see the header this copy itself carries for the exact provenance to update.
+**A version bump also re-copies the `vaam-ui` skill.** It is a copy of
+`skills/vaam-ui/` from the `vaam-apps/ui` repo at the tag this project
+consumes — not shipped in the npm tarball, so nothing keeps it in sync
+automatically. Every defect this section records (the nav pitfall,
+`themes: false`, `isQuietHue`'s quiet-hue rule) was found *from* that skill
+and none of it is derivable from `dist/`, so a bump that leaves the old
+tag's copy in place quietly removes the thing that caught the last three
+regressions.
+
+**It lives at `.agents/skills/vaam-ui/` since #384**, with `.claude/skills/
+vaam-ui` and `.goose/skills/vaam-ui` as symlinks to it, tracked by
+`skills-lock.json`. Do not hand-edit the copy: the lockfile records a
+`computedHash` over it, so a local edit reads as drift from the source
+rather than as an intended change.
+
+**The lockfile records `source` and that hash, but not which tag they came
+from** — so it can tell you the copy no longer matches upstream, not which
+upstream it last matched. That fact lives here instead, and #384 is why:
+the copy used to carry its own provenance header naming the tag, and the
+move to `.agents/` dropped it. **Currently synced from `v0.2.0`
+(commit `f48940b`).** Update this line and the copy together, or the next
+person has a hash that disagrees with something and no way to tell what.
 
 ## Conventions
 
