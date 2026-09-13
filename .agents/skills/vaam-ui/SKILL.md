@@ -5,15 +5,6 @@ description: Build operator-console screens with @vaam-apps/ui — the dark-firs
 
 # @vaam-apps/ui
 
-> **This is a copy, not the source.** Copied from
-> [`vaam-apps/ui`](https://github.com/vaam-apps/ui) at tag `v0.2.0`
-> (commit `f48940b`), from `skills/vaam-ui/` in that repo. It is not
-> shipped in the npm tarball — `@vaam-apps/ui`'s own `package.json` has
-> no `files`/`exports` entry naming it — so it goes stale silently the
-> moment the consumed version moves. **Re-copy this whole directory
-> whenever `@vaam-apps/ui` is bumped** (see AGENTS.md's "Bumping
-> `@vaam-apps/ui`" section), rather than hand-editing it in place here.
-
 A dark-first React component library for operator consoles — screens where
 someone is answering *"what happened to this one record, and does anybody
 need to do something?"* about one row out of a hundred thousand.

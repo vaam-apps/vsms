@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "vaam-ui": {
+      "source": "vaam-apps/ui",
+      "sourceType": "github",
+      "skillPath": "skills/vaam-ui/SKILL.md",
+      "computedHash": "b9a7c0374b564db31db53cd6ef4f0c377383e6757aa30edc270b4c963b00ec6c"
+    }
+  }
+}
