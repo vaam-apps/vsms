@@ -6,9 +6,135 @@ on:
   pull_request:
 
 jobs:
+  # Which of the jobs below actually need to run for this change.
+  #
+  # Every filter here is written SUBTRACTIVELY — it starts from `**` and
+  # removes only what provably cannot affect the job — except the two whose
+  # inputs are a genuinely closed set (`deny`, `diagrams`). That direction is
+  # deliberate and is the whole safety property: a path nobody anticipated
+  # matches `**` and RUNS the job. The inverse (list what a job needs) fails
+  # the other way, and the cost of the two mistakes is not symmetric — an
+  # over-run job costs a few CI minutes, an under-run one lets a regression
+  # merge green.
+  #
+  # `rules` is deliberately absent: it runs eight xtask guards spanning
+  # backends, schemas, docs, frontends, sdks and the workflows themselves, so
+  # almost nothing is safe to exclude, and it finishes in ~15s. Filtering it
+  # would add risk to save nothing.
+  #
+  # Non-obvious couplings encoded below, each of which would otherwise look
+  # like an over-inclusion someone could "tidy up" later:
+  #   - `schemas/**` reaches Rust (`include_server_schema!` generates it),
+  #     the TypeScript client (`just client-check` regenerates it), and both
+  #     migration jobs.
+  #   - `backends/migrations/**` reaches Rust: sms-migrate's `build.rs`
+  #     embeds every `up.sql`/`up.pre.sql` via `include_str!`.
+  #   - `docs/architecture.md` reaches the migrations job: §2.10 is the
+  #     source `cargo xtask bootstrap-sql` generates `0002_bootstrap` from.
+  #   - `backends/**` reaches the js job: `just client-check` builds
+  #     sms-gateway and diffs the generated client's calls against its routes.
+  #   - `examples/node/webhook-receiver/**` reaches the live job, which
+  #     spawns it as a real subprocess (`hooks_node_receiver_live`).
+  changes:
+    name: which jobs need to run
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      live: ${{ steps.filter.outputs.live }}
+      js: ${{ steps.filter.outputs.js }}
+      migrations: ${{ steps.filter.outputs.migrations }}
+      schema: ${{ steps.filter.outputs.schema }}
+      deny: ${{ steps.filter.outputs.deny }}
+      diagrams: ${{ steps.filter.outputs.diagrams }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4.0.3
+        id: filter
+        with:
+          filters: |
+            # Positive lists, not `'**'` plus `'!'` exclusions. That was the
+            # first attempt and it is silently wrong: paths-filter ORs its
+            # rules through picomatch, so `'**'` matches every file and the
+            # negations never subtract anything — every job runs always, and
+            # the config looks like it is filtering. Verified against
+            # picomatch directly rather than trusted.
+            #
+            # `'**/Cargo.toml'` is the safety net for the one thing a
+            # positive list gets wrong: a new Rust crate in a directory
+            # nobody listed here still matches, because it cannot exist
+            # without a manifest.
+            rust: &rust
+              - 'backends/**'
+              - 'schemas/**'
+              - '.xtask/**'
+              - 'sdks/rust/**'
+              - 'examples/rust/**'
+              - 'deploy/backup-tool/**'
+              - 'ci/e2e-integration/**'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - 'rust-toolchain*'
+              - '.cargo/**'
+              - '.github/workflows/ci.yml'
+            # Same compiled inputs as rust, plus the Node receiver it spawns
+            # as a real subprocess (`hooks_node_receiver_live`).
+            live:
+              - *rust
+              - 'examples/node/webhook-receiver/**'
+            js:
+              - 'frontends/**'
+              - 'sdks/node/**'
+              - 'examples/node/**'
+              - 'schemas/**'
+              - 'backends/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'biome.json'
+              - 'turbo.json'
+              - '.npmrc'
+              - 'justfile'
+              - 'ci/*.mjs'
+              # `just client-check` regenerates the TypeScript client with the
+              # cratestack CLI at the version `cargo xtask cratestack-pin`
+              # reads out of Cargo.toml, then diffs its calls against the
+              # routes sms-gateway actually serves. A pin bump changes that
+              # generated output, so it has to reach this job.
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            migrations:
+              - 'schemas/**'
+              - 'backends/**'
+              - '.xtask/**'
+              - 'ci/test-state-machine.sql'
+              - 'docs/architecture.md'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            schema:
+              - 'schemas/**'
+              - 'backends/**'
+              - '.xtask/**'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            deny:
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - 'deny.toml'
+              - '.github/workflows/ci.yml'
+            diagrams:
+              - 'docs/architecture.md'
+              - 'docs/roadmap.md'
+              - 'ci/mermaid-parse/**'
+              - '.github/workflows/ci.yml'
+
   migrations:
     name: migrations apply to an empty database
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.migrations == 'true'
 
     services:
       postgres:
@@ -63,6 +189,8 @@ jobs:
   schema-drift:
     name: 0001_init matches `cratestack migrate diff`
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.schema == 'true'
 
     # #204: none of the four adjacent gates this repo already had actually
     # checked that backends/migrations/postgres/0001_init/{up,down}.sql is
@@ -133,6 +261,8 @@ jobs:
   rust:
     name: cargo fmt, clippy, test
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
 
     env:
       # `include_server_schema!` expands 16 models into one compilation unit,
@@ -209,6 +339,8 @@ jobs:
   deny:
     name: cargo deny (advisories, bans, licenses, sources)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.deny == 'true'
 
     # #174: this check existed (`just deny`, `deny.toml`) but nothing in CI
     # ever ran it, so RUSTSEC-2023-0071 (Marvin Attack, in `rsa` via
@@ -275,6 +407,8 @@ jobs:
   live:
     name: live-Postgres suites (sms-test-support)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.live == 'true'
 
     env:
       # Same reasoning and same cap as the `rust` job above — this job
@@ -347,6 +481,8 @@ jobs:
   js:
     name: pnpm biome, typecheck, build, test
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.js == 'true'
     permissions:
       contents: read
       id-token: write  # npm publish --provenance needs an OIDC token
@@ -563,6 +699,8 @@ jobs:
   diagrams:
     name: mermaid diagrams parse
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.diagrams == 'true'
 
     # #179: this job used to install @mermaid-js/mermaid-cli, whose
     # puppeteer postinstall downloads a Chrome headless-shell build from an
