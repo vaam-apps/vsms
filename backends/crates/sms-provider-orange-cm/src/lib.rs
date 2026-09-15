@@ -292,14 +292,13 @@ struct SubmitResponseEnvelope {
     outbound_sms_message_request: SubmitResponseBody,
 }
 
+/// Orange's real 201 body (captured live, #95) carries `resourceURL` DIRECTLY
+/// inside `outboundSMSMessageRequest` — NOT nested under a `resourceReference`
+/// wrapper as the public OneAPI docs describe. Verified against a real
+/// `201 Created` response:
+/// `{"outboundSMSMessageRequest":{...,"resourceURL":"<host>/.../requests/<uuid>"}}`.
 #[derive(Debug, Deserialize)]
 struct SubmitResponseBody {
-    #[serde(rename = "resourceReference")]
-    resource_reference: ResourceReference,
-}
-
-#[derive(Debug, Deserialize)]
-struct ResourceReference {
     #[serde(rename = "resourceURL")]
     resource_url: String,
 }
@@ -374,10 +373,7 @@ impl SmsProvider for OrangeCmProvider {
                     source: Some(Box::new(error)),
                 })?;
 
-        let resource_url = parsed
-            .outbound_sms_message_request
-            .resource_reference
-            .resource_url;
+        let resource_url = parsed.outbound_sms_message_request.resource_url;
         let provider_ref = resource_id_from_url(&resource_url)
             .ok_or_else(|| ProviderError::Indeterminate {
                 message: format!(
@@ -559,9 +555,7 @@ mod tests {
             .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
                 "outboundSMSMessageRequest": {
-                    "resourceReference": {
-                        "resourceURL": "https://api.orange.com/.../requests/res-42"
-                    }
+                    "resourceURL": "https://api.orange.com/.../requests/res-42"
                 }
             })))
             .mount(&server)
@@ -605,7 +599,7 @@ mod tests {
             })))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
                 "outboundSMSMessageRequest": {
-                    "resourceReference": {"resourceURL": "https://x/res-77"}
+                    "resourceURL": "https://x/res-77"
                 }
             })))
             .mount(&server)
@@ -640,7 +634,7 @@ mod tests {
             .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
                 "outboundSMSMessageRequest": {
-                    "resourceReference": {"resourceURL": "https://x/res-78"}
+                    "resourceURL": "https://x/res-78"
                 }
             })))
             .mount(&server)
@@ -690,7 +684,7 @@ mod tests {
             .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
                 "outboundSMSMessageRequest": {
-                    "resourceReference": {"resourceURL": "https://x/res-1"}
+                    "resourceURL": "https://x/res-1"
                 }
             })))
             .mount(&server)
@@ -866,7 +860,7 @@ mod tests {
             .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
             .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
                 "outboundSMSMessageRequest": {
-                    "resourceReference": {"resourceURL": ""}
+                    "resourceURL": ""
                 }
             })))
             .mount(&server)

@@ -359,7 +359,7 @@ async fn mount_orange(server: &MockServer) {
                 .set_delay(delay)
                 .set_body_json(serde_json::json!({
                     "outboundSMSMessageRequest": {
-                        "resourceReference": {"resourceURL": format!("https://x/res-kill9-{n}")}
+                        "resourceURL": format!("https://x/res-kill9-{n}")
                     }
                 }))
         })

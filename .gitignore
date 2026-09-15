@@ -93,3 +93,6 @@ frontends/packages/sms-client/*
 # Chart.lock itself IS committed (it's the pin, same role Cargo.lock
 # plays for the Rust workspace).
 deploy/charts/vsms/charts/
+
+# Personal scratch for the real-handset (#36) test 
+real-send/
