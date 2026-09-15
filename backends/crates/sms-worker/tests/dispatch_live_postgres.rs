@@ -518,7 +518,7 @@ async fn a_well_formed_message_reaches_submitted() {
         .and(path("/smsmessaging/v1/outbound/tel:+2370000/requests"))
         .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
             "outboundSMSMessageRequest": {
-                "resourceReference": {"resourceURL": "https://x/res-live-1"}
+                "resourceURL": "https://x/res-1"
             }
         })))
         .mount(&server)

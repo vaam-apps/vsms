@@ -232,15 +232,14 @@ fn dlr_body(reference: &str, status: &DlrStatus) -> serde_json::Value {
     })
 }
 
-/// The submit response body Orange's real API returns on success — same
-/// `outboundSMSMessageRequest.resourceReference.resourceURL` envelope
-/// `OrangeCmProvider::submit` extracts a `resource_id` from.
+/// The submit response body Orange's real API returns on success (captured
+/// live, #95): `resourceURL` sits DIRECTLY inside `outboundSMSMessageRequest`,
+/// NOT nested under a `resourceReference` wrapper as the public OneAPI docs
+/// describe.
 fn accepted_body(reference: &str) -> serde_json::Value {
     serde_json::json!({
         "outboundSMSMessageRequest": {
-            "resourceReference": {
-                "resourceURL": format!("https://fake-orange.invalid/requests/res-{reference}")
-            }
+            "resourceURL": format!("https://fake-orange.invalid/requests/res-{reference}")
         }
     })
 }
@@ -255,7 +254,7 @@ fn response_for(decision: &SubmitDecision, reference: &str) -> ResponseTemplate 
         }
         SubmitOutcome::AcceptedMissingResourceUrl => {
             ResponseTemplate::new(201).set_body_json(serde_json::json!({
-                "outboundSMSMessageRequest": {"resourceReference": {"resourceURL": ""}}
+                "outboundSMSMessageRequest": {"resourceURL": ""}
             }))
         }
         SubmitOutcome::RateLimited => ResponseTemplate::new(429),
