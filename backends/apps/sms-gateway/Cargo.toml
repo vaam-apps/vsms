@@ -29,7 +29,7 @@ sms-provider.workspace = true
 sms-provider-orange-cm.workspace = true
 sms-provider-mtn.workspace = true
 # commands/serve.rs's --mtn-cost-per-segment-xaf flag — money, never a
-# float (see `MtnAggregatorConfig::cost_per_segment_xaf`'s own doc).
+# float (see `MtnConfig::cost_per_segment_xaf`'s own doc).
 rust_decimal.workspace = true
 
 # Command::ProvisionUser (#194)'s one-time password generation and hashing —

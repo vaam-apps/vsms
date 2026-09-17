@@ -3,6 +3,7 @@
 pub(crate) mod bootstrap;
 pub(crate) mod create_app;
 pub(crate) mod healthcheck;
+pub(crate) mod mtn_subscribe_dlr;
 pub(crate) mod provision_client;
 pub(crate) mod provision_user;
 pub(crate) mod record_route_validation;

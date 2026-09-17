@@ -2858,6 +2858,108 @@ had changed and `sdks/rust/vsms-sdk-rust/schema.cstack` had not been re-vendored
 exact omission that made #185 red. A guard you have miscounted as passing is worse than
 one you never ran.
 
+## `sms-provider-mtn` rewritten against MTN's real Swagger — the placeholder is gone
+
+`backends/crates/sms-provider-mtn` targeted an **invented** contract from the day it was
+written (#61): `POST {base_url}/v1/messages`, static Bearer API key, `201` + `messageId`,
+a DLR echoing that id back. Its own module doc said so. MTN's real Swagger has now been
+obtained, **vendored in-crate** at `backends/crates/sms-provider-mtn/mtn-sms-v3-swagger.yaml`,
+and the adapter rewritten against it. The maintainer's call was **MTN direct (MADAPI)**
+rather than a licensed aggregator, which sets aside §6.4's sender-ID pre-registration
+argument for going via one.
+
+### Every element of the guess was wrong, and the guess was a careful one
+
+That is the finding worth keeping. The placeholder was not lazy — it was built from the
+common shape across four real aggregators §6.2 names (Nexah, Africa's Talking, Infobip,
+Twilio), and documented honestly as a guess. It still matched **nothing**:
+
+| | invented | real |
+|---|---|---|
+| auth | static Bearer API key | `OAuth2 client_credentials`, `api.mtn.com/v1/oauth/access_token/accesstoken?grant_type=client_credentials`, scope `SEND-SMS` |
+| endpoint | `POST {base}/v1/messages` | `POST {base}/v3/sms/messages/sms/outbound` |
+| success | `201` | **`200`** *and* a body `statusCode` of `'0000'` |
+| request | `to`, `from`, `text`, `reference` | `receiverAddress[]`, `message`, `clientCorrelatorId` (**`maxLength: 36`**), `serviceCode`, `requestDeliveryReceipt`, `senderAddress?`, `keyword?` |
+| response | `{messageId}` | `{statusCode, statusMessage, transactionId, data:{status}}` |
+| DLR | `messageId`, `status`, `errorCode`, `network` | `clientCorrelatorId`, `deliveryStatus`, `details`, `completedDate`, `id`, `error`, `senderAddress`, `receiverAddress`, `submittedDate` |
+| statuses | `DELIVERED/FAILED/EXPIRED/REJECTED/PENDING/UNCERTAIN` | `ACCEPTD/DELETED/DELIVERED/ENROUTE/UNKNOWN/EXPIRED/REJECTED/UNDELIVERED` |
+
+**The one prediction that held is the one `OPEN_QUESTIONS.md` §2.1 already made**: the
+`SmsProvider` impl and the connect-vs-read `ProviderError` classification needed no change,
+because they follow from what `reqwest` guarantees rather than from any vendor's behaviour.
+That is the durable lesson — when you must guess a vendor contract, guess the *payload* and
+keep the *transport reasoning* independent of it, because only the second half will survive.
+
+### Three things that reach beyond this crate
+
+- **MTN and Orange are mirror images on correlation.** MADAPI's DLR echoes back the
+  caller-supplied `clientCorrelatorId`; Orange sends its own `resource_id` and (per its own
+  documented body) accepts no caller token at all. So `SubmitAck::provider_ref_alt` is
+  populated here and `None` there — and `providerMessageRefAlt`, which the Orange cleanup
+  stopped writing hours earlier the same day, turns out to be genuinely load-bearing. Its
+  original §2.7/§6.2 justification was the SMPP hex/decimal trap; this is a second,
+  independent reason it must stay. `sms_api::dlr::ingest_one`'s `providerMessageRef OR
+  providerMessageRefAlt` match needed no change to serve both.
+- **`ACCEPTD` and `ENROUTE` are the `InFlight` case**, confirming that variant generalises
+  beyond the Orange statuses it was added for. Both are SMPP `message_state` names
+  (`ACCEPTD` is the five-character truncation), and mapping them to `Uncertain` would cost
+  those messages their retry path for exactly the reason that variant's doc records.
+- **MTN's DLR endpoint is registered by API, not by support ticket.** `POST
+  /messages/sms/subscription` with a `deliveryReportUrl`. That is automatable where
+  Orange's whitelisting is not, so it is a real subcommand — `sms-gateway
+  mtn-subscribe-dlr` — rather than a runbook paragraph. **DLRs do not arrive without it**:
+  MADAPI needs `requestDeliveryReceipt: true` on each message (the adapter always sends it)
+  *and* a registered URL. Miss the registration and messages submit fine, reach `submitted`,
+  and sit there forever with no receipt — indistinguishable from a broken route.
+
+### Provenance, stated because it is load-bearing for trust
+
+The Swagger was downloaded **2026-09-17 with TLS certificate verification bypassed**.
+`developers.mtn.com`'s Let's Encrypt certificate expired `Sep 16 06:02:41 2026 GMT` — one
+day stale — and the chain was otherwise intact (`CN=developers.mtn.com`, Let's Encrypt
+issuer), verified with `openssl s_client` before the bypass. This was done at the
+maintainer's explicit direction after the concern was raised. SHA-256 of the vendored file:
+`5a74e8531afd7d087829f668a5c493df157e620dc0480c9213ef5bcee083fb94`.
+
+**Re-download over a valid certificate and diff before trusting it commercially.** The
+whole point of vendoring it is that this is reproducible rather than a claim.
+
+Note also what the Swagger does **not** specify: the token *response* body.
+`securityDefinitions.OAuth2` names only `tokenUrl`, so `access_token`/`expires_in` is an
+assumed-standard OAuth2 shape here, flagged as unverified in `token.md` — unlike Orange's,
+which §6.2 confirms from Orange's own documented response.
+
+### Decisions taken where the spec was silent
+
+Each is argued at its own call site; recorded here so they are findable:
+
+- **A `200` with a non-`'0000'` `statusCode` → `ProviderError::Rejected`.** No MADAPI error
+  catalogue is public, and `Rejected` has the narrowest blast radius: fails one message, no
+  circuit trip, no retry storm.
+- **`DELETED` → `Rejected`** — SMPP semantics: administratively removed, terminal, not
+  retryable, and not a delivery failure in the `UNDELIVERED` sense.
+- **A `completedDate` that fails RFC3339 parsing does not fail the notification** — it warns
+  and leaves `occurred_at` `None`. The Swagger says `format: datetime` and nothing more, so
+  RFC3339 is itself an assumption; `DeliveryReceipt.receivedAt` is stamped by the database
+  regardless, making this a diagnostic downgrade rather than a correctness one.
+- **`error` beats `details` into `error_code`**, with `details` as fallback. `DeliveryUpdate`
+  has one slot, so whichever loses is dropped — accepted information loss, not an oversight.
+- **`sender_id` left out of the all-or-none credential group**, because `senderAddress` is
+  optional in the Swagger. The wire value now prefers the per-message `req.sender_id` (the
+  already-approved sender `sendMessage` resolved) and falls back to config — a real
+  behaviour change from the placeholder, which ignored `req.sender_id` entirely.
+- **`KEY` is `"mtn_cm"`**, symmetric with `"orange_cm"`. MADAPI is pan-African; the key names
+  *this deployment's market*, not the API.
+
+### A real pre-existing bug found during the rewrite
+
+The old `MtnAggregatorConfig` derived `Debug` with no redaction, so `{:?}` on it would have
+printed `api_key` in plaintext. `MtnConfig` hand-writes `Debug`, matching what
+`OrangeCmConfig` already did. Nothing logged it today — but `#[derive(Debug)]` on a
+credential-bearing struct is one `tracing::debug!` away from a leak, which is the same class
+of defect `.xtask/src/secret_env_args.rs` exists to catch on the CLI side (that guard's list
+moved from `MTN_AGGREGATOR_API_KEY` to `MTN_CLIENT_SECRET` with this change).
+
 ## Open questions blocking later milestones
 
 1. **Hosting location.** Law No. 2024/017 requires prior authorisation for *all* cross-border personal-data transfers, and "legitimate interest" is not a lawful basis. Cameroon-hosted is the safe default. Needs an answer before production.

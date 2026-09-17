@@ -42,9 +42,14 @@ stays on aggregator HTTP indefinitely; title needed and obtained → M7
 proceeds, and inbound STOP handling via a real short code
 ([#76](https://github.com/vymalo/vsms/issues/76)) becomes possible at all.
 
-**Note this is not blocking anything today.** M5's aggregator path
-deliberately avoids the question, which is why the MTN adapter was built that
-way. It becomes urgent only when someone wants a direct interconnect.
+**Note this is not blocking anything today, and the 2026-09-17 MTN rewrite did
+not change that** — though it is now easy to misread, so state it plainly:
+`sms-provider-mtn` targets **MTN direct (MADAPI)**, which is a self-service
+customer relationship over ordinary HTTPS, exactly like Orange's developer
+API. That is *not* a direct interconnect. "Direct" here means "not through an
+aggregator", not "peered with MTN's SMSC". An ART title is about the latter,
+so this question becomes urgent only when someone wants real SMPP
+interconnect (M7), and nothing in M5 touches it.
 
 ### 1.2 Should the console act as the logged-in human? (settled 2026-08-13, [#211](https://github.com/vymalo/vsms/issues/211))
 
@@ -153,24 +158,40 @@ These are not decisions. They are places where the system asserts something
 that has never been tested against the real world, and where being wrong is
 silent.
 
-### 2.1 The MTN aggregator API shape is invented
+### 2.1 The MTN API shape is no longer invented (resolved 2026-09-17)
 
-`backends/crates/sms-provider-mtn` targets a **placeholder** request/response contract
-— `POST {base_url}/v1/messages`, Bearer API-key auth, a `201` with a
-`messageId`, and a DLR echoing it back. That shape was chosen to match the
-common pattern across the aggregators §6.2 names as candidates; it was **not**
-transcribed from any real vendor's documentation, because no aggregator
-contract exists yet.
+**Resolved.** `backends/crates/sms-provider-mtn` used to target a placeholder
+contract — `POST {base_url}/v1/messages`, Bearer API-key auth, a `201` with a
+`messageId` — chosen to match the common pattern across the aggregators §6.2
+names as candidates, and transcribed from no vendor's documentation at all.
 
-What *is* trustworthy in that crate: the `SmsProvider` impl and the
-connect-vs-read `ProviderError` classification, which follow from what
-`reqwest` itself guarantees rather than from any vendor's behaviour.
+MTN's real Swagger is now vendored at
+`backends/crates/sms-provider-mtn/mtn-sms-v3-swagger.yaml` and the adapter is
+rewritten against it (OAuth2 `client_credentials`, `POST
+/v3/sms/messages/sms/outbound`, `200` + a `'0000'` `statusCode`, an
+eight-value SMPP-derived `deliveryStatus` enum, and an API-registered
+`deliveryReportUrl`). See §6.2 for the contract and the maintainer's decision
+to target MTN direct rather than an aggregator.
 
-**When a real contract lands, replace the request/response structs — not the
-trait impl or the error classification around them.** And revisit
-`provider_ref_alt`, which is always `None` here purely because the *assumed*
-DLR shape echoes the submit id back; that is a property of the guess, not a
-proven simplification.
+**Every part of the old guess turned out wrong** — auth method, endpoint,
+success status code, every request field name, the response shape, every DLR
+field name, and the status vocabulary. Worth recording, because the guess was
+a *careful* one, built from the common shape across four real aggregators, and
+it still matched nothing. The prediction that held up is the one this entry
+already made: the `SmsProvider` impl and the connect-vs-read `ProviderError`
+classification needed no change, because they follow from what `reqwest`
+guarantees rather than from any vendor's behaviour.
+
+The `provider_ref_alt` caveat this entry flagged resolved the opposite way
+from the guess, and usefully: MTN's DLR echoes back the caller-supplied
+`clientCorrelatorId`, so the alt column is genuinely load-bearing here — the
+mirror image of Orange, which reports its own `resource_id` and accepts no
+caller token at all.
+
+**What remains unverified** is now the same thing it is for Orange: nothing
+has ever been run against a real MTN account. A documented shape is not an
+observed one. Note also the provenance caveat in §6.2 — the Swagger was fetched
+while `developers.mtn.com`'s TLS certificate was expired.
 
 ### 2.2 No message has ever reached a real handset
 

@@ -27,14 +27,16 @@ const SECRET_ENV_VARS: [&str; 4] = [
     "DATABASE_URL",
     "SMS_HASH_PEPPER",
     "ORANGE_CM_CLIENT_SECRET",
-    // The MTN aggregator issues a static Bearer key rather than an
-    // OAuth2 client id/secret pair, so this single value is the whole
-    // credential — strictly more sensitive than Orange's secret, which
-    // is useless without its client id. Added when the MTN adapter was
-    // first wired into `sms-worker`/`sms-gateway`; both bindings already
-    // carried `hide_env_values = true`, so this list entry is what stops
-    // a *future* binding from silently omitting it.
-    "MTN_AGGREGATOR_API_KEY",
+    // MTN's direct API (MADAPI) authenticates the same way Orange does —
+    // `OAuth2 client_credentials` — so `MTN_CLIENT_SECRET` is the
+    // sensitive half of that pair, the same role `ORANGE_CM_CLIENT_SECRET`
+    // plays above; `MTN_CLIENT_ID` is not credential material on its own
+    // (matching `ORANGE_CM_CLIENT_ID`'s own absence from this list) and
+    // stays visible. Replaces this list's original `MTN_AGGREGATOR_API_KEY`
+    // entry from this crate's now-retired static-Bearer-key shape — both
+    // bindings already carried `hide_env_values = true`, so this list
+    // entry is what stops a *future* binding from silently omitting it.
+    "MTN_CLIENT_SECRET",
 ];
 
 /// Directory names never worth walking into — build output, VCS

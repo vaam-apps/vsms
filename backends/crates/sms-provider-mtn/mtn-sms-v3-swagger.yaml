@@ -1,0 +1,505 @@
+swagger: "2.0"
+info:
+  version: "1.0"
+  title: "Short Message Service (SMS) API"
+  description: "Provides a Restful API to expose SMS capability for sending of messages , Mobile originating messages and Delivery Receipts."
+host: api.mtn.com
+basePath: /v3/sms/
+schemes:
+  - https
+consumes:
+  - application/json
+produces:
+  - application/json
+securityDefinitions:
+  OAuth2:
+    type: oauth2
+    flow: application
+    tokenUrl: "https://api.mtn.com/v1/oauth/access_token/accesstoken?grant_type=client_credentials"
+    scopes:
+      SEND-SMS: Grants ability to send SMS messages to subscribers.
+security:
+  - OAuth2: []
+paths:
+  /messages/sms/outbound:
+    post:
+      tags:
+        - "Sending SMS"
+      summary: "This operation is used to send an outbound SMS message to the provided recipients."
+      description: "This interface is used to send an SMS to the specified receiverAddress."
+      parameters:
+        - in: "body"
+          name: "body"
+          description: "Request body"
+          required: true
+          schema:
+            $ref: "#/definitions/outboundSMSMessageRequest"
+      responses:
+        200:
+          description: "Outbound SMS created"
+          schema:
+            $ref: "#/definitions/resourceReference"
+        401:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Not authenticated"
+        404:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Not found"
+        407:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Proxy system not authenticated"
+        500:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Internal Server Error"
+
+  /messages/sms/subscription:
+    post:
+      tags:
+        - "Subscribing for Mobile Originating and Delivery Receipts"
+      summary: "Create subscription to register a serviceCode, callback url and a delivery report url for mobile originating and Delivery Receipts."
+      description: "This is the interface used to register callbackUrl (For Mobile originating Messages ) and deliveryReportUrl (for Delivery Receipts ) for a shortCode/serviceCode/senderAddress."
+      parameters:
+        - in: header
+          name: transactionId
+          type: string
+          required: false
+        - in: "body"
+          name: "body"
+          description: "Request body"
+          required: true
+          schema:
+            $ref: "#/definitions/ShortCodeSubscription"
+      responses:
+        200:
+          description: "Outbound SMS created"
+          schema:
+            $ref: "#/definitions/subscriptionResponse"
+        401:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Not authenticated"
+        403:
+          schema:
+            $ref: "#/definitions/ForbiddenResponse"
+          description: "Forbidden"
+        404:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Not found"
+        407:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Proxy system not authenticated"
+        500:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Internal Server Error"
+
+
+
+  /messages/sms/subscription/{subscriptionId}:
+    patch:
+      tags:
+        - "Subscribing for Mobile Originating and Delivery Receipts"
+      summary: "Update a subscription information based on an already existing subscriptionId."
+      description: "Patch or update an existing subscription based on the subscriptionId , The subscriptionId is generated at the point of registering a short code for Mobile originating messages or Delivery Receipts with the /messages/sms/subscription endpoint above."
+      parameters:
+        - in: header
+          name: transactionId
+          type: string
+          required: false
+        - in: path
+          name: subscriptionId
+          type: string
+          required: true
+          description: This is the subscription Id that was returned on the initial subscription request.
+        - in: "body"
+          name: "body"
+          description: "Request body"
+          required: true
+          schema:
+            $ref: "#/definitions/UpdateSubscriptionRequest"
+      responses:
+        200:
+          description: "Outbound SMS created"
+          schema:
+            $ref: "#/definitions/subscriptionResponse"
+        401:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Not authenticated"
+        404:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Not found"
+        407:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Proxy system not authenticated"
+        500:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Internal Server Error"
+
+    delete:
+      tags:
+        - "Subscribing for Mobile Originating and Delivery Receipts"
+      summary: "Delete subscription or registration details based on the provided subscriptionId."
+      description: "This interface will stop our systems from sending Mobile originating messages and Delivery status reports to the provided delivery report and callback urls for a configured serviceCode."
+      parameters:
+        - in: header
+          name: transactionId
+          type: string
+          required: false
+        - in: "path"
+          name: subscriptionId
+          type: string
+          required: true
+          description: "It is the id that is generated at the point of subscription with the messages/sms/subscription   endpoint  "
+          x-example: "27831234552920202220"
+      responses:
+        200:
+          description: "SMS notification for Mobile originating and Delivery Receipts has been stopped."
+          schema:
+            $ref: "#/definitions/outboundSubscriptionDeleteResponse"
+        401:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Not authenticated"
+        404:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Not found"
+        407:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Proxy system not authenticated"
+        500:
+          schema:
+            $ref: "#/definitions/Error"
+          description: "Internal Server Error"
+
+
+
+definitions:
+  outboundSMSMessageRequest:
+    type: object
+    required:
+      - message
+      - serviceCode
+      - receiverAddress
+      - clientCorrelatorId
+    properties:
+      senderAddress:
+        type: string
+        description: "This is the sender address the recipients will see on their devices as the sender of the message. This is alphanumeric. This field is optional when it has a value it takes precedence over the serviceCode and is used to send messages rather than using serviceCode."
+        example: "MTN"
+      receiverAddress:
+        description: "This an array of the subscriber MSISDN(s) that the SMS is being sent to. The value is represented as International  ITU-T E.164. If more than one address is used the values will be comma separated.Thare are no limits to the length of the array but a sizable amount of 20 to 30 is expected for optimal delivery to recipients."
+        type: array
+        items:
+          type: string
+        example: ["23423456789","23423456790"]
+      message:
+        type: string
+        description: "The message being sent. The standard limit of the size of the message is 160 for English texts  and about 250 to 300 characters for french related texts."
+      clientCorrelatorId:
+        type: string
+        description: "It uniquely identifies the request.This can be alphanumeric or numeric depending on the consumers id pattern ."
+        maxLength: 36
+      keyword:
+        type: string
+        description: The keyword field is used in cases where the partner needs to share the short code and the partner had already subscribed with this keyword for Delivery Receipts via the subscriptions endpoint. The keyword field will then be used to send an outbound request to indicate that this request uses a shared short code and the Delivery receipt will be sent to the endpoint that was registered with this keyword . `Currently this is only used and was requested by the Nigeria opco `
+      serviceCode:
+        type: string
+        description: "This is the short code that is provided by the api consumer and is approved by the opco for sending messages on behalf of a 3pp. This field is mandatory and if a senderAddress is used rather than the serviceCode , then the senderAddress value must be passed as well to this field,this will ensure that the messages are sent using the senderAddress."
+        example: "11221 or 131"
+      requestDeliveryReceipt:
+        type: boolean
+        description: This is used to indicate whether the 3pp needs a delivery report or not. By default this is set to false . When set to true the consumer should ensure that they must have subscribed for delivery receipts or mobile originating messages using the subscriptions endpoints below .
+        example: false
+
+
+
+  resourceReference:
+    type: object
+    required:
+      - data
+      - statusCode
+      - statusMessage
+      - transactionId
+    properties:
+      statusCode:
+        type: string
+        description: This is the MADAPI Canonical Error Code (it is 4 characters long and it is not the HTTP Status Code which is 3 characters long). Back-end system errors are mapped to specific canonical error codes which are returned. More information on these mappings can be found on the MADAPI Confluence Page 'Response Codes'
+        example: '0000'
+      statusMessage:
+        type: string
+        description: More details and corrective actions related to the error which can be shown to a client.
+        example: 'Sucessful'
+      transactionId:
+        type: string
+        description: MADAPI generated Id to include for tracing requests
+        example: "1365478abcz-fdhsdfh54351"
+      data:
+        type: object
+        required:
+          - status
+        properties:
+          status:
+            type: string
+            description: "Status of the submitted outbound message(s)"
+            example: "PENDING"
+
+  status:
+    type: "string"
+    title: "Delivery status"
+    description: "SMS delivery status."
+    example: "DELIVERED"
+    enum:
+      - "ACCEPTD"
+      - "DELETED"
+      - "DELIVERED"
+      - "ENROUTE"
+      - "UNKNOWN"
+      - "EXPIRED"
+      - "REJECTED"
+      - "UNDELIVERED"
+
+  UpdateSubscriptionRequest:
+    type: object
+    properties:
+      serviceCode:
+        type: string
+        description: "Service code that is being shared"
+      callbackUrl:
+        type: string
+        description: "This is the callback URL"
+        example: "http://www...."
+      deliveryReportUrl:
+        type: string
+        description: "This is the delivery URL"
+        example: "http://www...."
+      targetSystem:
+        type: string
+      keywords:
+        type: array
+        items:
+          type: string
+        description: "Keywords applies to a shared short code . This is applicable only for the Nigeria opco."
+
+
+  ShortCodeSubscription:
+    type: object
+    required:
+      - callbackUrl
+      - targetSystem
+      - serviceCode
+    properties:
+      callbackUrl:
+        type: string
+        description: This is the callback URL that will be invoked when a Mobile originating or Delivery Receipt message is sent by a Subscriber to the configured short code .
+        example: "https://example.com/12acb41"
+      targetSystem:
+        type: string
+        description: Target system indicates the name of the system that this Mobile originating request will be sent to.
+        example: "Golden-Bank"
+      deliveryReportUrl:
+        type: string
+        description: This is the URL where the delivery receipts for messages sent with the /messages/sms/outbound endpoint will be sent. The messages will be sent to the deliveryReportUrl if requestDeliveryReceipt is set to true , by default it is false when sending an outbound message.
+        example: "https://example.com/delivery-report"
+      serviceCode:
+        type: string
+        description: This is the service code that is being registered for Mobile originating and delivery receipt calls
+
+  subscriptionResponse:
+    type: object
+    required:
+      - data
+      - statusCode
+      - statusMessage
+      - transactionId
+    properties:
+      statusCode:
+        type: string
+        description: This is the MADAPI Canonical Error Code (it is 4 characters long and it is not the HTTP Status Code which is 3 characters long). Back-end system errors are mapped to specific canonical error codes which are returned. More information on these mappings can be found on the MADAPI Confluence Page 'Response Codes'
+        example: '0000'
+      statusMessage:
+        type: string
+        description: More details and corrective actions related to the error which can be shown to a client.
+        example: 'Sms Subscriptions successful Please keep the subscription id safely 6328...., if you need to delete it later.'
+      transactionId:
+        type: string
+        description: MADAPI generated Id to include for tracing requests
+        example: "1365478abcz-fdhsdfh54351"
+      data:
+        type: object
+        properties:
+          subscriptionId:
+            type: string
+            description: "Unique identifier for the subscription"
+            example: "sub123456"
+
+  outboundSubscriptionDeleteResponse:
+    type: object
+    required:
+      - data
+      - statusCode
+      - statusMessage
+      - transactionId
+    properties:
+      statusCode:
+        type: string
+        description: This is the MADAPI Canonical Error Code (it is 4 characters long and it is not the HTTP Status Code which is 3 characters long). Back-end system errors are mapped to specific canonical error codes which are returned. More information on these mappings can be found on the MADAPI Confluence Page 'Response Codes'
+        example: '0000'
+      statusMessage:
+        type: string
+        description: More details and corrective actions related to the error which can be shown to a client.
+        example: 'Successful'
+      transactionId:
+        type: string
+        description: MADAPI generated Id to include for tracing requests
+        example: "1365478abcz-fdhsdfh54351"
+      data:
+        type: object
+        properties:
+          subscriptionId:
+            type: string
+            example: "63284250bde7cd4938630ada"
+
+  DeliveryNotificationRequest:
+    type: object
+    description: "This message body highlights the json message that will be sent to a third party endpoint to report the status of a message delivery."
+    properties:
+      clientCorrelatorId:
+        type: string
+        description: "Message ID for which the Derivery report is being sent"
+        example: "09273682261681"
+      deliveryStatus:
+        $ref: "#/definitions/status"
+      details:
+        type: string
+      completedDate:
+        type: string
+        format: datetime
+      id:
+        type: number
+      error:
+        type: string
+      senderAddress:
+        type: string
+      receiverAddress:
+        type: string
+      submittedDate:
+        type: string
+        format: datetime
+
+
+  ForbiddenResponse:
+    type: object
+    required:
+      - "statusCode"
+      - "statusMessage"
+      - "transactionId"
+    properties:
+      statusCode:
+        type: string
+        description: This is the MADAPI Canonical Error Code (it is 4 characters long and it is not the HTTP Status Code which is 3 characters long). Back-end system errors are mapped to specific canonical error codes which are returned. More information on these mappings can be found on the MADAPI Confluence Page 'Response Codes'
+        example: '4004'
+      statusMessage:
+        type: string
+        description: More details and corrective actions related to the error which can be shown to a client
+        example: 'Service code has already been registered .'
+      supportMessage:
+        type: string
+        description: Internal message meant for consumers of the API to troubleshoot the error (could possible include the back-end system error code in the message if it would be useful)
+        example: 'Service code 711 has been used by WEB-ONLINE !.'
+      transactionId:
+        type: string
+        description: MADAPI generated Id to include for tracing requests
+      timestamp:
+        type: string
+        format: date-time
+        description: Timestamp that the error occurred
+        example: '2020-08-01T12:34'
+      path:
+        type: string
+        description: The path that caused the error
+        example: 'https://api.mtn.com/v1/'
+      method:
+        type: string
+        description: The HTTP method type that was used
+        example: 'POST'
+
+  ErrorPatch:
+    type: object
+    required:
+      - "statusCode"
+      - "statusMessage"
+      - "transactionId"
+    properties:
+      statusCode:
+        type: string
+        description: This is the MADAPI Canonical Error Code (it is 4 characters long and it is not the HTTP Status Code which is 3 characters long). Back-end system errors are mapped to specific canonical error codes which are returned. More information on these mappings can be found on the MADAPI Confluence Page 'Response Codes'
+        example: '1000'
+      statusMessage:
+        type: string
+        description: More details and corrective actions related to the error which can be shown to a client
+      supportMessage:
+        type: string
+        description: Internal message meant for consumers of the API to troubleshoot the error (could possible include the back-end system error code in the message if it would be useful)
+      transactionId:
+        type: string
+        description: MADAPI generated Id to include for tracing requests
+      timestamp:
+        type: string
+        format: date-time
+        description: Timestamp that the error occurred
+        example: '2020-08-01T12:34'
+      path:
+        type: string
+        description: The path that caused the error
+        example: 'https://api.mtn.com/v1/'
+      method:
+        type: string
+        description: The HTTP method type that was used
+        example: 'POST'
+
+
+  Error:
+    type: object
+    required:
+      - "statusCode"
+      - "statusMessage"
+      - "transactionId"
+    properties:
+      statusCode:
+        type: string
+        description: This is the MADAPI Canonical Error Code (it is 4 characters long and it is not the HTTP Status Code which is 3 characters long). Back-end system errors are mapped to specific canonical error codes which are returned. More information on these mappings can be found on the MADAPI Confluence Page 'Response Codes'
+        example: '1000'
+      statusMessage:
+        type: string
+        description: More details and corrective actions related to the error which can be shown to a client
+      supportMessage:
+        type: string
+        description: Internal message meant for consumers of the API to troubleshoot the error (could possible include the back-end system error code in the message if it would be useful)
+      transactionId:
+        type: string
+        description: MADAPI generated Id to include for tracing requests
+      timestamp:
+        type: string
+        format: date-time
+        description: Timestamp that the error occurred
+        example: '2020-08-01T12:34'
+      path:
+        type: string
+        description: The path that caused the error
+        example: 'https://api.mtn.com/v1/'
+      method:
+        type: string
+        description: The HTTP method type that was used
+        example: 'POST'

@@ -18,15 +18,15 @@ sms-worker.workspace = true
 # Constructs the provider registry WorkerContext carries — #33/#61's
 # dispatch needs real SmsProvider adapters at startup, not just the trait
 # sms-worker holds. Two adapters as of the MTN wiring: Orange (the
-# original, always-available production path) and the MTN aggregator
-# (#61's crate, wired into this binary here for the first time — the
-# crate itself has existed, unused, since #61 landed).
+# original, always-available production path) and MTN, now via its own
+# direct API (MADAPI) rather than the aggregator shape #61 originally
+# wired in.
 sms-provider.workspace = true
 sms-provider-orange-cm.workspace = true
 sms-provider-mtn.workspace = true
 sms-api.workspace = true
 # mtn_provider's --mtn-cost-per-segment-xaf flag — money, never a float
-# (this repo's own standing rule; see `MtnAggregatorConfig::cost_per_segment_xaf`'s
+# (this repo's own standing rule; see `MtnConfig::cost_per_segment_xaf`'s
 # own doc).
 rust_decimal.workspace = true
 

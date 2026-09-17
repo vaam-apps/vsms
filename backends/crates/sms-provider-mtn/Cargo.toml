@@ -1,6 +1,6 @@
 [package]
 name = "sms-provider-mtn"
-description = "SmsProvider adapter for MTN Cameroon capacity bought through a licensed aggregator"
+description = "SmsProvider adapter for MTN's direct API (MADAPI)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
