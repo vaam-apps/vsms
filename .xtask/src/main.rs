@@ -28,6 +28,7 @@ mod parity;
 mod pin_copies;
 mod r6_ui_layers;
 mod raw_sqlx;
+mod release_versions;
 mod sdk_schema;
 mod secret_env_args;
 mod workflow_paths;
@@ -68,6 +69,7 @@ fn main() -> ExitCode {
         "cratestack-pin-check" => pin_copies::run(&root),
         "migrations-current" => migrations_current::run(&root),
         "node-sdk-types-check" => node_sdk_types::run(&root),
+        "release-versions" => release_versions::run(&root),
         "help" | "--help" | "-h" => {
             print_help();
             Ok(())
@@ -105,6 +107,7 @@ fn help_text() -> &'static str {
      workflow-paths        fail if a workflow names a path that does not exist\n  \
      docs-drift            fail if a doc, config or string names a missing path\n  \
      node-sdk-types-check  fail if the Node SDK's hand-written enum unions drift from schema.cstack\n  \
+     release-versions      every version release-please owns agrees, and every line it rewrites is still annotated\n  \
      docs-pdf              merge the docs into one PDF book (pandoc + Typst, needs docker)"
 }
 
