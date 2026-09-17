@@ -66,4 +66,44 @@ hit exactly that error before this line was added.
 {{- $_ := set (index .Values.persistence "console-private-key") "enabled" false -}}
 {{- end -}}
 
+{{/*
+MTN is optional, and an unconfigured MTN must leave *no* MTN env var
+behind — not even an empty one. This is not tidiness; it is the
+difference between a gateway that starts and one that does not.
+
+`sms-gateway`/`sms-worker` take the MTN credentials as `Option<T>` clap
+args bound to these env vars, and clap reads an env var that is *present
+but empty* as a value, not as absence. Verified against clap 4 directly
+rather than assumed:
+
+  - `Option<String>` with `MTN_CLIENT_ID=""` yields `Some("")`, which
+    trips `mtn_credentials`' all-or-none check ("all five must be set
+    together, or none") and aborts startup.
+  - `Option<f64>` with `MTN_TPS_CEILING=""` is worse still: clap fails to
+    parse before any of this repo's own validation runs, with
+    `invalid value '' for '--mtn-tps-ceiling': cannot parse float from
+    empty string`. The container never starts, and the message points at
+    a flag the operator never set.
+
+values.yaml cannot express this itself — it is loaded as plain data and
+only specific field *values* go through common's selective `tpl` pass
+(see this file's own R4 note above), so a `{{ if }}` there could blank a
+value but never remove the key. This template is a real Go-template pass
+over the merged values, so it can delete the keys outright, the same
+mutate-before-generate trick `global.nameOverride` and `admin.enabled`
+already use.
+
+Keyed on `mtn.clientId` alone: it is the first of the five the binary
+requires, so a deployment that sets it and forgets the rest gets this
+repo's own explicit all-or-none error rather than a silent half-config.
+*/}}
+{{- if not .Values.mtn.clientId }}
+{{- range $controller := list "gateway" "worker" }}
+{{- $env := (index $.Values.controllers $controller "containers" "main" "env") }}
+{{- range $key := list "MTN_CLIENT_ID" "MTN_CLIENT_SECRET" "MTN_SERVICE_CODE" "MTN_SENDER_ID" "MTN_BASE_URL" "MTN_TPS_CEILING" "MTN_COST_PER_SEGMENT_XAF" "MTN_SUPPORTS_ALPHANUMERIC_SENDER" }}
+{{- $_ := unset $env $key }}
+{{- end }}
+{{- end }}
+{{- end -}}
+
 {{ include "bjw-s.common.loader.generate" . }}

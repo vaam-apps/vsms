@@ -2819,12 +2819,16 @@ exists. What changed is that it is now reachable and configurable instead of dea
 
 ### Not done, deliberately, and worth knowing before assuming otherwise
 
-- **No `MTN_AGGREGATOR_*` plumbing in `deploy/charts/vsms/values.yaml` or the compose
-  files.** Not an oversight: an empty `MTN_AGGREGATOR_API_KEY` env var is `Some("")` to
-  clap, which would trip the all-or-none check and fail startup — so the env block has to
-  be *conditionally omitted*, which values.yaml (rendered per-value through `tpl`) cannot
-  express. It needs `templates/common.yaml`-level work. Orange-only deployments are
-  unaffected; the chart simply cannot express MTN-only yet.
+- **Helm chart plumbing: done, and the hazard was worse than first recorded.** This entry
+  used to say the chart couldn't express MTN. It can now — see the "MTN reaches the Helm
+  chart" section below. The reason it needed `templates/common.yaml`-level work rather than
+  a values.yaml edit is confirmed empirically rather than reasoned: an env var that is
+  *present but empty* is a value to clap, not an absence. `MTN_CLIENT_ID=""` yields
+  `Some("")` (trips the all-or-none check, as originally predicted), but `MTN_TPS_CEILING=""`
+  is worse — clap fails to parse it **before any of this repo's validation runs**, so the
+  container never starts and the error names a flag the operator never set. The compose
+  `.env` path has the identical hazard, which is why `deploy/.env.example` now says in
+  capitals to comment the block out rather than leave it blank.
 - **Nothing has been received from a live Orange account.** A documented shape is not an
   observed one. `docs/runbooks/36-handset-gate.adoc` is still the gate, still unrun, and
   the first real DLR remains the first real verification — the starting point just moved
@@ -2959,6 +2963,60 @@ printed `api_key` in plaintext. `MtnConfig` hand-writes `Debug`, matching what
 credential-bearing struct is one `tracing::debug!` away from a leak, which is the same class
 of defect `.xtask/src/secret_env_args.rs` exists to catch on the CLI side (that guard's list
 moved from `MTN_AGGREGATOR_API_KEY` to `MTN_CLIENT_SECRET` with this change).
+
+## MTN reaches the Helm chart — and the "empty env var" hazard, measured
+
+`deploy/charts/vsms` can configure MTN now. The interesting part is not the eight new
+values; it is why they could not simply be added to `values.yaml` like Orange's, and how
+much worse the failure mode turned out to be than the earlier deferral note guessed.
+
+**An env var that is present but empty is a *value* to clap, not an absence.** Measured
+against clap 4 directly with a throwaway probe rather than reasoned from the docs:
+
+| binding | `FOO=` (empty) |
+|---|---|
+| `Option<String>` | `Some("")` — trips `mtn_credentials`' all-or-none check |
+| `Option<f64>` | **hard parse failure before any of this repo's validation runs**: `invalid value '' for '--mtn-tps-ceiling <MTN_TPS_CEILING>': cannot parse float from empty string` |
+
+The second one is the reason this needed real work. A naive chart that renders
+`MTN_TPS_CEILING: ""` for an Orange-only deployment does not produce a disabled provider —
+it produces a **gateway and worker that refuse to boot**, with an error naming a flag the
+operator never set. Confirmed against both real binaries, not just the probe.
+
+So the env keys must be *removed*, not blanked, and `values.yaml` structurally cannot do
+that: it is loaded as plain data, and only specific field *values* pass through common's
+selective `tpl` (its own header documents which). A `{{ if }}` there can blank a value; it
+cannot delete a key. `templates/common.yaml` is a real Go-template pass over the merged
+values, so it deletes them outright — the same mutate-before-`generate` trick
+`global.nameOverride` and R4's `admin.enabled` already use. Keyed on `mtn.clientId` alone,
+deliberately: a deployment that sets that and forgets the rest gets this repo's own
+explicit all-or-none error rather than a silent half-configuration.
+
+**Verified as a three-way proof, because two renders would not have been enough:**
+
+| case | result |
+|---|---|
+| chart with MTN unconfigured | zero `MTN_` keys rendered; gateway boots (fails only on a deliberately bogus DB) |
+| chart with MTN configured | 16 keys (8 × 2 controllers); the *rendered values*, extracted from the manifest and fed to the real binary, parse and validate |
+| the naive blank-env version | `cannot parse float from empty string` — dead at startup, both binaries |
+
+Without the third case the first two would have looked like a passing test of nothing.
+
+Two details worth keeping: `tpsCeiling`/`costPerSegmentXaf` are **quoted strings** in
+`values.yaml`, because an unquoted `16.00` is a YAML float that reaches the container as
+`16` — a silent precision change on a money field. And neither has a default, for the same
+reason `MtnConfig` has no `Default`: an invented TPS ceiling either throttles a paid
+contract or gets the account rate-limited, and an invented price misprices
+`estimatedCostXaf`.
+
+**`deploy/.env.example` has the identical hazard** — Docker Compose passes `FOO=` through
+as an empty value — so that file now says in capitals to comment the block out rather than
+leave it blank, with the exact error it would otherwise produce. That is the one place an
+operator is most likely to half-fill a block out of habit.
+
+Also corrected there while passing through: it claimed Orange's credentials were "required
+unconditionally by sms-gateway", which stopped being true when the gateway moved to an
+at-least-one-provider check.
 
 ## Open questions blocking later milestones
 
