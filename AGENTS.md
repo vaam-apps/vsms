@@ -3177,6 +3177,42 @@ counter is hardcoded at all 23 call sites.
 - **`deploy/charts/vsms/Chart.yaml`.** Its version is a placeholder `release.yml`
   overwrites at `helm package` time; nothing to bump.
 
+### The annotation broke `release.yml`'s own version guard, and v0.3.2 published nothing
+
+The worst of the three, and the most deserved. This file's own #395 section
+argues at length that `release.yml`'s `version` job is gated
+`if: startsWith(github.ref, 'refs/tags/')` and therefore first runs *after* the
+release PR has merged — and that `cargo xtask release-versions` exists because
+of it. Then the very annotation that guard was built around broke that guard.
+
+It reads the manifests with `sed -n 's/^version = "\(.*\)"$/\1/p'`. That
+pattern is anchored to end-of-line. The annotated line is:
+
+```toml
+version = "0.3.2" # x-release-please-version
+```
+
+which does not end with `"`. So the pattern matched nothing, the variable came
+out **empty**, and the tag-vs-manifest comparison failed. The only trace was
+one line in a log nobody reads on a green day:
+
+```
+tag=0.3.2 workspace= rust-sdk= node-sdk=0.3.2
+```
+
+`v0.3.2` therefore published **no image, no chart, and neither SDK** — every
+downstream job `skipped`. The node SDK parsed fine, because JSON carries no
+comment; only the two `.toml` reads broke.
+
+Fixed by making both patterns tolerate trailing content
+(`"\([^"]*\)".*$`). The durable half is that `release-versions` now **runs
+`release.yml`'s own three `sed` extractions** on every PR — it parses them out
+of the workflow rather than restating them, converts the BRE `\(`/`\)`, applies
+each to the file it names, and fails if any yields nothing. Proven by restoring
+the anchored pattern and watching it report exactly that. Two facts about how to
+read a version lived in two files with nothing holding them together; now one
+reads the other.
+
 ### A bare-string `extra-files` entry is a trap — and this repo escaped it by luck
 
 Corrected after v0.3.2, by watching the sibling `vpay` repository's own first

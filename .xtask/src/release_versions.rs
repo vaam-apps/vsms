@@ -58,6 +58,8 @@ use regex::Regex;
 const CONFIG: &str = "release-please-config.json";
 const MANIFEST: &str = ".release-please-manifest.json";
 const ANNOTATION: &str = "x-release-please-version";
+/// The workflow whose own version guard only ever runs on a tag.
+const RELEASE_YML: &str = ".github/workflows/release.yml";
 
 /// Where a version was found, and what it said.
 type Findings = BTreeMap<String, String>;
@@ -133,6 +135,24 @@ pub fn run(root: &Path) -> Result<(), String> {
         }
     }
 
+    // (5) release.yml's own tag-vs-manifest guard, run here because there it
+    // only ever runs on a tag.
+    match release_yml_versions(root) {
+        Ok(pairs) => {
+            for (file, version) in pairs {
+                match version {
+                    Some(v) => {
+                        found.insert(format!("{RELEASE_YML} reading {file}"), v);
+                    }
+                    None => problems.push(format!(
+                        "  {RELEASE_YML}: its own `sed` for {file} extracts NOTHING. That job runs only on a tag, so it would fail after the release PR has already merged — which is exactly how v0.3.2 published nothing (`tag=0.3.2 workspace= rust-sdk=`). An `x-release-please-version` comment after the closing quote defeats an end-anchored pattern; use `\"\\([^\"]*\\)\".*$` instead of `\"\\(.*\\)\"$`"
+                    )),
+                }
+            }
+        }
+        Err(e) => problems.push(format!("  {e}")),
+    }
+
     if problems.is_empty() {
         let mut versions: Vec<&String> = found.values().collect();
         versions.sort_unstable();
@@ -157,6 +177,49 @@ pub fn run(root: &Path) -> Result<(), String> {
          `{ANNOTATION}` comment for it to act on — see .xtask/src/release_versions.rs.",
         problems.join("\n")
     ))
+}
+
+/// Run every `sed -n 's/…/\1/p' <file>` that `release.yml`'s version guard
+/// uses, against the files it names.
+///
+/// That guard is real and correct, and it is gated
+/// `if: startsWith(github.ref, 'refs/tags/')` — so it first executes *after*
+/// the release pull request has merged and the tag exists. When an
+/// `x-release-please-version` comment was added after the closing quote of
+/// `version = "0.3.2"`, its end-anchored pattern stopped matching, both Rust
+/// versions came out EMPTY, and v0.3.2 published no image, no chart and
+/// neither SDK — reported only as `tag=0.3.2 workspace= rust-sdk=` in a log
+/// nobody reads on a green day.
+///
+/// The BRE-to-Rust conversion is just `\(` -> `(` and `\)` -> `)`, which is
+/// all these three patterns use. A pattern this cannot convert is reported
+/// rather than skipped.
+fn release_yml_versions(root: &Path) -> Result<Vec<(String, Option<String>)>, String> {
+    let workflow = read(root, RELEASE_YML)?;
+    let call = Regex::new(r"sed -n 's/(.+?)/\\1/p' (\S+)").expect("static pattern");
+
+    let mut out = Vec::new();
+    for caps in call.captures_iter(&workflow) {
+        let (Some(pattern), Some(file)) = (caps.get(1), caps.get(2)) else {
+            continue;
+        };
+        let rust_pattern = pattern.as_str().replace("\\(", "(").replace("\\)", ")");
+        let re = Regex::new(&rust_pattern).map_err(|e| {
+            format!("{RELEASE_YML}: cannot read its own sed pattern {rust_pattern:?}: {e}")
+        })?;
+        let text = read(root, file.as_str())?;
+        let found = text
+            .lines()
+            .find_map(|l| re.captures(l))
+            .and_then(|c| c.get(1).map(|m| m.as_str().to_owned()));
+        out.push((file.as_str().to_owned(), found));
+    }
+    if out.is_empty() {
+        return Err(format!(
+            "{RELEASE_YML}: found none of its `sed -n 's/…/\\1/p' <file>` version extractions. If that job was rewritten, teach this check the new shape — do not leave it passing vacuously"
+        ));
+    }
+    Ok(out)
 }
 
 fn read(root: &Path, rel: &str) -> Result<String, String> {
