@@ -3177,6 +3177,45 @@ counter is hardcoded at all 23 call sites.
 - **`deploy/charts/vsms/Chart.yaml`.** Its version is a placeholder `release.yml`
   overwrites at `helm package` time; nothing to bump.
 
+### A bare-string `extra-files` entry is a trap — and this repo escaped it by luck
+
+Corrected after v0.3.2, by watching the sibling `vpay` repository's own first
+release destroy two files with the identical configuration.
+
+A bare string in `extra-files` does **not** get the annotation-only `Generic`
+updater, which is what the original config here assumed. `base.ts` infers an
+updater from the file extension:
+
+```text
+.json         -> CompositeUpdater(GenericJson('$.version'), Generic)
+.yaml/.yml    -> CompositeUpdater(GenericYaml('$.version'), Generic)
+.toml         -> CompositeUpdater(GenericToml('$.version'), Generic)
+.xml          -> CompositeUpdater(GenericXml('/*/version'), Generic)
+anything else -> Generic
+```
+
+`GenericYaml` reparses the document and re-serialises it. In `vpay` that turned
+`deploy/helm/vpay/Chart.yaml` from 48 lines into 13 — every comment destroyed,
+the wrong `version:` key bumped (0.2.0 -> 0.1.1, a downgrade, and the one field
+its config deliberately excluded), and `appVersion` left untouched because the
+`x-release-please-version` annotation had just been serialised away.
+
+**This repository was configured the same way and came through v0.3.2
+untouched, by luck rather than design.** Its two `.yaml` entries are compose
+files, and a modern compose file carries no top-level `version:` key, so
+`GenericYaml('$.version')` found nothing to change. Verified after the fact,
+not assumed: `compose.demo.yaml` and `deploy/docker-compose.yml` are byte-for-
+byte the same length before and after the release (793 and 668 lines), with all
+13 and 5 annotations intact. Add a top-level `version:` to a compose file, or
+list any other `.yaml`, and the luck runs out.
+
+Every entry is now `{"type": "generic", "path": …}`, which routes to
+`case 'generic'` and runs `Generic` alone whatever the extension.
+`cargo xtask release-versions` **refuses** a bare string outright and names the
+incident; two unit tests pin the refusal and the unknown-type refusal, and the
+parser accepts both the multi-line and single-line object spellings rather than
+silently skipping one.
+
 ### Not closed
 
 **Dependabot.** There is no `.github/dependabot.yml`, so security-update PRs arrive
