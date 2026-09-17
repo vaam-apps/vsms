@@ -3079,7 +3079,11 @@ so — and the release PR would get no `ci.yml` run at all, which is the same
 failure class `.xtask/src/workflow_paths.rs` exists for. So the workflow mints a
 GitHub App token (`actions/create-github-app-token@v3`) and every write goes
 through it, including the lockfile push, which is what gives the release PR real
-CI. Secrets: `RELEASE_PLEASE_APP_ID`, `RELEASE_PLEASE_APP_PRIVATE_KEY`; the App
+CI. Secrets: `RELEASE_PLEASE_APP_CLIENT_ID` — the App's **Client ID**
+(`Iv23li…`), not its numeric App ID; `actions/create-github-app-token`
+deprecated the `app-id` input in favour of `client-id`, and the two are
+different values on the same settings page — and
+`RELEASE_PLEASE_APP_PRIVATE_KEY`; the App
 needs `contents: write` and `pull-requests: write` on this repository only. There
 is deliberately **no fallback** to `GITHUB_TOKEN` — a fallback produces exactly
 the silent publish-nothing release above.
