@@ -12,9 +12,12 @@
 //! already distinguishes (§6.1/§6.2) — including two the design doc calls
 //! out for "real attention": a submit that times out *after* Orange already
 //! has it, and a DLR that races the submit response it's nominally about.
-//! It **cannot** prove anything about Orange's real behaviour — no real DLR
-//! payload shape, no real `receiptRequest` honouring, no real handset. That
-//! stays `docs/runbooks/36-handset-gate.adoc`'s job.
+//! It **cannot** prove anything about Orange's real behaviour — this
+//! suite's DLR shape and correlation are grounded in Orange's own
+//! documentation now (`sms-provider-orange-cm`'s `dlr.rs`/`lib.rs` module
+//! docs), but nothing has actually been received from a live Orange
+//! sandbox, and no real handset is involved. That stays
+//! `docs/runbooks/36-handset-gate.adoc`'s job.
 //!
 //! # DLR delivery goes over real HTTP, deliberately
 //!
@@ -399,12 +402,35 @@ async fn seed_message(
     max_attempts: i64,
     expires_at: DateTime<Utc>,
 ) -> Message {
+    seed_message_with_msisdn(db, app_id, max_attempts, expires_at, "+237677123456").await
+}
+
+/// Same as [`seed_message`], but with a caller-chosen `msisdn` — needed by
+/// [`run_seed`]'s own batch of concurrent messages, and nothing else.
+/// `sms_fake_orange::Ledger` correlates a submit call by its wire-level
+/// destination address now, not by a caller-supplied reference (Orange's
+/// real, documented submit request carries none — see
+/// `sms-fake-orange`'s own `ledger.md`), so several concurrently-dispatched
+/// messages sharing one hardcoded `msisdn` (every scripted, single-message
+/// test in this file still does, safely — see below) would be
+/// indistinguishable from the fake's own point of view, exactly as they'd
+/// be to real Orange. A single-message test never needs this: nothing else
+/// in its own isolated `FakeOrange` instance and cleared backlog (see
+/// `clear_claimable_backlog`) ever submits alongside it, so a fixed
+/// `msisdn` is unambiguous there.
+async fn seed_message_with_msisdn(
+    db: &Cratestack,
+    app_id: &str,
+    max_attempts: i64,
+    expires_at: DateTime<Utc>,
+    msisdn: &str,
+) -> Message {
     db.message()
         .create(schema::CreateMessageInput {
             appId: app_id.to_owned(),
             clientRef: None,
             idempotencyKey: Some(format!("chaos-test-{}", unique_suffix())),
-            msisdn: "+237677123456".to_owned(),
+            msisdn: msisdn.to_owned(),
             msisdnHash: format!("hmac-sha256-v1:chaos-test-{}", unique_suffix()),
             operator: OperatorCode::mtn,
             senderIdValue: "VYMALO".to_owned(),
@@ -555,7 +581,6 @@ fn orange_config(base_url: String) -> OrangeCmConfig {
         client_secret: "chaos-secret".to_owned(),
         sender_number: CHAOS_SENDER_NUMBER.to_owned(),
         base_url,
-        dlr_notify_url: None,
         connect_timeout: CHAOS_CONNECT_TIMEOUT,
         request_timeout: CHAOS_REQUEST_TIMEOUT,
     }
@@ -940,7 +965,7 @@ async fn a_rate_limited_submit_recovers_on_retry() {
 
     let resolved = reload(&harness.db, &seeded.id).await;
     assert_eq!(resolved.state, MessageState::delivered);
-    assert_eq!(harness.fake.ledger().submit_count(&seeded.id), 2);
+    assert_eq!(harness.fake.ledger().submit_count(&seeded.msisdn), 2);
 }
 
 #[tokio::test]
@@ -1009,7 +1034,7 @@ async fn a_malformed_201_body_lands_in_uncertain_and_is_never_resubmitted() {
             .expect("tick");
     }
     assert_eq!(
-        harness.fake.ledger().submit_count(&seeded.id),
+        harness.fake.ledger().submit_count(&seeded.msisdn),
         1,
         "uncertain must never be resubmitted"
     );
@@ -1047,7 +1072,7 @@ async fn a_201_with_a_missing_resource_url_lands_in_uncertain_and_is_never_resub
             .await
             .expect("tick");
     }
-    assert_eq!(harness.fake.ledger().submit_count(&seeded.id), 1);
+    assert_eq!(harness.fake.ledger().submit_count(&seeded.msisdn), 1);
 }
 
 /// A submit that Orange genuinely accepts but never answers within
@@ -1092,7 +1117,7 @@ async fn a_submit_that_times_out_after_orange_accepted_it_is_never_resubmitted_a
             .expect("tick");
     }
     assert_eq!(
-        harness.fake.ledger().submit_count(&seeded.id),
+        harness.fake.ledger().submit_count(&seeded.msisdn),
         1,
         "uncertain must never be resubmitted, even across several more polls"
     );
@@ -1219,7 +1244,7 @@ async fn an_undelivered_message_is_retried_and_reaches_delivered_on_the_next_att
          undelivered -> queued, so this message would still be sitting in undelivered"
     );
     assert_eq!(
-        harness.fake.ledger().submit_count(&seeded.id),
+        harness.fake.ledger().submit_count(&seeded.msisdn),
         2,
         "exactly one retry — the first submit, then the one this test proves happens"
     );
@@ -1276,7 +1301,7 @@ async fn an_undelivered_message_at_max_attempts_fails_instead_of_retrying_foreve
     let after = reload(&harness.db, &seeded.id).await;
     assert_eq!(after.state, MessageState::failed);
     assert_eq!(
-        harness.fake.ledger().submit_count(&seeded.id),
+        harness.fake.ledger().submit_count(&seeded.msisdn),
         1,
         "a message at max attempts must never be resubmitted"
     );
@@ -1322,12 +1347,24 @@ const MAX_TICKS: usize = 40;
 async fn run_seed(seed: u64) {
     let harness = build_harness(FaultPolicy::seeded(seed), TokenPolicy::Always).await;
     let mut seeded_ids = Vec::with_capacity(MESSAGES_PER_SEED);
-    for _ in 0..MESSAGES_PER_SEED {
-        let message = seed_message(
+    for index in 0..MESSAGES_PER_SEED {
+        // A distinct `msisdn` per message — `sms_fake_orange::Ledger`
+        // correlates a submit call by the wire-level destination address
+        // it named, not by a caller-supplied reference (Orange's real,
+        // documented submit request has none — see `sms-fake-orange`'s
+        // own `ledger.md`), so `MESSAGES_PER_SEED` concurrent messages
+        // sharing one hardcoded `msisdn` would be indistinguishable from
+        // the fake's own point of view, and
+        // `assert_never_resubmitted_after_indeterminate` below (which
+        // groups the fake's own ledger by `to`) would silently merge
+        // unrelated messages' submit histories together.
+        let msisdn = format!("+23767712345{index}");
+        let message = seed_message_with_msisdn(
             &harness.db,
             &harness.app_id,
             2,
             Utc::now() + ChronoDuration::hours(1),
+            &msisdn,
         )
         .await;
         seeded_ids.push(message.id);
@@ -1420,20 +1457,26 @@ async fn run_seed(seed: u64) {
     assert_never_resubmitted_after_indeterminate(&harness.fake.ledger(), seed);
 }
 
-/// For every reference the fake ever received a submit call for: if any
+/// For every destination the fake ever received a submit call for: if any
 /// call's own `response_delay` was at least [`CHAOS_REQUEST_TIMEOUT`] (the
 /// shape that reads as `Indeterminate` to `dispatch`'s configured client),
-/// that call must be the *last* one this reference was ever submitted with
-/// — `#119`'s own guarantee, checked from the provider's side of the wire.
+/// that call must be the *last* one this destination was ever submitted
+/// with — `#119`'s own guarantee, checked from the provider's side of the
+/// wire. Grouped by [`sms_fake_orange::SubmitRecord::to`] rather than a
+/// caller-supplied reference — Orange's real, documented submit request
+/// carries none, so `to` (the wire-observed destination address) is this
+/// fake's own honest proxy for "which logical message," and [`run_seed`]
+/// seeds a distinct `msisdn` per message specifically so this grouping
+/// stays meaningful across `MESSAGES_PER_SEED` concurrent messages.
 fn assert_never_resubmitted_after_indeterminate(ledger: &Ledger, seed: u64) {
-    let mut by_reference: HashMap<String, Vec<sms_fake_orange::SubmitRecord>> = HashMap::new();
+    let mut by_destination: HashMap<String, Vec<sms_fake_orange::SubmitRecord>> = HashMap::new();
     for record in ledger.submits() {
-        by_reference
-            .entry(record.reference.clone())
+        by_destination
+            .entry(record.to.clone())
             .or_default()
             .push(record);
     }
-    for (reference, mut records) in by_reference {
+    for (to, mut records) in by_destination {
         records.sort_by_key(|record| record.at);
         if let Some(first_indeterminate) = records
             .iter()
@@ -1442,7 +1485,7 @@ fn assert_never_resubmitted_after_indeterminate(ledger: &Ledger, seed: u64) {
             assert_eq!(
                 first_indeterminate,
                 records.len() - 1,
-                "seed {seed}: message {reference} was submitted again after an Indeterminate-shaped \
+                "seed {seed}: message to {to} was submitted again after an Indeterminate-shaped \
                  submit call (response_delay >= the client's own request_timeout) — this must \
                  never happen, it risks a duplicate real SMS"
             );

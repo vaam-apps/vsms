@@ -2708,6 +2708,156 @@ with the hue's own foreground colour and a real, non-transparent
 `1px solid` border — not the invisible box the pre-fix build would have
 produced.
 
+## Orange's DLR contract, read properly at last — and MTN wired into both binaries
+
+Two things landed together because the second is what made the first testable end to end:
+the Orange adapter's delivery-receipt handling was rewritten against **Orange's own
+published documentation** (<https://developer.orange.com/apis/sms/getting-started>, §4
+"About SMS Delivery Receipt") instead of the GSMA `OneAPI` family it had been inferred
+from, and `backends/crates/sms-provider-mtn` — a complete `SmsProvider` impl since #61 —
+was finally wired into `sms-worker` and `sms-gateway` instead of sitting as dead code.
+
+### The Orange DLR path had never worked, and nothing in this repo could have noticed
+
+This is the reference example, alongside `#87`, for *a fake that agrees with the code
+proves nothing*. Three independent defects, each invisible to `cargo test`:
+
+- **`deliveryInfo` is a single JSON object, not an array.** `dlr.rs` declared
+  `Vec<DeliveryInfoEntry>`, so serde rejected **every real Orange DLR** as
+  `MALFORMED_DLR` → HTTP 400. Not "some DLRs mis-parsed": none could ever have parsed.
+  The reason nobody saw it is the important part — `sms-fake-orange`'s `dlr_body()`
+  emitted the same wrong array shape, so the fake and the adapter were consistent with
+  each other and jointly wrong about Orange. A chaos suite, five seeded sweeps and ten
+  scripted fault tests all passed against a shape Orange does not send.
+- **The route answered `202 Accepted`; Orange's contract requires `200 OK`** ("must
+  return an HTTP 200 OK in order to acknowledge the receipt"). The handler's own comment
+  justified the 202 by citing §3.2's "return 202, never 200" rule — but that rule is
+  about **this API's own send endpoint** ("you have not sent anything yet"), and there is
+  no "not sent yet" to communicate on an inbound callback reporting something that
+  already happened. `docs/architecture.md` §3.2 now says so explicitly, at the exact line
+  that was mis-cited, so the next reader cannot repeat the inference.
+- **`callbackData` carries Orange's own `resource_id`, not a caller-supplied token.**
+  The documented send body has **no `receiptRequest` field at all**, so there was never
+  anything to supply. `submit()` had been sending `receiptRequest.callbackData =
+  Message.id` and storing it as `providerMessageRefAlt`; Orange documents itself as
+  echoing back the `resource_id` from `resourceURL` instead.
+
+**The maintainer's call on that third point was to stop sending `receiptRequest`
+entirely** and match the documented body exactly, with a consequence recorded here rather
+than papered over: **an `Indeterminate` submit is now permanently uncorrelatable.** When
+Orange accepts a message but we never read the response, we never learn the `resource_id`,
+and the DLR that eventually arrives carries an id we never stored. Such a message is
+resolved by `expire_stale`, not by a later DLR. `backends/crates/sms-worker/src/dispatch.rs`'s
+`Indeterminate` branch used to stamp `message.id` into `providerMessageRefAlt` "because
+that is exactly what was sent as `callbackData`" — that comment became false, so the stamp
+is gone rather than left looking functional. `providerMessageRefAlt` the *column* stays:
+its original justification (§2.7, §6.2) is the SMPP hex/decimal trap, which is unrelated to
+Orange and still real.
+
+`resource_id` **has no guaranteed format.** Orange says only "a string with the following
+typical format: `xxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`" — *typical*, not a contract. Every
+"UUID" claim in this tree is corrected (§6.2, `resource_id_from_url`'s doc, and `dlr.md`'s
+old "a phone number can never equal a UUID" reasoning). Take the trailing path segment,
+store it verbatim, never validate it.
+
+### The bug the fix *created*, and the variant that closes it
+
+Fixing the parser made real Orange DLRs reach `outcome_of` for the first time — including
+the two Orange sends on the entirely happy path. `DeliveredToNetwork` ("successful
+delivery to network") and `MessageWaiting` ("still queued for delivery. This is a
+temporary state") both mapped to `DeliveryOutcome::Uncertain`, and
+`sms_api::dlr::next_state` turns any `Uncertain` into `MessageState::uncertain`
+unconditionally.
+
+That is not cosmetic. **`uncertain -> undelivered` is not a legal edge** (§7.4), so a
+routine progress report followed by a genuinely retryable `DeliveryImpossible` would land
+the message in `failed` **permanently, with no retry** — where the identical failure
+against a still-`submitted` message goes to `undelivered` and is retried. It would also
+start `uncertain`'s 6-hour expiry timer and fire a `message.uncertain` webhook for
+perfectly healthy traffic.
+
+`DeliveryOutcome::InFlight` is the fix: *progress, not a verdict* — record the receipt,
+change no state. Deliberately **not** folded into `Unknown`, whose own doc promises an
+operator it means "the adapter didn't recognise this"; these two statuses are recognised
+precisely. It reaches the schema (`DeliveryOutcome.in_flight`) for the same reason —
+recording a well-understood status as `unknown` would be a lie in the one column an
+operator reads. MTN's `PENDING` moved to `InFlight` on the same reasoning; its `UNCERTAIN`
+stayed.
+
+Migration consequence: exactly one line of DDL, the `delivery_receipts_outcome_enum_check`
+`CHECK` gaining `'in_flight'`. Regenerated with an **isolated `=0.11.0` CLI** (the
+machine's global install had drifted to `0.12.0` — the standing trap), proven first by
+regenerating against the *unmodified* schema and getting `up.sql`/`down.sql`/`up.pre.sql`
+byte-identical to what was committed, so the one-line diff is demonstrably caused by the
+schema edit and not by emitter skew. Applied to a real disposable Postgres 16 via the
+production `sms-migrate` binary, `ci/test-state-machine.sql` → `ALL ASSERTIONS PASSED`,
+and the live `CHECK` constraint inspected directly to confirm it carries `in_flight`.
+
+### MTN: wired, with the honesty ledger unchanged
+
+`backends/apps/sms-worker/src/main.rs` gains `mtn_provider(cli)` and a second
+`.insert(...)` in `build_provider_registry`; `backends/apps/sms-gateway`'s DLR route now
+holds a **map keyed by `SmsProvider::key`** instead of one hardcoded provider, so
+`POST /dlr/{providerKey}` finally means something (the path parameter was decorative for
+every deployment with one adapter). The gateway's Orange credentials became `Option`al
+with an **at-least-one-provider** check, since "always needs a provider to parse against"
+becomes "needs at least one".
+
+Six new flags/env vars: `MTN_AGGREGATOR_API_KEY` (added to
+`.xtask/src/secret_env_args.rs`'s `SECRET_ENV_VARS` — the aggregator issues a *static*
+Bearer key, so that single value is the whole credential, strictly more sensitive than
+Orange's secret which is useless without its client id), `_SENDER_ID`, `_BASE_URL`,
+`_TPS_CEILING`, `_COST_PER_SEGMENT_XAF` (a `Decimal`, never a float) and
+`_SUPPORTS_ALPHANUMERIC_SENDER`. The first five are **required together, never
+defaulted** — `MtnAggregatorConfig` has no `Default` on purpose, and inventing a TPS
+ceiling would either throttle a real contract or get the account rate-limited, while
+inventing a per-segment cost would misprice `estimatedCostXaf`.
+
+**None of this makes MTN production-ready, and the crate's own module doc still says so.**
+The request/response shape remains an invented placeholder — no aggregator contract
+exists. What changed is that it is now reachable and configurable instead of dead code.
+
+### Not done, deliberately, and worth knowing before assuming otherwise
+
+- **No `MTN_AGGREGATOR_*` plumbing in `deploy/charts/vsms/values.yaml` or the compose
+  files.** Not an oversight: an empty `MTN_AGGREGATOR_API_KEY` env var is `Some("")` to
+  clap, which would trip the all-or-none check and fail startup — so the env block has to
+  be *conditionally omitted*, which values.yaml (rendered per-value through `tpl`) cannot
+  express. It needs `templates/common.yaml`-level work. Orange-only deployments are
+  unaffected; the chart simply cannot express MTN-only yet.
+- **Nothing has been received from a live Orange account.** A documented shape is not an
+  observed one. `docs/runbooks/36-handset-gate.adoc` is still the gate, still unrun, and
+  the first real DLR remains the first real verification — the starting point just moved
+  from "inferred from a different API family" to "read off Orange's own docs".
+
+### Guard-failure proofs (house standard; every one run for real, then reverted)
+
+| broken on purpose | observed failure |
+|---|---|
+| `DeliveryInfoField` → bare `Vec` | 5/8 dlr tests: `invalid type: map, expected a sequence at line 2 column 16` |
+| re-add `receiptRequest` to the submit body | `the documented submit body has no receiptRequest field at all: {...}` |
+| `dlr_handler` → single hardcoded provider | MTN-key DLR: `left: 404, right: 400`, while Orange's own tests kept passing |
+| success arm → `StatusCode::ACCEPTED` | `left: 202, right: 200` on both providers |
+| `InFlight` → `Some(uncertain)` | `a_progress_report_does_not_cost_a_message_its_retry_path`: `left: Some(uncertain)` |
+| drop `hide_env_values` from `--mtn-api-key` | `secret-env-args violation` |
+
+**One test's premise was inverted, not tweaked, and that is worth flagging:**
+`a_dlr_after_an_indeterminate_submit_still_correlates_and_resolves` became
+`..._cannot_correlate_and_expire_stale_resolves_it`. It used to prove a DLR echoing back
+`callbackData` rescued an `Indeterminate` message; with `receiptRequest` gone that is
+false *by design*, so it now proves the opposite. `sms-fake-orange` was correspondingly
+rebuilt to mint its own `resource_id` per submit and report it twice (resourceURL, then
+`callbackData`) exactly as Orange does — which means its ledger correlates by destination
+MSISDN now, and three live suites seed distinct msisdns per message as a result.
+
+**A methodology note worth more than any single finding above:** a first pass at running
+the eight `cargo xtask` guards reported all eight green. It was wrong —
+`OUT=$(cargo xtask $g 2>&1 | tail -2)` followed by `$?` reads *`tail`'s* exit status, not
+cargo's. Re-run capturing the real code, `sdk-schema-check` failed: `schemas/vsms.cstack`
+had changed and `sdks/rust/vsms-sdk-rust/schema.cstack` had not been re-vendored — the
+exact omission that made #185 red. A guard you have miscounted as passing is worse than
+one you never ran.
+
 ## Open questions blocking later milestones
 
 1. **Hosting location.** Law No. 2024/017 requires prior authorisation for *all* cross-border personal-data transfers, and "legitimate interest" is not a lawful basis. Cameroon-hosted is the safe default. Needs an answer before production.

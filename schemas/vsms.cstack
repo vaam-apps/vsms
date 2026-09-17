@@ -83,6 +83,13 @@ enum DeliveryOutcome {
   failed
   expired
   rejected
+  // A provider reported progress, not an outcome: the message is still in
+  // flight and nothing about its fate has been decided. Orange sends two of
+  // these (`DeliveredToNetwork`, `MessageWaiting`) on the happy path, so a
+  // receipt row records them honestly while the message's own state is left
+  // alone. Distinct from `unknown`, which means the adapter did not
+  // recognise the status at all.
+  in_flight
   unknown
 }
 

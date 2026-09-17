@@ -269,7 +269,25 @@ fn next_state(current: MessageState, outcome: DeliveryOutcome) -> Option<Message
             MessageState::uncertain => Some(MessageState::failed),
             _ => None,
         },
-        DeliveryOutcome::Unknown => None,
+        // Two different reasons to propose nothing, deliberately sharing
+        // one arm (clippy's `match_same_arms` is right that the bodies are
+        // identical; the reasoning is not, so it is written out here rather
+        // than lost):
+        //
+        // `InFlight` is progress, not a verdict. `submitted` already means
+        // "handed to the provider, awaiting its outcome", which is exactly
+        // what `DeliveredToNetwork`/`MessageWaiting` report, so there is
+        // nothing to transition *to*. Mapping these to `uncertain`
+        // instead — what happened before `DeliveryOutcome::InFlight`
+        // existed — silently destroyed the message's retry path, because
+        // `uncertain -> undelivered` is not a legal edge and a later
+        // retryable failure would therefore land in `failed` forever. See
+        // that variant's own doc for the full mechanism.
+        //
+        // `Unknown` is an unrecognised status, which per that variant's own
+        // doc must never be guessed into `Failed` or `Delivered`. The
+        // receipt still carries `rawStatus` for a human to read.
+        DeliveryOutcome::InFlight | DeliveryOutcome::Unknown => None,
     }
 }
 
@@ -280,6 +298,7 @@ const fn to_schema_outcome(outcome: DeliveryOutcome) -> schema::DeliveryOutcome 
         DeliveryOutcome::Failed => schema::DeliveryOutcome::failed,
         DeliveryOutcome::Expired => schema::DeliveryOutcome::expired,
         DeliveryOutcome::Rejected => schema::DeliveryOutcome::rejected,
+        DeliveryOutcome::InFlight => schema::DeliveryOutcome::in_flight,
         DeliveryOutcome::Unknown => schema::DeliveryOutcome::unknown,
     }
 }
@@ -293,6 +312,74 @@ mod tests {
     use sms_provider::DeliveryOutcome;
 
     use crate::schema;
+
+    /// A progress report must never move the message. Orange sends two of
+    /// these on the happy path (`DeliveredToNetwork`, `MessageWaiting`),
+    /// and `submitted` already means exactly what they report, so there is
+    /// nothing to transition to.
+    #[test]
+    fn an_in_flight_report_never_changes_the_messages_state() {
+        for current in [
+            MessageState::submitted,
+            MessageState::uncertain,
+            MessageState::delivered,
+        ] {
+            assert_eq!(
+                next_state(current, DeliveryOutcome::InFlight),
+                None,
+                "an InFlight report must not move a message out of {current:?}"
+            );
+        }
+    }
+
+    /// The concrete harm the `InFlight` variant exists to prevent, asserted
+    /// as a sequence rather than as a single mapping — this is what makes
+    /// the bug legible to whoever reads it next.
+    ///
+    /// Before `InFlight`, `MessageWaiting` mapped to `Uncertain`, so a
+    /// healthy `submitted` message became `uncertain` on a routine progress
+    /// report. From `uncertain`, a later genuinely-retryable
+    /// `DeliveryImpossible` maps to `failed` and stays there forever,
+    /// because `uncertain -> undelivered` is not a legal edge (§7.4). The
+    /// identical failure against a still-`submitted` message goes to
+    /// `undelivered` and is retried. So one progress report silently cost
+    /// the message every remaining retry.
+    #[test]
+    fn a_progress_report_does_not_cost_a_message_its_retry_path() {
+        // The progress report leaves it in `submitted`...
+        assert_eq!(
+            next_state(MessageState::submitted, DeliveryOutcome::InFlight),
+            None
+        );
+        // ...so the retryable failure that follows still reaches
+        // `undelivered`, which `claim.rs` will retry.
+        assert_eq!(
+            next_state(MessageState::submitted, DeliveryOutcome::Failed),
+            Some(MessageState::undelivered)
+        );
+        // Had the progress report been treated as `Uncertain`, the message
+        // would have been sitting in `uncertain` by now, and the very same
+        // failure would have been terminal instead:
+        assert_eq!(
+            next_state(MessageState::uncertain, DeliveryOutcome::Failed),
+            Some(MessageState::failed)
+        );
+    }
+
+    #[test]
+    fn in_flight_is_recorded_as_its_own_receipt_outcome_not_unknown() {
+        // `unknown` promises an operator "the adapter didn't recognise
+        // this". These statuses are recognised precisely, so recording them
+        // as `unknown` would be a lie in the one column an operator reads.
+        assert_eq!(
+            to_schema_outcome(DeliveryOutcome::InFlight),
+            schema::DeliveryOutcome::in_flight
+        );
+        assert_ne!(
+            to_schema_outcome(DeliveryOutcome::InFlight),
+            schema::DeliveryOutcome::unknown
+        );
+    }
 
     #[test]
     fn undelivered_retry_backoff_follows_the_documented_schedule() {

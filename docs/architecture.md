@@ -258,6 +258,13 @@ enum DeliveryOutcome {
   failed
   expired
   rejected
+  // A provider reported progress, not an outcome: the message is still in
+  // flight and nothing about its fate has been decided. Orange sends two of
+  // these (`DeliveredToNetwork`, `MessageWaiting`) on the happy path, so a
+  // receipt row records them honestly while the message's own state is left
+  // alone. Distinct from `unknown`, which means the adapter did not
+  // recognise the status at all.
+  in_flight
   unknown
 }
 
@@ -1592,7 +1599,7 @@ GET  /v1/messages/{id}           # generated CRUD, app-scoped by policy
 GET  /v1/messages?limit&offset&sort=-createdAt&where=...
 POST /v1/$procs/cancelMessage
 GET  /v1/webhook-endpoints  ·  POST  ·  PATCH  ·  DELETE
-POST /dlr/{providerKey}          # provider callbacks, NOT CrateStack-routed
+POST /dlr/{providerKey}          # provider callbacks, NOT CrateStack-routed; answers 200, not 202
 GET  /healthz  ·  /readyz  ·  /metrics
 ```
 
@@ -1650,7 +1657,7 @@ Steps 1 to 9 are all pre-persistence. A message that reaches the database is one
 
 The `client_id → App` lookup is where the absence of API keys shows up. The token carries no `appId`, because the OP can't inject one on the standard `client_credentials` path (§4.2), so the gateway derives it. That's on the hot path, so cache it — 60 seconds is short enough that retiring a client takes effect promptly and long enough that the lookup never matters.
 
-Return `202 Accepted`, never `200`. You have not sent anything yet, and an API that implies otherwise produces callers that don't handle DLRs.
+Return `202 Accepted`, never `200`. You have not sent anything yet, and an API that implies otherwise produces callers that don't handle DLRs. **This rule is about *this* endpoint — `sendMessage` — and nothing else.** It was once mis-cited to justify answering `202` on the inbound `POST /dlr/{providerKey}` provider callback, where the logic inverts: Orange's published contract requires a `200 OK` to acknowledge a receipt, and there is no "not sent yet" to communicate on a callback reporting something that already happened. See §4.1 and §6.2.
 
 ### 3.3 Encoding — write this crate first
 
@@ -1713,7 +1720,7 @@ Operator inference is a **hint in a database table, never a hardcoded match**. B
 
 TLS 1.3 preferred, 1.2 floor, at a Caddy or nginx edge with automatic Let's Encrypt. Rust services listen on loopback or a private network only. HSTS with a one-year max-age once you're confident. `crypto-aws-lc-rs` is available as a CrateStack Cargo feature if you ever need FIPS-validated TLS.
 
-One hard external constraint: **Orange will only call a DLR webhook on HTTPS port 443 with a CA-signed certificate.** Self-signed is rejected outright. Your `/dlr/*` endpoint must be publicly reachable on 443 with a real cert before Orange will even whitelist it — and whitelisting is a manual support ticket, not self-service. Budget a week.
+One hard external constraint: **Orange will only call a DLR webhook on HTTPS port 443 with a CA-signed certificate.** Self-signed is rejected outright. Your `/dlr/*` endpoint must be publicly reachable on 443 with a real cert before Orange will even whitelist it — and whitelisting is a manual support ticket, not self-service. Budget a week. The endpoint must also answer **`200 OK`** — Orange's docs are explicit that a 200 is what acknowledges the receipt, and §3.2's `202 Accepted` rule does not apply here (it governs this API's own send endpoint, not an inbound provider callback).
 
 Internal traffic (worker ↔ smpp role, if ever split) uses mTLS with a private CA, or a Unix socket if co-located.
 
@@ -2107,7 +2114,30 @@ The error taxonomy is the important part. Most gateway failover bugs are really 
 - OAuth2 `client_credentials` against `https://api.orange.com/oauth/v3/token`, TTL 3600s. Cache and refresh at 80% of life; do not fetch a token per message.
 - `POST https://api.orange.com/smsmessaging/v1/outbound/tel%3A%2B2370000/requests` with an `outboundSMSMessageRequest` body. Cameroon's country sender number is `tel:+2370000`.
 - Two products: **SMS Cameroon 2.0** (all operators, ~16–22 FCFA/SMS) and **on-net** (Orange only, ~8–11 FCFA/SMS), selected by `?resource_type_parameter_management=SMS_OCB2`. Prefer on-net for Orange-prefixed destinations — that single routing rule is most of the cost optimisation available to you.
-- `201` + a `resource_id` UUID is your DLR correlation key.
+- `201` + a `resource_id` is your DLR correlation key. It is the last path segment of the
+  response's `resourceURL`, and **its format is not a contract** — Orange's own getting-started
+  guide says only "a string with the following typical format:
+  `xxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`". *Typical*, not guaranteed. Never validate it, parse
+  it, or reason about it being a UUID; take the trailing segment and store it verbatim.
+- **The DLR callback contract, from Orange's own docs** (this was guessed from generic OneAPI
+  prose until it was read properly, and the guess was wrong in two places — see
+  `backends/crates/sms-provider-orange-cm/src/dlr.md`):
+  - The body is `{"deliveryInfoNotification":{"callbackData":"<resource_id>","deliveryInfo":
+    {"address":"tel:+<msisdn>","deliveryStatus":"<status>"}}}`. `deliveryInfo` is a **single
+    object, not an array** — the original array assumption made every real DLR fail to parse.
+  - `callbackData` carries Orange's **own** `resource_id`, not a caller-supplied token. The send
+    body Orange documents has no `receiptRequest` field at all, so there is nothing to supply.
+    That is why `Message.providerMessageRef` alone correlates a DLR, and why an `Indeterminate`
+    submit — accepted by Orange, response never read, `resource_id` never learned — can never be
+    correlated and is resolved by `expire_stale` instead.
+  - `deliveryStatus` is exactly five values: `DeliveredToNetwork`, `DeliveryUncertain`,
+    `DeliveryImpossible`, `MessageWaiting`, `DeliveredToTerminal`. Orange's own caveat matters
+    for how you treat them: `DeliveredToTerminal` "you can rely on", but `DeliveryImpossible`
+    may still be delivered later (a handset off-network for 24h, or a flat battery), and is also
+    what a landline or deactivated number returns.
+  - Your endpoint **must answer `200 OK`** to acknowledge. Not `202` — see §3.2's own
+    202-never-200 rule, which is about *this API's send endpoint*, not about acknowledging an
+    inbound provider webhook whose published contract demands 200.
 - **Hard 5 TPS cap.** ~18,000/hour ceiling, unbuyable self-service.
 - Sender name whitelisted via a support form; unapproved names return `400`. Max 11 alphanumeric chars plus spaces.
 - Admin endpoints for balance and expiry: `/sms/frontends/apps/admin/v1/contracts`, `/statistics`, `/purchaseorders`.

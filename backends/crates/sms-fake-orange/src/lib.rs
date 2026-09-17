@@ -8,6 +8,7 @@ pub use ledger::{Ledger, SubmitRecord};
 
 use std::net::TcpListener;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use wiremock::matchers::{method, path};
@@ -109,15 +110,31 @@ impl FakeOrange {
         let dlr_client = reqwest::Client::new();
         let dlr_endpoint = dlr_endpoint.into();
         let submit_path = format!("/smsmessaging/v1/outbound/tel:{sender_number}/requests");
+        // Mints one `resource_id` per submit call, exactly the way real
+        // Orange mints its own `{{resource_id}}` per submission (§4 "About
+        // SMS Delivery Receipt") — never derived from anything the caller
+        // sent, since the documented request carries nothing this fake (or
+        // real Orange) could use as a caller-chosen correlation token. See
+        // `ledger.md`'s own module doc for why this is a *different*
+        // concept from `SubmitRecord::to`.
+        let next_resource_id = Arc::new(AtomicU64::new(1));
 
         let responder = {
             let ledger = Arc::clone(&ledger);
             move |request: &Request| -> ResponseTemplate {
-                let reference = extract_callback_data(request).unwrap_or_default();
+                let to = extract_destination(request).unwrap_or_default();
+                let resource_id =
+                    format!("res-{}", next_resource_id.fetch_add(1, Ordering::SeqCst));
                 let decision = policy.next();
-                ledger.record_submit(&reference, &decision.outcome, decision.response_delay);
+                ledger.record_submit(
+                    &to,
+                    &resource_id,
+                    &decision.outcome,
+                    decision.response_delay,
+                );
                 tracing::info!(
-                    reference,
+                    to,
+                    resource_id,
                     outcome = ?decision.outcome,
                     delay_ms = %decision.response_delay.as_millis(),
                     dlrs_planned = decision.dlr_plan.len(),
@@ -130,11 +147,11 @@ impl FakeOrange {
                         dlr_client.clone(),
                         dlr_endpoint.clone(),
                         step.clone(),
-                        reference.clone(),
+                        resource_id.clone(),
                     );
                 }
 
-                response_for(&decision, &reference)
+                response_for(&decision, &resource_id)
             }
         };
 
@@ -162,19 +179,27 @@ impl FakeOrange {
     }
 }
 
-/// `receiptRequest.callbackData` from a submit request body —
-/// `OrangeCmProvider::submit` always sets this to `SubmitRequest::reference`
-/// (`Message.id`). `None` for a body this fake can't parse — never produced
-/// by the real adapter, only possible if something upstream is badly wrong,
-/// so a caller sees an empty-string reference (and an obviously-wrong
-/// ledger entry) rather than a panic.
-fn extract_callback_data(request: &Request) -> Option<String> {
+/// The destination this submit request named, from the documented
+/// `address` array (<https://developer.orange.com/apis/sms/getting-started>
+/// — the "Getting Started" sample submit body). `tel:` scheme stripped so
+/// it matches `Message.msisdn` verbatim. This is the only field on the
+/// documented wire shape that could plausibly distinguish one logical
+/// message from another — the real, documented request carries no
+/// caller-supplied reference at all (see `sms-provider-orange-cm`'s own
+/// `lib.rs` module doc on why `receiptRequest` is gone). `None` for a
+/// body this fake can't parse — never produced by the real adapter, only
+/// possible if something upstream is badly wrong, so a caller sees an
+/// empty-string `to` (and an obviously-wrong ledger entry) rather than a
+/// panic.
+fn extract_destination(request: &Request) -> Option<String> {
     let body: serde_json::Value = request.body_json().ok()?;
-    body.get("outboundSMSMessageRequest")?
-        .get("receiptRequest")?
-        .get("callbackData")?
-        .as_str()
-        .map(str::to_owned)
+    let raw = body
+        .get("outboundSMSMessageRequest")?
+        .get("address")?
+        .as_array()?
+        .first()?
+        .as_str()?;
+    Some(raw.trim_start_matches("tel:").to_owned())
 }
 
 /// Spawns the background task that delivers one [`fault::DlrStep`] —
@@ -188,18 +213,18 @@ fn schedule_dlr(
     client: reqwest::Client,
     endpoint: String,
     step: fault::DlrStep,
-    default_reference: String,
+    default_resource_id: String,
 ) {
     ledger.mark_dlr_pending();
     tokio::spawn(async move {
         tokio::time::sleep(step.delay).await;
-        let reference = step.reference_override.unwrap_or(default_reference);
-        let body = dlr_body(&reference, &step.status);
+        let resource_id = step.resource_id_override.unwrap_or(default_resource_id);
+        let body = dlr_body(&resource_id, &step.status);
         match client.post(&endpoint).json(&body).send().await {
             Ok(response) => {
                 tracing::info!(
                     endpoint,
-                    reference,
+                    resource_id,
                     status = %step.status.wire(),
                     http_status = response.status().as_u16(),
                     "fake orange: DLR posted"
@@ -211,43 +236,54 @@ fn schedule_dlr(
                 // problem to surface as a panic from a detached background
                 // task — the caller's own invariant sweep is what notices a
                 // DLR that never arrived.
-                tracing::warn!(%error, endpoint, reference, "fake orange: DLR delivery failed");
+                tracing::warn!(%error, endpoint, resource_id, "fake orange: DLR delivery failed");
             }
         }
         ledger.mark_dlr_settled();
     });
 }
 
-/// Orange's own `deliveryInfoNotification` shape, exactly what
-/// `sms-provider-orange-cm`'s real `dlr::parse` expects — see that crate's
-/// own module doc for the public `OneAPI` reference this is grounded in.
-fn dlr_body(reference: &str, status: &DlrStatus) -> serde_json::Value {
+/// Orange's own `deliveryInfoNotification` shape — §4 "About SMS Delivery
+/// Receipt" (<https://developer.orange.com/apis/sms/getting-started>):
+/// `deliveryInfo` is a single JSON object, sibling to `callbackData`, not
+/// an array (`sms-provider-orange-cm`'s real `dlr::parse` accepts both
+/// leniently, but this fake emits exactly what's documented). `callbackData`
+/// carries Orange's own `{{resource_id}}` — the same id the accompanying
+/// submit's `201` echoed back as `resourceURL`'s trailing segment, per
+/// `accepted_body` below. `address` is real, documented data too, so it's
+/// included even though nothing reads it — a fixed placeholder is fine,
+/// it plays no correlation role.
+fn dlr_body(resource_id: &str, status: &DlrStatus) -> serde_json::Value {
     serde_json::json!({
         "deliveryInfoNotification": {
-            "callbackData": reference,
-            "deliveryInfo": [
-                {"address": "tel:+237677000000", "deliveryStatus": status.wire()}
-            ]
+            "callbackData": resource_id,
+            "deliveryInfo": {
+                "address": "tel:+237677000000",
+                "deliveryStatus": status.wire()
+            }
         }
     })
 }
 
 /// The submit response body Orange's real API returns on success (captured
 /// live, #95): `resourceURL` sits DIRECTLY inside `outboundSMSMessageRequest`,
-/// NOT nested under a `resourceReference` wrapper as the public OneAPI docs
-/// describe.
-fn accepted_body(reference: &str) -> serde_json::Value {
+/// NOT nested under a `resourceReference` wrapper as the public `OneAPI` docs
+/// describe. `resource_id` is the id this fake minted for the call (see
+/// `mount`'s own responder), never a caller-supplied one — Orange's own
+/// docs (§4) frame `{{resource_id}}` as Orange's own value, communicated
+/// to the caller for the first time in this very response.
+fn accepted_body(resource_id: &str) -> serde_json::Value {
     serde_json::json!({
         "outboundSMSMessageRequest": {
-            "resourceURL": format!("https://fake-orange.invalid/requests/res-{reference}")
+            "resourceURL": format!("https://fake-orange.invalid/requests/{resource_id}")
         }
     })
 }
 
-fn response_for(decision: &SubmitDecision, reference: &str) -> ResponseTemplate {
+fn response_for(decision: &SubmitDecision, resource_id: &str) -> ResponseTemplate {
     let template = match decision.outcome {
         SubmitOutcome::Accepted => {
-            ResponseTemplate::new(201).set_body_json(accepted_body(reference))
+            ResponseTemplate::new(201).set_body_json(accepted_body(resource_id))
         }
         SubmitOutcome::AcceptedMalformedBody => {
             ResponseTemplate::new(201).set_body_string("not json")

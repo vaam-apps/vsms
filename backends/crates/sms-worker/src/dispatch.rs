@@ -356,23 +356,26 @@ async fn handle_submit_error(
     }
 
     let (next_state, reason, backoff) = terminal_outcome(err);
-    // Known statically, independent of whether the provider ever answered:
-    // `req.reference` (== `message.id`) is exactly what was sent as
-    // `callbackData` before the network call was attempted. Only worth
-    // persisting for the one outcome a later DLR might still need it for
-    // — see `write_transition`'s doc.
-    let provider_ref_alt =
-        matches!(err, ProviderError::Indeterminate { .. }).then_some(message.id.as_str());
-    write_transition(
-        ctx,
-        sys,
-        message,
-        next_state,
-        Some(reason),
-        backoff,
-        provider_ref_alt,
-    )
-    .await;
+    // No alternate reference to record any more, for any provider. This
+    // used to stamp `message.id` here for an `Indeterminate` outcome,
+    // reasoning that it was exactly what had been sent to the provider as
+    // `receiptRequest.callbackData` before the network call was attempted
+    // — a caller-chosen correlation token a later DLR could echo back even
+    // though the submit response itself was never read. That token no
+    // longer exists on the wire: `sms-provider-orange-cm`'s real submit
+    // request carries no caller-supplied reference at all (Orange's own
+    // docs describe no such field — see that crate's `lib.rs` module doc),
+    // so there is nothing here to persist regardless of which provider
+    // this message routed through. An `Indeterminate` submit's own
+    // `resource_id` (the one thing Orange *would* later echo back) is
+    // learned only from a response body this branch never got to read, so
+    // it was never available here either way. The accepted consequence:
+    // once a submit lands here as `Indeterminate`, that message has no
+    // correlation key at all, and a DLR Orange eventually sends for it
+    // (its own real `resource_id`) matches nothing and is dropped —
+    // `expire_stale`'s 6h grace is what resolves it, not a later DLR. See
+    // `write_transition`'s own doc for the full reasoning.
+    write_transition(ctx, sys, message, next_state, Some(reason), backoff, None).await;
 }
 
 /// The terminal-for-this-message outcome once failover has nothing left to
@@ -600,23 +603,28 @@ async fn write_submitted(
 /// `routed -> failed`, or `routed -> uncertain`, per
 /// [`handle_submit_error`]/[`terminal_outcome`]'s outcome.
 ///
-/// `provider_ref_alt`, when given, is stamped onto
-/// `Message.providerMessageRefAlt` alongside the transition — used only
-/// for the `Indeterminate` -> `uncertain` case. `SubmitRequest::reference`
-/// (always `message.id`, see [`submit_one`]) is sent to the provider
-/// *before* the network call that might time out, so it's known
-/// regardless of whether a response ever comes back — unlike
-/// `SubmitAck::provider_ref`/`provider_ref_alt`, which only exist on
-/// success. Without recording it here, a message that lands in
-/// `uncertain` would have neither `providerMessageRef` nor
-/// `providerMessageRefAlt` set, and `sms_api::dlr::ingest_one`'s
-/// correlation query (`providerId` + (`providerMessageRef` OR
-/// `providerMessageRefAlt`)) would never match a DLR that later echoes
-/// this same reference back — see `OrangeCmProvider::submit`'s own doc on
-/// `callbackData` always being `req.reference`. Every other transition out
-/// of `routed` either retries (no correlation needed yet) or is terminal
-/// in a way no later DLR can revisit, so `None` elsewhere is deliberate,
-/// not an oversight.
+/// `provider_ref_alt`, when given, would be stamped onto
+/// `Message.providerMessageRefAlt` alongside the transition —
+/// `sms_api::dlr::ingest_one`'s correlation query matches on `providerId`
+/// together with (`providerMessageRef` OR `providerMessageRefAlt`), so this
+/// is the generic, provider-agnostic seam a future adapter could use to record a
+/// second correlation value known at transition time rather than at
+/// submit-success time. Every call site in this crate passes `None`
+/// today: this used to be how `handle_submit_error` recorded
+/// `message.id` for the `Indeterminate` -> `uncertain` case specifically,
+/// reasoning that `receiptRequest.callbackData` (a caller-chosen
+/// correlation token) had been sent to Orange *before* the network call
+/// that timed out, so it was known regardless of whether a response ever
+/// came back. That token doesn't exist on the wire any more —
+/// `sms-provider-orange-cm`'s real submit request carries no
+/// caller-supplied reference at all (see that crate's `lib.rs` module
+/// doc) — so there is nothing left for any current provider to stamp
+/// here. An `Indeterminate` message's *only* possible correlation value,
+/// Orange's own `resource_id`, lives in a response body this code path
+/// never got to read, so it isn't available here either way. The
+/// consequence: a message that lands in `uncertain` via `Indeterminate`
+/// has no correlation key at all any more, and is resolved by
+/// `expire_stale`'s 6h grace, not by a later DLR.
 async fn write_transition(
     ctx: &WorkerContext,
     sys: &CratestackContext,

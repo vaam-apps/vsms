@@ -390,12 +390,31 @@ async fn seed_gate_fixture(db: &Cratestack) -> GateFixture {
 }
 
 async fn seed_message(db: &Cratestack, app_id: &str, operator: OperatorCode) -> Message {
+    seed_message_with_msisdn(db, app_id, operator, "+237677123456").await
+}
+
+/// Same as [`seed_message`], but with a caller-chosen `msisdn` — needed
+/// wherever more than one message is dispatched to Orange concurrently
+/// within a phase (`run_recovery_phase`'s own three recovery messages).
+/// `sms_fake_orange::Ledger` correlates a submit call by the wire-level
+/// destination address it named, not by a caller-supplied reference —
+/// Orange's real, documented submit request carries none (see
+/// `sms-fake-orange`'s own `ledger.md`) — so several messages sharing one
+/// hardcoded `msisdn` would be indistinguishable in `orange_ledger`'s own
+/// per-message `submit_count` checks, exactly as they would be to real
+/// Orange.
+async fn seed_message_with_msisdn(
+    db: &Cratestack,
+    app_id: &str,
+    operator: OperatorCode,
+    msisdn: &str,
+) -> Message {
     db.message()
         .create(schema::CreateMessageInput {
             appId: app_id.to_owned(),
             clientRef: None,
             idempotencyKey: Some(format!("kill-orange-gate-{}", unique_suffix())),
-            msisdn: "+237677123456".to_owned(),
+            msisdn: msisdn.to_owned(),
             msisdnHash: format!("hmac-sha256-v1:kill-orange-gate-{}", unique_suffix()),
             operator,
             senderIdValue: "VYMALO".to_owned(),
@@ -504,7 +523,6 @@ fn orange_config(base_url: String) -> OrangeCmConfig {
         client_secret: "kill-orange-gate-secret".to_owned(),
         sender_number: GATE_SENDER_NUMBER.to_owned(),
         base_url,
-        dlr_notify_url: None,
         connect_timeout: GATE_CONNECT_TIMEOUT,
         request_timeout: GATE_REQUEST_TIMEOUT,
     }
@@ -615,7 +633,7 @@ async fn run_baseline_phase(
     );
     assert_eq!(baseline_after.providerId, Some(fixture.orange_id.clone()));
     assert_eq!(
-        fake_orange.ledger().submit_count(&baseline.id),
+        fake_orange.ledger().submit_count(&baseline.msisdn),
         1,
         "sanity: the baseline message reached the real fake Orange exactly once"
     );
@@ -737,14 +755,20 @@ async fn run_recovery_phase(
     fixture: &GateFixture,
     orange_ledger: &sms_fake_orange::Ledger,
 ) {
-    let mut recovery_ids = Vec::new();
-    for _ in 0..3 {
-        recovery_ids.push(seed_message(db, app_id, OperatorCode::orange).await.id);
+    // Distinct `msisdn` per message — `orange_ledger.submit_count` below
+    // correlates by destination address (see `seed_message_with_msisdn`'s
+    // own doc), so three recovery messages sharing one hardcoded `msisdn`
+    // would make this loop's per-message assertion meaningless.
+    let mut recovery = Vec::new();
+    for index in 0..3 {
+        let msisdn = format!("+23767712346{index}");
+        let message = seed_message_with_msisdn(db, app_id, OperatorCode::orange, &msisdn).await;
+        recovery.push((message.id, msisdn));
     }
     tick(ctx, sys, "gate-worker").await.expect("tick"); // accepted -> queued (routing sees the circuit closed again, picks Orange)
     tick(ctx, sys, "gate-worker").await.expect("tick"); // queued -> routed -> submitted (via the revived Orange)
 
-    for id in &recovery_ids {
+    for (id, msisdn) in &recovery {
         let after = reload_message(db, id).await;
         assert_eq!(
             after.state,
@@ -757,7 +781,7 @@ async fn run_recovery_phase(
             "must have routed straight back to Orange, not stayed on MTN"
         );
         assert_eq!(
-            orange_ledger.submit_count(id),
+            orange_ledger.submit_count(msisdn),
             1,
             "the revived Orange's own ledger must show exactly one submission for {id} — not \
              zero (never reached) and not two (double-sent)"
@@ -765,7 +789,7 @@ async fn run_recovery_phase(
     }
     assert_eq!(
         orange_ledger.submits().len(),
-        recovery_ids.len(),
+        recovery.len(),
         "the revived Orange must have received exactly one request per recovery message, \
          nothing more"
     );

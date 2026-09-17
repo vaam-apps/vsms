@@ -1,40 +1,57 @@
 Parsing Orange's delivery notification callback.
 
-**Not verified against a live Orange sandbox** — this repo has no Orange
-Developer credentials, and §6.2 documents the submit path in detail but
-not the DLR callback's JSON shape. What's implemented here follows the
-`deliveryInfoNotification` shape common to the GSMA `OneAPI` SMS family
-Orange's own outbound API belongs to (the same lineage as the
-`outboundSMSMessageRequest` shape §6.2 *does* specify for submission).
-Treat this module as the best available design until it can be checked
-against a real callback payload, and add a fixture from Orange's sandbox
-the moment one exists — see `parses_a_delivered_notification` below for
-where it would slot in.
+# What's documented versus what's still unverified
 
-# Correlation: fixed per #95, grounded in public `OneAPI` docs, still
-# sandbox-unverified
+Grounded in Orange's own developer docs
+(<https://developer.orange.com/apis/sms/getting-started>, §4 "About SMS
+Delivery Receipt"), not the wider GSMA `OneAPI` family this module used
+to reason from by inference. Documented, and implemented here to match
+exactly:
 
-[`DeliveryUpdate::provider_ref`] used to be set from each entry's
-`address` field — the destination MSISDN, not the `resource_id` UUID
-`submit()` (`lib.rs`) stores as `Message.providerMessageRef`. A phone
-number can never equal a UUID, so correlation could never have worked
-(#95, caught in review of #94 by two independent bots).
+- **The DR callback body shape.** `deliveryInfoNotification` carries
+  `callbackData` and `deliveryInfo` as siblings; `deliveryInfo` is a
+  single JSON **object**, not an array — the assumption this module
+  carried before (inherited from the broader `OneAPI` family, never
+  Orange's own docs) was wrong, and a real single-object notification
+  would have failed to parse at all, rejecting every genuine DLR as
+  `MALFORMED_DLR` (HTTP 400). See [`DeliveryInfoField`] for why both
+  shapes are still accepted leniently rather than hard-failing on the
+  array form.
+- **`callbackData` is Orange's own `{{resource_id}}`, not a
+  caller-supplied token.** Orange's own words: "the unique ID of your
+  previously well sent SMS that you will need to use to correlate the
+  corresponding SMS." It's the same id `submit()` (`lib.rs`) already
+  recovers from `resourceURL`'s trailing path segment at submit time and
+  stores as `Message.providerMessageRef` — one id, reported twice, once
+  at submit, once at DR. There is no caller-supplied correlation field
+  anywhere in the documented request or response; the maintainer's own
+  decision (see `lib.rs`'s module doc) is to stop pretending one exists
+  via `receiptRequest`.
+- **The `deliveryStatus` vocabulary** — exactly the five values §4's own
+  table lists (`DeliveredToTerminal`, `DeliveryUncertain`,
+  `DeliveryImpossible`, `MessageWaiting`, `DeliveredToNetwork`), with
+  Orange's own caveat that `DeliveredToTerminal` can be relied on but
+  `DeliveryImpossible` cannot (see [`outcome_of`]'s own doc for how that
+  caveat shapes the mapping).
 
-The fix: `submit()` now sends `receiptRequest.callbackData` set to
-`SubmitRequest::reference` (`Message.id`) on every outbound request —
-confirmed against the public `OneAPI` SMS Messaging REST binding
-(Oracle Communications' `OneAPI` reference docs, which describe the same
-`outboundSMSMessageRequest`/`deliveryInfoNotification` family §6.2 is
-already modelled on) that `callbackData` is "passed back in the
-notification, allowing you to identify the message." The notification
-echoes it back as a **top-level** field of `deliveryInfoNotification`,
-sibling to the `deliveryInfo` array — not per-entry — which is what
-[`parse`] now reads as `provider_ref` instead of `address`.
+**Still genuinely unverified: nothing has been received from a real
+Orange sandbox.** A documented shape is not the same thing as an
+observed one — this repo has no Orange Developer credentials, and every
+claim above is a careful reading of the public docs, not a captured
+payload. The first real DLR this adapter ever receives from a live
+Orange account is still the first live verification of this module,
+exactly as it was before this file was rewritten — only the starting
+point moved, from "inferred from a different API family" to "read
+directly off Orange's own documentation."
 
-This is still unverified against Orange Cameroon's own live
-implementation specifically: `notifyURL`/`callbackData` is documented
-generic `OneAPI` behaviour, not confirmed Orange-Cameroon behaviour (the
-module doc above's own long-standing caveat). The first real DLR this
-adapter ever receives from a live Orange sandbox is also the first live
-verification of this fix — if `callbackData` doesn't come back exactly
-as sent, capture the raw payload and revisit.
+# Correlation, in one line
+
+`callbackData` (Orange's own `resource_id`) is matched against
+`Message.providerMessageRef`, the value `submit()` stored there from the
+`201` response's `resourceURL` at submit time. There is no second,
+alternate correlation path any more (see `lib.rs`'s own doc on
+`SubmitAck::provider_ref_alt` now always being `None` for this
+provider) — a submission whose `resource_id` was never learned (a
+timed-out submit, `ProviderError::Indeterminate`) has nothing for a
+later DLR to match against and is resolved by `expire_stale` instead.
+That's a deliberate, accepted tradeoff, not a gap in this module.
