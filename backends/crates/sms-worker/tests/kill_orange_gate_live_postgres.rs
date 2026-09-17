@@ -25,8 +25,9 @@
 //!
 //! - Talks to Orange through the **real** `sms_provider_orange_cm::
 //!   OrangeCmProvider` adapter, and to MTN through the **real**
-//!   `sms_provider_mtn::MtnAggregatorProvider` adapter (#61) — not a fake
-//!   `SmsProvider` impl for either.
+//!   `sms_provider_mtn::MtnProvider` adapter (#61, rebuilt against MTN's
+//!   own direct MADAPI contract) — not a fake `SmsProvider` impl for
+//!   either.
 //! - "Kills" Orange by dropping a real, running `sms_fake_orange::FakeOrange`
 //!   HTTP server, so the very next submit attempt gets a genuine OS-level
 //!   `ECONNREFUSED` through `OrangeCmProvider::submit` — real
@@ -80,7 +81,7 @@ use sms_api::schema::{
 };
 use sms_fake_orange::{FakeOrange, FaultPolicy, SubmitDecision, TokenPolicy};
 use sms_provider::SmsProvider;
-use sms_provider_mtn::{MtnAggregatorConfig, MtnAggregatorProvider};
+use sms_provider_mtn::{MtnConfig, MtnProvider};
 use sms_provider_orange_cm::{OrangeCmConfig, OrangeCmProvider};
 use sms_worker::WorkerContext;
 use sms_worker::dispatch::tick;
@@ -528,21 +529,39 @@ fn orange_config(base_url: String) -> OrangeCmConfig {
     }
 }
 
+/// MADAPI's real, vendored contract (`sms-provider-mtn/mtn-sms-v3-swagger.yaml`):
+/// `OAuth2 client_credentials` (mocked here the same way
+/// `orange_config`'s own token endpoint would be, had this fixture
+/// needed one directly — `MtnProvider` fetches its own token
+/// transparently), a `200` (not `201`) success response, and a
+/// `resourceReference` envelope (`statusCode: '0000'`, `transactionId`)
+/// rather than the old placeholder's invented `messageId`/`status`
+/// shape.
 async fn mount_mtn_ok(server: &MockServer) {
     Mock::given(method("POST"))
-        .and(path("/v1/messages"))
+        .and(path("/v1/oauth/access_token/accesstoken"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "kill-orange-gate-mtn-token",
+            "expires_in": 3600,
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v3/sms/messages/sms/outbound"))
         .respond_with(|request: &wiremock::Request| {
             let body: serde_json::Value = request
                 .body_json()
                 .unwrap_or_else(|_| serde_json::json!({}));
-            let reference = body
-                .get("reference")
+            let client_correlator_id = body
+                .get("clientCorrelatorId")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("unknown")
                 .to_owned();
-            ResponseTemplate::new(201).set_body_json(serde_json::json!({
-                "messageId": format!("mtn-{reference}"),
-                "status": "Sent",
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "statusCode": "0000",
+                "statusMessage": "Sucessful",
+                "transactionId": format!("mtn-{client_correlator_id}"),
+                "data": {"status": "PENDING"},
             }))
         })
         .mount(server)
@@ -572,17 +591,18 @@ async fn build_gate_harness(
 
     let mtn_server = MockServer::start().await;
     mount_mtn_ok(&mtn_server).await;
-    let mtn_provider: Arc<dyn SmsProvider> =
-        Arc::new(MtnAggregatorProvider::new(MtnAggregatorConfig {
-            api_key: "kill-orange-gate-mtn-key".to_owned(),
-            sender_id: "VYMALO".to_owned(),
-            base_url: mtn_server.uri(),
-            tps_ceiling: 20.0,
-            cost_per_segment_xaf: rust_decimal::Decimal::new(12, 0),
-            supports_alphanumeric_sender: true,
-            connect_timeout: GATE_CONNECT_TIMEOUT,
-            request_timeout: GATE_REQUEST_TIMEOUT,
-        }));
+    let mtn_provider: Arc<dyn SmsProvider> = Arc::new(MtnProvider::new(MtnConfig {
+        client_id: "kill-orange-gate-mtn-client".to_owned(),
+        client_secret: "kill-orange-gate-mtn-secret".to_owned(),
+        service_code: "131".to_owned(),
+        sender_id: Some("VYMALO".to_owned()),
+        base_url: mtn_server.uri(),
+        tps_ceiling: 20.0,
+        cost_per_segment_xaf: rust_decimal::Decimal::new(12, 0),
+        supports_alphanumeric_sender: true,
+        connect_timeout: GATE_CONNECT_TIMEOUT,
+        request_timeout: GATE_REQUEST_TIMEOUT,
+    }));
 
     let ctx = WorkerContext {
         db: db.clone(),
@@ -716,15 +736,48 @@ async fn run_outage_phase(
          attempted connection failed at the transport level before ever reaching Orange's \
          request handler, so there is nothing there to have been duplicated"
     );
+    // Counted per-path, not as a bare request total. MADAPI authenticates
+    // with OAuth2 `client_credentials`, so this mock server legitimately
+    // receives a token fetch *as well as* the submits — the static-API-key
+    // placeholder this adapter used to target made no such call, and a bare
+    // `received_requests().len()` silently conflated the two the moment the
+    // real contract landed. Splitting them asserts strictly more than the
+    // old total did: exactly one submit per message, AND exactly one token
+    // fetch for all of them.
     let mtn_requests_during_outage = mtn_server
         .received_requests()
         .await
         .expect("wiremock tracks every request it received");
+    let submit_requests = mtn_requests_during_outage
+        .iter()
+        .filter(|request| request.url.path() == "/v3/sms/messages/sms/outbound")
+        .count();
+    let token_requests = mtn_requests_during_outage
+        .iter()
+        .filter(|request| request.url.path() == "/v1/oauth/access_token/accesstoken")
+        .count();
     assert_eq!(
-        mtn_requests_during_outage.len(),
+        submit_requests,
         mtn_bound_ids.len() + orange_bound_ids.len(),
         "MTN must have received exactly one submit per message that reached it — three native, \
          five failed-over, eight total, none duplicated"
+    );
+    // Not incidental bookkeeping: a token fetched per message would mean
+    // `sms_provider_mtn::token`'s cache is not working, which §6.2 calls out
+    // explicitly for Orange ("do not fetch a token per message") and which
+    // would burn this deployment's rate budget on auth rather than traffic.
+    assert_eq!(
+        token_requests, 1,
+        "the OAuth2 token must be fetched once and cached for every subsequent submit, not \
+         re-fetched per message"
+    );
+    // Together these must account for every request the mock saw — if they
+    // don't, this adapter is making a call neither the submit path nor the
+    // token path explains, and that is worth failing over.
+    assert_eq!(
+        submit_requests + token_requests,
+        mtn_requests_during_outage.len(),
+        "every request MTN received must be either a submit or the token fetch"
     );
 
     // Clause (half): the circuit breaker opens on sustained failure.

@@ -12,8 +12,11 @@ signature verification is implemented — `RawCallback` already carries
 the exact, unmodified bytes a future one would need, but no provider's
 real signature scheme is documented yet to verify against (Orange's
 own DLR shape is itself unverified against a live sandbox — see
-`sms-provider-orange-cm`'s own `dlr` module; MTN's is an outright
-invented placeholder — see `sms-provider-mtn`'s own module doc).
+`sms-provider-orange-cm`'s own `dlr` module; MTN's is now transcribed
+from MTN's own vendored MADAPI Swagger, a real improvement over the
+outright invented placeholder this route originally served, but is
+still unverified against a live account — see `sms-provider-mtn`'s own
+module doc for the full honesty ledger).
 
 `{providerKey}` is looked up in a map keyed by each configured adapter's
 own `SmsProvider::key()` (`DlrProvider`, this module), not compared
@@ -21,7 +24,7 @@ against a single hardcoded provider — before #61's wiring, this route
 held exactly one adapter and 404'd every key that wasn't Orange's,
 including a key that genuinely belonged to a *second*, simply
 unconfigured, provider. With N adapters configured (today: Orange,
-`orange_cm`, and optionally MTN, `mtn_aggregator` — see
+`orange_cm`, and optionally MTN, `mtn_cm` — see
 `commands::serve::build_dlr_router`), a 404 means "no adapter is
 configured under this key," which is now the only thing it can mean.
 

@@ -186,10 +186,12 @@ mod tests {
     }
 
     fn mtn_dlr_provider() -> DlrProvider {
-        let config = sms_provider_mtn::MtnAggregatorConfig {
-            api_key: "test-api-key".to_owned(),
-            sender_id: "SENDER".to_owned(),
-            base_url: "https://aggregator.invalid".to_owned(),
+        let config = sms_provider_mtn::MtnConfig {
+            client_id: "test-client-id".to_owned(),
+            client_secret: "test-client-secret".to_owned(),
+            service_code: "131".to_owned(),
+            sender_id: Some("SENDER".to_owned()),
+            base_url: "https://mtn.invalid".to_owned(),
             tps_ceiling: 20.0,
             cost_per_segment_xaf: rust_decimal::Decimal::new(15, 0),
             supports_alphanumeric_sender: false,
@@ -197,7 +199,7 @@ mod tests {
             request_timeout: std::time::Duration::from_secs(2),
         };
         DlrProvider {
-            provider: Arc::new(sms_provider_mtn::MtnAggregatorProvider::new(config)),
+            provider: Arc::new(sms_provider_mtn::MtnProvider::new(config)),
             provider_row_id: "mtn-provider-row-id".to_owned(),
         }
     }
@@ -229,7 +231,7 @@ mod tests {
     /// **Guard-failure proof #1** (this PR's own required proof): before
     /// this PR, `dlr_handler` compared `provider_key` against exactly one
     /// hardcoded `Arc<dyn SmsProvider>` and 404'd everything else — so a
-    /// callback to `/dlr/mtn_aggregator` would have 404'd even with MTN
+    /// callback to `/dlr/mtn_cm` would have 404'd even with MTN
     /// genuinely configured, since only Orange's key could ever match.
     /// Reverting `dlr_handler`'s `state.providers.get(&provider_key)`
     /// lookup to that old single-provider shape and re-running this test
@@ -239,12 +241,7 @@ mod tests {
     /// refuses a body that isn't JSON at all.
     #[tokio::test]
     async fn a_dlr_posted_to_the_mtn_key_reaches_the_mtn_adapter_not_a_404() {
-        let status = post_dlr(
-            two_provider_router(),
-            "/dlr/mtn_aggregator",
-            "not json at all",
-        )
-        .await;
+        let status = post_dlr(two_provider_router(), "/dlr/mtn_cm", "not json at all").await;
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
     }
 
@@ -283,8 +280,8 @@ mod tests {
     async fn a_successfully_ingested_mtn_dlr_answers_200_not_202() {
         let status = post_dlr(
             two_provider_router(),
-            "/dlr/mtn_aggregator",
-            r#"{"messageId":"mtn-ref-1","status":"DELIVERED"}"#,
+            "/dlr/mtn_cm",
+            r#"{"clientCorrelatorId":"mtn-ref-1","deliveryStatus":"DELIVERED"}"#,
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);

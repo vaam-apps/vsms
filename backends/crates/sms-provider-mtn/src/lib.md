@@ -1,95 +1,190 @@
-[`SmsProvider`] for MTN Cameroon capacity bought through a licensed
-aggregator, not a direct MTN interconnect. #61 — see the epic (#60) and
-`docs/architecture.md` §6.2/§6.4: MTN's own developer portal publishes no
-pricing, no sender-ID policy, and no DLR spec for Cameroon, and the
-commercial path there routes through MTN's local enterprise team on a
-timeline this repo cannot build against. Buying capacity through a
-licensed aggregator is the recommended posture in §6.4 for exactly this
-reason, and it is also the path that avoids the ART-title question
-(decision #4) entirely — this crate never opens an SMPP bind or an
-interconnect of its own.
+[`SmsProvider`] for MTN via MTN's own **direct API, MADAPI** ("MTN Africa
+Developer API Platform"), not the licensed-aggregator posture this crate
+originally shipped under for #61. `docs/architecture.md` §6.4 recommended
+an aggregator specifically because "MTN's own developer portal publishes
+no pricing, no sender-ID policy, and no DLR spec for Cameroon" at the
+time — that gap is now closed by a real, vendored contract, and the
+maintainer's explicit decision is to build against it directly rather
+than keep the aggregator framing. This is a hard cutover: no aggregator
+type, config field, or doc claim survives from the previous shape.
 
-# This is a provisional shape, not a verified integration
+# The contract is now real, documented, and vendored — with one honest gap
 
-**No real aggregator contract, credentials, or API document exists in
-this repo, and none of this has been run against a live endpoint.**
-Matching `sms-provider-orange-cm`'s own precedent of naming exactly how
-confident each part is (see that crate's module doc on the OAuth/submit
-shape vs. the DLR shape), here is the honesty ledger for this crate:
+**`mtn-sms-v3-swagger.yaml`, committed alongside this crate's source, is
+the authoritative source for everything this crate builds against.**
+Downloaded from MTN's own developer portal
+(<https://developers.mtn.com/products/sms-v3-api>) on 2026-09-17. Read
+it directly rather than trusting any summary here or elsewhere — Swagger
+2.0, `host: api.mtn.com`, `basePath: /v3/sms/`.
 
-- **The transport-error classification** (connect-vs-read,
-  [`ProviderError::Indeterminate`] on a post-connect timeout or an
-  unparseable/incomplete `2xx`) is provider-agnostic reasoning, not an
-  aggregator-specific claim. It is exactly as trustworthy here as it is
-  in `sms-provider-orange-cm`, because it follows from what `reqwest`
-  itself guarantees about `is_connect`/`is_timeout`/`is_body`, not from
-  any aggregator's documentation — which is exactly what let it move,
-  unchanged, into `sms-provider-http` once this crate proved a second
-  adapter needed the identical reasoning. Same for the provider-agnostic
-  half of the HTTP-status mapping (`429` → `Transient`, `5xx` →
-  `Unavailable`, everything else → `Rejected`) — see
-  `classify_submit_error` in this crate's own source for what stays
-  local (`401`/`403`) and why.
-- **The request/response JSON shape below (`POST /v1/messages`, Bearer
-  API-key auth, a `messageId` in a `201` response, a `POST` DLR callback
-  carrying that same `messageId`) is an invented, best-guess shape**,
-  chosen to match the common pattern across the aggregators
-  `docs/architecture.md` §6.2 already names as candidates for this route
-  (Nexah, Africa's Talking, Infobip, Twilio): a REST `POST` that returns
-  `201 Created` for a newly created message resource (Africa's Talking's
-  own SMS API does exactly this), a JSON body carrying the created
-  message's id, and a webhook DLR that echoes that same id back. It is
-  **not** transcribed from any one vendor's real Swagger/API reference
-  the way Orange's submit shape was transcribed from §6.2. Treat every
-  field name below as a placeholder until a real contract exists, and
-  replace this module's request/response structs — not the
-  [`SmsProvider`] impl or the error classification around them — the
-  moment one does.
-- **Auth is a static Bearer API key, not `OAuth2 client_credentials`.**
-  Chosen over mirroring Orange's OAuth dance because a static
-  aggregator-issued key is at least as common a pattern in this space
-  (Africa's Talking, Infobip, and most SMS aggregators issue a key or
-  App-ID/App-secret pair rather than running a token endpoint), and it
-  avoids inventing a second unverified token-endpoint shape on top of an
-  already-invented submit shape. If a real MTN aggregator contract turns
-  out to use `client_credentials` instead, `sms-provider-orange-cm`'s
-  `token.rs` is the pattern to copy — nothing else in this crate would
-  need to change.
+**Provenance caveat, stated plainly rather than buried in a commit
+message:** `developers.mtn.com`'s TLS certificate was expired at
+download time (Let's Encrypt, `notAfter Sep 16 06:02:41 2026 GMT` — one
+day before this crate was written), so certificate verification was
+bypassed for that one download, at the maintainer's explicit direction.
+The certificate chain was otherwise intact (`CN=developers.mtn.com`,
+issued by Let's Encrypt) — this was an expired-but-otherwise-legitimate
+certificate, not a substituted one, and nothing about the download
+mechanism itself was compromised. SHA-256 of the vendored file:
+`5a74e8531afd7d087829f668a5c493df157e620dc0480c9213ef5bcee083fb94`.
+Anyone re-verifying this crate's shape against the real API should
+re-download over a valid certificate and diff against the vendored
+copy before trusting either.
 
-# `Capabilities` is genuinely different here, not just re-declared
+**What "documented" does and does not mean here — the one thing this
+section exists to be honest about.** Every request/response shape, every
+status code, the `OAuth2` flow, and the DLR callback shape below are
+transcribed from the vendored Swagger, not invented — a real, material
+improvement over this crate's original placeholder shape (`POST
+/v1/messages`, a static Bearer key, an invented `messageId`/`status`
+envelope — none of that exists any more). **But a documented shape is
+not an observed one.** Nothing in this crate has ever been run against a
+real MTN account, a real client id/secret pair, or a real webhook
+delivery — the same caution `sms-provider-orange-cm/src/dlr.md` draws
+for Orange's own DLR shape, which stayed genuinely unverified for a long
+time even after its submit shape was confirmed live. Treat every
+classification decision this crate makes for an undocumented case (a
+`200` response whose `statusCode` isn't `'0000'`, a `401`/`407` at
+submit time, which of `error`/`details` a DLR's failure reason lands in)
+as a considered guess, not a confirmed fact, until this crate is proven
+against a real endpoint.
 
-This is the actual point of #61's second paragraph, and it shows up as a
-structural difference from `sms-provider-orange-cm`, not just different
-field values. Orange's `capabilities()` (`sms-provider-orange-cm/src/lib.rs`)
-is a bare function with no inputs — every field is a fact about Orange's
-self-service product that's true for every deployment of this codebase.
-MTN-via-aggregator has no such fixed facts: `tps_ceiling` and
-`cost_per_segment_xaf` are negotiated per aggregator contract, not
-published anywhere, and whether an alphanumeric sender ID is usable at
-all depends on that specific contract's own sender-ID registration
-status with MTN (§3.3 of `docs/architecture.md`: "MTN requires
-pre-registration through your aggregator" — a per-relationship fact, not
-a platform-wide one the way Orange's support-form whitelist is). So
-[`MtnAggregatorConfig`] carries `tps_ceiling`, `cost_per_segment_xaf`,
-and `supports_alphanumeric_sender` as caller-supplied fields, and
-[`MtnAggregatorProvider::capabilities`] reads them back rather than
-returning a compiled-in constant. A routing layer that special-cased
-`if key == "orange_cm" { 5.0 } else { some_other_constant }` would be
-exactly the anti-pattern `sms-provider`'s own module doc warns against;
-reading `capabilities().tps_ceiling` off whichever provider is
-configured is the only version that survives a second aggregator
-relationship with different contract terms.
+# Auth: `OAuth2 client_credentials`, matching Orange's own shape
 
-One `Capabilities` field this crate's DLR shape makes genuinely simpler
-than Orange's, worth recording precisely because it's the opposite
-direction of complexity: Orange's DLR (`sms-provider-orange-cm/src/dlr.rs`)
-cannot correlate on the same reference it returns from `submit` — it
-needs `receiptRequest.callbackData` and `SubmitAck::provider_ref_alt` to
-work around that (#95). This crate's assumed DLR shape echoes the same
-`messageId` `submit` already returns, so `provider_ref_alt` is always
-`None` here. That is a property of the *assumed* shape, not a proven
-simplification — if a real MTN aggregator's DLR turns out to reference
-the submission differently, this is exactly the kind of correlation gap
-#95 already shows this codebase can silently ship with, so revisit
-`dlr::parse` and `submit`'s `provider_ref_alt` together the moment a real
-payload is available.
+MADAPI's `securityDefinitions.OAuth2` names `flow: application` (RFC
+6749's `client_credentials` grant) with a fixed `tokenUrl`. This
+replaces the previous crate's invented static-Bearer-key auth entirely —
+[`MtnConfig`] now carries `client_id`/`client_secret`, not `api_key`.
+[`token`]'s own module doc covers the two respects in which MADAPI's
+token endpoint genuinely differs from Orange's (an absolute URL on a
+different path than the SMS API's own `basePath`, and
+`grant_type=client_credentials` already on the query string rather than
+the form body) — read it before touching [`MtnProvider::access_token`]
+or [`token::fetch`].
+
+# `serviceCode` is the fixed, required identity; `senderAddress` is the optional, per-message override
+
+MADAPI's `outboundSMSMessageRequest.serviceCode` is unconditionally
+required ("the short code that is provided by the api consumer and is
+approved by the opco... This field is mandatory") — the closest MADAPI
+analogue to `sms-provider-orange-cm::OrangeCmConfig::sender_number`, and
+[`MtnConfig::service_code`] plays that role: a fixed, contract-level
+identity, always sent. `senderAddress` is genuinely optional and, per
+the Swagger, "takes precedence over the serviceCode" when present.
+
+**Where `senderAddress` comes from is a real design decision this
+crate's rewrite had to make, and it is a deliberate departure from the
+crate's own previous behaviour.** The original placeholder always sent
+one fixed, config-level `sender_id` for every message, ignoring
+`SubmitRequest::sender_id` entirely. That was wrong the same way it
+would be wrong for Orange: §3.3's sender-ID approval is a per-`App`
+relationship, and `Message.senderIdValue` — what `sendMessage` already
+resolved as the specific, approved sender for *this* message — is
+exactly what `SubmitRequest::sender_id` carries (the identical field
+Orange's own `sender_name` reads from `req.sender_id`, not
+`OrangeCmConfig`). [`MtnProvider::sender_address`] now reads
+`req.sender_id` first, falling back to [`MtnConfig::sender_id`] (an
+operator-configured default) only when the per-message value is empty —
+which, given `senderIdValue String @length(min: 3, max: 11)` in the
+schema, should never happen in practice; the fallback exists for
+defensive correctness, not because this crate has observed it being
+needed.
+
+**`--mtn-sender-id`/[`MtnConfig::sender_id`] is deliberately *not* part
+of the all-or-none required-credential group any more.** The Swagger
+marks `senderAddress` optional, and unlike `serviceCode` there is a
+fully valid MADAPI submission with no `senderAddress` at all (MTN then
+uses the `serviceCode` identity for the message) — requiring an operator
+to set a value that MADAPI itself treats as optional, purely because
+this crate's *previous* shape treated it as load-bearing, would be
+carrying the old design's requirement forward for no reason the new
+contract gives.
+
+# What a `200` on `/messages/sms/outbound` actually means
+
+Unlike Orange's `201 Created`, MADAPI's own documented success response
+for a submit is `200` ("Outbound SMS created" — the Swagger's own
+description text, despite the `200` status) carrying a `resourceReference`
+envelope: `statusCode` (a **4-character MADAPI canonical error code**,
+`'0000'` on success), `statusMessage`, `transactionId`, and a `data`
+object. **A `200` alone is not success** — see
+[`classify_application_error`]'s own doc: the HTTP layer answering `200`
+only means the request reached MADAPI and MADAPI made a decision about
+it; `statusCode != "0000"` is MADAPI's own, explicit way of reporting an
+application-level failure through a transport-level success, and this
+crate treats it as exactly that — a real failure, not a false "accepted."
+
+`transactionId` — "MADAPI generated Id to include for tracing requests"
+— is what [`SubmitAck::provider_ref`] carries.
+
+# `provider_ref_alt` is genuinely used here, the opposite of Orange
+
+`sms-provider-orange-cm`'s own module doc records, at length, why
+`provider_ref_alt` is always `None` for that adapter: Orange's real
+submit request has no caller-supplied correlation field at all, so the
+only value ever available to correlate a later DLR is Orange's own
+`resource_id`, reported both at submit time (`resourceURL`) and DLR time
+(`callbackData`) — one value, one column, `providerMessageRef` alone.
+
+MADAPI is structurally different, and it is worth stating plainly rather
+than leaving it to be re-derived: `outboundSMSMessageRequest` carries
+`clientCorrelatorId` — "It uniquely identifies the request", explicitly
+caller-supplied — and MADAPI's own DLR
+(`DeliveryNotificationRequest.clientCorrelatorId`, "Message ID for which
+the Derivery [sic] report is being sent") echoes that *same*
+caller-supplied token back, not MADAPI's own `transactionId`. So this
+adapter has two independent, genuinely useful correlation values:
+MADAPI's own `transactionId` (`provider_ref`, `Message.providerMessageRef`)
+and this system's own `Message.id` as sent in `clientCorrelatorId`
+(`provider_ref_alt`, `Message.providerMessageRefAlt`) — and
+`backends/crates/sms-api/src/dlr.rs` already matches a DLR against
+either column, so both are checked with no code change needed there.
+[`MtnProvider::submit`] sends `req.reference` (already `Message.id`,
+per [`SubmitRequest::reference`]'s own doc) as `clientCorrelatorId` and
+stores it as `provider_ref_alt` for exactly this reason.
+
+**`clientCorrelatorId` has a documented `maxLength: 36`.** `Message.id`
+is a `Cuid` — `cs_cuid()` emits 23 characters (`AGENTS.md`'s own
+"Milestone 0" note) — so this never trips in practice. [`MtnProvider::submit`]
+still checks it explicitly and refuses to submit rather than silently
+truncating a value MADAPI would then echo back on a DLR that could never
+correlate against anything: a silently truncated correlator is exactly
+the kind of "shipped looking correct, wasn't" bug this codebase's own
+history is full of. Mapped to [`ProviderError::Permanent`] — nothing is
+wrong with the caller's `Message`, only with this specific provider's
+own length limit on it, so a different route/provider for the same
+message is worth trying.
+
+# `Capabilities` stays contract-driven, unchanged in shape from before
+
+This crate's original structural point — `tps_ceiling`,
+`cost_per_segment_xaf`, and `supports_alphanumeric_sender` are
+negotiated per-contract commercial terms with no public number MADAPI's
+own docs give, so [`MtnConfig`] carries them as caller-supplied fields
+and [`MtnProvider::capabilities`] reads them back rather than returning
+a compiled-in constant — is unaffected by the aggregator-to-direct-API
+rewrite and stays exactly as it was. See
+`sms-provider-orange-cm/src/lib.rs`'s own `capabilities()` for the
+contrasting case (Orange's own self-service, fixed 5 TPS/known-pricing
+product), and `AGENTS.md`'s "Milestone 5" section for why this
+difference is structural, not cosmetic.
+
+# `subscribe_delivery_reports` — the operationally real difference this rewrite unlocks
+
+Orange's own DLR endpoint is whitelisted by a manual support ticket —
+§9.2's own stated external constraint, unautomatable by construction.
+**MADAPI's `POST /messages/sms/subscription` registers a
+`callbackUrl`/`deliveryReportUrl` through the API itself**, which means
+this, unlike Orange's, genuinely can be automated.
+[`MtnProvider::subscribe_delivery_reports`] is that call — an inherent
+method, not part of [`SmsProvider`] (no other adapter has anything like
+this concept, and forcing one onto the trait for MADAPI's sake alone
+would be exactly the kind of adapter-specific leakage `sms-provider`'s
+own module doc warns against). Nothing in this codebase calls it yet;
+see the method's own doc for the intended caller (a future
+`sms-gateway` subcommand, the same operator-action shape
+`rotate-signing-key`/`provision-user` already use) and the one
+simplifying decision its own doc names (`callbackUrl` and
+`deliveryReportUrl` set to the same value, since this deployment has no
+Mobile-Originating message handling to route a distinct `callbackUrl`
+into).
