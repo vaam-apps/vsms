@@ -492,7 +492,7 @@ ALTER TABLE consent_records ADD CONSTRAINT consent_records_scope_enum_check CHEC
 
 ALTER TABLE consent_records ADD CONSTRAINT consent_records_channel_enum_check CHECK (channel IN ('web_form', 'api', 'ivr', 'paper_form', 'verbal', 'sms_keyword', 'import', 'admin'));
 
-ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_outcome_enum_check CHECK (outcome IN ('delivered', 'uncertain', 'failed', 'expired', 'rejected', 'unknown'));
+ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_outcome_enum_check CHECK (outcome IN ('delivered', 'uncertain', 'failed', 'expired', 'rejected', 'in_flight', 'unknown'));
 
 ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_network_code_enum_check CHECK (network_code IN ('mtn', 'orange', 'camtel', 'nexttel', 'unknown'));
 

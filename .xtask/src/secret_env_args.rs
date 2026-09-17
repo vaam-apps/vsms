@@ -23,7 +23,19 @@ use std::path::{Path, PathBuf};
 /// Variables whose value is credential material. Adding one here makes
 /// every existing `#[arg(..., env = "…")]` binding it a hard failure
 /// until it also carries `hide_env_values = true`.
-const SECRET_ENV_VARS: [&str; 3] = ["DATABASE_URL", "SMS_HASH_PEPPER", "ORANGE_CM_CLIENT_SECRET"];
+const SECRET_ENV_VARS: [&str; 4] = [
+    "DATABASE_URL",
+    "SMS_HASH_PEPPER",
+    "ORANGE_CM_CLIENT_SECRET",
+    // The MTN aggregator issues a static Bearer key rather than an
+    // OAuth2 client id/secret pair, so this single value is the whole
+    // credential — strictly more sensitive than Orange's secret, which
+    // is useless without its client id. Added when the MTN adapter was
+    // first wired into `sms-worker`/`sms-gateway`; both bindings already
+    // carried `hide_env_values = true`, so this list entry is what stops
+    // a *future* binding from silently omitting it.
+    "MTN_AGGREGATOR_API_KEY",
+];
 
 /// Directory names never worth walking into — build output, VCS
 /// internals, agent worktrees (each a full second copy of this repo,

@@ -210,7 +210,7 @@ just ci           # the ENTIRE CI gate -- needs only docker/compose/just; see do
 | `sms-fake-orange` isn't reachable at `ORANGE_CM_BASE_URL`. `docker compose -f compose.dev.yaml logs sms-fake-orange`.
 
 | Messages reach `submitted` and stop
-| The DLR never arrived -- check ``sms-gateway``'s own `ORANGE_CM_DLR_NOTIFY_URL`/``sms-worker``'s `ORANGE_CM_DLR_NOTIFY_URL` in `compose.dev.yaml` match the internal `sms-gateway:8080` address, not a host-published port.
+| The DLR never arrived. There is no `notifyURL` knob any more -- Orange's own docs register the DLR endpoint out of band, so ``sms-fake-orange`` is told where to post by its own `--dlr-endpoint` (`FAKE_ORANGE_DLR_ENDPOINT`) instead. Check it points at the internal `http://sms-gateway:8080/dlr/orange_cm` address in `compose.dev.yaml`, not a host-published port, then `docker compose -f compose.dev.yaml logs sms-fake-orange` to confirm it actually tried.
 
 | `429` from everything
 | A rate-limit bucket. `docker compose -f compose.dev.yaml restart sms-gateway` to reset, or slow down.

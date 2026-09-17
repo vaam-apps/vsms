@@ -57,20 +57,28 @@ pub(crate) struct ServeArgs {
     pub(crate) issuer: String,
 
     /// `OAuth2` `client_credentials` client id for Orange Cameroon's
-    /// SMS API — required unconditionally, unlike `sms-worker`'s own
-    /// copy of this flag (optional there, only needed when `dispatch`
-    /// is selected): this binary always serves the DLR route (#34),
-    /// which always needs a provider to parse against.
+    /// SMS API. Optional as of #61's MTN wiring — this binary always
+    /// serves the DLR route (#34), but "always needs a provider to parse
+    /// against" now means *at least one* configured adapter, not
+    /// specifically Orange; see [`build_dlr_router`]'s own
+    /// at-least-one-provider check for the enforcement this loosening
+    /// moved to. Previously required unconditionally, unlike
+    /// `sms-worker`'s own copy of this flag (optional there, only needed
+    /// when `dispatch` is selected) — that asymmetry is gone now that
+    /// both binaries express the same "credentials are needed only if
+    /// this adapter is the one in use" shape, just against a different
+    /// gate (`dispatch` selection there, "no other adapter configured"
+    /// here).
     #[arg(long, env = "ORANGE_CM_CLIENT_ID")]
-    pub(crate) orange_client_id: String,
+    pub(crate) orange_client_id: Option<String>,
 
     /// Paired with `orange_client_id`. Never logged.
     #[arg(long, env = "ORANGE_CM_CLIENT_SECRET", hide_env_values = true)]
-    pub(crate) orange_client_secret: String,
+    pub(crate) orange_client_secret: Option<String>,
 
     /// E.164 without the `tel:` scheme.
     #[arg(long, env = "ORANGE_CM_SENDER_NUMBER")]
-    pub(crate) orange_sender_number: String,
+    pub(crate) orange_sender_number: Option<String>,
 
     /// Overridable so a real Orange sandbox (not just this crate's own
     /// `wiremock`-backed tests) can be pointed at without a code change.
@@ -80,6 +88,58 @@ pub(crate) struct ServeArgs {
         default_value = "https://api.orange.com"
     )]
     pub(crate) orange_base_url: String,
+
+    /// #61: the aggregator-issued static Bearer key for MTN Cameroon
+    /// capacity bought through a licensed aggregator — see
+    /// `sms-provider-mtn`'s module doc for why this crate assumes a
+    /// static key rather than `OAuth2 client_credentials`. Optional, the
+    /// same shape as the Orange trio above — this binary needs *a*
+    /// provider configured, not specifically this one. Paired with the
+    /// other four `--mtn-*` flags below — see [`build_dlr_router`]'s own
+    /// all-or-none check.
+    #[arg(long, env = "MTN_AGGREGATOR_API_KEY", hide_env_values = true)]
+    pub(crate) mtn_api_key: Option<String>,
+
+    /// The approved sender ID (numeric, alphanumeric, or short code) MTN
+    /// submits under.
+    #[arg(long, env = "MTN_AGGREGATOR_SENDER_ID")]
+    pub(crate) mtn_sender_id: Option<String>,
+
+    /// The aggregator's API host. No default — no real aggregator
+    /// relationship exists yet to bake a production host into (see
+    /// `MtnAggregatorConfig::base_url`'s own doc).
+    #[arg(long, env = "MTN_AGGREGATOR_BASE_URL")]
+    pub(crate) mtn_base_url: Option<String>,
+
+    /// The submission rate this specific aggregator contract allows, in
+    /// messages per second — a negotiated commercial term with no
+    /// public number to default to (see
+    /// `MtnAggregatorConfig::tps_ceiling`'s own doc), so this stays
+    /// required alongside the other `--mtn-*` flags rather than
+    /// defaulted — this repo's own standing preference is no default
+    /// that invents a fact.
+    #[arg(long, env = "MTN_AGGREGATOR_TPS_CEILING")]
+    pub(crate) mtn_tps_ceiling: Option<f64>,
+
+    /// What one segment costs on this contract, in XAF. `Decimal`, never
+    /// a float — this is money. Same required-together reasoning as
+    /// `--mtn-tps-ceiling` above.
+    #[arg(long, env = "MTN_AGGREGATOR_COST_PER_SEGMENT_XAF")]
+    pub(crate) mtn_cost_per_segment_xaf: Option<rust_decimal::Decimal>,
+
+    /// Whether this specific aggregator relationship has an alphanumeric
+    /// sender ID registered and approved with MTN. Defaults to `false` —
+    /// the safer default per `MtnAggregatorConfig::supports_alphanumeric_sender`'s
+    /// own doc: an unregistered alphanumeric sender risks silent
+    /// rewriting or dropping by MTN, not a clean rejection this adapter
+    /// could classify. Not part of the all-or-none check — it has a
+    /// safe default whether or not MTN is configured at all.
+    #[arg(
+        long,
+        env = "MTN_AGGREGATOR_SUPPORTS_ALPHANUMERIC_SENDER",
+        default_value_t = false
+    )]
+    pub(crate) mtn_supports_alphanumeric_sender: bool,
 
     /// #134: the server-held pepper behind `Message.msisdnHash`/
     /// `Message.bodyHash` — real secret material, config only, never
@@ -237,51 +297,165 @@ struct OrangeCredentials {
     base_url: String,
 }
 
-impl OrangeCredentials {
-    fn new(
-        client_id: String,
-        client_secret: String,
-        sender_number: String,
-        base_url: String,
-    ) -> Self {
-        Self {
-            client_id,
-            client_secret,
-            sender_number,
-            base_url,
+/// `Ok(None)` when none of the three Orange flags are set at all — a
+/// deployment that only wired up MTN. `Err` when only *some* are set —
+/// mirrors `sms-worker`'s own `orange_provider`
+/// (`backends/apps/sms-worker/src/main.rs`) all-or-none check exactly, since
+/// both binaries build the identical `OrangeCmConfig` from the identical
+/// flags, just at a different point in each one's own startup sequence.
+fn orange_credentials(
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    sender_number: Option<String>,
+    base_url: String,
+) -> Result<Option<OrangeCredentials>> {
+    match (client_id, client_secret, sender_number) {
+        (Some(client_id), Some(client_secret), Some(sender_number)) => {
+            Ok(Some(OrangeCredentials {
+                client_id,
+                client_secret,
+                sender_number,
+                base_url,
+            }))
         }
+        (None, None, None) => Ok(None),
+        _ => anyhow::bail!(
+            "--orange-client-id, --orange-client-secret and --orange-sender-number must all be \
+             set together, or none of them"
+        ),
     }
 }
 
-/// Builds the Orange adapter and the DLR router that dispatches onto it.
+/// The five `--mtn-*` values `serve` needs to construct the aggregator
+/// adapter (`--mtn-supports-alphanumeric-sender` excluded — see
+/// [`mtn_credentials`]'s own doc for why it isn't part of the
+/// all-or-none set).
+struct MtnCredentials {
+    api_key: String,
+    sender_id: String,
+    base_url: String,
+    tps_ceiling: f64,
+    cost_per_segment_xaf: rust_decimal::Decimal,
+    supports_alphanumeric_sender: bool,
+}
+
+/// `Ok(None)` when none of the five required `--mtn-*` flags are set at
+/// all — a deployment that only wired up Orange, or neither. `Err` when
+/// only *some* are set. Mirrors `sms-worker::mtn_provider`'s identical
+/// check. `supports_alphanumeric_sender` is threaded straight from the
+/// CLI's own `default_value_t = false` rather than gated by this match:
+/// it has a safe default regardless of whether MTN is configured at all,
+/// so requiring it alongside the other four would only ever reject a
+/// deployment for never having overridden a flag that was already
+/// correct.
+fn mtn_credentials(
+    api_key: Option<String>,
+    sender_id: Option<String>,
+    base_url: Option<String>,
+    tps_ceiling: Option<f64>,
+    cost_per_segment_xaf: Option<rust_decimal::Decimal>,
+    supports_alphanumeric_sender: bool,
+) -> Result<Option<MtnCredentials>> {
+    match (
+        api_key,
+        sender_id,
+        base_url,
+        tps_ceiling,
+        cost_per_segment_xaf,
+    ) {
+        (Some(api_key), Some(sender_id), Some(base_url), Some(tps_ceiling), Some(cost)) => {
+            Ok(Some(MtnCredentials {
+                api_key,
+                sender_id,
+                base_url,
+                tps_ceiling,
+                cost_per_segment_xaf: cost,
+                supports_alphanumeric_sender,
+            }))
+        }
+        (None, None, None, None, None) => Ok(None),
+        _ => anyhow::bail!(
+            "--mtn-api-key, --mtn-sender-id, --mtn-base-url, --mtn-tps-ceiling and \
+             --mtn-cost-per-segment-xaf must all be set together, or none of them"
+        ),
+    }
+}
+
+/// Builds however many adapters were configured and the DLR router that
+/// dispatches onto whichever ones are present — at least one, since this
+/// binary always serves the DLR route (#34) and a route with nothing
+/// behind it can never usefully answer a callback. Both credential sets
+/// are optional individually (see [`orange_credentials`]/
+/// [`mtn_credentials`]); this function is what turns "neither is set" into
+/// a startup failure rather than a route that 404s every real callback
+/// forever.
 ///
 /// Extracted from [`serve_command`] rather than inlined: that function
 /// crossed clippy's `too_many_lines` threshold (106/100) once #194's
 /// console-client wiring landed on top of the existing setup, and this is
 /// the one self-contained block in it — every value it touches is
-/// provider-shaped, and nothing after it reads `orange_config` or the
-/// bare `provider` handle again. Suppressing the lint instead would have
+/// provider-shaped, and nothing after it reads either config or the bare
+/// `provider` handles again. Suppressing the lint instead would have
 /// hidden the next fifty lines of growth too.
 async fn build_dlr_router(
     db: &Cratestack,
     sys: &cratestack::CratestackContext,
-    orange: OrangeCredentials,
+    orange: Option<OrangeCredentials>,
+    mtn: Option<MtnCredentials>,
 ) -> Result<axum::Router> {
-    let mut orange_config = sms_provider_orange_cm::OrangeCmConfig::production(
-        orange.client_id,
-        orange.client_secret,
-        orange.sender_number,
-    );
-    orange_config.base_url = orange.base_url;
-    let provider: Arc<dyn SmsProvider> =
-        Arc::new(sms_provider_orange_cm::OrangeCmProvider::new(orange_config));
-    let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
-    Ok(dlr::router(
-        db.clone(),
-        sys.clone(),
-        provider,
-        provider_row_id,
-    ))
+    let mut providers = Vec::new();
+
+    if let Some(orange) = orange {
+        let mut orange_config = sms_provider_orange_cm::OrangeCmConfig::production(
+            orange.client_id,
+            orange.client_secret,
+            orange.sender_number,
+        );
+        orange_config.base_url = orange.base_url;
+        let provider: Arc<dyn SmsProvider> =
+            Arc::new(sms_provider_orange_cm::OrangeCmProvider::new(orange_config));
+        let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
+        providers.push(dlr::DlrProvider {
+            provider,
+            provider_row_id,
+        });
+    }
+
+    if let Some(mtn) = mtn {
+        let mtn_config = sms_provider_mtn::MtnAggregatorConfig {
+            api_key: mtn.api_key,
+            sender_id: mtn.sender_id,
+            base_url: mtn.base_url,
+            tps_ceiling: mtn.tps_ceiling,
+            cost_per_segment_xaf: mtn.cost_per_segment_xaf,
+            supports_alphanumeric_sender: mtn.supports_alphanumeric_sender,
+            // Same values `sms-provider-orange-cm::OrangeCmConfig::production`
+            // bakes in — no `MtnAggregatorConfig` equivalent exists to
+            // default these from, and nothing about either timeout is
+            // provider-specific. Mirrors `sms-worker::mtn_provider`'s
+            // identical choice.
+            connect_timeout: std::time::Duration::from_secs(10),
+            request_timeout: std::time::Duration::from_secs(30),
+        };
+        let provider: Arc<dyn SmsProvider> =
+            Arc::new(sms_provider_mtn::MtnAggregatorProvider::new(mtn_config));
+        let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
+        providers.push(dlr::DlrProvider {
+            provider,
+            provider_row_id,
+        });
+    }
+
+    if providers.is_empty() {
+        anyhow::bail!(
+            "at least one provider must be configured to serve the DLR route: either \
+             --orange-client-id, --orange-client-secret and --orange-sender-number, or \
+             --mtn-api-key, --mtn-sender-id, --mtn-base-url, --mtn-tps-ceiling and \
+             --mtn-cost-per-segment-xaf (or their env vars)"
+        );
+    }
+
+    Ok(dlr::router(db.clone(), sys.clone(), providers))
 }
 
 /// Loads the OP's signing keys, assembles its state, and starts the
@@ -335,6 +509,12 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
         orange_client_secret,
         orange_sender_number,
         orange_base_url,
+        mtn_api_key,
+        mtn_sender_id,
+        mtn_base_url,
+        mtn_tps_ceiling,
+        mtn_cost_per_segment_xaf,
+        mtn_supports_alphanumeric_sender,
         hash_pepper,
         idempotency_ttl_secs,
         rate_limit_burst,
@@ -376,13 +556,21 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
 
     let op_state = build_op_state(&db, &sys, &issuer).await?;
 
-    let orange = OrangeCredentials::new(
+    let orange = orange_credentials(
         orange_client_id,
         orange_client_secret,
         orange_sender_number,
         orange_base_url,
-    );
-    let dlr_router = build_dlr_router(&db, &sys, orange).await?;
+    )?;
+    let mtn = mtn_credentials(
+        mtn_api_key,
+        mtn_sender_id,
+        mtn_base_url,
+        mtn_tps_ceiling,
+        mtn_cost_per_segment_xaf,
+        mtn_supports_alphanumeric_sender,
+    )?;
+    let dlr_router = build_dlr_router(&db, &sys, orange, mtn).await?;
     // #157: /readyz needs the same pooled handle every other router
     // shares — cloned here, before `sms_api::router` below takes `db` by
     // value as its own last use.
@@ -517,4 +705,106 @@ async fn shutdown_signal() {
         let _ = tokio::signal::ctrl_c().await;
     }
     info!("shutdown signal received");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mtn_credentials, orange_credentials};
+
+    #[test]
+    fn orange_credentials_is_none_when_all_three_are_unset() {
+        let result = orange_credentials(None, None, None, "https://api.orange.com".to_owned())
+            .expect("all-unset is not an error");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn orange_credentials_is_some_when_all_three_are_set() {
+        let result = orange_credentials(
+            Some("id".to_owned()),
+            Some("secret".to_owned()),
+            Some("+237677000000".to_owned()),
+            "https://api.orange.com".to_owned(),
+        )
+        .expect("all-set is not an error")
+        .expect("all-set must produce Some");
+        assert_eq!(result.client_id, "id");
+        assert_eq!(result.client_secret, "secret");
+        assert_eq!(result.sender_number, "+237677000000");
+        assert_eq!(result.base_url, "https://api.orange.com");
+    }
+
+    #[test]
+    fn orange_credentials_rejects_a_partial_set() {
+        let error = orange_credentials(
+            Some("id".to_owned()),
+            None,
+            None,
+            "https://api.orange.com".to_owned(),
+        )
+        // `OrangeCredentials` (the `Ok` type) isn't `Debug`, so
+        // `.expect_err(...)` doesn't compile here — `.err()` sidesteps
+        // that: `Result::err` needs no bound on `T` at all.
+        .err()
+        .expect("only one of three set must be rejected, not silently treated as unset");
+        assert!(error.to_string().contains("orange-client-id"), "{error}");
+    }
+
+    #[test]
+    fn mtn_credentials_is_none_when_all_five_are_unset() {
+        let result = mtn_credentials(None, None, None, None, None, false)
+            .expect("all-unset is not an error");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn mtn_credentials_is_some_when_all_five_are_set() {
+        let result = mtn_credentials(
+            Some("key".to_owned()),
+            Some("SENDER".to_owned()),
+            Some("https://aggregator.example".to_owned()),
+            Some(20.0),
+            Some(rust_decimal::Decimal::new(15, 0)),
+            true,
+        )
+        .expect("all-set is not an error")
+        .expect("all-set must produce Some");
+        assert_eq!(result.api_key, "key");
+        assert_eq!(result.sender_id, "SENDER");
+        assert_eq!(result.base_url, "https://aggregator.example");
+        assert!((result.tps_ceiling - 20.0).abs() < f64::EPSILON);
+        assert_eq!(
+            result.cost_per_segment_xaf,
+            rust_decimal::Decimal::new(15, 0)
+        );
+        assert!(result.supports_alphanumeric_sender);
+    }
+
+    #[test]
+    fn mtn_credentials_rejects_a_partial_set() {
+        let error = mtn_credentials(
+            Some("key".to_owned()),
+            Some("SENDER".to_owned()),
+            None,
+            None,
+            None,
+            false,
+        )
+        .err()
+        .expect("only two of five set must be rejected, not silently treated as unset");
+        assert!(error.to_string().contains("mtn-api-key"), "{error}");
+    }
+
+    /// `supports_alphanumeric_sender` must never gate the all-or-none
+    /// check — it has a safe default regardless of whether MTN is
+    /// configured at all (see [`mtn_credentials`]'s own doc). This is the
+    /// guard-failure proof for that claim: a caller that sets it `true`
+    /// while every other `--mtn-*` flag is unset must still resolve to
+    /// `None`, not `Err`.
+    #[test]
+    fn mtn_credentials_unset_with_alphanumeric_true_is_still_none_not_an_error() {
+        let result = mtn_credentials(None, None, None, None, None, true)
+            .expect("supports_alphanumeric_sender alone must not trip the all-or-none check");
+        assert!(result.is_none());
+    }
 }

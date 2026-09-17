@@ -30,6 +30,7 @@ use sms_provider::{
 use sms_provider_orange_cm::{OrangeCmConfig, OrangeCmProvider};
 use sms_worker::WorkerContext;
 use sms_worker::dispatch::tick;
+use sms_worker::jobs::expire_stale::ExpireStale;
 use std::sync::Arc;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -486,7 +487,6 @@ fn provider_with_timeouts(
         client_secret: "secret".to_owned(),
         sender_number: "+2370000".to_owned(),
         base_url,
-        dlr_notify_url: None,
         connect_timeout,
         request_timeout,
     }))
@@ -825,11 +825,22 @@ async fn an_indeterminate_submit_lands_in_uncertain_and_is_never_resubmitted() {
 
     let after = reload(&db, &seeded.id).await;
     assert_eq!(after.state, MessageState::uncertain);
+    // Orange's real, documented submit request carries no caller-supplied
+    // reference at all (https://developer.orange.com/apis/sms/getting-
+    // started — see `sms-provider-orange-cm`'s own `lib.rs` module doc),
+    // so there is nothing this code path could have sent that a later DLR
+    // could echo back, and nothing to stamp here any more. Both
+    // correlation columns stay unset: the only value Orange would ever
+    // report for this submission — its own `resource_id` — lives in the
+    // `201` response body this timeout meant was never read.
     assert_eq!(
-        after.providerMessageRefAlt,
-        Some(seeded.id.clone()),
-        "the reference sent as callbackData must be recorded even on a timed-out submit, or a \
-         later DLR echoing it back can never correlate"
+        after.providerMessageRef, None,
+        "a timed-out submit never learns Orange's resource_id"
+    );
+    assert_eq!(
+        after.providerMessageRefAlt, None,
+        "there is no second, caller-chosen correlation value any more — see dispatch.rs's own \
+         write_transition doc"
     );
 
     // Run several more ticks. `uncertain` is outside candidates()'s state
@@ -906,18 +917,27 @@ async fn a_connect_level_failure_still_backs_off_to_queued_not_uncertain() {
     );
 }
 
-/// Closes the loop the design doc's own reasoning depends on: an
-/// `uncertain` message is not abandoned, because
-/// `providerMessageRefAlt` was recorded at timeout time (see the first
-/// test above) and `sms_api::dlr::ingest_one` matches on
-/// `providerMessageRef` **or** `providerMessageRefAlt`. A DLR arriving
-/// later, echoing back the same reference Orange was sent as
-/// `callbackData`, must still correlate and drive the message to a real
-/// terminal state — proving the PR's own claim rather than asserting it
-/// from documentation alone.
+/// The accepted consequence the maintainer's decision creates, proven end
+/// to end rather than only asserted in a doc comment: an `Indeterminate`
+/// submit's message has no correlation key left at all, because Orange's
+/// real, documented submit request carries no caller-supplied reference
+/// (<https://developer.orange.com/apis/sms/getting-started> — see
+/// `sms-provider-orange-cm`'s `lib.rs` module doc on why
+/// `SubmitAck::provider_ref_alt` is always `None` for this provider now),
+/// and the one value Orange *would* eventually report for this submission
+/// — its own `resource_id` — lives in a `201` response body this code path
+/// never got to read. So a DLR arriving later, carrying Orange's real
+/// `resource_id` for that submission, has nothing in this deployment's
+/// database to match against: `sms_api::dlr::ingest_one` logs "no known
+/// message" and does nothing, the message stays `uncertain`, and
+/// `expire_stale`'s own 6h grace — not a later DLR — is what eventually
+/// resolves it. This used to be the test proving the opposite (a DLR
+/// echoing back `receiptRequest.callbackData` *did* still correlate); the
+/// maintainer's decision to stop sending that field inverted the property
+/// this test exists to prove.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn a_dlr_after_an_indeterminate_submit_still_correlates_and_resolves() {
+async fn a_dlr_after_an_indeterminate_submit_cannot_correlate_and_expire_stale_resolves_it() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
     let server = MockServer::start().await;
@@ -950,20 +970,31 @@ async fn a_dlr_after_an_indeterminate_submit_still_correlates_and_resolves() {
 
     let uncertain = reload(&db, &seeded.id).await;
     assert_eq!(uncertain.state, MessageState::uncertain);
+    assert_eq!(uncertain.providerMessageRef, None);
+    assert_eq!(uncertain.providerMessageRefAlt, None);
     // Read off the message rather than assumed from `seed_routed_provider`'s
     // own return value: `seed_routed_provider` disables every other route
     // first (see its own doc), so this test's own route/provider pair is
-    // deterministically the one that wins — but DLR correlation matches on
-    // the *row id* the message was actually stamped with regardless, so
-    // this reads it back from the message itself rather than leaning on
-    // that determinism guarantee.
+    // deterministically the one that wins — but the DLR below still
+    // targets the *row's* own `providerId` regardless, so this reads it
+    // back from the message itself rather than leaning on that
+    // determinism guarantee.
     let provider_row_id = uncertain
         .providerId
         .clone()
         .expect("routing must have stamped a providerId before this message could reach routed");
 
+    // A DLR carrying a real-shaped `resource_id` Orange might plausibly
+    // report for this submission — but this deployment never learned it
+    // (the `201` response was never read), so nothing in the database can
+    // possibly match it. Any value works here; the point is that *no*
+    // value could correlate, since `providerMessageRef`/`Alt` are both
+    // `None` above.
     let fixed_provider = FixedProvider {
-        updates: vec![delivery_update_for(&seeded.id, DeliveryOutcome::Delivered)],
+        updates: vec![delivery_update_for(
+            "res-orange-never-told-us-this-id",
+            DeliveryOutcome::Delivered,
+        )],
     };
     sms_api::dlr::ingest(
         &db,
@@ -973,13 +1004,28 @@ async fn a_dlr_after_an_indeterminate_submit_still_correlates_and_resolves() {
         &empty_callback(),
     )
     .await
-    .expect("ingest succeeds");
+    .expect("ingest succeeds even when nothing matches — see ingest_one's own doc");
 
-    let resolved = reload(&db, &seeded.id).await;
+    let still_uncertain = reload(&db, &seeded.id).await;
     assert_eq!(
-        resolved.state,
-        MessageState::delivered,
-        "a late DLR echoing the callbackData reference must still resolve an uncertain message"
+        still_uncertain.state,
+        MessageState::uncertain,
+        "a DLR for a resource_id this deployment never learned must correlate to nothing, not \
+         resolve this message"
+    );
+
+    // `expire_stale`'s 6h grace is the only thing that can still resolve
+    // this message — see `expire_stale.rs`'s own module doc.
+    ExpireStale
+        .run_at(&db, &sys, Utc::now() + Duration::hours(7))
+        .await
+        .expect("expire_stale run_at succeeds");
+
+    let expired = reload(&db, &seeded.id).await;
+    assert_eq!(
+        expired.state,
+        MessageState::expired,
+        "expire_stale, not a later DLR, is what resolves an uncorrelatable Indeterminate message"
     );
 }
 

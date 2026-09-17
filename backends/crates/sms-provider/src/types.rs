@@ -76,6 +76,33 @@ pub enum DeliveryOutcome {
     /// The provider refused the message outright (unroutable destination,
     /// blocked sender, etc.) — not retryable.
     Rejected,
+    /// The provider reported *progress*, not an outcome: the message is
+    /// still in flight and nothing about its fate has been decided yet.
+    ///
+    /// This exists because a real provider's status vocabulary is not just
+    /// terminal outcomes. Orange sends two of these on the entirely happy
+    /// path — `DeliveredToNetwork` ("successful delivery to network") and
+    /// `MessageWaiting` ("still queued for delivery. This is a temporary
+    /// state, pending transition to one of the preceding states"), both
+    /// quoted from <https://developer.orange.com/apis/sms/getting-started>
+    /// §4's own status table.
+    ///
+    /// Collapsing those into [`Self::Uncertain`] was the bug this variant
+    /// was added to fix, and it was not merely cosmetic. `Uncertain` drives
+    /// `Message` into the `uncertain` state, and `uncertain -> undelivered`
+    /// is not a legal transition (§7.4) — so a routine progress report
+    /// followed by a genuinely retryable `DeliveryImpossible` would land the
+    /// message in `failed` **permanently, with no retry**, where the same
+    /// failure arriving against a still-`submitted` message would have gone
+    /// to `undelivered` and been retried. It also started `uncertain`'s
+    /// 6-hour expiry timer and fired a `message.uncertain` webhook for
+    /// perfectly healthy traffic.
+    ///
+    /// Deliberately NOT folded into [`Self::Unknown`]: that variant's own
+    /// contract below promises an operator it means "the adapter didn't
+    /// recognise this". These two statuses are recognised precisely; the
+    /// honest thing to record is that they carry no verdict.
+    InFlight,
     /// A status the adapter could not classify into any of the above.
     /// Never silently mapped to `Failed` or `Delivered` — an operator
     /// reading `rawStatus` should be able to trust that `Unknown` really

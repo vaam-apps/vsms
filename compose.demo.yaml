@@ -600,7 +600,6 @@ services:
       ORANGE_CM_CLIENT_SECRET: placeholder
       ORANGE_CM_SENDER_NUMBER: '+2370000'
       ORANGE_CM_BASE_URL: http://sms-fake-orange:8090
-      ORANGE_CM_DLR_NOTIFY_URL: http://sms-gateway:8080/dlr/orange_cm
     depends_on:
       postgres:
         condition: service_healthy

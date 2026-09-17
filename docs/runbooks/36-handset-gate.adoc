@@ -41,14 +41,19 @@ Orange's own API with a 400, not here.
 * *A real Cameroon MTN or Orange test phone*, reachable and watched during
 both tests.
 * *A publicly reachable HTTPS endpoint* for ``sms-gateway``'s
-`POST /dlr/orange_cm` route, ideally whitelisted with Orange support (this
-repo's own long-standing note: Orange's DLR webhook is "whitelisted per a
-manual support ticket," which reads as a pre-registered target, not a
-per-request one). `submit()` always sends `receiptRequest.callbackData`
-regardless; `--orange-dlr-notify-url` is there as an explicit override if
-Orange's support team says an explicit `notifyURL` is also required -- set
-it only if the first attempt at test 1 sends the SMS but never reaches
-`delivered` in the database (see "If it doesn't reach ``delivered``" below).
+`POST /dlr/orange_cm` route, whitelisted with Orange support ahead of time
+-- confirmed against Orange's own documentation (§4 "About SMS Delivery
+Receipt", https://developer.orange.com/apis/sms/getting-started): the DR
+endpoint "must be whitelisted on the Orange SMS API server before being
+used; to do this, please fill in this web form." This is a real
+prerequisite, not an optional one -- there is no per-request `notifyURL`
+field on the submit request any more (`OrangeCmConfig` carries no such
+knob; see `sms-provider-orange-cm`'s own `lib.rs` module doc), so the
+whitelisted, pre-registered endpoint is the *only* way a DLR can ever
+reach this deployment. If the first attempt at test 1 sends the SMS but
+never reaches `delivered` in the database, the whitelisted URL is the
+first thing to re-check with Orange support (see "If it doesn't reach
+``delivered``" below).
 * *A reachable Postgres 16 instance* -- staging or production -- that both
 binaries below can connect to.
 * Built `sms-gateway` and `sms-worker` binaries (`cargo build --release -p
@@ -163,10 +168,14 @@ hand) and fix ``backends/crates/sms-provider-orange-cm/src/dlr.rs``'s `parse()` 
 match reality -- this is expected to be the first real test of that code's
 own long-standing "not verified against a live sandbox" caveat.
 * *No DLR arrives at all.* The webhook likely isn't reaching `sms-gateway`
--- check the HTTPS front-end is actually up and the URL is what Orange
-support whitelisted, and consider setting `--orange-dlr-notify-url`
-explicitly on `sms-worker` in case Orange's product needs a per-request
-`notifyURL` after all.
+-- check the HTTPS front-end is actually up and the URL is exactly what
+Orange support whitelisted via the web form (§4 "About SMS Delivery
+Receipt", https://developer.orange.com/apis/sms/getting-started). There is
+no per-request override to fall back on any more: `OrangeCmConfig` carries
+no `notifyURL`/`dlr_notify_url` field at all, since Orange's own docs
+describe the DR endpoint as pre-registered and account-level, not
+something a submit request can specify -- the whitelisted URL genuinely
+is the only path a DLR can take.
 
 == Test 2: `kill -9` mid-submit, no double-send
 

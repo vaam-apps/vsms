@@ -30,10 +30,18 @@ fn outcome_of(status: &str) -> DeliveryOutcome {
         "FAILED" => DeliveryOutcome::Failed,
         "EXPIRED" => DeliveryOutcome::Expired,
         "REJECTED" => DeliveryOutcome::Rejected,
-        // A message still in flight through the aggregator/MTN handoff —
-        // not resolved either way yet. Same "don't guess" reasoning as
-        // Orange's own `DeliveryUncertain`/`MessageWaiting` handling.
-        "PENDING" | "UNCERTAIN" => DeliveryOutcome::Uncertain,
+        // `PENDING` is progress, not a verdict: the message is still in
+        // flight through the aggregator/MTN handoff and nothing about its
+        // fate has been decided. It maps to `InFlight`, which records a
+        // receipt and leaves the message in `submitted` — *not* to
+        // `Uncertain`, which would drive it into §7.4's `uncertain` state
+        // and make a later retryable failure permanently `failed` (see
+        // `DeliveryOutcome::InFlight`'s own doc, and Orange's identical
+        // `MessageWaiting`/`DeliveredToNetwork` handling).
+        "PENDING" => DeliveryOutcome::InFlight,
+        // `UNCERTAIN` is the genuine absence of knowledge, the one this
+        // assumed vocabulary shares with Orange's `DeliveryUncertain`.
+        "UNCERTAIN" => DeliveryOutcome::Uncertain,
         _ => DeliveryOutcome::Unknown,
     }
 }
@@ -110,15 +118,24 @@ mod tests {
         );
     }
 
+    /// `PENDING` and `UNCERTAIN` are both non-final, but they are not the
+    /// same kind of non-final, and this test exists to keep them apart.
+    /// Neither may be guessed into a terminal outcome; equally, `PENDING`
+    /// must not become `Uncertain`, which would push a healthy in-flight
+    /// message into §7.4's `uncertain` state and cost it its retry path on
+    /// a later failure (`DeliveryOutcome::InFlight`'s own doc has the full
+    /// mechanism).
     #[test]
-    fn pending_and_uncertain_both_map_to_uncertain_not_a_guess() {
-        for status in ["PENDING", "UNCERTAIN"] {
+    fn pending_is_progress_while_uncertain_is_an_absence_of_knowledge() {
+        for (status, expected) in [
+            ("PENDING", DeliveryOutcome::InFlight),
+            ("UNCERTAIN", DeliveryOutcome::Uncertain),
+        ] {
             let body = format!(r#"{{"messageId":"mtn-res-3","status":"{status}"}}"#);
             let updates = parse(&callback(&body)).unwrap();
             assert_eq!(
-                updates[0].outcome,
-                DeliveryOutcome::Uncertain,
-                "status {status} should map to Uncertain"
+                updates[0].outcome, expected,
+                "status {status} should map to {expected:?}"
             );
         }
     }

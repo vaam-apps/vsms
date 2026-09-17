@@ -157,11 +157,11 @@ orange:
   clientId: ""
   senderNumber: ""
   baseUrl: https://api.orange.com
-  # receiptRequest.notifyURL on every submit (#95) — optional, only the
-  # dispatch role (sms-worker) uses it. Leave empty unless a real Orange
-  # sandbox requires an explicit notifyURL rather than relying on
-  # callbackData alone — see backends/apps/sms-worker/src/main.rs's own doc comment.
-  dlrNotifyUrl: ""
+  # No dlrNotifyUrl here on purpose. Orange's own docs (§4 "About SMS
+  # Delivery Receipt", https://developer.orange.com/apis/sms/getting-started)
+  # are explicit that the DR webhook is pre-registered, account-level, and
+  # whitelisted via a support web form — not a per-request field, so
+  # OrangeCmConfig carries no such knob for a chart value to plumb into.
 
 worker:
   # Comma-separated, no spaces — any of dispatch,drain,scheduler,hooks,jobs
@@ -547,8 +547,6 @@ controllers:
             value: '{{ .Values.orange.senderNumber }}'
           ORANGE_CM_BASE_URL:
             value: '{{ .Values.orange.baseUrl }}'
-          ORANGE_CM_DLR_NOTIFY_URL:
-            value: '{{ .Values.orange.dlrNotifyUrl }}'
           RUST_LOG:
             value: 'sms_worker=info,sms_worker_bin=info'
         probes:

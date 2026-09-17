@@ -25,8 +25,11 @@ crate owns three things, not one:
    caller wired up as the gateway's `POST /dlr/{providerKey}` route.
 3. **A request ledger** ([`ledger::Ledger`]) — every submit call
    received, queryable by test code, so a test can prove "Orange
-   received this reference exactly once" from the provider's own side
-   rather than inferring it from this system's database.
+   received a submission for this recipient exactly once" from the
+   provider's own side rather than inferring it from this system's
+   database. See `ledger.md`'s own doc for why correlation is by
+   destination address now, not a caller-supplied reference — Orange's
+   real, documented submit request carries no such field.
 
 # Two test policies, not a spectrum — plus one for a long-lived process
 

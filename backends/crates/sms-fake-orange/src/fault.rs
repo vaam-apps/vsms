@@ -93,37 +93,42 @@ pub struct DlrStep {
     pub delay: Duration,
     /// The outcome this DLR reports.
     pub status: DlrStatus,
-    /// `None` correlates against the real `callbackData` the submit request
-    /// carried (`Message.id`). `Some(ref)` sends an unrelated reference
-    /// instead — the "DLR for an unknown ref" fault mode.
-    pub reference_override: Option<String>,
+    /// `None` correlates against the `resource_id` this fake minted for
+    /// the originating submit call — mirroring real Orange's own
+    /// `callbackData` (§4 "About SMS Delivery Receipt": Orange always
+    /// echoes back its own `{{resource_id}}`, never a caller-supplied
+    /// value). `Some(id)` sends an unrelated id instead — models a DLR
+    /// for a `resource_id` this deployment never issued (or one it issued
+    /// for a different submission entirely).
+    pub resource_id_override: Option<String>,
 }
 
 impl DlrStep {
     /// A DLR reporting `status`, `delay` after the submit request arrived,
-    /// correlated against whatever reference that request actually carried.
+    /// correlated against the `resource_id` this fake minted for that
+    /// submission.
     #[must_use]
     pub fn after(delay: Duration, status: DlrStatus) -> Self {
         Self {
             delay,
             status,
-            reference_override: None,
+            resource_id_override: None,
         }
     }
 
-    /// A DLR reporting `status` against `fake_ref` instead of the real
-    /// submission's own reference — models a DLR for a reference this
-    /// deployment never issued.
+    /// A DLR reporting `status` against `fake_resource_id` instead of the
+    /// real submission's own minted `resource_id` — models a DLR for a
+    /// `resource_id` this deployment never issued.
     #[must_use]
     pub fn for_unknown_ref(
         delay: Duration,
         status: DlrStatus,
-        fake_ref: impl Into<String>,
+        fake_resource_id: impl Into<String>,
     ) -> Self {
         Self {
             delay,
             status,
-            reference_override: Some(fake_ref.into()),
+            resource_id_override: Some(fake_resource_id.into()),
         }
     }
 }

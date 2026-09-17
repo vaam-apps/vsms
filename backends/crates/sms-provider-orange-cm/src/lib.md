@@ -15,11 +15,21 @@ Two things in here are transcribed directly from §6.2 and verified only
 by rereading the doc precisely, not against a live Orange sandbox (this
 repo has no Orange Developer credentials): the OAuth token endpoint and
 TTL handling ([`token`]), and the submit request/response shape below.
-The submit body's `receiptRequest` (`notifyURL`/`callbackData`, #95) is
-one step further still — §6.2 doesn't mention it at all; it's grounded
-in the public `OneAPI` SMS Messaging REST binding this whole shape
-belongs to, not this repo's own design doc. The DLR callback shape
-([`dlr`]) is the same distance from §6.2 — see that module's doc.
+
+**The submit body and the DLR callback shape are both grounded in
+Orange's own developer documentation now**
+(<https://developer.orange.com/apis/sms/getting-started>), not the wider
+GSMA `OneAPI` family this crate used to reason from by inference. The
+submit body (`OutboundSmsMessageBody`) matches the docs' own "Getting
+Started" sample exactly: `address`/`senderAddress`/`senderName`/
+`outboundSMSTextMessage`, nothing else — there used to be a fifth field,
+`receiptRequest` (`notifyURL`/`callbackData`), sending a caller-chosen
+correlation token Orange's real docs never described; see
+`OutboundSmsMessageBody`'s own doc comment for why it's gone and what
+that costs. The DLR callback shape ([`dlr`]) is grounded the same way —
+see that module's own doc for the full correlation story and what's
+still genuinely unverified (nothing has been received from a live
+Orange sandbox yet).
 
 The connect-vs-read transport classification and the provider-agnostic
 half of the HTTP-status → `ProviderError` mapping live in
