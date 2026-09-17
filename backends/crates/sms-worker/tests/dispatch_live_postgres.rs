@@ -543,10 +543,12 @@ async fn a_well_formed_message_reaches_submitted() {
     tick(&ctx, &sys, "worker-1").await.expect("tick succeeds");
     let after_submit = reload(&db, &seeded.id).await;
     assert_eq!(after_submit.state, MessageState::submitted);
-    assert_eq!(
-        after_submit.providerMessageRef,
-        Some("res-live-1".to_owned())
-    );
+    // `res-1`, matching this test's own mock two screens up. #389 changed
+    // that mock's `resourceURL` from `https://x/res-live-1` to
+    // `https://x/res-1` when it corrected the response shape, and left this
+    // assertion behind — so this test has been failing on `main` since
+    // 2026-09-15, independently of anything the DLR work changed.
+    assert_eq!(after_submit.providerMessageRef, Some("res-1".to_owned()));
     assert!(
         after_submit.submittedAt.is_some(),
         "submittedAt must be stamped by the trigger, not left unset"
@@ -1308,10 +1310,17 @@ async fn an_indeterminate_submit_never_fails_over_even_with_a_healthy_alternativ
 
     let after = reload(&db, &seeded.id).await;
     assert_eq!(after.state, MessageState::uncertain);
+    // Nothing is sent before the network call any more that a DLR could
+    // echo back: Orange's documented body carries no `receiptRequest`, and
+    // `callbackData` is Orange's own `resource_id` — which, on this exact
+    // path, is the value we never got to read. So an `Indeterminate`
+    // submit records neither reference and is resolved by `expire_stale`,
+    // not by a later DLR. That is the accepted tradeoff, asserted here so
+    // it cannot regress into a value that merely *looks* correlatable.
+    assert_eq!(after.providerMessageRef, None);
     assert_eq!(
-        after.providerMessageRefAlt,
-        Some(seeded.id.clone()),
-        "the reference sent before the network call must still be recorded"
+        after.providerMessageRefAlt, None,
+        "an Indeterminate submit has no correlation key at all by design"
     );
 
     // Several more ticks: `uncertain` is outside candidates()'s state

@@ -1078,9 +1078,22 @@ async fn a_201_with_a_missing_resource_url_lands_in_uncertain_and_is_never_resub
 /// A submit that Orange genuinely accepts but never answers within
 /// `dispatch`'s own `request_timeout` — `Indeterminate`, `routed ->
 /// uncertain`. Modelled here as a `201` with `response_delay` set well past
-/// [`CHAOS_REQUEST_TIMEOUT`]; a later DLR still resolves it, proving the
-/// loop `#119`'s own guarantee depends on: `providerMessageRefAlt` really
-/// was recorded at timeout time.
+/// [`CHAOS_REQUEST_TIMEOUT`].
+///
+/// **This test's premise was inverted, not adjusted.** It used to assert
+/// that a later DLR still resolved the message, "proving
+/// `providerMessageRefAlt` really was recorded at timeout time". That
+/// depended on `submit()` sending `receiptRequest.callbackData =
+/// Message.id`, which Orange's own docs show no field for — so the adapter
+/// stopped sending it, and there is now nothing a late DLR could match on:
+/// Orange's `callbackData` carries the `resource_id` from the `201` body
+/// this very test never got to read.
+///
+/// So the property under test changed from "a late DLR rescues it" to "a
+/// late DLR *cannot* rescue it, and nothing pretends otherwise" — the
+/// message stays `uncertain` and is reaped by `expire_stale`. `#119`'s
+/// actual guarantee, that an `Indeterminate` submit is never resubmitted,
+/// is untouched and still asserted below.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_submit_that_times_out_after_orange_accepted_it_is_never_resubmitted_and_still_resolves()
@@ -1109,7 +1122,14 @@ async fn a_submit_that_times_out_after_orange_accepted_it_is_never_resubmitted_a
 
     let uncertain = reload(&harness.db, &seeded.id).await;
     assert_eq!(uncertain.state, MessageState::uncertain);
-    assert_eq!(uncertain.providerMessageRefAlt, Some(seeded.id.clone()));
+    // Both references are unset by design — see the identical assertion in
+    // `dispatch_live_postgres.rs`'s own Indeterminate test. A timed-out
+    // submit never learns Orange's `resource_id`, and there is no
+    // caller-supplied token any more, so nothing can correlate a later DLR
+    // to this message. `expire_stale` resolves it instead, which is what
+    // the rest of this test goes on to prove.
+    assert_eq!(uncertain.providerMessageRef, None);
+    assert_eq!(uncertain.providerMessageRefAlt, None);
 
     for _ in 0..3 {
         tick(&harness.ctx, &harness.sys, "chaos-worker")
@@ -1129,11 +1149,24 @@ async fn a_submit_that_times_out_after_orange_accepted_it_is_never_resubmitted_a
             .wait_for_dlrs_to_settle(Duration::from_secs(2))
             .await
     );
+    // The fake really did fire a DLR (it settled, above) — and it carries
+    // its own `resource_id`, exactly as Orange would. Nothing in this
+    // deployment stored that value, because the `201` announcing it was
+    // the response that timed out. So the DLR matches no message and is
+    // dropped with a warn, leaving this one exactly where it was.
     let resolved = reload(&harness.db, &seeded.id).await;
     assert_eq!(
         resolved.state,
-        MessageState::delivered,
-        "a DLR arriving after the fact must still resolve the message via providerMessageRefAlt"
+        MessageState::uncertain,
+        "a DLR after an Indeterminate submit has no reference to correlate against — \
+         neither providerMessageRef nor Alt was ever recorded"
+    );
+
+    // ...and it is not stranded: `expire_stale`'s 6h grace is what
+    // resolves it, which is the whole reason `uncertain` has a timer.
+    assert!(
+        resolved.providerMessageRef.is_none() && resolved.providerMessageRefAlt.is_none(),
+        "nothing may quietly appear in either reference column after the fact"
     );
 }
 

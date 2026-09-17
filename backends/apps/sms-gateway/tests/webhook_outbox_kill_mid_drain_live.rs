@@ -581,13 +581,19 @@ async fn wait_until_ready(base_url: &str, child: &mut Child) {
 /// A well-formed Orange `deliveryInfoNotification` body driving `provider_ref`
 /// to `Delivered` — see `backends/crates/sms-provider-orange-cm/src/dlr.rs`'s own
 /// `outcome_of` for the exact status string this maps from.
+///
+/// `deliveryInfo` is a single **object**, matching what Orange actually
+/// sends (<https://developer.orange.com/apis/sms/getting-started> §4). It
+/// used to be an array here, which the adapter still accepts leniently —
+/// but a test fixture that keeps emitting a shape the real provider never
+/// sends is exactly how the array assumption survived undetected in the
+/// first place, so this one emits the documented shape.
 fn delivered_dlr_body(provider_ref: &str) -> serde_json::Value {
     serde_json::json!({
         "deliveryInfoNotification": {
             "callbackData": provider_ref,
-            "deliveryInfo": [
+            "deliveryInfo":
                 {"address": "tel:+237677123456", "deliveryStatus": "DeliveredToTerminal"}
-            ]
         }
     })
 }
@@ -722,8 +728,10 @@ async fn killing_sms_gateway_mid_drain_loses_no_event_and_creates_no_duplicate()
         .await;
     assert_eq!(
         recovery_response.status(),
-        reqwest::StatusCode::ACCEPTED,
-        "the recovery-trigger DLR must itself be accepted"
+        reqwest::StatusCode::OK,
+        "the recovery-trigger DLR must itself be acknowledged with 200 — \
+         Orange's documented contract for a DR endpoint, not the 202 this \
+         route used to answer (see sms-gateway's own dlr.rs)"
     );
 
     let count_after_recovery = attempt_count_for(&db, &message_id).await;
