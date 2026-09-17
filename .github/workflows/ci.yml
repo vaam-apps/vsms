@@ -699,6 +699,15 @@ jobs:
       # sees (codec-json, two excluded client manifests, ci/runner/Dockerfile's
       # ARG); the last drifted once — see .xtask/src/pin_copies.rs.
       - run: cargo xtask cratestack-pin-check
+      # Every version release-please owns must already agree, and every
+      # line it rewrites must still carry its `x-release-please-version`
+      # comment. `release.yml`'s own version guard runs only on a tag, so
+      # it first fires after the release PR has merged; this one runs on
+      # the PR. The regression it is built for is a compose service added
+      # without the annotation — release-please then silently leaves that
+      # one image pinned to the previous release. See
+      # .xtask/src/release_versions.rs.
+      - run: cargo xtask release-versions
       # R6: pages compose, smart components decide, dumb components style.
       # Prose alone does not hold — the `hasRole('system')` gap was found
       # seven times before it got a golden test, and seven more after. This

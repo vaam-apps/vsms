@@ -1,0 +1,87 @@
+name: pr-title
+
+# The pull request title must be a conventional commit.
+#
+# Not a style rule. This repository squash-merges, so the PR title becomes
+# the subject of the one commit that lands on `main`, and that subject is
+# the ONLY thing `release-please.yml` reads to decide whether there is a
+# release to propose and whether it is a patch, a minor or a major.
+# A title of "Fix the DLR contract" is invisible to it; "fix: the DLR
+# contract" is a patch. When this repository adopted release-please, 58 of
+# its last 60 subjects were in the first shape — so without this gate the
+# release PR would simply never appear, and nothing would say why.
+#
+# This is deliberately a separate workflow rather than a job in `ci.yml`.
+# A PR title is changed by editing it, which raises `edited` and not
+# `synchronize`; `ci.yml` does not listen for `edited`, and adding it there
+# would re-run the entire gate — Rust, live Postgres, the JS build — every
+# time somebody fixes a typo in a title.
+#
+# Implemented as a regex rather than a marketplace action on purpose: this
+# repository's release-engineering notes treat an unpinned moving
+# dependency inside a pipeline as a real future breakage, and the whole
+# rule is one regex.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-title:
+    name: title is a conventional commit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the title
+        env:
+          # Via the environment, never interpolated into the script body:
+          # a PR title is attacker-controlled text and `${{ }}` inside a
+          # `run:` is textual substitution, so a title containing a quote
+          # and a semicolon would execute.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+
+          # type(optional scope)optional-!: subject
+          #
+          # The type list is exactly the one `release-please-config.json`
+          # declares changelog sections for. `feat` and `fix` move the
+          # version; `!` (or a `BREAKING CHANGE:` footer in the body) makes
+          # it a major. Everything else still produces a release, as a
+          # patch — which is what this repository wants, since most of its
+          # work lands as `docs`, `refactor`, `ci` or `build`.
+          PATTERN='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-zA-Z0-9,._/ -]+\))?!?: .+'
+
+          if printf '%s' "$TITLE" | grep -qE "$PATTERN"; then
+            echo "OK — $TITLE"
+            exit 0
+          fi
+
+          {
+            echo "### Pull request title is not a conventional commit"
+            echo
+            echo '```'
+            echo "$TITLE"
+            echo '```'
+            echo
+            echo "It must start with one of \`feat\` \`fix\` \`docs\` \`style\`"
+            echo "\`refactor\` \`perf\` \`test\` \`build\` \`ci\` \`chore\` \`revert\`,"
+            echo "an optional \`(scope)\`, an optional \`!\` for a breaking change,"
+            echo "then \`: \` and a subject. For example:"
+            echo
+            echo '```'
+            echo "fix: a timed-out submit no longer double-sends"
+            echo "feat(sms-api): simulateRoute explains why a route lost"
+            echo "refactor(sms-worker)!: JobHandler::run returns JobError, not String"
+            echo '```'
+            echo
+            echo "This repository squash-merges, so this title is the commit"
+            echo "subject on \`main\`, and it is the only thing release-please"
+            echo "reads to decide the next version. Edit the title and this"
+            echo "check re-runs on its own."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "::error title=Non-conventional PR title::${TITLE}"
+          exit 1

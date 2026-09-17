@@ -3018,6 +3018,175 @@ Also corrected there while passing through: it claimed Orange's credentials were
 unconditionally by sms-gateway", which stopped being true when the gateway moved to an
 at-least-one-provider check.
 
+## release-please proposes the version bump, and three things had to be true first
+
+`Release prep: v0.3.0` (#347) and `Release prep: v0.3.1` (#351) were written by
+hand: three manifests, four lockfiles, eighteen compose image defaults, then a
+tag. `.github/workflows/release-please.yml` replaces that. Every merge to `main`
+updates a standing `chore: release X.Y.Z` PR; merging it cuts the tag, which is
+what `release.yml` already triggers on. **This workflow publishes nothing** —
+`release.yml` still owns every artifact.
+
+Three findings, each read out of release-please's own source rather than its
+docs, and each of which would have shipped a config that looked right:
+
+**`release-type: rust` throws on this repository.**
+`CargoToml.updateContent` (`src/updaters/rust/cargo-toml.ts`) begins
+`if (!parsed.package) { throw new Error('is not a package manifest (might be a
+cargo workspace)') }`, and the `Rust` strategy pushes exactly that updater at the
+root `Cargo.toml` for any workspace. This root is a pure virtual manifest —
+`[workspace]` and `[workspace.package]`, no `[package]` — so the very first thing
+the strategy does is throw. It would not have helped anyway: every member carries
+`version.workspace = true`, so there is no `[package] version` in any of them to
+rewrite. `simple` is used instead, and it is not a downgrade: it writes
+`CHANGELOG.md` plus the `extra-files`, and its `version.txt` update is
+`createIfMissing: false`, so with no such file that update is skipped and no
+stray version file appears.
+
+**The annotation, not the file, is what gets rewritten — and only the first
+semver on the line.** `src/updaters/generic.ts` matches
+`x-release-please-version` on a line and then does one
+`line.replace(/(\d+)\.(\d+)\.(\d+)…/, version)`. Twenty lines carry the comment
+now: the two manifest versions, and eighteen `image:` defaults across
+`compose.demo.yaml` and `deploy/docker-compose.yml`. Each of the eighteen was
+checked before annotating — a line whose first semver-shaped substring is not the
+one we mean would be silently corrupted, and the script that added them refuses
+rather than guesses. `sdks/node/vsms-sdk-node/package.json` uses the `json`
+updater with `$.version` instead, because JSON cannot carry a comment.
+
+**Four lockfiles carry a first-party version, and `--locked` is everywhere.**
+`Cargo.lock` (21 workspace members), and `vsms-sdk-rust` in each of `sdks/rust`,
+`examples/rust` and `ci/e2e-integration`. A lockfile cannot be annotated — it is
+generated, and `version = "0.3.1"` appears in it for third-party crates too
+(`opaque-debug`, `rand_chacha` today), so a blind rewrite corrupts it. This is not
+cosmetic: `ci.yml` runs `cargo metadata --locked` on the root and `cargo check
+--locked` on each excluded manifest, and every production Dockerfile builds
+`--locked`, so a release PR with stale lockfiles is red on arrival. `ci.yml:317`'s
+own comment records this exact failure for v0.2.1 — found by a review bot, not by
+CI. The workflow therefore checks out the release branch after release-please has
+force-pushed it and runs `cargo metadata` (the same command CI runs, minus
+`--locked`) in the directory of **every** `Cargo.lock` `git ls-files` finds,
+rather than against a hardcoded list — a fifth copy of "which Rust roots exist"
+is the duplicated-list failure this file warns about elsewhere, and
+`deploy/backup-tool`, which versions independently, simply produces no diff.
+
+### The token is load-bearing, not hygiene
+
+GitHub raises no workflow events for anything done with the default
+`GITHUB_TOKEN`. With it, the `vX.Y.Z` tag would be created and **`release.yml`
+would not run** — no images, no chart, no SDKs, nothing failing anywhere to say
+so — and the release PR would get no `ci.yml` run at all, which is the same
+failure class `.xtask/src/workflow_paths.rs` exists for. So the workflow mints a
+GitHub App token (`actions/create-github-app-token@v3`) and every write goes
+through it, including the lockfile push, which is what gives the release PR real
+CI. Secrets: `RELEASE_PLEASE_APP_ID`, `RELEASE_PLEASE_APP_PRIVATE_KEY`; the App
+needs `contents: write` and `pull-requests: write` on this repository only. There
+is deliberately **no fallback** to `GITHUB_TOKEN` — a fallback produces exactly
+the silent publish-nothing release above.
+
+### Conventional titles, because 58 of the last 60 subjects were invisible
+
+release-please reads commit subjects and nothing else. At the time this landed,
+`git log --format='%s' -60 | grep -cE '^(feat|fix|…)(\(.+\))?!?: '` returned
+**2**. Every other subject — `Document GDPR engineering readiness`, `Fix Orange's
+DLR contract…` — is not rejected by release-please, it is *ignored*, so the
+release PR would simply never have appeared and nothing would have said why.
+
+`.github/workflows/pr-title.yml` closes that. It is a separate workflow rather
+than a job in `ci.yml` on purpose: a title is changed by editing it, which raises
+`edited` and not `synchronize`, and teaching `ci.yml` to listen for `edited` would
+re-run Rust, live Postgres and the JS build every time somebody fixes a typo in a
+title. It is a regex rather than a marketplace action for the reason this file's
+release-engineering notes already give about unpinned moving dependencies inside a
+pipeline, and the title reaches the script through the environment, never through
+`${{ }}` inside `run:` — a PR title is attacker-controlled text and `${{ }}` in a
+`run:` body is textual substitution.
+
+The repository's own squash setting moved from `COMMIT_OR_PR_TITLE` to
+`PR_TITLE` in the same change. Without that, a single-commit PR takes *its commit's*
+subject as the squash subject, so a conventional title could be silently bypassed
+by a PR whose one commit was titled anything at all — the lint would pass and the
+release would still not see it.
+
+Regex verified in both directions before being trusted, against real subjects from
+this repository and from vpay: `chore: release 0.4.0` (release-please's own PR
+title, which must pass or every release PR fails its own gate),
+`fix(security): …`, `chore(deps): …`, `feat(sdks/flutter)!: …`,
+`fix(sdks/flutter,checkout): …` all pass; `Document GDPR engineering readiness`,
+`Bump rustls to 0.23.45 …`, `feat:` with no subject, `feature:` (not a type) and
+`fix missing colon` all fail.
+
+### `cargo xtask release-versions`
+
+`release.yml`'s `version` job already compares the tag against the three manifest
+versions — but `if: startsWith(github.ref, 'refs/tags/')`, so it first fires
+*after* the release PR has merged. That is this repository's own definition of not
+a check. `.xtask/src/release_versions.rs` runs the equivalent on every PR: all 22
+version references must agree, every file listed in the config's `extra-files`
+must still contain an annotation to act on, and — the direction that actually
+happens by accident — every versioned vsms image default in the compose files must
+be annotated. The file list is read out of `release-please-config.json` rather than
+restated, and a reformat that defeats its line-based parser is an error rather than
+a vacuous pass.
+
+The regression it exists for is quiet: add a nineteenth compose service without the
+comment and nothing breaks visibly — the release PR is still opened, still green,
+still merges; that one service's default simply stays at the previous release
+forever, and the first symptom is somebody's `docker compose pull` fetching a stale
+image.
+
+All three failure modes were broken on purpose and observed, then restored:
+
+```
+# annotation dropped from one compose image line
+compose.demo.yaml:619: a versioned vsms image default with no x-release-please-version comment
+  — release-please will leave this service pinned to the previous release
+
+# one manifest left at the old version
+.release-please-manifest.json ("."): 0.3.1
+Cargo.toml:60: 0.3.1
+…
+sdks/node/vsms-sdk-node/package.json ($.version): 0.3.0
+
+# a listed extra-file loses every annotation
+deploy/docker-compose.yml: listed in release-please-config.json extra-files but carries no
+  x-release-please-version line, so release-please will never change it
+```
+
+Wired into `ci.yml`'s `rules` job, `just all-checks`, and `just ci` step 9 — folded
+into that existing step rather than added as a 24th, because the `step N 23`
+counter is hardcoded at all 23 call sites.
+
+### What a release still needs a human for, by design
+
+- **Prose.** `docs/runbooks/deployment.adoc`, `showcase.adoc` and
+  `deploy/.env.example` are mostly historical narrative about versions ("`v0.3.0`
+  alone published under `ghcr.io/vaam-store/…`; `v0.3.1` and every tag after it
+  lands under `ghcr.io/vaam-apps/…`"). A blanket bump makes those sentences false.
+  The compose defaults are what determine behaviour and they are bumped; the prose
+  describing them goes stale by one release.
+- **`examples/node/demo-app`'s `@vymalo/vsms-node` range.** That version does not
+  exist on npm until `release.yml` has published it, minutes after the release PR
+  merges, and pnpm's 24h `minimumReleaseAge` quarantine then forces the two-commit
+  dance this file already documents. A follow-up PR, every time — the same ordering
+  constraint the "Release v0.3.0" section above records.
+- **`deploy/charts/vsms/Chart.yaml`.** Its version is a placeholder `release.yml`
+  overwrites at `helm package` time; nothing to bump.
+
+### Not closed
+
+**Dependabot.** There is no `.github/dependabot.yml`, so security-update PRs arrive
+titled `Bump X from Y to Z` and will fail `pr-title`. Retitling fixes it and the
+check re-runs on `edited`, but the durable fix is a `dependabot.yml` with
+`commit-message.prefix: chore` — deliberately not added here, because creating that
+file also switches on version-update PRs nobody asked for.
+
+**An annotated line in a file the config does not list.** Catching it needs a
+whole-tree walk, and it requires someone to write an annotation while never
+touching the config — far less likely than the compose case, which happens by
+simply adding a service. Named in `release_versions.rs`'s own module doc rather
+than left to look like an oversight.
+
 ## Open questions blocking later milestones
 
 1. **Hosting location.** Law No. 2024/017 requires prior authorisation for *all* cross-border personal-data transfers, and "legitimate interest" is not a lawful basis. Cameroon-hosted is the safe default. Needs an answer before production.

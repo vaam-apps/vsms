@@ -1,0 +1,39 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "separate-pull-requests": false,
+  "packages": {
+    ".": {
+      "release-type": "simple",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false,
+      "include-v-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": false,
+      "changelog-sections": [
+        { "type": "feat", "section": "Features" },
+        { "type": "fix", "section": "Bug Fixes" },
+        { "type": "perf", "section": "Performance" },
+        { "type": "deps", "section": "Dependencies" },
+        { "type": "revert", "section": "Reverts" },
+        { "type": "refactor", "section": "Refactoring" },
+        { "type": "docs", "section": "Documentation" },
+        { "type": "test", "section": "Tests" },
+        { "type": "build", "section": "Build System" },
+        { "type": "ci", "section": "Continuous Integration" },
+        { "type": "chore", "section": "Chores" },
+        { "type": "style", "section": "Styles", "hidden": true }
+      ],
+      "extra-files": [
+        "Cargo.toml",
+        "sdks/rust/vsms-sdk-rust/Cargo.toml",
+        "compose.demo.yaml",
+        "deploy/docker-compose.yml",
+        {
+          "type": "json",
+          "path": "sdks/node/vsms-sdk-node/package.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    }
+  }
+}

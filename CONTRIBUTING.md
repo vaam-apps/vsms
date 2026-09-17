@@ -184,6 +184,64 @@ Every one of these was found by running the toolchain, not by reading its docume
 - **No `@@index`, no foreign keys, no triggers** come out of the emitter. All hand-written in `0002_bootstrap`.
 - **`pluralize()` is naive** (`ends_with('s') ? +"es" : +"s"`) and there is no `@@map`. Model names here were chosen to pluralise cleanly — `WebhookDelivery` would have become `webhook_deliverys`, which is why the model is `WebhookAttempt`.
 
+## Pull request titles are conventional commits, and the release depends on it
+
+The title, not the body, and not the individual commits:
+
+```
+type(optional scope)!: subject
+```
+
+`type` is one of `feat` `fix` `docs` `style` `refactor` `perf` `test` `build`
+`ci` `chore` `revert`. The `!` marks a breaking change (a `BREAKING CHANGE:`
+footer in the PR body does the same).
+
+This is not a style preference. This repository squash-merges with
+`PR_TITLE`, so the title becomes the subject of the single commit that lands
+on `main` — and `release-please.yml` reads exactly that subject to decide
+whether there is a release to propose and how big it is:
+
+| subject | effect on the next release |
+|---|---|
+| `feat: …` | minor bump (`0.3.1` → `0.4.0`) |
+| `fix: …`, and every other type | patch bump (`0.3.1` → `0.3.2`) |
+| `feat!: …`, or a `BREAKING CHANGE:` footer | minor while `0.x`, major after `1.0.0` |
+| `Fix the DLR contract` — no type | **invisible**; contributes nothing |
+
+That last row is the one that matters. A non-conventional subject is not
+rejected by release-please, it is *ignored* — so a release containing it
+simply describes less than it shipped, and a release containing only such
+commits never gets proposed at all. `.github/workflows/pr-title.yml` is what
+stops that happening; it runs on `edited` as well as `opened`, so fixing a
+title re-runs the check on its own.
+
+Scope is free-form and optional. `fix(sms-worker):`, `feat(sms-api):`,
+`ci:`, `docs:` are all fine; scopes are not used to route the version
+anywhere, they only read better in `CHANGELOG.md`.
+
+## Releasing
+
+Nobody hand-writes a version bump. Every merge to `main` updates a standing
+`chore: release X.Y.Z` pull request that carries the changelog and every
+version this repository owns — the three manifests, the eighteen compose
+image defaults, its own manifest file. Merging that PR creates the tag,
+which is what `release.yml` triggers on to publish images, the chart, and
+both SDKs.
+
+Two things a release still needs a human for, by design:
+
+- **Prose.** `docs/runbooks/*.adoc` and `deploy/.env.example` describe the
+  compose defaults in sentences that are partly historical narrative, so
+  they are deliberately not auto-bumped — see `release-please.yml`'s own
+  comment.
+- **`examples/node/demo-app`'s `@vymalo/vsms-node` range.** The new SDK
+  version does not exist on npm until `release.yml` has run, minutes after
+  the release PR merges, and pnpm's 24h quarantine then forces a two-commit
+  dance. It is a follow-up PR, every time.
+
+Run `just release-versions` before opening any PR that touches a version —
+it is also in `just all-checks` and `just ci`.
+
 ## Pull requests
 
 - CI must be green: migrations apply to an empty database, the state-machine test passes, the R1 lint passes.
