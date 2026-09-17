@@ -123,6 +123,14 @@ existingSecrets:
   orange:
     name: ""
     key: ORANGE_CM_CLIENT_SECRET
+  # MTN MADAPI's OAuth2 client_credentials secret. Only consulted when
+  # .Values.mtn.clientId is set — see the mtn block below and
+  # templates/common.yaml's own MTN stripping, which removes every MTN env
+  # var (including this secretKeyRef) from both controllers when MTN is
+  # not configured. Leave name empty for an Orange-only deployment.
+  mtn:
+    name: ""
+    key: MTN_CLIENT_SECRET
   # 32+ characters of real entropy — it encrypts the console's session
   # cookie (AES-256-GCM, frontends/apps/admin/lib/oidc.ts). Generate with
   # `openssl rand -hex 32`. A secret rather than a value for the obvious
@@ -157,6 +165,43 @@ orange:
   clientId: ""
   senderNumber: ""
   baseUrl: https://api.orange.com
+
+# MTN Cameroon via MADAPI, MTN's own developer platform. Entirely
+# optional: leave `clientId` empty and this deployment is Orange-only,
+# with every MTN env var stripped from both controllers before rendering.
+#
+# **Setting these is not sufficient on its own.** MADAPI sends no delivery
+# receipts until a `deliveryReportUrl` is registered against your approved
+# service code, which is a one-off API call, not a chart value:
+#
+#     sms-gateway mtn-subscribe-dlr \
+#       --delivery-report-url https://<gateway host>/dlr/mtn_cm
+#
+# Skip it and messages submit fine, reach `submitted`, and sit there with
+# no receipt ever arriving. See docs/runbooks/deployment.adoc's own
+# "Enabling MTN delivery receipts" section.
+#
+# `tpsCeiling` and `costPerSegmentXaf` have no defaults on purpose. They
+# are commercial terms of a specific MTN contract, absent from MADAPI's
+# own Swagger, and `MtnConfig` has no `Default` precisely so a real
+# sending path can never acquire an invented TPS ceiling (which would
+# either throttle a paid contract or get the account rate-limited) or an
+# invented per-segment price (which would misprice estimatedCostXaf). If
+# you set `clientId` you must set these too; the gateway refuses to start
+# on a partially-configured MTN, by design.
+mtn:
+  clientId: ""
+  serviceCode: ""
+  # Optional. MADAPI's senderAddress takes precedence over serviceCode
+  # when set; per-message sender IDs from sendMessage win over both.
+  senderId: ""
+  baseUrl: https://api.mtn.com
+  # Quoted strings, not YAML numbers: these are rendered into env values,
+  # and an unquoted 5.0 would reach the container as "5" and an unquoted
+  # 16.00 as "16", which is a silent precision change on a money field.
+  tpsCeiling: ""
+  costPerSegmentXaf: ""
+  supportsAlphanumericSender: false
   # No dlrNotifyUrl here on purpose. Orange's own docs (§4 "About SMS
   # Delivery Receipt", https://developer.orange.com/apis/sms/getting-started)
   # are explicit that the DR webhook is pre-registered, account-level, and
@@ -421,6 +466,25 @@ controllers:
             value: '{{ required "orange.senderNumber is required" .Values.orange.senderNumber }}'
           ORANGE_CM_BASE_URL:
             value: '{{ .Values.orange.baseUrl }}'
+          MTN_CLIENT_ID:
+            value: '{{ .Values.mtn.clientId }}'
+          MTN_CLIENT_SECRET:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ .Values.existingSecrets.mtn.name }}'
+                key: '{{ .Values.existingSecrets.mtn.key }}'
+          MTN_SERVICE_CODE:
+            value: '{{ .Values.mtn.serviceCode }}'
+          MTN_SENDER_ID:
+            value: '{{ .Values.mtn.senderId }}'
+          MTN_BASE_URL:
+            value: '{{ .Values.mtn.baseUrl }}'
+          MTN_TPS_CEILING:
+            value: '{{ .Values.mtn.tpsCeiling }}'
+          MTN_COST_PER_SEGMENT_XAF:
+            value: '{{ .Values.mtn.costPerSegmentXaf }}'
+          MTN_SUPPORTS_ALPHANUMERIC_SENDER:
+            value: '{{ .Values.mtn.supportsAlphanumericSender }}'
           SMS_HASH_PEPPER:
             valueFrom:
               secretKeyRef:
@@ -547,6 +611,25 @@ controllers:
             value: '{{ .Values.orange.senderNumber }}'
           ORANGE_CM_BASE_URL:
             value: '{{ .Values.orange.baseUrl }}'
+          MTN_CLIENT_ID:
+            value: '{{ .Values.mtn.clientId }}'
+          MTN_CLIENT_SECRET:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ .Values.existingSecrets.mtn.name }}'
+                key: '{{ .Values.existingSecrets.mtn.key }}'
+          MTN_SERVICE_CODE:
+            value: '{{ .Values.mtn.serviceCode }}'
+          MTN_SENDER_ID:
+            value: '{{ .Values.mtn.senderId }}'
+          MTN_BASE_URL:
+            value: '{{ .Values.mtn.baseUrl }}'
+          MTN_TPS_CEILING:
+            value: '{{ .Values.mtn.tpsCeiling }}'
+          MTN_COST_PER_SEGMENT_XAF:
+            value: '{{ .Values.mtn.costPerSegmentXaf }}'
+          MTN_SUPPORTS_ALPHANUMERIC_SENDER:
+            value: '{{ .Values.mtn.supportsAlphanumericSender }}'
           RUST_LOG:
             value: 'sms_worker=info,sms_worker_bin=info'
         probes:

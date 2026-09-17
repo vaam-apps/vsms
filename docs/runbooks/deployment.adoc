@@ -949,9 +949,9 @@ their own operator/subscription in front of one) supplies -- the same
 "bring your own database" split the compose path already documents for
 why it doesn't use `sops`.
 * *Does not create any Secret.* Every credential (`DATABASE_URL`,
-`SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `SMS_CONSOLE_SESSION_SECRET`,
-the admin console's private key PEM) is referenced by name from an
-`existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
+`SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `MTN_CLIENT_SECRET` when
+MTN is configured, `SMS_CONSOLE_SESSION_SECRET`, the admin console's
+private key PEM) is referenced by name from an `existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
 ever writes one into a ConfigMap or a rendered manifest. See
 ``values.yaml``'s own `existingSecrets` block for the exact key each
 Secret must contain.
