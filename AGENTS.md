@@ -3177,6 +3177,81 @@ counter is hardcoded at all 23 call sites.
 - **`deploy/charts/vsms/Chart.yaml`.** Its version is a placeholder `release.yml`
   overwrites at `helm package` time; nothing to bump.
 
+### The annotation broke `release.yml`'s own version guard, and v0.3.2 published nothing
+
+The worst of the three, and the most deserved. This file's own #395 section
+argues at length that `release.yml`'s `version` job is gated
+`if: startsWith(github.ref, 'refs/tags/')` and therefore first runs *after* the
+release PR has merged — and that `cargo xtask release-versions` exists because
+of it. Then the very annotation that guard was built around broke that guard.
+
+It reads the manifests with `sed -n 's/^version = "\(.*\)"$/\1/p'`. That
+pattern is anchored to end-of-line. The annotated line is:
+
+```toml
+version = "0.3.2" # x-release-please-version
+```
+
+which does not end with `"`. So the pattern matched nothing, the variable came
+out **empty**, and the tag-vs-manifest comparison failed. The only trace was
+one line in a log nobody reads on a green day:
+
+```
+tag=0.3.2 workspace= rust-sdk= node-sdk=0.3.2
+```
+
+`v0.3.2` therefore published **no image, no chart, and neither SDK** — every
+downstream job `skipped`. The node SDK parsed fine, because JSON carries no
+comment; only the two `.toml` reads broke.
+
+Fixed by making both patterns tolerate trailing content
+(`"\([^"]*\)".*$`). The durable half is that `release-versions` now **runs
+`release.yml`'s own three `sed` extractions** on every PR — it parses them out
+of the workflow rather than restating them, converts the BRE `\(`/`\)`, applies
+each to the file it names, and fails if any yields nothing. Proven by restoring
+the anchored pattern and watching it report exactly that. Two facts about how to
+read a version lived in two files with nothing holding them together; now one
+reads the other.
+
+### A bare-string `extra-files` entry is a trap — and this repo escaped it by luck
+
+Corrected after v0.3.2, by watching the sibling `vpay` repository's own first
+release destroy two files with the identical configuration.
+
+A bare string in `extra-files` does **not** get the annotation-only `Generic`
+updater, which is what the original config here assumed. `base.ts` infers an
+updater from the file extension:
+
+```text
+.json         -> CompositeUpdater(GenericJson('$.version'), Generic)
+.yaml/.yml    -> CompositeUpdater(GenericYaml('$.version'), Generic)
+.toml         -> CompositeUpdater(GenericToml('$.version'), Generic)
+.xml          -> CompositeUpdater(GenericXml('/*/version'), Generic)
+anything else -> Generic
+```
+
+`GenericYaml` reparses the document and re-serialises it. In `vpay` that turned
+`deploy/helm/vpay/Chart.yaml` from 48 lines into 13 — every comment destroyed,
+the wrong `version:` key bumped (0.2.0 -> 0.1.1, a downgrade, and the one field
+its config deliberately excluded), and `appVersion` left untouched because the
+`x-release-please-version` annotation had just been serialised away.
+
+**This repository was configured the same way and came through v0.3.2
+untouched, by luck rather than design.** Its two `.yaml` entries are compose
+files, and a modern compose file carries no top-level `version:` key, so
+`GenericYaml('$.version')` found nothing to change. Verified after the fact,
+not assumed: `compose.demo.yaml` and `deploy/docker-compose.yml` are byte-for-
+byte the same length before and after the release (793 and 668 lines), with all
+13 and 5 annotations intact. Add a top-level `version:` to a compose file, or
+list any other `.yaml`, and the luck runs out.
+
+Every entry is now `{"type": "generic", "path": …}`, which routes to
+`case 'generic'` and runs `Generic` alone whatever the extension.
+`cargo xtask release-versions` **refuses** a bare string outright and names the
+incident; two unit tests pin the refusal and the unknown-type refusal, and the
+parser accepts both the multi-line and single-line object spellings rather than
+silently skipping one.
+
 ### Not closed
 
 **Dependabot.** There is no `.github/dependabot.yml`, so security-update PRs arrive

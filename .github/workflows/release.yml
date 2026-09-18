@@ -84,8 +84,16 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
-          WS="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
-          RUST_SDK="$(sed -n 's/^version = "\(.*\)"$/\1/p' sdks/rust/vsms-sdk-rust/Cargo.toml | head -1)"
+          # `[^"]*".*$`, not `.*"$`. These lines carry a trailing
+          # `# x-release-please-version` comment, so an end-anchored pattern
+          # matches nothing and silently yields an EMPTY version — which is
+          # exactly how v0.3.2 failed: `tag=0.3.2 workspace= rust-sdk=`,
+          # every publish skipped. The node SDK line below needs no such fix
+          # (JSON carries no comment). `cargo xtask release-versions` runs
+          # these same three extractions on every PR now, because this job
+          # only ever runs on a tag — i.e. after the release PR has merged.
+          WS="$(sed -n 's/^version = "\([^"]*\)".*$/\1/p' Cargo.toml | head -1)"
+          RUST_SDK="$(sed -n 's/^version = "\([^"]*\)".*$/\1/p' sdks/rust/vsms-sdk-rust/Cargo.toml | head -1)"
           NODE_SDK="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' sdks/node/vsms-sdk-node/package.json | head -1)"
           echo "tag=${TAG} workspace=${WS} rust-sdk=${RUST_SDK} node-sdk=${NODE_SDK}"
           for v in "$WS" "$RUST_SDK" "$NODE_SDK"; do
