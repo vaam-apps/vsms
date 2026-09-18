@@ -63,7 +63,9 @@ name: release-please
 #     false. The compose defaults are what actually determine behaviour and
 #     they ARE bumped; the prose describing them goes stale by one release
 #     and is a human's to correct.
-#   - `examples/node/demo-app/package.json`'s `@vymalo/vsms-node` range.
+#   - `examples/node/demo-app/package.json`'s `@vymalo/vsms-node` range. Note
+#     the scope: that consumer still points at the OLD package name until
+#     `@vaam-apps/vsms-node` has been published once and can be resolved.
 #     That version does not exist on npm until `release.yml` publishes it,
 #     minutes AFTER this PR merges, and pnpm's 24h `minimumReleaseAge`
 #     quarantine then forces a two-commit dance besides. It is a

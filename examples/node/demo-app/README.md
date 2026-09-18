@@ -8,7 +8,7 @@ runs against the real stack those compose files bring up.
 It does both halves at once, against real containers, over real HTTP:
 
 1. Authenticates to `sms-gateway` with `private_key_jwt`, via
-   [`@vymalo/vsms-node`](https://www.npmjs.com/package/@vymalo/vsms-node) —
+   [`@vaam-apps/vsms-node`](https://www.npmjs.com/package/@vaam-apps/vsms-node) —
    the same published SDK an external integrator would use, reusing the
    machine credential `provision-client` already provisions for the admin
    console (no second `AppClient` is provisioned just for this).
@@ -72,7 +72,7 @@ pass, so nothing below is required inside those stacks:
 
 | Variable | Default | What it is |
 |---|---|---|
-| `VSMS_ISSUER` | `http://sms-gateway:8080` | The OP/API origin (same host, per this deployment's own design — see `@vymalo/vsms-node`'s own `privateKeyJwt` doc comment). |
+| `VSMS_ISSUER` | `http://sms-gateway:8080` | The OP/API origin (same host, per this deployment's own design — see `@vaam-apps/vsms-node`'s own `privateKeyJwt` doc comment). |
 | `VSMS_SCOPE` | `sms:send sms:read` | Requested token scope. |
 | `VSMS_CLIENT_ID` | *(unset)* | If set, used directly. Otherwise read from `VSMS_CLIENT_ID_PATH`. |
 | `VSMS_CLIENT_ID_PATH` | `/secrets/console-client-id` | Where `provision-client --client-id-out` wrote the client id. |

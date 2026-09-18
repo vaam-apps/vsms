@@ -234,7 +234,7 @@ Two things a release still needs a human for, by design:
   compose defaults in sentences that are partly historical narrative, so
   they are deliberately not auto-bumped — see `release-please.yml`'s own
   comment.
-- **`examples/node/demo-app`'s `@vymalo/vsms-node` range.** The new SDK
+- **`examples/node/demo-app`'s `@vaam-apps/vsms-node` range.** The new SDK
   version does not exist on npm until `release.yml` has run, minutes after
   the release PR merges, and pnpm's 24h quarantine then forces a two-commit
   dance. It is a follow-up PR, every time.

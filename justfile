@@ -793,9 +793,9 @@ ci-inner:
 	step 21 23 "Demo app — typecheck and cross-language signature vectors"
 	( cd examples/node/demo-app && pnpm install --ignore-workspace --frozen-lockfile && node_modules/.bin/tsc --noEmit && node --test )
 
-	step 22 23 "Official Node SDK (@vymalo/vsms-node) — build, typecheck, test, pack dry-run"
-	pnpm --filter @vymalo/vsms-node run build
-	pnpm --filter @vymalo/vsms-node run typecheck
+	step 22 23 "Official Node SDK (@vaam-apps/vsms-node) — build, typecheck, test, pack dry-run"
+	pnpm --filter @vaam-apps/vsms-node run build
+	pnpm --filter @vaam-apps/vsms-node run typecheck
 	( cd sdks/node/vsms-sdk-node && node --test && npm pack --dry-run )
 
 	step 23 23 "Mermaid diagrams parse (no browser)"

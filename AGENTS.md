@@ -3326,6 +3326,54 @@ touching the config — far less likely than the compose case, which happens by
 simply adding a service. Named in `release_versions.rs`'s own module doc rather
 than left to look like an oversight.
 
+## The Node SDK is `@vaam-apps/vsms-node` — and the first publish must be manual
+
+`@vymalo/vsms-node` was the npm scope from before the org moved twice
+(`vymalo` -> `vaam-store` -> `vaam-apps`). The scope is an npm namespace, not the
+GitHub owner, so it did not have to follow — but it stopped matching anything, and
+npm Trusted Publishing is bound to an `owner/repo` that kept changing underneath it.
+Every release since `v0.3.1` failed this way, silently in the sense that matters:
+
+```
+[WARN] Skipped OIDC: ERR_PNPM_AUTH_TOKEN_EXCHANGE: token exchange 404
+[E404] 404 Not Found - PUT https://registry.npmjs.org/@vymalo%2fvsms-node
+```
+
+That `E404` is npm masking an unauthorized write as "not found" rather than
+confirming the package exists — the same masking this file already records for a
+revoked bootstrap token. Read it as auth, never as a missing package.
+
+**The first publish of the new name cannot go through CI, and this is structural,
+not a misconfiguration.** npm Trusted Publishing cannot bootstrap itself: a package
+name must already exist on the registry before a Trusted Publisher can be attached
+to it. `@vaam-apps/vsms-node` has never been published, so there is nothing to
+attach to yet. One manual, token-authenticated publish has to reserve the name
+first; every release after that goes through OIDC in `release.yml` with no token
+anywhere in the repo.
+
+Two traps on that manual publish, both already documented in this file's own
+release-engineering notes and both easy to walk into again:
+
+- **Do not pass `--provenance`.** It only works inside a recognised CI OIDC
+  provider and hard-errors `EUSAGE: Automatic provenance generation not supported
+  for provider: null` *before uploading anything*. `release.yml` passes it because
+  it runs in Actions; a laptop is not that.
+- **If the account has 2FA-on-publish, use an Automation-type token**, npm's own
+  OTP-exempt class. A nested or non-interactive publish cannot answer an OTP
+  prompt and fails `EOTP`.
+
+**`examples/node/demo-app` deliberately still points at `@vymalo/vsms-node`.** It
+resolves from the registry against a committed lockfile with `--frozen-lockfile`,
+so pointing it at a name that does not exist yet would fail every CI run on an
+unresolvable dependency. It moves in a follow-up after the first publish — the same
+ordering constraint the `v0.3.0` bump already hit, for the same reason.
+`examples/node/sms-send-example` did move in this change, because it uses a
+`file:` link and never touches the registry at all.
+
+Historical entries elsewhere in this file still say `@vymalo/vsms-node`. Those are
+left alone on purpose: they describe publishes that really happened under that
+name, and `0.2.0` through `0.3.1` are still on npm under it.
+
 ## Open questions blocking later milestones
 
 1. **Hosting location.** Law No. 2024/017 requires prior authorisation for *all* cross-border personal-data transfers, and "legitimate interest" is not a lawful basis. Cameroon-hosted is the safe default. Needs an answer before production.
