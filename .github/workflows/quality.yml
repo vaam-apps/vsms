@@ -76,6 +76,10 @@ jobs:
     name: SAST
     needs: changes
     if: needs.changes.outputs.code == 'true' || needs.changes.outputs.docs == 'true'
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
     uses: vaam-apps/.github/.github/workflows/sast.yml@main
     with:
       # Only when code moved — a docs-only PR has nothing for CodeQL to read,
@@ -94,6 +98,9 @@ jobs:
     name: lint
     needs: changes
     if: needs.changes.outputs.any == 'true'
+    permissions:
+      contents: read
+      statuses: write
     uses: vaam-apps/.github/.github/workflows/lint.yml@main
     with:
       # AGENTS.md and CLAUDE.md are excluded deliberately, not by oversight.
@@ -111,6 +118,9 @@ jobs:
     name: trivy
     needs: changes
     if: needs.changes.outputs.code == 'true' || needs.changes.outputs.iac == 'true'
+    permissions:
+      security-events: write
+      contents: read
     uses: vaam-apps/.github/.github/workflows/trivy.yml@main
     with:
       # cargo deny already covers Rust advisories here, and more strictly. The
