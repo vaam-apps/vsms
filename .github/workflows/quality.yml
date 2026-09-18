@@ -80,7 +80,7 @@ jobs:
       security-events: write
       contents: read
       actions: read
-    uses: vaam-apps/.github/.github/workflows/sast.yml@24fa3b0c0e611ede4ccfa718d8838d1617e30b11 # vaam-apps/.github main
+    uses: vaam-apps/.github/.github/workflows/sast.yml@b04a3ff5fd9334005b6cd9f14ac55bc1ae7f2879 # vaam-apps/.github main
     with:
       # Only when code moved — a docs-only PR has nothing for CodeQL to read,
       # and Rust analysis is the slowest job in this file.
@@ -101,7 +101,7 @@ jobs:
     permissions:
       contents: read
       statuses: write
-    uses: vaam-apps/.github/.github/workflows/lint.yml@24fa3b0c0e611ede4ccfa718d8838d1617e30b11 # vaam-apps/.github main
+    uses: vaam-apps/.github/.github/workflows/lint.yml@b04a3ff5fd9334005b6cd9f14ac55bc1ae7f2879 # vaam-apps/.github main
     with:
       # AGENTS.md and CLAUDE.md are excluded deliberately, not by oversight.
       # They are the most load-bearing prose in this repository, written with
@@ -121,7 +121,7 @@ jobs:
     permissions:
       security-events: write
       contents: read
-    uses: vaam-apps/.github/.github/workflows/trivy.yml@24fa3b0c0e611ede4ccfa718d8838d1617e30b11 # vaam-apps/.github main
+    uses: vaam-apps/.github/.github/workflows/trivy.yml@b04a3ff5fd9334005b6cd9f14ac55bc1ae7f2879 # vaam-apps/.github main
     with:
       # cargo deny already covers Rust advisories here, and more strictly. The
       # value Trivy adds in this repo is misconfig (seven Dockerfiles, three
