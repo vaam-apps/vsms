@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.4.0](https://github.com/vaam-apps/vsms/compare/v0.3.3...v0.4.0) (2026-09-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdk:** the npm package is now @vaam-apps/vsms-node. Consumers of @vymalo/vsms-node must change their dependency; the old name keeps its existing published versions but receives no further releases.
+
+### Features
+
+* **sdk:** rename the Node SDK to @vaam-apps/vsms-node ([#409](https://github.com/vaam-apps/vsms/issues/409)) ([2113691](https://github.com/vaam-apps/vsms/commit/211369175e7d35b9a808d230c60a23e0cff2f72f))
+
+
+### Bug Fixes
+
+* **ci:** satisfy DS-0002 where it is real, scope-suppress where it is not ([#410](https://github.com/vaam-apps/vsms/issues/410)) ([2f26db4](https://github.com/vaam-apps/vsms/commit/2f26db469877854ca467fdb04df4b1205f56ee6f))
+* **ci:** scope-suppress the SDK test keypair for the secret scanner ([923c935](https://github.com/vaam-apps/vsms/commit/923c9353c864f6ccf158a9805d38482d9e57d2e1))
+
+
+### Continuous Integration
+
+* adopt org-wide SAST, lint, Trivy and issue governance ([#405](https://github.com/vaam-apps/vsms/issues/405)) ([1e3775b](https://github.com/vaam-apps/vsms/commit/1e3775b8ddef4328df83a87370a988edaa2c1f11))
+* keep the org App for SARIF upload, skip deploy/charts in Trivy ([#407](https://github.com/vaam-apps/vsms/issues/407)) ([7def870](https://github.com/vaam-apps/vsms/commit/7def870eb7882a75e87e6545efffe3a92c12d8e2))
+* re-pin org reusable workflows for the MD024 changelog fix ([c9ac2db](https://github.com/vaam-apps/vsms/commit/c9ac2dba220534132e1bc75bb5284d01cc1198bd))
+* re-pin org reusable workflows for the MD024 changelog fix ([075d5b0](https://github.com/vaam-apps/vsms/commit/075d5b0e5c73f60804d06fd2fdaf43b93334b5f2))
+
 ## [0.3.3](https://github.com/vaam-apps/vsms/compare/v0.3.2...v0.3.3) (2026-09-18)
 
 
