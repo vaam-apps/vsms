@@ -3252,6 +3252,66 @@ incident; two unit tests pin the refusal and the unknown-type refusal, and the
 parser accepts both the multi-line and single-line object spellings rather than
 silently skipping one.
 
+### A commit body can make release-please discard the whole commit, silently
+
+The third and worst of the release-please defects, found the morning after
+v0.3.2 by asking why no release PR had appeared. The `release-please` workflow
+had run and **reported success**:
+
+```
+❯ commit could not be parsed: 7ef89ec fix(ci): v0.3.2 published nothing …
+❯ error message: Error: unexpected token '(' at 8:30, valid tokens [)]
+❯ commits: 0
+✔ No commits for path: ., skipping
+```
+
+Line 8 column 30 of that commit's **body** is the `(` in
+``​`CompositeUpdater(GenericYaml('$.version'), Generic)`​``. release-please uses
+`@conventional-commits/parser`, a strict PEG parser — not the lenient
+regex-based `conventional-commits-parser` — and a body line that *begins* with
+`identifier(` reads to that grammar as a type-and-scope header, so a nested
+`(` inside it is a syntax error.
+
+**The consequence is not a warning, it is erasure.** The commit contributes
+nothing: no changelog entry, no version bump. It was the only commit since
+v0.3.2, so release-please proposed no release at all. Nothing was red.
+
+The rule, measured against the parser rather than reasoned about:
+
+| body line | parses? |
+|---|---|
+| `see A(B(c)) here` | yes — a word precedes it, so it is not a header |
+| `A(b) here` | yes — single parens, nothing nests |
+| `A(B(c)) here` | **no** — line-initial and nested |
+| ``​`A(B(c))`​`` ` here` | **no** — a backtick does not help |
+
+`ci/commit-message-parse/` closes it, as a second job in `pr-title.yml`
+(shared trigger: `edited` changes the title, `synchronize` changes the
+commits, and both are inputs to the assembled message). Three things about it
+are deliberate:
+
+- **It checks the squash result, not each commit.** Individual commits on a
+  branch need not be conventional — this repository squashes with `PR_TITLE`,
+  and `wip:` commits are legitimate. A first cut checked each commit and
+  rejected **24 of the last 40** on `main`, almost all for pre-convention
+  subjects that never landed as their own commit. A guard that loud gets
+  deleted rather than obeyed.
+- **The reconstruction was verified against a real merge**, not assumed:
+  title + blank + repeated `* <subject>` / blank / `<body>` / blank reproduces
+  #402's merge commit byte-for-byte through line 80 of 84. The remaining four
+  are GitHub's own co-author footer (`---------` plus deduplicated
+  `Co-authored-by:`), which the script does not reproduce — that would mean
+  reimplementing GitHub's dedup — and which provably cannot change the
+  verdict: both the passing and the failing case were re-parsed with and
+  without it and gave identical results.
+- **The parser is pinned to `0.4.1`**, the only version satisfying
+  release-please 17.6.0's own `^0.4.1`, so the guard parses with exactly the
+  grammar release-please will use. A looser range is the one way this check
+  could confidently report a verdict that does not match reality.
+
+Proven both directions: #402 fails with the exact line and a caret on the
+offending `(`; #397 and #399 pass.
+
 ### Not closed
 
 **Dependabot.** There is no `.github/dependabot.yml`, so security-update PRs arrive

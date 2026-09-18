@@ -28,6 +28,8 @@ on:
 
 permissions:
   contents: read
+  # `commit-message-parses` lists the pull request's commits via the REST API.
+  pull-requests: read
 
 jobs:
   conventional-title:
@@ -85,3 +87,47 @@ jobs:
 
           echo "::error title=Non-conventional PR title::${TITLE}"
           exit 1
+
+  # The title is only line 1 of what lands. This job checks the WHOLE squash
+  # message with release-please's own parser, because a body line can make
+  # release-please discard the entire commit — silently, with the workflow
+  # green. See ci/commit-message-parse/parse.mjs for the incident and the
+  # exact grammar rule.
+  #
+  # It lives in `pr-title.yml` rather than its own file because it shares this
+  # trigger exactly: `edited` (the title changed) and `synchronize` (the
+  # commits changed) are both inputs to the assembled message, and `ci.yml`
+  # still must not listen for `edited`.
+  commit-message-parses:
+    name: the squash message parses as a conventional commit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+
+      # A standalone npm project with a committed lockfile and an exact pin,
+      # deliberately outside `pnpm-workspace.yaml` — the same shape and the
+      # same reasoning as `ci/mermaid-parse/`: a CI tool, not application
+      # code. The pin is `@conventional-commits/parser` 0.4.1, the only
+      # version satisfying release-please 17.6.0's own `^0.4.1`, so this
+      # guard parses with exactly the grammar release-please will use. A
+      # looser range here would let the two disagree, which is the one way
+      # this check could report a verdict that does not match reality.
+      - name: Install the parser
+        working-directory: ci/commit-message-parse
+        run: npm ci
+
+      - name: Parse the message this pull request would land
+        working-directory: ci/commit-message-parse
+        env:
+          # Via the environment, never `${{ }}` inside `run:` — a pull
+          # request title is attacker-controlled text and `${{ }}` in a
+          # `run:` body is textual substitution.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node parse.mjs

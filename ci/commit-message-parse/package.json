@@ -1,0 +1,13 @@
+{
+  "name": "vsms-commit-message-parse",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Fails a PR whose commit messages release-please would silently drop.",
+  "scripts": {
+    "check": "node parse.mjs"
+  },
+  "dependencies": {
+    "@conventional-commits/parser": "0.4.1"
+  }
+}
