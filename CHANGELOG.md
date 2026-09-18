@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/vaam-apps/vsms/compare/v0.3.2...v0.3.3) (2026-09-18)
+
+
+### Bug Fixes
+
+* **ci:** a commit body can make release-please discard the whole commit ([#403](https://github.com/vaam-apps/vsms/issues/403)) ([ec245b3](https://github.com/vaam-apps/vsms/commit/ec245b397938d326b77791ece2fdebdffe7583a5))
+
 ## [0.3.2](https://github.com/vaam-apps/vsms/compare/v0.3.1...v0.3.2) (2026-09-17)
 
 
