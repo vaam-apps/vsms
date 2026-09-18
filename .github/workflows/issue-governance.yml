@@ -12,7 +12,7 @@ jobs:
   structure:
     permissions:
       issues: write
-    uses: vaam-apps/.github/.github/workflows/issue-governance.yml@d9c2a1bd5600efab1f0183eeb8e412595a8c5510 # vaam-apps/.github main
+    uses: vaam-apps/.github/.github/workflows/issue-governance.yml@c3c6bc37dd19da0fbb592831675396e81ee10d6c # vaam-apps/.github main
     with:
       enforce: true
     secrets:
