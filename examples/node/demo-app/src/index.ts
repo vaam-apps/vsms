@@ -12,7 +12,7 @@
  *
  * What this proves, end to end, over real HTTP, against real containers:
  *
- *   1. `private_key_jwt` token acquisition works (`@vymalo/vsms-node`,
+ *   1. `private_key_jwt` token acquisition works (`@vaam-apps/vsms-node`,
  *      the same SDK an external integrator would use — not a shortcut).
  *   2. `sendMessage` accepts a real OTP send.
  *   3. The message is actually routed, submitted (to `sms-fake-orange`,
@@ -51,8 +51,8 @@
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { Message, MessageState } from "@vymalo/vsms-node";
-import { SdkError, VsmsClient } from "@vymalo/vsms-node";
+import type { Message, MessageState } from "@vaam-apps/vsms-node";
+import { SdkError, VsmsClient } from "@vaam-apps/vsms-node";
 import type { Request, Response } from "express";
 import express from "express";
 import { decide } from "./decision.ts";
@@ -226,7 +226,7 @@ function startWebhookServer(port: number, secrets: readonly string[], events: Re
 // ---------------------------------------------------------------------------
 
 /**
- * `@vymalo/vsms-node` accepts no `fetch` override and no `signal`/timeout
+ * `@vaam-apps/vsms-node` accepts no `fetch` override and no `signal`/timeout
  * option anywhere in its public API — checked directly against
  * `sdks/node/vsms-sdk-node/src/{client,token}.ts`, not assumed: every
  * `fetch(...)` call in that package (the token exchange, `sendMessage`,
@@ -247,7 +247,7 @@ function withDeadline<T>(promise: Promise<T>, deadlineMs: number, label: string)
       reject(
         new Error(
           `${label} exceeded the remaining ${remainingMs}ms budget (deadline reached) — ` +
-            "@vymalo/vsms-node's fetch calls carry no AbortSignal, so this is a client-side " +
+            "@vaam-apps/vsms-node's fetch calls carry no AbortSignal, so this is a client-side " +
             "bound, not a real request cancellation",
         ),
       );

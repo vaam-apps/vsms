@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.18.0",
-  "description": "The demo showcase's own end-to-end evaluator: sends one OTP through @vymalo/vsms-node, watches it reach a terminal state, and verifies the signed webhooks vsms sends back for it. Run by compose.dev.yaml/compose.demo.yaml's own `demo-app` service, not by hand against a production deployment.",
+  "description": "The demo showcase's own end-to-end evaluator: sends one OTP through @vaam-apps/vsms-node, watches it reach a terminal state, and verifies the signed webhooks vsms sends back for it. Run by compose.dev.yaml/compose.demo.yaml's own `demo-app` service, not by hand against a production deployment.",
   "scripts": {
     "start": "node src/index.ts",
     "test": "node --test",
@@ -16,7 +16,7 @@
     "node": ">=23.6.0"
   },
   "dependencies": {
-    "@vymalo/vsms-node": "^0.3.0",
+    "@vaam-apps/vsms-node": "^0.3.3",
     "express": "^5.2.1"
   },
   "devDependencies": {
