@@ -116,6 +116,11 @@ EXPOSE 8080 9090
 # old `curl -fsS http://127.0.0.1:8080/healthz` check as a plain HTTP/1.1
 # GET over a raw socket — no shell, no third-party binary, nothing beyond
 # `std` needed.
+# Redundant: the `:nonroot` tag already runs as uid 65532, and this image
+# has no `useradd` to create a user with — it ships /etc/passwd precisely so
+# that uid works without one. Stated explicitly because Trivy's DS-0002 greps
+# for a literal USER instruction and cannot see what the tag already did.
+USER nonroot:nonroot
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/usr/local/bin/sms-gateway", "healthcheck"]
 
