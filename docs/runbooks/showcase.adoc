@@ -120,7 +120,7 @@ tag if the Composer's Send button 403s.)
 You don't have to open a browser to watch a message go end to end --
 `demo-app` (link:../../examples/node/demo-app[`examples/node/demo-app`],
 own README there) already did, as one of the containers `up -d` just
-started. It authenticates over `private_key_jwt` with `@vymalo/vsms-node`
+started. It authenticates over `private_key_jwt` with `@vaam-apps/vsms-node`
 (the same published SDK an integrator would use, reusing
 `provision-client`'s own credential -- no second client is provisioned),
 sends one real `otp`-class message, polls it to a terminal state, and

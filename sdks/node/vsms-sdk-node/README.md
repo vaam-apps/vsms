@@ -1,4 +1,4 @@
-# @vymalo/vsms-node
+# @vaam-apps/vsms-node
 
 Official Node.js SDK for [vsms](https://github.com/vaam-apps/vsms).
 
@@ -14,15 +14,15 @@ Owns the `private_key_jwt` credential lifecycle, so a caller writes `client.send
 ## Installation
 
 ```bash
-npm install @vymalo/vsms-node
+npm install @vaam-apps/vsms-node
 # or
-pnpm add @vymalo/vsms-node
+pnpm add @vaam-apps/vsms-node
 ```
 
 ## Quickstart
 
 ```typescript
-import { VsmsClient } from "@vymalo/vsms-node";
+import { VsmsClient } from "@vaam-apps/vsms-node";
 
 // Initialize client with private key on disk or PEM string
 const client = VsmsClient.privateKeyJwt({
@@ -37,7 +37,7 @@ const outcome = await client.sendMessage(
   {
     to: "+237677123456",
     senderId: "VYMALO",
-    body: "Hello from @vymalo/vsms-node!",
+    body: "Hello from @vaam-apps/vsms-node!",
   },
   {
     // Optional retry-safe idempotency key

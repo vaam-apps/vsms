@@ -730,7 +730,7 @@ services:
 
   # The demo showcase's own evaluator — `examples/node/demo-app`'s own
   # module doc has the full reasoning. Sends one OTP through
-  # `@vymalo/vsms-node`, watches it reach a terminal state, and verifies
+  # `@vaam-apps/vsms-node`, watches it reach a terminal state, and verifies
   # the `hooks` role's own signed webhook for it — the one piece of this
   # showcase nothing else exercises end to end.
   #

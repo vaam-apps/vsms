@@ -43,7 +43,7 @@ This builds (or reuses) the runner image, starts a disposable Postgres 16 for it
 . Test (`pnpm turbo run test`)
 . The sample Node receiver's cross-language HMAC signature vectors
 . The demo app (`examples/node/demo-app`) -- typecheck, plus its own copy of the same cross-language HMAC signature vectors (it carries a byte-for-byte copy of `signature.ts`/`cross-language-vectors.test.ts` from the step above, per that package's own README)
-. The official Node SDK (`@vymalo/vsms-node`) -- build, typecheck, test, `npm pack --dry-run`
+. The official Node SDK (`@vaam-apps/vsms-node`) -- build, typecheck, test, `npm pack --dry-run`
 . Every mermaid diagram in `docs/architecture.md`/`docs/roadmap.md` parses (no browser)
 
 A failing step stops the gate there (`set -euo pipefail`), with a `=== STEP n/22: ... ===` banner printed before each one so the log says exactly where it got to.
