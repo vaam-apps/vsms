@@ -22,3 +22,18 @@ misconfigurations:
       rclone config is mounted in. Changing the runtime user risks breaking
       backups in a way only a real restore drill would surface. Revisit
       together with docs/runbooks/backup-restore.adoc, not on its own.
+
+# The secret scanner's finding is real text but not a real secret.
+secrets:
+  - id: private-key
+    paths:
+      - "sdks/rust/vsms-sdk-rust/src/token.rs"
+    statement: >-
+      TEST_PRIVATE_KEY_PEM is a throwaway 2048-bit RSA keypair generated
+      locally with `openssl genrsa` for this module's own `#[cfg(test)]`
+      block, and its own comment says so. It is never registered against any
+      real AppClient and never presented to any real server; the only
+      load-bearing property is that the matching public key lets a test verify
+      a signed assertion's claims without hand-decoding a JWT. Scoped to this
+      one path rather than muting `private-key` repo-wide, because a real
+      committed key anywhere else must still fail this gate.
