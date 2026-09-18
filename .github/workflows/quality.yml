@@ -90,9 +90,6 @@ jobs:
       # authkestra issues by URL, and an upstream repo going private would
       # otherwise block an unrelated PR. Revisit once the annotation is boring.
       fail-on-broken-links: false
-    secrets:
-      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
-      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
 
   lint:
     name: lint
@@ -127,7 +124,4 @@ jobs:
       # value Trivy adds in this repo is misconfig (seven Dockerfiles, three
       # compose files, a Helm chart) and secret, which nothing else scans.
       scanners: "vuln,secret,misconfig"
-      skip-dirs: "**/node_modules,**/target,**/.git,frontends/packages/sms-client"
-    secrets:
-      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
-      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+      skip-dirs: "**/node_modules,**/target,**/.git,frontends/packages/sms-client,deploy/charts"
