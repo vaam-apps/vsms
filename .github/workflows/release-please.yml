@@ -158,9 +158,13 @@ jobs:
         if: steps.release.outputs.prs_created == 'true'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # `stable` branch head, 2026-09-19
 
-      - name: Cache cargo registry
-        if: steps.release.outputs.prs_created == 'true'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # No dependency cache here, deliberately. zizmor's `cache-poisoning`
+      # audit flags a restored cache in a job that also publishes: a poisoned
+      # entry could alter the very Cargo.lock this job commits onto the
+      # release branch. The step below only runs `cargo metadata`, which
+      # resolves and compiles nothing, and only on the runs that open a
+      # release PR — so the cache bought very little and cost a supply-chain
+      # surface in the release path.
 
       # Every Cargo.lock in the tree, found rather than listed. Four of them
       # carry a first-party version today (the root workspace's 21 members,
