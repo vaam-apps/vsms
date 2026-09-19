@@ -106,6 +106,13 @@ jobs:
           # secret is named for the one this input actually wants.
           client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          # Without these the minted token carries every permission the App
+          # installation holds org-wide - actions, issues, security-events and
+          # the rest - into a job that needs none of them. zizmor flags exactly
+          # that, as `github-app`. release-please needs only these two: open and
+          # update the release PR, push its branch, create the tag.
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Open or update the release PR
         id: release
