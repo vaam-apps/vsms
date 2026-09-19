@@ -16,12 +16,22 @@ name: quality
 on:
   pull_request:
     branches: [main]
+  # The default branch has otherwise never been security-scanned: a fork PR
+  # gets no secrets (app-client-id/app-private-key), so CodeQL/Trivy silently
+  # never run for it, and nothing else scans the default branch once a fork
+  # PR merges. This closes that gap by scanning on every push to the default
+  # branch too.
+  push:
+    branches: [main]
 
 permissions: {}
 
 concurrency:
   group: quality-${{ github.ref }}
-  cancel-in-progress: true
+  # PR-only: on the default branch the group key is identical for every
+  # merge, so cancelling would let one merge abort the scan still verifying
+  # the merge before it.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -97,7 +107,13 @@ jobs:
   lint:
     name: lint
     needs: changes
-    if: needs.changes.outputs.any == 'true'
+    # PR-only: its `fix` input defaults to true, and on a push
+    # github.event.pull_request.head.repo.full_name is empty, so the
+    # reusable workflow's own "commit fixes onto the PR branch" step runs
+    # `git checkout -q -B superlinter-fixes ""` and fails. Linting is a
+    # PR-time concern anyway; the scanners are what need default-branch
+    # coverage.
+    if: github.event_name == 'pull_request' && needs.changes.outputs.any == 'true'
     permissions:
       contents: read
       statuses: write
