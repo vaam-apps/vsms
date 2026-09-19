@@ -98,7 +98,7 @@ jobs:
     steps:
       - name: Mint a GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           # `client-id`, not the deprecated `app-id`. They are DIFFERENT
           # values on the App's settings page — `app-id` is the numeric
@@ -106,10 +106,17 @@ jobs:
           # secret is named for the one this input actually wants.
           client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          # Without these the minted token carries every permission the App
+          # installation holds org-wide - actions, issues, security-events and
+          # the rest - into a job that needs none of them. zizmor flags exactly
+          # that, as `github-app`. release-please needs only these two: open and
+          # update the release PR, push its branch, create the tag.
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Open or update the release PR
         id: release
-        uses: googleapis/release-please-action@v5
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
@@ -140,20 +147,30 @@ jobs:
       # otherwise drop the previous run's lockfile commit.
       - name: Check out the release branch
         if: steps.release.outputs.prs_created == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
           # Same App token, so the push below is an event GitHub will raise
           # — this is what gives the release PR a real `ci.yml` run.
           token: ${{ steps.app-token.outputs.token }}
+          # Never write that token into .git/config, where anything later
+          # uploading the workspace as an artifact would carry it out with it
+          # (zizmor `artipacked`). The push below supplies it explicitly on the
+          # remote URL instead - the same shape vaam-apps/.github's own
+          # lint.yml already uses for its fix-commit push.
+          persist-credentials: false
 
       - name: Install Rust
         if: steps.release.outputs.prs_created == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # `stable` branch head, 2026-09-19
 
-      - name: Cache cargo registry
-        if: steps.release.outputs.prs_created == 'true'
-        uses: Swatinem/rust-cache@v2
+      # No dependency cache here, deliberately. zizmor's `cache-poisoning`
+      # audit flags a restored cache in a job that also publishes: a poisoned
+      # entry could alter the very Cargo.lock this job commits onto the
+      # release branch. The step below only runs `cargo metadata`, which
+      # resolves and compiles nothing, and only on the runs that open a
+      # release PR — so the cache bought very little and cost a supply-chain
+      # surface in the release path.
 
       # Every Cargo.lock in the tree, found rather than listed. Four of them
       # carry a first-party version today (the root workspace's 21 members,
@@ -180,6 +197,11 @@ jobs:
 
       - name: Commit the lockfiles, if the version bump moved any
         if: steps.release.outputs.prs_created == 'true'
+        env:
+          # Via env, never inlined into the script: `${{ }}` inside a `run:` body
+          # is textual substitution, and a branch name is not ours to trust.
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_REF: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
         run: |
           set -euo pipefail
           if git diff --quiet -- '*Cargo.lock'; then
@@ -190,6 +212,7 @@ jobs:
           git config user.email 'release-please[bot]@users.noreply.github.com'
           git add -- '*Cargo.lock'
           git commit -m 'chore: sync Cargo.lock files with the release version'
-          git push
+          git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${HEAD_REF}"
           echo "### Lockfiles synced" >> "$GITHUB_STEP_SUMMARY"
           git diff --stat HEAD~1 -- '*Cargo.lock' >> "$GITHUB_STEP_SUMMARY"
