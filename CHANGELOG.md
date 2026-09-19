@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/vaam-apps/vsms/compare/v0.4.0...v0.4.1) (2026-09-19)
+
+
+### Continuous Integration
+
+* pin every action in release-please.yml to a commit SHA ([#411](https://github.com/vaam-apps/vsms/issues/411)) ([7ae773b](https://github.com/vaam-apps/vsms/commit/7ae773b11bda49ffa356594ca76314c6188821aa))
+
 ## [0.4.0](https://github.com/vaam-apps/vsms/compare/v0.3.3...v0.4.0) (2026-09-18)
 
 
