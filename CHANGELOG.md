@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.2](https://github.com/vaam-apps/vsms/compare/v0.4.1...v0.4.2) (2026-09-19)
+
+
+### Bug Fixes
+
+* **ci:** guard fromJSON so a no-commit release-please run does not fail ([f9b94d5](https://github.com/vaam-apps/vsms/commit/f9b94d5c766d728430e209f440456f2e7437f3d0))
+* **ci:** scan the default branch on push, not just pull_request ([#414](https://github.com/vaam-apps/vsms/issues/414)) ([f228c6d](https://github.com/vaam-apps/vsms/commit/f228c6dcb1168ba95b6f5170251c6cc71b98a18c))
+
 ## [0.4.1](https://github.com/vaam-apps/vsms/compare/v0.4.0...v0.4.1) (2026-09-19)
 
 
