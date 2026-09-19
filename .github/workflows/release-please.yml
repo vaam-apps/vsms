@@ -201,7 +201,13 @@ jobs:
           # Via env, never inlined into the script: `${{ }}` inside a `run:` body
           # is textual substitution, and a branch name is not ours to trust.
           TOKEN: ${{ steps.app-token.outputs.token }}
-          HEAD_REF: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          # `|| '{}'` is load-bearing, not defensive noise: GitHub evaluates a
+          # step's `env:` even when its `if:` skips the step, so on any run with
+          # no releasable commits `outputs.pr` is empty and a bare `fromJSON('')`
+          # fails the whole workflow with "Error reading JToken from JsonReader".
+          # The `with:` block on the checkout above does not have this problem;
+          # `env:` specifically does.
+          HEAD_REF: ${{ fromJSON(steps.release.outputs.pr || '{}').headBranchName }}
         run: |
           set -euo pipefail
           if git diff --quiet -- '*Cargo.lock'; then
