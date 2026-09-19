@@ -153,6 +153,12 @@ jobs:
           # Same App token, so the push below is an event GitHub will raise
           # — this is what gives the release PR a real `ci.yml` run.
           token: ${{ steps.app-token.outputs.token }}
+          # Never write that token into .git/config, where anything later
+          # uploading the workspace as an artifact would carry it out with it
+          # (zizmor `artipacked`). The push below supplies it explicitly on the
+          # remote URL instead - the same shape vaam-apps/.github's own
+          # lint.yml already uses for its fix-commit push.
+          persist-credentials: false
 
       - name: Install Rust
         if: steps.release.outputs.prs_created == 'true'
@@ -191,6 +197,11 @@ jobs:
 
       - name: Commit the lockfiles, if the version bump moved any
         if: steps.release.outputs.prs_created == 'true'
+        env:
+          # Via env, never inlined into the script: `${{ }}` inside a `run:` body
+          # is textual substitution, and a branch name is not ours to trust.
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          HEAD_REF: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
         run: |
           set -euo pipefail
           if git diff --quiet -- '*Cargo.lock'; then
@@ -201,6 +212,7 @@ jobs:
           git config user.email 'release-please[bot]@users.noreply.github.com'
           git add -- '*Cargo.lock'
           git commit -m 'chore: sync Cargo.lock files with the release version'
-          git push
+          git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${HEAD_REF}"
           echo "### Lockfiles synced" >> "$GITHUB_STEP_SUMMARY"
           git diff --stat HEAD~1 -- '*Cargo.lock' >> "$GITHUB_STEP_SUMMARY"
