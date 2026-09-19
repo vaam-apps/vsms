@@ -87,7 +87,7 @@ services:
     build:
       context: ..
       dockerfile: backends/apps/sms-migrate/Dockerfile
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.4.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.4.1} # x-release-please-version
     logging: *default-logging
     mem_limit: 512m
     cpus: 1.0
@@ -102,7 +102,7 @@ services:
     build:
       context: ..
       dockerfile: backends/apps/sms-gateway/Dockerfile
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.4.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.4.1} # x-release-please-version
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 512m
@@ -231,7 +231,7 @@ services:
     build:
       context: ..
       dockerfile: backends/apps/sms-worker/Dockerfile
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.4.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-worker:${VSMS_IMAGE_TAG:-v0.4.1} # x-release-please-version
     restart: unless-stopped
     logging: *default-logging
     mem_limit: 512m
@@ -303,7 +303,7 @@ services:
     build:
       context: ..
       dockerfile: backends/apps/sms-gateway/Dockerfile
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.4.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.4.1} # x-release-please-version
     profiles: [console]
     user: '0:0'
     command:
@@ -403,7 +403,7 @@ services:
     build:
       context: ..
       dockerfile: frontends/apps/admin/Dockerfile
-    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-admin:${VSMS_IMAGE_TAG:-v0.4.0} # x-release-please-version
+    image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-admin:${VSMS_IMAGE_TAG:-v0.4.1} # x-release-please-version
     restart: unless-stopped
     profiles: [console]
     environment:
