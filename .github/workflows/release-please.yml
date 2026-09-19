@@ -98,7 +98,7 @@ jobs:
     steps:
       - name: Mint a GitHub App token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           # `client-id`, not the deprecated `app-id`. They are DIFFERENT
           # values on the App's settings page — `app-id` is the numeric
@@ -109,7 +109,7 @@ jobs:
 
       - name: Open or update the release PR
         id: release
-        uses: googleapis/release-please-action@v5
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.app-token.outputs.token }}
           config-file: release-please-config.json
@@ -140,7 +140,7 @@ jobs:
       # otherwise drop the previous run's lockfile commit.
       - name: Check out the release branch
         if: steps.release.outputs.prs_created == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
           # Same App token, so the push below is an event GitHub will raise
@@ -149,11 +149,11 @@ jobs:
 
       - name: Install Rust
         if: steps.release.outputs.prs_created == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # `stable` branch head, 2026-09-19
 
       - name: Cache cargo registry
         if: steps.release.outputs.prs_created == 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Every Cargo.lock in the tree, found rather than listed. Four of them
       # carry a first-party version today (the root workspace's 21 members,
