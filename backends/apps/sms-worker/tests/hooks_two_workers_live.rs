@@ -244,17 +244,66 @@ impl Drop for KillOnDrop {
     }
 }
 
+/// `--metrics-listen 127.0.0.1:0` is load-bearing, not tidiness.
+///
+/// `sms-worker` binds its metrics listener unconditionally at startup
+/// (`spawn_metrics_task`, before any role runs) and `main` propagates the
+/// error, so a worker that cannot bind never claims anything — it exits.
+/// The flag defaults to a FIXED `127.0.0.1:9091`, and this test starts two
+/// workers at once, so without an explicit port the second one always lost
+/// the bind and died with:
+///
+/// ```text
+/// Error: binding metrics listener 127.0.0.1:9091
+/// Caused by: Address already in use (os error 98)
+/// ```
+///
+/// That did not fail this test, which is the part worth internalising: every
+/// assertion below (all rows `succeeded`, `attempts == 1`, one HTTP request
+/// per row) is satisfied just as well by ONE worker draining everything. So
+/// the gate whose whole purpose is "two workers never double-deliver" was
+/// passing while only one worker ran, and its green history is not evidence
+/// of the property. It only went red on 2026-09-20 because a concurrently
+/// running test binary — `cargo test` runs binaries in parallel, and
+/// `hooks_node_receiver_live` and `kill9_reclaim_live` spawn workers on the
+/// same default port — held 9091 first, so BOTH workers here died.
+///
+/// Port 0 asks the kernel for a free port, so there is no probe-then-bind
+/// race and no shared global to contend over. This is the same class of
+/// defect as the shared test database `sms-test-support` already solves per
+/// test binary; the metrics port was the global nobody had noticed.
 fn spawn_hooks_worker(database_url: &str, worker_id: &str) -> KillOnDrop {
     let bin = env!("CARGO_BIN_EXE_sms-worker");
     let child = Command::new(bin)
         .args(["--roles", "hooks"])
         .args(["--database-url", database_url])
         .args(["--worker-id", worker_id])
+        .args(["--metrics-listen", "127.0.0.1:0"])
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
         .expect("spawning the real sms-worker binary");
     KillOnDrop(child)
+}
+
+/// Fail loudly if a spawned worker is not still running.
+///
+/// Without this the test silently degrades to a single-worker run the moment
+/// anything kills one of them — which is exactly what happened for as long as
+/// both shared a metrics port. An assertion that both processes are alive is
+/// deterministic, unlike inspecting `leaseOwner` (which is cleared the moment
+/// an attempt reaches a terminal state, so observing both owners depends on
+/// catching them mid-flight).
+fn assert_still_running(worker: &mut KillOnDrop, worker_id: &str) {
+    match worker.0.try_wait().expect("polling the worker process") {
+        None => {}
+        Some(status) => panic!(
+            "{worker_id} exited before the run finished ({status}). Every assertion in this \
+             test is satisfied by one worker draining everything, so a dead sibling makes it \
+             pass while proving nothing about two. Its stderr is inherited, so the cause is \
+             above — a metrics-port bind failure is the one this guard was written for."
+        ),
+    }
 }
 
 async fn wait_until_all_terminal(
@@ -307,6 +356,15 @@ async fn two_real_hooks_workers_never_double_deliver_the_same_attempt() {
     let worker_2 = spawn_hooks_worker(&database_url, "hooks-two-workers-test-2");
 
     let final_attempts = wait_until_all_terminal(&db, &ids, Duration::from_secs(30)).await;
+
+    // Before any assertion below: both workers must still be alive. Every
+    // claim this test makes is satisfied by one worker draining everything,
+    // so a dead sibling turns this into a single-worker test that passes.
+    let mut worker_1 = worker_1;
+    let mut worker_2 = worker_2;
+    assert_still_running(&mut worker_1, "hooks-two-workers-test-1");
+    assert_still_running(&mut worker_2, "hooks-two-workers-test-2");
+
     drop(worker_1);
     drop(worker_2);
 

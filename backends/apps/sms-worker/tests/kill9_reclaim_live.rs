@@ -392,6 +392,11 @@ fn spawn_worker(database_url: &str, orange_base_url: &str, worker_id: &str) -> K
         .args(["--orange-sender-number", SENDER_NUMBER])
         .args(["--orange-base-url", orange_base_url])
         .args(["--worker-id", worker_id])
+        // Ephemeral metrics port: the default is a fixed 127.0.0.1:9091 and
+        // `cargo test` runs test binaries in parallel, so two suites that each
+        // spawn a worker contend for it and the loser dies at startup before
+        // claiming anything. That took vsms's own main red on 2026-09-20.
+        .args(["--metrics-listen", "127.0.0.1:0"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
