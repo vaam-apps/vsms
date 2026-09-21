@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.3](https://github.com/vaam-apps/vsms/compare/v0.4.2...v0.4.3) (2026-09-20)
+
+
+### Bug Fixes
+
+* **test:** give each spawned worker its own metrics port ([#415](https://github.com/vaam-apps/vsms/issues/415)) ([64aa7a7](https://github.com/vaam-apps/vsms/commit/64aa7a7abc0723311339fac1e8e2ee96688fe18e))
+
 ## [0.4.2](https://github.com/vaam-apps/vsms/compare/v0.4.1...v0.4.2) (2026-09-19)
 
 
