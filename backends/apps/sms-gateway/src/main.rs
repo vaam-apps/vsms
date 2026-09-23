@@ -21,7 +21,16 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Bind the HTTP API.
-    Serve(commands::serve::ServeArgs),
+    ///
+    /// `Box`ed, not a bare `ServeArgs` — the MTN wiring's own
+    /// `--mtn-client-id`/`--mtn-client-secret`/`--mtn-service-code` split
+    /// (replacing the previous single `--mtn-api-key`) pushed `ServeArgs`
+    /// past clippy's `large_enum_variant` threshold relative to this
+    /// enum's next-largest variant. Boxing is the standard fix for one
+    /// outsized variant in an otherwise-small enum — `Command` is
+    /// constructed once per process (`Cli::parse()`) and matched once, so
+    /// the extra allocation is not a cost anything here is sensitive to.
+    Serve(Box<commands::serve::ServeArgs>),
     /// Print the generated route table and exit. Needs no database.
     Routes,
     /// Generate a new RSA signing key, activate it, and keep the previous
@@ -221,6 +230,28 @@ enum Command {
     /// write above already uses — not a real token, and never handed back
     /// to a caller.
     RecordRouteValidation(commands::record_route_validation::RecordRouteValidationArgs),
+    /// Registers this deployment's `POST /dlr/mtn_cm` endpoint with MADAPI
+    /// so MTN will actually send delivery receipts to it.
+    ///
+    /// This is the step that has no Orange equivalent. Orange's DR
+    /// endpoint is whitelisted by a manual support ticket
+    /// (`docs/runbooks/36-handset-gate.adoc`); MTN's is a real API call
+    /// (`POST /messages/sms/subscription`, vendored Swagger's
+    /// `ShortCodeSubscription`), so it can be automated — which is why
+    /// this exists as a subcommand rather than a runbook paragraph.
+    ///
+    /// Run once per approved `serviceCode`, before expecting any DLR.
+    /// Sending alone is not enough: MADAPI requires
+    /// `requestDeliveryReceipt: true` on each outbound message *and* a
+    /// registered `deliveryReportUrl`. The adapter always sends the
+    /// former; this command supplies the latter. Miss it and messages
+    /// submit successfully, reach `submitted`, and then sit there with no
+    /// receipt ever arriving — which looks exactly like a broken route.
+    ///
+    /// Needs no database: it talks only to MADAPI, which is why it is the
+    /// one subcommand here with no `--database-url`.
+    MtnSubscribeDlr(commands::mtn_subscribe_dlr::MtnSubscribeDlrArgs),
+
     /// Exec-form liveness/readiness check for orchestrators that can't run
     /// a shell — a distroless `static` runtime image (see
     /// `backends/apps/sms-gateway/Dockerfile`) has no `/bin/sh` and no `curl`, so
@@ -285,7 +316,7 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Routes => commands::routes::run(),
 
-        Command::Serve(args) => commands::serve::serve_command(args).await,
+        Command::Serve(args) => commands::serve::serve_command(*args).await,
 
         Command::RotateSigningKey(args) => {
             commands::rotate_signing_key::rotate_signing_key_command(args.database_url).await
@@ -311,6 +342,10 @@ async fn main() -> Result<()> {
 
         Command::RecordRouteValidation(args) => {
             commands::record_route_validation::record_route_validation_command(args).await
+        }
+
+        Command::MtnSubscribeDlr(args) => {
+            commands::mtn_subscribe_dlr::mtn_subscribe_dlr_command(args).await
         }
 
         Command::Healthcheck(args) => {

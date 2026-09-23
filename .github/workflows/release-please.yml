@@ -1,0 +1,224 @@
+name: release-please
+
+# Proposes the next release as a pull request, and cuts the tag when that
+# pull request merges.
+#
+# The shape of a release here, before and after:
+#
+#   before  a human wrote "Release prep: vX.Y.Z" by hand (#347, #351),
+#           bumping three manifests, four lockfiles and eighteen compose
+#           image defaults, then pushed a tag.
+#   after   every merge to `main` updates a standing release PR. Merging it
+#           creates the `vX.Y.Z` tag and GitHub Release, which is what
+#           `release.yml` triggers on.
+#
+# So this workflow never publishes anything itself. It only ever writes the
+# version into the tree and creates the tag; `release.yml` owns every
+# artifact (GHCR images, the Helm chart, crates.io, npm).
+#
+# ---------------------------------------------------------------------------
+# Why a GitHub App token and not GITHUB_TOKEN
+# ---------------------------------------------------------------------------
+# This is load-bearing, not hygiene. GitHub deliberately does not raise
+# workflow events for anything done with the default `GITHUB_TOKEN`, to stop
+# a workflow triggering itself. So with `GITHUB_TOKEN`:
+#
+#   - the `vX.Y.Z` tag would be created and `release.yml` would NOT run.
+#     No images, no chart, no SDKs — a release that looks cut and published
+#     nothing, with nothing failing anywhere to say so.
+#   - the release PR would get no `ci.yml` run at all, which in this repo is
+#     the same failure class `.xtask/src/workflow_paths.rs`'s own module doc
+#     is about: a check that cannot run before merge is not a check.
+#
+# The App needs, on this repository only: `contents: write` (branches,
+# tags, releases) and `pull-requests: write`. Store its id and private key
+# as RELEASE_PLEASE_APP_CLIENT_ID (the App's **Client ID**, `Iv23li…`, not
+# its numeric App ID) and RELEASE_PLEASE_APP_PRIVATE_KEY. If either is
+# missing the token step fails outright rather than silently falling back
+# to `GITHUB_TOKEN` — a fallback would produce exactly the silent
+# publish-nothing release described above.
+#
+# ---------------------------------------------------------------------------
+# Why `release-type: simple` for a Rust workspace
+# ---------------------------------------------------------------------------
+# Not a shortcut — `rust` throws on this repo. `CargoToml.updateContent`
+# (release-please `src/updaters/rust/cargo-toml.ts`) hard-errors with "is
+# not a package manifest (might be a cargo workspace)" on any manifest with
+# no `[package]` section, and the root `Cargo.toml` here is a pure virtual
+# workspace. Its members carry `version.workspace = true`, so there is no
+# per-member `[package] version` to rewrite either.
+#
+# `simple` writes `CHANGELOG.md` and, per `release-please-config.json`'s
+# `extra-files`, the annotated `# x-release-please-version` lines. It also
+# tries `version.txt` with `createIfMissing: false`, so with no such file
+# that update is skipped — there is no stray version file here by design.
+#
+# ---------------------------------------------------------------------------
+# What this deliberately does NOT bump
+# ---------------------------------------------------------------------------
+#   - `docs/runbooks/*.adoc`, `deploy/.env.example`. Almost every version
+#     string in those is historical narrative ("v0.3.0 alone published
+#     under ghcr.io/vaam-store/...; v0.3.1 and every tag after it lands
+#     under ghcr.io/vaam-apps/..."). A blanket bump makes those sentences
+#     false. The compose defaults are what actually determine behaviour and
+#     they ARE bumped; the prose describing them goes stale by one release
+#     and is a human's to correct.
+#   - `examples/node/demo-app/package.json`'s `@vymalo/vsms-node` range. Note
+#     the scope: that consumer still points at the OLD package name until
+#     `@vaam-apps/vsms-node` has been published once and can be resolved.
+#     That version does not exist on npm until `release.yml` publishes it,
+#     minutes AFTER this PR merges, and pnpm's 24h `minimumReleaseAge`
+#     quarantine then forces a two-commit dance besides. It is a
+#     deliberate post-release follow-up — see AGENTS.md's "Release v0.3.0"
+#     section, which records the same ordering constraint.
+#   - `deploy/charts/vsms/Chart.yaml`. Its version is a placeholder
+#     `release.yml` overwrites at `helm package` time.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# Never cancel a run that may be mid-way through force-pushing the release
+# branch and then pushing lockfiles onto it. Keyed per ref like
+# `release.yml`, for the same reason its own comment gives.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# The App token below carries every write this workflow performs; the
+# workflow's own GITHUB_TOKEN needs nothing beyond reading the checkout.
+permissions:
+  contents: read
+
+jobs:
+  release-please:
+    name: propose the next release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          # `client-id`, not the deprecated `app-id`. They are DIFFERENT
+          # values on the App's settings page — `app-id` is the numeric
+          # App ID, `client-id` is the `Iv23li…` Client ID — so the
+          # secret is named for the one this input actually wants.
+          client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          # Without these the minted token carries every permission the App
+          # installation holds org-wide - actions, issues, security-events and
+          # the rest - into a job that needs none of them. zizmor flags exactly
+          # that, as `github-app`. release-please needs only these two: open and
+          # update the release PR, push its branch, create the tag.
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open or update the release PR
+        id: release
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # --------------------------------------------------------------------
+      # Lockfile sync
+      # --------------------------------------------------------------------
+      # release-please can only rewrite files it is pointed at, and a
+      # Cargo.lock cannot be pointed at: it is generated, so an
+      # `x-release-please-version` comment would not survive the next
+      # `cargo` run, and `version = "0.3.1"` appears in it for third-party
+      # crates too (`opaque-debug`, `rand_chacha` today) — a blind rewrite
+      # corrupts it.
+      #
+      # This is not cosmetic. `ci.yml` runs `cargo metadata --locked` on the
+      # root workspace and `cargo check --locked` on the excluded manifests,
+      # and every production Dockerfile builds with `--locked`. A release PR
+      # whose lockfiles still say the old version is red on arrival, and
+      # `ci.yml:317`'s own comment records this exact failure happening for
+      # v0.2.1 — found by a review bot, not by CI.
+      #
+      # `prs_created` is true for an UPDATED release PR as well as a newly
+      # created one (the action sets it from `prs.length > 0`, where `prs`
+      # is what `createPullRequests()` returned), so this runs on every
+      # release-please run that touched the branch — which it must, because
+      # release-please force-pushes that branch each time and would
+      # otherwise drop the previous run's lockfile commit.
+      - name: Check out the release branch
+        if: steps.release.outputs.prs_created == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          # Same App token, so the push below is an event GitHub will raise
+          # — this is what gives the release PR a real `ci.yml` run.
+          token: ${{ steps.app-token.outputs.token }}
+          # Never write that token into .git/config, where anything later
+          # uploading the workspace as an artifact would carry it out with it
+          # (zizmor `artipacked`). The push below supplies it explicitly on the
+          # remote URL instead - the same shape vaam-apps/.github's own
+          # lint.yml already uses for its fix-commit push.
+          persist-credentials: false
+
+      - name: Install Rust
+        if: steps.release.outputs.prs_created == 'true'
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # `stable` branch head, 2026-09-19
+
+      # No dependency cache here, deliberately. zizmor's `cache-poisoning`
+      # audit flags a restored cache in a job that also publishes: a poisoned
+      # entry could alter the very Cargo.lock this job commits onto the
+      # release branch. The step below only runs `cargo metadata`, which
+      # resolves and compiles nothing, and only on the runs that open a
+      # release PR — so the cache bought very little and cost a supply-chain
+      # surface in the release path.
+
+      # Every Cargo.lock in the tree, found rather than listed. Four of them
+      # carry a first-party version today (the root workspace's 21 members,
+      # and `vsms-sdk-rust` in each of sdks/rust, examples/rust and
+      # ci/e2e-integration); `deploy/backup-tool` versions independently and
+      # simply produces no diff. A hardcoded list would be a fifth copy of
+      # "which Rust roots exist" — the duplicated-list failure this repo has
+      # already been bitten by — and a new excluded crate would go stale in
+      # it silently.
+      #
+      # `cargo metadata` without `--locked` is precisely the inverse of the
+      # check `ci.yml` runs: same command, same resolution, but allowed to
+      # write the result back.
+      - name: Refresh every Cargo.lock
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          set -euo pipefail
+          git ls-files '*Cargo.lock' | while read -r lock; do
+            dir="$(dirname "$lock")"
+            echo "::group::cargo metadata in ${dir}"
+            (cd "$dir" && cargo metadata --format-version 1 > /dev/null)
+            echo "::endgroup::"
+          done
+
+      - name: Commit the lockfiles, if the version bump moved any
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          # Via env, never inlined into the script: `${{ }}` inside a `run:` body
+          # is textual substitution, and a branch name is not ours to trust.
+          TOKEN: ${{ steps.app-token.outputs.token }}
+          # `|| '{}'` is load-bearing, not defensive noise: GitHub evaluates a
+          # step's `env:` even when its `if:` skips the step, so on any run with
+          # no releasable commits `outputs.pr` is empty and a bare `fromJSON('')`
+          # fails the whole workflow with "Error reading JToken from JsonReader".
+          # The `with:` block on the checkout above does not have this problem;
+          # `env:` specifically does.
+          HEAD_REF: ${{ fromJSON(steps.release.outputs.pr || '{}').headBranchName }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- '*Cargo.lock'; then
+            echo "no lockfile changed — nothing to push"
+            exit 0
+          fi
+          git config user.name  'release-please[bot]'
+          git config user.email 'release-please[bot]@users.noreply.github.com'
+          git add -- '*Cargo.lock'
+          git commit -m 'chore: sync Cargo.lock files with the release version'
+          git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${HEAD_REF}"
+          echo "### Lockfiles synced" >> "$GITHUB_STEP_SUMMARY"
+          git diff --stat HEAD~1 -- '*Cargo.lock' >> "$GITHUB_STEP_SUMMARY"

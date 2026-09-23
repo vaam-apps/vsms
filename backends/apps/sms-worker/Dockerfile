@@ -82,6 +82,11 @@ EXPOSE 9091
 # (`HEALTH_STALE_THRESHOLD`) — in std-only Rust, intercepted ahead of the
 # normal `--roles`-driven startup path rather than added as a real clap
 # subcommand (see that interception's own comment for why).
+# Redundant: the `:nonroot` tag already runs as uid 65532, and this image
+# has no `useradd` to create a user with — it ships /etc/passwd precisely so
+# that uid works without one. Stated explicitly because Trivy's DS-0002 greps
+# for a literal USER instruction and cannot see what the tag already did.
+USER nonroot:nonroot
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD ["/usr/local/bin/sms-worker", "healthcheck"]
 

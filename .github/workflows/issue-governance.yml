@@ -1,0 +1,20 @@
+# Validates issue structure against the ai-governance work-item templates.
+# Not a PR workflow — issues only. The implementation lives in vaam-apps/.github.
+name: issue governance
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions: {}
+
+jobs:
+  structure:
+    permissions:
+      issues: write
+    uses: vaam-apps/.github/.github/workflows/issue-governance.yml@01d7a15ee827152447d3b3b7031fdc8a02d98dd7 # vaam-apps/.github main
+    with:
+      enforce: true
+    secrets:
+      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}

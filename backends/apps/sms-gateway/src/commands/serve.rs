@@ -89,54 +89,76 @@ pub(crate) struct ServeArgs {
     )]
     pub(crate) orange_base_url: String,
 
-    /// #61: the aggregator-issued static Bearer key for MTN Cameroon
-    /// capacity bought through a licensed aggregator — see
-    /// `sms-provider-mtn`'s module doc for why this crate assumes a
-    /// static key rather than `OAuth2 client_credentials`. Optional, the
-    /// same shape as the Orange trio above — this binary needs *a*
-    /// provider configured, not specifically this one. Paired with the
-    /// other four `--mtn-*` flags below — see [`build_dlr_router`]'s own
-    /// all-or-none check.
-    #[arg(long, env = "MTN_AGGREGATOR_API_KEY", hide_env_values = true)]
-    pub(crate) mtn_api_key: Option<String>,
+    /// The `OAuth2` `client_credentials` client id for MTN's direct API
+    /// (MADAPI) — see `sms-provider-mtn`'s module doc for the real,
+    /// vendored contract this replaces the previous aggregator-shaped
+    /// static-Bearer-key auth with. Optional, the same shape as the
+    /// Orange trio above — this binary needs *a* provider configured,
+    /// not specifically this one. Paired with the other `--mtn-*` flags
+    /// below — see [`build_dlr_router`]'s own all-or-none check.
+    #[arg(long, env = "MTN_CLIENT_ID")]
+    pub(crate) mtn_client_id: Option<String>,
 
-    /// The approved sender ID (numeric, alphanumeric, or short code) MTN
-    /// submits under.
-    #[arg(long, env = "MTN_AGGREGATOR_SENDER_ID")]
+    /// Paired with `mtn_client_id`. Never logged.
+    #[arg(long, env = "MTN_CLIENT_SECRET", hide_env_values = true)]
+    pub(crate) mtn_client_secret: Option<String>,
+
+    /// The approved short code MADAPI's own `outboundSMSMessageRequest.serviceCode`
+    /// requires unconditionally on every submit (see
+    /// `sms_provider_mtn::MtnConfig::service_code`'s own doc). Part of
+    /// the all-or-none set: unlike `--mtn-sender-id` below, MADAPI's own
+    /// Swagger marks this field mandatory, not optional.
+    #[arg(long, env = "MTN_SERVICE_CODE")]
+    pub(crate) mtn_service_code: Option<String>,
+
+    /// The approved alphanumeric sender ID MTN submits under, used only
+    /// as a fallback when a specific message's own resolved sender is
+    /// empty (see `sms_provider_mtn::MtnProvider::sender_address`'s own
+    /// doc). **Not** part of the all-or-none set below, unlike every
+    /// other `--mtn-*` flag: MADAPI's own Swagger marks `senderAddress`
+    /// optional ("This field is optional... if a senderAddress is used
+    /// rather than the serviceCode, then the senderAddress value must be
+    /// passed as well" — implying its *absence* is a fully valid
+    /// request, using `serviceCode` alone), so requiring an operator to
+    /// set this would enforce a constraint MADAPI itself doesn't have.
+    #[arg(long, env = "MTN_SENDER_ID")]
     pub(crate) mtn_sender_id: Option<String>,
 
-    /// The aggregator's API host. No default — no real aggregator
-    /// relationship exists yet to bake a production host into (see
-    /// `MtnAggregatorConfig::base_url`'s own doc).
-    #[arg(long, env = "MTN_AGGREGATOR_BASE_URL")]
-    pub(crate) mtn_base_url: Option<String>,
+    /// MADAPI's API host — now a real, documented default
+    /// (`https://api.mtn.com`, matching the vendored Swagger's own
+    /// `host`), unlike the previous aggregator shape which had none to
+    /// bake in. Not part of the all-or-none set: it always has a usable
+    /// value, configured or not, the same shape `--orange-base-url`
+    /// already has.
+    #[arg(long, env = "MTN_BASE_URL", default_value = "https://api.mtn.com")]
+    pub(crate) mtn_base_url: String,
 
-    /// The submission rate this specific aggregator contract allows, in
-    /// messages per second — a negotiated commercial term with no
-    /// public number to default to (see
-    /// `MtnAggregatorConfig::tps_ceiling`'s own doc), so this stays
-    /// required alongside the other `--mtn-*` flags rather than
-    /// defaulted — this repo's own standing preference is no default
-    /// that invents a fact.
-    #[arg(long, env = "MTN_AGGREGATOR_TPS_CEILING")]
+    /// The submission rate this specific MADAPI contract allows, in
+    /// messages per second — not published anywhere in the vendored
+    /// Swagger (see `sms_provider_mtn::MtnConfig::tps_ceiling`'s own
+    /// doc), so this stays required alongside the other `--mtn-*` flags
+    /// rather than defaulted — this repo's own standing preference is no
+    /// default that invents a fact.
+    #[arg(long, env = "MTN_TPS_CEILING")]
     pub(crate) mtn_tps_ceiling: Option<f64>,
 
     /// What one segment costs on this contract, in XAF. `Decimal`, never
     /// a float — this is money. Same required-together reasoning as
     /// `--mtn-tps-ceiling` above.
-    #[arg(long, env = "MTN_AGGREGATOR_COST_PER_SEGMENT_XAF")]
+    #[arg(long, env = "MTN_COST_PER_SEGMENT_XAF")]
     pub(crate) mtn_cost_per_segment_xaf: Option<rust_decimal::Decimal>,
 
-    /// Whether this specific aggregator relationship has an alphanumeric
-    /// sender ID registered and approved with MTN. Defaults to `false` —
-    /// the safer default per `MtnAggregatorConfig::supports_alphanumeric_sender`'s
-    /// own doc: an unregistered alphanumeric sender risks silent
-    /// rewriting or dropping by MTN, not a clean rejection this adapter
-    /// could classify. Not part of the all-or-none check — it has a
-    /// safe default whether or not MTN is configured at all.
+    /// Whether this specific MADAPI relationship has an alphanumeric
+    /// sender registered and approved with MTN. Defaults to `false` —
+    /// the safer default per
+    /// `sms_provider_mtn::MtnConfig::supports_alphanumeric_sender`'s own
+    /// doc: an unregistered alphanumeric sender risks silent rewriting
+    /// or dropping by MTN, not a clean rejection this adapter could
+    /// classify. Not part of the all-or-none check — it has a safe
+    /// default whether or not MTN is configured at all.
     #[arg(
         long,
-        env = "MTN_AGGREGATOR_SUPPORTS_ALPHANUMERIC_SENDER",
+        env = "MTN_SUPPORTS_ALPHANUMERIC_SENDER",
         default_value_t = false
     )]
     pub(crate) mtn_supports_alphanumeric_sender: bool,
@@ -326,56 +348,93 @@ fn orange_credentials(
     }
 }
 
-/// The five `--mtn-*` values `serve` needs to construct the aggregator
-/// adapter (`--mtn-supports-alphanumeric-sender` excluded — see
-/// [`mtn_credentials`]'s own doc for why it isn't part of the
-/// all-or-none set).
+/// The `--mtn-*` values `serve` needs to construct the MADAPI adapter.
+/// `sender_id` and `base_url` are excluded from the all-or-none tuple
+/// [`mtn_credentials`] checks — see that function's own doc for why each
+/// one individually has a safe, always-usable value regardless of
+/// whether MTN is otherwise configured.
 struct MtnCredentials {
-    api_key: String,
-    sender_id: String,
+    client_id: String,
+    client_secret: String,
+    service_code: String,
+    sender_id: Option<String>,
     base_url: String,
     tps_ceiling: f64,
     cost_per_segment_xaf: rust_decimal::Decimal,
     supports_alphanumeric_sender: bool,
 }
 
-/// `Ok(None)` when none of the five required `--mtn-*` flags are set at
-/// all — a deployment that only wired up Orange, or neither. `Err` when
-/// only *some* are set. Mirrors `sms-worker::mtn_provider`'s identical
-/// check. `supports_alphanumeric_sender` is threaded straight from the
-/// CLI's own `default_value_t = false` rather than gated by this match:
-/// it has a safe default regardless of whether MTN is configured at all,
-/// so requiring it alongside the other four would only ever reject a
-/// deployment for never having overridden a flag that was already
-/// correct.
-fn mtn_credentials(
-    api_key: Option<String>,
-    sender_id: Option<String>,
-    base_url: Option<String>,
+/// [`mtn_credentials`]'s own raw input, one field per `--mtn-*` flag —
+/// grouped into a struct rather than eight positional parameters
+/// because a plain eight-argument function trips clippy's own
+/// `too_many_arguments` threshold (7), and a named-field struct reads
+/// better at both ends than `#[allow(...)]`ing it away would. Built once
+/// in [`serve_command`] straight out of `ServeArgs`'s own destructured
+/// `mtn_*` fields.
+struct RawMtnArgs {
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    service_code: Option<String>,
     tps_ceiling: Option<f64>,
     cost_per_segment_xaf: Option<rust_decimal::Decimal>,
+    sender_id: Option<String>,
     supports_alphanumeric_sender: bool,
-) -> Result<Option<MtnCredentials>> {
-    match (
-        api_key,
+    base_url: String,
+}
+
+/// `Ok(None)` when none of the five required `--mtn-*` flags
+/// (`client_id`/`client_secret`/`service_code`/`tps_ceiling`/
+/// `cost_per_segment_xaf`) are set at all — a deployment that only wired
+/// up Orange, or neither. `Err` when only *some* are set. Mirrors
+/// `sms-worker::mtn_provider`'s identical check.
+///
+/// `sender_id` is threaded through unconditionally, not gated by this
+/// match: MADAPI's own Swagger marks `senderAddress` optional (see
+/// `ServeArgs::mtn_sender_id`'s own doc), so this crate must never
+/// require an operator to set it. `supports_alphanumeric_sender` is
+/// threaded straight from the CLI's own `default_value_t = false` for
+/// the identical reason it always was — it has a safe default regardless
+/// of whether MTN is configured at all. `base_url` is threaded through
+/// unconditionally too, now that it carries a real default
+/// (`https://api.mtn.com`) rather than needing an operator-supplied
+/// value the way the previous, host-less aggregator shape did.
+fn mtn_credentials(args: RawMtnArgs) -> Result<Option<MtnCredentials>> {
+    let RawMtnArgs {
+        client_id,
+        client_secret,
+        service_code,
+        tps_ceiling,
+        cost_per_segment_xaf,
         sender_id,
+        supports_alphanumeric_sender,
         base_url,
+    } = args;
+    match (
+        client_id,
+        client_secret,
+        service_code,
         tps_ceiling,
         cost_per_segment_xaf,
     ) {
-        (Some(api_key), Some(sender_id), Some(base_url), Some(tps_ceiling), Some(cost)) => {
-            Ok(Some(MtnCredentials {
-                api_key,
-                sender_id,
-                base_url,
-                tps_ceiling,
-                cost_per_segment_xaf: cost,
-                supports_alphanumeric_sender,
-            }))
-        }
+        (
+            Some(client_id),
+            Some(client_secret),
+            Some(service_code),
+            Some(tps_ceiling),
+            Some(cost),
+        ) => Ok(Some(MtnCredentials {
+            client_id,
+            client_secret,
+            service_code,
+            sender_id,
+            base_url,
+            tps_ceiling,
+            cost_per_segment_xaf: cost,
+            supports_alphanumeric_sender,
+        })),
         (None, None, None, None, None) => Ok(None),
         _ => anyhow::bail!(
-            "--mtn-api-key, --mtn-sender-id, --mtn-base-url, --mtn-tps-ceiling and \
+            "--mtn-client-id, --mtn-client-secret, --mtn-service-code, --mtn-tps-ceiling and \
              --mtn-cost-per-segment-xaf must all be set together, or none of them"
         ),
     }
@@ -422,23 +481,25 @@ async fn build_dlr_router(
     }
 
     if let Some(mtn) = mtn {
-        let mtn_config = sms_provider_mtn::MtnAggregatorConfig {
-            api_key: mtn.api_key,
+        let mtn_config = sms_provider_mtn::MtnConfig {
+            client_id: mtn.client_id,
+            client_secret: mtn.client_secret,
+            service_code: mtn.service_code,
             sender_id: mtn.sender_id,
             base_url: mtn.base_url,
             tps_ceiling: mtn.tps_ceiling,
             cost_per_segment_xaf: mtn.cost_per_segment_xaf,
             supports_alphanumeric_sender: mtn.supports_alphanumeric_sender,
             // Same values `sms-provider-orange-cm::OrangeCmConfig::production`
-            // bakes in — no `MtnAggregatorConfig` equivalent exists to
-            // default these from, and nothing about either timeout is
+            // bakes in — no `MtnConfig` equivalent exists to default
+            // these from, and nothing about either timeout is
             // provider-specific. Mirrors `sms-worker::mtn_provider`'s
             // identical choice.
             connect_timeout: std::time::Duration::from_secs(10),
             request_timeout: std::time::Duration::from_secs(30),
         };
         let provider: Arc<dyn SmsProvider> =
-            Arc::new(sms_provider_mtn::MtnAggregatorProvider::new(mtn_config));
+            Arc::new(sms_provider_mtn::MtnProvider::new(mtn_config));
         let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
         providers.push(dlr::DlrProvider {
             provider,
@@ -450,12 +511,47 @@ async fn build_dlr_router(
         anyhow::bail!(
             "at least one provider must be configured to serve the DLR route: either \
              --orange-client-id, --orange-client-secret and --orange-sender-number, or \
-             --mtn-api-key, --mtn-sender-id, --mtn-base-url, --mtn-tps-ceiling and \
+             --mtn-client-id, --mtn-client-secret, --mtn-service-code, --mtn-tps-ceiling and \
              --mtn-cost-per-segment-xaf (or their env vars)"
         );
     }
 
     Ok(dlr::router(db.clone(), sys.clone(), providers))
+}
+
+/// Resolves both provider credential sets and builds the DLR router and
+/// the `/readyz` router that needs the same pooled `db` handle. Pulled
+/// out of [`serve_command`] purely to keep it under clippy's
+/// `too_many_lines` limit, the same recurring growth shape
+/// [`build_dlr_router`]'s and [`build_op_state`]'s own doc comments
+/// already record — this time it was MTN's own `--mtn-client-secret`/
+/// `--mtn-service-code` split landing on top of an already-tight budget.
+/// Seven parameters, not eight: `mtn`'s own five raw CLI values are
+/// already grouped into [`RawMtnArgs`] (see that struct's own doc for
+/// why), so this function doesn't just move the `too_many_arguments`
+/// problem one level up.
+async fn build_provider_routers(
+    db: &Cratestack,
+    sys: &cratestack::CratestackContext,
+    orange_client_id: Option<String>,
+    orange_client_secret: Option<String>,
+    orange_sender_number: Option<String>,
+    orange_base_url: String,
+    mtn: RawMtnArgs,
+) -> Result<(axum::Router, axum::Router)> {
+    let orange = orange_credentials(
+        orange_client_id,
+        orange_client_secret,
+        orange_sender_number,
+        orange_base_url,
+    )?;
+    let mtn = mtn_credentials(mtn)?;
+    let dlr_router = build_dlr_router(db, sys, orange, mtn).await?;
+    // #157: /readyz needs the same pooled handle every other router
+    // shares — cloned here, before `sms_api::router` (in `serve_command`)
+    // takes `db` by value as its own last use.
+    let health_router = health::router(db.clone());
+    Ok((dlr_router, health_router))
 }
 
 /// Loads the OP's signing keys, assembles its state, and starts the
@@ -499,44 +595,30 @@ async fn build_op_state(
 }
 
 pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
-    let ServeArgs {
-        listen,
-        metrics_listen,
-        database_url,
-        max_connections,
-        issuer,
-        orange_client_id,
-        orange_client_secret,
-        orange_sender_number,
-        orange_base_url,
-        mtn_api_key,
-        mtn_sender_id,
-        mtn_base_url,
-        mtn_tps_ceiling,
-        mtn_cost_per_segment_xaf,
-        mtn_supports_alphanumeric_sender,
-        hash_pepper,
-        idempotency_ttl_secs,
-        rate_limit_burst,
-        rate_limit_refill_per_second,
-        source_rate_limit_burst,
-        source_rate_limit_refill_per_second,
-        token_rate_limit_burst,
-        token_rate_limit_refill_per_second,
-        console_client_id,
-    } = args;
-
+    // Deliberately not one big `let ServeArgs { .. } = args;` up front —
+    // that pattern alone used to span 27 source lines, and clippy's own
+    // `too_many_lines` counts them. Every field the two `.await`s below
+    // need (`hash_pepper`, `database_url`, `max_connections`, `issuer`,
+    // every `orange_*`/`mtn_*` flag) is read or moved straight off `args`
+    // instead; the one destructure at the bottom, once `args` no longer
+    // needs to be a value the two helpers below can still read from,
+    // binds only what's left — a genuine reduction in this function's own
+    // line count, not just a relocation of the same lines. Partial moves
+    // off an owned, non-`Drop` struct are ordinary, sound Rust: nothing
+    // here reads `args` as a whole again after any individual field is
+    // taken.
+    //
     // #134: validated before anything else in this branch runs — failing
     // loudly on a missing/too-short pepper at startup, not at the first
     // `sendMessage` call. `clap`'s own `env`/required handling already
     // refuses a *missing* value before this line is ever reached; this is
     // the length check clap can't express.
-    let pepper = sms_api::HashPepper::new(hash_pepper)
+    let pepper = sms_api::HashPepper::new(args.hash_pepper.clone())
         .context("SMS_HASH_PEPPER is invalid — see sms_api::pepper's module doc")?;
 
     let pool = PgPoolOptions::new()
-        .max_connections(max_connections)
-        .connect(&database_url)
+        .max_connections(args.max_connections)
+        .connect(&args.database_url)
         .await
         .context("connecting to Postgres")?;
 
@@ -554,27 +636,42 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // own module doc for the full mechanism.
     sms_api::webhooks::register_subscribers(&db);
 
-    let op_state = build_op_state(&db, &sys, &issuer).await?;
+    let op_state = build_op_state(&db, &sys, &args.issuer).await?;
 
-    let orange = orange_credentials(
-        orange_client_id,
-        orange_client_secret,
-        orange_sender_number,
-        orange_base_url,
-    )?;
-    let mtn = mtn_credentials(
-        mtn_api_key,
-        mtn_sender_id,
-        mtn_base_url,
-        mtn_tps_ceiling,
-        mtn_cost_per_segment_xaf,
-        mtn_supports_alphanumeric_sender,
-    )?;
-    let dlr_router = build_dlr_router(&db, &sys, orange, mtn).await?;
-    // #157: /readyz needs the same pooled handle every other router
-    // shares — cloned here, before `sms_api::router` below takes `db` by
-    // value as its own last use.
-    let health_router = health::router(db.clone());
+    let (dlr_router, health_router) = build_provider_routers(
+        &db,
+        &sys,
+        args.orange_client_id.clone(),
+        args.orange_client_secret.clone(),
+        args.orange_sender_number.clone(),
+        args.orange_base_url.clone(),
+        RawMtnArgs {
+            client_id: args.mtn_client_id.clone(),
+            client_secret: args.mtn_client_secret.clone(),
+            service_code: args.mtn_service_code.clone(),
+            tps_ceiling: args.mtn_tps_ceiling,
+            cost_per_segment_xaf: args.mtn_cost_per_segment_xaf,
+            sender_id: args.mtn_sender_id.clone(),
+            supports_alphanumeric_sender: args.mtn_supports_alphanumeric_sender,
+            base_url: args.mtn_base_url.clone(),
+        },
+    )
+    .await?;
+
+    let ServeArgs {
+        listen,
+        metrics_listen,
+        issuer,
+        console_client_id,
+        idempotency_ttl_secs,
+        rate_limit_burst,
+        rate_limit_refill_per_second,
+        source_rate_limit_burst,
+        source_rate_limit_refill_per_second,
+        token_rate_limit_burst,
+        token_rate_limit_refill_per_second,
+        ..
+    } = args;
 
     let auth = GatewayAuth::new(
         db.clone(),
@@ -709,7 +806,7 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::{mtn_credentials, orange_credentials};
+    use super::{RawMtnArgs, mtn_credentials, orange_credentials};
 
     #[test]
     fn orange_credentials_is_none_when_all_three_are_unset() {
@@ -750,28 +847,48 @@ mod tests {
         assert!(error.to_string().contains("orange-client-id"), "{error}");
     }
 
+    /// Every field of [`RawMtnArgs`] set to its "nothing configured"
+    /// value — individual tests below override just the fields under
+    /// test via struct-update syntax, the same `base_cli()` shape
+    /// `sms-worker`'s own `main.rs` test module already uses.
+    fn base_mtn_args() -> RawMtnArgs {
+        RawMtnArgs {
+            client_id: None,
+            client_secret: None,
+            service_code: None,
+            tps_ceiling: None,
+            cost_per_segment_xaf: None,
+            sender_id: None,
+            supports_alphanumeric_sender: false,
+            base_url: "https://api.mtn.com".to_owned(),
+        }
+    }
+
     #[test]
     fn mtn_credentials_is_none_when_all_five_are_unset() {
-        let result = mtn_credentials(None, None, None, None, None, false)
-            .expect("all-unset is not an error");
+        let result = mtn_credentials(base_mtn_args()).expect("all-unset is not an error");
         assert!(result.is_none());
     }
 
     #[test]
     fn mtn_credentials_is_some_when_all_five_are_set() {
-        let result = mtn_credentials(
-            Some("key".to_owned()),
-            Some("SENDER".to_owned()),
-            Some("https://aggregator.example".to_owned()),
-            Some(20.0),
-            Some(rust_decimal::Decimal::new(15, 0)),
-            true,
-        )
+        let result = mtn_credentials(RawMtnArgs {
+            client_id: Some("client-id".to_owned()),
+            client_secret: Some("client-secret".to_owned()),
+            service_code: Some("131".to_owned()),
+            tps_ceiling: Some(20.0),
+            cost_per_segment_xaf: Some(rust_decimal::Decimal::new(15, 0)),
+            sender_id: Some("SENDER".to_owned()),
+            supports_alphanumeric_sender: true,
+            ..base_mtn_args()
+        })
         .expect("all-set is not an error")
         .expect("all-set must produce Some");
-        assert_eq!(result.api_key, "key");
-        assert_eq!(result.sender_id, "SENDER");
-        assert_eq!(result.base_url, "https://aggregator.example");
+        assert_eq!(result.client_id, "client-id");
+        assert_eq!(result.client_secret, "client-secret");
+        assert_eq!(result.service_code, "131");
+        assert_eq!(result.sender_id.as_deref(), Some("SENDER"));
+        assert_eq!(result.base_url, "https://api.mtn.com");
         assert!((result.tps_ceiling - 20.0).abs() < f64::EPSILON);
         assert_eq!(
             result.cost_per_segment_xaf,
@@ -782,29 +899,44 @@ mod tests {
 
     #[test]
     fn mtn_credentials_rejects_a_partial_set() {
-        let error = mtn_credentials(
-            Some("key".to_owned()),
-            Some("SENDER".to_owned()),
-            None,
-            None,
-            None,
-            false,
-        )
+        let error = mtn_credentials(RawMtnArgs {
+            client_id: Some("client-id".to_owned()),
+            client_secret: Some("client-secret".to_owned()),
+            ..base_mtn_args()
+        })
         .err()
         .expect("only two of five set must be rejected, not silently treated as unset");
-        assert!(error.to_string().contains("mtn-api-key"), "{error}");
+        assert!(error.to_string().contains("mtn-client-id"), "{error}");
+    }
+
+    /// `sender_id` must never gate the all-or-none check — MADAPI's own
+    /// Swagger marks `senderAddress` optional (see [`mtn_credentials`]'s
+    /// own doc). Guard-failure proof: a caller that sets it while every
+    /// other `--mtn-*` flag is unset must still resolve to `None`, not
+    /// `Err`.
+    #[test]
+    fn mtn_credentials_unset_with_only_sender_id_set_is_still_none_not_an_error() {
+        let result = mtn_credentials(RawMtnArgs {
+            sender_id: Some("SENDER".to_owned()),
+            ..base_mtn_args()
+        })
+        .expect("sender_id alone must not trip the all-or-none check");
+        assert!(result.is_none());
     }
 
     /// `supports_alphanumeric_sender` must never gate the all-or-none
-    /// check — it has a safe default regardless of whether MTN is
+    /// check either — it has a safe default regardless of whether MTN is
     /// configured at all (see [`mtn_credentials`]'s own doc). This is the
     /// guard-failure proof for that claim: a caller that sets it `true`
     /// while every other `--mtn-*` flag is unset must still resolve to
     /// `None`, not `Err`.
     #[test]
     fn mtn_credentials_unset_with_alphanumeric_true_is_still_none_not_an_error() {
-        let result = mtn_credentials(None, None, None, None, None, true)
-            .expect("supports_alphanumeric_sender alone must not trip the all-or-none check");
+        let result = mtn_credentials(RawMtnArgs {
+            supports_alphanumeric_sender: true,
+            ..base_mtn_args()
+        })
+        .expect("supports_alphanumeric_sender alone must not trip the all-or-none check");
         assert!(result.is_none());
     }
 }

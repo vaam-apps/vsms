@@ -34,4 +34,9 @@ FROM gcr.io/distroless/static-debian12:nonroot AS runtime
 
 COPY --from=builder /tmp/vsms-e2e-integration /usr/local/bin/vsms-e2e-integration
 
+# Redundant: the `:nonroot` tag already runs as uid 65532, and this image
+# has no `useradd` to create a user with — it ships /etc/passwd precisely so
+# that uid works without one. Stated explicitly because Trivy's DS-0002 greps
+# for a literal USER instruction and cannot see what the tag already did.
+USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/vsms-e2e-integration"]

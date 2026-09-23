@@ -59,4 +59,9 @@ COPY --from=builder /tmp/vsms-demo-seed /usr/local/bin/vsms-demo-seed
 # own runtime stage: this binary seeds a handful of rows and exits, and
 # compose.demo.yaml's own dependency chain gates on
 # `service_completed_successfully`, not a running/healthy container.
+# Redundant: the `:nonroot` tag already runs as uid 65532, and this image
+# has no `useradd` to create a user with — it ships /etc/passwd precisely so
+# that uid works without one. Stated explicitly because Trivy's DS-0002 greps
+# for a literal USER instruction and cannot see what the tag already did.
+USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/vsms-demo-seed"]

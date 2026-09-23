@@ -621,7 +621,12 @@ jobs:
       # because it passes the flag.
       - name: Demo app — typecheck and cross-language signature vectors
         run: |
-          pnpm install --ignore-workspace --frozen-lockfile
+          # --trust-lockfile: the lockfile here is committed and reviewed, and
+          # pnpm's 24h quarantine would otherwise refuse a freshly published
+          # first-party version. Under --ignore-workspace the root
+          # minimumReleaseAgeExclude is silently unread, so an entry there does
+          # nothing — the Dockerfile already uses this flag for the same reason.
+          pnpm install --ignore-workspace --frozen-lockfile --trust-lockfile
           node_modules/.bin/tsc --noEmit
           node --test
         working-directory: examples/node/demo-app
@@ -645,7 +650,7 @@ jobs:
       #
       # which is the *steady state* between a release and the next version
       # bump, not a defect — so it turned `main` red the moment
-      # @vymalo/vsms-node@0.2.0 was published, and would do so after every
+      # @vaam-apps/vsms-node@0.2.0 was published, and would do so after every
       # single release. `npm pack --dry-run` validates the same packaging
       # (files list, package.json shape) without asserting the version is
       # unpublished, which is the only part of that check CI actually wants.
@@ -655,10 +660,10 @@ jobs:
       # builds from the packaged source, and aborts before upload — it
       # never asks crates.io whether the version exists. Run locally
       # against the already-published 0.2.0, it exits 0.
-      - name: Official Node SDK (@vymalo/vsms-node) — test, typecheck and pack validation
+      - name: Official Node SDK (@vaam-apps/vsms-node) — test, typecheck and pack validation
         run: |
-          pnpm --filter @vymalo/vsms-node run build
-          pnpm --filter @vymalo/vsms-node run typecheck
+          pnpm --filter @vaam-apps/vsms-node run build
+          pnpm --filter @vaam-apps/vsms-node run typecheck
           node --test
           npm pack --dry-run
         working-directory: sdks/node/vsms-sdk-node
@@ -699,6 +704,15 @@ jobs:
       # sees (codec-json, two excluded client manifests, ci/runner/Dockerfile's
       # ARG); the last drifted once — see .xtask/src/pin_copies.rs.
       - run: cargo xtask cratestack-pin-check
+      # Every version release-please owns must already agree, and every
+      # line it rewrites must still carry its `x-release-please-version`
+      # comment. `release.yml`'s own version guard runs only on a tag, so
+      # it first fires after the release PR has merged; this one runs on
+      # the PR. The regression it is built for is a compose service added
+      # without the annotation — release-please then silently leaves that
+      # one image pinned to the previous release. See
+      # .xtask/src/release_versions.rs.
+      - run: cargo xtask release-versions
       # R6: pages compose, smart components decide, dumb components style.
       # Prose alone does not hold — the `hasRole('system')` gap was found
       # seven times before it got a golden test, and seven more after. This

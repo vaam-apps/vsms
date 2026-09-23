@@ -339,6 +339,11 @@ fn spawn_hooks_worker(database_url: &str, worker_id: &str) -> KillOnDrop {
         .args(["--roles", "hooks"])
         .args(["--database-url", database_url])
         .args(["--worker-id", worker_id])
+        // Ephemeral metrics port: the default is a fixed 127.0.0.1:9091 and
+        // `cargo test` runs test binaries in parallel, so two suites that each
+        // spawn a worker contend for it and the loser dies at startup before
+        // claiming anything. That took vsms's own main red on 2026-09-20.
+        .args(["--metrics-listen", "127.0.0.1:0"])
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()

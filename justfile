@@ -130,6 +130,7 @@ all-checks: lint test
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask workflow-paths
 	{{_cargo}} xtask cratestack-pin-check
+	{{_cargo}} xtask release-versions
 	{{_cargo}} xtask docs-drift
 	{{_cargo}} xtask r6
 	{{_cargo}} xtask node-sdk-types-check
@@ -176,6 +177,14 @@ docs-drift:
 # choice. See .xtask/src/pin_copies.rs for the incident.
 cratestack-pin-check:
 	{{_cargo}} xtask cratestack-pin-check
+
+# Every version release-please owns (three manifests, eighteen compose image
+# defaults, its own manifest file) must already agree, and every line it
+# rewrites must still carry its `x-release-please-version` comment.
+# release.yml's own version guard runs only on a tag — i.e. first fires after
+# the release PR has already merged. See .xtask/src/release_versions.rs.
+release-versions:
+	{{_cargo}} xtask release-versions
 # R6: no CSS classes or raw markup in page/*-screen view files
 r6:
 	{{_cargo}} xtask r6
@@ -696,6 +705,7 @@ ci-inner:
 	{{_cargo}} xtask sdk-schema-check
 	{{_cargo}} xtask workflow-paths
 	{{_cargo}} xtask cratestack-pin-check
+	{{_cargo}} xtask release-versions
 	{{_cargo}} xtask docs-drift
 	{{_cargo}} xtask r6
 	{{_cargo}} xtask node-sdk-types-check
@@ -783,9 +793,9 @@ ci-inner:
 	step 21 23 "Demo app — typecheck and cross-language signature vectors"
 	( cd examples/node/demo-app && pnpm install --ignore-workspace --frozen-lockfile && node_modules/.bin/tsc --noEmit && node --test )
 
-	step 22 23 "Official Node SDK (@vymalo/vsms-node) — build, typecheck, test, pack dry-run"
-	pnpm --filter @vymalo/vsms-node run build
-	pnpm --filter @vymalo/vsms-node run typecheck
+	step 22 23 "Official Node SDK (@vaam-apps/vsms-node) — build, typecheck, test, pack dry-run"
+	pnpm --filter @vaam-apps/vsms-node run build
+	pnpm --filter @vaam-apps/vsms-node run typecheck
 	( cd sdks/node/vsms-sdk-node && node --test && npm pack --dry-run )
 
 	step 23 23 "Mermaid diagrams parse (no browser)"

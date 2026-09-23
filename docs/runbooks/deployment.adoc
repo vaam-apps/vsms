@@ -474,6 +474,44 @@ both origins -- was run end to end against a throwaway config while
 building this PR, using `tls internal` in place of real DNS; see the PR
 description for what specifically was and wasn't verified.
 
+== Enabling MTN delivery receipts (MADAPI)
+
+Only if this deployment sends through MTN. Orange needs nothing here --
+its DR endpoint is whitelisted by a manual support ticket, covered in
+xref:36-handset-gate.adoc[36-handset-gate.adoc].
+
+*MTN delivery receipts do not arrive unless you register an endpoint
+first.* MADAPI requires two independent things: `requestDeliveryReceipt:
+true` on every outbound message, which `sms-provider-mtn` always sends,
+and a `deliveryReportUrl` registered against your approved
+`serviceCode`. Skip the registration and messages submit successfully,
+reach `submitted`, and then sit there permanently with no receipt ever
+arriving -- which looks exactly like a broken route and is why this
+section exists rather than a line in a table.
+
+Unlike Orange's whitelisting, this is a real API call, so run it once per
+approved short code:
+
+[,bash]
+----
+docker compose run --rm sms-gateway mtn-subscribe-dlr \
+  --delivery-report-url "https://$SMS_GATEWAY_DOMAIN/dlr/mtn_cm" \
+  --target-system vsms
+----
+
+`MTN_CLIENT_ID`, `MTN_CLIENT_SECRET`, `MTN_SERVICE_CODE` and
+`MTN_BASE_URL` come from the environment (see `deploy/.env.example`), so
+they are not repeated on the command line -- the secret in particular
+should never land in shell history.
+
+Note the path segment is `mtn_cm`, matching `SmsProvider::key` and what
+``sms-gateway``'s `+/dlr/{providerKey}+` handler matches against. A
+subscription registered against any other path will be accepted by MTN
+and then silently 404 on every receipt.
+
+`run --rm`, not `exec`: this command needs no database and no running
+gateway, and the gateway may legitimately not be up yet.
+
 == Backend-only deployment (R4, `CONTRIBUTING.md`)
 
 *"Some deployments will ship the backends only, with no admin surface at
@@ -911,9 +949,9 @@ their own operator/subscription in front of one) supplies -- the same
 "bring your own database" split the compose path already documents for
 why it doesn't use `sops`.
 * *Does not create any Secret.* Every credential (`DATABASE_URL`,
-`SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `SMS_CONSOLE_SESSION_SECRET`,
-the admin console's private key PEM) is referenced by name from an
-`existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
+`SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `MTN_CLIENT_SECRET` when
+MTN is configured, `SMS_CONSOLE_SESSION_SECRET`, the admin console's
+private key PEM) is referenced by name from an `existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
 ever writes one into a ConfigMap or a rendered manifest. See
 ``values.yaml``'s own `existingSecrets` block for the exact key each
 Secret must contain.

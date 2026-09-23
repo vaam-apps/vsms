@@ -1,0 +1,152 @@
+# Calls the org-wide quality workflows in vaam-apps/.github.
+#
+# Everything here is a gate, not an implementation — the workflows themselves
+# live in one place so eight repositories do not each carry their own drifting
+# copy. What this file owns is the answer to "has anything meaningful changed",
+# which is necessarily per-repo.
+#
+# Gating is a per-job `if:` over a paths-filter job, never `on.pull_request.paths`.
+# Both behave identically today because this repo has no required status checks;
+# they diverge the moment one is added, because a skipped job still reports and a
+# workflow that never triggers reports nothing at all — leaving the PR blocked
+# forever on a check that will never arrive. ci.yml already makes this choice for
+# the same reason.
+name: quality
+
+on:
+  pull_request:
+    branches: [main]
+  # The default branch has otherwise never been security-scanned: a fork PR
+  # gets no secrets (app-client-id/app-private-key), so CodeQL/Trivy silently
+  # never run for it, and nothing else scans the default branch once a fork
+  # PR merges. This closes that gap by scanning on every push to the default
+  # branch too.
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: quality-${{ github.ref }}
+  # PR-only: on the default branch the group key is identical for every
+  # merge, so cancelling would let one merge abort the scan still verifying
+  # the merge before it.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: what changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+      docs: ${{ steps.filter.outputs.docs }}
+      iac: ${{ steps.filter.outputs.iac }}
+      any: ${{ steps.filter.outputs.any }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          filters: |
+            # Positive lists, never '**' plus '!' exclusions: paths-filter ORs
+            # its rules through picomatch, so '**' matches everything and the
+            # negations never subtract. ci.yml records this the hard way.
+            code:
+              - 'backends/**'
+              - 'frontends/**'
+              - 'sdks/**'
+              - 'examples/**'
+              - 'ci/**'
+              - '.xtask/**'
+              - 'schemas/**'
+              - '**/Cargo.toml'
+              - '**/Cargo.lock'
+              - '**/package.json'
+              - 'pnpm-lock.yaml'
+            docs:
+              - '**/*.md'
+              - '**/*.adoc'
+              - 'docs/**'
+            iac:
+              - '**/Dockerfile*'
+              - 'compose*.yaml'
+              - 'compose*.yml'
+              - 'deploy/**'
+              - '.github/workflows/**'
+            any:
+              - '**'
+
+  sast:
+    name: SAST
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.docs == 'true'
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    uses: vaam-apps/.github/.github/workflows/sast.yml@01d7a15ee827152447d3b3b7031fdc8a02d98dd7 # vaam-apps/.github main
+    with:
+      # Only when code moved — a docs-only PR has nothing for CodeQL to read,
+      # and Rust analysis is the slowest job in this file.
+      codeql-languages: ${{ needs.changes.outputs.code == 'true' && '["rust","javascript-typescript","actions"]' || '[]' }}
+      docs-globs: ${{ needs.changes.outputs.docs == 'true' && 'docs/** *.md' || '' }}
+      # Annotate, don't fail: docs/architecture.md cites upstream cratestack and
+      # authkestra issues by URL, and an upstream repo going private would
+      # otherwise block an unrelated PR. Revisit once the annotation is boring.
+      fail-on-broken-links: false
+    secrets:
+      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+
+  lint:
+    name: lint
+    needs: changes
+    # PR-only: its `fix` input defaults to true, and on a push
+    # github.event.pull_request.head.repo.full_name is empty, so the
+    # reusable workflow's own "commit fixes onto the PR branch" step runs
+    # `git checkout -q -B superlinter-fixes ""` and fails. Linting is a
+    # PR-time concern anyway; the scanners are what need default-branch
+    # coverage.
+    if: github.event_name == 'pull_request' && needs.changes.outputs.any == 'true'
+    permissions:
+      contents: read
+      statuses: write
+    uses: vaam-apps/.github/.github/workflows/lint.yml@01d7a15ee827152447d3b3b7031fdc8a02d98dd7 # vaam-apps/.github main
+    with:
+      # AGENTS.md and CLAUDE.md are excluded deliberately, not by oversight.
+      # They are the most load-bearing prose in this repository, written with
+      # long lines and a structure markdownlint disagrees with on almost every
+      # paragraph. Auto-reformatting them to satisfy a style rule is a bad
+      # trade against the risk of mangling the one document every session reads.
+      # frontends/packages/sms-client is generated by `just client-gen`.
+      filter-regex-exclude: '(^|/)(AGENTS|CLAUDE)\.md$|^frontends/packages/sms-client/|^backends/migrations/'
+    secrets:
+      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+
+  trivy:
+    name: trivy
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.iac == 'true'
+    permissions:
+      security-events: write
+      contents: read
+    uses: vaam-apps/.github/.github/workflows/trivy.yml@01d7a15ee827152447d3b3b7031fdc8a02d98dd7 # vaam-apps/.github main
+    with:
+      # cargo deny already covers Rust advisories here, and more strictly. The
+      # value Trivy adds in this repo is misconfig (seven Dockerfiles, three
+      # compose files, a Helm chart) and secret, which nothing else scans.
+      scanners: "vuln,secret,misconfig"
+      # Trivy does not auto-detect this filename; without passing it the file
+      # is decorative. See .trivyignore.yaml for what is suppressed and why.
+      trivyignores: ".trivyignore.yaml"
+      skip-dirs: "**/node_modules,**/target,**/.git,frontends/packages/sms-client,deploy/charts"
+    secrets:
+      app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+      app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}

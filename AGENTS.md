@@ -2819,12 +2819,16 @@ exists. What changed is that it is now reachable and configurable instead of dea
 
 ### Not done, deliberately, and worth knowing before assuming otherwise
 
-- **No `MTN_AGGREGATOR_*` plumbing in `deploy/charts/vsms/values.yaml` or the compose
-  files.** Not an oversight: an empty `MTN_AGGREGATOR_API_KEY` env var is `Some("")` to
-  clap, which would trip the all-or-none check and fail startup — so the env block has to
-  be *conditionally omitted*, which values.yaml (rendered per-value through `tpl`) cannot
-  express. It needs `templates/common.yaml`-level work. Orange-only deployments are
-  unaffected; the chart simply cannot express MTN-only yet.
+- **Helm chart plumbing: done, and the hazard was worse than first recorded.** This entry
+  used to say the chart couldn't express MTN. It can now — see the "MTN reaches the Helm
+  chart" section below. The reason it needed `templates/common.yaml`-level work rather than
+  a values.yaml edit is confirmed empirically rather than reasoned: an env var that is
+  *present but empty* is a value to clap, not an absence. `MTN_CLIENT_ID=""` yields
+  `Some("")` (trips the all-or-none check, as originally predicted), but `MTN_TPS_CEILING=""`
+  is worse — clap fails to parse it **before any of this repo's validation runs**, so the
+  container never starts and the error names a flag the operator never set. The compose
+  `.env` path has the identical hazard, which is why `deploy/.env.example` now says in
+  capitals to comment the block out rather than leave it blank.
 - **Nothing has been received from a live Orange account.** A documented shape is not an
   observed one. `docs/runbooks/36-handset-gate.adoc` is still the gate, still unrun, and
   the first real DLR remains the first real verification — the starting point just moved
@@ -2857,6 +2861,518 @@ cargo's. Re-run capturing the real code, `sdk-schema-check` failed: `schemas/vsm
 had changed and `sdks/rust/vsms-sdk-rust/schema.cstack` had not been re-vendored — the
 exact omission that made #185 red. A guard you have miscounted as passing is worse than
 one you never ran.
+
+## `sms-provider-mtn` rewritten against MTN's real Swagger — the placeholder is gone
+
+`backends/crates/sms-provider-mtn` targeted an **invented** contract from the day it was
+written (#61): `POST {base_url}/v1/messages`, static Bearer API key, `201` + `messageId`,
+a DLR echoing that id back. Its own module doc said so. MTN's real Swagger has now been
+obtained, **vendored in-crate** at `backends/crates/sms-provider-mtn/mtn-sms-v3-swagger.yaml`,
+and the adapter rewritten against it. The maintainer's call was **MTN direct (MADAPI)**
+rather than a licensed aggregator, which sets aside §6.4's sender-ID pre-registration
+argument for going via one.
+
+### Every element of the guess was wrong, and the guess was a careful one
+
+That is the finding worth keeping. The placeholder was not lazy — it was built from the
+common shape across four real aggregators §6.2 names (Nexah, Africa's Talking, Infobip,
+Twilio), and documented honestly as a guess. It still matched **nothing**:
+
+| | invented | real |
+|---|---|---|
+| auth | static Bearer API key | `OAuth2 client_credentials`, `api.mtn.com/v1/oauth/access_token/accesstoken?grant_type=client_credentials`, scope `SEND-SMS` |
+| endpoint | `POST {base}/v1/messages` | `POST {base}/v3/sms/messages/sms/outbound` |
+| success | `201` | **`200`** *and* a body `statusCode` of `'0000'` |
+| request | `to`, `from`, `text`, `reference` | `receiverAddress[]`, `message`, `clientCorrelatorId` (**`maxLength: 36`**), `serviceCode`, `requestDeliveryReceipt`, `senderAddress?`, `keyword?` |
+| response | `{messageId}` | `{statusCode, statusMessage, transactionId, data:{status}}` |
+| DLR | `messageId`, `status`, `errorCode`, `network` | `clientCorrelatorId`, `deliveryStatus`, `details`, `completedDate`, `id`, `error`, `senderAddress`, `receiverAddress`, `submittedDate` |
+| statuses | `DELIVERED/FAILED/EXPIRED/REJECTED/PENDING/UNCERTAIN` | `ACCEPTD/DELETED/DELIVERED/ENROUTE/UNKNOWN/EXPIRED/REJECTED/UNDELIVERED` |
+
+**The one prediction that held is the one `OPEN_QUESTIONS.md` §2.1 already made**: the
+`SmsProvider` impl and the connect-vs-read `ProviderError` classification needed no change,
+because they follow from what `reqwest` guarantees rather than from any vendor's behaviour.
+That is the durable lesson — when you must guess a vendor contract, guess the *payload* and
+keep the *transport reasoning* independent of it, because only the second half will survive.
+
+### Three things that reach beyond this crate
+
+- **MTN and Orange are mirror images on correlation.** MADAPI's DLR echoes back the
+  caller-supplied `clientCorrelatorId`; Orange sends its own `resource_id` and (per its own
+  documented body) accepts no caller token at all. So `SubmitAck::provider_ref_alt` is
+  populated here and `None` there — and `providerMessageRefAlt`, which the Orange cleanup
+  stopped writing hours earlier the same day, turns out to be genuinely load-bearing. Its
+  original §2.7/§6.2 justification was the SMPP hex/decimal trap; this is a second,
+  independent reason it must stay. `sms_api::dlr::ingest_one`'s `providerMessageRef OR
+  providerMessageRefAlt` match needed no change to serve both.
+- **`ACCEPTD` and `ENROUTE` are the `InFlight` case**, confirming that variant generalises
+  beyond the Orange statuses it was added for. Both are SMPP `message_state` names
+  (`ACCEPTD` is the five-character truncation), and mapping them to `Uncertain` would cost
+  those messages their retry path for exactly the reason that variant's doc records.
+- **MTN's DLR endpoint is registered by API, not by support ticket.** `POST
+  /messages/sms/subscription` with a `deliveryReportUrl`. That is automatable where
+  Orange's whitelisting is not, so it is a real subcommand — `sms-gateway
+  mtn-subscribe-dlr` — rather than a runbook paragraph. **DLRs do not arrive without it**:
+  MADAPI needs `requestDeliveryReceipt: true` on each message (the adapter always sends it)
+  *and* a registered URL. Miss the registration and messages submit fine, reach `submitted`,
+  and sit there forever with no receipt — indistinguishable from a broken route.
+
+### Provenance, stated because it is load-bearing for trust
+
+The Swagger was downloaded **2026-09-17 with TLS certificate verification bypassed**.
+`developers.mtn.com`'s Let's Encrypt certificate expired `Sep 16 06:02:41 2026 GMT` — one
+day stale — and the chain was otherwise intact (`CN=developers.mtn.com`, Let's Encrypt
+issuer), verified with `openssl s_client` before the bypass. This was done at the
+maintainer's explicit direction after the concern was raised. SHA-256 of the vendored file:
+`5a74e8531afd7d087829f668a5c493df157e620dc0480c9213ef5bcee083fb94`.
+
+**Re-download over a valid certificate and diff before trusting it commercially.** The
+whole point of vendoring it is that this is reproducible rather than a claim.
+
+Note also what the Swagger does **not** specify: the token *response* body.
+`securityDefinitions.OAuth2` names only `tokenUrl`, so `access_token`/`expires_in` is an
+assumed-standard OAuth2 shape here, flagged as unverified in `token.md` — unlike Orange's,
+which §6.2 confirms from Orange's own documented response.
+
+### Decisions taken where the spec was silent
+
+Each is argued at its own call site; recorded here so they are findable:
+
+- **A `200` with a non-`'0000'` `statusCode` → `ProviderError::Rejected`.** No MADAPI error
+  catalogue is public, and `Rejected` has the narrowest blast radius: fails one message, no
+  circuit trip, no retry storm.
+- **`DELETED` → `Rejected`** — SMPP semantics: administratively removed, terminal, not
+  retryable, and not a delivery failure in the `UNDELIVERED` sense.
+- **A `completedDate` that fails RFC3339 parsing does not fail the notification** — it warns
+  and leaves `occurred_at` `None`. The Swagger says `format: datetime` and nothing more, so
+  RFC3339 is itself an assumption; `DeliveryReceipt.receivedAt` is stamped by the database
+  regardless, making this a diagnostic downgrade rather than a correctness one.
+- **`error` beats `details` into `error_code`**, with `details` as fallback. `DeliveryUpdate`
+  has one slot, so whichever loses is dropped — accepted information loss, not an oversight.
+- **`sender_id` left out of the all-or-none credential group**, because `senderAddress` is
+  optional in the Swagger. The wire value now prefers the per-message `req.sender_id` (the
+  already-approved sender `sendMessage` resolved) and falls back to config — a real
+  behaviour change from the placeholder, which ignored `req.sender_id` entirely.
+- **`KEY` is `"mtn_cm"`**, symmetric with `"orange_cm"`. MADAPI is pan-African; the key names
+  *this deployment's market*, not the API.
+
+### A real pre-existing bug found during the rewrite
+
+The old `MtnAggregatorConfig` derived `Debug` with no redaction, so `{:?}` on it would have
+printed `api_key` in plaintext. `MtnConfig` hand-writes `Debug`, matching what
+`OrangeCmConfig` already did. Nothing logged it today — but `#[derive(Debug)]` on a
+credential-bearing struct is one `tracing::debug!` away from a leak, which is the same class
+of defect `.xtask/src/secret_env_args.rs` exists to catch on the CLI side (that guard's list
+moved from `MTN_AGGREGATOR_API_KEY` to `MTN_CLIENT_SECRET` with this change).
+
+## MTN reaches the Helm chart — and the "empty env var" hazard, measured
+
+`deploy/charts/vsms` can configure MTN now. The interesting part is not the eight new
+values; it is why they could not simply be added to `values.yaml` like Orange's, and how
+much worse the failure mode turned out to be than the earlier deferral note guessed.
+
+**An env var that is present but empty is a *value* to clap, not an absence.** Measured
+against clap 4 directly with a throwaway probe rather than reasoned from the docs:
+
+| binding | `FOO=` (empty) |
+|---|---|
+| `Option<String>` | `Some("")` — trips `mtn_credentials`' all-or-none check |
+| `Option<f64>` | **hard parse failure before any of this repo's validation runs**: `invalid value '' for '--mtn-tps-ceiling <MTN_TPS_CEILING>': cannot parse float from empty string` |
+
+The second one is the reason this needed real work. A naive chart that renders
+`MTN_TPS_CEILING: ""` for an Orange-only deployment does not produce a disabled provider —
+it produces a **gateway and worker that refuse to boot**, with an error naming a flag the
+operator never set. Confirmed against both real binaries, not just the probe.
+
+So the env keys must be *removed*, not blanked, and `values.yaml` structurally cannot do
+that: it is loaded as plain data, and only specific field *values* pass through common's
+selective `tpl` (its own header documents which). A `{{ if }}` there can blank a value; it
+cannot delete a key. `templates/common.yaml` is a real Go-template pass over the merged
+values, so it deletes them outright — the same mutate-before-`generate` trick
+`global.nameOverride` and R4's `admin.enabled` already use. Keyed on `mtn.clientId` alone,
+deliberately: a deployment that sets that and forgets the rest gets this repo's own
+explicit all-or-none error rather than a silent half-configuration.
+
+**Verified as a three-way proof, because two renders would not have been enough:**
+
+| case | result |
+|---|---|
+| chart with MTN unconfigured | zero `MTN_` keys rendered; gateway boots (fails only on a deliberately bogus DB) |
+| chart with MTN configured | 16 keys (8 × 2 controllers); the *rendered values*, extracted from the manifest and fed to the real binary, parse and validate |
+| the naive blank-env version | `cannot parse float from empty string` — dead at startup, both binaries |
+
+Without the third case the first two would have looked like a passing test of nothing.
+
+Two details worth keeping: `tpsCeiling`/`costPerSegmentXaf` are **quoted strings** in
+`values.yaml`, because an unquoted `16.00` is a YAML float that reaches the container as
+`16` — a silent precision change on a money field. And neither has a default, for the same
+reason `MtnConfig` has no `Default`: an invented TPS ceiling either throttles a paid
+contract or gets the account rate-limited, and an invented price misprices
+`estimatedCostXaf`.
+
+**`deploy/.env.example` has the identical hazard** — Docker Compose passes `FOO=` through
+as an empty value — so that file now says in capitals to comment the block out rather than
+leave it blank, with the exact error it would otherwise produce. That is the one place an
+operator is most likely to half-fill a block out of habit.
+
+Also corrected there while passing through: it claimed Orange's credentials were "required
+unconditionally by sms-gateway", which stopped being true when the gateway moved to an
+at-least-one-provider check.
+
+## release-please proposes the version bump, and three things had to be true first
+
+`Release prep: v0.3.0` (#347) and `Release prep: v0.3.1` (#351) were written by
+hand: three manifests, four lockfiles, eighteen compose image defaults, then a
+tag. `.github/workflows/release-please.yml` replaces that. Every merge to `main`
+updates a standing `chore: release X.Y.Z` PR; merging it cuts the tag, which is
+what `release.yml` already triggers on. **This workflow publishes nothing** —
+`release.yml` still owns every artifact.
+
+Three findings, each read out of release-please's own source rather than its
+docs, and each of which would have shipped a config that looked right:
+
+**`release-type: rust` throws on this repository.**
+`CargoToml.updateContent` (`src/updaters/rust/cargo-toml.ts`) begins
+`if (!parsed.package) { throw new Error('is not a package manifest (might be a
+cargo workspace)') }`, and the `Rust` strategy pushes exactly that updater at the
+root `Cargo.toml` for any workspace. This root is a pure virtual manifest —
+`[workspace]` and `[workspace.package]`, no `[package]` — so the very first thing
+the strategy does is throw. It would not have helped anyway: every member carries
+`version.workspace = true`, so there is no `[package] version` in any of them to
+rewrite. `simple` is used instead, and it is not a downgrade: it writes
+`CHANGELOG.md` plus the `extra-files`, and its `version.txt` update is
+`createIfMissing: false`, so with no such file that update is skipped and no
+stray version file appears.
+
+**The annotation, not the file, is what gets rewritten — and only the first
+semver on the line.** `src/updaters/generic.ts` matches
+`x-release-please-version` on a line and then does one
+`line.replace(/(\d+)\.(\d+)\.(\d+)…/, version)`. Twenty lines carry the comment
+now: the two manifest versions, and eighteen `image:` defaults across
+`compose.demo.yaml` and `deploy/docker-compose.yml`. Each of the eighteen was
+checked before annotating — a line whose first semver-shaped substring is not the
+one we mean would be silently corrupted, and the script that added them refuses
+rather than guesses. `sdks/node/vsms-sdk-node/package.json` uses the `json`
+updater with `$.version` instead, because JSON cannot carry a comment.
+
+**Four lockfiles carry a first-party version, and `--locked` is everywhere.**
+`Cargo.lock` (21 workspace members), and `vsms-sdk-rust` in each of `sdks/rust`,
+`examples/rust` and `ci/e2e-integration`. A lockfile cannot be annotated — it is
+generated, and `version = "0.3.1"` appears in it for third-party crates too
+(`opaque-debug`, `rand_chacha` today), so a blind rewrite corrupts it. This is not
+cosmetic: `ci.yml` runs `cargo metadata --locked` on the root and `cargo check
+--locked` on each excluded manifest, and every production Dockerfile builds
+`--locked`, so a release PR with stale lockfiles is red on arrival. `ci.yml:317`'s
+own comment records this exact failure for v0.2.1 — found by a review bot, not by
+CI. The workflow therefore checks out the release branch after release-please has
+force-pushed it and runs `cargo metadata` (the same command CI runs, minus
+`--locked`) in the directory of **every** `Cargo.lock` `git ls-files` finds,
+rather than against a hardcoded list — a fifth copy of "which Rust roots exist"
+is the duplicated-list failure this file warns about elsewhere, and
+`deploy/backup-tool`, which versions independently, simply produces no diff.
+
+### The token is load-bearing, not hygiene
+
+GitHub raises no workflow events for anything done with the default
+`GITHUB_TOKEN`. With it, the `vX.Y.Z` tag would be created and **`release.yml`
+would not run** — no images, no chart, no SDKs, nothing failing anywhere to say
+so — and the release PR would get no `ci.yml` run at all, which is the same
+failure class `.xtask/src/workflow_paths.rs` exists for. So the workflow mints a
+GitHub App token (`actions/create-github-app-token@v3`) and every write goes
+through it, including the lockfile push, which is what gives the release PR real
+CI. Secrets: `RELEASE_PLEASE_APP_CLIENT_ID` — the App's **Client ID**
+(`Iv23li…`), not its numeric App ID; `actions/create-github-app-token`
+deprecated the `app-id` input in favour of `client-id`, and the two are
+different values on the same settings page — and
+`RELEASE_PLEASE_APP_PRIVATE_KEY`; the App
+needs `contents: write` and `pull-requests: write` on this repository only. There
+is deliberately **no fallback** to `GITHUB_TOKEN` — a fallback produces exactly
+the silent publish-nothing release above.
+
+### Conventional titles, because 58 of the last 60 subjects were invisible
+
+release-please reads commit subjects and nothing else. At the time this landed,
+`git log --format='%s' -60 | grep -cE '^(feat|fix|…)(\(.+\))?!?: '` returned
+**2**. Every other subject — `Document GDPR engineering readiness`, `Fix Orange's
+DLR contract…` — is not rejected by release-please, it is *ignored*, so the
+release PR would simply never have appeared and nothing would have said why.
+
+`.github/workflows/pr-title.yml` closes that. It is a separate workflow rather
+than a job in `ci.yml` on purpose: a title is changed by editing it, which raises
+`edited` and not `synchronize`, and teaching `ci.yml` to listen for `edited` would
+re-run Rust, live Postgres and the JS build every time somebody fixes a typo in a
+title. It is a regex rather than a marketplace action for the reason this file's
+release-engineering notes already give about unpinned moving dependencies inside a
+pipeline, and the title reaches the script through the environment, never through
+`${{ }}` inside `run:` — a PR title is attacker-controlled text and `${{ }}` in a
+`run:` body is textual substitution.
+
+The repository's own squash setting moved from `COMMIT_OR_PR_TITLE` to
+`PR_TITLE` in the same change. Without that, a single-commit PR takes *its commit's*
+subject as the squash subject, so a conventional title could be silently bypassed
+by a PR whose one commit was titled anything at all — the lint would pass and the
+release would still not see it.
+
+Regex verified in both directions before being trusted, against real subjects from
+this repository and from vpay: `chore: release 0.4.0` (release-please's own PR
+title, which must pass or every release PR fails its own gate),
+`fix(security): …`, `chore(deps): …`, `feat(sdks/flutter)!: …`,
+`fix(sdks/flutter,checkout): …` all pass; `Document GDPR engineering readiness`,
+`Bump rustls to 0.23.45 …`, `feat:` with no subject, `feature:` (not a type) and
+`fix missing colon` all fail.
+
+### `cargo xtask release-versions`
+
+`release.yml`'s `version` job already compares the tag against the three manifest
+versions — but `if: startsWith(github.ref, 'refs/tags/')`, so it first fires
+*after* the release PR has merged. That is this repository's own definition of not
+a check. `.xtask/src/release_versions.rs` runs the equivalent on every PR: all 22
+version references must agree, every file listed in the config's `extra-files`
+must still contain an annotation to act on, and — the direction that actually
+happens by accident — every versioned vsms image default in the compose files must
+be annotated. The file list is read out of `release-please-config.json` rather than
+restated, and a reformat that defeats its line-based parser is an error rather than
+a vacuous pass.
+
+The regression it exists for is quiet: add a nineteenth compose service without the
+comment and nothing breaks visibly — the release PR is still opened, still green,
+still merges; that one service's default simply stays at the previous release
+forever, and the first symptom is somebody's `docker compose pull` fetching a stale
+image.
+
+All three failure modes were broken on purpose and observed, then restored:
+
+```
+# annotation dropped from one compose image line
+compose.demo.yaml:619: a versioned vsms image default with no x-release-please-version comment
+  — release-please will leave this service pinned to the previous release
+
+# one manifest left at the old version
+.release-please-manifest.json ("."): 0.3.1
+Cargo.toml:60: 0.3.1
+…
+sdks/node/vsms-sdk-node/package.json ($.version): 0.3.0
+
+# a listed extra-file loses every annotation
+deploy/docker-compose.yml: listed in release-please-config.json extra-files but carries no
+  x-release-please-version line, so release-please will never change it
+```
+
+Wired into `ci.yml`'s `rules` job, `just all-checks`, and `just ci` step 9 — folded
+into that existing step rather than added as a 24th, because the `step N 23`
+counter is hardcoded at all 23 call sites.
+
+### What a release still needs a human for, by design
+
+- **Prose.** `docs/runbooks/deployment.adoc`, `showcase.adoc` and
+  `deploy/.env.example` are mostly historical narrative about versions ("`v0.3.0`
+  alone published under `ghcr.io/vaam-store/…`; `v0.3.1` and every tag after it
+  lands under `ghcr.io/vaam-apps/…`"). A blanket bump makes those sentences false.
+  The compose defaults are what determine behaviour and they are bumped; the prose
+  describing them goes stale by one release.
+- **`examples/node/demo-app`'s `@vymalo/vsms-node` range.** That version does not
+  exist on npm until `release.yml` has published it, minutes after the release PR
+  merges, and pnpm's 24h `minimumReleaseAge` quarantine then forces the two-commit
+  dance this file already documents. A follow-up PR, every time — the same ordering
+  constraint the "Release v0.3.0" section above records.
+- **`deploy/charts/vsms/Chart.yaml`.** Its version is a placeholder `release.yml`
+  overwrites at `helm package` time; nothing to bump.
+
+### The annotation broke `release.yml`'s own version guard, and v0.3.2 published nothing
+
+The worst of the three, and the most deserved. This file's own #395 section
+argues at length that `release.yml`'s `version` job is gated
+`if: startsWith(github.ref, 'refs/tags/')` and therefore first runs *after* the
+release PR has merged — and that `cargo xtask release-versions` exists because
+of it. Then the very annotation that guard was built around broke that guard.
+
+It reads the manifests with `sed -n 's/^version = "\(.*\)"$/\1/p'`. That
+pattern is anchored to end-of-line. The annotated line is:
+
+```toml
+version = "0.3.2" # x-release-please-version
+```
+
+which does not end with `"`. So the pattern matched nothing, the variable came
+out **empty**, and the tag-vs-manifest comparison failed. The only trace was
+one line in a log nobody reads on a green day:
+
+```
+tag=0.3.2 workspace= rust-sdk= node-sdk=0.3.2
+```
+
+`v0.3.2` therefore published **no image, no chart, and neither SDK** — every
+downstream job `skipped`. The node SDK parsed fine, because JSON carries no
+comment; only the two `.toml` reads broke.
+
+Fixed by making both patterns tolerate trailing content
+(`"\([^"]*\)".*$`). The durable half is that `release-versions` now **runs
+`release.yml`'s own three `sed` extractions** on every PR — it parses them out
+of the workflow rather than restating them, converts the BRE `\(`/`\)`, applies
+each to the file it names, and fails if any yields nothing. Proven by restoring
+the anchored pattern and watching it report exactly that. Two facts about how to
+read a version lived in two files with nothing holding them together; now one
+reads the other.
+
+### A bare-string `extra-files` entry is a trap — and this repo escaped it by luck
+
+Corrected after v0.3.2, by watching the sibling `vpay` repository's own first
+release destroy two files with the identical configuration.
+
+A bare string in `extra-files` does **not** get the annotation-only `Generic`
+updater, which is what the original config here assumed. `base.ts` infers an
+updater from the file extension:
+
+```text
+.json         -> CompositeUpdater(GenericJson('$.version'), Generic)
+.yaml/.yml    -> CompositeUpdater(GenericYaml('$.version'), Generic)
+.toml         -> CompositeUpdater(GenericToml('$.version'), Generic)
+.xml          -> CompositeUpdater(GenericXml('/*/version'), Generic)
+anything else -> Generic
+```
+
+`GenericYaml` reparses the document and re-serialises it. In `vpay` that turned
+`deploy/helm/vpay/Chart.yaml` from 48 lines into 13 — every comment destroyed,
+the wrong `version:` key bumped (0.2.0 -> 0.1.1, a downgrade, and the one field
+its config deliberately excluded), and `appVersion` left untouched because the
+`x-release-please-version` annotation had just been serialised away.
+
+**This repository was configured the same way and came through v0.3.2
+untouched, by luck rather than design.** Its two `.yaml` entries are compose
+files, and a modern compose file carries no top-level `version:` key, so
+`GenericYaml('$.version')` found nothing to change. Verified after the fact,
+not assumed: `compose.demo.yaml` and `deploy/docker-compose.yml` are byte-for-
+byte the same length before and after the release (793 and 668 lines), with all
+13 and 5 annotations intact. Add a top-level `version:` to a compose file, or
+list any other `.yaml`, and the luck runs out.
+
+Every entry is now `{"type": "generic", "path": …}`, which routes to
+`case 'generic'` and runs `Generic` alone whatever the extension.
+`cargo xtask release-versions` **refuses** a bare string outright and names the
+incident; two unit tests pin the refusal and the unknown-type refusal, and the
+parser accepts both the multi-line and single-line object spellings rather than
+silently skipping one.
+
+### A commit body can make release-please discard the whole commit, silently
+
+The third and worst of the release-please defects, found the morning after
+v0.3.2 by asking why no release PR had appeared. The `release-please` workflow
+had run and **reported success**:
+
+```
+❯ commit could not be parsed: 7ef89ec fix(ci): v0.3.2 published nothing …
+❯ error message: Error: unexpected token '(' at 8:30, valid tokens [)]
+❯ commits: 0
+✔ No commits for path: ., skipping
+```
+
+Line 8 column 30 of that commit's **body** is the `(` in
+``​`CompositeUpdater(GenericYaml('$.version'), Generic)`​``. release-please uses
+`@conventional-commits/parser`, a strict PEG parser — not the lenient
+regex-based `conventional-commits-parser` — and a body line that *begins* with
+`identifier(` reads to that grammar as a type-and-scope header, so a nested
+`(` inside it is a syntax error.
+
+**The consequence is not a warning, it is erasure.** The commit contributes
+nothing: no changelog entry, no version bump. It was the only commit since
+v0.3.2, so release-please proposed no release at all. Nothing was red.
+
+The rule, measured against the parser rather than reasoned about:
+
+| body line | parses? |
+|---|---|
+| `see A(B(c)) here` | yes — a word precedes it, so it is not a header |
+| `A(b) here` | yes — single parens, nothing nests |
+| `A(B(c)) here` | **no** — line-initial and nested |
+| ``​`A(B(c))`​`` ` here` | **no** — a backtick does not help |
+
+`ci/commit-message-parse/` closes it, as a second job in `pr-title.yml`
+(shared trigger: `edited` changes the title, `synchronize` changes the
+commits, and both are inputs to the assembled message). Three things about it
+are deliberate:
+
+- **It checks the squash result, not each commit.** Individual commits on a
+  branch need not be conventional — this repository squashes with `PR_TITLE`,
+  and `wip:` commits are legitimate. A first cut checked each commit and
+  rejected **24 of the last 40** on `main`, almost all for pre-convention
+  subjects that never landed as their own commit. A guard that loud gets
+  deleted rather than obeyed.
+- **The reconstruction was verified against a real merge**, not assumed:
+  title + blank + repeated `* <subject>` / blank / `<body>` / blank reproduces
+  #402's merge commit byte-for-byte through line 80 of 84. The remaining four
+  are GitHub's own co-author footer (`---------` plus deduplicated
+  `Co-authored-by:`), which the script does not reproduce — that would mean
+  reimplementing GitHub's dedup — and which provably cannot change the
+  verdict: both the passing and the failing case were re-parsed with and
+  without it and gave identical results.
+- **The parser is pinned to `0.4.1`**, the only version satisfying
+  release-please 17.6.0's own `^0.4.1`, so the guard parses with exactly the
+  grammar release-please will use. A looser range is the one way this check
+  could confidently report a verdict that does not match reality.
+
+Proven both directions: #402 fails with the exact line and a caret on the
+offending `(`; #397 and #399 pass.
+
+### Not closed
+
+**Dependabot.** There is no `.github/dependabot.yml`, so security-update PRs arrive
+titled `Bump X from Y to Z` and will fail `pr-title`. Retitling fixes it and the
+check re-runs on `edited`, but the durable fix is a `dependabot.yml` with
+`commit-message.prefix: chore` — deliberately not added here, because creating that
+file also switches on version-update PRs nobody asked for.
+
+**An annotated line in a file the config does not list.** Catching it needs a
+whole-tree walk, and it requires someone to write an annotation while never
+touching the config — far less likely than the compose case, which happens by
+simply adding a service. Named in `release_versions.rs`'s own module doc rather
+than left to look like an oversight.
+
+## The Node SDK is `@vaam-apps/vsms-node` — and the first publish must be manual
+
+`@vymalo/vsms-node` was the npm scope from before the org moved twice
+(`vymalo` -> `vaam-store` -> `vaam-apps`). The scope is an npm namespace, not the
+GitHub owner, so it did not have to follow — but it stopped matching anything, and
+npm Trusted Publishing is bound to an `owner/repo` that kept changing underneath it.
+Every release since `v0.3.1` failed this way, silently in the sense that matters:
+
+```
+[WARN] Skipped OIDC: ERR_PNPM_AUTH_TOKEN_EXCHANGE: token exchange 404
+[E404] 404 Not Found - PUT https://registry.npmjs.org/@vymalo%2fvsms-node
+```
+
+That `E404` is npm masking an unauthorized write as "not found" rather than
+confirming the package exists — the same masking this file already records for a
+revoked bootstrap token. Read it as auth, never as a missing package.
+
+**The first publish of the new name cannot go through CI, and this is structural,
+not a misconfiguration.** npm Trusted Publishing cannot bootstrap itself: a package
+name must already exist on the registry before a Trusted Publisher can be attached
+to it. `@vaam-apps/vsms-node` has never been published, so there is nothing to
+attach to yet. One manual, token-authenticated publish has to reserve the name
+first; every release after that goes through OIDC in `release.yml` with no token
+anywhere in the repo.
+
+Two traps on that manual publish, both already documented in this file's own
+release-engineering notes and both easy to walk into again:
+
+- **Do not pass `--provenance`.** It only works inside a recognised CI OIDC
+  provider and hard-errors `EUSAGE: Automatic provenance generation not supported
+  for provider: null` *before uploading anything*. `release.yml` passes it because
+  it runs in Actions; a laptop is not that.
+- **If the account has 2FA-on-publish, use an Automation-type token**, npm's own
+  OTP-exempt class. A nested or non-interactive publish cannot answer an OTP
+  prompt and fails `EOTP`.
+
+**`examples/node/demo-app` deliberately still points at `@vymalo/vsms-node`.** It
+resolves from the registry against a committed lockfile with `--frozen-lockfile`,
+so pointing it at a name that does not exist yet would fail every CI run on an
+unresolvable dependency. It moves in a follow-up after the first publish — the same
+ordering constraint the `v0.3.0` bump already hit, for the same reason.
+`examples/node/sms-send-example` did move in this change, because it uses a
+`file:` link and never touches the registry at all.
+
+Historical entries elsewhere in this file still say `@vymalo/vsms-node`. Those are
+left alone on purpose: they describe publishes that really happened under that
+name, and `0.2.0` through `0.3.1` are still on npm under it.
 
 ## Open questions blocking later milestones
 

@@ -8,9 +8,9 @@ importers:
 
   .:
     dependencies:
-      '@vymalo/vsms-node':
-        specifier: ^0.3.0
-        version: 0.3.0
+      '@vaam-apps/vsms-node':
+        specifier: ^0.3.3
+        version: 0.3.3
       express:
         specifier: ^5.2.1
         version: 5.2.1
@@ -120,8 +120,8 @@ packages:
   '@types/serve-static@2.2.0':
     resolution: {integrity: sha512-8mam4H1NHLtu7nmtalF7eyBH14QyOASmcxHhSfEoRyr0nP/YdoesEtU+uSRvMe96TW/HPTtkoKqQLl53N7UXMQ==}
 
-  '@vymalo/vsms-node@0.3.0':
-    resolution: {integrity: sha512-Va3JWhXipib4mdrBh9cWYHi2VdmrofNbKU+FW7oH0oJmWys7JxrThGGZ5IfcJLwu21Ln6cLBYuvMBsUcSXv3UQ==}
+  '@vaam-apps/vsms-node@0.3.3':
+    resolution: {integrity: sha512-p7Zp+a2/E2NugbEMgzqrNKkaMvF93kvMraaoOH1jN4CbwM8g/5qw6uF1SrfobiCEcx919LjuIygbsIbLENJNZQ==}
     engines: {node: '>=20'}
 
   accepts@2.0.0:
@@ -264,8 +264,8 @@ packages:
   is-promise@4.0.0:
     resolution: {integrity: sha512-hvpoI6korhJMnej285dSg6nu1+e6uxs7zG3BYAm5byqDsgJNWwxzM6z6iZiAgQR4TJ30JmBTOwqZUw3WlyH3AQ==}
 
-  jose@5.10.0:
-    resolution: {integrity: sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg==}
+  jose@6.2.12:
+    resolution: {integrity: sha512-9NiFmJEex0sy2Dk58j2UGBSHgUs2ypF9eZSu4L6vjOX3Dp96Sw1F3uL+H+D1sx02jZZdzUT0HgvCy59CuvXcWw==}
 
   math-intrinsics@1.1.0:
     resolution: {integrity: sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==}
@@ -478,9 +478,9 @@ snapshots:
       '@types/http-errors': 2.0.5
       '@types/node': 24.13.3
 
-  '@vymalo/vsms-node@0.3.0':
+  '@vaam-apps/vsms-node@0.3.3':
     dependencies:
-      jose: 5.10.0
+      jose: 6.2.12
 
   accepts@2.0.0:
     dependencies:
@@ -645,7 +645,7 @@ snapshots:
 
   is-promise@4.0.0: {}
 
-  jose@5.10.0: {}
+  jose@6.2.12: {}
 
   math-intrinsics@1.1.0: {}
 
