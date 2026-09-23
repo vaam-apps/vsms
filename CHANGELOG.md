@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.4.4](https://github.com/vaam-apps/vsms/compare/v0.4.3...v0.4.4) (2026-09-23)
+
+
+### Chores
+
+* **ci:** bump the vaam-apps/.github workflow pin to pick up the lint fix ([#417](https://github.com/vaam-apps/vsms/issues/417)) ([848e28c](https://github.com/vaam-apps/vsms/commit/848e28cbdf337ee743f68c3b0ea0ab5011138fbd))
+* **deps:** bump @vaam-apps/ui 0.2.0 -&gt; 0.2.4 ([#419](https://github.com/vaam-apps/vsms/issues/419)) ([ff2af82](https://github.com/vaam-apps/vsms/commit/ff2af82b97ef840e9a20f72618efcb8d25d03383))
+
 ## [0.4.3](https://github.com/vaam-apps/vsms/compare/v0.4.2...v0.4.3) (2026-09-20)
 
 
