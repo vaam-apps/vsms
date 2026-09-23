@@ -16,7 +16,7 @@
     "@vsms/env": "workspace:*",
     "@vsms/gateway": "workspace:*",
     "@vsms/hooks": "workspace:*",
-    "@vaam-apps/ui": "^0.2.0",
+    "@vaam-apps/ui": "^0.2.4",
     "jose": "6.2.12",
     "lucide-react": "^1.44.0",
     "next": "16.3.5",
