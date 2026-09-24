@@ -271,12 +271,13 @@ way:
 > sub-navigation (rename, confirm-requeue, "New X" from a toolbar). Always dims
 > the background. Never scrolls the page behind it. §1.7.
 >
-> _Since vaam-apps/vsms#420 (2026-09-24), on `@vaam-apps/ui` 0.3.0: a dialog
-> whose form has three or more inputs, or whose body would scroll on a 375×812
-> phone, is a `DialogFullScreen`. It is full-screen below 640px, with its
-> confirm action in a top bar, and the centered dialog from 640px up.
-> Confirmations and one- or two-field forms stay centered at every width. Every dialog takes the library's width. The rule and its
-> enforcing test are in `AGENTS.md`._
+> _Since vaam-apps/vsms#420 (2026-09-24), which moved the console to
+> `@vaam-apps/ui` 0.4.0: a dialog whose form has three or more inputs, or whose
+> body would scroll on a 375×812 phone, is a `DialogFullScreen`. It is
+> full-screen below 640px, with its confirm action in a top bar, and the
+> centered dialog from 640px up. Confirmations and one- or two-field forms stay
+> centered at every width. Every dialog takes the library's width. The rule and
+> its enforcing test are in `AGENTS.md`._
 >
 > **Inline confirmation** (`@vaam-apps/ui`'s `InlineConfirm`, rendered as the
 > drawer's own body/footer, no portal) — the *same* two shapes as `Dialog`
