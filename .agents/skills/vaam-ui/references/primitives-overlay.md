@@ -11,19 +11,19 @@ months ago, a message that expired while they were looking at a payload.
 
 ## Choosing one
 
-| The operator is… | Use | Not |
-|---|---|---|
-| deciding something irreversible, and must stop | `ConfirmDialog` | a toast |
-| confirming a row-level action | `InlineConfirm` | `ConfirmDialog` |
-| confirming something **inside an open drawer** | `InlineConfirm` | a nested `Dialog` — it does not work, see below |
-| reading one record's headline without leaving the list | `QuickDetailDrawer` | `Dialog` |
-| working through a whole record — every field, an edit form, destructive actions | `MoreDetailDrawer` | `Dialog` |
-| taking one focused action with a form in it | `Dialog` | a drawer |
-| picking from a short list of actions on a row | `DropdownMenu` | `Popover` |
-| reading a little extra anchored content, possibly interactive | `Popover` | `Tooltip` |
-| reading a one-line gloss on a label | `Tooltip` | `Popover` |
-| jumping somewhere by typing | `CommandMenu` | `DropdownMenu` |
-| being told something already finished | `toast` | anything modal |
+| The operator is…                                                                | Use                 | Not                                             |
+| ------------------------------------------------------------------------------- | ------------------- | ----------------------------------------------- |
+| deciding something irreversible, and must stop                                  | `ConfirmDialog`     | a toast                                         |
+| confirming a row-level action                                                   | `InlineConfirm`     | `ConfirmDialog`                                 |
+| confirming something **inside an open drawer**                                  | `InlineConfirm`     | a nested `Dialog` — it does not work, see below |
+| reading one record's headline without leaving the list                          | `QuickDetailDrawer` | `Dialog`                                        |
+| working through a whole record — every field, an edit form, destructive actions | `MoreDetailDrawer`  | `Dialog`                                        |
+| taking one focused action with a form in it                                     | `Dialog`            | a drawer                                        |
+| picking from a short list of actions on a row                                   | `DropdownMenu`      | `Popover`                                       |
+| reading a little extra anchored content, possibly interactive                   | `Popover`           | `Tooltip`                                       |
+| reading a one-line gloss on a label                                             | `Tooltip`           | `Popover`                                       |
+| jumping somewhere by typing                                                     | `CommandMenu`       | `DropdownMenu`                                  |
+| being told something already finished                                           | `toast`             | anything modal                                  |
 
 Two rules that cut most of the wrong answers:
 
@@ -40,8 +40,14 @@ Two rules that cut most of the wrong answers:
 
 ## `Dialog` — a modal for one focused decision
 
-Parts: `Dialog`, `DialogTrigger`, `DialogContent`, `DialogHeader`,
-`DialogTitle`, `DialogDescription`, `DialogFooter`, `DialogClose`.
+Parts: `Dialog`, `DialogTrigger`, `DialogContent`, `DialogFullScreen`,
+`DialogHeader`, `DialogTitle`, `DialogDescription`, `DialogActions`,
+`DialogClose`.
+
+It is a **compound component**, like `Select`: `Dialog` owns the open
+state, and everything visible is a part you nest inside it. You pick the
+*presentation* by the container part; the other parts are the same in
+both.
 
 `Dialog` itself is a context provider, not a rendered element — it holds
 the open state so that both shapes work: uncontrolled, driven by a
@@ -61,13 +67,70 @@ The `| undefined` on each is deliberate: this package compiles under
 `exactOptionalPropertyTypes`, where a bare `open?: boolean` would reject
 `open={maybeUndefined}`. Yours can pass it.
 
+### The container — pick one
+
+- **`DialogContent`** — M3's basic dialog at every width: centred, 28px
+  corners, 560px wide where there is room (the screen less 16px each side
+  on a phone), on `surface-3`. Use it for anything short: a confirmation,
+  a few fields.
+- **`DialogFullScreen`** — M3's full-screen dialog **below 640px**, the
+  same basic dialog from 640px up. Use it for a long or form-heavy dialog
+  a phone should give the whole screen. Below 640px: a 64px top bar leads
+  with a close icon and carries your `DialogActions` trailing, and a
+  `DialogClose` among the actions is hidden (the close icon is that
+  action). Chosen by CSS media query, so it server-renders correctly.
+
+`className` on either lands on the panel, and it is the only prop they
+take besides `children` — the parts carry nothing DOM-only, so a native
+implementation can share them. The panel is bounded at `max-h-[85vh]`
+(full height when full-screen) and scrolls internally.
+
+**Inside a dialog, surfaces step up one.** The panel is `surface-3`, which
+is also this library's hover and selected fill — so everything inside it
+reads `surface-1` as `surface-2`, `surface-2` as `surface-3`, and
+`surface-3` as a `surface-4` half a step on (lighter in the dark theme,
+darker in the light one — as far as text contrast allows). A `RadioGroup`'s checked
+row, a table's hover, a switch track keep their meaning without you doing
+anything. Do not compensate with your own fills. (Full-screen on a phone
+the panel is the page's own ground, and nothing shifts.)
+
+### The parts
+
+- **`DialogHeader`** — holds `DialogTitle` and `DialogDescription`, pinned
+  to the top of the visible panel while a long body scrolls.
+- **`DialogTitle`** — the headline and the dialog's accessible name.
+  Always include it.
+- **`DialogDescription`** — the supporting text, what `aria-describedby`
+  points at.
+- **`DialogActions`** — the dialog's buttons, end-aligned, pinned to the
+  bottom of the visible panel (in the full-screen bar below 640px). Put the
+  dismissing one in as a `DialogClose`, so the full-screen dialog knows to
+  hide it. Write it as a direct part of the container — inside your own
+  `relative` (or otherwise positioned) wrapper it never reaches the bar.
+  The bar holds **one short confirming action**, as M3's does. More fit —
+  three short labels at 320px — but they crowd the bar, and a long label
+  leaves little room for another. **Renamed from
+  `DialogFooter` in 0.3.0** — same place, same children.
+- **`DialogClose`** — closes the dialog, two ways:
+  - **Bare** (`<DialogClose />`, no children, no `as`): the close icon.
+    Every dialog renders one already — the ✕ in the top-right corner, or
+    the bar's leading close icon when full-screen. Written as a **direct
+    part** of `DialogContent`/`DialogFullScreen` (or inside a fragment
+    there), it *replaces* that icon — the way to change its `aria-label`
+    (default "Close"). Written anywhere else — inside `DialogActions`, the
+    header, your own element — it is an extra ✕ icon button where you put
+    it, and the corner icon stays.
+  - **With children or `as`**: closes on click and renders what you give
+    it, e.g. `<DialogClose as={Button} variant="ghost">Cancel</DialogClose>`.
+
 `DialogTrigger` and `DialogClose` are polymorphic — `as={Button}` rather
-than Radix's old `asChild`. `DialogContent`'s `className` lands on the
-panel, whose default is `max-w-[480px]`.
+than Radix's old `asChild`. Both set `type="button"` unless `as` is an
+intrinsic tag that is not a button (`"a"`, `"div"`), so neither submits a
+surrounding `<form>`; pass `type="submit"` yourself if you want that.
 
 ```tsx
 <Dialog>
-  <DialogTrigger as={Button} type="button" variant="secondary" size="sm">
+  <DialogTrigger as={Button} variant="secondary" size="sm">
     Requeue payout
   </DialogTrigger>
 
@@ -85,37 +148,72 @@ panel, whose default is `max-w-[480px]`.
       <DetailRow label="Provider" value="orange_cm" />
     </DetailList>
 
-    <DialogFooter>
-      <DialogClose as={Button} type="button" variant="ghost" size="sm">
+    <DialogActions>
+      <DialogClose as={Button} variant="ghost" size="sm">
         Cancel
       </DialogClose>
       <Button type="button" size="sm" onClick={requeue}>
         Requeue
       </Button>
-    </DialogFooter>
+    </DialogActions>
   </DialogContent>
 </Dialog>
 ```
 
-**Pass `type="button"` when you use `as`.** `DialogTrigger` and
-`DialogClose` set `type="button"` only on the plain `<button>` they
-render by default; with `as={Button}` nothing sets it, and `Button` has no
-default either — so inside a `<form>` the browser treats it as a submit.
-(Menu and popover triggers do not have this problem: Headless UI resolves
-the type itself.)
+A form a phone should give the whole screen — the same parts inside
+`DialogFullScreen`, the submit button pointing at the form with `form=`:
 
-**You do not have to solve tall content.** The panel is bounded at
-`max-h-[85vh]` and scrolls internally; `DialogHeader` and `DialogFooter`
-are `sticky`, so they stay pinned to the visible panel while the body
-scrolls between them, and the close button is a sibling of the scrollport
-rather than inside it, so it never travels out of view. A short dialog is
-unaffected — the cap is a maximum, not a height. Do not add your own
-`overflow-y-auto`; putting it on the panel is the exact bug this layout
-was built to avoid.
+```tsx
+<Dialog open={open} onOpenChange={setOpen}>
+  <DialogFullScreen>
+    <DialogHeader>
+      <DialogTitle>New webhook endpoint</DialogTitle>
+      <DialogDescription>The signing secret is shown once, after creation.</DialogDescription>
+    </DialogHeader>
+    <form id="create-endpoint" onSubmit={create}>{/* FormFields */}</form>
+    <DialogActions>
+      <DialogClose as={Button} variant="ghost" size="sm">Cancel</DialogClose>
+      <Button type="submit" form="create-endpoint" size="sm">Create</Button>
+    </DialogActions>
+  </DialogFullScreen>
+</Dialog>
+```
 
-Both `DialogTitle` and `DialogDescription` should be present:
-`DialogTitle` becomes the dialog's accessible name, and the description is
-what `aria-describedby` points at.
+**Migrating from 0.2.x:**
+
+- Rename `DialogFooter` to `DialogActions`.
+- Write a Cancel button as `<DialogClose as={Button} variant="ghost">`
+  rather than a `Button` whose `onClick` closes the dialog — that is how the
+  full-screen dialog knows to hide it. If your Cancel also ran logic, keep
+  it as `onClick` on the `DialogClose`: it runs, then the dialog closes; do
+  not *also* call your close handler there, or it runs twice. A button that
+  must stay visible in the full-screen bar ("I've saved it — close") stays
+  a plain `Button`.
+- The panel is now M3's: 28px corners, `surface-3`, 560px wide by default
+  (was 480px; `ConfirmDialog` was 384px), a 1px ring instead of a border,
+  and it fades in without scaling. A `max-w-*` you pass in `className`
+  still wins over the default: drop `max-w-[560px]` (now the default), and
+  decide for any other width (`max-w-[480px]`, `max-w-sm`) whether you
+  still want it.
+- Type and spacing change: `DialogTitle` is 20px (was 16px), 16px above
+  the description (was 4px); with a mouse the padding is 20px (was 24px)
+  and the buttons sit 16px under the text.
+- The parts take `className` and `children` only; any other attribute you
+  passed to `DialogContent`, `DialogHeader` or `DialogFooter` is dropped.
+- Consider `DialogFullScreen` for your long, form-heavy dialogs.
+
+**You do not have to solve tall content.** `DialogHeader` and
+`DialogActions` are `sticky`, pinned to the visible panel while the body
+scrolls between them, and the close icon is a sibling of the scrollport
+rather than inside it, so it never travels out of view. Do not add your
+own `overflow-y-auto`; putting it on the panel is the exact bug this
+layout was built to avoid.
+
+A `Select` inside a dialog works: its dropdown floats over the panel
+rather than being clipped by it — on the panel's own material, told apart
+by its border and shadow, the way a sheet opened over a sheet is the same
+material as the one under it — and on a phone its sheet opens over the
+dialog.
 
 ---
 
@@ -208,6 +306,18 @@ interface DetailDrawerProps {
   **caller is expected to own a shallow `?panel=<recordId>` route** so the
   panel survives a refresh and can be linked to; the component owns the
   weight, never the routing.
+
+Below 768px both are a phone bottom sheet with M3's own shape: 28px top
+corners (`rounded-t-sheet`, the `--radius-sheet` token — M3's corner for
+sheets and dialogs only; do not put it on a card) and M3's 32×4 drag handle, with
+22px above it and 22px below. That handle used to be a 5px bar 8px from
+the top, so the title row now sits about 19px lower than it did — worth
+knowing if a screenshot test pins it. Below 640px a `Select` inside one
+opens as a second sheet over it with the same corner and handle — or, if
+it has a `SelectSearch`, as the full-screen search view over the whole
+screen, not just the drawer. Between 640 and 767px the drawer is a sheet
+but a `SelectContent` is still a dropdown (a docked search view if
+searchable), and a `SelectDropdown` is a dropdown at every width.
 
 One limitation to know before you pick the quick one for a background
 task: `modal={false}` in vaul 1.1.2 removes the dim and the pointer

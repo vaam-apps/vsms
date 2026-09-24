@@ -19,10 +19,10 @@ success or warning button** — those hues belong to the status system, and
 a button that borrows one erodes the state language on every screen where
 both appear.
 
-| Prop | Type | Default |
-|---|---|---|
+| Prop      | Type                                                   | Default     |
+| --------- | ------------------------------------------------------ | ----------- |
 | `variant` | `"primary" \| "secondary" \| "ghost" \| "destructive"` | `"primary"` |
-| `size` | `"sm" \| "md" \| "icon"` | `"md"` |
+| `size`    | `"sm" \| "md" \| "icon"`                               | `"md"`      |
 
 Everything else is `<button>`'s own attributes, and the ref lands on the
 element. `ButtonVariant` and `ButtonSize` are exported if you need to
@@ -135,7 +135,9 @@ required turns that into a compile error instead.
 - **A hint cannot reach a `Select`.** Headless UI's `ListboxButton` builds
   its own `aria-describedby` from an internal description context and lets
   its own props win, so a value handed down is overwritten with
-  `undefined` before it reaches the DOM. `aria-invalid` threads fine.
+  `undefined` before it reaches the DOM. A searchable `Select`'s trigger
+  (Headless UI's combobox button) does the same. `aria-invalid` threads
+  fine.
   There is a test pinning exactly what each control emits, so this will
   announce itself if it ever changes. Until then: put anything a `Select`
   user must read into the label, not the hint.
@@ -180,13 +182,23 @@ import { FieldError, FormField, Input } from "@vaam-apps/ui";
 </form>
 ```
 
-## Select, SelectTrigger, SelectValue, SelectContent, SelectGroup, SelectItem
+## Select and its parts
 
-A listbox, for a vocabulary too long to show at once. For a handful of
+`Select`, `SelectTrigger`, `SelectValue`, `SelectContent`, `SelectDropdown`,
+`SelectModal`, `SelectItem`, `SelectGroup`, `SelectSearch`, `SelectEmpty`,
+`SelectClose`, `SelectModalHandle`.
+
+A picker, for a vocabulary too long to show at once. For a handful of
 options prefer `RadioGroup` or `ChipSelect` — a select costs one click to
 discover the choices and another to pick one.
 
-The composition is the Radix shape kept deliberately intact:
+It is a **compound component**: `Select` is the wrapper that owns the
+value, and everything visible is a part you nest inside it. You describe
+*what* you want; the library decides *how* — which engine, which
+presentation at which width. Adding a `<SelectSearch />` is the whole
+switch from a plain picker to a searchable one.
+
+### The value and the trigger
 
 - **`Select`** owns the value. `value` / `defaultValue` / `onValueChange`
   (all `string`), plus `disabled` and `aria-invalid`. Controlled when
@@ -196,23 +208,145 @@ The composition is the Radix shape kept deliberately intact:
   `useState<string>()` → `value={v}` pattern would otherwise be a type
   error.
 - **`SelectTrigger`** is the button. Takes `id`, `className`, and
-  `aria-label` / `aria-labelledby` for a select used outside a
-  `FormField` — the trigger only ever renders the selected value, so
-  nothing else can name it.
+  `aria-label` for a select used outside a `FormField` — the trigger only
+  ever renders the selected value, so nothing else can name it. Use
+  `aria-label`, not `aria-labelledby`: the latter is accepted but does not
+  currently reach the rendered button (Headless UI's own label wiring
+  overrides it), so a select named that way is named by its own text —
+  the current value or the placeholder — instead of its label.
 - **`SelectValue`** renders the selected item's *children* (the label),
-  not the raw value, falling back to the value if no item matches. Its
-  `placeholder` shows while nothing is selected.
-- **`SelectContent`** is the dropdown. It renders **inline, not
-  portalled** — a correctness fix, not a preference: Headless UI's
-  portalled options land outside a vaul drawer's focus trap, where the
-  enter transition stalls and the listbox is measurably never usable
-  (`opacity: 0`, `pointer-events: none`, a collapsed rect). Every select
-  inside a drawer was broken that way until it was rendered inline.
+  not the raw value. Its `placeholder` shows while nothing is selected.
+  The label is found by walking `Select`'s children, so write
+  `SelectItem`s directly rather than from inside your own wrapper
+  component if the label differs from the value. An item's label is also
+  remembered once the item has rendered, so the name stays when your own
+  search results (`filter={false}`) no longer include the chosen item;
+  only a value no item has ever shown falls back to the raw value.
+
+### The container — pick one
+
+- **`SelectContent`** (use this by default) — a dropdown under the
+  trigger from 640px up; **below 640px an M3 modal bottom sheet** (pinned
+  to the bottom edge, full width, 28px top corners, a scrim, capped at
+  85dvh and scrolling, a drag handle that dismisses past 56px or on a
+  flick, 56px rows with the current value as a filled row with 16px
+  corners). With a `SelectSearch` it is instead M3's **docked search
+  view** from 640px up and its **full-screen search view** below. Chosen
+  by CSS media query, so it server-renders correctly.
+- **`SelectDropdown`** — the dropdown (or docked search view) at *every*
+  width, phones included. The opt-out, for a two- or three-option select
+  inline in a dense form row. Most selects should not use it.
+- **`SelectModal`** — the sheet (or full-screen search view) at every
+  width. From 640px up, both are capped at 640px and centred; the
+  searchable one is then the full window height, with the sheet's 28px top
+  corners and scrim.
+
+All three render **inline, not portalled** — a correctness fix, not a
+preference: Headless UI's portalled options land outside a vaul drawer's
+focus trap, where they never become usable. So they all work inside a
+`Drawer`. The dropdown (and the docked search view) is nonetheless
+`position: fixed`, placed under its trigger by Floating UI, so a scrolling
+or clipping ancestor — a `Dialog`'s body, a drawer's, a card with
+`overflow-hidden` — no longer cuts it off. The exception is a container
+that clips *and* has a `transform`, `filter`, `backdrop-filter`,
+`contain` or `will-change: transform`: that one still clips it, so do not
+put a `Select` in one. When its trigger scrolls out of its container's
+view, the dropdown fades out and ignores the pointer until the trigger
+scrolls back; while faded it still answers the keyboard, and Escape
+closes it. It matches the trigger's width,
+shrinks to the room below it, and opens *above* the trigger only when it
+does not fit below and less than 200px is left there (a short list that
+fits never flips); with too little room either side it keeps the better
+side, shorter. Near the right edge of the window a docked search view
+aligns to its trigger's right edge instead of its left. Its placement is
+the library's: do not pass `top-*`, `left-*`, `inset-*` or `mt-*` in
+`className` (they replace or add to it), and know that a `max-h-*` there
+replaces the cap that keeps it inside the window. Do not put a `Select` inside something that re-anchors
+`position: fixed` children at phone width (a `transform`ed or
+`will-change`d ancestor that is *not* pinned to the bottom edge — the
+sheet anchors to that ancestor instead of the screen). A width you pass
+to `SelectContent`'s `className` (`w-64`) applies to the dropdown only;
+the phone sheet stays full-width unless you pass a `max-sm:` width.
+`SelectModal` inside a desktop side drawer is laid out against the
+drawer's panel, not the window — measured at 1440px, a 640px modal
+centred in `MoreDetailDrawer`'s 680px panel rather than on the screen.
+
+### The options
+
 - **`SelectItem`** takes a `value` and its label as children. Labels clamp
-  to two lines.
+  to two lines. Any string is a valid `value`, `""` included (an "Any
+  country" row): picked, the trigger shows its label. Without a
+  `<SelectItem value="">`, `value=""` on `Select` still means "nothing
+  picked" and shows the placeholder. `textValue` is what search matches against — pass it
+  when the children are not plain text, or to be findable by a word not
+  shown. It *replaces* the children's text rather than adding to it, so
+  include the label: `textValue="Cameroon CM"` makes "CM" find Cameroon,
+  where `textValue="CM"` would stop "Cameroon" finding it.
 - **`SelectGroup`** is semantic grouping only — a `contents` fieldset with
-  no visual treatment of its own. Nothing in the console uses it today; it
-  exists for API parity.
+  no visual treatment of its own.
+
+### Search — a searchable select
+
+- **`SelectSearch`** — an M3 search field in the popup's header (write it
+  first among the container's children; it is lifted into the header
+  wherever you put it, but it must be a direct part, not inside your own
+  wrapper component). It makes the select a WAI-ARIA combobox: focus stays
+  in the field while the arrow keys move through the options, Enter picks,
+  Escape closes. Enter with nothing to pick does nothing (the view and the
+  text stay). Tab leaves the field and closes the popup *without* picking
+  anything. Matching is case- and accent-insensitive ("cote" finds "Côte
+  d’Ivoire"). `placeholder`; `aria-label` (default "Search" plus the
+  select's own name — "Search Country" inside a `FormField` labelled
+  Country); `clearLabel`, the clear button's name (default "Clear
+  search"); `onQueryChange(query)` (called as the text changes, and with
+  `""` on close if anything was typed — not on the close of a popup nobody
+  searched, so a per-query fetch does not refetch the full list on every
+  open and close); and `filter` — pass `filter={false}` when you filter or
+  fetch the items yourself from `onQueryChange`; every item you render is
+  then shown. Adding or removing the `SelectSearch` swaps the engine and
+  remounts the trigger and the popup, so change it only while the select
+  is closed.
+- **`SelectEmpty`** — shown when no option is shown. Every searchable
+  popup renders "No match" on its own; write a `SelectEmpty` to say more
+  ("No country matches", or "Searching…" while your fetch is in flight).
+  It is plain text, not a live region itself: the popup keeps one polite
+  `role="status"` mounted while it is open and puts this text into it
+  when the list empties, which is what a screen reader reliably
+  announces.
+
+### Chrome — public parts with defaults, so you rarely write them
+
+- **`SelectClose`** — closes the popup. The full-screen search view leads
+  with one (a back arrow, named "Back") unless you write your own as a
+  direct part of the container — one wrapped in your own element does not
+  replace it. Add one anywhere else with any children
+  (`<SelectClose>Done</SelectClose>`); with children, they are its name
+  and `aria-label` is ignored. Where it lands decides what it is. Written
+  as a direct part of a searchable select's container, it is lifted into
+  the header beside the field and is a real button, named by its children
+  or, with none, by `aria-label` (default "Back").
+  Anywhere inside the list — every `SelectClose` in a plain select, or one
+  you wrap in your own element in a searchable one — it is a pointer-only
+  affordance (`aria-hidden`, out of the tab order), because a listbox may
+  only expose options; keyboard users have Escape.
+- **`SelectModalHandle`** — the sheet's M3 drag handle. Every sheet
+  renders one at its top unless you place your own; there is none in a
+  dropdown or a search view.
+
+**Behaviour you get for free:** Escape, a tap on the dimmed page, the back
+arrow, a drag of the handle, or picking an option closes it and returns
+focus to the trigger. Inside a drawer, any of those closes the `Select`
+alone; the next Escape closes the drawer. While a searchable popup is
+open the rest of the page is inert and does not scroll, inside a `Dialog`
+or `Drawer` too, and both are restored on close — including when your
+`onValueChange` closes the dialog around it. `SideNav`'s bottom toolbar
+hides itself while any `Select` is open below 640px, and its vertical
+toolbar while a `SelectModal` is open.
+
+**Known limit.** The full-screen search view is `100dvh` tall, and
+neither iOS Safari nor Android Chrome (by default) shrinks `dvh` for the
+on-screen keyboard — it overlays the page — so the last results can sit
+under the keyboard until it is dismissed.
 
 ```tsx
 import {
@@ -230,6 +364,32 @@ const [provider, setProvider] = useState<string>();
       <SelectItem value="orange_cm">Orange Cameroon</SelectItem>
       <SelectItem value="mtn_agg">MTN (aggregator)</SelectItem>
       <SelectItem value="twilio">Twilio</SelectItem>
+    </SelectContent>
+  </Select>
+</FormField>
+```
+
+Searchable — the same parts plus a `SelectSearch`:
+
+```tsx
+import {
+  FormField, Select, SelectContent, SelectEmpty, SelectItem, SelectSearch,
+  SelectTrigger, SelectValue,
+} from "@vaam-apps/ui";
+
+<FormField label="Country" htmlFor="sender-country">
+  <Select value={country} onValueChange={setCountry}>
+    <SelectTrigger id="sender-country">
+      <SelectValue placeholder="Choose a country" />
+    </SelectTrigger>
+    <SelectContent>
+      <SelectSearch placeholder="Search countries" />
+      {countries.map((c) => (
+        <SelectItem key={c.code} value={c.code} textValue={`${c.name} ${c.code}`}>
+          {c.name}
+        </SelectItem>
+      ))}
+      <SelectEmpty>No country matches</SelectEmpty>
     </SelectContent>
   </Select>
 </FormField>
@@ -423,40 +583,121 @@ You need these only when talking to something that works in date objects
 (a chart axis, a bare `Calendar`). Application code should hold the ISO
 string and pass it straight to the API.
 
-### DatePicker and DateRangePicker
+### DatePicker and DateRangePicker, and their parts
+
+`DatePicker`, `DateRangePicker`, `DatePickerTrigger`, `DatePickerValue`,
+`DatePickerClear`, `DatePickerContent`, `DatePickerDropdown`,
+`DatePickerModal`, `DatePickerTitle`, `DatePickerCancel`,
+`DatePickerConfirm`, `DatePickerClose`.
+
+A **compound component**, shaped like `Select`: the root (`DatePicker` for
+one date, `DateRangePicker` for a range) owns the value, and every visible
+piece is a part nested inside it. The same parts serve both roots.
 
 ```ts
 interface DatePickerProps {
   value: IsoDate | undefined;
   onValueChange: (value: IsoDate | undefined) => void;
-  placeholder?: string;              // default "Pick a date"
   min?: IsoDate | undefined;         // earliest selectable, inclusive
   max?: IsoDate | undefined;         // latest selectable, inclusive
   disabled?: boolean | undefined;
-  clearable?: boolean;               // default true
   "aria-describedby"?: string | undefined;
   "aria-invalid"?: boolean | undefined;
-  className?: string | undefined;
+  children: ReactNode;
 }
 ```
 
-`DateRangePickerProps` is the same with `value: IsoDateRange | undefined`,
-a default placeholder of "Pick a date range", and `numberOfMonths`
-(default `2`, so "last 30 days" is selectable without navigating).
+`DateRangePickerProps` is the same with `value: IsoDateRange | undefined`.
+A half-finished range (`from` set, `to` open) is a value, not a validation
+error. `aria-describedby` and `aria-invalid` are what `FormField` hands
+its child; the root passes both on to the trigger.
 
-`min` / `max` clamp navigation as well as selection — the chevrons stop
+**A pick is staged, then confirmed, at every width.** Tapping a day only
+moves the pick. A range follows M3's rule: the first tap sets the start, a
+tap on or after the start sets the end, and a tap before the start or on a
+whole range starts a new range. `onValueChange` fires once, when the operator presses OK
+(Save for a range). Cancel, Escape, a press outside the picker and the
+full-screen picker's close icon all throw the pick away. OK is disabled
+until there is a date to commit; a range needs only its start, and
+committing a start alone gives an open-ended range (`{ from, to:
+undefined }`). Focus goes
+back to the trigger on close.
+
+**A press outside only closes the picker.** It does not also act on what
+it lands on: the page is inert while the picker is open, and the rest of
+that press (its click included) is spent on closing. So a button beside
+an open picker takes two presses: one to close the picker, one to press
+it. Inside a `Dialog`, a `Drawer` or your own Radix dialog (its overlay
+wrapping the content or not), the same press, by mouse or touch and however
+long it is held, closes the picker and leaves the dialog open.
+
+#### The parts
+
+- **`DatePickerTrigger`** is the field-looking button. It takes `id` (the
+  `htmlFor` of a `FormField`), `className`, `children` and `aria-label`.
+  It is named by its label: a `FormField` label, or `aria-label` for a
+  picker used outside one. The date it shows is added to its description,
+  so a screen reader hears "Send on, button, 2026-09-11". With no label at
+  all, it is named by its own text.
+- **`DatePickerValue`** is the shown value: `YYYY-MM-DD`, or
+  `from → to` for a range, in mono. While the value is empty it shows its
+  `placeholder`.
+- **`DatePickerClear`** empties the value at once, without opening the
+  picker and without OK. Write it inside the trigger. It renders beside
+  the button, over the field's right end, and only while there is a value
+  and the picker is enabled. Its `aria-label` defaults to "Clear the
+  date", or "Clear the dates" for a range. Leave it out for a date that
+  must always be set.
+- **A container, pick one.** Each takes `className` and, as `children`,
+  any chrome parts you want to relabel.
+  - **`DatePickerContent`** (the default) is M3's docked picker from
+    640px up: a 360px panel under the trigger. Below 640px a single date
+    opens M3's modal date picker: 360px wide (the window less 32px on a
+    narrower phone) and centred over a scrim,
+    with 28px corners and a 120px header that shows the pick as its
+    headline. A range below 640px opens M3's full-screen range picker. It
+    has a bar with a close icon and Save, a 128px header, and one pinned
+    weekday row over the months, stacked vertically to scroll through:
+    12 months either side of the range's start (or today), narrowed by
+    `min`/`max`. The presentation is chosen by CSS media query, so it
+    server-renders correctly.
+  - **`DatePickerDropdown`** is docked at every width, phones included.
+    It's the opt-out for a picker inline in a dense row.
+  - **`DatePickerModal`** is the modal at every width, centred over a
+    scrim on a wide window (a range shows two months there). Below 640px
+    it is the same modal or full-screen picker as `DatePickerContent`.
+- **The chrome** is public parts with defaults, so you rarely write them.
+  Write one inside the container to relabel it:
+  - `DatePickerTitle` defaults to "Select date" or "Select dates". It
+    always names the picker. It is *shown* only where there is a header:
+    a single date's modal, and the full-screen range picker below 640px.
+    The docked picker, and a range's `DatePickerModal` from 640px up (two
+    months, no header), show no title.
+  - `DatePickerCancel` defaults to "Cancel".
+  - `DatePickerConfirm` defaults to "OK", or "Save" for a range.
+  - `DatePickerClose` is the full-screen range picker's close icon, at the
+    start of its bar; it throws the pick away, as Cancel does elsewhere.
+    Named "Close" by default. Give it an `aria-label` to rename it;
+    `children` with an `aria-label` to replace the icon with another (a
+    48px icon button named by the label); or `children` alone for a text
+    button named by its text. Only the full-screen picker has a bar, so
+    anywhere else a written one is not shown.
+
+A docked range shows two months side by side from 768px up, and stacked
+between 640px and 768px.
+
+All three containers render **inline, not portalled**, so they work
+inside a `Drawer`. Escape inside a drawer closes the picker, not the
+drawer. The docked panel is `position: fixed`, placed under its trigger
+by Floating UI exactly as `SelectDropdown` is, with the same caveat: a
+container that clips *and* has a `transform`, `filter`,
+`backdrop-filter`, `contain` or `will-change: transform` still clips it.
+While any picker is open the rest of the page is inert and does not
+scroll.
+
+`min` / `max` clamp navigation as well as selection. The arrows stop,
 rather than letting the operator wander into a month with nothing
-selectable. `clearable` adds an inline clear control once a date is
-picked; it sits outside the trigger button, because a button nested in a
-button is invalid HTML that browsers resolve by hoisting the inner one
-out, silently detaching its handler.
-
-`placeholder` doubles as the accessible name: it is rendered into the
-trigger as visually hidden text, so a picker outside a `FormField` is
-still named. The single picker closes on pick; the range picker stays
-open, because the first click is only half the answer, and a half-finished
-range (`from` set, `to` open) is representable rather than a validation
-error.
+selectable. Every day outside the bounds is disabled.
 
 The trigger is a button, not an editable field — the value comes from the
 calendar, and a text input that looks editable but is not is worse than a
@@ -465,7 +706,8 @@ button that looks like a field. If you want typed entry, use a plain
 
 ```tsx
 import {
-  DatePicker, DateRangePicker, FormField, type IsoDate, type IsoDateRange,
+  DatePicker, DatePickerClear, DatePickerContent, DatePickerTrigger,
+  DatePickerValue, DateRangePicker, FormField, type IsoDate, type IsoDateRange,
 } from "@vaam-apps/ui";
 
 const [settledOn, setSettledOn] = useState<IsoDate | undefined>();
@@ -475,26 +717,66 @@ const [attemptWindow, setAttemptWindow] = useState<IsoDateRange | undefined>({
 });
 
 <FormField label="Settlement date" htmlFor="settled-on">
-  <DatePicker
-    value={settledOn}
-    onValueChange={setSettledOn}
-    min="2026-09-01"
-    max="2026-09-30"
-    placeholder="A day in September"
-  />
+  <DatePicker value={settledOn} onValueChange={setSettledOn} min="2026-09-01" max="2026-09-30">
+    <DatePickerTrigger id="settled-on">
+      <DatePickerValue placeholder="A day in September" />
+      <DatePickerClear />
+    </DatePickerTrigger>
+    <DatePickerContent />
+  </DatePicker>
 </FormField>
 
-<DateRangePicker
-  value={attemptWindow}
-  onValueChange={setAttemptWindow}
-  placeholder="Attempt window"
-/>
+<DateRangePicker value={attemptWindow} onValueChange={setAttemptWindow}>
+  <DatePickerTrigger aria-label="Attempt window">
+    <DatePickerValue placeholder="Any time" />
+    <DatePickerClear />
+  </DatePickerTrigger>
+  <DatePickerContent />
+</DateRangePicker>
 ```
+
+#### Migrating from the single-component picker (0.2.x)
+
+The old `<DatePicker value onValueChange placeholder />` rendered
+everything itself. It is gone; there is no compatibility shim.
+
+- **Nest the parts.** At minimum a `DatePickerTrigger` holding a
+  `DatePickerValue`, and a `DatePickerContent`.
+- **`placeholder`** moves to `<DatePickerValue placeholder>`. It no longer
+  names the trigger: the old picker repeated it in visually hidden text,
+  and an empty trigger was announced twice ("Created between Created
+  between"). Outside a `FormField`, give the trigger an `aria-label`.
+- **`clearable`** (default `true`) is replaced by writing
+  `<DatePickerClear />` in the trigger. **The default flipped:** a picker
+  with no `DatePickerClear` has no clear button. Add one wherever the old
+  picker left `clearable` at its default.
+- **The clear button's name changed.** It was `Clear ${placeholder}`
+  ("Clear Created between"); it is now "Clear the date" / "Clear the
+  dates", or its own `aria-label`. Tests that query it by name need the new
+  one.
+- **`className`** moves to `DatePickerTrigger`, or to the container for
+  the picker's own panel.
+- **`numberOfMonths`** on `DateRangePicker` is gone: two months docked,
+  stacked in the full-screen picker.
+- **A tap on a whole range starts a new one.** The old picker used
+  react-day-picker's rule, which extended the range from its start, so a
+  new start needed Clear first. Its first tap was also a one-day range
+  (`from` = `to`); it is now a start with an open end until the second tap.
+- **`onValueChange` fires on OK or Save only.** The old single picker
+  committed and closed on the first click, and the old range picker
+  committed each click while it stayed open. Code that filtered live as
+  the operator clicked now filters once, on confirm.
+- **Inside a `Drawer` it now works.** The old calendar was portalled out
+  of the drawer, where no day could be clicked.
 
 ### Calendar
 
-The bare month grid, for a different shell than the popover — a filter
-panel, a sidebar, anything that wants the calendar always visible. It is
+The bare month grid, for a different shell than the pickers — a filter
+panel, a sidebar, anything that wants the calendar always visible. It
+has M3's date picker geometry: 40px round days in 48px cells, a 56px
+month row with the arrows at its end, the range as a band running between
+two filled ends, and today as a ring. Unlike the pickers, it shows the
+neighbouring months' days by default (`showOutsideDays`). It is
 `react-day-picker` with every element's class supplied from this system's
 tokens; its own stylesheet is deliberately **not** imported, so there is
 no second theme in the page to drift from `theme.css`. `CalendarProps` is

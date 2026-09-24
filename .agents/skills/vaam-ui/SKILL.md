@@ -56,25 +56,26 @@ font/theme steps: `references/setup.md`.
 Every public export is documented, and a test in the package fails if one
 is not — so if something is missing here, it does not exist.
 
-| Reference | What is in it |
-|---|---|
-| `references/components.md` | How to choose: the three surface registers, and what belongs where |
-| `references/primitives-input.md` | Buttons, text inputs, selects, checkboxes, switches, radios, chips, date pickers, `FormField` |
-| `references/primitives-overlay.md` | Dialogs, drawers, popovers, dropdown and command menus, tooltips, toasts |
-| `references/primitives-layout.md` | Cards, tables, tabs, pagination, `SideNav`, screen scaffolding, skeletons, theming |
-| `references/data-display.md` | Ids, phones, money, timestamps, masked secrets, detail lists, stat tiles, `InstrumentPanel` |
-| `references/patterns.md` | Banners, empty states, live rows, payload inspectors, timelines |
-| `references/status-system.md` | `defineStatusSystem`, `StatusPill`, `StateChip`, `StateMark` |
-| `references/utilities.md` | **`cn()`** — read this before writing a `className` — and `useReducedMotion` |
-| `references/setup.md` | Install, the stylesheet, fonts, the theme attribute |
-| `references/pitfalls.md` | Every entry is a bug that actually shipped |
+| Reference                          | What is in it                                                                                 |
+| ---------------------------------- | --------------------------------------------------------------------------------------------- |
+| `references/components.md`         | How to choose: the three surface registers, and what belongs where                            |
+| `references/primitives-input.md`   | Buttons, text inputs, selects, checkboxes, switches, radios, chips, date pickers, `FormField` |
+| `references/primitives-overlay.md` | Dialogs, drawers, popovers, dropdown and command menus, tooltips, toasts                      |
+| `references/primitives-layout.md`  | Cards, tables, tabs, pagination, `SideNav`, screen scaffolding, skeletons, theming            |
+| `references/data-display.md`       | Ids, phones, money, timestamps, masked secrets, detail lists, stat tiles, `InstrumentPanel`   |
+| `references/patterns.md`           | Banners, empty states, live rows, payload inspectors, timelines                               |
+| `references/status-system.md`      | `defineStatusSystem`, `StatusPill`, `StateChip`, `StateMark`                                  |
+| `references/utilities.md`          | **`cn()`** — read this before writing a `className` — and `useReducedMotion`                  |
+| `references/setup.md`              | Install, the stylesheet, fonts, the theme attribute                                           |
+| `references/pitfalls.md`           | Every entry is a bug that actually shipped                                                    |
 
 Three orientation rules:
 
 - **Surfaces come in three registers** — diagnostic (a hairline; most of
   the library), floating (a shadow, because it overlaps a ground it does
-  not know), instrument (`InstrumentPanel` / `Card glow`, for data you
-  *scan* rather than read).
+  not know — one exception: `SideNav`'s floating toolbar follows M3's
+  elevation level 0 and has none), instrument (`InstrumentPanel` / `Card glow`,
+  for data you *scan* rather than read).
 - **`cn()` is exported** and is the only correct way to merge classes onto
   these components — plain string concatenation loses to `tailwind-merge`
   in ways that delete classes silently. `references/utilities.md` has the

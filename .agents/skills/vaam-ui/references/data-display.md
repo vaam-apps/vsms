@@ -296,6 +296,7 @@ One headline number with its label and context.
 | `value` | `React.ReactNode` | The figure. **This component does no formatting** — a tile cannot know whether it is showing a count, a currency or a rate. Pass a `Money` or a formatted string. Never clamped: a truncated figure is a wrong figure, so a long one wraps inside the tile instead. |
 | `caption` | `React.ReactNode` | One line under the value: the comparison, the window, the caveat. Clamped to two lines — tiles stretch to the tallest in the row. |
 | `tone` | `StatusHue` | Tints the value. Leave unset unless the number's own colour carries meaning; a wall of coloured tiles makes the one that matters harder to find. |
+| `emphasized` | `boolean` | Singles this tile's value out among peers by weight (`font-medium`), not colour — colour is reserved for status. Set it on at most one tile in a row; a row where every tile is emphasised has no emphasis. |
 | `action` | `React.ReactNode` | Top-right slot — a sparkline, a `StateChip`, a refresh button. |
 
 The `caption` slot exists because a bare number with no denominator is the

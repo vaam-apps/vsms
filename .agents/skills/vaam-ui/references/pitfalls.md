@@ -53,7 +53,11 @@ already steps its own caption up; do not push it back down.
 so they **cannot reserve their own space** — that is the trade that lets
 one layout serve every width. The content column's padding is yours:
 leave room on the left where the vertical rail floats, and at the bottom
-where the phone pill does.
+where the phone pill does. Both are M3's floating toolbar now and each
+ends 80px from its edge, so the numbers are `sm:pl-24` and `pb-24` —
+`sm:pl-20`, which was right for the old 52px rail, now leaves content
+flush against the toolbar. With `viewport-fit=cover` the bottom one also
+rises by `env(safe-area-inset-bottom)`; add it to your `pb-*` too.
 
 ## A tooltip is invisible or cut in half
 
