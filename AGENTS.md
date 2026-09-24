@@ -2742,12 +2742,12 @@ read off the changelog — the 0.1.2 section above is why:
   `onClick` beside it runs the handler twice. Measured with a counter on the
   handler: two calls per Cancel with it, one without — and in
   `CreateAppDialog`/`CreateRoleDialog` that handler is also `form.reset()`.
-  The panel's default width is `560px` (was `480px`): `requeue-confirm` and
-  `create-sender` grow to it; `create-endpoint`'s explicit `max-w-[560px]`
-  is gone (measured 560 either way); the other five keep their explicit
-  `440`/`480`/`520`, because upstream's migration table (vaam-apps/ui#33)
-  marks those widths, and `DialogFullScreen` for the form dialogs, as this
-  console's decision rather than a migration step.
+  The panel's default width is `560px` (was `480px`), and all eight take
+  it: upstream's migration table (vaam-apps/ui#33) left the explicit widths
+  and `DialogFullScreen` to this console, and the maintainer's call was to
+  drop all six widths (`create-endpoint`'s `560`, the other five's
+  `440`/`480`/`520`) and to adopt `DialogFullScreen` by the rule at the end
+  of this section.
 - **`SideNav`'s** new rail geometry (`sm:pl-24`, the 80px edge, the 288px
   bottom bar) is `smallScreen="floating"` only. `console-chrome.tsx` passes
   `"off-canvas"`: no floating toolbar exists at 375, 1100 or 1280px, the
@@ -2758,7 +2758,8 @@ read off the changelog — the 0.1.2 section above is why:
   640px, with no opt-out. No call site passes a `className` to
   `SelectContent`. In a `Dialog` (`record-opt-out`) and in a
   `MoreDetailDrawer` (provider edit) the dropdown opens 4px under its
-  trigger at 1280px and as a full-width sheet at 375px; on `/jobs` at 375px
+  trigger at 1280px and as a full-width sheet at 375px (over the dialog,
+  since `record-opt-out` went full-screen too); on `/jobs` at 375px
   every option of the state filter's sheet is hittable, not under the sticky
   header. Inside the drawer, Escape or a scrim tap closes the `Select` alone
   and returns focus to its trigger; the next Escape closes the drawer.
@@ -2770,6 +2771,26 @@ and drawer views with fixture props inside the real `ConsoleChrome`, under
 `next dev` with a locally minted session cookie, driven by Playwright. No
 gateway was running, so no screen was exercised end to end with live data,
 and the route was deleted rather than committed.
+
+**Which `Dialog` presentation, and whose width — the rule for the next
+one.** A dialog whose body is a form of three or more inputs, or would
+scroll at 375×812 with the keyboard closed, is `DialogFullScreen` (M3's
+full-screen dialog below 640px, the basic dialog from 640px up); a
+confirmation or a one- or two-input form is `DialogContent`. Neither takes a
+`max-w-*`: the library owns the width. Today that makes six full-screen
+(`create-app`, `create-role`, `provision-user`, `create-sender`,
+`create-endpoint`, `record-opt-out`) and the two confirmations basic; none
+of the eight scrolls at 375×812 as a basic dialog (the tallest,
+`create-endpoint`, is 594px of the 690px cap). The full-screen bar shows the
+confirm action alone, so `DialogActions` stays a direct part of the
+container (inside a `relative` wrapper `create-role`'s Create stayed in the
+body, at y 524), a `type="submit"` confirm names its form with `form=`
+(without it the bar's Create submitted nothing), and Cancel is the
+`DialogClose as={Button}` the bar hides.
+`frontends/apps/admin/app/dialog-presentation.test.ts` checks the rule and
+that wiring for every file that renders a dialog container, and fails on a
+new one with no row — so a new dialog gets classified when it is written,
+not afterwards.
 
 ## Orange's DLR contract, read properly at last — and MTN wired into both binaries
 
