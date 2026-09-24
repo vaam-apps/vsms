@@ -32,28 +32,22 @@ minimumReleaseAgeExclude:
   # postcss is forced past next's own exact pin by the override below, for
   # four advisories; the pinned version is the only one that clears them.
   - postcss@8.5.28
-  # @vaam-apps/ui@0.3.0 published 2026-09-24T16:39:45Z (the time pnpm's
-  # own policy check reports; the registry's `time` field says 16:42:25Z)
-  # and is the newest version in range (^0.3.0) admin's manifest asks for,
-  # so pnpm's default 24h quarantine has nothing older to fall back to and
-  # refuses the install outright -- a hard ERR_PNPM_NO_MATCHING_VERSION,
-  # not a warning. The gate re-verifies on EVERY install including
-  # `--frozen-lockfile`, so without this both CI and the admin Docker build
-  # fail until 2026-09-25T16:40Z (reproduced: with this entry removed,
-  # `pnpm install --frozen-lockfile` exits 1 with
-  # ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION naming 0.3.0). Version-scoped
-  # deliberately: 0.3.1+ stays quarantined. See this repo's own AGENTS.md
-  # ("Bumping `@vaam-apps/ui`, and the two-step the quarantine forces") for
-  # why a bump onto a package this young is always two commits, never one:
-  # pnpm re-verifies every entry already in the lockfile before resolving
-  # the new manifest, so a one-step swap fails naming the *old* version.
-  # The 0.2.4 entry is gone because `pnpm install` has already re-resolved
-  # the lockfile onto 0.3.0, and `pnpm install --frozen-lockfile` was re-run
-  # clean with 0.2.4 removed to prove that.
-  - '@vaam-apps/ui@0.3.0'
-  # @vaam-apps/ui@0.4.0 published 2026-09-24T20:21:35Z (registry `time`).
-  # Step one of the two-step: both entries are present for the install that
-  # moves the lockfile from 0.3.0 to 0.4.0; the next commit drops 0.3.0.
+  # @vaam-apps/ui@0.4.0 published 2026-09-24T20:18:56Z (the time pnpm's
+  # own policy check reports; the registry's `time` field says 20:21:35Z)
+  # and is the newest version in range (^0.4.0) admin's manifest asks for,
+  # so pnpm's default 24h quarantine has nothing older to fall back to. CI
+  # and the admin Docker build both install with `--frozen-lockfile`, so
+  # without this both fail until 2026-09-25T20:19Z (reproduced: with this
+  # entry removed, `pnpm install --frozen-lockfile` exits 1 with
+  # ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION naming 0.4.0). Version-scoped deliberately: 0.4.1+ stays
+  # quarantined. See this repo's own AGENTS.md ("Bumping `@vaam-apps/ui`,
+  # and the two-step the quarantine forces") for why a bump onto a package
+  # this young is always two commits, never one: pnpm re-verifies every
+  # entry already in the lockfile before resolving the new manifest, so a
+  # one-step swap fails naming the *old* version. The 0.3.0 entry is gone
+  # because `pnpm install` has already re-resolved the lockfile onto 0.4.0,
+  # and `pnpm install --frozen-lockfile` was re-run clean with 0.3.0 removed
+  # to prove that.
   - '@vaam-apps/ui@0.4.0'
   - '@next/env@16.3.5'
   - '@next/swc-darwin-arm64@16.3.5'
