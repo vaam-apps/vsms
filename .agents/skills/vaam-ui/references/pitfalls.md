@@ -59,6 +59,18 @@ ends 80px from its edge, so the numbers are `sm:pl-24` and `pb-24` —
 flush against the toolbar. With `viewport-fit=cover` the bottom one also
 rises by `env(safe-area-inset-bottom)`; add it to your `pb-*` too.
 
+## My own Menu pill collides with the bottom toolbar
+
+Up to 0.3.0, `SideNav` rendered `accountSlot` only in the 1280px sidebar,
+so apps pinned their own `fixed` button beside the phone toolbar to reach
+Sign out and the theme — and when the toolbar grew to 288px it covered
+that button (26.5px of it at 375px, 54px of 58px at 320px, measured in
+vaam-apps/vpay#258). The toolbar now carries the account block itself:
+pass it as `accountSlot` at every width, and it appears behind the
+toolbar's **More** control, in a bottom sheet on a phone and a drawer from
+the vertical rail. Delete the pill. `primitives-layout.md`'s
+"`accountSlot` below 1280px" has the details.
+
 ## A tooltip is invisible or cut in half
 
 `Tooltip`'s bubble is a CSS pseudo-element, so **any scrolling ancestor

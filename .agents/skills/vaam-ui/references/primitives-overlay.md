@@ -365,6 +365,12 @@ becomes visible. That failure is exactly why `InlineConfirm` exists.
 Render it *instead of* the drawer's body (and drop the drawer's `footer`,
 since `InlineConfirm` brings its own action row).
 
+That includes `SideNav`'s `accountSlot`: below 1280px it renders in the
+toolbar's More sheet, which is a vaul drawer. A `ConfirmDialog` opened
+from Sign out there was measured opening under the sheet's scrim, where a
+click or a tap cannot reach its buttons (`primitives-layout.md`,
+"`accountSlot` below 1280px — the More sheet").
+
 ### The generic composition
 
 For a one-off drawer with no quick-vs-more distinction to encode.

@@ -223,16 +223,16 @@ interface NavItem { label: string; href: string; icon: ComponentType<{ size?: nu
 interface NavGroup { label: string; items: NavItem[] }
 ```
 
-| Prop             | Type                                                                                            | Notes                                                                                                           |
-| ---------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `topItem`        | `NavItem`                                                                                       | Flat, ungrouped, always first — the dashboard row.                                                              |
-| `groups`         | `NavGroup[]`                                                                                    | Section header plus rows. Headers show only in the sidebar.                                                     |
-| `footerItems`    | `NavItem[]`                                                                                     | De-emphasised utility rows. Administrivia, not content.                                                         |
-| `currentPath`    | `string`                                                                                        | A plain string — this package has no router dependency. Active means equal, or a path prefix followed by `/`.   |
-| `accountSlot`    | `React.ReactNode`                                                                               | Rendered as-is; never built here. Shown only where there is room for it (the sidebar, and the off-canvas tree). |
-| `smallScreen`    | `"floating" \| "off-canvas" \| undefined`                                                       | Default `"floating"`.                                                                                           |
-| `collapsed`      | `boolean \| undefined`                                                                          | Turns the sidebar back into the rail.                                                                           |
-| `toolbarVariant` | `"standard" \| "vibrant" \| undefined` (the two values are exported as `SideNavToolbarVariant`) | Default `"standard"`. Which M3 floating-toolbar colour scheme the rails wear; the sidebar ignores it.           |
+| Prop             | Type                                                                                            | Notes                                                                                                                                                                 |
+| ---------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `topItem`        | `NavItem`                                                                                       | Flat, ungrouped, always first — the dashboard row.                                                                                                                    |
+| `groups`         | `NavGroup[]`                                                                                    | Section header plus rows. Headers show only in the sidebar.                                                                                                           |
+| `footerItems`    | `NavItem[]`                                                                                     | De-emphasised utility rows. Administrivia, not content.                                                                                                               |
+| `currentPath`    | `string`                                                                                        | A plain string — this package has no router dependency. Active means equal, or a path prefix followed by `/`.                                                         |
+| `accountSlot`    | `React.ReactNode`                                                                               | Rendered as-is; never built here. In the sidebar under the footer rows; below 1280px (or `collapsed`), in the sheet the toolbar's **More** control opens — see below. |
+| `smallScreen`    | `"floating" \| "off-canvas" \| undefined`                                                       | Default `"floating"`.                                                                                                                                                 |
+| `collapsed`      | `boolean \| undefined`                                                                          | Turns the sidebar back into the rail.                                                                                                                                 |
+| `toolbarVariant` | `"standard" \| "vibrant" \| undefined` (the two values are exported as `SideNavToolbarVariant`) | Default `"standard"`. Which M3 floating-toolbar colour scheme the rails wear; the sidebar ignores it.                                                                 |
 
 ### The three shapes
 
@@ -244,7 +244,9 @@ interface NavGroup { label: string; items: NavItem[] }
   phone. A 64px column down the side of that phone would be 17% of the
   width, permanently, in the thumb's dead zone — so the toolbar turns
   rather than shrinks. The overflow rows are real anchors, so
-  middle-click and ⌘-click still work on them.
+  middle-click and ⌘-click still work on them. With an `accountSlot`
+  the last control is **More** instead, and opens a bottom sheet — see
+  "`accountSlot` below 1280px" below.
 - **640–1279px** — M3's vertical floating toolbar, 64px wide, 16px from
   the left edge, vertically centred. Labels come from a native `title` on
   hover, and from `sr-only` text for a screen reader. (A CSS tooltip
@@ -293,12 +295,81 @@ Icons are rendered at `size={24}` in the rails (16 in the sidebar), so a
 Footer items are no longer dimmed in the rails; the divider above them is
 what separates them now.
 
-**Anything you pin beside the bottom toolbar must clear its new width.**
-With four slots and the menu it is 288px wide, centred — at 375px it
-starts 43.5px from the left, at 360px 36px. A `fixed bottom-3 left-3`
-button of your own that sat beside the old, narrower pill will now touch
-or overlap it. Put such an action in the overflow menu's destinations,
-or move it above the toolbar (`bottom-24`).
+**Anything you pin beside the bottom toolbar must clear its width.**
+With four slots and the overflow control it is 288px wide, centred — at
+375px it starts 43.5px from the left, at 360px 36px. A
+`fixed bottom-3 left-3` button of your own will touch or overlap it. If
+that button exists to reach the account block — sign out, the theme, who
+is signed in — delete it and pass that markup as `accountSlot`: the
+toolbar carries it now (next section). Anything else goes above the
+toolbar (`bottom-24`).
+
+### `accountSlot` below 1280px — the More sheet
+
+In the default `smallScreen="floating"` mode, `accountSlot` is reachable
+at every width. Wherever a floating toolbar is the navigation — below
+1280px, and at every width when `collapsed` — the toolbar ends in a
+**More** control that opens an M3 modal sheet with the account block in
+it, rendered as-is:
+
+- **Phone bar (below 640px)** — a bottom sheet: the destinations that did
+  not fit in the bar, the footer items, then `accountSlot`. The control
+  appears whenever there is overflow **or** an `accountSlot`, so a nav
+  with four or fewer destinations gains it too (the bar is then at most
+  288px wide, like any bar with an overflow).
+- **Vertical rail (640–1279px, or `collapsed`)** — a modal navigation
+  drawer from the left edge, 360px wide and full height: every
+  destination labelled under its group header, the footer items, then
+  `accountSlot`. The control is the rail's last item, under the footer
+  rows.
+- **Sidebar (1280px and up)** — unchanged: `accountSlot` renders under
+  the footer rows, in flow, and no More control is showing.
+
+Both sheets are modal: focus moves onto the sheet when it opens and stays
+inside it, Escape or a tap on the scrim closes it, and focus returns to
+More. A `Select` inside `accountSlot` closes on its own without closing
+the sheet. Following a destination with a plain click closes the sheet.
+
+What this means for your app:
+
+- **Do not build your own floating account chrome** — a "Menu" pill, a
+  `fixed` avatar button, a drawer that exists only to reach Sign out below
+  1280px. Pass the markup as `accountSlot` and delete the rest. Pass it at
+  every width, not only when your own code thinks the sidebar is showing.
+- **Without an `accountSlot` nothing changes.** The phone bar's overflow
+  stays a dropdown menu of links named "More destinations", and the
+  vertical rail gains no control. A `role="menu"` may only hold menu
+  items, which is why the account block needs a sheet at all. `false`,
+  `true` and `""` count as no `accountSlot`, so
+  `accountSlot={signedIn && <Account />}` is safe.
+- **Confirm with `InlineConfirm`, never a `Dialog`, inside the account
+  block.** Below 1280px it renders in a modal drawer, so the drawer rule
+  in `primitives-overlay.md` applies: a `ConfirmDialog` behind Sign out
+  opens under the sheet's scrim, where a click or a tap cannot reach it
+  (only the keyboard can). `Select`, `DatePicker` and `RadioGroup` work
+  in the sheet.
+- **The control's accessible name** is "More" when it opens the sheet and
+  "More destinations" when it opens the menu. An end-to-end test that
+  clicks "More destinations" on a page that passes `accountSlot` must
+  click "More" instead, and expect a `dialog` rather than a `menu`.
+- **`accountSlot` can be mounted twice at once.** While a sheet is open,
+  the sidebar's copy stays in the DOM under `display: none`. Do not put a
+  hard-coded `id` in it; use `useId`. The two copies do not share
+  component state, and the sheet's copy mounts when the sheet opens and
+  unmounts when it closes, so `useState` inside the slot starts over on
+  every open. Keep anything that must survive (the theme, the session)
+  in a store.
+- **The hidden copy comes first in the DOM.** Below 1280px, and at every
+  width when `collapsed`, the sidebar's copy is still there under
+  `display: none`, before the sheet's. A test
+  that finds the account block by its text (`cy.contains(email)`,
+  `getByText(email)`) finds the hidden one first, or two with the sheet
+  open. Scope the query to the sheet:
+  `getByRole("dialog", { name: "More" })`.
+- The sheet carries `data-side-nav-sheet="bottom"` or `"side"`, the
+  account block's wrapper `data-side-nav-account`, and the control
+  `data-side-nav-more` — stable hooks for tests, because like the rails
+  they are portalled to `document.body`.
 
 ### Only the sidebar takes space out of the page
 
@@ -374,6 +445,22 @@ One SSR note: everything except the floating rails is in the
 server-rendered HTML — the sidebar, and the whole off-canvas tree. The
 rails cannot be, because a portal needs a `document`, so they mount
 after hydration.
+
+### One `aria-label="Primary"` landmark at every width
+
+All three shapes are `<nav aria-label="Primary">`, and exactly one is
+exposed to assistive technology at any width. Up to and including 0.3.0
+that was false below 1280px: the in-flow `<nav>` had no `display: none`
+there, so it was an empty, zero-width second "Primary" landmark beside
+the rail, and axe reported `landmark-unique`
+([vaam-apps/ui#16](https://github.com/vaam-apps/ui/issues/16)). If your
+app suppressed `landmark-unique` on a shell story or page because of
+`SideNav`, remove the suppression once you are on the fixed version.
+
+Do not pass `SideNav` a `className` that sets `display` (`flex`,
+`block`). It is merged last and replaces the `hidden` that keeps the
+in-flow `<nav>` out of the accessibility tree below 1280px, which brings
+the second landmark back. Width, height and position classes are fine.
 
 ## `ScreenStack` / `ScreenHeader`
 

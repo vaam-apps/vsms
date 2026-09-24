@@ -17,11 +17,11 @@ An opaque machine identifier — a CUID, a ULID, a provider's reference.
 <IdDisplay value="pi_3QaBcDeFgHiJkLmN" truncateTo={12} />
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `value` | `string` | The full value. Always what gets copied. |
-| `variant` | `"table" \| "full"` | `table` (default) truncates and reveals the copy button on hover; `full` shows everything, `select-all`, copy always visible. |
-| `truncateTo` | `number` | Leading characters in `table`. Default `7` — enough to tell two 23-character CUIDs apart in a column without dominating it. An id family with a shared prefix (`ord_`, `pi_`) needs more. |
+| Prop         | Type                | Notes                                                                                                                                                                                     |
+| ------------ | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `value`      | `string`            | The full value. Always what gets copied.                                                                                                                                                  |
+| `variant`    | `"table" \| "full"` | `table` (default) truncates and reveals the copy button on hover; `full` shows everything, `select-all`, copy always visible.                                                             |
+| `truncateTo` | `number`            | Leading characters in `table`. Default `7` — enough to tell two 23-character CUIDs apart in a column without dominating it. An id family with a shared prefix (`ord_`, `pi_`) needs more. |
 
 Two rules it enforces so no call site has to:
 
@@ -32,7 +32,7 @@ Two rules it enforces so no call site has to:
   wanted the bare value and returns nothing, or a 400. If a prefix is part
   of the id, it belongs in `value`.
 
-Copy always copies the *full* value in both variants. The truncated form is
+Copy always copies the _full_ value in both variants. The truncated form is
 for the eye only.
 
 ### `Code`
@@ -42,13 +42,14 @@ key, a role key, a job kind, a field name.
 
 ```tsx
 <p className="text-body text-muted-foreground">
-  The route matched on <Code>prefix:+2376</Code> and chose <Code>orange_cm</Code>.
+  The route matched on <Code>prefix:+2376</Code> and chose{" "}
+  <Code>orange_cm</Code>.
 </p>
 ```
 
 **Not `IdDisplay`**, and the distinction is load-bearing: `IdDisplay`
 truncates, which is right for an opaque id you match by eye and wrong for
-anything a person is meant to *read*. Renders a `<span>`, not a `<code>` —
+anything a person is meant to _read_. Renders a `<span>`, not a `<code>` —
 several call sites sit inside a `<dd>` or a sentence where `<code>` would
 add semantics the content does not have. Props: `children`, `className`.
 
@@ -65,12 +66,12 @@ do not put it.
 </span>
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `value` | `string` | **The exact text put on the clipboard.** Always the full, machine-readable value — never what is displayed. A truncated id or a prettily-spaced phone number pasted into a query returns nothing. |
-| `label` | `string` | Accessible name. Defaults to `Copy ${value}`, right for a short id and wrong for a paragraph. |
-| `revealOnGroupHover` | `boolean` | Hide until the containing `.group` is hovered or this button is focused — for dense tables. Keyboard users always reach it: focus reveals it. |
-| `size` | `12 \| 14 \| 16` | Icon size. Default `12`. |
+| Prop                 | Type             | Notes                                                                                                                                                                                             |
+| -------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `value`              | `string`         | **The exact text put on the clipboard.** Always the full, machine-readable value — never what is displayed. A truncated id or a prettily-spaced phone number pasted into a query returns nothing. |
+| `label`              | `string`         | Accessible name. Defaults to `Copy ${value}`, right for a short id and wrong for a paragraph.                                                                                                     |
+| `revealOnGroupHover` | `boolean`        | Hide until the containing `.group` is hovered or this button is focused — for dense tables. Keyboard users always reach it: focus reveals it.                                                     |
+| `size`               | `12 \| 14 \| 16` | Icon size. Default `12`.                                                                                                                                                                          |
 
 A checkmark replaces the icon for 1500ms. A refused clipboard write — an
 insecure origin, a permissions policy — leaves the icon unchanged and logs
@@ -85,21 +86,23 @@ investigation.
 ```tsx
 <PhoneDisplay
   value="+237677123456"
-  format={(e164) => e164.replace(/^(\+237)(\d)(\d\d)(\d\d)(\d\d)(\d\d)$/, "$1 $2 $3 $4 $5 $6")}
+  format={(e164) =>
+    e164.replace(/^(\+237)(\d)(\d\d)(\d\d)(\d\d)(\d\d)$/, "$1 $2 $3 $4 $5 $6")
+  }
   tag="MTN"
   tagTitle="Carrier inferred from the number prefix. Portability means this is wrong for some subscribers."
 />
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `value` | `string` | E.164. The stored form, and what gets copied. |
-| `format` | `(e164: string) => string \| null` | Regrouping for reading. Omit it, or return `null`, and the raw E.164 renders. |
-| `tag` | `string` | A short mono tag after the number — carrier, line type, region. Renders an em dash when absent, so a column stays aligned. |
-| `tagTitle` | `string` | Hover text for the tag. Say where it came from and how much to trust it. |
+| Prop       | Type                               | Notes                                                                                                                      |
+| ---------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `value`    | `string`                           | E.164. The stored form, and what gets copied.                                                                              |
+| `format`   | `(e164: string) => string \| null` | Regrouping for reading. Omit it, or return `null`, and the raw E.164 renders.                                              |
+| `tag`      | `string`                           | A short mono tag after the number — carrier, line type, region. Renders an em dash when absent, so a column stays aligned. |
+| `tagTitle` | `string`                           | Hover text for the tag. Say where it came from and how much to trust it.                                                   |
 
 **There is no built-in grouping and no country table on purpose.** Grouping
-is a per-country convention and a mis-grouped number reads as a *different*
+is a per-country convention and a mis-grouped number reads as a _different_
 number, so an application that knows its market passes a formatter and
 everyone else gets the raw E.164, which is always correct if less pretty.
 Copy always copies the raw E.164, not the grouped form on screen.
@@ -114,14 +117,14 @@ A secret, masked by default with an explicit reveal.
 <MaskedValue value="+237677123456" reveal={3} revealable={false} label="payer number" />
 ```
 
-| Prop | Type | Default | Notes |
-|---|---|---|---|
-| `value` | `string` | — | The full value. In the DOM only while revealed. |
-| `reveal` | `number` | `4` | Trailing characters left visible. `0` masks everything. |
-| `prefix` | `number` | `0` | Leading characters left visible — for a prefixed credential (`whsec_`, `sk_live_`) where the prefix says what kind of thing it is and is not itself secret. |
-| `revealable` | `boolean` | `true` | `false` gives a permanently masked value with no toggle. |
-| `copyable` | `boolean` | `true` | Copies the full value whether or not it is revealed — the point of masking is the screen, not the clipboard. |
-| `label` | `string` | `"value"` | Names the value in the toggle's and copy button's accessible names. |
+| Prop         | Type      | Default   | Notes                                                                                                                                                       |
+| ------------ | --------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `value`      | `string`  | —         | The full value. In the DOM only while revealed.                                                                                                             |
+| `reveal`     | `number`  | `4`       | Trailing characters left visible. `0` masks everything.                                                                                                     |
+| `prefix`     | `number`  | `0`       | Leading characters left visible — for a prefixed credential (`whsec_`, `sk_live_`) where the prefix says what kind of thing it is and is not itself secret. |
+| `revealable` | `boolean` | `true`    | `false` gives a permanently masked value with no toggle.                                                                                                    |
+| `copyable`   | `boolean` | `true`    | Copies the full value whether or not it is revealed — the point of masking is the screen, not the clipboard.                                                |
+| `label`      | `string`  | `"value"` | Names the value in the toggle's and copy button's accessible names.                                                                                         |
 
 **What is revealed:** the `prefix` leading characters, the `reveal` trailing
 characters, and a **fixed-length run of eight dots** in between — the same
@@ -156,14 +159,14 @@ available, landing on the published surface. Use the component.
 <Money amount={1250} currency="USD" display="symbol" />      // $12.50
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `amount` | `MinorUnits` = `number \| bigint \| string` | An **integer count of the currency's smallest unit**. |
-| `currency` | `string` | ISO 4217 code. |
-| `tone` | `"none" \| "signed"` | `signed` tints credits green and debits red. Off by default: in a ledger where most rows point one way, colouring every row is noise, and colour alone is not an accessible way to carry sign. The minus is always rendered regardless. |
-| `locale` | `string` | Defaults to the runtime's. Pass one wherever output must be stable — a test, a server-rendered page that must match hydration, a figure compared against a statement. |
-| `display` | `"symbol" \| "code" \| "none"` | Default `code`. |
-| `signDisplay` | `Intl.NumberFormatOptions["signDisplay"]` | e.g. `"always"` for a ledger delta. |
+| Prop          | Type                                        | Notes                                                                                                                                                                                                                                   |
+| ------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `amount`      | `MinorUnits` = `number \| bigint \| string` | An **integer count of the currency's smallest unit**.                                                                                                                                                                                   |
+| `currency`    | `string`                                    | ISO 4217 code.                                                                                                                                                                                                                          |
+| `tone`        | `"none" \| "signed"`                        | `signed` tints credits green and debits red. Off by default: in a ledger where most rows point one way, colouring every row is noise, and colour alone is not an accessible way to carry sign. The minus is always rendered regardless. |
+| `locale`      | `string`                                    | Defaults to the runtime's. Pass one wherever output must be stable — a test, a server-rendered page that must match hydration, a figure compared against a statement.                                                                   |
+| `display`     | `"symbol" \| "code" \| "none"`              | Default `code`.                                                                                                                                                                                                                         |
+| `signDisplay` | `Intl.NumberFormatOptions["signDisplay"]`   | e.g. `"always"` for a ledger delta.                                                                                                                                                                                                     |
 
 `code` is the default because symbols are ambiguous across locales — `$`
 alone names at least a dozen currencies — and an operator reconciling
@@ -203,9 +206,9 @@ type. Normalise in the assertion, not in the formatter.
 <TimestampDisplay value={payout.createdAt} timezone="Africa/Douala" />
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `value` | `string` | ISO 8601. |
+| Prop       | Type     | Notes                                |
+| ---------- | -------- | ------------------------------------ |
+| `value`    | `string` | ISO 8601.                            |
 | `timezone` | `string` | Any IANA zone name. Default `"UTC"`. |
 
 Relative under 24 hours (`just now`, `2m`, `47m`, `6h` — under a minute is
@@ -270,7 +273,7 @@ list adds no gap for them.
 All three now share one type pairing — label `text-caption
 text-subtle-foreground`, value `text-body text-foreground` — so the variant
 a row was picked for is invisible in its type. Before that, `stacked`
-rendered its label *larger* than the value it labelled and `inline` styled
+rendered its label _larger_ than the value it labelled and `inline` styled
 neither side, so one drawer showed values at two or three different sizes
 depending on which layout each row happened to need. Pick the variant for
 the shape of the value, not for how the text should look.
@@ -290,14 +293,14 @@ One headline number with its label and context.
 />
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `label` | `React.ReactNode` | Truncates to one line. |
-| `value` | `React.ReactNode` | The figure. **This component does no formatting** — a tile cannot know whether it is showing a count, a currency or a rate. Pass a `Money` or a formatted string. Never clamped: a truncated figure is a wrong figure, so a long one wraps inside the tile instead. |
-| `caption` | `React.ReactNode` | One line under the value: the comparison, the window, the caveat. Clamped to two lines — tiles stretch to the tallest in the row. |
-| `tone` | `StatusHue` | Tints the value. Leave unset unless the number's own colour carries meaning; a wall of coloured tiles makes the one that matters harder to find. |
-| `emphasized` | `boolean` | Singles this tile's value out among peers by weight (`font-medium`), not colour — colour is reserved for status. Set it on at most one tile in a row; a row where every tile is emphasised has no emphasis. |
-| `action` | `React.ReactNode` | Top-right slot — a sparkline, a `StateChip`, a refresh button. |
+| Prop         | Type              | Notes                                                                                                                                                                                                                                                               |
+| ------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `label`      | `React.ReactNode` | Truncates to one line.                                                                                                                                                                                                                                              |
+| `value`      | `React.ReactNode` | The figure. **This component does no formatting** — a tile cannot know whether it is showing a count, a currency or a rate. Pass a `Money` or a formatted string. Never clamped: a truncated figure is a wrong figure, so a long one wraps inside the tile instead. |
+| `caption`    | `React.ReactNode` | One line under the value: the comparison, the window, the caveat. Clamped to two lines — tiles stretch to the tallest in the row.                                                                                                                                   |
+| `tone`       | `StatusHue`       | Tints the value. Leave unset unless the number's own colour carries meaning; a wall of coloured tiles makes the one that matters harder to find.                                                                                                                    |
+| `emphasized` | `boolean`         | Singles this tile's value out among peers by weight (`font-medium`), not colour — colour is reserved for status. Set it on at most one tile in a row; a row where every tile is emphasised has no emphasis.                                                         |
+| `action`     | `React.ReactNode` | Top-right slot — a sparkline, a `StateChip`, a refresh button.                                                                                                                                                                                                      |
 
 The `caption` slot exists because a bare number with no denominator is the
 most common way a dashboard misleads. It is deliberately upright sans, not
@@ -312,13 +315,21 @@ navigable to a screen reader instead of a wall of text.
 ### `InstrumentPanel`
 
 The **instrument register**: an aurora mesh ground, no border, for data you
-*scan* rather than read.
+_scan_ rather than read.
 
 ```tsx
-<InstrumentPanel title="Settlement" caption="Last 24 hours, across all providers">
+<InstrumentPanel
+  title="Settlement"
+  caption="Last 24 hours, across all providers"
+>
   <div className="grid gap-3 sm:grid-cols-3">
     <StatTile label="Paid" value="12,481" caption="98.2% of 12,710 terminal" />
-    <StatTile label="Unresolved" value="37" tone="uncertain" caption="Outcome never learned" />
+    <StatTile
+      label="Unresolved"
+      value="37"
+      tone="uncertain"
+      caption="Outcome never learned"
+    />
     <StatTile
       label="Spend"
       value={<Money amount={318_420_00} currency="XAF" display="none" />}
@@ -345,7 +356,7 @@ Three things to know:
   system whose premise is that colour means something.
 - **`text-subtle-foreground` is banned on this surface.** A gradient ground
   breaks the assumption every contrast check here rests on — that a
-  foreground sits on *one* known surface. Measured over `--surface-1` at the
+  foreground sits on _one_ known surface. Measured over `--surface-1` at the
   shipped 14% cap, worst case across the four blobs, subtle falls to
   **4.41:1 in dark and 4.45:1 in light**, below the 4.5:1 bar, while muted
   holds at 5.29:1 and above. The component already steps its own caption up

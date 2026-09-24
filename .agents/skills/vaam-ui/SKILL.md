@@ -93,6 +93,11 @@ shipped. The ones that bite integrators most:
 - `SideNav`'s rails are `fixed` and portalled to `document.body`, so they
   **cannot reserve their own space** — the content column's padding is
   yours to set.
+- `SideNav`'s `accountSlot` is reachable at every width — below 1280px
+  through the toolbar's **More** sheet — so pass it always, and do not
+  build floating account chrome (a "Menu" pill) of your own. That sheet
+  is a drawer: confirm inside the slot with `InlineConfirm`, not a
+  `Dialog`.
 - `text-subtle-foreground` is banned on the aurora mesh (it falls below
   AA there); `InstrumentPanel` already steps its own caption up.
 - A tooltip inside a scrolling ancestor is clipped. Use a native `title`.

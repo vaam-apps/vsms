@@ -2480,15 +2480,20 @@ where those tables should be fixed.
 from** — so it can tell you the copy no longer matches upstream, not which
 upstream it last matched. That fact lives here instead, and #384 is why:
 the copy used to carry its own provenance header naming the tag, and the
-move to `.agents/` dropped it. **Currently synced from `v0.3.0`
-(commit `a9bc6c6`).** Update this line and the copy together, or the next
+move to `.agents/` dropped it. **Currently synced from `v0.4.0`
+(commit `54283c9`).** Update this line and the copy together, or the next
 person has a hash that disagrees with something and no way to tell what.
 The `0.2.0` -> `0.2.4` bump (#419) did neither, so for that one release the
 copy described `0.2.0` while the console ran `0.2.4`; the `0.3.0` bump below
 re-copied it. The hash is reproducible without the `skills` CLI: SHA-256 over
-every file under the skill directory, sorted by relative path, feeding each
-path and then its bytes — recomputed that way for `v0.2.0` and `v0.3.0`, it
-matches both the old and the new `computedHash` exactly.
+every file under the skill directory, feeding each `/`-separated relative
+path and then its bytes, with the files sorted by JavaScript's
+`String.prototype.localeCompare` — the CLI's own `computeSkillFolderHash`.
+The sort is the part that bites: `localeCompare` puts `references/…` before
+`SKILL.md`, and a byte-order sort (Python's `sorted`, `sort` in C locale) puts
+`SKILL.md` first and gives a different hash (found when this paragraph's
+earlier wording, "sorted by relative path", failed to reproduce anything).
+Recomputed that way, it matches the lock for `v0.3.0` and for `v0.4.0`.
 
 ## CI runs only what a change can affect — and two ways that goes silently wrong
 
@@ -2724,6 +2729,25 @@ component, so the badge itself only appears once a row is opened), and
 with the hue's own foreground colour and a real, non-transparent
 `1px solid` border — not the invisible box the pre-fix build would have
 produced.
+
+## Bumping `@vaam-apps/ui` to `0.4.0` — nothing to migrate here
+
+`0.4.0` followed `0.3.0` the same day, and PR #420 took both. Its changes, and
+why none needed a code change in this console:
+
+- **`SideNav`** exposes one `Primary` landmark at every width (vaam-apps/ui#39)
+  and, with an `accountSlot`, gains a "More" control on its **floating**
+  toolbars below 1280px (vaam-apps/ui#40, breaking for floating-mode apps).
+  `console-chrome.tsx` passes `smallScreen="off-canvas"`, which neither change
+  touches: the off-canvas tree still renders `accountSlot` in its own drawer.
+- **The `vaam-ui` skill** now passes the org's markdownlint (vaam-apps/ui#37).
+  Its bytes changed, so the copy was re-synced and the hash moved. The
+  Super-linter exclusion of `.agents/skills/` stays: vendored, hash-locked
+  files are not this repository's to lint.
+- **The quarantine** needed the same two-step as `0.3.0`, and pnpm dated this
+  release three minutes earlier than the registry's `time` field again
+  (20:18:56Z against 20:21:35Z). The `pnpm-workspace.yaml` comment gives the
+  earlier one, because that is what pnpm enforces.
 
 ## Bumping `@vaam-apps/ui` to `0.3.0` — the first release that breaks the API
 

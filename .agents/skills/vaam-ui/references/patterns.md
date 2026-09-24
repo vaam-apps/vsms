@@ -9,7 +9,7 @@ decision it froze.
 
 ### `InlineBanner`
 
-A standing notice or an error *around* content that is showing.
+A standing notice or an error _around_ content that is showing.
 
 ```tsx
 <InlineBanner>Scoped to the last 30 days. Older payouts are in the archive.</InlineBanner>
@@ -25,14 +25,14 @@ A standing notice or an error *around* content that is showing.
 
 `variant` is one of:
 
-| Variant | For |
-|---|---|
-| `neutral` (default) | A standing notice — a scope, a caveat. |
-| `danger` | An error. |
-| `warning` | Recoverable, needs attention — a stale write. |
-| `success` | A positive confirmation — a verified audit chain. |
-| `uncertain` | Degraded or unknown, neither failure nor success — a stalled feed, a volume spike. |
-| `plain` | A caption-only note, no border or fill, for something that does not need the weight of a box. |
+| Variant             | For                                                                                           |
+| ------------------- | --------------------------------------------------------------------------------------------- |
+| `neutral` (default) | A standing notice — a scope, a caveat.                                                        |
+| `danger`            | An error.                                                                                     |
+| `warning`           | Recoverable, needs attention — a stale write.                                                 |
+| `success`           | A positive confirmation — a verified audit chain.                                             |
+| `uncertain`         | Degraded or unknown, neither failure nor success — a stalled feed, a volume spike.            |
+| `plain`             | A caption-only note, no border or fill, for something that does not need the weight of a box. |
 
 One thing worth knowing, because it looks like a bug and is not:
 `success` draws the same achromatic chrome as `neutral` — `border-edge` and
@@ -51,16 +51,18 @@ The banner for a `412 Precondition Failed` save — "someone else changed this
 row since it loaded".
 
 ```tsx
-{isStaleWrite(error) && <StaleWriteBanner onReload={() => refetch()} />}
+{
+  isStaleWrite(error) && <StaleWriteBanner onReload={() => refetch()} />;
+}
 
 <StaleWriteBanner
   message="This payout was released by another operator while you were editing it."
   onReload={reload}
-/>
+/>;
 ```
 
-`onReload: () => void` is required; `message` defaults to *"Someone else
-changed this row since it loaded. Reload to see their edit."*
+`onReload: () => void` is required; `message` defaults to _"Someone else
+changed this row since it loaded. Reload to see their edit."_
 
 It renders through `InlineBanner` at `warning`, **not `danger`**, and that is
 the decision it encodes: nothing was lost and nothing is broken. The write
@@ -87,11 +89,11 @@ have submitted the very edit the banner is warning has gone stale.
 />
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `message` | `React.ReactNode` | One line. |
-| `action` | `{ label: string; onClick: () => void }` | Optional, rendered as an underlined text button beside the message. |
-| `variant` | `"inline" \| "standalone"` | `inline` (default) sits in a table body or the panel where the missing list would be. `standalone` centres a single line plus one action — the one exception, for a screen with nothing else to do. Still no illustration, still no card. |
+| Prop      | Type                                     | Notes                                                                                                                                                                                                                                     |
+| --------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `message` | `React.ReactNode`                        | One line.                                                                                                                                                                                                                                 |
+| `action`  | `{ label: string; onClick: () => void }` | Optional, rendered as an underlined text button beside the message.                                                                                                                                                                       |
+| `variant` | `"inline" \| "standalone"`               | `inline` (default) sits in a table body or the panel where the missing list would be. `standalone` centres a single line plus one action — the one exception, for a screen with nothing else to do. Still no illustration, still no card. |
 
 The message stays upright sans, not italic, deliberately: the component is
 reporting its own state, the same register as an empty cell or a skeleton,
@@ -122,7 +124,7 @@ completion script. A backgrounded, non-composited tab never runs that
 callback — proven live against a real build — so `null` rendered as a
 permanently empty `<main>` with no signal that anything was ever happening.
 This does not fix that (nothing in application code can make a browser paint
-a hidden tab); it makes the wait *visible* instead of indistinguishable
+a hidden tab); it makes the wait _visible_ instead of indistinguishable
 from broken.
 
 It is also the one place in the library that **announces** a wait. `Skeleton`
@@ -144,19 +146,25 @@ A `TableRow` that washes when the record behind it changes state.
       washTrigger={payout.version}
       washHue={PAYOUT_STATUS[payout.state].hue}
     >
-      <TableCell><IdDisplay value={payout.id} /></TableCell>
-      <TableCell><PayoutPill state={payout.state} /></TableCell>
-      <TableCell align="end"><Money amount={payout.amount} currency={payout.currency} /></TableCell>
+      <TableCell>
+        <IdDisplay value={payout.id} />
+      </TableCell>
+      <TableCell>
+        <PayoutPill state={payout.state} />
+      </TableCell>
+      <TableCell align="end">
+        <Money amount={payout.amount} currency={payout.currency} />
+      </TableCell>
     </LiveRow>
   ))}
 </TableBody>
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `washTrigger` | `string \| number` | **Any value that changes to trigger a wash.** Pass the row's `@version` — an exact change key, immune to clock skew. A timestamp compared against the wall clock is not. |
-| `washHue` | `StatusHue` | The destination state's hue, so the wash tints toward where the row landed. Default `neutral`. |
-| …plus everything `TableRow` takes | | including `selected`. |
+| Prop                              | Type               | Notes                                                                                                                                                                    |
+| --------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `washTrigger`                     | `string \| number` | **Any value that changes to trigger a wash.** Pass the row's `@version` — an exact change key, immune to clock skew. A timestamp compared against the wall clock is not. |
+| `washHue`                         | `StatusHue`        | The destination state's hue, so the wash tints toward where the row landed. Default `neutral`.                                                                           |
+| …plus everything `TableRow` takes |                    | including `selected`.                                                                                                                                                    |
 
 The contract it enforces is "an in-place status change never moves a row":
 the tint appears and decays, and nothing else moves or resizes. A changed
@@ -184,18 +192,34 @@ accordion.
       method: "POST",
       url: "https://api.provider.example/v1/payouts",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ amount: 31842000, currency: "XAF", msisdn: "+237677123456" }, null, 2),
+      body: JSON.stringify(
+        { amount: 31842000, currency: "XAF", msisdn: "+237677123456" },
+        null,
+        2,
+      ),
     },
     {
       direction: "response",
       status: 201,
       durationMs: 412,
-      body: JSON.stringify({ reference: "OM-9F2A4C7E", status: "PENDING" }, null, 2),
+      body: JSON.stringify(
+        { reference: "OM-9F2A4C7E", status: "PENDING" },
+        null,
+        2,
+      ),
     },
     {
       direction: "callback",
       status: 200,
-      body: JSON.stringify({ reference: "OM-9F2A4C7E", status: "FAILED", code: "INSUFFICIENT_FLOAT" }, null, 2),
+      body: JSON.stringify(
+        {
+          reference: "OM-9F2A4C7E",
+          status: "FAILED",
+          code: "INSUFFICIENT_FLOAT",
+        },
+        null,
+        2,
+      ),
       error: "Signature verified. Provider reported a terminal failure.",
     },
   ]}
@@ -208,11 +232,11 @@ Record<string, string>; body?: string; error?: string }`. Each exchange gets
 Body / Headers / Error tabs, the last only when `error` is set. A status
 under 400 renders in neutral chrome, 400 and over in danger chrome.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `exchanges` | `PayloadExchange[]` | In order. Treated as an append-only log. |
-| `defaultOpen` | `number` | Index to open. Default `0`; pass `-1` to start with everything collapsed. |
-| `maxInlineBytes` | `number` | Bodies longer than this collapse behind an explicit "Load full payload (N KB)" action. Default `262144`. |
+| Prop             | Type                | Notes                                                                                                    |
+| ---------------- | ------------------- | -------------------------------------------------------------------------------------------------------- |
+| `exchanges`      | `PayloadExchange[]` | In order. Treated as an append-only log.                                                                 |
+| `defaultOpen`    | `number`            | Index to open. Default `0`; pass `-1` to start with everything collapsed.                                |
+| `maxInlineBytes` | `number`            | Bodies longer than this collapse behind an explicit "Load full payload (N KB)" action. Default `262144`. |
 
 **No syntax highlighting, on purpose.** A rainbow JSON block would be the
 loudest thing on a diagnostic screen, and on these screens colour is
@@ -243,19 +267,23 @@ inspector per node.
       attempt: 1,
       maxAttempts: 3,
     },
-    { toState: "unknown", at: "2026-09-11T09:00:31Z", providerKey: "orange_cm" },
+    {
+      toState: "unknown",
+      at: "2026-09-11T09:00:31Z",
+      providerKey: "orange_cm",
+    },
   ]}
 />
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `transitions` | `StateTransition<S>[]` | `{ toState, at, actor?, providerKey?, workerNode?, attempt?, maxAttempts?, payload? }`; `at` is ISO 8601 and `payload` is `PayloadExchange[]`. An empty array renders a skeleton. |
-| `system` | `StatusSystem<S>` | The same presentation table the record's `createStatusPill` is bound to, so a timeline and a pill can never disagree about what a state looks like. |
-| `currentState` | one of the system's state keys | Used for the in-flight cap. |
-| `isTerminal` | `boolean` | **Passed in, not derived** from the state's `family`: terminality is the server's fact, and a presentational table is the wrong place to learn it from. |
-| `timezone` | `string` | Any IANA zone name. Default `"UTC"`. |
-| `annotations` | `Partial<Record<S, string>>` | Per-state notes, rendered beneath the node that entered that state. |
+| Prop           | Type                           | Notes                                                                                                                                                                             |
+| -------------- | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transitions`  | `StateTransition<S>[]`         | `{ toState, at, actor?, providerKey?, workerNode?, attempt?, maxAttempts?, payload? }`; `at` is ISO 8601 and `payload` is `PayloadExchange[]`. An empty array renders a skeleton. |
+| `system`       | `StatusSystem<S>`              | The same presentation table the record's `createStatusPill` is bound to, so a timeline and a pill can never disagree about what a state looks like.                               |
+| `currentState` | one of the system's state keys | Used for the in-flight cap.                                                                                                                                                       |
+| `isTerminal`   | `boolean`                      | **Passed in, not derived** from the state's `family`: terminality is the server's fact, and a presentational table is the wrong place to learn it from.                           |
+| `timezone`     | `string`                       | Any IANA zone name. Default `"UTC"`.                                                                                                                                              |
+| `annotations`  | `Partial<Record<S, string>>`   | Per-state notes, rendered beneath the node that entered that state.                                                                                                               |
 
 While the record is still moving (`isTerminal={false}`) the rail continues
 past the last node as a dashed segment ending in the current state's glyph
