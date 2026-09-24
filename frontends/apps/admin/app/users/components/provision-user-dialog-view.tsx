@@ -7,6 +7,7 @@ import {
   Code,
   Dialog,
   DialogActions,
+  DialogClose,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -152,9 +153,9 @@ export function ProvisionUserDialogView({
         <DialogActions>
           {result === undefined ? (
             <>
-              <Button type="button" variant="ghost" onClick={onDone}>
+              <DialogClose as={Button} variant="ghost">
                 Cancel
-              </Button>
+              </DialogClose>
               <Button type="submit" form="provision-user-form" disabled={isPending}>
                 {isPending ? "Provisioning…" : "Provision"}
               </Button>

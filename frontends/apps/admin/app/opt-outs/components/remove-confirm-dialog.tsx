@@ -44,7 +44,7 @@ export function RemoveConfirmDialog({
           <InlineBanner variant="danger">Remove failed: {errorMessage}</InlineBanner>
         )}
         <DialogActions>
-          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
+          <DialogClose as={Button} variant="ghost">
             Cancel
           </DialogClose>
           <Button type="button" variant="destructive" disabled={pending} onClick={onConfirm}>

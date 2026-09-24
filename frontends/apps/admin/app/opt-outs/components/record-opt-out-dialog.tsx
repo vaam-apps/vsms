@@ -108,7 +108,7 @@ export function RecordOptOutDialog({
           {errorMessage != null && <InlineBanner variant="danger">{errorMessage}</InlineBanner>}
         </div>
         <DialogActions>
-          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
+          <DialogClose as={Button} variant="ghost">
             Cancel
           </DialogClose>
           <Button type="button" disabled={isPending} onClick={form.handleSubmit(onSubmit)}>

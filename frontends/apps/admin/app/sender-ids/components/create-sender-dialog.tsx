@@ -104,7 +104,7 @@ export function CreateSenderDialog({
           )}
         </form>
         <DialogActions>
-          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
+          <DialogClose as={Button} variant="ghost">
             Cancel
           </DialogClose>
           <Button type="submit" form="create-sender-id-form" disabled={pending}>

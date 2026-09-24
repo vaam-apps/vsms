@@ -54,7 +54,7 @@ export function RequeueConfirmDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogActions>
-          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
+          <DialogClose as={Button} variant="ghost">
             Cancel
           </DialogClose>
           <Button type="button" disabled={pending} onClick={onConfirm}>

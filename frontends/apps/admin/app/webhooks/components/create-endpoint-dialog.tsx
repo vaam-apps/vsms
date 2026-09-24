@@ -37,7 +37,7 @@ export function CreateEndpointDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[560px]">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>New webhook endpoint</DialogTitle>
           <DialogDescription>
@@ -53,7 +53,7 @@ export function CreateEndpointDialog({
           createErrorMessage={errorMessage}
         />
         <DialogActions>
-          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
+          <DialogClose as={Button} variant="ghost">
             Cancel
           </DialogClose>
           <Button
