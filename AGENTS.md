@@ -2469,9 +2469,15 @@ rather than as an intended change.
 from** — so it can tell you the copy no longer matches upstream, not which
 upstream it last matched. That fact lives here instead, and #384 is why:
 the copy used to carry its own provenance header naming the tag, and the
-move to `.agents/` dropped it. **Currently synced from `v0.2.0`
-(commit `f48940b`).** Update this line and the copy together, or the next
+move to `.agents/` dropped it. **Currently synced from `v0.3.0`
+(commit `a9bc6c6`).** Update this line and the copy together, or the next
 person has a hash that disagrees with something and no way to tell what.
+The `0.2.0` -> `0.2.4` bump (#419) did neither, so for that one release the
+copy described `0.2.0` while the console ran `0.2.4`; the `0.3.0` bump below
+re-copied it. The hash is reproducible without the `skills` CLI: SHA-256 over
+every file under the skill directory, sorted by relative path, feeding each
+path and then its bytes — recomputed that way for `v0.2.0` and `v0.3.0`, it
+matches both the old and the new `computedHash` exactly.
 
 ## CI runs only what a change can affect — and two ways that goes silently wrong
 
@@ -2707,6 +2713,52 @@ component, so the badge itself only appears once a row is opened), and
 with the hue's own foreground colour and a real, non-transparent
 `1px solid` border — not the invisible box the pre-fix build would have
 produced.
+
+## Bumping `@vaam-apps/ui` to `0.3.0` — the first release that breaks the API
+
+`0.3.0` (pnpm's policy check reads it as published `2026-09-24T16:39:45Z`;
+the registry's `time` field says `16:42:25Z`) breaks four components. What
+each one means for this console, measured in headless Chromium rather than
+read off the changelog — the 0.1.2 section above is why:
+
+- **`DatePicker`/`DateRangePicker`/`Calendar`** become compound parts. This
+  console uses none of them.
+- **`Dialog`.** `DialogFooter` is `DialogActions`, in the eight files that
+  import any `Dialog` part (every other file that says "Dialog" says it in a
+  comment, or renders one of those eight). Cancel is
+  `<DialogClose as={Button} variant="ghost">` with **no** `onClick`:
+  `DialogClose` already calls the root's `onOpenChange(false)`, so a closing
+  `onClick` beside it runs the handler twice. Measured with a counter on the
+  handler: two calls per Cancel with it, one without — and in
+  `CreateAppDialog`/`CreateRoleDialog` that handler is also `form.reset()`.
+  The panel's default width is `560px` (was `480px`): `requeue-confirm` and
+  `create-sender` grow to it; `create-endpoint`'s explicit `max-w-[560px]`
+  is gone (measured 560 either way); the other four keep their explicit
+  `440`/`480`/`520`, because upstream's migration table (vaam-apps/ui#33)
+  marks those widths, and `DialogFullScreen` for the form dialogs, as this
+  console's decision rather than a migration step.
+- **`SideNav`'s** new rail geometry (`sm:pl-24`, the 80px edge, the 288px
+  bottom bar) is `smallScreen="floating"` only. `console-chrome.tsx` passes
+  `"off-canvas"`: no floating toolbar exists at 375, 1100 or 1280px, the
+  in-flow rail is 64px at 1100 (content starts at x=64) and 260px at 1280,
+  with 16px icons — and the off-canvas `NavLink` code is unchanged between
+  the two tags. Nothing to change.
+- **`Select`** is `position: fixed` (Floating UI) and a bottom sheet below
+  640px, with no opt-out. No call site passes a `className` to
+  `SelectContent`. In a `Dialog` (`record-opt-out`) and in a
+  `MoreDetailDrawer` (provider edit) the dropdown opens 4px under its
+  trigger at 1280px and as a full-width sheet at 375px; on `/jobs` at 375px
+  every option of the state filter's sheet is hittable, not under the sticky
+  header. Inside the drawer, Escape or a scrim tap closes the `Select` alone
+  and returns focus to its trigger; the next Escape closes the drawer.
+- **The phone detail drawer's** header now starts 49px below the sheet's
+  top edge, under a 32×4 handle 23px down (upstream: "~19px lower").
+
+How it was measured: a throwaway route rendering the console's own dialog
+and drawer views with fixture props inside the real `ConsoleChrome`, under
+`next dev` with a locally minted session cookie, driven by Playwright. No
+gateway was running, so no screen was exercised end to end with live data,
+and the route was deleted rather than committed.
 
 ## Orange's DLR contract, read properly at last — and MTN wired into both binaries
 
