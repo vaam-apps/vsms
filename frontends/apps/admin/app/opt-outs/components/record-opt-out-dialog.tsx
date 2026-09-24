@@ -20,7 +20,7 @@ import {
   Dialog,
   DialogActions,
   DialogClose,
-  DialogContent,
+  DialogFullScreen,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -54,7 +54,7 @@ export function RecordOptOutDialog({
 }: RecordOptOutDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[480px]">
+      <DialogFullScreen>
         <DialogHeader>
           <DialogTitle>Record an opt-out</DialogTitle>
         </DialogHeader>
@@ -115,7 +115,7 @@ export function RecordOptOutDialog({
             {isPending ? "Recording…" : "Record"}
           </Button>
         </DialogActions>
-      </DialogContent>
+      </DialogFullScreen>
     </Dialog>
   );
 }

@@ -33,7 +33,7 @@
 // `provisionMutation.reset()` on close clears it from memory rather than
 // leaving it retrievable. See `apps-screen.tsx`'s own module doc — the
 // mechanism is identical, applied to a password instead of a PEM. This
-// stays a centered `Dialog`, not a drawer, for the identical §3 reason —
+// stays a `Dialog`, not a drawer, for the identical §3 reason —
 // reading a shown-once secret and confirming it's saved is a yes/no
 // interaction with no sub-navigation.
 //

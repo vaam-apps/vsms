@@ -5,7 +5,7 @@ import {
   Dialog,
   DialogActions,
   DialogClose,
-  DialogContent,
+  DialogFullScreen,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -33,7 +33,7 @@ export function CreateRoleDialogView({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[520px]">
+      <DialogFullScreen>
         <DialogHeader>
           <DialogTitle>New role</DialogTitle>
         </DialogHeader>
@@ -82,7 +82,7 @@ export function CreateRoleDialogView({
             {isPending ? "Creating…" : "Create"}
           </Button>
         </DialogActions>
-      </DialogContent>
+      </DialogFullScreen>
     </Dialog>
   );
 }

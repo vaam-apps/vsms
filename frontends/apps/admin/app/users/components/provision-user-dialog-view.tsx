@@ -8,8 +8,8 @@ import {
   Dialog,
   DialogActions,
   DialogClose,
-  DialogContent,
   DialogDescription,
+  DialogFullScreen,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -56,7 +56,7 @@ export function ProvisionUserDialogView({
 }) {
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : onDone())}>
-      <DialogContent className="max-w-[480px]">
+      <DialogFullScreen>
         <DialogHeader>
           <DialogTitle>Provision a console account</DialogTitle>
           <DialogDescription>
@@ -166,7 +166,7 @@ export function ProvisionUserDialogView({
             </Button>
           )}
         </DialogActions>
-      </DialogContent>
+      </DialogFullScreen>
     </Dialog>
   );
 }

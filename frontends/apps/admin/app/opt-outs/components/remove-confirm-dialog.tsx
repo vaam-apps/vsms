@@ -36,7 +36,7 @@ export function RemoveConfirmDialog({
 }: RemoveConfirmDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[440px]">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Remove this opt-out?</DialogTitle>
         </DialogHeader>

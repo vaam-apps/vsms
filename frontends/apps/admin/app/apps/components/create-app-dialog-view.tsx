@@ -7,7 +7,7 @@ import {
   Dialog,
   DialogActions,
   DialogClose,
-  DialogContent,
+  DialogFullScreen,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -34,7 +34,7 @@ export function CreateAppDialogView({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[480px]">
+      <DialogFullScreen>
         <DialogHeader>
           <DialogTitle>New app</DialogTitle>
         </DialogHeader>
@@ -81,7 +81,7 @@ export function CreateAppDialogView({
             {isPending ? "Creating…" : "Create"}
           </Button>
         </DialogActions>
-      </DialogContent>
+      </DialogFullScreen>
     </Dialog>
   );
 }
