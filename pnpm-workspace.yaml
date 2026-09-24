@@ -51,6 +51,10 @@ minimumReleaseAgeExclude:
   # the lockfile onto 0.3.0, and `pnpm install --frozen-lockfile` was re-run
   # clean with 0.2.4 removed to prove that.
   - '@vaam-apps/ui@0.3.0'
+  # @vaam-apps/ui@0.4.0 published 2026-09-24T20:21:35Z (registry `time`).
+  # Step one of the two-step: both entries are present for the install that
+  # moves the lockfile from 0.3.0 to 0.4.0; the next commit drops 0.3.0.
+  - '@vaam-apps/ui@0.4.0'
   - '@next/env@16.3.5'
   - '@next/swc-darwin-arm64@16.3.5'
   - '@next/swc-darwin-x64@16.3.5'
