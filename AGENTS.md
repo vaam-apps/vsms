@@ -2466,15 +2466,24 @@ vaam-ui` and `.goose/skills/vaam-ui` as symlinks to it, tracked by
 rather than as an intended change.
 
 **That is also why `quality.yml`'s Super-linter skips `.agents/skills/`.**
-The upstream copy does not pass the org markdownlint config: under
-`MD060: aligned`, `v0.2.0`'s copy had 411 unaligned table pipes and
-`v0.3.0`'s has 221 (`data-display.md` alone 120), and `markdownlint --fix`
-does not repair MD060 (run on `data-display.md`, it leaves the file
-byte-identical and all 120 in place). Super-linter lints only the files a
-PR changes, so every re-copy that touches such a file would turn the lint
-red, and the only fix would be a hand edit that breaks the hash. Measured
-with markdownlint-cli2 0.23.3 and the org's default config. Upstream is
-where those tables should be fixed.
+A lint failure in a vendored, hash-locked file has no fix in this
+repository: the only local fix is a hand edit, and a hand edit reads as
+drift in `skills-lock.json`. Upstream lints the skill itself since
+vaam-apps/ui#37 — its `pnpm lint` runs markdownlint-cli2 over every Markdown
+file with a copy of the org config — and `v0.4.0`'s copy passes the org
+config clean (markdownlint-cli2 0.23.3: 0 issues in 11 files). The exclusion
+stays because upstream's config is a *copy*, kept in step with the org's by
+hand: if the two ever drift, a skill bump that upstream's CI passed would
+turn this repository's lint red with nothing here to fix.
+
+It was added for a stronger reason that `v0.4.0` retired: until then the
+upstream copy did not pass the org config at all. Under `MD060: aligned`,
+`v0.2.0`'s copy had 411 unaligned table pipes and `v0.3.0`'s 221
+(`data-display.md` alone 120), `markdownlint --fix` does not repair MD060
+(run on `data-display.md`, it leaves the file byte-identical and all 120 in
+place), and Super-linter lints only the files a PR changes, so every re-copy
+that touched such a file turned the lint red. Measured with markdownlint-cli2
+0.23.3 and the org's default config.
 
 **The lockfile records `source` and that hash, but not which tag they came
 from** — so it can tell you the copy no longer matches upstream, not which
@@ -2737,16 +2746,29 @@ why none needed a code change in this console:
 
 - **`SideNav`** exposes one `Primary` landmark at every width (vaam-apps/ui#39)
   and, with an `accountSlot`, gains a "More" control on its **floating**
-  toolbars below 1280px (vaam-apps/ui#40, breaking for floating-mode apps).
-  `console-chrome.tsx` passes `smallScreen="off-canvas"`, which neither change
-  touches: the off-canvas tree still renders `accountSlot` in its own drawer.
-- **The `vaam-ui` skill** now passes the org's markdownlint (vaam-apps/ui#37).
-  Its bytes changed, so the copy was re-synced and the hash moved. The
-  Super-linter exclusion of `.agents/skills/` stays: vendored, hash-locked
-  files are not this repository's to lint.
-- **The quarantine** needed the same two-step as `0.3.0`, and pnpm dated this
-  release three minutes earlier than the registry's `time` field again
-  (20:18:56Z against 20:21:35Z). The `pnpm-workspace.yaml` comment gives the
+  toolbars below 1280px, and at every width when `collapsed`
+  (vaam-apps/ui#40, breaking for floating-mode apps). `console-chrome.tsx`
+  passes `smallScreen="off-canvas"` and no `collapsed`, and neither change
+  touches that tree: it still renders `accountSlot` in its own drawer.
+  Measured, not only read: the installed `0.3.0` and `0.4.0` packages differ
+  in `dist/` only in `components/primitives/side-nav.{js,d.ts}`, so
+  `theme.css` and the `gap:5px` scan marker (`status-pill.js`) are
+  unchanged; and server-rendering `SideNav` through each version's `dist`
+  with this console's own `NAV_*` data, `console-chrome.tsx`'s props and a
+  stand-in `AccountSlot` gives byte-identical markup at four routes, with
+  and without an email.
+- **The `vaam-ui` skill** now passes the org's markdownlint (vaam-apps/ui#37;
+  markdownlint-cli2 0.23.3 on this copy: 0 issues, against 221 for
+  `v0.3.0`'s). Its bytes changed, so the copy was re-synced and the hash
+  moved. The Super-linter exclusion of `.agents/skills/` stays anyway, for
+  the reason the skill section above gives: upstream lints against its own
+  copy of the org config, and if the two drift, a skill bump would turn this
+  repository's lint red with no fix possible here.
+- **The quarantine** needed the same two-step as `0.3.0` (reproduced: with
+  only the `0.4.0` entry, `pnpm install --lockfile-only` against the `0.3.0`
+  lockfile exits 1 naming `0.3.0`), and pnpm again dated the release earlier
+  than the registry's `time` field: 20:18:56Z against 20:21:35Z, 2m39s
+  (`0.3.0`'s gap was 2m40s). The `pnpm-workspace.yaml` comment gives the
   earlier one, because that is what pnpm enforces.
 
 ## Bumping `@vaam-apps/ui` to `0.3.0` — the first release that breaks the API

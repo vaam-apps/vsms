@@ -39,15 +39,15 @@ minimumReleaseAgeExclude:
   # and the admin Docker build both install with `--frozen-lockfile`, so
   # without this both fail until 2026-09-25T20:19Z (reproduced: with this
   # entry removed, `pnpm install --frozen-lockfile` exits 1 with
-  # ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION naming 0.4.0). Version-scoped deliberately: 0.4.1+ stays
-  # quarantined. See this repo's own AGENTS.md ("Bumping `@vaam-apps/ui`,
-  # and the two-step the quarantine forces") for why a bump onto a package
-  # this young is always two commits, never one: pnpm re-verifies every
-  # entry already in the lockfile before resolving the new manifest, so a
-  # one-step swap fails naming the *old* version. The 0.3.0 entry is gone
-  # because `pnpm install` has already re-resolved the lockfile onto 0.4.0,
-  # and `pnpm install --frozen-lockfile` was re-run clean with 0.3.0 removed
-  # to prove that.
+  # ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION naming 0.4.0). Version-scoped
+  # deliberately: 0.4.1+ stays quarantined. See this repo's own AGENTS.md
+  # ("Bumping `@vaam-apps/ui`, and the two-step the quarantine forces") for
+  # why a bump onto a package this young is always two commits, never one:
+  # pnpm re-verifies every entry already in the lockfile before resolving
+  # the new manifest, so a one-step swap fails naming the *old* version.
+  # The 0.3.0 entry is gone because `pnpm install` has already re-resolved
+  # the lockfile onto 0.4.0, and `pnpm install --frozen-lockfile` was re-run
+  # clean with 0.3.0 removed to prove that.
   - '@vaam-apps/ui@0.4.0'
   - '@next/env@16.3.5'
   - '@next/swc-darwin-arm64@16.3.5'
