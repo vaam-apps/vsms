@@ -2733,7 +2733,7 @@ read off the changelog — the 0.1.2 section above is why:
   `CreateAppDialog`/`CreateRoleDialog` that handler is also `form.reset()`.
   The panel's default width is `560px` (was `480px`): `requeue-confirm` and
   `create-sender` grow to it; `create-endpoint`'s explicit `max-w-[560px]`
-  is gone (measured 560 either way); the other four keep their explicit
+  is gone (measured 560 either way); the other five keep their explicit
   `440`/`480`/`520`, because upstream's migration table (vaam-apps/ui#33)
   marks those widths, and `DialogFullScreen` for the form dialogs, as this
   console's decision rather than a migration step.
