@@ -2781,16 +2781,28 @@ confirmation or a one- or two-input form is `DialogContent`. Neither takes a
 (`create-app`, `create-role`, `provision-user`, `create-sender`,
 `create-endpoint`, `record-opt-out`) and the two confirmations basic; none
 of the eight scrolls at 375×812 as a basic dialog (the tallest,
-`create-endpoint`, is 594px of the 690px cap). The full-screen bar shows the
-confirm action alone, so `DialogActions` stays a direct part of the
-container (inside a `relative` wrapper `create-role`'s Create stayed in the
-body, at y 524), a `type="submit"` confirm names its form with `form=`
-(without it the bar's Create submitted nothing), and Cancel is the
-`DialogClose as={Button}` the bar hides.
-`frontends/apps/admin/app/dialog-presentation.test.ts` checks the rule and
-that wiring for every file that renders a dialog container, and fails on a
-new one with no row — so a new dialog gets classified when it is written,
-not afterwards.
+`create-endpoint`, is 594px of the 690px cap with a mouse and 610px with a
+touch pointer, for which the library pads the panel 24px rather than 20 and
+sets the actions 24px rather than 16 under the text — measure the next one
+with touch). The bar takes `DialogActions` by absolute position against the
+panel, so it stays a direct part of the container (inside a `relative`
+wrapper `create-role`'s Create stayed in the body, at y 524); a
+`type="submit"` confirm sits outside its `<form>` and names it with `form=`
+(without it Create submitted nothing, in the bar or not); and Cancel is the
+`DialogClose as={Button}` the bar hides. Measured at 375 and at 1280 alike:
+in the five `<form>` dialogs, Enter in a field submits once through that
+same button and the browser's own validation (`type="email"`, `min="0"`)
+still stops it; in all six form dialogs, a failed zod check focuses the
+first invalid field, a server error's banner lands in view, and a double
+click submits once; in all eight, Tab runs through the body and the actions
+and reaches the close icon last — although below 640px the bar draws it
+first — and Escape returns focus to the trigger.
+`record-opt-out` is the exception: it has no `<form>`, its Record calls
+`handleSubmit` from `onClick`, and so Enter in its fields submits nothing, as
+it never has. `frontends/apps/admin/app/dialog-presentation.test.ts` checks
+the rule and that wiring for every dialog container under
+`frontends/apps/admin/`, one row per container, and fails on a new one with
+no row — so a new dialog gets classified when it is written, not afterwards.
 
 ## Orange's DLR contract, read properly at last — and MTN wired into both binaries
 
