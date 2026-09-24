@@ -118,6 +118,17 @@ The stored `WebhookAttempt.payload` is the `data` object only (§8.4's `messageI
 
 `backends/crates/sms-worker/src/lib.rs`'s role dispatch (`Role::Drain => { drain::run(ctx, worker).await; return; }`) is a small, mechanical addition, kept minimal on purpose — a sibling PR adding `Role::Hooks`'s own real body (#40) will conflict trivially with it. The stub test that used to exercise `Role::Drain` (`a_stub_role_never_resolves_on_its_own`) now uses `Role::Hooks` instead, the only role still a pure `std::future::pending` stub.
 
+## Docs↔skills parity
+
+The code, its docs and the agent skills in
+[vaam-apps/vsms-skills](https://github.com/vaam-apps/vsms-skills) land together
+or not at all. The rule, the gate and what a pull request must declare are in
+[CONTRIBUTING.md § Docs↔skills parity](CONTRIBUTING.md#docsskills-parity). The
+routing table (which skill a change touches) is vsms-skills'
+`skills/vsms-docs-skills/references/skills-parity.md`. vsms-skills' CI runs its
+gate against this repository's `main` daily, so a merge that outruns the skills
+shows up there as a red build.
+
 ## Regenerating migrations — this repo's actual workflow, found the hard way
 
 **Check your `cratestack` CLI version before running any of this — every time, not from memory.** This has drifted before: at the time of #121 (see below) the globally installed CLI was `0.7.4` against a pinned library family of `=0.6.7`, and the newer CLI's emitter produced foreign-key `ALTER TABLE` statements the pinned emitter never had — confirmed by running the diff against the *unmodified* schema and seeing it already disagree with the committed `0001_init`. **Corrected 2026-08-11 (#59): that specific mismatch no longer exists** — `cratestack --version` now reports `0.7.10`, exactly matching the root `Cargo.toml` pin (`=0.7.10`), verified by hand before regenerating anything for that PR. This entry stays as a standing instruction, not a one-time fact, because the two numbers move independently (the CLI is a global install on whatever machine runs this; the pin is a file in this repo) and nothing automated checks them against each other — the next mismatch will look exactly like the last one: a diff that "by the book" silently produces migrations the compiled library never emits. **A policy-only `@@allow` change never touches DDL and must not be regenerated at all** (that is how #121 correctly avoided this). For a real schema change, match the CLI to the pin first, every time.

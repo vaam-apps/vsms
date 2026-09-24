@@ -1,3 +1,6 @@
+<!-- A pull request body is not a document: it opens under GitHub's own
+     title, so it has no top-level heading. -->
+<!-- markdownlint-disable-file MD041 -->
 <!--
   This template is a convention, not a gate. Nothing in CI enforces it —
   a reviewer reading a PR that skips a section will simply have to ask.
@@ -60,6 +63,14 @@
 - [ ] Claims in this PR were verified against the repository or a running
       system, rather than assumed.
 
+## Companions (docs ↔ skills parity)
+
+<!-- CONTRIBUTING.md § Docs↔skills parity. For each: a link, or
+     `n/a — <reason>`. A bare "n/a" is an omission, not a decision. -->
+
+- **vsms docs** (sidecars, `docs/architecture.md`, runbooks):
+- **vsms-skills** (routing: `skills/vsms-docs-skills/references/skills-parity.md`):
+
 ## Reviewer Focus
 
 <!-- Where you actually want eyes. The subtle decision, the thing you are
@@ -68,7 +79,7 @@
 
 ---
 
-**Checklist**
+## Checklist
 
 - [ ] `docs/roadmap.md` checked. (The check is mandatory on every PR; the
       *edit* usually is not — "no edit needed, this changes no milestone,
