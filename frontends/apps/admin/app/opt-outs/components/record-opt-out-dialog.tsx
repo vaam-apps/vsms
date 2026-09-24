@@ -14,6 +14,13 @@
 //    down whole, the same way `providers-screen.tsx` already threads
 //    `form.register`/`Controller` through JSX — nothing new invented here,
 //    just relocated behind the smart/dumb boundary.
+//
+// It is a real `<form>` now, submitted by a `type="submit"` Record that
+// names it with `form=`, the same wiring as the console's other five form
+// dialogs. Record used to be a `type="button"` calling `handleSubmit` from
+// its `onClick`, so Enter in a field submitted nothing — and with the dialog
+// full-screen below 640px, Record sits in the top bar, away from the fields
+// and the keyboard (vaam-apps/vsms#420).
 
 import {
   Button,
@@ -58,7 +65,11 @@ export function RecordOptOutDialog({
         <DialogHeader>
           <DialogTitle>Record an opt-out</DialogTitle>
         </DialogHeader>
-        <div className="flex flex-col gap-4">
+        <form
+          id="record-opt-out-form"
+          onSubmit={form.handleSubmit(onSubmit)}
+          className="flex flex-col gap-4"
+        >
           <FormField
             label="MSISDN"
             htmlFor="record-msisdn"
@@ -106,12 +117,12 @@ export function RecordOptOutDialog({
             <Input id="record-reason" {...form.register("reason")} />
           </FormField>
           {errorMessage != null && <InlineBanner variant="danger">{errorMessage}</InlineBanner>}
-        </div>
+        </form>
         <DialogActions>
           <DialogClose as={Button} variant="ghost">
             Cancel
           </DialogClose>
-          <Button type="button" disabled={isPending} onClick={form.handleSubmit(onSubmit)}>
+          <Button type="submit" form="record-opt-out-form" disabled={isPending}>
             {isPending ? "Recording…" : "Record"}
           </Button>
         </DialogActions>

@@ -9,9 +9,10 @@
 // No DOM here — this workspace has no jsdom, and Headless UI portals its
 // panel, so a static render sees nothing. Each view is a hook-free function
 // component, so it is called directly and its element tree read. What that
-// proves: the confirm button targets the `<form>` whose `onSubmit` calls the
-// view's `onSubmit` (or calls it from its own `onClick`), and `DialogActions`
-// is a direct part of the container, as the vaam-ui skill asks
+// proves: in a dialog with inputs, the confirm is a `type="submit"` naming
+// the `<form>` whose `onSubmit` calls the view's `onSubmit` — so Enter in a
+// field submits too — and in a confirmation it calls it from its own
+// `onClick`; and `DialogActions` is a direct part of the container, as the vaam-ui skill asks
 // (`primitives-overlay.md`): inside a positioned wrapper of your own it never
 // reaches the bar (measured: a `relative` wrapper left create-role's Create
 // at y 524 in the body, not in the 64px bar). What it cannot prove is where
@@ -234,6 +235,13 @@ function anatomy(node: ReactNode) {
   };
 }
 
+/** The labelled controls in a dialog's tree: a `FormField`, or a
+ * `<fieldset>` for a group no single label can name (create-endpoint's
+ * event types). */
+function inputCount(tree: El[]): number {
+  return tree.filter((el) => el.type === FormField || el.type === "fieldset").length;
+}
+
 const APP_DIR = fileURLToPath(new URL(".", import.meta.url));
 /** The admin package root, so a dialog written in `components/` or `lib/`
  * beside `app/` is found too (its row's `file` then starts `../`). */
@@ -277,9 +285,7 @@ describe("every Dialog follows AGENTS.md's presentation rule, and its actions su
     describe(c.file, () => {
       it("takes the presentation the rule gives it", () => {
         const { container, tree } = anatomy(c.render(false, () => {}));
-        // A labelled control is a `FormField`, or a `<fieldset>` for a group
-        // no single label can name (create-endpoint's event types).
-        const inputs = tree.filter((el) => el.type === FormField || el.type === "fieldset").length;
+        const inputs = inputCount(tree);
         const expected = inputs >= 3 || c.scrollsAt375 ? DialogFullScreen : DialogContent;
         expect(
           container?.type,
@@ -300,6 +306,13 @@ describe("every Dialog follows AGENTS.md's presentation rule, and its actions su
         expect(confirms, "not exactly one confirming Button in DialogActions").toHaveLength(1);
         const [button] = confirms as [El];
         const event = { preventDefault: vi.fn() };
+        // A dialog with inputs submits through a real `<form>`: only then does
+        // Enter in a field submit, and the browser's own validation run.
+        // `record-opt-out` confirmed from an `onClick` until #420, and Enter
+        // there did nothing.
+        if (inputCount(tree) > 0) {
+          expect(button.props.type, "a form dialog whose confirm is not a submit").toBe("submit");
+        }
         if (button.props.type === "submit") {
           // Outside the <form> (DialogActions is a sibling of it), a submit
           // button submits only the form its `form` attribute names.

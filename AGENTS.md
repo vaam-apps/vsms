@@ -2789,20 +2789,29 @@ panel, so it stays a direct part of the container (inside a `relative`
 wrapper `create-role`'s Create stayed in the body, at y 524); a
 `type="submit"` confirm sits outside its `<form>` and names it with `form=`
 (without it Create submitted nothing, in the bar or not); and Cancel is the
-`DialogClose as={Button}` the bar hides. Measured at 375 and at 1280 alike:
-in the five `<form>` dialogs, Enter in a field submits once through that
-same button and the browser's own validation (`type="email"`, `min="0"`)
-still stops it; in all six form dialogs, a failed zod check focuses the
-first invalid field, a server error's banner lands in view, and a double
-click submits once; in all eight, Tab runs through the body and the actions
-and reaches the close icon last — although below 640px the bar draws it
-first — and Escape returns focus to the trigger.
-`record-opt-out` is the exception: it has no `<form>`, its Record calls
-`handleSubmit` from `onClick`, and so Enter in its fields submits nothing, as
-it never has. `frontends/apps/admin/app/dialog-presentation.test.ts` checks
-the rule and that wiring for every dialog container under
-`frontends/apps/admin/`, one row per container, and fails on a new one with
-no row — so a new dialog gets classified when it is written, not afterwards.
+`DialogClose as={Button}` the bar hides. All six form dialogs are wired that
+way: `record-opt-out` had no `<form>` and confirmed from an `onClick`, so
+Enter in its fields submitted nothing, and since this change it has a
+`<form>` like the other five (the maintainer's call). Measured at 375 and at
+1280 alike, in all six: Enter in a field submits once through the confirm;
+the browser's own validation still stops a submit (`type="email"`,
+`min="0"`, and a `required` and a `pattern` injected into `record-opt-out`
+for the probe, whose fields carry none); a failed zod check focuses the
+first invalid field; a server error's banner lands in view; and a double
+click submits once. In `record-opt-out`, Enter again while pending submits
+nothing: the disabled confirm is the form's default button. In all eight,
+Tab runs through the body and the actions and reaches the close icon last —
+although below 640px the bar draws it first — and Escape returns focus to
+the trigger. One consequence of the `<form>` worth knowing: Enter on a
+closed `Select` trigger submits the form too, because Headless UI's
+`ListboxButton` calls its `attemptSubmit` on Enter (Space and the arrow keys
+open the list). Measured on `record-opt-out`'s Source; `provision-user`'s
+Role is the same component in a `<form>`, not probed.
+`frontends/apps/admin/app/dialog-presentation.test.ts` checks the rule and
+that wiring for every dialog container under `frontends/apps/admin/`, one row
+per container — a dialog with inputs must confirm with a `type="submit"`
+naming its `<form>` — and fails on a new one with no row, so a new dialog
+gets classified when it is written, not afterwards.
 
 ## Orange's DLR contract, read properly at last — and MTN wired into both binaries
 
