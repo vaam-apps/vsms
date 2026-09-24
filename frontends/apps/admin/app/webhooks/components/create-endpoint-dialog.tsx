@@ -1,10 +1,10 @@
 import {
   Button,
   Dialog,
-  DialogContent,
-  DialogDescription,
   DialogActions,
   DialogClose,
+  DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@vaam-apps/ui";
