@@ -2465,6 +2465,17 @@ vaam-ui` and `.goose/skills/vaam-ui` as symlinks to it, tracked by
 `computedHash` over it, so a local edit reads as drift from the source
 rather than as an intended change.
 
+**That is also why `quality.yml`'s Super-linter skips `.agents/skills/`.**
+The upstream copy does not pass the org markdownlint config: under
+`MD060: aligned`, `v0.2.0`'s copy had 411 unaligned table pipes and
+`v0.3.0`'s has 221 (`data-display.md` alone 120), and `markdownlint --fix`
+does not repair MD060 (run on `data-display.md`, it leaves the file
+byte-identical and all 120 in place). Super-linter lints only the files a
+PR changes, so every re-copy that touches such a file would turn the lint
+red, and the only fix would be a hand edit that breaks the hash. Measured
+with markdownlint-cli2 0.23.3 and the org's default config. Upstream is
+where those tables should be fixed.
+
 **The lockfile records `source` and that hash, but not which tag they came
 from** — so it can tell you the copy no longer matches upstream, not which
 upstream it last matched. That fact lives here instead, and #384 is why:
