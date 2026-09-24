@@ -8,7 +8,8 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
+  DialogActions,
+  DialogClose,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -149,7 +150,7 @@ export function ProvisionUserDialogView({
           </div>
         )}
 
-        <DialogFooter>
+        <DialogActions>
           {result === undefined ? (
             <>
               <Button type="button" variant="ghost" onClick={onDone}>
@@ -164,7 +165,7 @@ export function ProvisionUserDialogView({
               I&apos;ve saved this password — close
             </Button>
           )}
-        </DialogFooter>
+        </DialogActions>
       </DialogContent>
     </Dialog>
   );

@@ -19,7 +19,8 @@ import {
   Button,
   Dialog,
   DialogContent,
-  DialogFooter,
+  DialogActions,
+  DialogClose,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -106,14 +107,14 @@ export function RecordOptOutDialog({
           </FormField>
           {errorMessage != null && <InlineBanner variant="danger">{errorMessage}</InlineBanner>}
         </div>
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
-          </Button>
+          </DialogClose>
           <Button type="button" disabled={isPending} onClick={form.handleSubmit(onSubmit)}>
             {isPending ? "Recording…" : "Record"}
           </Button>
-        </DialogFooter>
+        </DialogActions>
       </DialogContent>
     </Dialog>
   );

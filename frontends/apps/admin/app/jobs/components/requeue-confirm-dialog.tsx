@@ -15,9 +15,10 @@
 import {
   Button,
   Dialog,
+  DialogActions,
+  DialogClose,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@vaam-apps/ui";
@@ -52,14 +53,14 @@ export function RequeueConfirmDialog({
             )}
           </DialogDescription>
         </DialogHeader>
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
-          </Button>
+          </DialogClose>
           <Button type="button" disabled={pending} onClick={onConfirm}>
             Requeue
           </Button>
-        </DialogFooter>
+        </DialogActions>
       </DialogContent>
     </Dialog>
   );

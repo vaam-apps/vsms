@@ -1,9 +1,10 @@
 import {
   Button,
   Dialog,
+  DialogActions,
+  DialogClose,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -102,14 +103,14 @@ export function CreateSenderDialog({
             <InlineBanner variant="danger">Create failed: {errorMessage}</InlineBanner>
           )}
         </form>
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
-          </Button>
+          </DialogClose>
           <Button type="submit" form="create-sender-id-form" disabled={pending}>
             {pending ? "Creating…" : "Create"}
           </Button>
-        </DialogFooter>
+        </DialogActions>
       </DialogContent>
     </Dialog>
   );

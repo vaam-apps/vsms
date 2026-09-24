@@ -12,7 +12,8 @@ import {
   Button,
   Dialog,
   DialogContent,
-  DialogFooter,
+  DialogActions,
+  DialogClose,
   DialogHeader,
   DialogTitle,
   InlineBanner,
@@ -42,14 +43,14 @@ export function RemoveConfirmDialog({
         {errorMessage != null && (
           <InlineBanner variant="danger">Remove failed: {errorMessage}</InlineBanner>
         )}
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
-          </Button>
+          </DialogClose>
           <Button type="button" variant="destructive" disabled={pending} onClick={onConfirm}>
             {pending ? "Removing…" : "Remove"}
           </Button>
-        </DialogFooter>
+        </DialogActions>
       </DialogContent>
     </Dialog>
   );

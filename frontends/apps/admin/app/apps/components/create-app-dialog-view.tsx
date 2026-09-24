@@ -6,7 +6,8 @@ import {
   Button,
   Dialog,
   DialogContent,
-  DialogFooter,
+  DialogActions,
+  DialogClose,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -72,14 +73,14 @@ export function CreateAppDialogView({
           </FormField>
           {generalError != null && <ErrorBanner>{generalError}</ErrorBanner>}
         </form>
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
-          </Button>
+          </DialogClose>
           <Button type="submit" form="create-app-form" disabled={isPending}>
             {isPending ? "Creating…" : "Create"}
           </Button>
-        </DialogFooter>
+        </DialogActions>
       </DialogContent>
     </Dialog>
   );

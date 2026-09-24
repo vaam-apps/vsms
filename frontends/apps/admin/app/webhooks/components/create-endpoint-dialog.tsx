@@ -3,7 +3,8 @@ import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
+  DialogActions,
+  DialogClose,
   DialogHeader,
   DialogTitle,
 } from "@vaam-apps/ui";
@@ -51,10 +52,10 @@ export function CreateEndpointDialog({
           onSubmit={onSubmit}
           createErrorMessage={errorMessage}
         />
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost" onClick={() => onOpenChange(false)}>
             Cancel
-          </Button>
+          </DialogClose>
           <Button
             type="submit"
             form="create-endpoint-form"
@@ -62,7 +63,7 @@ export function CreateEndpointDialog({
           >
             {pending ? "Creating…" : "Create"}
           </Button>
-        </DialogFooter>
+        </DialogActions>
       </DialogContent>
     </Dialog>
   );
