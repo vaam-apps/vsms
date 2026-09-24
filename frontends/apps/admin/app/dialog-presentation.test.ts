@@ -24,8 +24,9 @@
 // Mutation-checked when written: dropping `form="create-app-form"` from the
 // Create button, wrapping `DialogActions` in a `<div>`, dropping
 // `disabled={isPending}`, putting an `onClick` back on a Cancel, turning a
-// three-input form back into `DialogContent`, and adding a new dialog file
-// without a row here — each fails this file.
+// three-input form back into `DialogContent`, and adding a new dialog without
+// a row here — in `app/`, in `components/`, behind an aliased import, or
+// beside an existing one in a file that has a row — each fails this file.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -107,8 +108,10 @@ interface Case {
   file: string;
   /** Measured at 375×812, keyboard closed, as `DialogContent` (PR #420's
    * probe): the scrolling body's `scrollHeight` against its `clientHeight`.
-   * None of the eight scrolls; the tallest, create-endpoint, is 594 of a
-   * 690px cap. Update this, measured, if a dialog's body grows. */
+   * None of the eight scrolls; the tallest, create-endpoint, is 594px of a
+   * 690px cap with a mouse and 610px with a touch pointer (a coarse pointer
+   * gets the library's wider padding and action spacing) — measure with
+   * touch. Update this, measured, if a dialog's body grows. */
   scrollsAt375: boolean;
   /** Renders the view with `pending`, wiring its confirm to `confirm`. */
   render: (pending: boolean, confirm: () => void) => ReactNode;
@@ -232,23 +235,38 @@ function anatomy(node: ReactNode) {
 }
 
 const APP_DIR = fileURLToPath(new URL(".", import.meta.url));
+/** The admin package root, so a dialog written in `components/` or `lib/`
+ * beside `app/` is found too (its row's `file` then starts `../`). */
+const ADMIN_DIR = fileURLToPath(new URL("..", import.meta.url));
+/** A rendered container: `<DialogContent`, or `<ui.DialogFullScreen`. */
+const CONTAINER_TAG = /<(?:\w+\.)?(?:DialogContent|DialogFullScreen)\b/g;
+/** A named import of either, which catches the one the tag pattern cannot
+ * see: an alias (`DialogFullScreen as Sheet`, rendered as `<Sheet>`). */
+const CONTAINER_IMPORT =
+  /import\s*\{[^}]*\b(?:DialogContent|DialogFullScreen)\b[^}]*\}\s*from\s*["']@vaam-apps\/ui["']/;
 
 describe("every Dialog follows AGENTS.md's presentation rule, and its actions survive the bar", () => {
-  it("covers every file in app/ that renders a Dialog container", () => {
+  it("covers every Dialog container in the console, one row each", () => {
+    // One entry per container, so a second dialog added to a file that
+    // already has a row needs a row of its own. Before this counted, and
+    // walked the package root rather than `app/`, three new dialogs passed
+    // unclassified: one in `components/`, one behind an aliased import, and
+    // a second one appended to `remove-confirm-dialog.tsx`.
     const found: string[] = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
         const path = join(dir, entry.name);
         if (entry.isDirectory()) walk(path);
-        else if (
-          entry.name.endsWith(".tsx") &&
-          /<(DialogContent|DialogFullScreen)\b/.test(readFileSync(path, "utf8"))
-        ) {
-          found.push(relative(APP_DIR, path));
+        else if (entry.name.endsWith(".tsx")) {
+          const source = readFileSync(path, "utf8");
+          const tags = source.match(CONTAINER_TAG)?.length ?? 0;
+          const containers = Math.max(tags, CONTAINER_IMPORT.test(source) ? 1 : 0);
+          for (let i = 0; i < containers; i++) found.push(relative(APP_DIR, path));
         }
       }
     };
-    walk(APP_DIR);
+    walk(ADMIN_DIR);
     expect(
       found.sort(),
       "a dialog without a row in CASES — add one, and classify it by the rule",
