@@ -11,17 +11,17 @@ two sections are the ones to read before writing a screen.
 
 ## `Card` / `CardHeader` / `CardBody`
 
-The diagnostic surface: a hairline border on a `--surface-3` step, no
-shadow. This is the default container for a section of a screen — a
+The diagnostic surface: a hairline border on a `surface-2` step
+(`bg-base-300`), no shadow. This is the default container for a section of a screen — a
 provider's configuration, a delivery's detail, a group of related fields.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `Card` `glow` | `boolean` | Aurora glow. The instrument register only. Default `false`. |
-| `CardHeader` `title` | `React.ReactNode` | Rendered as a heading, truncated to one line. |
-| `CardHeader` `headingLevel` | `2 \| 3 \| 4 \| 5 \| 6` | Default `3`. |
-| `CardHeader` `meta` | `React.ReactNode` | A mono line under the title — ids, priorities, counts. |
-| `CardHeader` `action` | `React.ReactNode` | Right-aligned slot, usually buttons. |
+| Prop                        | Type                    | Notes                                                       |
+| --------------------------- | ----------------------- | ----------------------------------------------------------- |
+| `Card` `glow`               | `boolean`               | Aurora glow. The instrument register only. Default `false`. |
+| `CardHeader` `title`        | `React.ReactNode`       | Rendered as a heading, truncated to one line.               |
+| `CardHeader` `headingLevel` | `2 \| 3 \| 4 \| 5 \| 6` | Default `3`.                                                |
+| `CardHeader` `meta`         | `React.ReactNode`       | A mono line under the title — ids, priorities, counts.      |
+| `CardHeader` `action`       | `React.ReactNode`       | Right-aligned slot, usually buttons.                        |
 
 `headingLevel` is a prop rather than a constant because a heading level
 belongs to the page's outline, not to the card. A card placed directly
@@ -59,13 +59,13 @@ The list a person scans for the one row that is wrong. No zebra striping —
 the status tints are the signal, and stripes plus tints are noise. Row
 dividers are a hairline; hover is a surface step.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `Table` `maxHeight` | `string \| undefined` | e.g. `"24rem"`. **Required for a sticky header.** |
-| `Table` `label` | `string \| undefined` | Names the scroll wrapper, used only while it is really scrollable. |
-| `TableRow` `selected` | `boolean` | Surface step plus a 2px inset marker on the leading edge. |
-| `TableHead` / `TableCell` `align` | `"start" \| "end"` | `"end"` for money and counts. |
-| `TableCell` `mono` | `boolean` | Mono, `tabular-nums` — ids, amounts, anything compared column-wise. |
+| Prop                                  | Type                                          | Notes                                                                                                  |
+| ------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Table` `maxHeight`                   | `string \| undefined`                         | e.g. `"24rem"`. **Required for a sticky header.**                                                      |
+| `Table` `label`                       | `string \| undefined`                         | Names the scroll wrapper, used only while it is really scrollable.                                     |
+| `TableRow` `selected`                 | `boolean`                                     | Surface step plus a 2px inset marker on the leading edge.                                              |
+| `TableHead` / `TableCell` `align`     | `"start" \| "end"`                            | `"end"` for money and counts.                                                                          |
+| `TableCell` `mono`                    | `boolean`                                     | Mono, `tabular-nums` — ids, amounts, anything compared column-wise.                                    |
 | `TableHead` / `TableCell` `hideBelow` | `Breakpoint` (`"sm" \| "md" \| "lg" \| "xl"`) | Drops the column below that width. Put it on the `TableHead` **and** every `TableCell` in that column. |
 
 ### The sticky header needs `maxHeight`
@@ -129,15 +129,15 @@ Underline tabs, addressed **by value rather than by index** — the panel a
 tab shows does not change when someone reorders the list. There is no pill
 or segmented variant; segmented controls are consumer furniture.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `ValueTabs` `value` | `string \| undefined` | Controlled. |
-| `ValueTabs` `defaultValue` | `string \| undefined` | Uncontrolled; falls back to the first trigger. |
-| `ValueTabs` `onValueChange` | `((value: string) => void) \| undefined` | |
-| `ValueTabsList` `className` | `string` | Lands on the tablist row — `gap-*`, `justify-*`, `border-b-*` belong here. |
-| `ValueTabsList` `wrapperClassName` | `string` | Lands on the horizontal scroller around the row. |
-| `ValueTabsTrigger` `value` | `string` | Read from the element tree, not inside the trigger. |
-| `ValueTabsContent` `value` | `string` | Kept for parity. **The real pairing is positional** — panels must be declared in trigger order. |
+| Prop                               | Type                                     | Notes                                                                                           |
+| ---------------------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `ValueTabs` `value`                | `string \| undefined`                    | Controlled.                                                                                     |
+| `ValueTabs` `defaultValue`         | `string \| undefined`                    | Uncontrolled; falls back to the first trigger.                                                  |
+| `ValueTabs` `onValueChange`        | `((value: string) => void) \| undefined` |                                                                                                 |
+| `ValueTabsList` `className`        | `string`                                 | Lands on the tablist row — `gap-*`, `justify-*`, `border-b-*` belong here.                      |
+| `ValueTabsList` `wrapperClassName` | `string`                                 | Lands on the horizontal scroller around the row.                                                |
+| `ValueTabsTrigger` `value`         | `string`                                 | Read from the element tree, not inside the trigger.                                             |
+| `ValueTabsContent` `value`         | `string`                                 | Kept for parity. **The real pairing is positional** — panels must be declared in trigger order. |
 
 Note the explicit `| undefined` on the optional props. This package
 compiles under `exactOptionalPropertyTypes`, where `value?: string` means
@@ -166,12 +166,12 @@ import {
 
 Previous/next paging with a position readout that does not lie.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `onPrevious` / `onNext` | `(() => void) \| undefined` | Required keys, nullable values: `undefined` disables that direction. |
-| `position` | `PaginationPosition` | `{ kind: "offset", offset, pageSize, total }` or `{ kind: "cursor", count }`. |
-| `children` | `React.ReactNode` | Between the readout and the buttons — a page-size select, a "Newest first" note. |
-| `label` | `string \| undefined` | Default `"Pagination"`. |
+| Prop                    | Type                        | Notes                                                                            |
+| ----------------------- | --------------------------- | -------------------------------------------------------------------------------- |
+| `onPrevious` / `onNext` | `(() => void) \| undefined` | Required keys, nullable values: `undefined` disables that direction.             |
+| `position`              | `PaginationPosition`        | `{ kind: "offset", offset, pageSize, total }` or `{ kind: "cursor", count }`.    |
+| `children`              | `React.ReactNode`           | Between the readout and the buttons — a page-size select, a "Newest first" note. |
+| `label`                 | `string \| undefined`       | Default `"Pagination"`.                                                          |
 
 The two `position` shapes are the point. `offset` renders `1–25 of 340`
 and is only honest when the API really returns a total; `cursor` renders
@@ -223,27 +223,31 @@ interface NavItem { label: string; href: string; icon: ComponentType<{ size?: nu
 interface NavGroup { label: string; items: NavItem[] }
 ```
 
-| Prop | Type | Notes |
-|---|---|---|
-| `topItem` | `NavItem` | Flat, ungrouped, always first — the dashboard row. |
-| `groups` | `NavGroup[]` | Section header plus rows. Headers show only in the sidebar. |
-| `footerItems` | `NavItem[]` | De-emphasised utility rows. Administrivia, not content. |
-| `currentPath` | `string` | A plain string — this package has no router dependency. Active means equal, or a path prefix followed by `/`. |
-| `accountSlot` | `React.ReactNode` | Rendered as-is; never built here. Shown only where there is room for it (the sidebar, and the off-canvas tree). |
-| `smallScreen` | `"floating" \| "off-canvas" \| undefined` | Default `"floating"`. |
-| `collapsed` | `boolean \| undefined` | Turns the sidebar back into the rail. |
+| Prop             | Type                                                                                            | Notes                                                                                                                                                                 |
+| ---------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `topItem`        | `NavItem`                                                                                       | Flat, ungrouped, always first — the dashboard row.                                                                                                                    |
+| `groups`         | `NavGroup[]`                                                                                    | Section header plus rows. Headers show only in the sidebar.                                                                                                           |
+| `footerItems`    | `NavItem[]`                                                                                     | De-emphasised utility rows. Administrivia, not content.                                                                                                               |
+| `currentPath`    | `string`                                                                                        | A plain string — this package has no router dependency. Active means equal, or a path prefix followed by `/`.                                                         |
+| `accountSlot`    | `React.ReactNode`                                                                               | Rendered as-is; never built here. In the sidebar under the footer rows; below 1280px (or `collapsed`), in the sheet the toolbar's **More** control opens — see below. |
+| `smallScreen`    | `"floating" \| "off-canvas" \| undefined`                                                       | Default `"floating"`.                                                                                                                                                 |
+| `collapsed`      | `boolean \| undefined`                                                                          | Turns the sidebar back into the rail.                                                                                                                                 |
+| `toolbarVariant` | `"standard" \| "vibrant" \| undefined` (the two values are exported as `SideNavToolbarVariant`) | Default `"standard"`. Which M3 floating-toolbar colour scheme the rails wear; the sidebar ignores it.                                                                 |
 
 ### The three shapes
 
-- **Below 640px** — a horizontal pill along the bottom: four destinations
-  and an overflow menu for the rest. Four is a thumb measurement, not a
-  taste one: five 44px targets, four 4px gaps and 12px of pill padding
-  come to 248px, which still reads as a pill on a 375px phone. A 52px
-  column down the side of that phone would be 14% of the width,
-  permanently, in the thumb's dead zone — so the rail turns rather than
-  shrinks. The overflow rows are real anchors, so middle-click and
-  ⌘-click still work on them.
-- **640–1279px** — a vertical floating rail, 52px wide, inset 12px from
+- **Below 640px** — M3 Expressive's horizontal floating toolbar along the
+  bottom, 64px tall and 16px off the edge: four destinations and an
+  overflow menu for the rest. Four is a width measurement, not a taste
+  one: the current page's 64px pill, four 48px targets, four 4px gaps and
+  16px of padding come to 288px, about 43px clear of each edge on a 375px
+  phone. A 64px column down the side of that phone would be 17% of the
+  width, permanently, in the thumb's dead zone — so the toolbar turns
+  rather than shrinks. The overflow rows are real anchors, so
+  middle-click and ⌘-click still work on them. With an `accountSlot`
+  the last control is **More** instead, and opens a bottom sheet — see
+  "`accountSlot` below 1280px" below.
+- **640–1279px** — M3's vertical floating toolbar, 64px wide, 16px from
   the left edge, vertically centred. Labels come from a native `title` on
   hover, and from `sr-only` text for a screen reader. (A CSS tooltip
   cannot work here: the rail is a scroll container and clips its own
@@ -251,6 +255,121 @@ interface NavGroup { label: string; items: NavItem[] }
   inside a 40px-wide clip box, so no label ever appeared.)
 - **1280px and up** — the full sidebar, with labels and group headers, in
   flow. With `collapsed`, this band uses the floating rail instead.
+
+### The rails are M3's floating toolbar
+
+Both rails are Material 3 Expressive's floating toolbar, with androidx's
+own numbers (`FloatingToolbarTokens.kt`): 64px across, fully round, 8px
+padding, 4px between items, 16px from the screen edge (plus the safe
+area at the bottom). Every item is a 48×48 target around a 40px round
+container with a 24px icon, and the **current page is a filled pill 64px
+long** on the toolbar's own axis. No border, no blur and **no shadow**
+— androidx ships it at elevation level 0, and so does this — so the
+bar's fill is the only thing separating it from what scrolls under it.
+
+`toolbarVariant` picks M3's two schemes:
+
+- `"standard"` (default) — a `surface-2` bar, muted icons, the current
+  page as a filled `primary` pill. Quiet — and its fill is `surface-2`,
+  the same as `Card` and `StatTile` in both themes, so over those its
+  edge disappears (same colour, no shadow). If your screen scrolls cards
+  or stat tiles under the bar, use `"vibrant"`.
+- `"vibrant"` — a `primary` bar, i.e. the inverse of the page (near-white
+  on dark, near-black on light), with the current page cut out in
+  `surface-2`. Loud, and its edge holds over every surface — though not
+  over a filled `primary` control (a primary `Button`), which is its own
+  colour.
+
+The bottom toolbar hides itself while any `Select` is open below 640px
+(a sheet, a full-screen search view, or a `SelectDropdown`), so the popup
+is never drawn under it whatever stacking context the `Select` sits in.
+The vertical toolbar does the same while a `SelectModal` is open, at any
+width.
+
+Neither is a hue, on purpose — a tinted bar would read as a status. Do
+not restyle the rails with a status colour to make them "pop"; use
+`toolbarVariant="vibrant"`.
+
+Icons are rendered at `size={24}` in the rails (16 in the sidebar), so a
+`NavItem.icon` must honour its `size` prop — every lucide icon does.
+Footer items are no longer dimmed in the rails; the divider above them is
+what separates them now.
+
+**Anything you pin beside the bottom toolbar must clear its width.**
+With four slots and the overflow control it is 288px wide, centred — at
+375px it starts 43.5px from the left, at 360px 36px. A
+`fixed bottom-3 left-3` button of your own will touch or overlap it. If
+that button exists to reach the account block — sign out, the theme, who
+is signed in — delete it and pass that markup as `accountSlot`: the
+toolbar carries it now (next section). Anything else goes above the
+toolbar (`bottom-24`).
+
+### `accountSlot` below 1280px — the More sheet
+
+In the default `smallScreen="floating"` mode, `accountSlot` is reachable
+at every width. Wherever a floating toolbar is the navigation — below
+1280px, and at every width when `collapsed` — the toolbar ends in a
+**More** control that opens an M3 modal sheet with the account block in
+it, rendered as-is:
+
+- **Phone bar (below 640px)** — a bottom sheet: the destinations that did
+  not fit in the bar, the footer items, then `accountSlot`. The control
+  appears whenever there is overflow **or** an `accountSlot`, so a nav
+  with four or fewer destinations gains it too (the bar is then at most
+  288px wide, like any bar with an overflow).
+- **Vertical rail (640–1279px, or `collapsed`)** — a modal navigation
+  drawer from the left edge, 360px wide and full height: every
+  destination labelled under its group header, the footer items, then
+  `accountSlot`. The control is the rail's last item, under the footer
+  rows.
+- **Sidebar (1280px and up)** — unchanged: `accountSlot` renders under
+  the footer rows, in flow, and no More control is showing.
+
+Both sheets are modal: focus moves onto the sheet when it opens and stays
+inside it, Escape or a tap on the scrim closes it, and focus returns to
+More. A `Select` inside `accountSlot` closes on its own without closing
+the sheet. Following a destination with a plain click closes the sheet.
+
+What this means for your app:
+
+- **Do not build your own floating account chrome** — a "Menu" pill, a
+  `fixed` avatar button, a drawer that exists only to reach Sign out below
+  1280px. Pass the markup as `accountSlot` and delete the rest. Pass it at
+  every width, not only when your own code thinks the sidebar is showing.
+- **Without an `accountSlot` nothing changes.** The phone bar's overflow
+  stays a dropdown menu of links named "More destinations", and the
+  vertical rail gains no control. A `role="menu"` may only hold menu
+  items, which is why the account block needs a sheet at all. `false`,
+  `true` and `""` count as no `accountSlot`, so
+  `accountSlot={signedIn && <Account />}` is safe.
+- **Confirm with `InlineConfirm`, never a `Dialog`, inside the account
+  block.** Below 1280px it renders in a modal drawer, so the drawer rule
+  in `primitives-overlay.md` applies: a `ConfirmDialog` behind Sign out
+  opens under the sheet's scrim, where a click or a tap cannot reach it
+  (only the keyboard can). `Select`, `DatePicker` and `RadioGroup` work
+  in the sheet.
+- **The control's accessible name** is "More" when it opens the sheet and
+  "More destinations" when it opens the menu. An end-to-end test that
+  clicks "More destinations" on a page that passes `accountSlot` must
+  click "More" instead, and expect a `dialog` rather than a `menu`.
+- **`accountSlot` can be mounted twice at once.** While a sheet is open,
+  the sidebar's copy stays in the DOM under `display: none`. Do not put a
+  hard-coded `id` in it; use `useId`. The two copies do not share
+  component state, and the sheet's copy mounts when the sheet opens and
+  unmounts when it closes, so `useState` inside the slot starts over on
+  every open. Keep anything that must survive (the theme, the session)
+  in a store.
+- **The hidden copy comes first in the DOM.** Below 1280px, and at every
+  width when `collapsed`, the sidebar's copy is still there under
+  `display: none`, before the sheet's. A test
+  that finds the account block by its text (`cy.contains(email)`,
+  `getByText(email)`) finds the hidden one first, or two with the sheet
+  open. Scope the query to the sheet:
+  `getByRole("dialog", { name: "More" })`.
+- The sheet carries `data-side-nav-sheet="bottom"` or `"side"`, the
+  account block's wrapper `data-side-nav-account`, and the control
+  `data-side-nav-more` — stable hooks for tests, because like the rails
+  they are portalled to `document.body`.
 
 ### Only the sidebar takes space out of the page
 
@@ -268,12 +387,20 @@ yours to set.** Nothing errors when you forget. The screen just has a rail
 sitting on top of its first column of text, or a last table row hidden
 under the bottom pill.
 
-What to reserve, from the rail's own geometry: the vertical rail occupies
-the leftmost 64px (12px inset plus 52px wide), so a left pad of 80px
-(`pl-20`) leaves a 16px gutter. The bottom pill is 44px targets plus 6px
-of padding, 12px off the bottom — about 68px, so `pb-24` clears it. Below
+What to reserve, from the toolbar's own geometry: the vertical toolbar
+occupies the leftmost 80px (16px inset plus 64px wide), so a left pad of
+96px (`pl-24`) leaves a 16px gutter. The bottom toolbar is 64px tall, 16px
+off the bottom — 80px, so `pb-24` clears it with 16px to spare. The
+bottom offset also adds `env(safe-area-inset-bottom)`: that is 0 unless
+your page opts into `viewport-fit=cover`, and if it does (an iPhone with a
+home indicator adds about 34px), use
+`pb-[calc(6rem+env(safe-area-inset-bottom))]` instead. Below
 640px there is no rail on the left at all, and above 1279px (uncollapsed)
-the sidebar is in flow and needs no gutter:
+the sidebar is in flow and needs no gutter.
+
+**If your screen still says `sm:pl-20`, change it to `sm:pl-24`.** That
+was right for the old 52px rail; the M3 toolbar ends at exactly 80px, so
+`pl-20` now puts your content flush against it.
 
 ```tsx
 import { SideNav, ScreenStack, ScreenHeader } from "@vaam-apps/ui";
@@ -296,7 +423,7 @@ import { SideNav, ScreenStack, ScreenHeader } from "@vaam-apps/ui";
   />
 
   {/* The rails float over this column. These paddings are the caller's job. */}
-  <main className="min-w-0 flex-1 overflow-y-auto p-6 pb-24 sm:pb-6 sm:pl-20 xl:pl-6">
+  <main className="min-w-0 flex-1 overflow-y-auto p-6 pb-24 sm:pb-6 sm:pl-24 xl:pl-6">
     <ScreenStack>{children}</ScreenStack>
   </main>
 </div>
@@ -304,7 +431,7 @@ import { SideNav, ScreenStack, ScreenHeader } from "@vaam-apps/ui";
 
 If you pass `collapsed`, the sidebar never renders and the rail is the
 navigation at every width from 640px up — so keep the left gutter at `xl`
-too (`sm:pl-20` with no `xl:pl-6` override) for as long as the preference
+too (`sm:pl-24` with no `xl:pl-6` override) for as long as the preference
 is on. `collapsed` is a JS boolean rather than a breakpoint because it is
 a preference the caller owns, persists, and usually puts a toggle beside.
 
@@ -318,6 +445,22 @@ One SSR note: everything except the floating rails is in the
 server-rendered HTML — the sidebar, and the whole off-canvas tree. The
 rails cannot be, because a portal needs a `document`, so they mount
 after hydration.
+
+### One `aria-label="Primary"` landmark at every width
+
+All three shapes are `<nav aria-label="Primary">`, and exactly one is
+exposed to assistive technology at any width. Up to and including 0.3.0
+that was false below 1280px: the in-flow `<nav>` had no `display: none`
+there, so it was an empty, zero-width second "Primary" landmark beside
+the rail, and axe reported `landmark-unique`
+([vaam-apps/ui#16](https://github.com/vaam-apps/ui/issues/16)). If your
+app suppressed `landmark-unique` on a shell story or page because of
+`SideNav`, remove the suppression once you are on the fixed version.
+
+Do not pass `SideNav` a `className` that sets `display` (`flex`,
+`block`). It is merged last and replaces the `hidden` that keeps the
+in-flow `<nav>` out of the accessibility tree below 1280px, which brings
+the second landmark back. Width, height and position classes are fine.
 
 ## `ScreenStack` / `ScreenHeader`
 
@@ -373,13 +516,13 @@ Two different honesty claims about a wait.
 `Progress` is a determinate bar for a **bounded, countable** quantity —
 attempts against a retry budget, rows processed, quota consumed.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `value` | `number` | Clamped into `[0, max]`. |
-| `max` | `number` | Default `100`, so a percentage needs no ceremony. |
-| `label` | `string` | Required. The accessible name, e.g. `"Retry budget used"`. |
-| `tone` | `StatusHue` | Default `"neutral"`. Leave it unless the number's colour carries meaning. |
-| `showValue` | `boolean` | Renders `3 / 5` beside the bar. |
+| Prop        | Type        | Notes                                                                     |
+| ----------- | ----------- | ------------------------------------------------------------------------- |
+| `value`     | `number`    | Clamped into `[0, max]`.                                                  |
+| `max`       | `number`    | Default `100`, so a percentage needs no ceremony.                         |
+| `label`     | `string`    | Required. The accessible name, e.g. `"Retry budget used"`.                |
+| `tone`      | `StatusHue` | Default `"neutral"`. Leave it unless the number's colour carries meaning. |
+| `showValue` | `boolean`   | Renders `3 / 5` beside the bar.                                           |
 
 A bar creeping toward a value it cannot reach is a lie, which is why
 `Spinner` exists for the unbounded case: a button mid-submit, a poll with
@@ -402,11 +545,12 @@ A placeholder for content whose shape is known but whose value has not
 arrived. Match the real element's height exactly, so nothing shifts when
 it lands.
 
-| Prop | Type | Notes |
-|---|---|---|
-| `animated` | `boolean` | Default `true`. `false` is the flat block, for a placeholder inside something already moving. |
-| `SkeletonText` `lines` | `number` | Default `3`. |
-| `SkeletonText` `lineClassName` | `string` | Match the real text's line-height. |
+| Prop                           | Type      | Notes                                                                                                              |
+| ------------------------------ | --------- | ------------------------------------------------------------------------------------------------------------------ |
+| `animated`                     | `boolean` | Default `true`. `false` is the flat block, for a placeholder inside something already moving.                      |
+| `instrument`                   | `boolean` | Default `false`. Paints the drift with the `--aurora-*` hue ramp instead of the neutral tonal default — see below. |
+| `SkeletonText` `lines`         | `number`  | Default `3`.                                                                                                       |
+| `SkeletonText` `lineClassName` | `string`  | Match the real text's line-height.                                                                                 |
 
 **It animates itself — do not add a pulse.** What runs is not a shimmer:
 a shimmer is a highlight sweeping on a fixed period, which reads as a
@@ -416,6 +560,14 @@ each other on coprime periods, with no edge, no direction and no shared
 phase. It says "still waiting, not stuck" and deliberately says nothing
 about how much longer. It goes still under `prefers-reduced-motion`, from
 the stylesheet — no call site has to decide that.
+
+**The drift is tonal by default, not hued.** It paints with
+`--color-base-content` — a brightness texture, no colour — because most
+`Skeleton`s stand in for diagnostic-register content (table cells, form
+fields) and colour is chrome reserved for the instrument register (see
+`InstrumentPanel` in `data-display.md`). Set `instrument` only on a
+placeholder standing in for content that will itself render inside
+`InstrumentPanel`/`StatTile`; everywhere else, leave it off.
 
 `SkeletonText`'s last line is short on purpose, which is why it is a
 component rather than a loop: a stack of equal-width bars reads as a table

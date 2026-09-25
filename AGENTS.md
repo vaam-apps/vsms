@@ -2476,13 +2476,44 @@ vaam-ui` and `.goose/skills/vaam-ui` as symlinks to it, tracked by
 `computedHash` over it, so a local edit reads as drift from the source
 rather than as an intended change.
 
+**That is also why `quality.yml`'s Super-linter skips `.agents/skills/`.**
+A lint failure in a vendored, hash-locked file has no fix in this
+repository: the only local fix is a hand edit, and a hand edit reads as
+drift in `skills-lock.json`. Upstream lints the skill itself since
+vaam-apps/ui#37 — its `pnpm lint` runs markdownlint-cli2 over every Markdown
+file with a copy of the org config — and `v0.4.0`'s copy passes the org
+config clean (markdownlint-cli2 0.23.3: 0 issues in 11 files). The exclusion
+stays because upstream's config is a *copy*, kept in step with the org's by
+hand: if the two ever drift, a skill bump that upstream's CI passed would
+turn this repository's lint red with nothing here to fix.
+
+It was added for a stronger reason that `v0.4.0` retired: until then the
+upstream copy did not pass the org config at all. Under `MD060: aligned`,
+`v0.2.0`'s copy had 411 unaligned table pipes and `v0.3.0`'s 221
+(`data-display.md` alone 120), `markdownlint --fix` does not repair MD060
+(run on `data-display.md`, it leaves the file byte-identical and all 120 in
+place), and Super-linter lints only the files a PR changes, so every re-copy
+that touched such a file turned the lint red. Measured with markdownlint-cli2
+0.23.3 and the org's default config.
+
 **The lockfile records `source` and that hash, but not which tag they came
 from** — so it can tell you the copy no longer matches upstream, not which
 upstream it last matched. That fact lives here instead, and #384 is why:
 the copy used to carry its own provenance header naming the tag, and the
-move to `.agents/` dropped it. **Currently synced from `v0.2.0`
-(commit `f48940b`).** Update this line and the copy together, or the next
+move to `.agents/` dropped it. **Currently synced from `v0.4.0`
+(commit `54283c9`).** Update this line and the copy together, or the next
 person has a hash that disagrees with something and no way to tell what.
+The `0.2.0` -> `0.2.4` bump (#419) did neither, so for that one release the
+copy described `0.2.0` while the console ran `0.2.4`; the `0.3.0` bump below
+re-copied it. The hash is reproducible without the `skills` CLI: SHA-256 over
+every file under the skill directory, feeding each `/`-separated relative
+path and then its bytes, with the files sorted by JavaScript's
+`String.prototype.localeCompare` — the CLI's own `computeSkillFolderHash`.
+The sort is the part that bites: `localeCompare` puts `references/…` before
+`SKILL.md`, and a byte-order sort (Python's `sorted`, `sort` in C locale) puts
+`SKILL.md` first and gives a different hash (found when this paragraph's
+earlier wording, "sorted by relative path", failed to reproduce anything).
+Recomputed that way, it matches the lock for `v0.3.0` and for `v0.4.0`.
 
 ## CI runs only what a change can affect — and two ways that goes silently wrong
 
@@ -2718,6 +2749,126 @@ component, so the badge itself only appears once a row is opened), and
 with the hue's own foreground colour and a real, non-transparent
 `1px solid` border — not the invisible box the pre-fix build would have
 produced.
+
+## Bumping `@vaam-apps/ui` to `0.4.0` — nothing to migrate here
+
+`0.4.0` followed `0.3.0` the same day, and PR #420 took both. Its changes, and
+why none needed a code change in this console:
+
+- **`SideNav`** exposes one `Primary` landmark at every width (vaam-apps/ui#39)
+  and, with an `accountSlot`, gains a "More" control on its **floating**
+  toolbars below 1280px, and at every width when `collapsed`
+  (vaam-apps/ui#40, breaking for floating-mode apps). `console-chrome.tsx`
+  passes `smallScreen="off-canvas"` and no `collapsed`, and neither change
+  touches that tree: it still renders `accountSlot` in its own drawer.
+  Measured, not only read: the installed `0.3.0` and `0.4.0` packages differ
+  in `dist/` only in `components/primitives/side-nav.{js,d.ts}`, so
+  `theme.css` and the `gap:5px` scan marker (`status-pill.js`) are
+  unchanged; and server-rendering `SideNav` through each version's `dist`
+  with this console's own `NAV_*` data, `console-chrome.tsx`'s props and a
+  stand-in `AccountSlot` gives byte-identical markup at four routes, with
+  and without an email.
+- **The `vaam-ui` skill** now passes the org's markdownlint (vaam-apps/ui#37;
+  markdownlint-cli2 0.23.3 on this copy: 0 issues, against 221 for
+  `v0.3.0`'s). Its bytes changed, so the copy was re-synced and the hash
+  moved. The Super-linter exclusion of `.agents/skills/` stays anyway, for
+  the reason the skill section above gives: upstream lints against its own
+  copy of the org config, and if the two drift, a skill bump would turn this
+  repository's lint red with no fix possible here.
+- **The quarantine** needed the same two-step as `0.3.0` (reproduced: with
+  only the `0.4.0` entry, `pnpm install --lockfile-only` against the `0.3.0`
+  lockfile exits 1 naming `0.3.0`), and pnpm again dated the release earlier
+  than the registry's `time` field: 20:18:56Z against 20:21:35Z, 2m39s
+  (`0.3.0`'s gap was 2m40s). The `pnpm-workspace.yaml` comment gives the
+  earlier one, because that is what pnpm enforces.
+
+## Bumping `@vaam-apps/ui` to `0.3.0` — the first release that breaks the API
+
+`0.3.0` (pnpm's policy check reads it as published `2026-09-24T16:39:45Z`;
+the registry's `time` field says `16:42:25Z`) breaks four components. What
+each one means for this console, measured in headless Chromium rather than
+read off the changelog — the 0.1.2 section above is why:
+
+- **`DatePicker`/`DateRangePicker`/`Calendar`** become compound parts. This
+  console uses none of them.
+- **`Dialog`.** `DialogFooter` is `DialogActions`, in the eight files that
+  import any `Dialog` part (every other file that says "Dialog" says it in a
+  comment, or renders one of those eight). Cancel is
+  `<DialogClose as={Button} variant="ghost">` with **no** `onClick`:
+  `DialogClose` already calls the root's `onOpenChange(false)`, so a closing
+  `onClick` beside it runs the handler twice. Measured with a counter on the
+  handler: two calls per Cancel with it, one without — and in
+  `CreateAppDialog`/`CreateRoleDialog` that handler is also `form.reset()`.
+  The panel's default width is `560px` (was `480px`), and all eight take
+  it: upstream's migration table (vaam-apps/ui#33) left the explicit widths
+  and `DialogFullScreen` to this console, and the maintainer's call was to
+  drop all six widths (`create-endpoint`'s `560`, the other five's
+  `440`/`480`/`520`) and to adopt `DialogFullScreen` by the rule at the end
+  of this section.
+- **`SideNav`'s** new rail geometry (`sm:pl-24`, the 80px edge, the 288px
+  bottom bar) is `smallScreen="floating"` only. `console-chrome.tsx` passes
+  `"off-canvas"`: no floating toolbar exists at 375, 1100 or 1280px, the
+  in-flow rail is 64px at 1100 (content starts at x=64) and 260px at 1280,
+  with 16px icons — and the off-canvas `NavLink` code is unchanged between
+  the two tags. Nothing to change.
+- **`Select`** is `position: fixed` (Floating UI) and a bottom sheet below
+  640px, with no opt-out. No call site passes a `className` to
+  `SelectContent`. In a `Dialog` (`record-opt-out`) and in a
+  `MoreDetailDrawer` (provider edit) the dropdown opens 4px under its
+  trigger at 1280px and as a full-width sheet at 375px (over the dialog,
+  since `record-opt-out` went full-screen too); on `/jobs` at 375px
+  every option of the state filter's sheet is hittable, not under the sticky
+  header. Inside the drawer, Escape or a scrim tap closes the `Select` alone
+  and returns focus to its trigger; the next Escape closes the drawer.
+- **The phone detail drawer's** header now starts 49px below the sheet's
+  top edge, under a 32×4 handle 23px down (upstream: "~19px lower").
+
+How it was measured: a throwaway route rendering the console's own dialog
+and drawer views with fixture props inside the real `ConsoleChrome`, under
+`next dev` with a locally minted session cookie, driven by Playwright. No
+gateway was running, so no screen was exercised end to end with live data,
+and the route was deleted rather than committed.
+
+**Which `Dialog` presentation, and whose width — the rule for the next
+one.** A dialog whose body is a form of three or more inputs, or would
+scroll at 375×812 with the keyboard closed, is `DialogFullScreen` (M3's
+full-screen dialog below 640px, the basic dialog from 640px up); a
+confirmation or a one- or two-input form is `DialogContent`. Neither takes a
+`max-w-*`: the library owns the width. Today that makes six full-screen
+(`create-app`, `create-role`, `provision-user`, `create-sender`,
+`create-endpoint`, `record-opt-out`) and the two confirmations basic; none
+of the eight scrolls at 375×812 as a basic dialog (the tallest,
+`create-endpoint`, is 594px of the 690px cap with a mouse and 610px with a
+touch pointer, for which the library pads the panel 24px rather than 20 and
+sets the actions 24px rather than 16 under the text — measure the next one
+with touch). The bar takes `DialogActions` by absolute position against the
+panel, so it stays a direct part of the container (inside a `relative`
+wrapper `create-role`'s Create stayed in the body, at y 524); a
+`type="submit"` confirm sits outside its `<form>` and names it with `form=`
+(without it Create submitted nothing, in the bar or not); and Cancel is the
+`DialogClose as={Button}` the bar hides. All six form dialogs are wired that
+way: `record-opt-out` had no `<form>` and confirmed from an `onClick`, so
+Enter in its fields submitted nothing, and since this change it has a
+`<form>` like the other five (the maintainer's call). Measured at 375 and at
+1280 alike, in all six: Enter in a field submits once through the confirm;
+the browser's own validation still stops a submit (`type="email"`,
+`min="0"`, and a `required` and a `pattern` injected into `record-opt-out`
+for the probe, whose fields carry none); a failed zod check focuses the
+first invalid field; a server error's banner lands in view; and a double
+click submits once. In `record-opt-out`, Enter again while pending submits
+nothing: the disabled confirm is the form's default button. In all eight,
+Tab runs through the body and the actions and reaches the close icon last —
+although below 640px the bar draws it first — and Escape returns focus to
+the trigger. One consequence of the `<form>` worth knowing: Enter on a
+closed `Select` trigger submits the form too, because Headless UI's
+`ListboxButton` calls its `attemptSubmit` on Enter (Space and the arrow keys
+open the list). Measured on `record-opt-out`'s Source; `provision-user`'s
+Role is the same component in a `<form>`, not probed.
+`frontends/apps/admin/app/dialog-presentation.test.ts` checks the rule and
+that wiring for every dialog container under `frontends/apps/admin/`, one row
+per container — a dialog with inputs must confirm with a `type="submit"`
+naming its `<form>` — and fails on a new one with no row, so a new dialog
+gets classified when it is written, not afterwards.
 
 ## Orange's DLR contract, read properly at last — and MTN wired into both binaries
 

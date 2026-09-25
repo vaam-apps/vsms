@@ -11,8 +11,9 @@
 import {
   Button,
   Dialog,
+  DialogActions,
+  DialogClose,
   DialogContent,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   InlineBanner,
@@ -35,21 +36,21 @@ export function RemoveConfirmDialog({
 }: RemoveConfirmDialogProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[440px]">
+      <DialogContent>
         <DialogHeader>
           <DialogTitle>Remove this opt-out?</DialogTitle>
         </DialogHeader>
         {errorMessage != null && (
           <InlineBanner variant="danger">Remove failed: {errorMessage}</InlineBanner>
         )}
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost">
             Cancel
-          </Button>
+          </DialogClose>
           <Button type="button" variant="destructive" disabled={pending} onClick={onConfirm}>
             {pending ? "Removing…" : "Remove"}
           </Button>
-        </DialogFooter>
+        </DialogActions>
       </DialogContent>
     </Dialog>
   );

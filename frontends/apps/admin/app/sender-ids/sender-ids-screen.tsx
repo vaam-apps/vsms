@@ -33,7 +33,7 @@
 // drawer). See `frontends/apps/admin/app/gallery/page.tsx`'s
 // `NestedDialogInDrawerRegression` demo and `docs/design/console-redesign.md`
 // §3/§1.7 for the mechanism and root cause. Create sender ID stays a real
-// centered `Dialog` — it opens from the toolbar while no drawer is open.
+// `Dialog` — it opens from the toolbar while no drawer is open.
 //
 // # Registration status is a plain `String`, not a governed enum
 //

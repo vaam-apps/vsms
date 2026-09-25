@@ -1,9 +1,10 @@
 import {
   Button,
   Dialog,
-  DialogContent,
+  DialogActions,
+  DialogClose,
   DialogDescription,
-  DialogFooter,
+  DialogFullScreen,
   DialogHeader,
   DialogTitle,
 } from "@vaam-apps/ui";
@@ -14,7 +15,9 @@ import { CreateEndpointFields } from "./create-endpoint-fields";
 // Dumb (R6): the "New webhook endpoint" dialog, start to finish. Not
 // affected by the nested-Dialog-in-drawer bug (see webhooks-screen.tsx's
 // own module doc) — it opens from the toolbar while no drawer is open, so
-// it stays a real, centered `Dialog`.
+// it stays a real `Dialog`: `DialogFullScreen`, because it is a form of
+// five inputs (AGENTS.md's rule for which presentation a dialog takes) —
+// full-screen below 640px, centred from 640px up.
 export function CreateEndpointDialog({
   open,
   onOpenChange,
@@ -36,7 +39,7 @@ export function CreateEndpointDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[560px]">
+      <DialogFullScreen>
         <DialogHeader>
           <DialogTitle>New webhook endpoint</DialogTitle>
           <DialogDescription>
@@ -51,10 +54,10 @@ export function CreateEndpointDialog({
           onSubmit={onSubmit}
           createErrorMessage={errorMessage}
         />
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost">
             Cancel
-          </Button>
+          </DialogClose>
           <Button
             type="submit"
             form="create-endpoint-form"
@@ -62,8 +65,8 @@ export function CreateEndpointDialog({
           >
             {pending ? "Creating…" : "Create"}
           </Button>
-        </DialogFooter>
-      </DialogContent>
+        </DialogActions>
+      </DialogFullScreen>
     </Dialog>
   );
 }

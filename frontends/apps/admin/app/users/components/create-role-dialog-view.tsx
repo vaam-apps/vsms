@@ -3,8 +3,9 @@
 import {
   Button,
   Dialog,
-  DialogContent,
-  DialogFooter,
+  DialogActions,
+  DialogClose,
+  DialogFullScreen,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -32,7 +33,7 @@ export function CreateRoleDialogView({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[520px]">
+      <DialogFullScreen>
         <DialogHeader>
           <DialogTitle>New role</DialogTitle>
         </DialogHeader>
@@ -73,15 +74,15 @@ export function CreateRoleDialogView({
           </FormField>
           {generalError != null && <ErrorBanner>{generalError}</ErrorBanner>}
         </form>
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost">
             Cancel
-          </Button>
+          </DialogClose>
           <Button type="submit" form="create-role-form" disabled={isPending}>
             {isPending ? "Creating…" : "Create"}
           </Button>
-        </DialogFooter>
-      </DialogContent>
+        </DialogActions>
+      </DialogFullScreen>
     </Dialog>
   );
 }

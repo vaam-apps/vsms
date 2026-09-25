@@ -1,9 +1,10 @@
 import {
   Button,
   Dialog,
-  DialogContent,
+  DialogActions,
+  DialogClose,
   DialogDescription,
-  DialogFooter,
+  DialogFullScreen,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -23,7 +24,9 @@ import {
 // Dumb (R6): the "New sender ID" dialog, start to finish. Not affected by
 // the nested-Dialog-in-drawer bug (see sender-ids-screen.tsx's own module
 // doc) — it opens from the toolbar while no drawer is open, so it stays a
-// real, centered `Dialog`.
+// real `Dialog`: `DialogFullScreen`, because it is a three-input form
+// (AGENTS.md's rule for which presentation a dialog takes) — full-screen
+// below 640px, centred from 640px up.
 export function CreateSenderDialog({
   open,
   onOpenChange,
@@ -43,7 +46,7 @@ export function CreateSenderDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogFullScreen>
         <DialogHeader>
           <DialogTitle>New sender ID</DialogTitle>
           <DialogDescription>
@@ -102,15 +105,15 @@ export function CreateSenderDialog({
             <InlineBanner variant="danger">Create failed: {errorMessage}</InlineBanner>
           )}
         </form>
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost">
             Cancel
-          </Button>
+          </DialogClose>
           <Button type="submit" form="create-sender-id-form" disabled={pending}>
             {pending ? "Creating…" : "Create"}
           </Button>
-        </DialogFooter>
-      </DialogContent>
+        </DialogActions>
+      </DialogFullScreen>
     </Dialog>
   );
 }

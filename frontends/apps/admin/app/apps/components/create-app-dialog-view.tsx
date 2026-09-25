@@ -5,8 +5,9 @@
 import {
   Button,
   Dialog,
-  DialogContent,
-  DialogFooter,
+  DialogActions,
+  DialogClose,
+  DialogFullScreen,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -33,7 +34,7 @@ export function CreateAppDialogView({
 }) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[480px]">
+      <DialogFullScreen>
         <DialogHeader>
           <DialogTitle>New app</DialogTitle>
         </DialogHeader>
@@ -72,15 +73,15 @@ export function CreateAppDialogView({
           </FormField>
           {generalError != null && <ErrorBanner>{generalError}</ErrorBanner>}
         </form>
-        <DialogFooter>
-          <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+        <DialogActions>
+          <DialogClose as={Button} variant="ghost">
             Cancel
-          </Button>
+          </DialogClose>
           <Button type="submit" form="create-app-form" disabled={isPending}>
             {isPending ? "Creating…" : "Create"}
           </Button>
-        </DialogFooter>
-      </DialogContent>
+        </DialogActions>
+      </DialogFullScreen>
     </Dialog>
   );
 }

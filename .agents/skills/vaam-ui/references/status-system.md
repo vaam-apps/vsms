@@ -10,20 +10,32 @@ import { defineStatusSystem, createStatusPill } from "@vaam-apps/ui";
 
 export const PAYMENT_STATUS = defineStatusSystem({
   pending: {
-    family: "in-flight", silhouette: "circle", mark: "pie-1",
-    hue: "progress", filled: false, attention: "quiet",
+    family: "in-flight",
+    silhouette: "circle",
+    mark: "pie-1",
+    hue: "progress",
+    filled: false,
+    attention: "quiet",
     label: "Pending",
     tooltip: "Sent to the provider. Waiting for them to confirm.",
   },
   paid: {
-    family: "terminal", silhouette: "circle", mark: "check",
-    hue: "success", filled: true, attention: "quiet",
+    family: "terminal",
+    silhouette: "circle",
+    mark: "check",
+    hue: "success",
+    filled: true,
+    attention: "quiet",
     label: "Paid",
     tooltip: "The provider confirmed the transfer.",
   },
   failed: {
-    family: "terminal", silhouette: "circle", mark: "cross",
-    hue: "danger", filled: true, attention: "loud",
+    family: "terminal",
+    silhouette: "circle",
+    mark: "cross",
+    hue: "danger",
+    filled: true,
+    attention: "loud",
     label: "Failed",
     tooltip: "The provider rejected it. Nothing was moved.",
   },
@@ -37,21 +49,21 @@ with it, `createStatusPill(PAYMENT_STATUS)` accepts exactly those keys and
 no others. Without it you would annotate `StatusSystem<"pending" | …>` and
 repeat every key.
 
-**The table belongs to the application**, because what a state *means* is
+**The table belongs to the application**, because what a state _means_ is
 domain knowledge. The library owns the vocabulary and the rendering.
 
 ## The fields
 
-| Field | What it controls |
-|---|---|
-| `hue` | The colour, from a closed set of eight. What *kind* of state this is. |
-| `attention` | `quiet` or `loud`. Whether the row should pull the eye. |
-| `filled` | Whether the silhouette is solid. Answers "is it over?" in greyscale. |
-| `silhouette` | `circle` / `diamond` / `square`. |
-| `mark` | The interior glyph. |
-| `label` | Human-facing name. Sentence case, never the raw enum literal. |
-| `tooltip` | One or two sentences: what this means and what happens next. |
-| `family` | `in-flight` / `unresolved` / `terminal`. Metadata; nothing renders it. |
+| Field        | What it controls                                                       |
+| ------------ | ---------------------------------------------------------------------- |
+| `hue`        | The colour, from a closed set of eight. What _kind_ of state this is.  |
+| `attention`  | `quiet` or `loud`. Whether the row should pull the eye.                |
+| `filled`     | Whether the silhouette is solid. Answers "is it over?" in greyscale.   |
+| `silhouette` | `circle` / `diamond` / `square`.                                       |
+| `mark`       | The interior glyph.                                                    |
+| `label`      | Human-facing name. Sentence case, never the raw enum literal.          |
+| `tooltip`    | One or two sentences: what this means and what happens next.           |
+| `family`     | `in-flight` / `unresolved` / `terminal`. Metadata; nothing renders it. |
 
 `StatusHue` is exactly: `neutral`, `progress`, `success`, `warning`,
 `danger`, `uncertain`, `expired`, `parked`. There is no ninth, and adding
@@ -81,7 +93,7 @@ six loud ones reads instantly; one with forty reads as noise.
 ## The three helpers that come with it
 
 `defineStatusSystem` and `createStatusPill` are the ones you call. Three
-more exist for the code *around* a status, and knowing they are there
+more exist for the code _around_ a status, and knowing they are there
 stops you re-deriving them:
 
 ```ts
@@ -89,7 +101,7 @@ import { HUE_CLASSES, isQuietHue, isTerminalStatus } from "@vaam-apps/ui";
 ```
 
 - **`isTerminalStatus(system, state)`** — is this state over? Note the
-  two arguments: the system *and* the key, not a `StatusMeta`. It reads
+  two arguments: the system _and_ the key, not a `StatusMeta`. It reads
   that state's `family`, so your code can ask "can this still change?"
   without learning which of your own keys are endings — whether to keep
   polling, whether to offer a retry, whether to keep a row live.

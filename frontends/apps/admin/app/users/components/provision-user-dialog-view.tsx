@@ -6,9 +6,10 @@ import {
   Button,
   Code,
   Dialog,
-  DialogContent,
+  DialogActions,
+  DialogClose,
   DialogDescription,
-  DialogFooter,
+  DialogFullScreen,
   DialogHeader,
   DialogTitle,
   FormField,
@@ -55,7 +56,7 @@ export function ProvisionUserDialogView({
 }) {
   return (
     <Dialog open={open} onOpenChange={(next) => (next ? undefined : onDone())}>
-      <DialogContent className="max-w-[480px]">
+      <DialogFullScreen>
         <DialogHeader>
           <DialogTitle>Provision a console account</DialogTitle>
           <DialogDescription>
@@ -149,12 +150,12 @@ export function ProvisionUserDialogView({
           </div>
         )}
 
-        <DialogFooter>
+        <DialogActions>
           {result === undefined ? (
             <>
-              <Button type="button" variant="ghost" onClick={onDone}>
+              <DialogClose as={Button} variant="ghost">
                 Cancel
-              </Button>
+              </DialogClose>
               <Button type="submit" form="provision-user-form" disabled={isPending}>
                 {isPending ? "Provisioning…" : "Provision"}
               </Button>
@@ -164,8 +165,8 @@ export function ProvisionUserDialogView({
               I&apos;ve saved this password — close
             </Button>
           )}
-        </DialogFooter>
-      </DialogContent>
+        </DialogActions>
+      </DialogFullScreen>
     </Dialog>
   );
 }
