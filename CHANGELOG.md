@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/vaam-apps/vsms/compare/v0.4.4...v0.5.0) (2026-09-25)
+
+
+### Features
+
+* **admin:** move the console to @vaam-apps/ui 0.4.0 ([#420](https://github.com/vaam-apps/vsms/issues/420)) ([74d937f](https://github.com/vaam-apps/vsms/commit/74d937f3e4c12c558c2477a08c4d5fe37e455b96))
+
+
+### Documentation
+
+* **contributing:** state the docs↔skills parity rule, and ask for companions ([#421](https://github.com/vaam-apps/vsms/issues/421)) ([40bfb83](https://github.com/vaam-apps/vsms/commit/40bfb83ce658739a51e9318a66136b42ae4fed9a))
+* **design:** note that long dialogs go full-screen on phones since [#420](https://github.com/vaam-apps/vsms/issues/420) ([#423](https://github.com/vaam-apps/vsms/issues/423)) ([c89ba4a](https://github.com/vaam-apps/vsms/commit/c89ba4a19a6228f86f83126d5c0dd87b73f87dde))
+
 ## [0.4.4](https://github.com/vaam-apps/vsms/compare/v0.4.3...v0.4.4) (2026-09-23)
 
 
