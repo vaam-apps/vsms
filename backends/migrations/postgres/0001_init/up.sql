@@ -490,7 +490,7 @@ ALTER TABLE audit_anchors ADD CONSTRAINT audit_anchors_chain_hash_length_check C
 
 ALTER TABLE consent_records ADD CONSTRAINT consent_records_scope_enum_check CHECK (scope IN ('otp', 'transactional', 'notification', 'marketing'));
 
-ALTER TABLE consent_records ADD CONSTRAINT consent_records_channel_enum_check CHECK (channel IN ('web_form', 'api', 'ivr', 'paper_form', 'verbal', 'sms_keyword', 'imported', 'admin'));
+ALTER TABLE consent_records ADD CONSTRAINT consent_records_channel_enum_check CHECK (channel IN ('web_form', 'api', 'ivr', 'paper_form', 'verbal', 'sms_keyword', 'import', 'admin'));
 
 ALTER TABLE delivery_receipts ADD CONSTRAINT delivery_receipts_outcome_enum_check CHECK (outcome IN ('delivered', 'uncertain', 'failed', 'expired', 'rejected', 'in_flight', 'unknown'));
 
@@ -516,7 +516,7 @@ ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_source_en
 
 ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_confidence_enum_check CHECK (confidence IN ('verified', 'likely', 'contested', 'unverified'));
 
-ALTER TABLE opt_outs ADD CONSTRAINT opt_outs_source_enum_check CHECK (source IN ('inbound_stop', 'admin', 'imported', 'operator'));
+ALTER TABLE opt_outs ADD CONSTRAINT opt_outs_source_enum_check CHECK (source IN ('inbound_stop', 'admin', 'import', 'operator'));
 
 ALTER TABLE providers ADD CONSTRAINT providers_kind_enum_check CHECK (kind IN ('orange_cm_http', 'mtn_http', 'aggregator_http', 'smpp'));
 

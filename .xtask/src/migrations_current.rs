@@ -24,6 +24,28 @@ use std::process::Command;
 const SCHEMA: &str = "schemas/vsms.cstack";
 const COMMITTED_DIR: &str = "backends/migrations/postgres/0001_init";
 
+/// A migration that rewrites statements of the already-applied `0001_init`.
+///
+/// `0001_init` is regenerated wholesale only while no database has applied
+/// it. A deployed one has, so a schema change that alters an emitted
+/// statement ships as a forward migration instead, and this check compares
+/// `0001_init` to what the generator emits *minus* what that migration
+/// rewrites: each `(current, applied)` pair is a statement the generator
+/// emits now and the line `0001_init` still carries. `LATER_UP` must contain
+/// every `current` line, so the pair cannot outlive the migration. Delete
+/// the pair and regenerate `0001_init` whenever it is squashed.
+const LATER_UP: &str = "backends/migrations/postgres/0004_import_to_imported/up.sql";
+const REWRITTEN_BY_LATER: [(&str, &str); 2] = [
+    (
+        "ALTER TABLE consent_records ADD CONSTRAINT consent_records_channel_enum_check CHECK (channel IN ('web_form', 'api', 'ivr', 'paper_form', 'verbal', 'sms_keyword', 'imported', 'admin'));",
+        "ALTER TABLE consent_records ADD CONSTRAINT consent_records_channel_enum_check CHECK (channel IN ('web_form', 'api', 'ivr', 'paper_form', 'verbal', 'sms_keyword', 'import', 'admin'));",
+    ),
+    (
+        "ALTER TABLE opt_outs ADD CONSTRAINT opt_outs_source_enum_check CHECK (source IN ('inbound_stop', 'admin', 'imported', 'operator'));",
+        "ALTER TABLE opt_outs ADD CONSTRAINT opt_outs_source_enum_check CHECK (source IN ('inbound_stop', 'admin', 'import', 'operator'));",
+    ),
+];
+
 /// Removes its temp directory on drop, on every exit path — success,
 /// error-return, or an early `?` — matching the bash version's own
 /// `trap 'rm -rf "$out"' EXIT`.
@@ -124,8 +146,21 @@ pub fn run(root: &Path) -> Result<(), String> {
         let regenerated_path = regenerated.join(format!("{f}.sql"));
         let committed = fs::read_to_string(&committed_path)
             .map_err(|e| format!("{}: {e}", committed_path.display()))?;
-        let fresh = fs::read_to_string(&regenerated_path)
+        let mut fresh = fs::read_to_string(&regenerated_path)
             .map_err(|e| format!("{}: {e}", regenerated_path.display()))?;
+        if f == "up" {
+            let later =
+                fs::read_to_string(root.join(LATER_UP)).map_err(|e| format!("{LATER_UP}: {e}"))?;
+            for (current, applied) in REWRITTEN_BY_LATER {
+                if !later.contains(current) {
+                    return Err(format!(
+                        "migrations-current: {LATER_UP} no longer contains the statement the \
+                         generator emits now:\n  {current}"
+                    ));
+                }
+                fresh = fresh.replace(current, applied);
+            }
+        }
         if committed != fresh {
             mismatches.push((f, crate::diff::line_diff(&committed, &fresh)));
         }
