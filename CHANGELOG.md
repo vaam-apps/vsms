@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/vaam-apps/vsms/compare/v0.5.0...v0.5.1) (2026-09-29)
+
+
+### Chores
+
+* **deps:** bump cratestack 0.11.0 to 0.15.0 ([#424](https://github.com/vaam-apps/vsms/issues/424)) ([63848f7](https://github.com/vaam-apps/vsms/commit/63848f77592f1c35b2a431eec84a2083efa61992))
+
 ## [0.5.0](https://github.com/vaam-apps/vsms/compare/v0.4.4...v0.5.0) (2026-09-25)
 
 
