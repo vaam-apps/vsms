@@ -20,6 +20,11 @@
 # section.
 FROM rust:1.98-bookworm
 
+# DL4006: several RUNs below pipe `curl` into a shell installer. Without
+# `pipefail` a failed download is masked by the installer's own exit status
+# and the layer builds "successfully" from a truncated script.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # CARGO_BUILD_JOBS default matches AGENTS.md's own "Build cost" warning:
 # `include_server_schema!` expansion is memory-hungry enough to OOM at
 # cargo's default job count on a constrained machine. This is only ever
@@ -56,6 +61,13 @@ RUN rustup component add rustfmt clippy
 # binary on PATH, so `corepack enable` right after install fails `not
 # found`, exit 127). `npm install -g corepack` puts it back before
 # `corepack enable` runs — npm itself still ships with Node 26.
+# DL3008/DL3016: no apt or npm version pin, deliberately. Every package here
+# comes from a third-party repo (PGDG, nodesource) or a floating channel
+# (`corepack`, which must track npm's latest to keep `packageManager`
+# resolvable) — the versions that matter are pinned above by suite and
+# major line (`postgresql-client-16`, `setup_26.x`), and a patch pin would
+# make the image fail to build the day the repo drops that exact revision.
+# hadolint ignore=DL3008,DL3016
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg lsb-release git unzip \
     && install -d /usr/share/postgresql-common/pgdg \
