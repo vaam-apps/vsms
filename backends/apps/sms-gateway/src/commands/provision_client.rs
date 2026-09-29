@@ -255,8 +255,9 @@ pub(crate) async fn provision_client_command(args: ProvisionClientArgs) -> Resul
     // `authorize_with_db` (so this CLI command now genuinely enforces
     // `provisionAppClient`'s policy, not just this file's own copy of it)
     // and hands the resulting `Authorized` witness into the trait method.
-    let provisioned = provision_app_client::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.provision_app_client(&db, &ctx, args.clone(), authorized)
+    let provisioned = provision_app_client::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.provision_app_client(&db, &c, a, authorized).await }
     })
     .await
     .context("provisioning the client")?;

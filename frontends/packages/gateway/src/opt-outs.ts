@@ -28,7 +28,7 @@ import { parseGatewayJson } from "./json";
 import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 
 /** `schema.cstack`'s `OptOutSource`, verbatim. */
-export type OptOutSource = "inbound_stop" | "admin" | "import" | "operator";
+export type OptOutSource = "inbound_stop" | "admin" | "imported" | "operator";
 
 export interface OptOutRecord {
   id: string;

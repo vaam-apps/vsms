@@ -279,7 +279,7 @@ enum AttemptState {
 enum OptOutSource {
   inbound_stop
   admin
-  import
+  imported
   operator
 }
 
@@ -291,7 +291,7 @@ enum ConsentChannel {
   paper_form
   verbal
   sms_keyword
-  import
+  imported
   admin
 }
 

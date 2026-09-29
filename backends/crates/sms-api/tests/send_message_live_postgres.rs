@@ -310,8 +310,9 @@ async fn a_well_formed_send_is_accepted_and_classified() {
     // non-HTTP code" per that function's own doc comment.
     let ctx = app_caller(&client_id);
     let send_args = args("+237677123456", "Votre code est 4821", Some(&sender));
-    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .expect("a well-formed send must be accepted");
@@ -336,8 +337,9 @@ async fn an_unknown_client_id_is_unauthorized() {
     // test above.
     let ctx = app_caller("no-such-client");
     let send_args = args("+237677123456", "hi", None);
-    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .unwrap_err();
@@ -378,8 +380,9 @@ async fn a_human_caller_is_rejected_with_a_clear_reason_not_a_guess() {
     // the documented `kind == "app"` gap this test means to exercise, not
     // an incidental Layer 1 denial.
     let send_args = args("+237677123456", "hi", None);
-    let error = send_message::invoke_with_db(&db, &send_args, &human, |authorized| {
-        procedures.send_message(&db, &human, send_args.clone(), authorized)
+    let error = send_message::invoke_with_db(&db, &send_args, &human, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), human.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .unwrap_err();
@@ -426,8 +429,9 @@ async fn an_opted_out_recipient_is_refused_before_persistence() {
     // `invoke_with_db`.
     let ctx = app_caller(&client_id);
     let send_args = args_with_class(to, "hi", Some(&sender), Some(MessageClass::notification));
-    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .unwrap_err();
@@ -476,8 +480,9 @@ async fn a_full_monthly_quota_is_refused() {
     // `invoke_with_db`.
     let ctx = app_caller(&client_id);
     let send_args = args("+237677123456", "hi", Some(&sender));
-    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .unwrap_err();
@@ -498,8 +503,9 @@ async fn no_sender_id_and_no_default_is_refused() {
     // `invoke_with_db`.
     let ctx = app_caller(&client_id);
     let send_args = args("+237677123456", "hi", None);
-    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .unwrap_err();
@@ -520,8 +526,9 @@ async fn an_unregistered_sender_id_is_refused() {
     // `invoke_with_db`.
     let ctx = app_caller(&client_id);
     let send_args = args("+237677123456", "hi", Some("NOTREGISTERED"));
-    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .unwrap_err();
@@ -556,8 +563,9 @@ async fn an_app_default_sender_is_used_when_none_is_given() {
     // `invoke_with_db`.
     let ctx = app_caller(&client_id);
     let send_args = args("+237677123456", "hi", None);
-    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .expect("the app's default sender must be used");
@@ -582,8 +590,9 @@ async fn an_unrecognised_prefix_classifies_as_unknown_not_a_guess() {
     // `invoke_with_db`.
     let ctx = app_caller(&client_id);
     let send_args = args("+237640123456", "hi", Some(&sender));
-    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .expect("an unrecognised prefix is still a valid send");
@@ -646,8 +655,9 @@ async fn the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn() {
     // from it (E0515), the same trap `&owner()` called inline hits elsewhere
     // in this workspace's live suites.
     let procedures_a = Procedures::new(test_pepper());
-    let sent_a = send_message::invoke_with_db(&db, &args_a, &ctx_a, |authorized| {
-        procedures_a.send_message(&db, &ctx_a, args_a.clone(), authorized)
+    let sent_a = send_message::invoke_with_db(&db, &args_a, &ctx_a, |db, authorized| {
+        let (p, c, a) = (procedures_a.clone(), ctx_a.clone(), args_a.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .expect("sending under pepper A");
@@ -657,8 +667,9 @@ async fn the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn() {
     let ctx_b = app_caller(&client_b);
     let args_b = args(to, "hi", Some(&sender));
     let procedures_b = Procedures::new(other_pepper);
-    let sent_b = send_message::invoke_with_db(&db, &args_b, &ctx_b, |authorized| {
-        procedures_b.send_message(&db, &ctx_b, args_b.clone(), authorized)
+    let sent_b = send_message::invoke_with_db(&db, &args_b, &ctx_b, |db, authorized| {
+        let (p, c, a) = (procedures_b.clone(), ctx_b.clone(), args_b.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .expect("sending under pepper B — a distinct App, so quota/dedupe don't interfere");
@@ -673,8 +684,9 @@ async fn the_stored_hash_is_keyed_by_pepper_not_just_the_msisdn() {
     let ctx_c = app_caller(&client_c);
     let args_c = args(to, "hi", Some(&sender));
     let procedures_c = Procedures::new(test_pepper());
-    let sent_c = send_message::invoke_with_db(&db, &args_c, &ctx_c, |authorized| {
-        procedures_c.send_message(&db, &ctx_c, args_c.clone(), authorized)
+    let sent_c = send_message::invoke_with_db(&db, &args_c, &ctx_c, |db, authorized| {
+        let (p, c, a) = (procedures_c.clone(), ctx_c.clone(), args_c.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .expect("sending under pepper A again, from an independent Procedures instance");
@@ -747,11 +759,13 @@ async fn a_marketing_send_is_refused_but_a_transactional_send_to_the_same_recipi
         Some(&sender),
         Some(MessageClass::marketing),
     );
-    let marketing_error = send_message::invoke_with_db(&db, &marketing_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, marketing_args.clone(), authorized)
-    })
-    .await
-    .unwrap_err();
+    let marketing_error =
+        send_message::invoke_with_db(&db, &marketing_args, &ctx, |db, authorized| {
+            let (p, c, a) = (procedures.clone(), ctx.clone(), marketing_args.clone());
+            async move { p.send_message(&db, &c, a, authorized).await }
+        })
+        .await
+        .unwrap_err();
     assert!(
         matches!(marketing_error, cratestack::CratestackError::Validation(_)),
         "a marketing send with no consent on file must be refused, got: {marketing_error:?}"
@@ -764,8 +778,9 @@ async fn a_marketing_send_is_refused_but_a_transactional_send_to_the_same_recipi
         Some(MessageClass::transactional),
     );
     let transactional_result =
-        send_message::invoke_with_db(&db, &transactional_args, &ctx, |authorized| {
-            procedures.send_message(&db, &ctx, transactional_args.clone(), authorized)
+        send_message::invoke_with_db(&db, &transactional_args, &ctx, |db, authorized| {
+            let (p, c, a) = (procedures.clone(), ctx.clone(), transactional_args.clone());
+            async move { p.send_message(&db, &c, a, authorized).await }
         })
         .await
         .expect(
@@ -794,8 +809,9 @@ async fn a_notification_send_with_no_consent_record_is_refused() {
     // `invoke_with_db`.
     let ctx = app_caller(&client_id);
     let send_args = args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification));
-    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .unwrap_err();
@@ -835,8 +851,9 @@ async fn a_notification_send_with_a_matching_consent_record_succeeds() {
     // `invoke_with_db`.
     let ctx = app_caller(&client_id);
     let send_args = args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification));
-    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let result = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .expect("a matching, on-file consent record must let this send through");
@@ -865,8 +882,9 @@ async fn a_consent_record_scoped_to_a_different_class_does_not_authorise_this_on
     // `invoke_with_db`.
     let ctx = app_caller(&client_id);
     let send_args = args_with_class(&to, "hi", Some(&sender), Some(MessageClass::notification));
-    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .unwrap_err();
@@ -916,8 +934,9 @@ async fn an_opted_out_recipient_still_receives_an_otp_or_transactional_message()
         Some(&sender),
         Some(MessageClass::otp),
     );
-    let otp_result = send_message::invoke_with_db(&db, &otp_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, otp_args.clone(), authorized)
+    let otp_result = send_message::invoke_with_db(&db, &otp_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), otp_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .expect("an OTP send to an opted-out recipient must still succeed");
@@ -930,8 +949,9 @@ async fn an_opted_out_recipient_still_receives_an_otp_or_transactional_message()
         Some(MessageClass::transactional),
     );
     let transactional_result =
-        send_message::invoke_with_db(&db, &transactional_args, &ctx, |authorized| {
-            procedures.send_message(&db, &ctx, transactional_args.clone(), authorized)
+        send_message::invoke_with_db(&db, &transactional_args, &ctx, |db, authorized| {
+            let (p, c, a) = (procedures.clone(), ctx.clone(), transactional_args.clone());
+            async move { p.send_message(&db, &c, a, authorized).await }
         })
         .await
         .expect("a transactional send to an opted-out recipient must still succeed");
@@ -992,8 +1012,9 @@ async fn a_marketing_send_scheduled_into_quiet_hours_is_refused_however_it_is_ac
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db`.
     let ctx = app_caller(&client_id);
-    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let error = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await
     .expect_err(
@@ -1041,8 +1062,9 @@ async fn a_marketing_send_matches_the_real_clocks_current_quiet_hours_state() {
         Some(&sender),
         Some(MessageClass::marketing),
     );
-    let outcome = send_message::invoke_with_db(&db, &send_args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, send_args.clone(), authorized)
+    let outcome = send_message::invoke_with_db(&db, &send_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), send_args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await;
 

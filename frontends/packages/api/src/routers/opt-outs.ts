@@ -8,7 +8,7 @@ import { z } from "zod";
 import { rethrowGatewayError } from "../gateway-error";
 import { publicProcedure, router } from "../trpc";
 
-const optOutSource = z.enum(["inbound_stop", "admin", "import", "operator"]);
+const optOutSource = z.enum(["inbound_stop", "admin", "imported", "operator"]);
 
 const recordInput = z.object({
   msisdn: z.string().min(1),

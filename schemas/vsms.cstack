@@ -148,7 +148,7 @@ enum SenderIdKind {
 enum OptOutSource {
   inbound_stop
   admin
-  import
+  imported
   operator
 }
 
@@ -156,7 +156,7 @@ enum OptOutSource {
 // free-form String the way `OptOut.scope` is — `ConsentRecord.scope`
 // reuses `MessageClass` itself (see that model's own comment) rather than
 // inventing a second string vocabulary that could drift from it, and this
-// enum is the equivalent discipline for "channel". `admin`/`import` mirror
+// enum is the equivalent discipline for "channel". `admin`/`imported` mirror
 // `OptOutSource`'s own two non-runtime-observed sources; the rest are
 // capture channels a signup flow plausibly uses.
 enum ConsentChannel {
@@ -166,7 +166,7 @@ enum ConsentChannel {
   paper_form
   verbal
   sms_keyword
-  import
+  imported
   admin
 }
 
@@ -1509,6 +1509,7 @@ type SimulateRouteResult {
 
 procedure simulateRoute(args: SimulateRouteInput): SimulateRouteResult
   @allow(auth().kind == "app" || hasRole('owner') || hasRole('admin') || hasRole('operator') || hasRole('auditor') || hasRole('system'))
+
 type MessageReceiptsInput {
   messageId Cuid
 }

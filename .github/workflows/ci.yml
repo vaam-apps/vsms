@@ -257,19 +257,18 @@ jobs:
       # ~18MB binary from source on every run, and gains a supply-chain
       # check `cargo install` never performed.
       #
-      # The action ref (`@v0.8.3`) and the `version:` input are
+      # The action ref (the pinned commit, tag `v0.15.0`) and the `version:` input are
       # deliberately independent, and this is NOT the duplicated-value
       # drift AGENTS.md's release-engineering notes warn about: GitHub
       # forbids expressions in `uses:`, so the ref cannot be derived from
       # the pin even in principle. `cargo xtask cratestack-pin` remains
       # the single source of truth for *which version gets installed*; the
       # ref only says which revision of the installer script runs, and the
-      # two need not match. Pinned rather than floating on `@main` per this
-      # repo's own rule against unpinned dependencies inside a pipeline —
-      # v0.8.3 is the first tag carrying the installer's retry hardening
-      # (cratestack#578/#618); v0.8.0 and earlier ship an older script.
+      # two need not match. Pinned to the commit of the `v0.15.0` tag
+      # (da143158cd46...) rather than a movable tag or `@main`, per this
+      # repo's own rule against unpinned dependencies inside a pipeline.
       - name: Install cratestack CLI (matched to the library pin)
-        uses: cratestack/cratestack/.github/actions/install-cratestack-cli@v0.11.0
+        uses: cratestack/cratestack/.github/actions/install-cratestack-cli@da143158cd4621a0268ff5ee4ec9a99833d45daf # v0.15.0
         with:
           version: ${{ steps.pin.outputs.version }}
 
@@ -562,10 +561,10 @@ jobs:
         id: pin
         run: echo "version=$(cargo xtask cratestack-pin)" >> "$GITHUB_OUTPUT"
       # See the `schema-drift` job above for why this uses cratestack's own
-      # composite action, and why its `@v0.8.3` ref is independent of the
+      # composite action, and why its pinned-commit ref (tag `v0.15.0`) is independent of the
       # `version:` input rather than a duplicated value that can drift.
       - name: Install cratestack CLI (matched to the library pin)
-        uses: cratestack/cratestack/.github/actions/install-cratestack-cli@v0.11.0
+        uses: cratestack/cratestack/.github/actions/install-cratestack-cli@da143158cd4621a0268ff5ee4ec9a99833d45daf # v0.15.0
         with:
           version: ${{ steps.pin.outputs.version }}
       # `just` is not preinstalled on GitHub runners, and no other job in this

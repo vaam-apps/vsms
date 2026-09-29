@@ -45,7 +45,7 @@ describe("recordOptOutSchema", () => {
   });
 
   it("accepts every known source", () => {
-    for (const source of ["inbound_stop", "admin", "import", "operator"]) {
+    for (const source of ["inbound_stop", "admin", "imported", "operator"]) {
       expect(recordOptOutSchema.safeParse(baseValues({ source })).success).toBe(true);
     }
   });
