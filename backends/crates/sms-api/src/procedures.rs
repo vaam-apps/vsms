@@ -2,10 +2,7 @@
 
 use authkestra_engine::TokenManager;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
-use cratestack::{
-    CratestackContext, CratestackError, Decimal, FilterExpr, TransactionIsolation, Value,
-    run_in_isolated_tx,
-};
+use cratestack::{CratestackContext, CratestackError, Decimal, FilterExpr, Value};
 use rand::rngs::OsRng;
 use rsa::RsaPrivateKey;
 use rsa::pkcs8::{EncodePrivateKey, LineEnding};
@@ -26,6 +23,13 @@ use crate::schema::{
     opt_out, provider, sender_id, sender_id_registration, webhook_attempt, webhook_endpoint,
 };
 use crate::worker_locks;
+
+/// `OperatorPrefixRule`'s delegate, taken by the two helpers that both a
+/// plain procedure (`simulateRoute`) and an `@isolation` one (`sendMessage`)
+/// call — the isolated handle and `Cratestack` are different types, but
+/// each hands out this same delegate.
+type OperatorPrefixRules<'a> =
+    cratestack::ModelDelegate<'a, schema::models::OperatorPrefixRule, String>;
 
 /// RSA modulus size for a freshly generated client keypair. Matches
 /// `sms_auth::op::RSA_KEY_BITS` — same reasoning: the smallest size still
@@ -242,7 +246,7 @@ impl Procedures {
     /// out a human caller before this is reached.
     async fn resolve_app(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         sys: &CratestackContext,
         client_id: String,
     ) -> Result<schema::App, CratestackError> {
@@ -284,13 +288,12 @@ impl Procedures {
     /// cache miss.
     async fn operator_table(
         &self,
-        db: &schema::Cratestack,
+        rules: OperatorPrefixRules<'_>,
         sys: &CratestackContext,
     ) -> Result<OperatorPrefixTable, CratestackError> {
         self.operator_cache
             .get_or_fetch((), |()| async move {
-                let rows = db
-                    .operator_prefix_rule()
+                let rows = rules
                     .find_many()
                     .where_expr(FilterExpr::from(operator_prefix_rule::active().is_true()))
                     .run(sys)
@@ -307,11 +310,11 @@ impl Procedures {
     /// load-bearing.
     async fn classify_operator(
         &self,
-        db: &schema::Cratestack,
+        rules: OperatorPrefixRules<'_>,
         sys: &CratestackContext,
         msisdn: &Msisdn,
     ) -> Result<schema::OperatorCode, CratestackError> {
-        let table = self.operator_table(db, sys).await?;
+        let table = self.operator_table(rules, sys).await?;
         Ok(table
             .lookup(msisdn)
             .and_then(parse_operator_code)
@@ -330,7 +333,7 @@ impl Procedures {
     /// of marketing — more restrictive than the design doc specified, not
     /// a compliance gap, but not what was asked for either.
     async fn ensure_not_opted_out(
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         sys: &CratestackContext,
         msisdn_hash: &str,
     ) -> Result<(), CratestackError> {
@@ -395,7 +398,7 @@ impl Procedures {
     /// already lives with (see `ConsentRecord`'s own `schema.cstack`
     /// comment and `sms_api::pepper`'s module doc).
     async fn ensure_consent_on_file(
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         sys: &CratestackContext,
         app_id: &str,
         msisdn_hash: &str,
@@ -434,7 +437,7 @@ impl Procedures {
     /// cap precise to the message. Revisit if a real customer relies on
     /// the quota as an exact ceiling rather than a monthly budget signal.
     async fn ensure_within_quota(
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         sys: &CratestackContext,
         app: &schema::App,
         now: DateTime<Utc>,
@@ -471,7 +474,7 @@ impl Procedures {
     /// webhook) has to use this exact string, or every registration will
     /// silently read as unapproved.
     async fn resolve_sender_id(
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         sys: &CratestackContext,
         app: &schema::App,
         requested: Option<&str>,
@@ -551,7 +554,7 @@ impl Procedures {
     /// `Decimal::ZERO` when no active provider exists yet — honest given
     /// nothing is configured, not a fabricated estimate.
     async fn estimate_cost(
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         sys: &CratestackContext,
         segments: i64,
     ) -> Result<Decimal, CratestackError> {
@@ -614,7 +617,7 @@ impl Procedures {
     /// job is that decision, not delivery.
     async fn send(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::SendMessageInput,
     ) -> Result<schema::SendMessageResult, CratestackError> {
@@ -692,7 +695,9 @@ impl Procedures {
 
         // 7. Operator classification (routing hint only, per sms-msisdn's
         // own doc — never load-bearing).
-        let operator = self.classify_operator(db, &sys, &msisdn).await?;
+        let operator = self
+            .classify_operator(db.operator_prefix_rule(), &sys, &msisdn)
+            .await?;
 
         // 8. Idempotency: the DB-level defence described in §4.5 as
         // independent of the HTTP `Idempotency-Key` layer (#153,
@@ -826,7 +831,7 @@ impl Procedures {
     /// action. See #23's PR description for the full reasoning.
     async fn provision_client(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         _ctx: &CratestackContext,
         args: schema::ProvisionClientInput,
     ) -> Result<schema::ProvisionClientResult, CratestackError> {
@@ -902,53 +907,45 @@ impl Procedures {
         let app_id = args.appId;
         let label = args.label;
 
-        run_in_isolated_tx(db.pool(), TransactionIsolation::Serializable, |mut tx| {
+        db.transaction(async |tx| {
             let sys = &sys;
-            let client_id = client_id.clone();
-            let app_id = app_id.clone();
-            let label = label.clone();
-            let scopes_packed = scopes_packed.clone();
-            let grant_types_packed = grant_types_packed.clone();
-            let jwks_json = jwks_json.clone();
-            async move {
-                let app_client = db
-                    .app_client()
-                    .create(schema::CreateAppClientInput {
-                        appId: app_id,
-                        clientId: client_id.clone(),
-                        label,
-                        scopes: scopes_packed.clone(),
-                        lastUsedAt: None,
-                        retiredAt: None,
-                    })
-                    .run_in_tx(&mut tx, sys)
-                    .await?
-                    // cratestack 0.7.13 (#554): `run_in_tx` write builders
-                    // now return `RunInTxOutcome<T>` (the value plus any
-                    // `AuditEvent`s built for a caller-installed `AuditSink`
-                    // to fan out after commit). This codebase installs no
-                    // `AuditSink` — `@@audit` rows still land in
-                    // `cratestack_audit` the way they always have, inside
-                    // this same transaction, regardless — so `.value` is
-                    // the only thing any call site here needs.
-                    .value;
+            let app_client = db
+                .app_client()
+                .create(schema::CreateAppClientInput {
+                    appId: app_id,
+                    clientId: client_id.clone(),
+                    label,
+                    scopes: scopes_packed.clone(),
+                    lastUsedAt: None,
+                    retiredAt: None,
+                })
+                .run_in_tx(tx, sys)
+                .await?
+                // cratestack 0.7.13 (#554): `run_in_tx` write builders
+                // now return `RunInTxOutcome<T>` (the value plus any
+                // `AuditEvent`s built for a caller-installed `AuditSink`
+                // to fan out after commit). This codebase installs no
+                // `AuditSink` — `@@audit` rows still land in
+                // `cratestack_audit` the way they always have, inside
+                // this same transaction, regardless — so `.value` is
+                // the only thing any call site here needs.
+                .value;
 
-                db.oauth_client()
-                    .create(schema::CreateOauthClientInput {
-                        clientId: client_id,
-                        appClientId: Some(app_client.id),
-                        tokenEndpointAuthMethod: schema::ClientAuthMethod::private_key_jwt,
-                        jwks: Some(jwks_json),
-                        grantTypes: grant_types_packed,
-                        scopes: scopes_packed,
-                        redirectUris: sms_core::EMPTY.to_owned(),
-                        requirePkce: false,
-                    })
-                    .run_in_tx(&mut tx, sys)
-                    .await?;
+            db.oauth_client()
+                .create(schema::CreateOauthClientInput {
+                    clientId: client_id.clone(),
+                    appClientId: Some(app_client.id),
+                    tokenEndpointAuthMethod: schema::ClientAuthMethod::private_key_jwt,
+                    jwks: Some(jwks_json),
+                    grantTypes: grant_types_packed,
+                    scopes: scopes_packed,
+                    redirectUris: sms_core::EMPTY.to_owned(),
+                    requirePkce: false,
+                })
+                .run_in_tx(tx, sys)
+                .await?;
 
-                Ok(((), tx))
-            }
+            Ok(())
         })
         .await?;
 
@@ -1024,7 +1021,7 @@ impl Procedures {
     /// `rotate_denies_a_caller_with_no_webhook_manage_permission`.
     async fn rotate_secret(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::EndpointInput,
     ) -> Result<schema::WebhookEndpoint, CratestackError> {
@@ -1033,54 +1030,49 @@ impl Procedures {
         let sys = Self::sys();
         let endpoint_id = args.endpointId;
 
-        run_in_isolated_tx(db.pool(), TransactionIsolation::Serializable, |mut tx| {
+        db.transaction(async |tx| {
             let sys = &sys;
-            let endpoint_id = endpoint_id.clone();
-            async move {
-                let endpoint = db
-                    .webhook_endpoint()
-                    .find_many()
-                    .where_expr(FilterExpr::from(
-                        webhook_endpoint::id().eq(endpoint_id.clone()),
-                    ))
-                    .limit(1)
-                    .run_in_tx(&mut tx, sys)
-                    .await?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| {
-                        CratestackError::NotFound(format!(
-                            "no WebhookEndpoint with id {endpoint_id}"
-                        ))
-                    })?;
+            let endpoint = db
+                .webhook_endpoint()
+                .find_many()
+                .where_expr(FilterExpr::from(
+                    webhook_endpoint::id().eq(endpoint_id.clone()),
+                ))
+                .limit(1)
+                .run_in_tx(tx, sys)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    CratestackError::NotFound(format!("no WebhookEndpoint with id {endpoint_id}"))
+                })?;
 
-                let updated = db
-                    .webhook_endpoint()
-                    .update(endpoint_id)
-                    .set(schema::UpdateWebhookEndpointInput {
-                        secret: Some(sms_webhook::generate_secret()),
-                        prevSecret: Some(Some(endpoint.secret)),
-                        secretRotatedAt: Some(Some(Utc::now())),
-                        ..Default::default()
-                    })
-                    // #59: WebhookEndpoint gained `@version`. `@isolation
-                    // ("serializable")` above already stops two concurrent
-                    // rotations of the same row from clobbering each
-                    // other's `prevSecret` — this doc comment's own
-                    // reasoning predates the field existing — so
-                    // `if_match` here is defense in depth, not the primary
-                    // guard: it makes a losing race a named
-                    // `PreconditionFailed` instead of relying solely on a
-                    // serialization-failure retry.
-                    .if_match(endpoint.version)
-                    .run_in_tx(&mut tx, sys)
-                    .await?
-                    // cratestack 0.7.13 (#554): see the identical comment on
-                    // `provisionAppClient`'s own `run_in_tx` call above.
-                    .value;
+            let updated = db
+                .webhook_endpoint()
+                .update(endpoint_id)
+                .set(schema::UpdateWebhookEndpointInput {
+                    secret: Some(sms_webhook::generate_secret()),
+                    prevSecret: Some(Some(endpoint.secret)),
+                    secretRotatedAt: Some(Some(Utc::now())),
+                    ..Default::default()
+                })
+                // #59: WebhookEndpoint gained `@version`. `@isolation
+                // ("serializable")` above already stops two concurrent
+                // rotations of the same row from clobbering each
+                // other's `prevSecret` — this doc comment's own
+                // reasoning predates the field existing — so
+                // `if_match` here is defense in depth, not the primary
+                // guard: it makes a losing race a named
+                // `PreconditionFailed` instead of relying solely on a
+                // serialization-failure retry.
+                .if_match(endpoint.version)
+                .run_in_tx(tx, sys)
+                .await?
+                // cratestack 0.7.13 (#554): see the identical comment on
+                // `provisionAppClient`'s own `run_in_tx` call above.
+                .value;
 
-                Ok((updated, tx))
-            }
+            Ok(updated)
         })
         .await
     }
@@ -1123,7 +1115,7 @@ impl Procedures {
     /// `PATCH /webhook_endpoints/{id}` route.
     async fn replay_attempt(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::ReplayWebhookAttemptInput,
     ) -> Result<schema::WebhookAttempt, CratestackError> {
@@ -1133,92 +1125,89 @@ impl Procedures {
         let attempt_id = args.attemptId;
         let now = Utc::now();
 
-        run_in_isolated_tx(db.pool(), TransactionIsolation::Serializable, |mut tx| {
+        db.transaction(async |tx| {
             let sys = &sys;
-            let attempt_id = attempt_id.clone();
-            async move {
-                let attempt = db
-                    .webhook_attempt()
-                    .find_many()
-                    .where_expr(FilterExpr::from(
-                        webhook_attempt::id().eq(attempt_id.clone()),
-                    ))
-                    .limit(1)
-                    .run_in_tx(&mut tx, sys)
-                    .await?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| {
-                        CratestackError::NotFound(format!("no WebhookAttempt with id {attempt_id}"))
-                    })?;
+            let attempt = db
+                .webhook_attempt()
+                .find_many()
+                .where_expr(FilterExpr::from(
+                    webhook_attempt::id().eq(attempt_id.clone()),
+                ))
+                .limit(1)
+                .run_in_tx(tx, sys)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    CratestackError::NotFound(format!("no WebhookAttempt with id {attempt_id}"))
+                })?;
 
-                match attempt.state {
-                    schema::AttemptState::failed | schema::AttemptState::dead => {}
-                    other => {
-                        return Err(CratestackError::Conflict(format!(
-                            "webhook attempt {attempt_id} is {other:?}; replay only applies to \
+            match attempt.state {
+                schema::AttemptState::failed | schema::AttemptState::dead => {}
+                other => {
+                    return Err(CratestackError::Conflict(format!(
+                        "webhook attempt {attempt_id} is {other:?}; replay only applies to \
                              a failed or dead delivery"
-                        )));
-                    }
+                    )));
                 }
+            }
 
-                let endpoint_id = attempt.endpointId.clone();
+            let endpoint_id = attempt.endpointId.clone();
 
-                let updated = db
-                    .webhook_attempt()
-                    .update(attempt_id.clone())
-                    .set(schema::UpdateWebhookAttemptInput {
-                        state: Some(schema::AttemptState::pending),
-                        attempts: Some(0),
-                        lastStatusCode: Some(None),
-                        lastError: Some(None),
-                        leaseOwner: Some(None),
-                        leaseUntil: Some(None),
-                        nextAttemptAt: Some(Some(now)),
+            let updated = db
+                .webhook_attempt()
+                .update(attempt_id.clone())
+                .set(schema::UpdateWebhookAttemptInput {
+                    state: Some(schema::AttemptState::pending),
+                    attempts: Some(0),
+                    lastStatusCode: Some(None),
+                    lastError: Some(None),
+                    leaseOwner: Some(None),
+                    leaseUntil: Some(None),
+                    nextAttemptAt: Some(Some(now)),
+                    ..Default::default()
+                })
+                .if_match(attempt.version)
+                .run_in_tx(tx, sys)
+                .await?
+                // cratestack 0.7.13 (#554): see the identical comment on
+                // `provisionAppClient`'s own `run_in_tx` call above.
+                .value;
+
+            let endpoint = db
+                .webhook_endpoint()
+                .find_many()
+                .where_expr(FilterExpr::from(webhook_endpoint::id().eq(endpoint_id)))
+                .limit(1)
+                .run_in_tx(tx, sys)
+                .await?
+                .into_iter()
+                .next();
+
+            if let Some(endpoint) = endpoint
+                && (endpoint.consecutiveFailures != 0 || endpoint.circuitOpenUntil.is_some())
+            {
+                // #59: if_match(endpoint.version) — the row was
+                // just read above, inside this same transaction, so
+                // the version is fresh. A losing race here (another
+                // writer touched this endpoint between the read and
+                // this write) surfaces as PreconditionFailed and
+                // aborts the whole replay rather than silently
+                // clobbering whatever the other writer just set.
+                let endpoint_version = endpoint.version;
+                db.webhook_endpoint()
+                    .update(endpoint.id)
+                    .set(schema::UpdateWebhookEndpointInput {
+                        consecutiveFailures: Some(0),
+                        circuitOpenUntil: Some(None),
                         ..Default::default()
                     })
-                    .if_match(attempt.version)
-                    .run_in_tx(&mut tx, sys)
-                    .await?
-                    // cratestack 0.7.13 (#554): see the identical comment on
-                    // `provisionAppClient`'s own `run_in_tx` call above.
-                    .value;
-
-                let endpoint = db
-                    .webhook_endpoint()
-                    .find_many()
-                    .where_expr(FilterExpr::from(webhook_endpoint::id().eq(endpoint_id)))
-                    .limit(1)
-                    .run_in_tx(&mut tx, sys)
-                    .await?
-                    .into_iter()
-                    .next();
-
-                if let Some(endpoint) = endpoint
-                    && (endpoint.consecutiveFailures != 0 || endpoint.circuitOpenUntil.is_some())
-                {
-                    // #59: if_match(endpoint.version) — the row was
-                    // just read above, inside this same transaction, so
-                    // the version is fresh. A losing race here (another
-                    // writer touched this endpoint between the read and
-                    // this write) surfaces as PreconditionFailed and
-                    // aborts the whole replay rather than silently
-                    // clobbering whatever the other writer just set.
-                    let endpoint_version = endpoint.version;
-                    db.webhook_endpoint()
-                        .update(endpoint.id)
-                        .set(schema::UpdateWebhookEndpointInput {
-                            consecutiveFailures: Some(0),
-                            circuitOpenUntil: Some(None),
-                            ..Default::default()
-                        })
-                        .if_match(endpoint_version)
-                        .run_in_tx(&mut tx, sys)
-                        .await?;
-                }
-
-                Ok((updated, tx))
+                    .if_match(endpoint_version)
+                    .run_in_tx(tx, sys)
+                    .await?;
             }
+
+            Ok(updated)
         })
         .await
         // The one write above that can hit an illegal edge (`webhook_attempt`'s
@@ -1257,7 +1246,7 @@ impl Procedures {
     /// `runAt` the original enqueue left behind.
     async fn requeue(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::RequeueJobInput,
     ) -> Result<schema::Job, CratestackError> {
@@ -1267,49 +1256,46 @@ impl Procedures {
         let job_id = args.jobId;
         let now = Utc::now();
 
-        run_in_isolated_tx(db.pool(), TransactionIsolation::Serializable, |mut tx| {
+        db.transaction(async |tx| {
             let sys = &sys;
-            let job_id = job_id.clone();
-            async move {
-                let existing = db
-                    .job()
-                    .find_many()
-                    .where_expr(FilterExpr::from(job::id().eq(job_id.clone())))
-                    .limit(1)
-                    .run_in_tx(&mut tx, sys)
-                    .await?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| CratestackError::NotFound(format!("no Job with id {job_id}")))?;
+            let existing = db
+                .job()
+                .find_many()
+                .where_expr(FilterExpr::from(job::id().eq(job_id.clone())))
+                .limit(1)
+                .run_in_tx(tx, sys)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| CratestackError::NotFound(format!("no Job with id {job_id}")))?;
 
-                if existing.state != schema::JobState::dead {
-                    return Err(CratestackError::Conflict(format!(
-                        "job {job_id} is {:?}; requeue only applies to a dead job",
-                        existing.state
-                    )));
-                }
-
-                let updated = db
-                    .job()
-                    .update(job_id.clone())
-                    .set(schema::UpdateJobInput {
-                        state: Some(schema::JobState::pending),
-                        attempts: Some(0),
-                        lastError: Some(None),
-                        leaseOwner: Some(None),
-                        leaseUntil: Some(None),
-                        runAt: Some(now),
-                        ..Default::default()
-                    })
-                    .if_match(existing.version)
-                    .run_in_tx(&mut tx, sys)
-                    .await?
-                    // cratestack 0.7.13 (#554): see the identical comment on
-                    // `provisionAppClient`'s own `run_in_tx` call above.
-                    .value;
-
-                Ok((updated, tx))
+            if existing.state != schema::JobState::dead {
+                return Err(CratestackError::Conflict(format!(
+                    "job {job_id} is {:?}; requeue only applies to a dead job",
+                    existing.state
+                )));
             }
+
+            let updated = db
+                .job()
+                .update(job_id.clone())
+                .set(schema::UpdateJobInput {
+                    state: Some(schema::JobState::pending),
+                    attempts: Some(0),
+                    lastError: Some(None),
+                    leaseOwner: Some(None),
+                    leaseUntil: Some(None),
+                    runAt: Some(now),
+                    ..Default::default()
+                })
+                .if_match(existing.version)
+                .run_in_tx(tx, sys)
+                .await?
+                // cratestack 0.7.13 (#554): see the identical comment on
+                // `provisionAppClient`'s own `run_in_tx` call above.
+                .value;
+
+            Ok(updated)
         })
         .await
         // Same reasoning as `replay_attempt`'s own trailing `map_err`: the
@@ -1374,7 +1360,9 @@ impl Procedures {
         // itself would already have rejected before routing ever ran.
         let msisdn = Msisdn::parse_mobile(&args.msisdn)
             .map_err(|error| CratestackError::Validation(error.to_string()))?;
-        let operator = self.classify_operator(db, &sys, &msisdn).await?;
+        let operator = self
+            .classify_operator(db.operator_prefix_rule(), &sys, &msisdn)
+            .await?;
 
         let (routes, providers) = route_simulator::fetch_routes_and_providers(db, &sys).await?;
         let no_routes_configured = routes.is_empty();
@@ -1769,7 +1757,7 @@ impl Procedures {
     /// model's policy never admits from any human role).
     async fn provision_console_user(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::ProvisionUserInput,
     ) -> Result<schema::ProvisionUserResult, CratestackError> {
@@ -1785,52 +1773,46 @@ impl Procedures {
         let display_name = args.displayName;
         let role_key = args.roleKey;
 
-        let user_id =
-            run_in_isolated_tx(db.pool(), TransactionIsolation::Serializable, |mut tx| {
+        let user_id = db
+            .transaction(async |tx| {
                 let sys = &sys;
-                let email = email.clone();
-                let display_name = display_name.clone();
-                let role_key = role_key.clone();
-                let password_hash = password_hash.clone();
-                async move {
-                    let user = db
-                        .user()
-                        .create(schema::CreateUserInput {
-                            subject: format!("pending-{}", cratestack::uuid::Uuid::new_v4()),
-                            email,
-                            displayName: display_name,
-                            roleKey: role_key,
-                            lastLoginAt: None,
-                            deletedAt: None,
-                        })
-                        .run_in_tx(&mut tx, ctx)
-                        .await?
-                        // cratestack 0.7.13 (#554): see the identical
-                        // comment on `provisionAppClient`'s own
-                        // `run_in_tx` call above.
-                        .value;
-                    let user_id = user.id.clone();
+                let user = db
+                    .user()
+                    .create(schema::CreateUserInput {
+                        subject: format!("pending-{}", cratestack::uuid::Uuid::new_v4()),
+                        email: email.clone(),
+                        displayName: display_name,
+                        roleKey: role_key.clone(),
+                        lastLoginAt: None,
+                        deletedAt: None,
+                    })
+                    .run_in_tx(tx, ctx)
+                    .await?
+                    // cratestack 0.7.13 (#554): see the identical
+                    // comment on `provisionAppClient`'s own
+                    // `run_in_tx` call above.
+                    .value;
+                let user_id = user.id.clone();
 
-                    db.user()
-                        .update(user.id.clone())
-                        .set(schema::UpdateUserInput {
-                            subject: Some(user.id.clone()),
-                            ..Default::default()
-                        })
-                        .if_match(user.version)
-                        .run_in_tx(&mut tx, ctx)
-                        .await?;
+                db.user()
+                    .update(user.id.clone())
+                    .set(schema::UpdateUserInput {
+                        subject: Some(user.id.clone()),
+                        ..Default::default()
+                    })
+                    .if_match(user.version)
+                    .run_in_tx(tx, ctx)
+                    .await?;
 
-                    db.user_credential()
-                        .create(schema::CreateUserCredentialInput {
-                            userId: user_id.clone(),
-                            passwordHash: password_hash,
-                        })
-                        .run_in_tx(&mut tx, sys)
-                        .await?;
+                db.user_credential()
+                    .create(schema::CreateUserCredentialInput {
+                        userId: user_id.clone(),
+                        passwordHash: password_hash,
+                    })
+                    .run_in_tx(tx, sys)
+                    .await?;
 
-                    Ok((user_id, tx))
-                }
+                Ok(user_id)
             })
             .await
             .map_err(map_database_error)?;
@@ -1853,7 +1835,7 @@ impl Procedures {
     /// without touching `OptOut.create`'s own policy.
     async fn create_opt_out_entry(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::RecordOptOutInput,
     ) -> Result<schema::OptOut, CratestackError> {
@@ -2043,7 +2025,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn send_message(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::procedures::send_message::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
@@ -2071,7 +2053,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn cancel_message(
         &self,
-        _db: &schema::Cratestack,
+        _db: &schema::IsolatedCratestack,
         _ctx: &CratestackContext,
         _args: schema::procedures::cancel_message::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
@@ -2085,7 +2067,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn enqueue_job(
         &self,
-        _db: &schema::Cratestack,
+        _db: &schema::IsolatedCratestack,
         _ctx: &CratestackContext,
         _args: schema::procedures::enqueue_job::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
@@ -2099,7 +2081,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn provision_app_client(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::procedures::provision_app_client::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
@@ -2113,7 +2095,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn rotate_webhook_secret(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::procedures::rotate_webhook_secret::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
@@ -2127,7 +2109,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn replay_webhook_attempt(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::procedures::replay_webhook_attempt::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
@@ -2141,7 +2123,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn requeue_job(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::procedures::requeue_job::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
@@ -2211,7 +2193,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn provision_user(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::procedures::provision_user::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
@@ -2225,7 +2207,7 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 
     fn record_opt_out(
         &self,
-        db: &schema::Cratestack,
+        db: &schema::IsolatedCratestack,
         ctx: &CratestackContext,
         args: schema::procedures::record_opt_out::Args,
         // cratestack 0.7.13 (cratestack#512): see `preview_message`'s

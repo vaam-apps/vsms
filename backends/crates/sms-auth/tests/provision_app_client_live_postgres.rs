@@ -269,8 +269,9 @@ async fn provisioning_persists_linked_app_client_and_oauth_client_rows() {
     // doesn't outlive the closure's returned future (E0515) — bind it once
     // instead.
     let ctx = owner();
-    let result = provision_app_client::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.provision_app_client(&db, &ctx, args.clone(), authorized)
+    let result = provision_app_client::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.provision_app_client(&db, &c, a, authorized).await }
     })
     .await
     .expect("provisioning a well-formed request must succeed");
@@ -363,8 +364,9 @@ async fn the_returned_private_key_builds_an_assertion_the_op_accepts() {
     // doesn't outlive the closure's returned future (E0515) — bind it once
     // instead.
     let ctx = owner();
-    let result = provision_app_client::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.provision_app_client(&db, &ctx, args.clone(), authorized)
+    let result = provision_app_client::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.provision_app_client(&db, &c, a, authorized).await }
     })
     .await
     .expect("provisioning a well-formed request must succeed");

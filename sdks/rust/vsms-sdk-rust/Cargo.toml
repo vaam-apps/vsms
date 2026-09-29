@@ -37,7 +37,7 @@ path = "src/lib.rs"
 # `axum`/`tower`/`hyper`/`tower-http`/`cratestack-axum` are gone from this
 # crate's dependency tree — see the PR description for the before/after.
 #
-# `~0.11.0`, not `=0.11.0` — a range, not an exact pin, and the distinction
+# `~0.15.0`, not `=0.15.0` — a range, not an exact pin, and the distinction
 # is the whole difference between an application manifest and a published
 # library's. Cargo resolves exactly one version per semver-compatible line
 # for the entire graph, so an `=` requirement in a *library* is not "this
@@ -47,14 +47,14 @@ path = "src/lib.rs"
 # on `cratestack-client = "=0.11.1"` could not add `vsms-sdk-rust = "0.3.1"`
 # at all (`failed to select a version for cratestack-client` … `versions
 # that meet the requirements =0.11.0 are: 0.11.0`) and had to downgrade its
-# whole cratestack pin to adopt the SDK. `~0.11.0` (>=0.11.0, <0.12.0) says
+# whole cratestack pin to adopt the SDK. `~0.15.0` (>=0.15.0, <0.16.0) says
 # the thing that is actually true — the generated client surface needs the
-# 0.11 line, and a patch inside it is fine — and lets the consumer's own
-# lockfile pick which patch. The root `Cargo.toml` keeps `=0.11.0` for
+# 0.15 line, and a patch inside it is fine — and lets the consumer's own
+# lockfile pick which patch. The root `Cargo.toml` keeps `=0.15.0` for
 # `cratestack-pg`, correctly: that workspace ships binaries, where an exact
 # pin binds only itself. `cargo xtask cratestack-pin-check` still holds this
 # floor to the root pin, it just accepts the `~` operator here.
-cratestack = { package = "cratestack-client", version = "~0.11.0", default-features = false, features = [
+cratestack = { package = "cratestack-client", version = "~0.15.0", default-features = false, features = [
   "codec-json",
   "decimal-rust-decimal",
 ] }

@@ -6,7 +6,7 @@
 
 import { z } from "zod";
 
-export const OPT_OUT_SOURCES = ["inbound_stop", "admin", "import", "operator"] as const;
+export const OPT_OUT_SOURCES = ["inbound_stop", "admin", "imported", "operator"] as const;
 
 export const recordOptOutSchema = z.object({
   msisdn: z.string().trim().min(1, "MSISDN is required"),

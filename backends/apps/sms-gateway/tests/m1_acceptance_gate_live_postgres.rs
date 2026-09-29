@@ -662,8 +662,9 @@ async fn a_persisted_client_credentials_client_survives_a_process_restart_and_a_
     // doesn't outlive the closure's returned future (E0515) — bind it once
     // instead.
     let ctx = owner();
-    let provisioned = provision_app_client::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.provision_app_client(&db, &ctx, args.clone(), authorized)
+    let provisioned = provision_app_client::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.provision_app_client(&db, &c, a, authorized).await }
     })
     .await
     .expect("provisioning a service account through the real procedure");

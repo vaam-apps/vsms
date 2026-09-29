@@ -439,8 +439,9 @@ async fn main() -> anyhow::Result<()> {
             validityMinutes: None,
         },
     };
-    let result = send_message::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.send_message(&db, &ctx, args.clone(), authorized)
+    let result = send_message::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.send_message(&db, &c, a, authorized).await }
     })
     .await?;
 

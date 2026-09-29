@@ -258,8 +258,9 @@ async fn replaying_a_dead_attempt_resets_it_to_pending_with_a_fresh_counter() {
             attemptId: seeded.id.clone(),
         },
     };
-    let replayed = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+    let replayed = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.replay_webhook_attempt(&db, &c, a, authorized).await }
     })
     .await
     .expect("replaying a dead attempt must succeed");
@@ -316,8 +317,9 @@ async fn replaying_a_failed_attempt_resets_it_to_pending() {
             attemptId: seeded.id.clone(),
         },
     };
-    let replayed = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+    let replayed = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.replay_webhook_attempt(&db, &c, a, authorized).await }
     })
     .await
     .expect("replaying a failed attempt must succeed");
@@ -370,8 +372,9 @@ async fn replay_also_clears_the_endpoints_open_circuit_breaker() {
             attemptId: seeded.id.clone(),
         },
     };
-    replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+    replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.replay_webhook_attempt(&db, &c, a, authorized).await }
     })
     .await
     .expect("replaying against a circuit-open endpoint must still succeed");
@@ -435,8 +438,9 @@ async fn replaying_a_non_replayable_attempt_is_a_conflict_not_a_crash() {
                 attemptId: seeded.id.clone(),
             },
         };
-        let error = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
-            procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+        let error = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+            let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+            async move { p.replay_webhook_attempt(&db, &c, a, authorized).await }
         })
         .await
         .expect_err(&format!("replaying a {label} attempt must not succeed"));
@@ -494,8 +498,9 @@ async fn replaying_an_unknown_attempt_id_is_refused() {
             attemptId: format!("nosuchattempt{}", unique_suffix()),
         },
     };
-    let error = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+    let error = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.replay_webhook_attempt(&db, &c, a, authorized).await }
     })
     .await
     .expect_err("a nonexistent attempt id must not silently succeed");
@@ -563,8 +568,9 @@ async fn replay_denies_a_caller_with_no_webhook_manage_permission() {
             attemptId: attempt.id.clone(),
         },
     };
-    let error = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.replay_webhook_attempt(&db, &ctx, args.clone(), authorized)
+    let error = replay_webhook_attempt::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.replay_webhook_attempt(&db, &c, a, authorized).await }
     })
     .await
     .expect_err("a caller with no webhook:manage permission must be denied");

@@ -211,8 +211,9 @@ async fn requeuing_a_dead_job_resets_it_to_pending_with_a_fresh_attempts_counter
             jobId: seeded.id.clone(),
         },
     };
-    let requeued = requeue_job::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.requeue_job(&db, &ctx, args.clone(), authorized)
+    let requeued = requeue_job::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.requeue_job(&db, &c, a, authorized).await }
     })
     .await
     .expect("requeuing a dead job must succeed");
@@ -263,8 +264,9 @@ async fn requeuing_a_non_dead_job_is_a_conflict_not_a_crash() {
                 jobId: seeded.id.clone(),
             },
         };
-        let error = requeue_job::invoke_with_db(&db, &args, &ctx, |authorized| {
-            procedures.requeue_job(&db, &ctx, args.clone(), authorized)
+        let error = requeue_job::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+            let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+            async move { p.requeue_job(&db, &c, a, authorized).await }
         })
         .await
         .expect_err(&format!("requeuing a {label} job must not succeed"));
@@ -317,8 +319,9 @@ async fn requeuing_an_unknown_job_id_is_refused() {
             jobId: format!("nosuchjob{}", unique_suffix()),
         },
     };
-    let error = requeue_job::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.requeue_job(&db, &ctx, args.clone(), authorized)
+    let error = requeue_job::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.requeue_job(&db, &c, a, authorized).await }
     })
     .await
     .expect_err("a nonexistent job id must not silently succeed");
@@ -373,8 +376,9 @@ async fn requeue_denies_a_caller_with_no_job_enqueue_scope() {
             jobId: seeded.id.clone(),
         },
     };
-    let error = requeue_job::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.requeue_job(&db, &ctx, args.clone(), authorized)
+    let error = requeue_job::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.requeue_job(&db, &c, a, authorized).await }
     })
     .await
     .expect_err("a caller with no job:enqueue scope must be denied");
@@ -400,7 +404,7 @@ async fn requeue_denies_a_caller_with_no_job_enqueue_scope() {
 /// confirming `requeue_job`'s own `if_match` on the now-stale version it
 /// captured earlier is rejected — rather than trusting the code without
 /// seeing it fail. `requeue_job`'s internal read happens fresh inside its
-/// own `run_in_isolated_tx` closure, so to observe a genuine version race
+/// own `@isolation` transaction, so to observe a genuine version race
 /// from outside, this test seeds a `dead` job, requeues it once
 /// successfully (bumping its version), and confirms a *second* concurrent
 /// requeue attempt reading the same *now-stale* row (constructed by hand
@@ -428,8 +432,9 @@ async fn a_stale_version_is_a_conflict_not_a_lost_update() {
             jobId: seeded.id.clone(),
         },
     };
-    let requeued = requeue_job::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.requeue_job(&db, &ctx, args.clone(), authorized)
+    let requeued = requeue_job::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.requeue_job(&db, &c, a, authorized).await }
     })
     .await
     .expect("the first requeue must succeed");

@@ -175,8 +175,9 @@ async fn rotating_moves_the_current_secret_to_prev_and_mints_a_fresh_one() {
             endpointId: endpoint.id.clone(),
         },
     };
-    let rotated = rotate_webhook_secret::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.rotate_webhook_secret(&db, &ctx, args.clone(), authorized)
+    let rotated = rotate_webhook_secret::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.rotate_webhook_secret(&db, &c, a, authorized).await }
     })
     .await
     .expect("rotating a fresh endpoint's secret");
@@ -227,19 +228,22 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
     // cratestack 0.7.13 (cratestack#512): see the identical comment on the
     // test above.
     let first_args = args();
-    let first = rotate_webhook_secret::invoke_with_db(&db, &first_args, &ctx, |authorized| {
-        procedures.rotate_webhook_secret(&db, &ctx, first_args.clone(), authorized)
+    let first = rotate_webhook_secret::invoke_with_db(&db, &first_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), first_args.clone());
+        async move { p.rotate_webhook_secret(&db, &c, a, authorized).await }
     })
     .await
     .expect("first rotation");
     assert_eq!(first.prevSecret.as_deref(), Some("generation-zero-secret"));
 
     let second_args = args();
-    let second = rotate_webhook_secret::invoke_with_db(&db, &second_args, &ctx, |authorized| {
-        procedures.rotate_webhook_secret(&db, &ctx, second_args.clone(), authorized)
-    })
-    .await
-    .expect("second rotation");
+    let second =
+        rotate_webhook_secret::invoke_with_db(&db, &second_args, &ctx, |db, authorized| {
+            let (p, c, a) = (procedures.clone(), ctx.clone(), second_args.clone());
+            async move { p.rotate_webhook_secret(&db, &c, a, authorized).await }
+        })
+        .await
+        .expect("second rotation");
     assert_eq!(
         second.prevSecret.as_deref(),
         Some(first.secret.as_str()),
@@ -277,8 +281,9 @@ async fn rotating_an_unknown_endpoint_id_is_not_found() {
             endpointId: format!("nosuchendpoint{}", unique_suffix()),
         },
     };
-    let error = rotate_webhook_secret::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.rotate_webhook_secret(&db, &ctx, args.clone(), authorized)
+    let error = rotate_webhook_secret::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.rotate_webhook_secret(&db, &c, a, authorized).await }
     })
     .await
     .expect_err("a nonexistent endpoint id must not silently succeed");
@@ -322,8 +327,9 @@ async fn rotate_denies_a_caller_with_no_webhook_manage_permission() {
             endpointId: format!("irrelevant-the-gate-must-fire-first{}", unique_suffix()),
         },
     };
-    let error = rotate_webhook_secret::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.rotate_webhook_secret(&db, &ctx, args.clone(), authorized)
+    let error = rotate_webhook_secret::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.rotate_webhook_secret(&db, &c, a, authorized).await }
     })
     .await
     .expect_err("a caller with no webhook:manage permission must be denied");

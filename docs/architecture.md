@@ -14,19 +14,19 @@ sender-ID regimes, aggregator coverage and data-residency conflicts especially.
 
 **Stack (as chosen):** Rust + TypeScript · CrateStack (`.cstack` schema-first) · Authkestra OP (OIDC Provider) · full RBAC through JWT claims · single OIDC client for humans, one OAuth service account per calling app.
 
-**Decisions locked in this revision**
+## Decisions locked in this revision
 
-| Question | Answer |
-|---|---|
-| Tenancy | Single org, multiple apps. No `tenantId` in the core model. |
-| Operator path | Provider abstraction over both HTTP and SMPP; ship HTTP first. |
-| Admin UI | Hand-built Next.js + shadcn/ui over the generated TypeScript client. |
-| Transport | `transport rest` (CrateStack default). gRPC is a later, optional addition. |
-| Machine auth | OAuth2 `client_credentials` service accounts. No API keys, no HMAC request signing. |
-| Identifiers | `Cuid` for every model id and FK. |
-| Eventing | CrateStack `@@emit` + `events::Subscriptions`. No hand-rolled outbox table. |
-| **Background work** | **One `sms-worker` node, role-selectable, singletons elected by Postgres advisory lock.** |
-| **State machines** | **Enforced in Postgres by transition tables + `BEFORE UPDATE` triggers, not only in Rust.** |
+| Question            | Answer                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------- |
+| Tenancy             | Single org, multiple apps. No `tenantId` in the core model.                                 |
+| Operator path       | Provider abstraction over both HTTP and SMPP; ship HTTP first.                              |
+| Admin UI            | Hand-built Next.js + shadcn/ui over the generated TypeScript client.                        |
+| Transport           | `transport rest` (CrateStack default). gRPC is a later, optional addition.                  |
+| Machine auth        | OAuth2 `client_credentials` service accounts. No API keys, no HMAC request signing.         |
+| Identifiers         | `Cuid` for every model id and FK.                                                           |
+| Eventing            | CrateStack `@@emit` + `events::Subscriptions`. No hand-rolled outbox table.                 |
+| **Background work** | **One `sms-worker` node, role-selectable, singletons elected by Postgres advisory lock.**   |
+| **State machines**  | **Enforced in Postgres by transition tables + `BEFORE UPDATE` triggers, not only in Rust.** |
 
 The schema in §2 was assembled into a single file and run through the real `cratestack-parser` 0.4.16 and the real Postgres migration emitter; the policy and `@authorize` rules — which live in `cratestack-macros`, not the parser — were proven by compiling a real `include_server_schema!` expansion. Rust and Authkestra APIs were checked against published crate sources. Every Mermaid diagram here was rendered with `mmdc` to confirm it parses. The validated schema ships alongside this document as `schema.cstack`.
 
@@ -48,7 +48,7 @@ The schema in §2 was assembled into a single file and run through the real `cra
 
 Three rules that constrain every other decision in this document. They are stated here rather than scattered through it because each is a *default with named exceptions*, and the exceptions are the interesting part.
 
-### R1 — All data access goes through CrateStack delegates. Never raw `sqlx`.
+### R1 — All data access goes through CrateStack delegates. Never raw `sqlx`
 
 The generated `Cratestack` runtime is the only way application code touches the database. `db.message().find_many()…`, `db.message().update(id).set(…).if_match(v)`, `db.job().create(…)`, `.run(&ctx)` or `.run_in_tx(&mut tx, &ctx)`. No `sqlx::query!`, no `query_as`, no `query_scalar`, no `raw_sql`.
 
@@ -63,11 +63,11 @@ A raw query that touches `messages` is therefore not "the same query, written by
 
 **The named exceptions.** Raw SQL is permitted in exactly these places, and nowhere else:
 
-| Exception | Where | Why the delegates can't do it |
-|---|---|---|
-| **DDL and migrations** | `backends/migrations/**` | Triggers, partial indexes, foreign keys, column defaults, transition tables. Not data access at all — the emitter produces none of these (§2.10). |
-| **Advisory locks** | `backends/crates/sms-worker/src/lease.rs` | `pg_try_advisory_lock` / `pg_advisory_unlock`. No delegate expression exists; it isn't a table. |
-| **`LISTEN` / `NOTIFY`** | `backends/crates/sms-worker/src/notify.rs`, `backends/crates/sms-api/src/cache.rs` | Cache-invalidation fan-out (§8.3). No delegate expression exists. |
+| Exception               | Where                                                                              | Why the delegates can't do it                                                                                                                     |
+| ----------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **DDL and migrations**  | `backends/migrations/**`                                                           | Triggers, partial indexes, foreign keys, column defaults, transition tables. Not data access at all — the emitter produces none of these (§2.10). |
+| **Advisory locks**      | `backends/crates/sms-worker/src/lease.rs`                                          | `pg_try_advisory_lock` / `pg_advisory_unlock`. No delegate expression exists; it isn't a table.                                                   |
+| **`LISTEN` / `NOTIFY`** | `backends/crates/sms-worker/src/notify.rs`, `backends/crates/sms-api/src/cache.rs` | Cache-invalidation fan-out (§8.3). No delegate expression exists.                                                                                 |
 
 That is the complete list. Two things people reach for that are *not* on it:
 
@@ -86,11 +86,11 @@ Enforced in CI:
 
 `db.pool()` is the escape hatch that makes raw SQL *possible*; the lint is what makes it *deliberate*. Adding a row to the exceptions table should feel like a design decision, because it is one.
 
-### R2 — State transitions are proposed by Rust and decided by Postgres.
+### R2 — State transitions are proposed by Rust and decided by Postgres
 
 Legal edges live in `message_state_transitions` / `job_state_transitions`; `BEFORE UPDATE` triggers reject the rest with SQLSTATE `SM001`. Application code never assumes a transition is valid because it checked first. §2.10 and §7.4.
 
-### R3 — Nothing that must be written can be `@server_only`.
+### R3 — Nothing that must be written can be `@server_only`
 
 `@server_only` excludes a field from **both** create and update inputs, so under R1 such a field can never be populated at all. It is for columns the database owns, not for secrets. Field secrecy comes from model-level `@@allow` and from keeping secrets out of the gateway database entirely. §2.0 has the full attribute matrix.
 
@@ -133,12 +133,12 @@ Three tiers and one database. The online tier is stateless and scales freely; ev
 
 ### Why these process boundaries
 
-| Node | Crate | Why it's separate |
-|---|---|---|
-| `sms-api` | `cratestack-pg` + Axum | Stateless, scale to N. Holds the CrateStack router, the procedures, and the event subscribers. |
-| `sms-auth` | `authkestra-op` + `authkestra-axum` + your `ClientStore` | Different blast radius and release cadence. Isolating it behind JWKS is what makes swapping in Keycloak/ZITADEL a config change. |
-| `sms-worker` | plain tokio | **All background processing, one binary.** Roles are selected at startup; singleton roles self-elect. §7. |
-| `admin` | Next.js 15+ App Router | — |
+| Node         | Crate                                                    | Why it's separate                                                                                                                |
+| ------------ | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `sms-api`    | `cratestack-pg` + Axum                                   | Stateless, scale to N. Holds the CrateStack router, the procedures, and the event subscribers.                                   |
+| `sms-auth`   | `authkestra-op` + `authkestra-axum` + your `ClientStore` | Different blast radius and release cadence. Isolating it behind JWKS is what makes swapping in Keycloak/ZITADEL a config change. |
+| `sms-worker` | plain tokio                                              | **All background processing, one binary.** Roles are selected at startup; singleton roles self-elect. §7.                        |
+| `admin`      | Next.js 15+ App Router                                   | —                                                                                                                                |
 
 One worker binary rather than three services is a deliberate simplification over the previous revision. The roles have genuinely different concurrency requirements — `dispatch` must be a singleton because of Orange's per-contract TPS cap, `hooks` wants to scale — but they share configuration, database pool, tracing setup, provider registry and deployment lifecycle. Splitting them into separate images buys isolation you don't need yet and costs you three deploy pipelines. Roles are already the unit of scaling, so when you *do* need `hooks` on its own node, you run the same image with `--roles hooks` and change nothing else.
 
@@ -150,42 +150,42 @@ One worker binary rather than three services is a deliberate simplification over
 
 Mechanical properties of the toolchain, each verified by running it — most against 0.4.16, two rows below marked 0.5.0 where the emitter's behaviour changed under us mid-project. None are obvious from the docs and each costs an afternoon if you find it the hard way.
 
-| Constraint | Consequence |
-|---|---|
-| **Exactly one whitespace character between field name and type.** `parse_field` splits on *each* whitespace char. | No column alignment, ever. `id  Cuid` fails with `invalid type reference: `. |
-| **The parser is line-based.** | An `@@allow` cannot wrap. A wrapped continuation is parsed as a field and errors on the type. |
-| **`enum` and `type` bodies need one declaration per line**, header ending in `{`. | No single-line `enum Foo { a b }`. |
-| **`@use(Mixin)` is single-`@`.** `@@use(...)` parses, is retained as an unknown model attribute, and **silently does not expand the mixin**. | Never write `@@use`. There is no error. |
-| **Unknown attributes are silently ignored.** | A typo'd attribute is a no-op, not an error. |
-| **A misspelled `@@allow` action is silently dropped.** With deny-by-default, the model becomes unreachable. | Assert the generated policy set in a test. |
-| **`@default` contents are not validated**; the value is spliced verbatim into DDL. | Enum and string defaults must be single-quoted: `@default('accepted')`. Double quotes are a PG *identifier*. A typo'd variant reaches the DDL and fails at `psql`. |
-| **`@default(cuid())` is not real.** It parses, emits `DEFAULT cuid()` (no such PG function), *and* silently removes the field from the create input. | Verified: `no field 'id' on type CreateAppInput`. Use `@default(dbgenerated())` + a real SQL default. |
-| **`@default(dbgenerated())` emits no `DEFAULT` clause** — it only marks the field server-generated and drops it from create input. | Hand-write `ALTER COLUMN … SET DEFAULT …`. §2.10. |
-| **Relation scalars must match the referenced field's type by *name*.** | Verified: `Cuid` ↔ `Cuid` passes; `String` FK → `Cuid` PK is a hard parse error. |
-| **Policy comparisons against `auth().x` also require type-name equality**, including through relation traversal. | Verified by compile: `auth Principal { appId Cuid }` vs `WebhookEndpoint.appId Cuid` passes; a `String` auth field is a compile error. |
-| **`@authorize(M, action, args.x)` requires name *and* arity match** with `M`'s PK. | `CancelInput.messageId` must be `Cuid`. |
-| **A `Cuid` field cannot be compared to a *literal* in a policy** — only to `auth().x`. | We never do this. |
-| **`Cuid` is format-guarded only on REST query-string filters** — `[a-z0-9]{2,32}`. Not on create, update, or DB decode. | Ids must be lowercase alphanumeric with **no prefix separator**, or `GET /messages?id=…` returns 400. |
-| **There is no `@@index`.** Only `@unique` emits an index. | Every non-unique index is hand-written. §2.10. |
-| **Foreign keys are never emitted.** No `REFERENCES` codepath exists in `cratestack-migrate` 0.4.16. | Hand-written too. |
-| **No triggers, no CHECK without `@db_enforce`, no partial indexes.** | **The state machines in §2.10 are entirely hand-written SQL.** The schema declares the states; Postgres enforces the edges. |
-| **`@db_enforce` promotes `@length`/`@range` into a real `CHECK` — and is a silent no-op on `@regex`.** Verified with an isolated two-field probe schema: identical `@db_enforce` on a `@length` field emits `ADD CONSTRAINT … CHECK (length(...) BETWEEN …)`; on a `@regex` field it emits nothing, no error. | Pattern constraints need a hand-written `CHECK (col ~ '...')` in §2.10. `@regex` alone is application-layer validation only. |
-| **0.5.0: enum-typed columns emit as `TEXT NOT NULL` + `CHECK (col IN (...))`, not a native `CREATE TYPE ... AS ENUM`.** 0.4.16 emitted real enum types; nothing announced the change. | Anything referencing an enum type name directly in hand-written SQL — our `message_state`/`job_state` transition-table columns — breaks silently at `psql` time (`type "message_state" does not exist`) on the next full regeneration. Now `TEXT` with a matching hand-written `CHECK`. |
-| **Scalar list fields (`String[]`, `Int[]`) PANIC `include_server_schema!`** — `proc macro panicked: unsupported SQLx value type for this slice`. The parser accepts them and the migration emitter happily writes `TEXT[]`; only the server macro fails. | **No model may declare a list field.** Multi-values are delimited `String` columns (see below). Lists inside `type` blocks are fine — they never touch SQLx. |
-| **`@version` emits `BIGINT NOT NULL` with no default.** | Seeds and raw SQL fail without a hand-added default. |
-| **ANY `@default(...)` excludes the field from `CreateXInput`** — literals included, not just `dbgenerated()`. `is_generated_on_create` is a bare `starts_with("@default")`. | Verified: `CreateMessageInput has no field named 'priority'` for `priority Int @default(100)`. **A `@default` on a caller-settable field is a bug.** Keep it only where being unsettable is the point. |
-| **But defaulted fields ARE settable on `UpdateXInput`.** | So `@default(auth().x)` protects *creation* only; a `PATCH` can still overwrite it. That's the real footgun, not create. |
-| **`@server_only` excludes a field from create *and* update inputs.** | It is write-never through the framework. See R3 — secrets you must write cannot use it. |
-| **`@server_only` fields ARE readable server-side.** The struct keeps them, `FromRow` reads them, `SELECT` includes them; only serde output and the `fields=` allowlist strip them (`#[serde(skip_serializing, default)]`). | Worker and procedure code reads them through delegates normally. |
-| **`@readonly` and `@server_only` are identical for inputs** and mutually exclusive (parser error if both). Neither may sit on `@id`. | `@readonly` still serializes to responses; `@server_only` doesn't. |
-| **`@pii` / `@sensitive` redact audit snapshots ONLY.** They do not strip from HTTP responses, traces or errors. | A field marked `@sensitive` is still returned by `GET /messages/{id}`. Verified: `hush still in json: true`. |
-| **`?sort=<server_only column>` is not rejected** — `allowed_sorts` has no `@server_only` filter, unlike `allowed_fields`. | An ordering oracle over a column the caller can't read. Low impact here, but don't expose list routes on a model whose `@server_only` column is a real secret. |
-| **`upsert` does not exist when the `@id` has a `@default`.** | `db.webhook_attempt().upsert(...)` is a compile error. Dedupe is `create` + catching SQLSTATE `23505` (§8.3). |
-| **`SKIP LOCKED` / `NOWAIT` are not expressible.** `.for_update()` is. | §7.3 — the claim loops use optimistic CAS instead. |
-| **`update_many` / `delete_many` refuse to run with zero filters**, and `update_many` has no `if_match`. | Guard rail, not a limitation. |
-| **Nothing auto-touches `updatedAt`.** | A `set_updated_at` trigger in migration SQL (§2.10), not a field you remember to set. |
-| **No field-level read masking.** Model-level access only. | Field secrecy = model-level `@@allow`, or a separate model. |
-| **`pluralize()` is naive** (`ends_with('s') ? +"es" : +"s"`), and there is no `@@map`. | Every model name here pluralises cleanly. `WebhookDelivery` would have become `webhook_deliverys` — it's `WebhookAttempt` for that reason alone. |
+| Constraint                                                                                                                                                                                                                                                                                                    | Consequence                                                                                                                                                                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Exactly one whitespace character between field name and type.** `parse_field` splits on *each* whitespace char.                                                                                                                                                                                             | No column alignment, ever. `id  Cuid` fails with an `invalid type reference` error.                                                                                                                                                                                                     |
+| **The parser is line-based.**                                                                                                                                                                                                                                                                                 | An `@@allow` cannot wrap. A wrapped continuation is parsed as a field and errors on the type.                                                                                                                                                                                           |
+| **`enum` and `type` bodies need one declaration per line**, header ending in `{`.                                                                                                                                                                                                                             | No single-line `enum Foo { a b }`.                                                                                                                                                                                                                                                      |
+| **`@use(Mixin)` is single-`@`.** `@@use(...)` parses, is retained as an unknown model attribute, and **silently does not expand the mixin**.                                                                                                                                                                  | Never write `@@use`. There is no error.                                                                                                                                                                                                                                                 |
+| **Unknown attributes are silently ignored.**                                                                                                                                                                                                                                                                  | A typo'd attribute is a no-op, not an error.                                                                                                                                                                                                                                            |
+| **A misspelled `@@allow` action is silently dropped.** With deny-by-default, the model becomes unreachable.                                                                                                                                                                                                   | Assert the generated policy set in a test.                                                                                                                                                                                                                                              |
+| **`@default` contents are not validated**; the value is spliced verbatim into DDL.                                                                                                                                                                                                                            | Enum and string defaults must be single-quoted: `@default('accepted')`. Double quotes are a PG *identifier*. A typo'd variant reaches the DDL and fails at `psql`.                                                                                                                      |
+| **`@default(cuid())` is not real.** It parses, emits `DEFAULT cuid()` (no such PG function), *and* silently removes the field from the create input.                                                                                                                                                          | Verified: `no field 'id' on type CreateAppInput`. Use `@default(dbgenerated())` + a real SQL default.                                                                                                                                                                                   |
+| **`@default(dbgenerated())` emits no `DEFAULT` clause** — it only marks the field server-generated and drops it from create input.                                                                                                                                                                            | Hand-write `ALTER COLUMN … SET DEFAULT …`. §2.10.                                                                                                                                                                                                                                       |
+| **Relation scalars must match the referenced field's type by *name*.**                                                                                                                                                                                                                                        | Verified: `Cuid` ↔ `Cuid` passes; `String` FK → `Cuid` PK is a hard parse error.                                                                                                                                                                                                        |
+| **Policy comparisons against `auth().x` also require type-name equality**, including through relation traversal.                                                                                                                                                                                              | Verified by compile: `auth Principal { appId Cuid }` vs `WebhookEndpoint.appId Cuid` passes; a `String` auth field is a compile error.                                                                                                                                                  |
+| **`@authorize(M, action, args.x)` requires name *and* arity match** with `M`'s PK.                                                                                                                                                                                                                            | `CancelInput.messageId` must be `Cuid`.                                                                                                                                                                                                                                                 |
+| **A `Cuid` field cannot be compared to a *literal* in a policy** — only to `auth().x`.                                                                                                                                                                                                                        | We never do this.                                                                                                                                                                                                                                                                       |
+| **`Cuid` is format-guarded only on REST query-string filters** — `[a-z0-9]{2,32}`. Not on create, update, or DB decode.                                                                                                                                                                                       | Ids must be lowercase alphanumeric with **no prefix separator**, or `GET /messages?id=…` returns 400.                                                                                                                                                                                   |
+| **There is no `@@index`.** Only `@unique` emits an index.                                                                                                                                                                                                                                                     | Every non-unique index is hand-written. §2.10.                                                                                                                                                                                                                                          |
+| **Foreign keys are never emitted.** No `REFERENCES` codepath exists in `cratestack-migrate` 0.4.16.                                                                                                                                                                                                           | Hand-written too.                                                                                                                                                                                                                                                                       |
+| **No triggers, no CHECK without `@db_enforce`, no partial indexes.**                                                                                                                                                                                                                                          | **The state machines in §2.10 are entirely hand-written SQL.** The schema declares the states; Postgres enforces the edges.                                                                                                                                                             |
+| **`@db_enforce` promotes `@length`/`@range` into a real `CHECK` — and is a silent no-op on `@regex`.** Verified with an isolated two-field probe schema: identical `@db_enforce` on a `@length` field emits `ADD CONSTRAINT … CHECK (length(...) BETWEEN …)`; on a `@regex` field it emits nothing, no error. | Pattern constraints need a hand-written `CHECK (col ~ '...')` in §2.10. `@regex` alone is application-layer validation only.                                                                                                                                                            |
+| **0.5.0: enum-typed columns emit as `TEXT NOT NULL` + `CHECK (col IN (...))`, not a native `CREATE TYPE ... AS ENUM`.** 0.4.16 emitted real enum types; nothing announced the change.                                                                                                                         | Anything referencing an enum type name directly in hand-written SQL — our `message_state`/`job_state` transition-table columns — breaks silently at `psql` time (`type "message_state" does not exist`) on the next full regeneration. Now `TEXT` with a matching hand-written `CHECK`. |
+| **Scalar list fields (`String[]`, `Int[]`) PANIC `include_server_schema!`** — `proc macro panicked: unsupported SQLx value type for this slice`. The parser accepts them and the migration emitter happily writes `TEXT[]`; only the server macro fails.                                                      | **No model may declare a list field.** Multi-values are delimited `String` columns (see below). Lists inside `type` blocks are fine — they never touch SQLx.                                                                                                                            |
+| **`@version` emits `BIGINT NOT NULL` with no default.**                                                                                                                                                                                                                                                       | Seeds and raw SQL fail without a hand-added default.                                                                                                                                                                                                                                    |
+| **ANY `@default(...)` excludes the field from `CreateXInput`** — literals included, not just `dbgenerated()`. `is_generated_on_create` is a bare `starts_with("@default")`.                                                                                                                                   | Verified: `CreateMessageInput has no field named 'priority'` for `priority Int @default(100)`. **A `@default` on a caller-settable field is a bug.** Keep it only where being unsettable is the point.                                                                                  |
+| **But defaulted fields ARE settable on `UpdateXInput`.**                                                                                                                                                                                                                                                      | So `@default(auth().x)` protects *creation* only; a `PATCH` can still overwrite it. That's the real footgun, not create.                                                                                                                                                                |
+| **`@server_only` excludes a field from create *and* update inputs.**                                                                                                                                                                                                                                          | It is write-never through the framework. See R3 — secrets you must write cannot use it.                                                                                                                                                                                                 |
+| **`@server_only` fields ARE readable server-side.** The struct keeps them, `FromRow` reads them, `SELECT` includes them; only serde output and the `fields=` allowlist strip them (`#[serde(skip_serializing, default)]`).                                                                                    | Worker and procedure code reads them through delegates normally.                                                                                                                                                                                                                        |
+| **`@readonly` and `@server_only` are identical for inputs** and mutually exclusive (parser error if both). Neither may sit on `@id`.                                                                                                                                                                          | `@readonly` still serializes to responses; `@server_only` doesn't.                                                                                                                                                                                                                      |
+| **`@pii` / `@sensitive` redact audit snapshots ONLY.** They do not strip from HTTP responses, traces or errors.                                                                                                                                                                                               | A field marked `@sensitive` is still returned by `GET /messages/{id}`. Verified: `hush still in json: true`.                                                                                                                                                                            |
+| **`?sort=<server_only column>` is not rejected** — `allowed_sorts` has no `@server_only` filter, unlike `allowed_fields`.                                                                                                                                                                                     | An ordering oracle over a column the caller can't read. Low impact here, but don't expose list routes on a model whose `@server_only` column is a real secret.                                                                                                                          |
+| **`upsert` does not exist when the `@id` has a `@default`.**                                                                                                                                                                                                                                                  | `db.webhook_attempt().upsert(...)` is a compile error. Dedupe is `create` + catching SQLSTATE `23505` (§8.3).                                                                                                                                                                           |
+| **`SKIP LOCKED` / `NOWAIT` are not expressible.** `.for_update()` is.                                                                                                                                                                                                                                         | §7.3 — the claim loops use optimistic CAS instead.                                                                                                                                                                                                                                      |
+| **`update_many` / `delete_many` refuse to run with zero filters**, and `update_many` has no `if_match`.                                                                                                                                                                                                       | Guard rail, not a limitation.                                                                                                                                                                                                                                                           |
+| **Nothing auto-touches `updatedAt`.**                                                                                                                                                                                                                                                                         | A `set_updated_at` trigger in migration SQL (§2.10), not a field you remember to set.                                                                                                                                                                                                   |
+| **No field-level read masking.** Model-level access only.                                                                                                                                                                                                                                                     | Field secrecy = model-level `@@allow`, or a separate model.                                                                                                                                                                                                                             |
+| **`pluralize()` is naive** (`ends_with('s') ? +"es" : +"s"`), and there is no `@@map`.                                                                                                                                                                                                                        | Every model name here pluralises cleanly. `WebhookDelivery` would have become `webhook_deliverys` — it's `WebhookAttempt` for that reason alone.                                                                                                                                        |
 
 ### 2.1 Header, enums, principal
 
@@ -279,7 +279,7 @@ enum AttemptState {
 enum OptOutSource {
   inbound_stop
   admin
-  import
+  imported
   operator
 }
 
@@ -291,7 +291,7 @@ enum ConsentChannel {
   paper_form
   verbal
   sms_keyword
-  import
+  imported
   admin
 }
 
@@ -1592,7 +1592,7 @@ And this migration reports **`has_blocking = true`**. The single blocking operat
 
 ### 3.1 API surface
 
-```
+```text
 POST /v1/$procs/sendMessage      # the send API
 POST /v1/$procs/previewMessage   # encoding + cost dry-run, free
 GET  /v1/messages/{id}           # generated CRUD, app-scoped by policy
@@ -1700,7 +1700,7 @@ One trap worth knowing, verified against the metadata rather than assumed: an in
 
 Cameroon is a closed 9-digit plan since November 2014. E.164 is `+237` + 9 digits.
 
-```
+```text
 mobile     (?:24[23]|6(?:[25-9]\d|4[01]))\d{6}
 fixedLine  2(?:22|33)\d{6}
 general    [26]\d{8}|88\d{6,7}
@@ -1734,7 +1734,7 @@ Those are two different things and it is worth keeping them apart: `client_crede
 
 **The `GrantType` serde bug is fixed as of `authkestra-op` 0.3.2.** Recording it because the workaround shaped this design and the schema still carries its fingerprints. In 0.2.3, `GrantType` was `#[serde(untagged)]` over unit variants, so every unit variant serialised to JSON `null` and `null` deserialised back to the first variant — a persisted `client_credentials` client silently became `authorization_code`, losing its own grant and gaining one it never registered for. 0.3.2 replaced that with hand-written `Serialize`/`Deserialize` impls over the real OAuth strings. Re-verified by round-tripping every variant against the published crate:
 
-```
+```text
 ClientCredentials -> "client_credentials" -> ClientCredentials     OK
 AuthorizationCode -> "authorization_code" -> AuthorizationCode     OK
 DeviceCode        -> "urn:ietf:params:oauth:grant-type:device_code" -> DeviceCode  OK
@@ -1864,7 +1864,7 @@ The discriminator is worth noting: a client_credentials token has `identity: Non
 
 The one place symmetric secrets remain, because here you're the sender and your customers verify:
 
-```
+```text
 POST /your/webhook
 X-Sms-Event:     message.delivered
 X-Sms-Event-Id:  c8f2a1...
@@ -1940,13 +1940,13 @@ The `messages_app_idem_key` unique index (driven by `sendMessage`'s `clientRef`,
 
 Five limiters, easy to conflate — an earlier revision of this table collapsed `/token` into one row naming `tower_governor` at `sms-auth`; that mechanism was never actually built (`sms-auth` links no such crate), and the row was never corrected once #156 landed the real one:
 
-| Limiter | Where | Purpose |
-|---|---|---|
-| `/token`, per-IP + aggregate | Caddy `rate_limit` module (`deploy/Caddyfile`, #156) | Flood protection ahead of any signature verification. **Mandatory** (§4.2). |
-| `/token`, per-`client_id` | `token_rate_limit` in `sms-gateway` (#168) | The `client_id` dimension §4.2 requires and the Caddy edge cannot reach (body-only field) — defense in depth alongside the row above, not a replacement for it. |
-| Per-principal ingress | `RateLimitLayer` (×2) on `sms-api` | Stop a buggy — or forging — caller flooding you. `429` + `Retry-After`. Mounted as of #153; the second, coarser layer as of #163 — see §4.5. |
-| Per-MSISDN OTP | in `sendMessage` | Stop SMS-pumping fraud. E.g. 3 OTP / 10 min / number, 10 / day. |
-| Per-provider egress TPS | in the worker's `dispatch` role | Respect **Orange's hard 5 TPS cap**. |
+| Limiter                      | Where                                                | Purpose                                                                                                                                                         |
+| ---------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/token`, per-IP + aggregate | Caddy `rate_limit` module (`deploy/Caddyfile`, #156) | Flood protection ahead of any signature verification. **Mandatory** (§4.2).                                                                                     |
+| `/token`, per-`client_id`    | `token_rate_limit` in `sms-gateway` (#168)           | The `client_id` dimension §4.2 requires and the Caddy edge cannot reach (body-only field) — defense in depth alongside the row above, not a replacement for it. |
+| Per-principal ingress        | `RateLimitLayer` (×2) on `sms-api`                   | Stop a buggy — or forging — caller flooding you. `429` + `Retry-After`. Mounted as of #153; the second, coarser layer as of #163 — see §4.5.                    |
+| Per-MSISDN OTP               | in `sendMessage`                                     | Stop SMS-pumping fraud. E.g. 3 OTP / 10 min / number, 10 / day.                                                                                                 |
+| Per-provider egress TPS      | in the worker's `dispatch` role                      | Respect **Orange's hard 5 TPS cap**.                                                                                                                            |
 
 `RateLimitConfig::new(burst, refill_per_second)`. **`InMemoryRateLimitStore` is the only shipped store**, with an unbounded key map and no persistence — single-replica dev only. For production implement the `RateLimitStore` trait (which *is* `#[async_trait]`) against Redis or Postgres. The bucket is wall-clock-driven, so a process pause longer than one fill window grants a fresh burst on resume. `token_rate_limit`'s own limiter (#168) uses the identical `cratestack::ratelimit` types and inherits the same characteristics, with its own, independent `InMemoryRateLimitStore` instance — never shared with `sms-api::router`'s two, since `/token` sits entirely outside that router (§4.5's own doc on why).
 
@@ -1998,15 +1998,15 @@ A trap worth a test: a misspelled action in `@@allow` is silently dropped rather
 
 Humans get roles. Service accounts get OAuth scopes. Different vocabularies on purpose — an app has no business holding `user:manage`.
 
-| Role | Purpose | Permissions |
-|---|---|---|
-| `owner` | Break-glass. 1–2 humans. | everything, incl. `role:manage`, `user:delete`, `provider:delete`, `client:provision` |
-| `admin` | Day-to-day administration | all except role editing and owner-level deletes |
-| `operator` | Runs traffic | `sms:read/send`, `message:cancel`, `provider:read/update`, `route:read`, `sender:manage`, `optout:manage`, `job:read/enqueue`, `worker:read`, `dashboard:read` |
-| `developer` | Integrates apps | `app:read`, `webhook:manage`, `sms:read`, `sms:send` |
-| `auditor` | Read-only oversight | `*:read`, `audit:read`. No mutations anywhere. |
-| `support` | First-line | `sms:read`, `optout:manage`, `delivery:read` |
-| `system` | Internal only | `message:create/update`, `receipt:create`, `job:update`. **Never issued to a human, never reachable from any HTTP route.** |
+| Role        | Purpose                   | Permissions                                                                                                                                                    |
+| ----------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `owner`     | Break-glass. 1–2 humans.  | everything, incl. `role:manage`, `user:delete`, `provider:delete`, `client:provision`                                                                          |
+| `admin`     | Day-to-day administration | all except role editing and owner-level deletes                                                                                                                |
+| `operator`  | Runs traffic              | `sms:read/send`, `message:cancel`, `provider:read/update`, `route:read`, `sender:manage`, `optout:manage`, `job:read/enqueue`, `worker:read`, `dashboard:read` |
+| `developer` | Integrates apps           | `app:read`, `webhook:manage`, `sms:read`, `sms:send`                                                                                                           |
+| `auditor`   | Read-only oversight       | `*:read`, `audit:read`. No mutations anywhere.                                                                                                                 |
+| `support`   | First-line                | `sms:read`, `optout:manage`, `delivery:read`                                                                                                                   |
+| `system`    | Internal only             | `message:create/update`, `receipt:create`, `job:update`. **Never issued to a human, never reachable from any HTTP route.**                                     |
 
 Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`, and (#56/#57) `job:read`, `job:enqueue`, `worker:read`, and (#49) `dashboard:read` — the same literals `operator`'s own `perms` carry, reused verbatim rather than invented separately, since `require_permission` (§5.1) checks either claim for the identical string. Registered per `AppClient` and enforced verbatim — scopes are rejected rather than filtered, and an omitted `scope` yields `scope: None`, which your check must treat as denial.
 
@@ -2257,14 +2257,14 @@ flowchart LR
     HK -- "claim + lease → signed POST" --> ATT
 ```
 
-| Role | Cardinality | Loop | Why |
-|---|---|---|---|
-| `dispatch` | **singleton** | claim messages → route → submit | Orange's 5 TPS cap is **per contract**. Two instances each politely limiting to 5 TPS send 10 and get blocked. |
-| `drain` | **singleton** | `db.events().drain()` every 5s | The framework runs no background drain worker. Multiple drainers multiply duplicate delivery (§8.2). |
-| `scheduler` | **singleton** | enqueue due recurring `Job` rows | Two schedulers double-enqueue; `jobs_dedupe_idx` catches it, but cleanly avoiding it is better. |
-| `smpp` | **singleton per provider** | hold binds, pump `submit_sm`/`deliver_sm` | SMPP binds are stateful, sequence-numbered, and contractually count-limited. |
-| `hooks` | **scale to N** | claim `webhook_attempts` → signed POST | Slow customer endpoints are the bottleneck; parallelism is the fix. |
-| `jobs` | **scale to N** | claim `jobs` → execute by `kind` | Generic background work; nothing shared between rows. |
+| Role        | Cardinality                | Loop                                      | Why                                                                                                            |
+| ----------- | -------------------------- | ----------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `dispatch`  | **singleton**              | claim messages → route → submit           | Orange's 5 TPS cap is **per contract**. Two instances each politely limiting to 5 TPS send 10 and get blocked. |
+| `drain`     | **singleton**              | `db.events().drain()` every 5s            | The framework runs no background drain worker. Multiple drainers multiply duplicate delivery (§8.2).           |
+| `scheduler` | **singleton**              | enqueue due recurring `Job` rows          | Two schedulers double-enqueue; `jobs_dedupe_idx` catches it, but cleanly avoiding it is better.                |
+| `smpp`      | **singleton per provider** | hold binds, pump `submit_sm`/`deliver_sm` | SMPP binds are stateful, sequence-numbered, and contractually count-limited.                                   |
+| `hooks`     | **scale to N**             | claim `webhook_attempts` → signed POST    | Slow customer endpoints are the bottleneck; parallelism is the fix.                                            |
+| `jobs`      | **scale to N**             | claim `jobs` → execute by `kind`          | Generic background work; nothing shared between rows.                                                          |
 
 The split is not aesthetic. Every singleton is a singleton because of an external constraint — a provider's rate contract, a stateful protocol session, or the framework's own delivery semantics — not because concurrency would be hard to write.
 
@@ -2469,17 +2469,17 @@ stateDiagram-v2
 
 Job kinds, all enqueued by the `scheduler` role with a `dedupeKey`:
 
-| `kind` | Cadence | Does |
-|---|---|---|
-| `expire_stale` | 1 min | `submitted`/`uncertain` past validity → `expired` |
-| `poll_balance` | 5 min | Orange `/contracts`; emit `balance.low` |
-| `probe_providers` | 1 min | Per-provider health → `Provider.healthy` |
-| `reap_outbox` | 1 h | Delete delivered `cratestack_event_outbox` rows >24h; alarm on high-`attempts` rows |
-| `reconcile_clients` | 1 h | OP client rows with no matching `AppClient` → orphan alert |
-| `purge_retention` | daily | **#67, done.** Terminal `Message` rows past 90 days: null `body`/`clientRef`/`idempotencyKey`/`stateReason`, overwrite `msisdn` with a placeholder (kept `NOT NULL`), stamp `purgedAt`. `msisdnHash` survives — see §10. Delete `DeliveryReceipt` rows past their own `receivedAt` + 90 days |
-| `cleanup_secrets` | 1 h | Clear `prevSecret` past 24h; deactivate `AppClient` past `retiredAt` |
-| `anchor_audit` | daily | Merkle root of the day's audit rows → append-only store |
-| `verify_backup` | daily | Restore last night's dump into a scratch database and count rows |
+| `kind`              | Cadence | Does                                                                                                                                                                                                                                                                                         |
+| ------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `expire_stale`      | 1 min   | `submitted`/`uncertain` past validity → `expired`                                                                                                                                                                                                                                            |
+| `poll_balance`      | 5 min   | Orange `/contracts`; emit `balance.low`                                                                                                                                                                                                                                                      |
+| `probe_providers`   | 1 min   | Per-provider health → `Provider.healthy`                                                                                                                                                                                                                                                     |
+| `reap_outbox`       | 1 h     | Delete delivered `cratestack_event_outbox` rows >24h; alarm on high-`attempts` rows                                                                                                                                                                                                          |
+| `reconcile_clients` | 1 h     | OP client rows with no matching `AppClient` → orphan alert                                                                                                                                                                                                                                   |
+| `purge_retention`   | daily   | **#67, done.** Terminal `Message` rows past 90 days: null `body`/`clientRef`/`idempotencyKey`/`stateReason`, overwrite `msisdn` with a placeholder (kept `NOT NULL`), stamp `purgedAt`. `msisdnHash` survives — see §10. Delete `DeliveryReceipt` rows past their own `receivedAt` + 90 days |
+| `cleanup_secrets`   | 1 h     | Clear `prevSecret` past 24h; deactivate `AppClient` past `retiredAt`                                                                                                                                                                                                                         |
+| `anchor_audit`      | daily   | Merkle root of the day's audit rows → append-only store                                                                                                                                                                                                                                      |
+| `verify_backup`     | daily   | Restore last night's dump into a scratch database and count rows                                                                                                                                                                                                                             |
 
 The backup-verify job is not optional. An untested backup is a hypothesis.
 
@@ -2598,7 +2598,7 @@ Branching on the SQLSTATE rather than substring-matching the message is the whol
 
 ### 8.4 Event catalogue
 
-```
+```text
 message.accepted     message.submitted    message.delivered
 message.failed       message.expired      message.uncertain
 message.cancelled
@@ -2808,7 +2808,7 @@ Sanctions run to 100,000,000 FCFA, suspension, withdrawal of authorisation, and 
 
 ## 11. Repository layout
 
-```
+```text
 vsms/
 ├── schema/
 │   ├── schema.cstack
@@ -2868,16 +2868,16 @@ Two things to check before writing screens. Run `cratestack studio init` / `stud
 
 ## 12. Milestones
 
-| # | Deliverable | Gate |
-|---|---|---|
-| 0 | Schema + migrations + **state machine triggers** + generated router + `sms-encoding` + `sms-msisdn` | The schema **expands** (not just parses — see below); every create input carries the fields its procedure sets; migration applies clean on an empty DB; an illegal transition raises `SM001`; `previewMessage` correct on a French corpus incl. `ç` and `’` |
-| 1 | `sms-auth`: OP with RS256, **custom `ClientStore`**, `/token` rate limiting, service-account provisioning, RBAC layers 1–2 | A *persisted* client_credentials client actually gets a token; a `developer` token cannot reach a `provider:write` route |
-| 2 | `sms-worker` skeleton: lease, claim loop, `dispatch` + `jobs` roles, Orange CM adapter | Real SMS to a real Orange handset, `delivered` in under 15s; `kill -9` the worker mid-submit and the lease reclaims the message |
-| 3 | Subscriptions → `WebhookAttempt` → `hooks` role, signing, retries, replay, `drain` role | Signature verifies in a sample Node receiver; killing `sms-api` mid-drain loses no event; two workers produce exactly one attempt per event |
-| 4 | Next.js admin, all screens, ETag/If-Match threaded through every edit | An operator can diagnose a failed message without touching SQL |
-| 5 | MTN via aggregator, routing rules, failover, circuit breakers | Kill Orange in staging; MTN unaffected, Orange fails over cleanly |
-| 6 | Retention, audit anchoring, backup verification, alerting | Restore drill passes; purge verified against a seeded old dataset |
-| 7 | *(conditional)* SMPP + direct interconnect | Only after the ART licensing question is settled |
+| #   | Deliverable                                                                                                                | Gate                                                                                                                                                                                                                                                        |
+| --- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | Schema + migrations + **state machine triggers** + generated router + `sms-encoding` + `sms-msisdn`                        | The schema **expands** (not just parses — see below); every create input carries the fields its procedure sets; migration applies clean on an empty DB; an illegal transition raises `SM001`; `previewMessage` correct on a French corpus incl. `ç` and `’` |
+| 1   | `sms-auth`: OP with RS256, **custom `ClientStore`**, `/token` rate limiting, service-account provisioning, RBAC layers 1–2 | A *persisted* client_credentials client actually gets a token; a `developer` token cannot reach a `provider:write` route                                                                                                                                    |
+| 2   | `sms-worker` skeleton: lease, claim loop, `dispatch` + `jobs` roles, Orange CM adapter                                     | Real SMS to a real Orange handset, `delivered` in under 15s; `kill -9` the worker mid-submit and the lease reclaims the message                                                                                                                             |
+| 3   | Subscriptions → `WebhookAttempt` → `hooks` role, signing, retries, replay, `drain` role                                    | Signature verifies in a sample Node receiver; killing `sms-api` mid-drain loses no event; two workers produce exactly one attempt per event                                                                                                                 |
+| 4   | Next.js admin, all screens, ETag/If-Match threaded through every edit                                                      | An operator can diagnose a failed message without touching SQL                                                                                                                                                                                              |
+| 5   | MTN via aggregator, routing rules, failover, circuit breakers                                                              | Kill Orange in staging; MTN unaffected, Orange fails over cleanly                                                                                                                                                                                           |
+| 6   | Retention, audit anchoring, backup verification, alerting                                                                  | Restore drill passes; purge verified against a seeded old dataset                                                                                                                                                                                           |
+| 7   | *(conditional)* SMPP + direct interconnect                                                                                 | Only after the ART licensing question is settled                                                                                                                                                                                                            |
 
 Milestone 1's gate is deliberately blunt. The `GrantType` bug means a stock integration looks correct in every in-memory test and fails the moment you persist a client — so "a *persisted* client gets a token" is the only gate that proves anything.
 
@@ -2900,37 +2900,37 @@ Milestone 0 still comes first. The encoding crate has the highest ratio of busin
 
 **Technical risks:**
 
-| Risk | Mitigation |
-|---|---|
-| **Persisted `client_credentials` clients denied by the `GrantType` serde bug** | Custom `ClientStore` (§4.2); milestone 1 gate tests the persisted path |
-| **Raw SQL creeping in** — bypasses policy, audit, events and version bumping at once | R1 + `assert-no-raw-sqlx.sh` in CI; the exception allowlist lives in one script |
-| **A scalar list field panics `include_server_schema!`** — and the parser and migration emitter both accept it, so nothing catches it until the macro runs | No model declares a list; multi-values are sentinel-delimited `String` (§2.2). Milestone 0 gate is "the schema expands", not "the schema parses" |
-| **A `@default` on a caller-settable field makes it unwritable** (excluded from create input) | Verified by compile in CI via the create-input round-trip test; §2.0 |
-| **`@server_only` on a field the server must write makes it unwritable entirely** | R3; secrets are protected by model-level `@@allow`, or kept out of the database |
-| **Advisory lock leaked on a pooled connection → singleton role dead until restart** | Explicit `release()` on shutdown, or a dedicated single-connection pool that's closed outright. `Drop` cannot do this — releasing needs an `await` |
-| **Two workers both running `dispatch` → Orange TPS doubled → blocked** | Advisory lock is the only gate; alert on "singleton unheld" *and* on unexpected concurrent submits per provider |
-| Claim-loop `Forbidden` swallowed as "lost the race", hiding a policy bug as throughput loss | Match `PreconditionFailed` for the race; log `Forbidden` loudly (§7.3) |
-| **State machine and code drift** → production `SM001` on a legal-looking transition | `state_machine_parity` test in CI; alert on any non-zero `SM001` rate |
-| Illegal transition surfaces as `500 DATABASE_ERROR` | Map `sqlstate = 'SM001'` → `CratestackError::Conflict` → 409 |
-| `/token` unprotected → Argon2 19 MiB DoS amplification | `tower_governor` keyed on client_id **and** IP |
-| A client provisioned with `client_secret_hash = None` authenticates anyone | `NOT NULL` column; `find_client` refuses to build a registration without it |
-| Secret containing `+ / = %` fails Basic auth non-obviously | Generate from `[A-Za-z0-9._~-]` only |
-| Caller omits `scope` → token has `scope: None` → silent authz confusion | Treat missing scope as denial; document that callers must request explicitly |
-| Bearer token leak usable until expiry (no PoP available) | 15-minute TTL, `sub` denylist, `App.ipAllowlist` at the edge |
-| **A webhook subscriber blocking or panicking breaks the send API** | Subscribers only insert rows; bodies wrapped so panics become `Err`; HTTP lives in the `hooks` role |
-| **Concurrent drains double-deliver** (no `SKIP LOCKED` in the framework) | Unique index on `(endpoint_id, aggregate_id, event_type)` + `ON CONFLICT DO NOTHING`; `drain` is a singleton |
-| **Poison outbox row retries forever, table grows unbounded** | `reap_outbox` job + alert on `attempts > 5`; nothing in the framework caps this |
-| **Outbox stalls when writes go quiet** (no background worker) | `drain` role every 5s; alert on oldest undelivered age |
-| Worker crash strands a claimed message | `leaseUntil` + reclaim predicate in the claim query; `kill -9` gate at milestone 2 |
-| Cuid ids with `_`/`-` break `GET /messages?id=…` with a 400 | `cs_cuid()` emits `[a-z0-9]{23}`, no prefix separator |
-| Orange 5 TPS + 100k FCFA/day SIM cap ceilings you at ~5k SMS/day | Start MTN and commercial-contract conversations at milestone 2 |
-| No FK constraints, no column defaults, no non-unique indexes, no triggers from the emitter | §2.10, applied at milestone 0, with an "applies clean on empty DB" gate |
-| A typo'd `@@allow` action or `@@use` silently no-ops | Test asserting the full generated policy set and expanded field list |
-| System context sets `kind` but not `role = "system"` → all message writes deny | Integration test on the first send |
-| SMPP hex/decimal `message_id` mismatch | `providerMessageRef` + `providerMessageRefAlt`, both indexed |
-| Grey route silently replaces sender ID | Monthly handset validation per route; alert on delivery-rate divergence |
-| CrateStack pre-1.0, 23 releases in 11 weeks | Pin exactly (see the root `Cargo.toml`'s `cratestack` line, or run `cargo xtask cratestack-pin` for the current value — this table doesn't hardcode a version that's certain to be stale by the next bump); `cratestack diff` CI gate catches wire breaks |
-| Only in-memory rate-limit store ships | Implement `RateLimitStore` against Redis/Postgres before the second API replica |
+| Risk                                                                                                                                                      | Mitigation                                                                                                                                                                                                                                                |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Persisted `client_credentials` clients denied by the `GrantType` serde bug**                                                                            | Custom `ClientStore` (§4.2); milestone 1 gate tests the persisted path                                                                                                                                                                                    |
+| **Raw SQL creeping in** — bypasses policy, audit, events and version bumping at once                                                                      | R1 + `assert-no-raw-sqlx.sh` in CI; the exception allowlist lives in one script                                                                                                                                                                           |
+| **A scalar list field panics `include_server_schema!`** — and the parser and migration emitter both accept it, so nothing catches it until the macro runs | No model declares a list; multi-values are sentinel-delimited `String` (§2.2). Milestone 0 gate is "the schema expands", not "the schema parses"                                                                                                          |
+| **A `@default` on a caller-settable field makes it unwritable** (excluded from create input)                                                              | Verified by compile in CI via the create-input round-trip test; §2.0                                                                                                                                                                                      |
+| **`@server_only` on a field the server must write makes it unwritable entirely**                                                                          | R3; secrets are protected by model-level `@@allow`, or kept out of the database                                                                                                                                                                           |
+| **Advisory lock leaked on a pooled connection → singleton role dead until restart**                                                                       | Explicit `release()` on shutdown, or a dedicated single-connection pool that's closed outright. `Drop` cannot do this — releasing needs an `await`                                                                                                        |
+| **Two workers both running `dispatch` → Orange TPS doubled → blocked**                                                                                    | Advisory lock is the only gate; alert on "singleton unheld" *and* on unexpected concurrent submits per provider                                                                                                                                           |
+| Claim-loop `Forbidden` swallowed as "lost the race", hiding a policy bug as throughput loss                                                               | Match `PreconditionFailed` for the race; log `Forbidden` loudly (§7.3)                                                                                                                                                                                    |
+| **State machine and code drift** → production `SM001` on a legal-looking transition                                                                       | `state_machine_parity` test in CI; alert on any non-zero `SM001` rate                                                                                                                                                                                     |
+| Illegal transition surfaces as `500 DATABASE_ERROR`                                                                                                       | Map `sqlstate = 'SM001'` → `CratestackError::Conflict` → 409                                                                                                                                                                                              |
+| `/token` unprotected → Argon2 19 MiB DoS amplification                                                                                                    | `tower_governor` keyed on client_id **and** IP                                                                                                                                                                                                            |
+| A client provisioned with `client_secret_hash = None` authenticates anyone                                                                                | `NOT NULL` column; `find_client` refuses to build a registration without it                                                                                                                                                                               |
+| Secret containing `+ / = %` fails Basic auth non-obviously                                                                                                | Generate from `[A-Za-z0-9._~-]` only                                                                                                                                                                                                                      |
+| Caller omits `scope` → token has `scope: None` → silent authz confusion                                                                                   | Treat missing scope as denial; document that callers must request explicitly                                                                                                                                                                              |
+| Bearer token leak usable until expiry (no PoP available)                                                                                                  | 15-minute TTL, `sub` denylist, `App.ipAllowlist` at the edge                                                                                                                                                                                              |
+| **A webhook subscriber blocking or panicking breaks the send API**                                                                                        | Subscribers only insert rows; bodies wrapped so panics become `Err`; HTTP lives in the `hooks` role                                                                                                                                                       |
+| **Concurrent drains double-deliver** (no `SKIP LOCKED` in the framework)                                                                                  | Unique index on `(endpoint_id, aggregate_id, event_type)` + `ON CONFLICT DO NOTHING`; `drain` is a singleton                                                                                                                                              |
+| **Poison outbox row retries forever, table grows unbounded**                                                                                              | `reap_outbox` job + alert on `attempts > 5`; nothing in the framework caps this                                                                                                                                                                           |
+| **Outbox stalls when writes go quiet** (no background worker)                                                                                             | `drain` role every 5s; alert on oldest undelivered age                                                                                                                                                                                                    |
+| Worker crash strands a claimed message                                                                                                                    | `leaseUntil` + reclaim predicate in the claim query; `kill -9` gate at milestone 2                                                                                                                                                                        |
+| Cuid ids with `_`/`-` break `GET /messages?id=…` with a 400                                                                                               | `cs_cuid()` emits `[a-z0-9]{23}`, no prefix separator                                                                                                                                                                                                     |
+| Orange 5 TPS + 100k FCFA/day SIM cap ceilings you at ~5k SMS/day                                                                                          | Start MTN and commercial-contract conversations at milestone 2                                                                                                                                                                                            |
+| No FK constraints, no column defaults, no non-unique indexes, no triggers from the emitter                                                                | §2.10, applied at milestone 0, with an "applies clean on empty DB" gate                                                                                                                                                                                   |
+| A typo'd `@@allow` action or `@@use` silently no-ops                                                                                                      | Test asserting the full generated policy set and expanded field list                                                                                                                                                                                      |
+| System context sets `kind` but not `role = "system"` → all message writes deny                                                                            | Integration test on the first send                                                                                                                                                                                                                        |
+| SMPP hex/decimal `message_id` mismatch                                                                                                                    | `providerMessageRef` + `providerMessageRefAlt`, both indexed                                                                                                                                                                                              |
+| Grey route silently replaces sender ID                                                                                                                    | Monthly handset validation per route; alert on delivery-rate divergence                                                                                                                                                                                   |
+| CrateStack pre-1.0, 23 releases in 11 weeks                                                                                                               | Pin exactly (see the root `Cargo.toml`'s `cratestack` line, or run `cargo xtask cratestack-pin` for the current value — this table doesn't hardcode a version that's certain to be stale by the next bump); `cratestack diff` CI gate catches wire breaks |
+| Only in-memory rate-limit store ships                                                                                                                     | Implement `RateLimitStore` against Redis/Postgres before the second API replica                                                                                                                                                                           |
 
 ---
 

@@ -174,8 +174,9 @@ async fn a_provisioned_user_can_actually_log_in_with_the_returned_password() {
             roleKey: "console_identity_owner_role".to_owned(),
         },
     };
-    let result = provision_user::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.provision_user(&db, &ctx, args.clone(), authorized)
+    let result = provision_user::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.provision_user(&db, &c, a, authorized).await }
     })
     .await
     .expect("provisioning a user");
@@ -235,15 +236,17 @@ async fn provisioning_the_same_email_twice_is_a_conflict() {
     // test above.
     let ctx = owner_with_user_manage();
     let first_args = args();
-    provision_user::invoke_with_db(&db, &first_args, &ctx, |authorized| {
-        procedures.provision_user(&db, &ctx, first_args.clone(), authorized)
+    provision_user::invoke_with_db(&db, &first_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), first_args.clone());
+        async move { p.provision_user(&db, &c, a, authorized).await }
     })
     .await
     .expect("first provision succeeds");
 
     let second_args = args();
-    let second = provision_user::invoke_with_db(&db, &second_args, &ctx, |authorized| {
-        procedures.provision_user(&db, &ctx, second_args.clone(), authorized)
+    let second = provision_user::invoke_with_db(&db, &second_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), second_args.clone());
+        async move { p.provision_user(&db, &c, a, authorized).await }
     })
     .await;
     assert!(
@@ -286,8 +289,9 @@ async fn recording_an_opt_out_makes_it_findable_by_the_same_number() {
             reason: Some("test seed".to_owned()),
         },
     };
-    let recorded = record_opt_out::invoke_with_db(&db, &record_args, &ctx, |authorized| {
-        procedures.record_opt_out(&db, &ctx, record_args.clone(), authorized)
+    let recorded = record_opt_out::invoke_with_db(&db, &record_args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), record_args.clone());
+        async move { p.record_opt_out(&db, &c, a, authorized).await }
     })
     .await
     .expect("recording an opt-out");
@@ -337,8 +341,9 @@ async fn searching_an_unrecorded_number_finds_nothing_even_with_other_rows_prese
                 reason: None,
             },
         };
-        record_opt_out::invoke_with_db(&db, &args, &ctx, |authorized| {
-            procedures.record_opt_out(&db, &ctx, args.clone(), authorized)
+        record_opt_out::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+            let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+            async move { p.record_opt_out(&db, &c, a, authorized).await }
         })
         .await
         .expect("seeding an unrelated opt-out");
@@ -389,8 +394,9 @@ async fn a_support_role_caller_can_record_an_opt_out_the_bare_model_policy_would
             reason: None,
         },
     };
-    let recorded = record_opt_out::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.record_opt_out(&db, &ctx, args.clone(), authorized)
+    let recorded = record_opt_out::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.record_opt_out(&db, &c, a, authorized).await }
     })
     .await
     .expect("a support-role caller with optout:manage must be able to record an opt-out");
@@ -425,10 +431,12 @@ async fn recording_or_searching_denies_a_caller_with_no_optout_manage_permission
             reason: None,
         },
     };
-    let record_result = record_opt_out::invoke_with_db(&db, &record_args, &ctx, |authorized| {
-        procedures.record_opt_out(&db, &ctx, record_args.clone(), authorized)
-    })
-    .await;
+    let record_result =
+        record_opt_out::invoke_with_db(&db, &record_args, &ctx, |db, authorized| {
+            let (p, c, a) = (procedures.clone(), ctx.clone(), record_args.clone());
+            async move { p.record_opt_out(&db, &c, a, authorized).await }
+        })
+        .await;
     assert!(
         matches!(
             record_result,
@@ -479,8 +487,9 @@ async fn recording_an_opt_out_stamps_a_current_opted_out_at() {
             reason: None,
         },
     };
-    let recorded = record_opt_out::invoke_with_db(&db, &args, &ctx, |authorized| {
-        procedures.record_opt_out(&db, &ctx, args.clone(), authorized)
+    let recorded = record_opt_out::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.record_opt_out(&db, &c, a, authorized).await }
     })
     .await
     .expect("recording an opt-out");
