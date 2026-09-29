@@ -48,7 +48,7 @@ The schema in §2 was assembled into a single file and run through the real `cra
 
 Three rules that constrain every other decision in this document. They are stated here rather than scattered through it because each is a *default with named exceptions*, and the exceptions are the interesting part.
 
-### R1 — All data access goes through CrateStack delegates. Never raw `sqlx`.
+### R1 — All data access goes through CrateStack delegates. Never raw `sqlx`
 
 The generated `Cratestack` runtime is the only way application code touches the database. `db.message().find_many()…`, `db.message().update(id).set(…).if_match(v)`, `db.job().create(…)`, `.run(&ctx)` or `.run_in_tx(&mut tx, &ctx)`. No `sqlx::query!`, no `query_as`, no `query_scalar`, no `raw_sql`.
 
@@ -86,11 +86,11 @@ Enforced in CI:
 
 `db.pool()` is the escape hatch that makes raw SQL *possible*; the lint is what makes it *deliberate*. Adding a row to the exceptions table should feel like a design decision, because it is one.
 
-### R2 — State transitions are proposed by Rust and decided by Postgres.
+### R2 — State transitions are proposed by Rust and decided by Postgres
 
 Legal edges live in `message_state_transitions` / `job_state_transitions`; `BEFORE UPDATE` triggers reject the rest with SQLSTATE `SM001`. Application code never assumes a transition is valid because it checked first. §2.10 and §7.4.
 
-### R3 — Nothing that must be written can be `@server_only`.
+### R3 — Nothing that must be written can be `@server_only`
 
 `@server_only` excludes a field from **both** create and update inputs, so under R1 such a field can never be populated at all. It is for columns the database owns, not for secrets. Field secrecy comes from model-level `@@allow` and from keeping secrets out of the gateway database entirely. §2.0 has the full attribute matrix.
 
