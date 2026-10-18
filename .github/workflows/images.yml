@@ -1,0 +1,298 @@
+name: images
+
+# Builds every container image this repository publishes, for BOTH
+# linux/amd64 and linux/arm64, and proves each one is what it claims to be.
+# A reusable workflow (`workflow_call`), called from two places that differ
+# in exactly one thing:
+#
+#   - ci.yml      `push: false` on every pull request that touches an image
+#                 input. Builds both architectures, loads them locally and
+#                 asserts them (`ci/assert-image.sh`); pushes nothing. This is
+#                 what lets a PR prove the arm64 build before it merges.
+#   - release.yml `push: true` on a tag / push to main / manual dispatch.
+#                 Pushes each architecture BY DIGEST, then `merge` stitches the
+#                 two into one manifest list under the release tags and
+#                 asserts the list holds exactly linux/amd64 + linux/arm64.
+#
+# The image list lives in ONE place, the `build` matrix below. It used to be
+# release.yml's `build-and-push` matrix alone; a second copy in ci.yml would
+# have been a list that drifts (a new image published but never built on a
+# PR, or the reverse). `cargo xtask workflow-paths` still checks every
+# `dockerfile:` here exists.
+#
+# --- How arm64 is built: natively, never emulated --------------------------
+# Each architecture builds on a runner OF that architecture: `ubuntu-latest`
+# (x86_64) and `ubuntu-24.04-arm` (aarch64). Both are GitHub-hosted and free
+# for a public repository, and this repository is public. No QEMU anywhere:
+# an emulated `cargo build` of this workspace is an order of magnitude slower
+# than native and an emulated `next build` is worse, and neither buys
+# anything the native runner doesn't already give.
+#
+#   - The five Rust images build on `rust:1.98-alpine3.22`, a multi-arch image
+#     whose own libc is musl, so a plain `cargo build` on an aarch64 runner
+#     emits an `aarch64-unknown-linux-musl` static binary. No cross-compiler,
+#     no `rustup target add`, no cargo-zigbuild — the Dockerfiles needed no
+#     change to build for arm64. (vpay's backends/Dockerfile works the same
+#     way for the same reason.)
+#   - The two Node images build on `node:26-bookworm-slim` (also multi-arch)
+#     and `pnpm install`/`next build` run natively, so the native addons in
+#     the standalone trace (swc, sharp) are the arm64 ones. A cross-build
+#     would have to pretend otherwise.
+#
+# --- What is asserted, and where -------------------------------------------
+#   `ci/assert-image.sh`    per image, per architecture: the image config says
+#                           the right platform; every named binary and every
+#                           native addon is an ELF of that architecture
+#                           (read from `e_machine`, not trusted from a tag);
+#                           `USER` is numeric and non-root.
+#   `ci/assert-manifest.sh` per pushed tag: a manifest list containing exactly
+#                           linux/amd64 and linux/arm64.
+#
+# Permissions are not declared here on purpose: a called workflow cannot ask
+# for more than its caller grants, and the two callers grant different things
+# (`contents: read` for ci.yml, `+ packages: write` for release.yml).
+
+on:
+  workflow_call:
+    inputs:
+      push:
+        description: >-
+          true: push each architecture by digest and merge into tagged
+          manifest lists (release). false: build and assert only (PR CI).
+        type: boolean
+        required: true
+      tag_primary:
+        description: First tag for the merged manifest list (release only).
+        type: string
+        default: ''
+      tag_secondary:
+        description: Second tag for the merged manifest list (release only).
+        type: string
+        default: ''
+      app_version:
+        description: Value of the org.opencontainers.image.version label.
+        type: string
+        default: ci
+
+jobs:
+  build:
+    name: ${{ matrix.image.name }} (${{ matrix.platform.docker }})
+    runs-on: ${{ matrix.platform.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          # `repo` is flat (`vsms-<image>`) for the production images and
+          # nested (`vsms/<name>`) for dev/demo tools — those published under
+          # that shape from the start, and they are referenced by
+          # compose.demo.yaml, the Helm chart and deploy/, so renaming them is
+          # a separate decision with real blast radius.
+          #
+          # `assert` is what ci/assert-image.sh checks inside the image:
+          # `--elf` a file that must be an ELF of the platform's architecture,
+          # `--scan` a directory whose every native addon must be too.
+          - name: sms-gateway
+            dockerfile: backends/apps/sms-gateway/Dockerfile
+            repo: vsms-sms-gateway
+            assert: --elf /usr/local/bin/sms-gateway
+          - name: sms-worker
+            dockerfile: backends/apps/sms-worker/Dockerfile
+            repo: vsms-sms-worker
+            assert: --elf /usr/local/bin/sms-worker
+          - name: admin
+            dockerfile: frontends/apps/admin/Dockerfile
+            repo: vsms-admin
+            assert: --elf /usr/local/bin/node --scan /app
+          # deploy/charts/vsms's migrate Job (a pre-install/pre-upgrade Helm
+          # hook) needs a prebuilt image to pull from a registry; Kubernetes
+          # has no `build:` context the way docker-compose.yml does.
+          - name: migrate
+            dockerfile: backends/apps/sms-migrate/Dockerfile
+            repo: vsms-migrate
+            assert: --elf /usr/local/bin/sms-migrate
+          # Dev/demo tools, never production artifacts: nested under `vsms/`.
+          # compose-demo-ghcr (compose.demo.yaml) has no `build:` stanza for
+          # anything, so each needs a real published image.
+          - name: sms-fake-orange
+            dockerfile: backends/apps/sms-fake-orange/Dockerfile
+            repo: vsms/sms-fake-orange
+            assert: --elf /usr/local/bin/sms-fake-orange
+          - name: demo
+            dockerfile: backends/apps/vsms-demo-seed/Dockerfile
+            repo: vsms/demo
+            assert: --elf /usr/local/bin/vsms-demo-seed
+          - name: demo-app
+            dockerfile: examples/node/demo-app/Dockerfile
+            repo: vsms/demo-app
+            assert: --elf /usr/local/bin/node --scan /app
+        platform:
+          - arch: amd64
+            runner: ubuntu-latest
+            docker: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            docker: linux/arm64
+
+    env:
+      REGISTRY_IMAGE: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.repo }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        if: inputs.push
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ---- PR CI: build, keep locally, assert. Nothing is pushed. ----------
+      # `load: true` needs a single-platform image with no attestation
+      # manifests, hence `provenance: false` here only. The release path below
+      # keeps BuildKit's default provenance, as it always has.
+      - name: Build ${{ matrix.image.name }} for ${{ matrix.platform.docker }} (not pushed)
+        if: ${{ !inputs.push }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: ${{ matrix.platform.docker }}
+          load: true
+          provenance: false
+          tags: vsms-ci/${{ matrix.image.name }}:${{ matrix.platform.arch }}
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+
+      - name: Assert ${{ matrix.image.name }} is ${{ matrix.platform.docker }}
+        if: ${{ !inputs.push }}
+        env:
+          REF: vsms-ci/${{ matrix.image.name }}:${{ matrix.platform.arch }}
+          PLATFORM: ${{ matrix.platform.docker }}
+          ASSERT: ${{ matrix.image.assert }}
+        run: |
+          # ASSERT is deliberately unquoted: it is a list of flags.
+          # shellcheck disable=SC2086
+          ci/assert-image.sh "$REF" "$PLATFORM" $ASSERT
+
+      # ---- Release: push this architecture by digest, no tag yet. ----------
+      # The tags are applied once, in `merge`, to the list that holds both
+      # architectures. A tag on a single-architecture image is exactly the
+      # state this workflow exists to prevent.
+      - name: Build and push ${{ matrix.image.name }} for ${{ matrix.platform.docker }} (by digest)
+        id: push
+        if: inputs.push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          # Build context is the repo root for every image — see each
+          # Dockerfile's own header comment for why (schemas/ for
+          # include_server_schema!/migrate's own copy of the migrations, the
+          # pnpm workspace for admin).
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          platforms: ${{ matrix.platform.docker }}
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ inputs.app_version }}
+          cache-from: type=gha,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image.name }}-${{ matrix.platform.arch }}
+
+      # Assert what the REGISTRY holds, not what the builder had in its cache:
+      # pull the pushed digest back and run the same checks as PR CI.
+      - name: Assert the pushed ${{ matrix.image.name }} digest is ${{ matrix.platform.docker }}
+        if: inputs.push
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          PLATFORM: ${{ matrix.platform.docker }}
+          ASSERT: ${{ matrix.image.assert }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::build-push-action returned no digest ('${DIGEST}')"; exit 1; }
+          docker pull --platform "$PLATFORM" "${REGISTRY_IMAGE}@${DIGEST}"
+          docker tag "${REGISTRY_IMAGE}@${DIGEST}" "vsms-ci/pushed:${PLATFORM#*/}"
+          # ASSERT is deliberately unquoted: it is a list of flags.
+          # shellcheck disable=SC2086
+          ci/assert-image.sh "vsms-ci/pushed:${PLATFORM#*/}" "$PLATFORM" $ASSERT
+
+      - name: Record the digest
+        if: inputs.push
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+          REPO: ${{ matrix.image.repo }}
+        run: |
+          set -euo pipefail
+          mkdir -p digest
+          jq -n --arg repo "$REPO" --arg digest "$DIGEST" '{repo: $repo, digest: $digest}' > digest/digest.json
+          cat digest/digest.json
+
+      - name: Upload the digest
+        if: inputs.push
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: digests-${{ matrix.image.name }}-${{ matrix.platform.arch }}
+          path: digest/digest.json
+          if-no-files-found: error
+          retention-days: 1
+
+  # One manifest list per image, under both release tags, from the two
+  # per-architecture digests. Only runs when every `build` job succeeded, so a
+  # tag can never be applied to a half-built set.
+  merge:
+    name: manifest lists (linux/amd64 + linux/arm64)
+    if: inputs.push
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: digests
+          pattern: digests-*
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create the manifest lists and assert their platforms
+        env:
+          OWNER: ${{ github.repository_owner }}
+          TAG_PRIMARY: ${{ inputs.tag_primary }}
+          TAG_SECONDARY: ${{ inputs.tag_secondary }}
+        run: |
+          set -euo pipefail
+          [[ -n "$TAG_PRIMARY" && -n "$TAG_SECONDARY" ]] || { echo "::error::push: true needs tag_primary and tag_secondary"; exit 1; }
+          shopt -s nullglob
+          files=(digests/*/digest.json)
+          [[ ${#files[@]} -gt 0 ]] || { echo "::error::no digests downloaded"; exit 1; }
+
+          tags=()
+          # The set of images is whatever the `build` matrix uploaded; it is
+          # not listed a second time here.
+          for repo in $(jq -rs 'map(.repo) | unique[]' "${files[@]}"); do
+            image="ghcr.io/${OWNER}/${repo}"
+            mapfile -t sources < <(jq -rs --arg image "$image" --arg repo "$repo" \
+              '.[] | select(.repo == $repo) | "\($image)@\(.digest)"' "${files[@]}")
+            echo "::group::${image} <- ${sources[*]}"
+            docker buildx imagetools create \
+              -t "${image}:${TAG_PRIMARY}" -t "${image}:${TAG_SECONDARY}" \
+              "${sources[@]}"
+            echo "::endgroup::"
+            tags+=("${image}:${TAG_PRIMARY}" "${image}:${TAG_SECONDARY}")
+          done
+
+          # Reads the tags back from the registry. Fails the job (and so the
+          # release) if any tag is not exactly linux/amd64 + linux/arm64.
+          ci/assert-manifest.sh "${tags[@]}" | tee -a "$GITHUB_STEP_SUMMARY"

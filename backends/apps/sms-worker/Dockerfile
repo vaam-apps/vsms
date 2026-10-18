@@ -82,11 +82,14 @@ EXPOSE 9091
 # (`HEALTH_STALE_THRESHOLD`) — in std-only Rust, intercepted ahead of the
 # normal `--roles`-driven startup path rather than added as a real clap
 # subcommand (see that interception's own comment for why).
-# Redundant: the `:nonroot` tag already runs as uid 65532, and this image
-# has no `useradd` to create a user with — it ships /etc/passwd precisely so
-# that uid works without one. Stated explicitly because Trivy's DS-0002 greps
-# for a literal USER instruction and cannot see what the tag already did.
-USER nonroot:nonroot
+# Numeric uid:gid, not `nonroot:nonroot`. The `:nonroot` tag already runs as
+# 65532 and ships /etc/passwd, so the user exists either way — but a *named*
+# USER is something a kubelet cannot verify: a pod with `runAsNonRoot: true`
+# and no `runAsUser` is refused with "image has non-numeric user (nonroot),
+# cannot verify user is non-root". 65532 is the same uid, spelled so it can
+# be checked. (Also what Trivy's DS-0002 wants: a literal, non-root USER.)
+# `ci/assert-image.sh` fails the image build if this ever becomes a name again.
+USER 65532:65532
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD ["/usr/local/bin/sms-worker", "healthcheck"]
 

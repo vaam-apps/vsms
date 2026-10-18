@@ -78,9 +78,12 @@ COPY --from=builder /tmp/sms-fake-orange /usr/local/bin/sms-fake-orange
 # at all (they must match whatever's calling this specific fake).
 EXPOSE 8090
 
-# Redundant: the `:nonroot` tag already runs as uid 65532, and this image
-# has no `useradd` to create a user with — it ships /etc/passwd precisely so
-# that uid works without one. Stated explicitly because Trivy's DS-0002 greps
-# for a literal USER instruction and cannot see what the tag already did.
-USER nonroot:nonroot
+# Numeric uid:gid, not `nonroot:nonroot`. The `:nonroot` tag already runs as
+# 65532 and ships /etc/passwd, so the user exists either way — but a *named*
+# USER is something a kubelet cannot verify: a pod with `runAsNonRoot: true`
+# and no `runAsUser` is refused with "image has non-numeric user (nonroot),
+# cannot verify user is non-root". 65532 is the same uid, spelled so it can
+# be checked. (Also what Trivy's DS-0002 wants: a literal, non-root USER.)
+# `ci/assert-image.sh` fails the image build if this ever becomes a name again.
+USER 65532:65532
 ENTRYPOINT ["/usr/local/bin/sms-fake-orange"]

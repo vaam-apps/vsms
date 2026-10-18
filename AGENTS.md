@@ -3580,6 +3580,17 @@ Historical entries elsewhere in this file still say `@vymalo/vsms-node`. Those a
 left alone on purpose: they describe publishes that really happened under that
 name, and `0.2.0` through `0.3.1` are still on npm under it.
 
+## Every published image is linux/amd64 + linux/arm64 — natively built, and asserted
+
+The webank product moved to an arm64 (Hetzner CAX) Talos cluster and asked for arm64 builds of every component. Through `v0.5.0` every vsms tag was a manifest list holding `linux/amd64` (plus BuildKit's `unknown/unknown` attestation manifest) and nothing else — read from `ghcr.io/vaam-apps/vsms-sms-gateway:v0.5.0`, not assumed.
+
+- **Built natively, never emulated.** `.github/workflows/images.yml` (a `workflow_call` workflow, so `ci.yml` and `release.yml` share ONE image list) builds each image per architecture on a runner of that architecture: `ubuntu-latest` and `ubuntu-24.04-arm`, both GitHub-hosted and free because the repository is public. The Rust Dockerfiles needed no change to build for arm64: `rust:1.98-alpine3.22` is multi-arch and Alpine's libc is musl, so `cargo build` on an aarch64 runner emits a static `aarch64-unknown-linux-musl` binary — no cross-linker, no cargo-zigbuild. `ci/` has no QEMU step and must not grow one.
+- **Release path.** Each architecture is pushed by digest (no tag); the `merge` job then runs `docker buildx imagetools create` to put both under `:<tag>` and `:latest` (or `:main`/`:sha-*`), and `ci/assert-manifest.sh` reads the tags back and fails the release unless each lists exactly `linux/amd64` + `linux/arm64`. Same shape as `vaam-apps/vpay`'s `release.yml`.
+- **PR path.** `ci.yml`'s `images` job (path-filtered) runs the same build with `push: false`: both architectures, loaded locally, asserted, discarded. Everything about a release except the push and the merge is therefore exercised before merge — which `cargo xtask workflow-paths` could never do for a workflow that only runs after one.
+- **`ci/assert-image.sh`**, per image and architecture: the image config's platform; every named binary and every native addon in `/app` is an ELF whose `e_machine` matches (read from the header, because a tag, a runner label and an image config can all be wrong while the bytes are right); and `USER` is numeric and non-root.
+- **`USER` is numeric everywhere.** `USER nonroot:nonroot` (distroless, uid 65532) and `USER admin`/`USER demoapp` (`useradd`ed, 10001/10002) are *named* users, and a kubelet enforcing `runAsNonRoot: true` with no `runAsUser` cannot verify a name: the pod is refused with "image has non-numeric user (nonroot), cannot verify user is non-root". They are `USER 65532:65532`, `USER 10001` and `USER 10002` now, and `assert-image.sh` fails the build if one becomes a name again.
+- **Not yet done, deliberately:** `compose.demo.yaml` still pins `platform: linux/amd64` on every service, because its default tag is `v0.5.0`, which is amd64-only. Drop the pins in the PR that follows the first release cut with this workflow, once the tag default points at a manifest list that has arm64. Existing tags are not rebuilt; arm64 exists from the next release onward.
+
 ## Open questions blocking later milestones
 
 1. **Hosting location.** Law No. 2024/017 requires prior authorisation for *all* cross-border personal-data transfers, and "legitimate interest" is not a lawful basis. Cameroon-hosted is the safe default. Needs an answer before production.

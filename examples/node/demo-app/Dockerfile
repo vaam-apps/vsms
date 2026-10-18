@@ -55,7 +55,10 @@ RUN corepack prepare pnpm@11.18.0 --activate \
     && pnpm install --ignore-workspace --frozen-lockfile --trust-lockfile --prod
 
 RUN chown -R demoapp:demoapp /app
-USER demoapp
+# Numeric uid, not `USER demoapp` — a kubelet cannot verify a named user
+# is non-root under `runAsNonRoot: true` (see frontends/apps/admin/Dockerfile).
+# 10002 is the uid created above.
+USER 10002
 
 ENV NODE_ENV=production
 EXPOSE 9000

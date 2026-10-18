@@ -158,9 +158,11 @@ services:
   # runs, just pulled from GHCR instead of built from source.
   migrate:
     image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-migrate:${VSMS_IMAGE_TAG:-v0.5.0} # x-release-please-version
-    # release.yml's build-and-push matrix publishes one architecture
-    # (whatever the ubuntu-latest runner is, amd64) with no multi-arch
-    # manifest — pin every vsms image to it explicitly so this file
+    # Every tag through v0.5.0 was built by a release.yml that published one
+    # architecture (amd64) with no multi-arch manifest. Releases cut after
+    # images.yml landed are amd64 + arm64, so these pins can go once the
+    # default tag above points at one of those. Until then, pin every vsms
+    # image to amd64 explicitly so this file
     # behaves the same on an Apple Silicon/ARM host as on amd64,
     # through Docker Desktop's own emulation, rather than failing
     # with a confusing "no matching manifest" the first time someone
