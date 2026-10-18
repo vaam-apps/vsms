@@ -321,9 +321,16 @@ jobs:
         # failing the step, so the log showed a blank value instead of an
         # error naming the missing secret. Keep the two names identical;
         # the indirection bought nothing and cost a release.
+        #
+        # zizmor `use-trusted-publishing` is ignored here, knowingly: crates.io
+        # Trusted Publishing needs the crate's publisher configured on
+        # crates.io (an owner action, not a workflow edit) and the
+        # `rust-lang/crates-io-auth-action` exchange in place of this token.
+        # The npm SDK below already publishes that way (OIDC, no token); this
+        # is the remaining token-based publish, to move once crates.io is set up.
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish
+        run: cargo publish # zizmor: ignore[use-trusted-publishing]
 
   publish-node-sdk:
     permissions:
