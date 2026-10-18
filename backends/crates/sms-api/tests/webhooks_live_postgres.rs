@@ -413,7 +413,7 @@ async fn a_message_with_no_matching_endpoints_produces_no_attempts_and_no_error(
         .expect("no endpoints configured should not be an error");
 
     let attempts = attempts_for(&db, &message.id).await;
-    assert!(attempts.is_empty());
+    assert_eq!(attempts.len(), 0);
 }
 
 /// **The one honest caveat under `#44`'s "no event lost" gate.** Read

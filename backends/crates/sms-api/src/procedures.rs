@@ -2280,7 +2280,7 @@ mod tests {
         assert_eq!(result.encoding, schema::Encoding::gsm7);
         assert_eq!(result.segments, 1);
         assert_eq!(result.perSegment, 160);
-        assert!(result.offending.is_empty());
+        assert_eq!(result.offending.len(), 0);
     }
 
     #[test]
@@ -2290,7 +2290,7 @@ mod tests {
         // here would overstate the bill on every message with a smart quote.
         let result = preview("Bienvenue sur l\u{2019}application", None).unwrap();
         assert_eq!(result.encoding, schema::Encoding::gsm7);
-        assert!(result.offending.is_empty());
+        assert_eq!(result.offending.len(), 0);
     }
 
     #[test]

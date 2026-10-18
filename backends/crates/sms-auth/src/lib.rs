@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(reg.grant_types, vec![GrantType::ClientCredentials]);
         assert_eq!(reg.scopes, vec!["sms:send", "sms:read"]);
         assert!(!reg.require_pkce);
-        assert!(reg.allowed_audiences.is_empty());
+        assert_eq!(reg.allowed_audiences.len(), 0);
     }
 
     #[test]
@@ -447,7 +447,7 @@ mod tests {
         }))
         .expect("valid row parses");
 
-        assert!(reg.scopes.is_empty());
+        assert_eq!(reg.scopes.len(), 0);
     }
 
     #[test]

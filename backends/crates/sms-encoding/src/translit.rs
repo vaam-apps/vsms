@@ -157,14 +157,14 @@ mod tests {
         let body = "Votre code est 4821 (été, à jour) @ 12h30 - 50%";
         let (out, reps) = transliterate_to_gsm7(body);
         assert_eq!(out, body);
-        assert!(reps.is_empty());
+        assert_eq!(reps.len(), 0);
     }
 
     #[test]
     fn untransliterable_characters_are_left_alone() {
         let (out, reps) = transliterate_to_gsm7("20°C 好 🙂");
         assert_eq!(out, "20°C 好 🙂");
-        assert!(reps.is_empty());
+        assert_eq!(reps.len(), 0);
         assert!(!is_gsm7_str(&out));
     }
 
