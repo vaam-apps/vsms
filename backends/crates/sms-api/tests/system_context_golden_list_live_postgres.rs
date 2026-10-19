@@ -193,10 +193,10 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass,
     OperatorCode, OptOutSource, ProviderKind, SenderIdKind, SenderIdRegistrationStatus, app,
-    app_client, audit_anchor, client_assertion, consent_record, delivery_receipt, job, message,
-    oauth_client, oauth_signing_key, operator_prefix_rule, opt_out, provider, role, route,
-    route_validation, sender_id, sender_id_registration, user, user_credential, webhook_attempt,
-    webhook_endpoint,
+    app_client, audit_anchor, client_assertion, consent_record, delivery_receipt, federated_link,
+    job, message, oauth_client, oauth_signing_key, operator_prefix_rule, opt_out, provider, role,
+    route, route_validation, sender_id, sender_id_registration, sso_transaction, user,
+    user_credential, webhook_attempt, webhook_endpoint,
 };
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
@@ -255,6 +255,13 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// - `RouteValidation` — #64, new in this PR. `crate::jobs::grey_route_watch`'s
 ///   own `check_overdue_validations` (`backends/crates/sms-worker/src/jobs/grey_route_watch.rs`)
 ///   is its only reader, under `sys`, from the moment it was written.
+/// - `FederatedLink`, `SsoTransaction` — the SSO broker (`sms_auth::sso`).
+///   `store::resolve_user` reads `FederatedLink` by `(issuer, subject)` on
+///   every federated sign-in, and `store::consume_transaction`/`reap_expired`
+///   read `SsoTransaction` by `stateHash`/`expiresAt`, all under `sys`. Both
+///   models are `hasRole('system')` on every action from the moment they were
+///   written (see their `schema.cstack` comments) - listed so the live half of
+///   this guard proves it on day one, not found live.
 const SYSTEM_READABLE_MODELS: &[&str] = &[
     "App",
     "AppClient",
@@ -302,6 +309,10 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     // sys() from day one — not a "found live" instance either. See this
     // file's own "fifteenth instance" doc section above.
     "RouteValidation",
+    // The SSO broker: both new, both system-only on every action, both read
+    // under sys() by sms_auth::sso::store from day one.
+    "FederatedLink",
+    "SsoTransaction",
 ];
 
 /// Models with no internal `system`-role reader anywhere in this codebase
@@ -1122,6 +1133,65 @@ async fn seed_and_verify_user_credential(db: &Cratestack, user_id: &str) -> sche
     seeded
 }
 
+/// The SSO broker's `FederatedLink`: read by `(issuer, subject)` under `sys`
+/// on every federated sign-in. `hasRole('system')` is its entire policy.
+async fn seed_and_verify_federated_link(
+    db: &Cratestack,
+    suffix: &str,
+    user_id: &str,
+) -> schema::FederatedLink {
+    let seeded = db
+        .federated_link()
+        .create(schema::CreateFederatedLinkInput {
+            issuer: format!("https://idp.example.test/realms/{suffix}"),
+            subject: format!("upstream-sub-{suffix}"),
+            userId: user_id.to_owned(),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a FederatedLink");
+    assert_system_can_read_back!(
+        db,
+        federated_link,
+        federated_link,
+        seeded.id,
+        "FederatedLink",
+        "@@allow(\"read\", hasRole('system'))"
+    );
+    seeded
+}
+
+/// The SSO broker's `SsoTransaction`: created, read by `stateHash` and
+/// deleted under `sys`. `hasRole('system')` is its entire policy.
+async fn seed_and_verify_sso_transaction(
+    db: &Cratestack,
+    suffix: &str,
+    now: chrono::DateTime<Utc>,
+) -> schema::SsoTransaction {
+    let seeded = db
+        .sso_transaction()
+        .create(schema::CreateSsoTransactionInput {
+            stateHash: format!("{suffix:0>64}"),
+            nonce: "golden-list-nonce".to_owned(),
+            codeVerifier: "golden-list-verifier".to_owned(),
+            consoleRequest: "{}".to_owned(),
+            isRetry: false,
+            expiresAt: now + Duration::minutes(5),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding an SsoTransaction");
+    assert_system_can_read_back!(
+        db,
+        sso_transaction,
+        sso_transaction,
+        seeded.id,
+        "SsoTransaction",
+        "@@allow(\"read\", hasRole('system'))"
+    );
+    seeded
+}
+
 /// #68: `anchor_audit`'s own `latest_anchor`/`verify_chain_linkage`
 /// (`backends/crates/sms-worker/src/jobs/anchor_audit.rs`) read this model under
 /// `sys` — the first, and so far only, internal reader `AuditAnchor` has.
@@ -1274,6 +1344,8 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     let role = seed_and_verify_role(&db, &suffix).await;
     let user = seed_and_verify_user(&db, &suffix, &role.key).await;
     seed_and_verify_user_credential(&db, &user.id).await;
+    seed_and_verify_federated_link(&db, &suffix, &user.id).await;
+    seed_and_verify_sso_transaction(&db, &suffix, now).await;
     seed_and_verify_audit_anchor(&db, &suffix, now).await;
     seed_and_verify_consent_record(&db, &suffix, &app.id).await;
     seed_and_verify_route_validation(&db, &suffix, &route.id).await;

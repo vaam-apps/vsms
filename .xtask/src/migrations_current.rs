@@ -46,6 +46,21 @@ const REWRITTEN_BY_LATER: [(&str, &str); 2] = [
     ),
 ];
 
+/// Tables that exist in `schemas/vsms.cstack` but whose DDL ships in a
+/// forward migration instead of `0001_init`, for the same reason
+/// [`REWRITTEN_BY_LATER`] exists: `0001_init` has been applied to deployed
+/// databases and `sms-migrate` records migrations by name, so a regenerated
+/// `0001_init` would never create them there.
+///
+/// Every generator statement that names one of these tables is *removed*
+/// from the fresh output before the comparison with `0001_init`, and must
+/// appear verbatim in the later migration's `up.sql` (or, for the `DROP`s,
+/// `down.sql`) - so the forward migration cannot drift from the schema
+/// either. Delete an entry, and its statements, when the migrations are
+/// squashed into a regenerated `0001_init`.
+const ADDED_BY_LATER_DIR: &str = "backends/migrations/postgres/0005_sso_federation";
+const ADDED_BY_LATER_TABLES: [&str; 2] = ["federated_links", "sso_transactions"];
+
 /// Removes its temp directory on drop, on every exit path — success,
 /// error-return, or an early `?` — matching the bash version's own
 /// `trap 'rm -rf "$out"' EXIT`.
@@ -72,6 +87,69 @@ impl Drop for ScratchDir {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// True when `block` (one blank-line-separated chunk of generator output) is
+/// DDL about one of [`ADDED_BY_LATER_TABLES`]. Matches the table name as a
+/// whole word (or as the prefix of an index/constraint name built from it)
+/// in a non-comment line.
+fn names_added_table(block: &str) -> bool {
+    block
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("--"))
+        .any(|line| {
+            ADDED_BY_LATER_TABLES.iter().any(|table| {
+                line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                    .any(|word| word == *table || word.starts_with(&format!("{table}_")))
+            })
+        })
+}
+
+/// Splits `fresh` into the part `0001_init` must equal and the blocks the
+/// forward migration must carry. The generator's header comment lists
+/// `dbgenerated()` columns as `--   - table.column` lines; those for an
+/// added table go too.
+fn split_added(fresh: &str) -> (String, Vec<String>) {
+    let mut kept = Vec::new();
+    let mut moved = Vec::new();
+    for block in fresh.split("\n\n") {
+        if names_added_table(block) {
+            moved.push(block.trim_end_matches('\n').to_owned());
+            continue;
+        }
+        let filtered: Vec<&str> = block
+            .lines()
+            .filter(|line| {
+                let trimmed = line.trim_start();
+                !(trimmed.starts_with("--   - ")
+                    && ADDED_BY_LATER_TABLES
+                        .iter()
+                        .any(|table| trimmed.starts_with(&format!("--   - {table}."))))
+            })
+            .collect();
+        kept.push(filtered.join("\n"));
+    }
+    (kept.join("\n\n"), moved)
+}
+
+/// Removes the statements about [`ADDED_BY_LATER_TABLES`] from `fresh` (the
+/// generator's `f`.sql) and checks each is present verbatim in the forward
+/// migration's own `f`.sql.
+fn strip_added_tables(root: &Path, f: &str, fresh: &str) -> Result<String, String> {
+    let carrier = root.join(ADDED_BY_LATER_DIR).join(format!("{f}.sql"));
+    let carrier_text =
+        fs::read_to_string(&carrier).map_err(|e| format!("{}: {e}", carrier.display()))?;
+    let (without_added, moved) = split_added(fresh);
+    for block in &moved {
+        if !carrier_text.contains(block.as_str()) {
+            return Err(format!(
+                "migrations-current: {} does not contain this statement the generator emits \
+                 for a table it carries:\n{block}",
+                carrier.display()
+            ));
+        }
+    }
+    Ok(without_added)
 }
 
 pub fn run(root: &Path) -> Result<(), String> {
@@ -148,6 +226,7 @@ pub fn run(root: &Path) -> Result<(), String> {
             .map_err(|e| format!("{}: {e}", committed_path.display()))?;
         let mut fresh = fs::read_to_string(&regenerated_path)
             .map_err(|e| format!("{}: {e}", regenerated_path.display()))?;
+        fresh = strip_added_tables(root, f, &fresh)?;
         if f == "up" {
             let later =
                 fs::read_to_string(root.join(LATER_UP)).map_err(|e| format!("{LATER_UP}: {e}"))?;
