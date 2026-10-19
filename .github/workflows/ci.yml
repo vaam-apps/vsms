@@ -191,7 +191,7 @@ jobs:
       # "Bootstrap SQL matches the design doc" (`cargo xtask
       # bootstrap-sql-check`, which replaced the old
       # `python3 ci/gen-bootstrap-sql.py ... && diff -u ...` pair earlier).
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # `stable` branch head, 2026-09-19
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # `stable` branch head, 2026-10-16
 
       - name: Install psql
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
@@ -241,7 +241,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # `stable` branch head, 2026-09-19
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # `stable` branch head, 2026-10-16
 
       # Matched to the pin in root Cargo.toml, read through
       # `cargo xtask cratestack-pin` — the single place that parses
@@ -312,7 +312,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # `stable` branch head, 2026-09-19
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # `stable` branch head, 2026-10-16
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
@@ -463,7 +463,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # `stable` branch head, 2026-09-19
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # `stable` branch head, 2026-10-16
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # sms-test-support shells out to `psql` to apply migrations — not
@@ -601,7 +601,7 @@ jobs:
       # it keeps one definition of what generation and the route gate actually
       # run: inlining the recipes here would duplicate them and let CI drift
       # from what a developer runs locally.
-      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: just
       # `client-check` depends on `client-gen`, so this both generates the
@@ -708,7 +708,7 @@ jobs:
       # This job called plain bash/Python scripts before the `xtask` PR and
       # needed no Rust toolchain at all — now every check here is
       # `cargo xtask <check>`, so this step is new.
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # `stable` branch head, 2026-09-19
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # `stable` branch head, 2026-10-16
 
       # R1: all data access goes through CrateStack delegates.
       - run: cargo xtask no-raw-sqlx

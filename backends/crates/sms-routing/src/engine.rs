@@ -399,7 +399,7 @@ mod tests {
         let providers = HashMap::new();
         let decision = select_route(&[], &providers, &candidate(), &ExcludedRouteIds::new(), 0.5);
         assert!(decision.winner.is_none());
-        assert!(decision.evaluations.is_empty());
+        assert_eq!(decision.evaluations.len(), 0);
     }
 
     #[test]

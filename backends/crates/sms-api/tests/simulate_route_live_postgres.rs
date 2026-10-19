@@ -361,7 +361,7 @@ async fn zero_configured_routes_is_reported_distinctly_from_zero_eligible_routes
     .expect("simulateRoute must succeed against an empty Route table");
 
     assert!(result.noRoutesConfigured);
-    assert!(result.evaluations.is_empty());
+    assert_eq!(result.evaluations.len(), 0);
     assert!(result.winner.is_none());
 }
 

@@ -57,10 +57,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# Read-only by default; the two jobs that publish ask for what they need at
+# job level (zizmor `excessive-permissions`: a write scope granted to the
+# whole workflow is granted to every job, including the ones that only read).
 permissions:
   contents: read
-  packages: write
-  id-token: write # required for npm provenance publishing
 
 jobs:
   # One computation, reused by every image build and artifact publish job
@@ -74,7 +75,9 @@ jobs:
       app_version: ${{ steps.v.outputs.app_version }}
       is_tag: ${{ steps.v.outputs.is_tag }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # A tag names the version every artifact below ships as: images get
       # the tag verbatim, crates.io and npm get whatever the manifests say.
       # Nothing else compares the two, so a tag pushed against manifests
@@ -131,6 +134,9 @@ jobs:
           fi
 
   build-and-push:
+    permissions:
+      contents: read
+      packages: write
     name: build and push ${{ matrix.image }}
     needs: version
     runs-on: ubuntu-latest
@@ -207,12 +213,14 @@ jobs:
             repo: vsms/demo-app
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -223,7 +231,7 @@ jobs:
       # include_server_schema!/migrate's own copy of schema/migrations,
       # the pnpm workspace for admin).
       - name: Build and push ${{ matrix.image }}
-        uses: docker/build-push-action@v7
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -243,13 +251,18 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
 
   publish-chart:
+    permissions:
+      contents: read
+      packages: write
     name: package and push the vsms Helm chart
     needs: [version, build-and-push]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.16.4
 
@@ -260,17 +273,20 @@ jobs:
           helm dependency build deploy/charts/vsms
 
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Package the chart
+        env:
+          CHART_VERSION: ${{ needs.version.outputs.chart_version }}
+          APP_VERSION: ${{ needs.version.outputs.app_version }}
         run: |
           helm package deploy/charts/vsms \
-            --version "${{ needs.version.outputs.chart_version }}" \
-            --app-version "${{ needs.version.outputs.app_version }}" \
+            --version "$CHART_VERSION" \
+            --app-version "$APP_VERSION" \
             --destination dist/
 
       - name: Push to GHCR as an OCI artifact
@@ -282,8 +298,10 @@ jobs:
     needs: version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # `stable` branch head, 2026-10-16
 
       - name: Verify vendored schema is up to date
         run: cargo xtask sdk-schema-check
@@ -303,20 +321,36 @@ jobs:
         # failing the step, so the log showed a blank value instead of an
         # error naming the missing secret. Keep the two names identical;
         # the indirection bought nothing and cost a release.
+        #
+        # zizmor `use-trusted-publishing` is ignored here, knowingly: crates.io
+        # Trusted Publishing needs the crate's publisher configured on
+        # crates.io (an owner action, not a workflow edit) and the
+        # `rust-lang/crates-io-auth-action` exchange in place of this token.
+        # The npm SDK below already publishes that way (OIDC, no token); this
+        # is the remaining token-based publish, to move once crates.io is set up.
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish
+        run: cargo publish # zizmor: ignore[use-trusted-publishing]
 
   publish-node-sdk:
+    permissions:
+      contents: read
+      id-token: write # npm Trusted Publishing (OIDC) and --provenance
     name: publish @vaam-apps/vsms-node to npm
     needs: version
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26'
           registry-url: 'https://registry.npmjs.org'
+          # Nothing here restores a package-manager cache: this job publishes, and
+          # a cache another run could have written is an input to the artifact
+          # (zizmor `cache-poisoning`).
+          package-manager-cache: false
 
       - name: Enable corepack (pins pnpm)
         run: corepack enable
