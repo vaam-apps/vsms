@@ -131,6 +131,44 @@ and `role: "owner"` — the audit trail can now say *who*. A second user
 provisioned with `auditor` (which lacks `provider:update`) gets a real,
 live `Forbidden` on the identical edit.
 
+### 1.4 Should humans sign in with a local password or through an external identity provider? (settled 2026-10-19)
+
+**Answered: both — federate to the staff Keycloak realm, brokered by the
+gateway, and keep local passwords as the break-glass path.**
+
+#194 chose local Argon2id passwords and recorded federation as "ruled out for
+now, not closed", for three reasons: it needed a second OIDC client
+implementation, there was no identity provider to point at, and there was
+nothing to prove it against under this repo's fake-for-every-external-
+dependency rule. The owner decided (2026-10-19) to build it, and the three
+reasons no longer hold (`auth.verif.fyi`'s `vaam-staff` realm exists;
+`backends/crates/sms-fake-oidc` is the fake; a real Keycloak container was
+driven end to end). The decisions, each recorded with its reasoning in
+`docs/architecture.md` §4.3 and operated per `docs/runbooks/sso.adoc`:
+
+- **The gateway stays the console's OP.** Only "who is this human?" is
+  federated; every API token is still vsms's own, so `GatewayAuth` and every
+  policy are unchanged.
+- **Provisioning is just-in-time, gated by a group**, linked by `(iss, sub)`
+  and **never by email**.
+- **Roles stay local.** No claim sets a role; a JIT user gets one configured
+  least-privilege role (`support`, the built-in with the fewest permissions).
+- **A second factor is required, by claim, failing closed** — and Keycloak's
+  `acr` cannot express it (measured), so the production rule is
+  `amr = ["otp"]`.
+- **Password sign-in stays, unchanged.**
+
+**What this does not settle** — still open, and worth a decision before SSO is
+relied on for more than the current handful of staff:
+
+- Whether a Keycloak group is an acceptable stand-in for "may see every app's
+  message metadata". Any signed-in human, whatever their role, can list all
+  apps' messages (#211, §1.2 above), so group membership is that permission
+  in practice. Narrowing it is a schema-policy question, not an SSO one.
+- Whether vsms sessions should end when the Keycloak session does
+  (back-channel logout is not built; deactivating the `User` ends access
+  within a minute, and a console session lasts at most eight hours).
+
 ### 1.3 Where is this hosted, and does the 90-day decision hold? (settled, recorded for context)
 
 Both parts are **answered** and listed here only so a future reader does not
@@ -345,6 +383,12 @@ paragraph asks for before writing code: how does a caller *prove* they are
 the account holder before a new secret is issued to them — email-verified
 token, a break-glass CLI command run by someone with database access, or
 something else? Nobody has decided.
+
+**Single sign-on (§1.4) narrows this without closing it.** A user provisioned
+through Keycloak has no vsms password to lose: recovery is Keycloak's own, and
+`deactivate the User` is the revocation. The gap above remains exactly as
+described for the local, password-holding accounts — which, by design, are the
+break-glass path and so the ones that matter most when everything else is down.
 
 ---
 

@@ -136,7 +136,7 @@ Three tiers and one database. The online tier is stateless and scales freely; ev
 | Node         | Crate                                                    | Why it's separate                                                                                                                |
 | ------------ | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | `sms-api`    | `cratestack-pg` + Axum                                   | Stateless, scale to N. Holds the CrateStack router, the procedures, and the event subscribers.                                   |
-| `sms-auth`   | `authkestra-op` + `authkestra-axum` + your `ClientStore` | Different blast radius and release cadence. Isolating it behind JWKS is what makes swapping in Keycloak/ZITADEL a config change. |
+| `sms-auth`   | `authkestra-op` + `authkestra-axum` + your `ClientStore` | Different blast radius and release cadence. Isolating it behind JWKS is what makes swapping in Keycloak/ZITADEL a config change. Since the SSO work it is also an OIDC *relying party* of the staff Keycloak realm for the one step "who is this human?" — see §4.3. |
 | `sms-worker` | plain tokio                                              | **All background processing, one binary.** Roles are selected at startup; singleton roles self-elect. §7.                        |
 | `admin`      | Next.js 15+ App Router                                   | —                                                                                                                                |
 
@@ -910,6 +910,11 @@ model Role {
 ```
 
 `User.role` references `Role.key`, not `Role.id` — both `String`, so the type rule holds, and it keeps the JWT-facing identifier readable in the database. `Role.permissions` is a delimited `String` rather than a join table: the set is small, it's read on every token issuance, and `unpack()` produces exactly the array that goes into the `perms` claim. A join table would cost a query on the login hot path and buy nothing.
+
+**`FederatedLink` and `SsoTransaction` (single sign-on, §4.3)** — two models, both `hasRole('system')` on every action they have, shipped as forward migration `0005_sso_federation` (not a regenerated `0001_init`: that file has been applied to deployed databases and `sms-migrate` records migrations by name; `cargo xtask migrations-current` knows the two tables are carried by `0005`, and fails if `0005`'s copy of the generator's statements drifts from `schemas/vsms.cstack`).
+
+- `FederatedLink(issuer, subject, userId)` with a hand-written `UNIQUE (issuer, subject)` — the identity key. It is **not** `User.subject`: that column is vsms's own OP subject (the row's `id`, written by `provision_user.rs` and the JIT path), while an upstream `sub` is unique only within its issuer and chosen by someone else; putting it in `User.subject` would give one column two meanings and let an upstream-chosen string collide with a local id-shaped subject. Never `email`. `@@audit`; no `update` or `delete` action (unlinking is deliberately not an operation yet).
+- `SsoTransaction(stateHash, nonce, codeVerifier, consoleRequest, isRetry, expiresAt)` — one in-flight upstream sign-in. `stateHash` is the SHA-256 of the upstream `state` (`@unique`), so a copy of the table is not a set of valid callback URLs; the row is consumed by `delete` (a second concurrent delete of the same row affects nothing, which is the single-use guarantee); a five-minute TTL; reaped by a task in `sms-gateway serve`. Postgres is the only coordination mechanism, so this is a table and not a cookie or process memory.
 
 ### 2.9 Procedures
 
@@ -1821,7 +1826,7 @@ The `sys` context is a `system`-role principal, which is the only thing `OauthCl
 
 ### 4.3 Human callers
 
-Authorization code + PKCE against `sms-auth`, single OIDC client (`sms-console`). Tokens in httpOnly cookies via Next.js route handlers acting as a BFF — never `localStorage`, never an access token in a client component.
+Authorization code + PKCE against `sms-auth`, single OIDC client (`sms-console`). Who the human *is* is established either by a local password (`POST /login`, the break-glass path) or by the staff Keycloak realm (`GET /login/sso/start`, brokered — see "Federated sign-in" below); both end in the same `Identity` and the same `handle_authorize`. Tokens in httpOnly cookies via Next.js route handlers acting as a BFF — never `localStorage`, never an access token in a client component.
 
 Both realms land in the same `CratestackContext`. `AuthProvider` is an RPITIT trait (not `#[async_trait]`) requiring `Clone + Send + Sync + 'static`:
 
@@ -1858,7 +1863,74 @@ The discriminator is worth noting: a client_credentials token has `identity: Non
 - **`handle_authorization_code` stamps no role-bearing `extra` claims.** At the vendored 0.3.3 it called plain `issue_user_token`; at 0.8.0 it calls `issue_user_token_with_extra`, but the only `extra` it ever populates is the DPoP `cnf` binding (`merge_dpop_cnf`) — never `kind`, `role`, or `perms`. So a human access token carries only the standard OIDC set plus `identity` (and, for a DPoP-bound client, `cnf`). The discriminator above still holds (`claims.identity.is_some()` reliably means "human"), but role/perms cannot be read off the token. `sms_api::auth::GatewayAuth`'s real human path resolves them with a per-request, TTL-cached `User`/`Role` lookup instead (`backends/crates/sms-api/src/auth.rs`'s `authenticate_human`) — a deliberate, documented departure from "baked in at issuance," not an oversight, and arguably better: a role change or deactivation now takes effect within one cache TTL (60s) rather than the access token's full 15-minute lifetime.
 - **A human token's `aud` is real** (`Some(client_id)`, i.e. `sms-console`) **and must be validated** — unlike a service-account token's self-referential `aud == sub == client_id`, which is why §4.2's own "disable audience validation" guidance exists. `GatewayAuth`'s single shared `jsonwebtoken::Validation` still carries `validate_aud = false` (it decodes both realms), so the human-only audience check is a manual, post-decode comparison in `authenticate_human` against a fixed `human_client_id` — not the library's own validation path.
 
-`sms_auth::login` (`backends/crates/sms-auth/src/login.rs`) is the piece this section never specified: what actually authenticates a human before `handle_authorize` can run. §4.3's own prose was silent on the mechanism; #194 settled it as local Argon2id password authentication against a new `UserCredential` model (deliberately *not* a field on `User` — see that model's own `schema.cstack` comment for why: §2.0's "no field-level read masking" means a password hash living on `User` would come back verbatim from `GET /users/{id}`), not a federated external IdP. See `sms_auth::login`'s own module doc for the full weighing of that decision, and the PR that landed #194 for the Risk Assessment this new password-storage surface deserves.
+`sms_auth::login` (`backends/crates/sms-auth/src/login.rs`) is the piece this section never specified: what actually authenticates a human before `handle_authorize` can run. §4.3's own prose was silent on the mechanism; #194 settled it as local Argon2id password authentication against a new `UserCredential` model (deliberately *not* a field on `User` — see that model's own `schema.cstack` comment for why: §2.0's "no field-level read masking" means a password hash living on `User` would come back verbatim from `GET /users/{id}`), not a federated external IdP — *at the time*; federated sign-in was added afterwards as a second path, see "Federated sign-in" below. See `sms_auth::login`'s own module doc for the full weighing of that decision, and the PR that landed #194 for the Risk Assessment this new password-storage surface deserves.
+
+#### Federated sign-in (Keycloak) — what is built, and why it is a broker
+
+**Chosen 2026-10-19: `sms-gateway` stays the console's OpenID Provider and becomes a relying party of the staff Keycloak realm for the one step the OP could not do itself.** The paragraph above records why #194 chose local passwords over federation ("a second, equally security-sensitive OIDC *client* implementation… and an actual external IdP this deployment can point at (none decided)… nothing in this sandbox to prove it against"). All three conditions have since changed: an IdP exists (`auth.verif.fyi`'s `vaam-staff` realm), `sms-fake-oidc` is the fake that convention asks for, and the real-Keycloak check below is the proof. Password sign-in is **not** removed — it is the break-glass path and its code and tests are untouched.
+
+The alternative — point the console (and `GatewayAuth`) straight at Keycloak — was rejected because it would replace the OP that every API token comes from: `authenticate_human`, the `User`/`Role` per-request lookup, the `aud` check and every `@@allow` policy are written against vsms's own tokens, and Keycloak's access token carries no vsms role and cannot be made to. Brokering changes nothing downstream of the `Identity`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Browser
+    participant C as Console (admin)
+    participant G as sms-gateway (OP + RP)
+    participant K as Keycloak
+    B->>C: GET /api/auth/sso
+    C-->>B: 302 gateway /login/sso/start?client_id,redirect_uri,state,nonce,code_challenge (+ vsms_oidc_txn cookie)
+    B->>G: GET /login/sso/start
+    Note over G: dry-run handle_authorize (client, exact redirect_uri, PKCE), then persist SsoTransaction
+    G-->>B: 302 Keycloak /authorize (code, S256, state, nonce)
+    B->>K: sign in (password, OTP)
+    K-->>B: 302 gateway /login/sso/callback?code&state
+    B->>G: GET /login/sso/callback
+    Note over G: consume transaction, exchange code, verify id_token, group + MFA rules, link or JIT user
+    alt accepted
+        G-->>B: 302 console /api/auth/callback?code&state
+        B->>C: GET /api/auth/callback (unchanged)
+        C->>G: POST /token (code_verifier)
+        G-->>C: access_token, refresh_token, id_token
+    else refused
+        G-->>B: 302 console /api/auth/callback?error=access_denied&state
+        C-->>B: 302 /login?error=sso_failed
+    end
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Started: GET /login/sso/start (request validated, row written)
+    Started --> Refused: console request invalid (400, nothing stored)
+    Started --> AtIdP: 302 to Keycloak
+    AtIdP --> Consumed: callback with a live state (row deleted)
+    AtIdP --> [*]: callback with unknown/replayed/expired state (400)
+    AtIdP --> [*]: no callback within 5 min (reaped)
+    Consumed --> Verified: code exchanged, id_token valid
+    Consumed --> Refused: upstream error, bad token, not in group (access_denied)
+    Verified --> Retrying: only the MFA claim is missing, first attempt
+    Retrying --> AtIdP: new transaction, prompt=login, isRetry
+    Verified --> Refused: MFA claim missing on the retry (never a second retry)
+    Verified --> SignedIn: group + MFA ok, link found or JIT created
+    Verified --> Refused: linked user inactive/deleted, email already local
+    SignedIn --> [*]: handle_authorize → console code
+    Refused --> [*]: generic access_denied redirect
+```
+
+Citations (re-verifiable): the routes are `backends/apps/sms-gateway/src/sso.rs` (`start_handler`, `callback_handler`, `issue_console_code`); the broker is `backends/crates/sms-auth/src/sso/` (`provider.rs` discovery/JWKS/exchange, `id_token.rs` verification, `policy.rs` the two rules and the retry verdict, `store.rs` transactions and JIT, `flow.rs` the order of checks); the fake is `backends/crates/sms-fake-oidc`.
+
+**The decisions** (owner, 2026-10-19):
+
+- **Provisioning is just-in-time, gated by group.** The first successful sign-in of a user in `--sso-required-group` creates the `User` if no `FederatedLink` for `(issuer, sub)` exists; `User` and link are written in **one serializable transaction**, and `lastLoginAt` is stamped. **Linking is by `(iss, sub)` only — never by email.** Email and name are display data: used once to create the account and never re-read. A Keycloak identity whose email a local account already holds is *refused* (`email_in_use`), not merged — that merge is exactly the account-takeover shape federation invites. Two concurrent first sign-ins of one identity produce one user (a live test found the race: the loser hits `users_email_key` before the link's unique index, and re-reads the link).
+- **Roles stay local.** No claim sets or changes a role. A JIT user gets `--sso-jit-role`, default **`support`**: of the six built-in roles (§5.2, as seeded in `0002_bootstrap`) it has the fewest permissions (3: `sms:read`, `optout:manage`, `delivery:read`, against `developer` 4, `auditor` 9, `operator` 12, `admin` 19, `owner` 24) and the fewest `hasRole(...)` clauses in the schema (3, against `developer` 7, `auditor` 11, `operator` 24). `auditor` is the only purely read-only role but reads far more (every `*:read` plus `audit:read`); `support`'s one write is `optout:manage`, a deliberate first-line action. The value is configuration, and `system`/`app` are refused. **What "least privilege" does not buy:** `Message`/`DeliveryReceipt` `@@allow` admits `auth().kind == "user"` unscoped by app (#211), so *any* signed-in human — `support` included — sees every app's messages in the console. That is existing behaviour, not something SSO adds, but it means group membership in the realm is effectively "may see all message metadata".
+- **MFA by claim, fail closed.** Accepted only if `acr ∈ accepted_acr` **or** `amr ∩ accepted_amr ≠ ∅`; an empty list matches nothing; both empty is a startup failure. **Measured, because the obvious reading is wrong** (`quay.io/keycloak/keycloak:26.6.1`, 2026-10-19): a password + OTP sign-in is `acr "1"` and `amr []` (empty — even with the `oidc-amr-mapper`); `amr` is populated only after the browser flow's executions get an authenticator config with `default.reference.value` (`pwd`, `otp`); a repeat sign-in from Keycloak's SSO cookie is `acr "0"` with `amr` still `["pwd","otp"]`. So `acr "1"`/`"0"` prove nothing about a second factor, and the production setting is `accepted_amr = ["otp"]`, `accepted_acr = []` — which is why the validation allows one list to be empty and a test pins `acr "1"` + `amr ["pwd"]` as refused.
+- **One retry for the first-login case.** A new user's OTP is enrolled by Keycloak's `CONFIGURE_TOTP` *required action*, so that first token has `amr ["pwd"]`, and every later sign-in completed from the same SSO session is `["pwd"]` too (measured). When **the only reason for refusal is the MFA claim** (everything else valid, group included) **and the transaction is not itself a retry**, the callback starts a fresh transaction carrying the *same* console request with new `state`/`nonce`/PKCE and `prompt=login`; Keycloak re-runs the forms and the token then has `otp`. A retry that still fails is refused (at most one retry, no loop); any other failure is refused immediately. Measured end to end: a user whose first login enrols OTP is signed in after exactly one retry (two authorization requests, the second with `prompt=login`); a user with no second factor at all is refused after exactly two.
+- **Validation of the upstream token, in order:** header `alg` on the allow-list (RSA and ECDSA only — `none`, `HS*` and `EdDSA` refused; `none` cannot even be parsed), a `kid` present, the JWKS key with that `kid` (an unknown `kid` earns one refetch, no more often than `--sso-jwks-min-refresh-secs`) that is the right family and states no conflicting `use`/`alg`, the signature, `exp`/`nbf` with 60 s leeway, `iss` equal byte for byte to the configured issuer (discovery's `issuer` is held to the same standard before anything is fetched from it), `aud` containing the client id, `azp` equal when present and required when `aud` has several members, `iat` present and not in the future, `sub` 1–255 characters, and `nonce` equal in constant time.
+- **Refusals are generic to the browser, precise in the log.** Every refusal is one redirect to the console's own `redirect_uri` with `error=access_denied` (operational failures: `temporarily_unavailable`); the reason is a fixed label in a `WARN` line and never a token, code, secret or claim value. An unknown/replayed/expired `state` has nowhere trustworthy to redirect and gets a plain `400`.
+- **How the console knows SSO exists:** the OP's discovery document gains a `vsms_sso_login_endpoint` member (an OIDC-permitted extension) exactly when SSO is configured. The gateway is the one authority; there is no console env var to drift out of step with it, and the URL is the gateway's *public* one (the console may reach the issuer over an internal address, but the browser needs a public one). Chosen over a separate endpoint (a second request for no extra information) and over a console env var (a second source of truth).
+- **Not a feature flag:** SSO is active exactly when its settings are present; invalid or partial settings refuse to start.
+
+Operator setup, the Keycloak client and the `amr` configuration, and the log-reason table: `docs/runbooks/sso.adoc`.
 
 ### 4.4 Outbound webhook signing
 

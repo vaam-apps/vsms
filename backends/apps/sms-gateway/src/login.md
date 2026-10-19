@@ -11,7 +11,10 @@ of this route.
 established `authkestra_engine::auth::state::Identity` before it will
 issue an authorization code — it has no login form of its own, and
 §4.3/#194 chose local password auth over federating to an external `IdP`
-(see `sms_auth::login`'s own module doc for the full reasoning). So this
+(see `sms_auth::login`'s own module doc for the full reasoning) — and
+federation was added afterwards as a *second* way to establish the
+`Identity` (`sso.rs` in this directory, `sms_auth::sso`), not a
+replacement: this route stays as the break-glass path. So this
 route collapses what a spec-shaped OIDC deployment would split across a
 `GET /authorize` redirect and a separately-hosted login page into one
 step: the caller (`admin`'s own `/login` page and `/api/auth/login`
