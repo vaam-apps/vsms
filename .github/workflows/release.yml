@@ -6,14 +6,15 @@ name: release
 # Release Triggers:
 #   - push v*.*.*        -> Production release:
 #                           • Docker images: :<tag> and :latest
+#                             (every image a linux/amd64 + linux/arm64 manifest list)
 #                           • Helm chart: OCI semver <tag#v>
 #                           • Rust SDK: cargo publish to crates.io
 #                           • Node.js SDK: pnpm publish with provenance to npm
 #   - push to main       -> Staging/Continuous delivery:
-#                           • Docker images: :main and :sha-<12 hex>
+#                           • Docker images: :main and :sha-<12 hex> (amd64 + arm64)
 #                           • Helm chart: 0.0.0-main.<sha>
 #   - workflow_dispatch  -> Manual smoke test:
-#                           • Docker images: :branch-<slug> and :sha-<12 hex>
+#                           • Docker images: :branch-<slug> and :sha-<12 hex> (amd64 + arm64)
 #                           • Helm chart: 0.0.0-dev.<sha>
 #                           • SDK dry runs on non-tag triggers
 
@@ -133,122 +134,27 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           fi
 
+  # Every image, for linux/amd64 AND linux/arm64 — see images.yml's own header
+  # for how (native runners, no emulation) and for what is asserted. Each
+  # architecture is pushed by digest, then `images.yml`'s `merge` job applies
+  # the two tags below to a manifest list holding both and fails this run if
+  # any tag is not exactly linux/amd64 + linux/arm64.
+  #
+  # This job used to be a single-architecture `build-and-push` matrix on
+  # `ubuntu-latest`; every tag through v0.5.0 is a linux/amd64 image. The
+  # first release cut after this change is the first with an arm64 image.
   build-and-push:
+    name: build and push every image (amd64 + arm64)
+    needs: version
     permissions:
       contents: read
       packages: write
-    name: build and push ${{ matrix.image }}
-    needs: version
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Four production images. `repo` is flat (`vsms-<image>`) — these
-          # published under that shape at `v0.1.0`, and an image-hygiene PR
-          # that later introduced a nested `vsms/<name>` convention for
-          # non-production images (below) deliberately left these four
-          # unrenamed: they're already referenced by `compose.demo.yaml`,
-          # the Helm chart, and `deploy/`, so renaming them is a separate
-          # decision with real blast radius nobody has made yet.
-          - image: sms-gateway
-            dockerfile: backends/apps/sms-gateway/Dockerfile
-            repo: vsms-sms-gateway
-          - image: sms-worker
-            dockerfile: backends/apps/sms-worker/Dockerfile
-            repo: vsms-sms-worker
-          - image: admin
-            dockerfile: frontends/apps/admin/Dockerfile
-            repo: vsms-admin
-          # #145: deploy/charts/vsms's migrate Job (a pre-install/
-          # pre-upgrade Helm hook — see that chart's own values.yaml)
-          # needs a prebuilt image to pull from a registry; Kubernetes has
-          # no `build:` context the way docker-compose.yml does. This
-          # image already existed (deploy/migrate.Dockerfile, from #143;
-          # rebuilt as the small Rust binary backends/apps/sms-migrate later — see
-          # AGENTS.md) but was never published anywhere before #145 — the
-          # compose path always builds it locally from source.
-          - image: migrate
-            dockerfile: backends/apps/sms-migrate/Dockerfile
-            repo: vsms-migrate
-          # Two non-production images, both nested under `vsms/<name>`
-          # (`repo:`, not `vsms-<name>`) — the convention this workflow now
-          # follows for anything that isn't a real production artifact, so
-          # a future fake MTN (or any other dev/demo tool) lands under the
-          # same `vsms/` namespace rather than growing a fifth flat
-          # `vsms-<name>` repo. compose-demo-ghcr: the GHCR-only showcase
-          # stack (compose.demo.yaml) has no `build:` stanza for anything,
-          # including the provider fake that gets a message past `routed`
-          # to a visible `delivered` — see that file's own header comment.
-          # This image is a development/demo tool, never a production
-          # artifact (backends/apps/sms-fake-orange/src/main.rs's own module doc,
-          # repeated at WARN on every start), but it needs a real published
-          # image the same as the four production images above the moment
-          # any compose stack stops building from source.
-          - image: sms-fake-orange
-            dockerfile: backends/apps/sms-fake-orange/Dockerfile
-            repo: vsms/sms-fake-orange
-          # Demo-only fixture-seeding logic (App/SenderId) that used to be
-          # compiled into the production sms-gateway image
-          # (`Command::SeedDemoApp`) — moved into its own binary/crate/image
-          # by the same image-hygiene PR that introduced this nested
-          # naming convention, so no demo-only code ships inside a
-          # production image. See backends/apps/vsms-demo-seed/src/main.rs's own
-          # module doc.
-          - image: demo
-            dockerfile: backends/apps/vsms-demo-seed/Dockerfile
-            repo: vsms/demo
-          # The demo showcase's own evaluator (`compose.dev.yaml`'s and
-          # `compose.demo.yaml`'s `demo-app` service — see
-          # `examples/node/demo-app`'s own README/module doc). Nested
-          # under `vsms/`, same reasoning as `sms-fake-orange`/`demo`
-          # above: a dev/demo tool, never a production artifact.
-          # `compose.demo.yaml`'s own `demo-app` service still builds
-          # from source (`build:`, its own flagged exception to that
-          # file's "every image pulled from GHCR" rule) until the first
-          # tag that includes this matrix entry publishes an image for
-          # it to switch to — see that service's own comment.
-          - image: demo-app
-            dockerfile: examples/node/demo-app/Dockerfile
-            repo: vsms/demo-app
-
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Log in to GHCR
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # Build context is the repo root for every image — see each
-      # Dockerfile's own header comment for why (schema/ for
-      # include_server_schema!/migrate's own copy of schema/migrations,
-      # the pnpm workspace for admin).
-      - name: Build and push ${{ matrix.image }}
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: true
-          # `matrix.repo`, not a hardcoded `vsms-${{ matrix.image }}` — see
-          # the matrix's own comments above for which images are flat
-          # (production, `vsms-<name>`) vs nested (dev/demo,
-          # `vsms/<name>`).
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.repo }}:${{ needs.version.outputs.tag_primary }}
-            ghcr.io/${{ github.repository_owner }}/${{ matrix.repo }}:${{ needs.version.outputs.tag_secondary }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ needs.version.outputs.app_version }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+    uses: ./.github/workflows/images.yml
+    with:
+      push: true
+      tag_primary: ${{ needs.version.outputs.tag_primary }}
+      tag_secondary: ${{ needs.version.outputs.tag_secondary }}
+      app_version: ${{ needs.version.outputs.app_version }}
 
   publish-chart:
     permissions:

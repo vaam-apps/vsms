@@ -69,6 +69,7 @@ jobs:
       schema: ${{ steps.filter.outputs.schema }}
       deny: ${{ steps.filter.outputs.deny }}
       diagrams: ${{ steps.filter.outputs.diagrams }}
+      images: ${{ steps.filter.outputs.images }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -154,6 +155,47 @@ jobs:
               - 'docs/roadmap.md'
               - 'ci/mermaid-parse/**'
               - '.github/workflows/ci.yml'
+            # Everything a published image's build reads: every Dockerfile's
+            # build context is the repository root, so this is the union of
+            # the Rust workspace, the pnpm workspace and the demo app, plus
+            # the build definition itself (images.yml, and release.yml, whose
+            # only image-related content is the call into images.yml).
+            images:
+              - 'backends/**'
+              - 'frontends/**'
+              - 'sdks/**'
+              - 'schemas/**'
+              - 'examples/node/demo-app/**'
+              - '**/Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'turbo.json'
+              - '.npmrc'
+              - '.nvmrc'
+              - '.dockerignore'
+              - 'ci/assert-image.sh'
+              - 'ci/assert-manifest.sh'
+              - '.github/workflows/images.yml'
+              - '.github/workflows/release.yml'
+              - '.github/workflows/ci.yml'
+
+  # Every published image, built for BOTH linux/amd64 and linux/arm64 on
+  # native runners, asserted (ELF architecture of each binary, numeric
+  # non-root USER) and thrown away. release.yml calls the same workflow with
+  # `push: true`, so this is the PR-time proof of the exact build a release
+  # will publish — everything except the push and the manifest-list merge.
+  images:
+    name: images (linux/amd64 + linux/arm64)
+    needs: changes
+    if: needs.changes.outputs.images == 'true'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/images.yml
+    with:
+      push: false
 
   migrations:
     name: migrations apply to an empty database

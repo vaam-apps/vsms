@@ -60,7 +60,13 @@ WORKDIR /app
 COPY --from=builder --chown=admin:admin /repo/frontends/apps/admin/.next/standalone/ ./
 COPY --from=builder --chown=admin:admin /repo/frontends/apps/admin/.next/static ./frontends/apps/admin/.next/static
 
-USER admin
+# Numeric uid, not `USER admin`: a kubelet cannot verify that a named
+# user is non-root, so `runAsNonRoot: true` without a `runAsUser` refuses the
+# pod with "image has non-numeric user (admin), cannot verify user is
+# non-root". 10001 is the uid created above (and the one
+# docs/runbooks/deployment.adoc chowns the console key to).
+# `ci/assert-image.sh` fails the image build if this becomes a name again.
+USER 10001
 
 # Not 3000 (Next's own default) — this deployment's own convention:
 # nothing behind the §9.2 Caddy edge needs a "standard" port, and every
