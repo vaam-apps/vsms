@@ -9,11 +9,11 @@ use anyhow::{Context, Result};
 use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::GatewayAuth;
-use sms_api::schema::{Cratestack, provider as provider_filter};
+use sms_api::schema::{Cratestack, provider as provider_filter, role as role_filter};
 use sms_provider::SmsProvider;
 use tracing::info;
 
-use crate::{dlr, health, login, op, token_rate_limit};
+use crate::{dlr, health, login, op, sso, token_rate_limit};
 use sms_api::system_context;
 
 /// `Command::Serve`'s flags. See `Command::Serve`'s own doc comment in
@@ -257,6 +257,78 @@ pub(crate) struct ServeArgs {
         default_value = sms_api::DEFAULT_CONSOLE_CLIENT_ID
     )]
     pub(crate) console_client_id: String,
+
+    /// The staff identity provider's issuer URL (a Keycloak realm, e.g.
+    /// `https://auth.example.org/realms/staff`), compared byte for byte with
+    /// the discovery document's `issuer` and every `id_token`'s `iss`.
+    ///
+    /// **SSO is active exactly when this block is present** - there is no
+    /// separate switch. `--sso-issuer`, `--sso-client-id`,
+    /// `--sso-client-secret`, `--sso-redirect-uri` and `--sso-required-group`
+    /// must all be set together or not at all, and at least one of
+    /// `--sso-accepted-amr` / `--sso-accepted-acr` must be non-empty: SSO
+    /// that cannot enforce multi-factor refuses to start rather than run
+    /// without it. A blank value counts as unset. Password sign-in is
+    /// unchanged and remains the break-glass path. See
+    /// `docs/runbooks/sso.adoc`.
+    #[arg(long, env = "SMS_SSO_ISSUER")]
+    pub(crate) sso_issuer: Option<String>,
+
+    /// This gateway's confidential client id at the identity provider.
+    #[arg(long, env = "SMS_SSO_CLIENT_ID")]
+    pub(crate) sso_client_id: Option<String>,
+
+    /// Paired with `--sso-client-id` (`client_secret_basic`). Never logged.
+    #[arg(long, env = "SMS_SSO_CLIENT_SECRET", hide_env_values = true)]
+    pub(crate) sso_client_secret: Option<String>,
+
+    /// The gateway's own **public** callback, registered as the client's
+    /// only redirect URI at the identity provider - for example
+    /// `https://vsms.example.org/login/sso/callback`. Must end in exactly
+    /// `/login/sso/callback`.
+    #[arg(long, env = "SMS_SSO_REDIRECT_URI")]
+    pub(crate) sso_redirect_uri: Option<String>,
+
+    /// Scopes requested upstream. Defaults to `openid email profile`; must
+    /// include `openid`.
+    #[arg(long, env = "SMS_SSO_SCOPES")]
+    pub(crate) sso_scopes: Option<String>,
+
+    /// The identity-provider group a user must belong to to sign in at all
+    /// (exact match against the groups claim - with Keycloak's group-membership
+    /// mapper, set "Full group path" off).
+    #[arg(long, env = "SMS_SSO_REQUIRED_GROUP")]
+    pub(crate) sso_required_group: Option<String>,
+
+    /// The `id_token` claim the group list is read from. Defaults to `groups`.
+    #[arg(long, env = "SMS_SSO_GROUPS_CLAIM")]
+    pub(crate) sso_groups_claim: Option<String>,
+
+    /// `acr` values that satisfy the multi-factor rule, comma-separated. May
+    /// be empty if `--sso-accepted-amr` is not. Note that Keycloak's `acr`
+    /// of `1`/`0` proves nothing about a second factor - see the SSO runbook.
+    #[arg(long, env = "SMS_SSO_ACCEPTED_ACR", value_delimiter = ',')]
+    pub(crate) sso_accepted_acr: Vec<String>,
+
+    /// `amr` values that satisfy the multi-factor rule (any one of them
+    /// suffices), comma-separated - typically `otp`. May be empty if
+    /// `--sso-accepted-acr` is not.
+    #[arg(long, env = "SMS_SSO_ACCEPTED_AMR", value_delimiter = ',')]
+    pub(crate) sso_accepted_amr: Vec<String>,
+
+    /// The `Role.key` a just-in-time provisioned user is created with.
+    /// Defaults to `support`, the built-in role with the fewest permissions.
+    /// No token claim ever sets or changes a role; this is the one fixed
+    /// value, and it must name an existing, non-reserved role.
+    #[arg(long, env = "SMS_SSO_JIT_ROLE")]
+    pub(crate) sso_jit_role: Option<String>,
+
+    /// Floor, in seconds, on the gap between two fetches of the identity
+    /// provider's signing keys (an unknown `kid` triggers one refetch, never
+    /// more often than this). Defaults to 30. A string, parsed by hand, so a
+    /// blank env var is "unset" rather than a parse failure.
+    #[arg(long, env = "SMS_SSO_JWKS_MIN_REFRESH_SECS")]
+    pub(crate) sso_jwks_min_refresh_secs: Option<String>,
 }
 
 /// `Provider.id` for the row matching `provider.key()` — resolved once at
@@ -594,6 +666,77 @@ async fn build_op_state(
     Ok(op_state)
 }
 
+/// Validates the SSO block and, when present, builds the provider, checks the
+/// JIT role exists, and starts the transaction reaper. `Ok(None)` = SSO is not
+/// configured. Any invalid configuration is an error here, i.e. the process
+/// does not start: SSO that cannot enforce its own rules must not run.
+///
+/// Note what is *not* checked here: that the identity provider is reachable.
+/// Password sign-in is the break-glass path, so a dead Keycloak must not stop
+/// the gateway booting; discovery happens lazily, on the first sign-in.
+async fn build_sso(
+    args: &ServeArgs,
+    db: &Cratestack,
+    sys: &cratestack::CratestackContext,
+) -> Result<Option<sms_auth::sso::SsoProvider>> {
+    let jwks_min_refresh_secs = match args
+        .sso_jwks_min_refresh_secs
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => Some(raw.parse::<u64>().with_context(|| {
+            format!("SMS_SSO_JWKS_MIN_REFRESH_SECS must be a whole number of seconds, got {raw:?}")
+        })?),
+        None => None,
+    };
+    let raw = sms_auth::sso::RawSsoConfig {
+        issuer: args.sso_issuer.clone(),
+        client_id: args.sso_client_id.clone(),
+        client_secret: args.sso_client_secret.clone(),
+        redirect_uri: args.sso_redirect_uri.clone(),
+        scopes: args.sso_scopes.clone(),
+        required_group: args.sso_required_group.clone(),
+        groups_claim: args.sso_groups_claim.clone(),
+        accepted_acr: args.sso_accepted_acr.clone(),
+        accepted_amr: args.sso_accepted_amr.clone(),
+        jit_role: args.sso_jit_role.clone(),
+        jwks_min_refresh_secs,
+    };
+    let Some(config) = sms_auth::sso::SsoConfig::from_raw(raw).context("SSO is misconfigured")?
+    else {
+        return Ok(None);
+    };
+
+    let role = db
+        .role()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            role_filter::key().eq(config.jit_role_key.clone()),
+        ))
+        .limit(1)
+        .run(sys)
+        .await
+        .context("looking up the SSO just-in-time role")?;
+    if role.is_empty() {
+        anyhow::bail!(
+            "--sso-jit-role {:?} names no Role row - create it, or use one of the built-in roles",
+            config.jit_role_key
+        );
+    }
+
+    info!(
+        issuer = %config.issuer,
+        jit_role = %config.jit_role_key,
+        required_group = %config.required_group,
+        "SSO is configured (the identity provider is contacted on first use)"
+    );
+    let provider = sms_auth::sso::SsoProvider::new(config)
+        .map_err(|error| anyhow::anyhow!("building the SSO provider: {error}"))?;
+    sso::spawn_transaction_reaper(db.clone(), sys.clone());
+    Ok(Some(provider))
+}
+
 pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // Deliberately not one big `let ServeArgs { .. } = args;` up front —
     // that pattern alone used to span 27 source lines, and clippy's own
@@ -637,6 +780,16 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     sms_api::webhooks::register_subscribers(&db);
 
     let op_state = build_op_state(&db, &sys, &args.issuer).await?;
+
+    // SSO: validated before the listener binds, so a misconfiguration is a
+    // startup failure, not a 500 on someone's first sign-in. When present,
+    // the OP's discovery document also starts advertising the start URL.
+    let sso_provider = build_sso(&args, &db, &sys).await?;
+    let op_state = op_state.with_sso_login_endpoint(
+        sso_provider
+            .as_ref()
+            .map(|_| format!("{}{}", args.issuer, sms_auth::sso::START_PATH)),
+    );
 
     let (dlr_router, health_router) = build_provider_routers(
         &db,
@@ -691,7 +844,9 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
         ));
     // #194: built before `sms_api::router` below takes `db`/`sys` by value —
     // same ordering constraint `dlr::router` above is already subject to.
-    let login_router = login::router(db.clone(), sys, op_state.clone());
+    let login_router = login::router(db.clone(), sys.clone(), op_state.clone());
+    let sso_router =
+        sso_provider.map(|provider| sso::router(db.clone(), sys, op_state.clone(), provider));
 
     let app = sms_api::router(
         db,
@@ -707,7 +862,8 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     .merge(op::router(op_state, token_rate_limit))
     .merge(dlr_router)
     .merge(health_router)
-    .merge(login_router);
+    .merge(login_router)
+    .merge(sso_router.unwrap_or_default());
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await

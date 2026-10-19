@@ -54,6 +54,9 @@ tracing-subscriber.workspace = true
 # before this route existed.
 serde.workspace = true
 serde_json.workspace = true
+# sso.rs: the SSO routes' expiry stamps and the console error redirect's URL.
+chrono.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 # #25's acceptance gate spawns the real `sms-gateway` binary as two
@@ -64,7 +67,6 @@ serde_json.workspace = true
 # human-login path that doesn't exist yet (see
 # `tests/m1_acceptance_gate_live_postgres.rs`'s own module doc).
 base64.workspace = true
-chrono.workspace = true
 jsonwebtoken.workspace = true
 rand.workspace = true
 reqwest.workspace = true
@@ -88,6 +90,9 @@ serde_json.workspace = true
 # code builds it (there is no such helper — authkestra-op computes it
 # internally, unexported).
 sha2.workspace = true
+# tests/sso_flow_live_postgres.rs: the scripted fake upstream IdP the SSO
+# broker is driven against.
+sms-fake-oidc.workspace = true
 # tests/m1_acceptance_gate_live_postgres.rs gets its DATABASE_URL from this
 # instead of the environment.
 sms-test-support.workspace = true
