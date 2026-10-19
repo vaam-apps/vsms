@@ -24,6 +24,9 @@ members = [
   "backends/crates/sms-provider-mtn",
   "backends/crates/sms-routing",
   "backends/crates/sms-fake-orange",
+  # Dev/test-only fake upstream OpenID Provider (Keycloak stand-in) for the
+  # SSO broker's tests - same discipline as sms-fake-orange above.
+  "backends/crates/sms-fake-oidc",
   "backends/crates/sms-test-support",
   "backends/apps/sms-gateway",
   "backends/apps/sms-worker",
@@ -131,6 +134,10 @@ sms-test-support = { path = "./backends/crates/sms-test-support" }
 # binary that does, is itself a dev/demo tool, never referenced by a
 # production compose file (see that binary's own module doc).
 sms-fake-orange = { path = "./backends/crates/sms-fake-orange" }
+# Dev-only, same discipline: a fake upstream OpenID Provider (Keycloak
+# stand-in) that signs whatever id_token a test scripts, malformed ones
+# included. No production binary links against it.
+sms-fake-oidc = { path = "./backends/crates/sms-fake-oidc" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`
 # paths, so the facade has to be in scope under exactly that name. Pinned
@@ -223,6 +230,13 @@ base64 = "0.22"
 # and authkestra-axum both already resolve to (verified: Cargo.lock has
 # exactly one axum entry, 0.8.9), so this doesn't fork the tree.
 axum = "0.8"
+
+# SSO broker (sms-auth::sso): RFC 3986 URL handling for the upstream endpoints
+# and redirect URIs, and constant-time comparison for the single-use `state`.
+# Both are already in Cargo.lock transitively (url 2.5, subtle 2.6) - named
+# directly for the crate that now calls them, no second copy.
+url = "2"
+subtle = "2"
 
 anyhow = "1"
 async-trait = "0.1"
