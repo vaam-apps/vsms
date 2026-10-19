@@ -27,7 +27,7 @@ use crate::op::OpState;
 /// Longest value any `start` query parameter may have. Real values are tens
 /// of bytes (a PKCE challenge is 43); this only bounds what an
 /// unauthenticated caller can make the database hold.
-const MAX_PARAM_LEN: usize = 2048;
+const MAX_PARAM_LEN: usize = 1024;
 
 /// The in-process backstop: 30 sign-in starts in a burst, then one per
 /// second, for the whole gateway. A real deployment has a handful of staff.
