@@ -154,7 +154,23 @@ services:
       # check compares the token's `aud` against *this* value, which
       # would have stayed the old default forever.
       SMS_CONSOLE_OIDC_CLIENT_ID: ${SMS_CONSOLE_OIDC_CLIENT_ID:-sms-console}
-      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,cratestack=info}
+      # Single sign-on through the staff Keycloak realm (docs/runbooks/sso.adoc).
+      # Optional, and active exactly when SMS_SSO_ISSUER is set - there is no
+      # other switch. Blank means unset to the gateway (it normalises blank
+      # values itself, unlike the MTN block above), so passing these through
+      # empty is safe; a half-filled block, or one with both
+      # SMS_SSO_ACCEPTED_AMR and SMS_SSO_ACCEPTED_ACR empty, refuses to start.
+      SMS_SSO_ISSUER: ${SMS_SSO_ISSUER:-}
+      SMS_SSO_CLIENT_ID: ${SMS_SSO_CLIENT_ID:-}
+      SMS_SSO_CLIENT_SECRET: ${SMS_SSO_CLIENT_SECRET:-}
+      SMS_SSO_REDIRECT_URI: ${SMS_SSO_REDIRECT_URI:-}
+      SMS_SSO_SCOPES: ${SMS_SSO_SCOPES:-}
+      SMS_SSO_REQUIRED_GROUP: ${SMS_SSO_REQUIRED_GROUP:-}
+      SMS_SSO_GROUPS_CLAIM: ${SMS_SSO_GROUPS_CLAIM:-}
+      SMS_SSO_ACCEPTED_AMR: ${SMS_SSO_ACCEPTED_AMR:-}
+      SMS_SSO_ACCEPTED_ACR: ${SMS_SSO_ACCEPTED_ACR:-}
+      SMS_SSO_JIT_ROLE: ${SMS_SSO_JIT_ROLE:-}
+      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,sms_auth=info,cratestack=info}
     depends_on:
       postgres:
         condition: service_healthy

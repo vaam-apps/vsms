@@ -131,6 +131,14 @@ existingSecrets:
   mtn:
     name: ""
     key: MTN_CLIENT_SECRET
+  # The gateway's confidential-client secret at the staff identity provider
+  # (Keycloak) for single sign-on. Only consulted when .Values.sso.issuer is
+  # set — templates/common.yaml strips every SSO env var (this secretKeyRef
+  # included) from the gateway when SSO is not configured. Leave name empty
+  # for a password-only deployment.
+  sso:
+    name: ""
+    key: SMS_SSO_CLIENT_SECRET
   # 32+ characters of real entropy — it encrypts the console's session
   # cookie (AES-256-GCM, frontends/apps/admin/lib/oidc.ts). Generate with
   # `openssl rand -hex 32`. A secret rather than a value for the obvious
@@ -207,6 +215,47 @@ mtn:
   # are explicit that the DR webhook is pre-registered, account-level, and
   # whitelisted via a support web form — not a per-request field, so
   # OrangeCmConfig carries no such knob for a chart value to plumb into.
+
+# Single sign-on through the staff Keycloak realm (docs/runbooks/sso.adoc).
+# Entirely optional, and active exactly when `issuer` is set — there is no
+# other switch. Leave `issuer` empty and every SSO env var is stripped from
+# the gateway before rendering (see templates/common.yaml); password sign-in
+# is untouched either way and stays as the break-glass path.
+#
+# Set `issuer`, `clientId`, `requiredGroup` and an `acceptedAmr` and/or
+# `acceptedAcr` list, plus existingSecrets.sso. The gateway refuses to start
+# on a half-filled block, or on one with BOTH accepted lists empty: SSO that
+# cannot enforce a second factor does not run.
+#
+# The callback registered at the identity provider is derived, not set:
+# `<oidcIssuer>/login/sso/callback` - the gateway's own public origin, which
+# is what `oidcIssuer` already is.
+sso:
+  # The realm's issuer URL, byte for byte as Keycloak publishes it, e.g.
+  # https://auth.verif.fyi/realms/vaam-staff
+  issuer: ""
+  clientId: ""
+  # Space-delimited. Must include `openid`. (Gateway default if left empty:
+  # "openid email profile".)
+  scopes: ""
+  # Exact group name a user must be in. With Keycloak's group-membership
+  # mapper, turn "Full group path" OFF so the claim holds `vsms-staff`, not
+  # `/vsms-staff`.
+  requiredGroup: ""
+  # The id_token claim holding the group list. Gateway default: groups.
+  groupsClaim: ""
+  # A token is accepted only if its `acr` is in acceptedAcr OR its `amr`
+  # shares a member with acceptedAmr. Keycloak's acr "1"/"0" says nothing
+  # about a second factor; with the stock browser flow its amr is EMPTY
+  # until the flow's executions are given an authenticator-config reference
+  # value (docs/runbooks/sso.adoc). The usual setting is acceptedAmr: [otp]
+  # with acceptedAcr left empty.
+  acceptedAmr: []
+  acceptedAcr: []
+  # The role a just-in-time provisioned user is created with. No token claim
+  # ever sets a role. Gateway default if left empty: support (the built-in
+  # role with the fewest permissions).
+  jitRole: ""
 
 worker:
   # Comma-separated, no spaces — any of dispatch,drain,scheduler,hooks,jobs
@@ -485,13 +534,36 @@ controllers:
             value: '{{ .Values.mtn.costPerSegmentXaf }}'
           MTN_SUPPORTS_ALPHANUMERIC_SENDER:
             value: '{{ .Values.mtn.supportsAlphanumericSender }}'
+          SMS_SSO_ISSUER:
+            value: '{{ .Values.sso.issuer }}'
+          SMS_SSO_CLIENT_ID:
+            value: '{{ required "sso.clientId is required when sso.issuer is set" .Values.sso.clientId }}'
+          SMS_SSO_CLIENT_SECRET:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.sso.name is required when sso.issuer is set" .Values.existingSecrets.sso.name }}'
+                key: '{{ .Values.existingSecrets.sso.key }}'
+          SMS_SSO_REDIRECT_URI:
+            value: '{{ required "oidcIssuer is required" .Values.oidcIssuer }}/login/sso/callback'
+          SMS_SSO_SCOPES:
+            value: '{{ .Values.sso.scopes }}'
+          SMS_SSO_REQUIRED_GROUP:
+            value: '{{ required "sso.requiredGroup is required when sso.issuer is set" .Values.sso.requiredGroup }}'
+          SMS_SSO_GROUPS_CLAIM:
+            value: '{{ .Values.sso.groupsClaim }}'
+          SMS_SSO_ACCEPTED_AMR:
+            value: '{{ join "," .Values.sso.acceptedAmr }}'
+          SMS_SSO_ACCEPTED_ACR:
+            value: '{{ join "," .Values.sso.acceptedAcr }}'
+          SMS_SSO_JIT_ROLE:
+            value: '{{ .Values.sso.jitRole }}'
           SMS_HASH_PEPPER:
             valueFrom:
               secretKeyRef:
                 name: '{{ required "existingSecrets.hashPepper.name is required" .Values.existingSecrets.hashPepper.name }}'
                 key: '{{ .Values.existingSecrets.hashPepper.key }}'
           RUST_LOG:
-            value: 'sms_gateway=info,sms_api=info,cratestack=info'
+            value: 'sms_gateway=info,sms_api=info,sms_auth=info,cratestack=info'
         probes:
           # #157: /healthz stays liveness-only by design
           # (backends/apps/sms-gateway/src/health.rs's own doc: "It does not touch the

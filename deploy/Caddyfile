@@ -237,6 +237,21 @@
 		# a second provider lands (#63), add a second zone rather than
 		# reinstating a composite key here — the IPv6 masking is the
 		# security property, the path split is only fairness.
+		# Single sign-on's two browser-facing routes. Each `start` writes a
+		# database row before any authentication, and a `callback` reads one;
+		# the gateway has an in-process backstop, but the per-source limit
+		# belongs here where the real peer address is known. Generous for a
+		# handful of staff signing in, hostile to a loop.
+		zone sso_per_ip {
+			match {
+				path /login/sso/*
+			}
+			key {http.request.remote.host}
+			events {$RATE_LIMIT_SSO_PER_IP_EVENTS:30}
+			window {$RATE_LIMIT_SSO_PER_IP_WINDOW:1m}
+			ipv6_prefix 64
+		}
+
 		zone dlr_per_source {
 			match {
 				path /dlr/*

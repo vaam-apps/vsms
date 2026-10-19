@@ -194,6 +194,10 @@ struct SsoFlags {
     accepted_acr: Vec<String>,
     jit_role: Option<String>,
     required_group: Option<String>,
+    /// Also export the optional settings as *blank* environment variables,
+    /// exactly as `deploy/charts/vsms` renders an unset `sso.scopes`,
+    /// `sso.groupsClaim`, `sso.jitRole` and `sso.acceptedAcr`.
+    blank_optionals: bool,
 }
 
 impl SsoFlags {
@@ -204,6 +208,7 @@ impl SsoFlags {
             accepted_acr: vec![],
             jit_role: None,
             required_group: Some(REQUIRED_GROUP.to_owned()),
+            blank_optionals: false,
         }
     }
 }
@@ -277,6 +282,16 @@ impl GatewayProcess {
             }
             if let Some(role) = &sso.jit_role {
                 command.args(["--sso-jit-role", role]);
+            }
+            if sso.blank_optionals {
+                for name in [
+                    "SMS_SSO_SCOPES",
+                    "SMS_SSO_GROUPS_CLAIM",
+                    "SMS_SSO_JIT_ROLE",
+                    "SMS_SSO_ACCEPTED_ACR",
+                ] {
+                    command.env(name, "");
+                }
             }
             // Zero: the rotation test must be able to refetch at once.
             command.args(["--sso-jwks-min-refresh-secs", "0"]);
@@ -747,6 +762,27 @@ async fn an_existing_local_account_is_never_linked_by_email() {
     assert_eq!(still.len(), 1);
     assert_eq!(still[0].id, local.id);
     assert_eq!(still[0].roleKey, "owner", "and its role is untouched");
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn blank_optional_values_as_the_chart_renders_them_are_treated_as_unset() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = Rig::start_with(|issuer| SsoFlags {
+        blank_optionals: true,
+        ..SsoFlags::amr_otp(issuer)
+    })
+    .await;
+    rig.fake.queue_login(rig.spec());
+    assert!(matches!(
+        sign_in(&rig, &Attempt::new()).await,
+        Outcome::Code { .. }
+    ));
+    let user = rig.users_with_email(&rig.email()).await.remove(0);
+    assert_eq!(
+        user.roleKey, "support",
+        "a blank jit role is the default, not an empty role"
+    );
 }
 
 #[tokio::test]
