@@ -37,6 +37,12 @@
 # in this graph either.
 FROM rust:1.98-alpine3.22 AS builder
 
+# DL3018: no apk version pin, deliberately. Alpine drops a superseded package
+# revision from the 3.22 index when it ships the next one, so an exact pin
+# makes this build fail on the day the revision rotates out, for no change
+# of ours. What this image does pin is the base: `rust:1.98-alpine3.22` fixes
+# the Alpine release, and with it the musl/gcc series `build-base` resolves to.
+# hadolint ignore=DL3018
 RUN apk add --no-cache musl-dev build-base
 
 WORKDIR /app

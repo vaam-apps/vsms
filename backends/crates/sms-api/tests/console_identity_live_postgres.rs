@@ -182,7 +182,7 @@ async fn a_provisioned_user_can_actually_log_in_with_the_returned_password() {
     .expect("provisioning a user");
 
     assert_eq!(result.email, email);
-    assert!(!result.password.is_empty());
+    assert_ne!(result.password.len(), 0);
     assert_eq!(
         result.password.len(),
         24,

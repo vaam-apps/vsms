@@ -478,7 +478,7 @@ mod tests {
         let wire = decision_to_wire(&decision, schema::OperatorCode::mtn, "677123456", true);
 
         assert!(wire.noRoutesConfigured);
-        assert!(wire.evaluations.is_empty());
+        assert_eq!(wire.evaluations.len(), 0);
         assert!(wire.winner.is_none());
     }
 }

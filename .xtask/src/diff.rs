@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn identical_text_has_no_diff() {
-        assert!(line_diff("a\nb\n", "a\nb\n").is_empty());
+        assert_eq!(line_diff("a\nb\n", "a\nb\n").len(), 0);
     }
 
     #[test]

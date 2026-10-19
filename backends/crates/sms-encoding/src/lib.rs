@@ -189,7 +189,7 @@ mod tests {
         assert_eq!(r.length, 19);
         assert_eq!(r.segments, 1);
         assert_eq!(r.per_segment, GSM7_SINGLE);
-        assert!(r.offending.is_empty());
+        assert_eq!(r.offending.len(), 0);
         assert_eq!(r.suggestion, None);
     }
 
