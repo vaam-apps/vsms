@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.6.0](https://github.com/vaam-apps/vsms/compare/v0.5.0...v0.6.0) (2026-10-19)
+
+
+### Features
+
+* **release:** publish every image for linux/amd64 and linux/arm64 ([#426](https://github.com/vaam-apps/vsms/issues/426)) ([bcc044e](https://github.com/vaam-apps/vsms/commit/bcc044e8e2bb8672ee583c48501486ffe0556142))
+
+
+### Bug Fixes
+
+* **ci:** clear the six drifted checks that turned main red ([#427](https://github.com/vaam-apps/vsms/issues/427)) ([8d2a859](https://github.com/vaam-apps/vsms/commit/8d2a8594eb05bbf8dc87dd64f6e8ee9f5a4903bf))
+
+
+### Chores
+
+* **deps:** bump cratestack 0.11.0 to 0.15.0 ([#424](https://github.com/vaam-apps/vsms/issues/424)) ([63848f7](https://github.com/vaam-apps/vsms/commit/63848f77592f1c35b2a431eec84a2083efa61992))
+
 ## [0.5.0](https://github.com/vaam-apps/vsms/compare/v0.4.4...v0.5.0) (2026-09-25)
 
 
