@@ -21,7 +21,9 @@ const DB_SENTINEL: &str = "SENTINELPASSWORD";
 const PEPPER_SENTINEL: &str = "SENTINELPEPPER";
 const ORANGE_SENTINEL: &str = "SENTINELORANGESECRET";
 
-const SENTINELS: [&str; 3] = [DB_SENTINEL, PEPPER_SENTINEL, ORANGE_SENTINEL];
+const SSO_SENTINEL: &str = "SENTINELSSOSECRET";
+
+const SENTINELS: [&str; 4] = [DB_SENTINEL, PEPPER_SENTINEL, ORANGE_SENTINEL, SSO_SENTINEL];
 
 fn help(args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_sms-gateway"))
@@ -33,6 +35,7 @@ fn help(args: &[&str]) -> String {
         )
         .env("SMS_HASH_PEPPER", PEPPER_SENTINEL)
         .env("ORANGE_CM_CLIENT_SECRET", ORANGE_SENTINEL)
+        .env("SMS_SSO_CLIENT_SECRET", SSO_SENTINEL)
         // `dotenvy` loads a developer's own `.env` in `main`, but never
         // over a variable already set — these three win regardless.
         .output()
