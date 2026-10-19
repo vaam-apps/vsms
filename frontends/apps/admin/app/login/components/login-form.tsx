@@ -1,4 +1,4 @@
-import { Button, InlineBanner, Input, Label } from "@vaam-apps/ui";
+import { Button, buttonVariants, InlineBanner, Input, Label, Separator } from "@vaam-apps/ui";
 
 /**
  * The login screen's markup and classes — the dumb layer for
@@ -32,6 +32,10 @@ import { Button, InlineBanner, Input, Label } from "@vaam-apps/ui";
  *     does, which is also what makes the daisyUI focus/disabled states and
  *     the `--radius-field` token reach this screen for free.
  *
+ * **The single sign-on link is an `<a>`** (`buttonVariants` styling, no
+ * client JS): it is a GET navigation to `GET /api/auth/sso`, which mints the
+ * same transaction cookie and redirects to the gateway.
+ *
  * `autoComplete="username"`/`"current-password"` are kept verbatim: they
  * are what let a password manager fill this form, and they are easy to drop
  * silently while moving markup.
@@ -42,7 +46,14 @@ import { Button, InlineBanner, Input, Label } from "@vaam-apps/ui";
 // `string | undefined` by design (that is how "render no alert at all" is
 // expressed), so the caller passes `undefined` rather than omitting the
 // prop.
-export function LoginForm({ errorMessage }: { errorMessage?: string | undefined }) {
+export function LoginForm({
+  errorMessage,
+  ssoHref,
+}: {
+  errorMessage?: string | undefined;
+  /** Where "Sign in with Keycloak" goes; omitted when the gateway has no SSO. */
+  ssoHref?: string | undefined;
+}) {
   return (
     <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-6 px-4">
       <h1 className="font-semibold text-foreground text-xl">Sign in</h1>
@@ -72,6 +83,18 @@ export function LoginForm({ errorMessage }: { errorMessage?: string | undefined 
 
         <Button type="submit">Sign in</Button>
       </form>
+
+      {ssoHref !== undefined && (
+        <>
+          <Separator />
+          {/* A plain link, not a button: it is a GET navigation to the
+              console's own route, which mints the transaction cookie and
+              redirects to the gateway. No client JS, same as the form. */}
+          <a href={ssoHref} className={buttonVariants({ variant: "secondary" })}>
+            Sign in with Keycloak
+          </a>
+        </>
+      )}
     </main>
   );
 }

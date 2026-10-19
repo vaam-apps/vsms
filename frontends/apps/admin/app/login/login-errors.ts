@@ -18,6 +18,13 @@ export const LOGIN_ERROR_MESSAGES: Record<string, string> = {
   invalid_credentials: "Incorrect email or password.",
   invalid_request: "The login request was malformed. Try again.",
   expired: "Your login attempt expired. Try again.",
+  // Single sign-on. Both are deliberately generic: the gateway refuses for
+  // many reasons (not in the group, no second factor, account disabled, ...)
+  // and says which only in its own log, so nothing here can help someone
+  // enumerate accounts or groups.
+  sso_failed: "Single sign-on was not completed. Try again, or ask an administrator for access.",
+  sso_unavailable:
+    "Single sign-on is unavailable right now. Try again shortly, or sign in with your password.",
 };
 
 /** Shown for a code not in the table — see the module doc for why this is

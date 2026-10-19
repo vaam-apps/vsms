@@ -13,6 +13,15 @@ describe("loginErrorMessage", () => {
     }
   });
 
+  it("has a generic message for each single sign-on failure", () => {
+    expect(loginErrorMessage("sso_failed")).toBe(LOGIN_ERROR_MESSAGES.sso_failed);
+    expect(loginErrorMessage("sso_unavailable")).toBe(LOGIN_ERROR_MESSAGES.sso_unavailable);
+    // Neither may say why: no mention of groups, factors or accounts.
+    for (const code of ["sso_failed", "sso_unavailable"]) {
+      expect(LOGIN_ERROR_MESSAGES[code]).not.toMatch(/group|factor|otp|account|disabled|inactive/i);
+    }
+  });
+
   /**
    * The case the module doc calls load-bearing: `/api/auth/login` can
    * redirect with a code this table has never seen, and falling through to

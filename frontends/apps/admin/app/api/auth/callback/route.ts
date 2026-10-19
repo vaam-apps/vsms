@@ -7,6 +7,14 @@
  * that receives a genuine HTTP redirect, not `sms-gateway`'s `/login`
  * itself, which returns JSON to `POST /api/auth/login` instead).
  *
+ * **A refused or failed single sign-on arrives here too, as an OAuth error
+ * redirect** (`?error=access_denied&state=...`, from the gateway's
+ * `/login/sso/callback`) - the standard way an authorization server says no
+ * - and is handled first: `state` is verified against the same
+ * transaction cookie (so a forged error link cannot clear someone's
+ * in-progress login), then the browser goes back to `/login` with one of
+ * two generic messages. The error text is never echoed.
+ *
  * Five things happen here, in order, each a hard stop on failure:
  *
  * 1. Read the `vsms_oidc_txn` cookie set at `GET /login` — if it's
@@ -29,6 +37,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 import { redirect } from "next/navigation";
 import { verifyNonce, verifyState } from "../../../../lib/oidc";
 import { clearTxnCookie, readTxnCookie, writeSessionCookie } from "../../../../lib/session";
+import { loginErrorForOauthError } from "../../../../lib/sso";
 
 export const runtime = "nodejs";
 
@@ -54,8 +63,17 @@ export async function GET(request: Request): Promise<Response> {
   const url = new URL(request.url);
   const code = url.searchParams.get("code");
   const returnedState = url.searchParams.get("state");
+  const oauthError = url.searchParams.get("error");
 
   const txn = await readTxnCookie();
+  if (oauthError !== null) {
+    if (txn === undefined || returnedState === null || !verifyState(returnedState, txn.state)) {
+      redirect("/login?error=expired");
+    }
+    console.warn("[auth/callback] the sign-in was refused upstream:", oauthError.slice(0, 64));
+    await clearTxnCookie();
+    redirect(`/login?error=${loginErrorForOauthError(oauthError)}`);
+  }
   if (txn === undefined || code === null || returnedState === null) {
     redirect("/login?error=expired");
   }
