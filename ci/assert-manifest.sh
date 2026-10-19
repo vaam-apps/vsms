@@ -12,20 +12,23 @@
 # real platform is counted.
 set -euo pipefail
 
-die() { echo "::error::assert-manifest: $*" >&2; exit 1; }
+die() {
+	echo "::error::assert-manifest: $*" >&2
+	exit 1
+}
 [[ $# -ge 1 ]] || die "usage: assert-manifest.sh <image-ref>..."
 
 WANT='["linux/amd64","linux/arm64"]'
 for ref in "$@"; do
-  raw="$(docker buildx imagetools inspect --raw "$ref")" || die "cannot inspect ${ref}"
-  jq -e '(.manifests | type) == "array"' >/dev/null <<<"$raw" \
-    || die "${ref} is a single-platform image, not a manifest list"
-  got="$(jq -c '[.manifests[]
+	raw="$(docker buildx imagetools inspect --raw "$ref")" || die "cannot inspect ${ref}"
+	jq -e '(.manifests | type) == "array"' >/dev/null <<<"$raw" ||
+		die "${ref} is a single-platform image, not a manifest list"
+	got="$(jq -c '[.manifests[]
                  | select((.platform.os // "unknown") != "unknown"
                           and (.platform.architecture // "unknown") != "unknown")
                  | "\(.platform.os)/\(.platform.architecture)"]
                 | sort' <<<"$raw")"
-  [[ "$got" == "$WANT" ]] \
-    || die "${ref} contains ${got}, expected exactly ${WANT}"
-  echo "  ok  ${ref}: ${got}"
+	[[ "$got" == "$WANT" ]] ||
+		die "${ref} contains ${got}, expected exactly ${WANT}"
+	echo "  ok  ${ref}: ${got}"
 done
