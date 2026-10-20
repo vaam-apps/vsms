@@ -1,4 +1,3 @@
-<!-- markdownlint-disable MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading -->
 The two raw routes of the federated (SSO) sign-in, and the task that cleans
 up after them (`GET /login/sso/start`, `GET /login/sso/callback`).
 
@@ -39,3 +38,5 @@ authentication, so both sit behind a small in-process token bucket
 (a backstop) and, in production, behind per-source zones in
 `deploy/Caddyfile`. Rows are deleted when consumed and, if never consumed, by
 [`spawn_transaction_reaper`] after five minutes.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

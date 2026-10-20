@@ -1,4 +1,3 @@
-<!-- markdownlint-disable MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading -->
 A fake upstream `OpenID` Provider - a Keycloak stand-in for vsms's SSO tests.
 
 `sms-gateway` is an OIDC *relying party* toward the staff identity provider
@@ -38,3 +37,5 @@ by a unit test that asserts on a helper.
 
 The keys are throwaway literals (see `keys.rs`); nothing here protects
 anything.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

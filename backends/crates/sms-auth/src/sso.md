@@ -1,4 +1,3 @@
-<!-- markdownlint-disable MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading -->
 OIDC single sign-on for the admin console, brokered by the gateway.
 
 # The shape: the gateway stays the console's OP
@@ -67,3 +66,5 @@ sequenceDiagram
 The HTTP routes are in the gateway (`backends/apps/sms-gateway/src/sso.rs`),
 next to `login.rs`, for the same reason: they are raw axum routes that run
 before any bearer token exists.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

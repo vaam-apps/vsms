@@ -33,7 +33,7 @@ pub enum Completed {
 ///
 /// # Errors
 ///
-/// [`SsoError::Refused`] with the precise [`Refusal`]; [`SsoError::Unavailable`]
+/// [`SsoError::Refused`] with the precise [`super::error::Refusal`]; [`SsoError::Unavailable`]
 /// when the `IdP` or the database could not be used.
 pub async fn complete(
     provider: &SsoProvider,

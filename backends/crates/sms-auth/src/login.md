@@ -1,4 +1,3 @@
-<!-- markdownlint-disable MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading -->
 Password verification for human console logins (#194).
 
 # Why a password at all — read this before copying the pattern elsewhere
@@ -71,3 +70,5 @@ procedure (#58) needs to hash a freshly generated one-time password from
 `sms-api`, which cannot depend on this crate (`sms-auth` depends on
 `sms-api`, not the reverse). See that module's own doc for the full
 reasoning; this file now calls it exactly like any other caller.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

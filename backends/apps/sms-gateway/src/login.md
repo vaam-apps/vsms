@@ -1,4 +1,3 @@
-<!-- markdownlint-disable MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading -->
 Mounting the raw `POST /login` route (#194).
 
 Not CrateStack-routed, for the same structural reason `dlr.rs`'s own
@@ -38,3 +37,5 @@ verifies either; that's `admin`'s own job, both ends (see
 `frontends/apps/admin/app/login/page.tsx` for where they're minted and
 `frontends/apps/admin/app/api/auth/callback/route.ts` for where they're checked against
 the redirect this route ultimately returns).
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
