@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading -->
 Mounting the raw `POST /login` route (#194).
 
 Not CrateStack-routed, for the same structural reason `dlr.rs`'s own

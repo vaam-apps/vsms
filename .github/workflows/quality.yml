@@ -134,7 +134,13 @@ jobs:
       # would turn this lint red with nothing to fix here. Before v0.4.0 the
       # copy failed the org config outright (v0.3.0: 221 MD060 errors).
       # AGENTS.md has the measurements.
-      filter-regex-exclude: '(^|/)(AGENTS|CLAUDE)\.md$|^frontends/packages/sms-client/|^backends/migrations/|(^|/)\.agents/skills/'
+      # deploy/charts/*/templates/ are Go templates, not YAML: `{{- include ... }}`
+      # on line 2 is a yamllint syntax *error* (not a style warning), so any
+      # PR that touches a chart template fails the gate with nothing to fix in
+      # the file. `helm lint --strict` and the render checks in
+      # docs/runbooks/deployment.adoc are what validate them. values.yaml in
+      # the same chart is real YAML and stays linted.
+      filter-regex-exclude: '(^|/)(AGENTS|CLAUDE)\.md$|^frontends/packages/sms-client/|^backends/migrations/|(^|/)\.agents/skills/|^deploy/charts/[^/]+/templates/'
     secrets:
       app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
       app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}

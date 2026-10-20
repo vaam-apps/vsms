@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading -->
 Password verification for human console logins (#194).
 
 # Why a password at all — read this before copying the pattern elsewhere

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading -->
 OIDC single sign-on for the admin console, brokered by the gateway.
 
 # The shape: the gateway stays the console's OP
@@ -53,15 +54,15 @@ sequenceDiagram
 
 # Where each piece lives
 
-| Piece | Module |
-| --- | --- |
-| Config, validation, fail-closed startup rules | [`config`] |
+| Piece                                             | Module       |
+| ------------------------------------------------- | ------------ |
+| Config, validation, fail-closed startup rules     | [`config`]   |
 | Discovery, JWKS, authorization URL, code exchange | [`provider`] |
-| `id_token` verification (pure) | [`id_token`] |
-| MFA rule, group gate, the one-retry verdict | [`policy`] |
-| `SsoTransaction`/`FederatedLink` persistence, JIT | [`store`] |
-| The callback's orchestration | [`flow`] |
-| Why a refusal looks the same to the browser | [`error`] |
+| `id_token` verification (pure)                    | [`id_token`] |
+| MFA rule, group gate, the one-retry verdict       | [`policy`]   |
+| `SsoTransaction`/`FederatedLink` persistence, JIT | [`store`]    |
+| The callback's orchestration                      | [`flow`]     |
+| Why a refusal looks the same to the browser       | [`error`]    |
 
 The HTTP routes are in the gateway (`backends/apps/sms-gateway/src/sso.rs`),
 next to `login.rs`, for the same reason: they are raw axum routes that run

@@ -1,3 +1,4 @@
+<!-- markdownlint-disable MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading -->
 The two raw routes of the federated (SSO) sign-in, and the task that cleans
 up after them (`GET /login/sso/start`, `GET /login/sso/callback`).
 

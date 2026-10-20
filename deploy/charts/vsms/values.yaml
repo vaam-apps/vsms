@@ -250,8 +250,8 @@ sso:
   # until the flow's executions are given an authenticator-config reference
   # value (docs/runbooks/sso.adoc). The usual setting is acceptedAmr: [otp]
   # with acceptedAcr left empty.
-  acceptedAmr: []
-  acceptedAcr: []
+  acceptedAmr: [ ]
+  acceptedAcr: [ ]
   # The role a just-in-time provisioned user is created with. No token claim
   # ever sets a role. Gateway default if left empty: support (the built-in
   # role with the fewest permissions).
