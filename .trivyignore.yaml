@@ -37,3 +37,18 @@ secrets:
       a signed assertion's claims without hand-decoding a JWT. Scoped to this
       one path rather than muting `private-key` repo-wide, because a real
       committed key anywhere else must still fail this gate.
+  - id: private-key
+    paths:
+      - "backends/crates/sms-fake-oidc/src/keys.rs"
+    statement: >-
+      Four throwaway signing keys (three 2048-bit RSA, one P-256) generated
+      locally with `openssl` for `sms-fake-oidc`, a dev/test-only fake
+      upstream identity provider (`publish = false`; no production binary
+      depends on it, and `sms-gateway` never loads it). They sign the
+      deliberately malformed id_tokens the SSO broker's tests feed it; the
+      fake publishes the matching public halves itself, and the "signed by a
+      key the relying party has never seen" tests only work because these keys
+      protect nothing. Committed as literals so a test run does not pay for RSA
+      generation in a debug build. Scoped to this one path rather than muting
+      `private-key` repo-wide, because a real committed key anywhere else must
+      still fail this gate.
