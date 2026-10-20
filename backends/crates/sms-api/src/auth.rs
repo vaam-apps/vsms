@@ -642,7 +642,7 @@ async fn load_human_principal(
 ///   (`OauthSigningKey`'s own comment is explicit about this), so a human
 ///   `Role` keyed `"app"` would be confusing, not exploitable — reserved
 ///   to keep it that way rather than relying on that fact never changing.
-const RESERVED_ROLE_KEYS: &[&str] = &["system", "app"];
+pub const RESERVED_ROLE_KEYS: &[&str] = &["system", "app"];
 
 #[cfg(test)]
 mod tests {

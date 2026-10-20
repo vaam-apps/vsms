@@ -3507,18 +3507,23 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "cratestack-pg",
+ "hex",
  "jsonwebtoken",
  "rand 0.8.7",
  "reqwest 0.12.28",
  "rsa",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "sms-api",
  "sms-core",
+ "sms-fake-oidc",
  "sms-test-support",
+ "subtle",
  "thiserror",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]
@@ -3535,6 +3540,20 @@ name = "sms-encoding"
 version = "0.6.0"
 dependencies = [
  "unicode-normalization",
+]
+
+[[package]]
+name = "sms-fake-oidc"
+version = "0.6.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "form_urlencoded",
+ "jsonwebtoken",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
 ]
 
 [[package]]
@@ -3590,6 +3609,7 @@ dependencies = [
  "sms-api",
  "sms-auth",
  "sms-core",
+ "sms-fake-oidc",
  "sms-provider",
  "sms-provider-mtn",
  "sms-provider-orange-cm",
@@ -3598,6 +3618,7 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+ "url",
 ]
 
 [[package]]

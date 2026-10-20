@@ -131,6 +131,44 @@ and `role: "owner"` — the audit trail can now say *who*. A second user
 provisioned with `auditor` (which lacks `provider:update`) gets a real,
 live `Forbidden` on the identical edit.
 
+### 1.4 Should humans sign in with a local password or through an external identity provider? (settled 2026-10-19)
+
+**Answered: both — federate to the staff Keycloak realm, brokered by the
+gateway, and keep local passwords as the break-glass path.**
+
+#194 chose local Argon2id passwords and recorded federation as "ruled out for
+now, not closed", for three reasons: it needed a second OIDC client
+implementation, there was no identity provider to point at, and there was
+nothing to prove it against under this repo's fake-for-every-external-
+dependency rule. The owner decided (2026-10-19) to build it, and the three
+reasons no longer hold (`auth.verif.fyi`'s `vaam-staff` realm exists;
+`backends/crates/sms-fake-oidc` is the fake; a real Keycloak container was
+driven end to end). The decisions, each recorded with its reasoning in
+`docs/architecture.md` §4.3 and operated per `docs/runbooks/sso.adoc`:
+
+- **The gateway stays the console's OP.** Only "who is this human?" is
+  federated; every API token is still vsms's own, so `GatewayAuth` and every
+  policy are unchanged.
+- **Provisioning is just-in-time, gated by a group**, linked by `(iss, sub)`
+  and **never by email**.
+- **Roles stay local.** No claim sets a role; a JIT user gets one configured
+  least-privilege role (`support`, the built-in with the fewest permissions).
+- **A second factor is required, by claim, failing closed** — and Keycloak's
+  `acr` cannot express it (measured), so the production rule is
+  `amr = ["otp"]`.
+- **Password sign-in stays, unchanged.**
+
+**What this does not settle** — still open, and worth a decision before SSO is
+relied on for more than the current handful of staff:
+
+- Whether a Keycloak group is an acceptable stand-in for "may see every app's
+  message metadata". Any signed-in human, whatever their role, can list all
+  apps' messages (#211, §1.2 above), so group membership is that permission
+  in practice. Narrowing it is a schema-policy question, not an SSO one.
+- Whether vsms sessions should end when the Keycloak session does
+  (back-channel logout is not built; deactivating the `User` ends access
+  within a minute, and a console session lasts at most eight hours).
+
 ### 1.3 Where is this hosted, and does the 90-day decision hold? (settled, recorded for context)
 
 Both parts are **answered** and listed here only so a future reader does not
@@ -346,6 +384,12 @@ the account holder before a new secret is issued to them — email-verified
 token, a break-glass CLI command run by someone with database access, or
 something else? Nobody has decided.
 
+**Single sign-on (§1.4) narrows this without closing it.** A user provisioned
+through Keycloak has no vsms password to lose: recovery is Keycloak's own, and
+`deactivate the User` is the revocation. The gap above remains exactly as
+described for the local, password-holding accounts — which, by design, are the
+break-glass path and so the ones that matter most when everything else is down.
+
 ---
 
 ## 4. Framework questions with a filed answer pending
@@ -392,13 +436,13 @@ workarounds still in place here — 0.8.x's own breaking changes (the
 gate) are unrelated to all five. Each remains a deliberate follow-up rather
 than something a dependency bump should spend its budget on.
 
-| Question | Where | State |
-|---|---|---|
-| Does `cratestack studio`'s direct-DB mode intend to bypass `@version` and `@@emit`? | [cratestack#507](https://github.com/cratestack/cratestack/issues/507) | **Closed 2026-08-13, cratestack 0.7.13** (PR [cratestack#553](https://github.com/cratestack/cratestack/pull/553): `[target.db]` writes now route through the same descriptor path every other write does, rather than being refused outright; PR [cratestack#557](https://github.com/cratestack/cratestack/pull/557) fixed a related no-payload SQL-preview duplication in the same window). Not verified live against `cratestack studio` by this PR — `docs/roadmap.md`'s own #46 section already disqualified Studio from any deployed vsms surface for unrelated reasons (no procedure surface, bypasses `@@allow`), so nothing here currently depends on the fix. |
-| Should `@length` on a nullable field compile? | [cratestack#537](https://github.com/cratestack/cratestack/issues/537) | **Closed 2026-08-13, cratestack 0.7.13** (PR [cratestack#546](https://github.com/cratestack/cratestack/pull/546)). The two workarounds this repo carries — `AuditAnchor.prevChainHash`'s non-null sentinel, `RouteValidation.notes`'s dropped `@length` bound (#64) — are now removable in principle, but reverting either is a real `schema.cstack` edit with its own migration-regeneration and re-verification cost, not attempted in this dependency-bump PR. Left for a follow-up that wants to spend that budget deliberately. |
-| Should `auth().isSystem()` replace the `hasRole('system')` convention? | [#176](https://github.com/vymalo/vsms/issues/176) | Not evaluated. Would touch the gap this codebase has hit **fifteen times**. **Moved in 0.11.0** — `auth().isSystem()` now also works in a `procedure`/`query` `@allow`, not only a model's `@@allow` (which is what #176 itself is actually about, and which has worked since 0.7.10/cratestack#500). The model-level calculus this question asks about is unchanged; the primitive itself is no longer static. |
-| Should `.upsert().do_nothing()` replace create-then-catch-`23505`? | [#177](https://github.com/vymalo/vsms/issues/177) | Not evaluated. Affects `ClientAssertion`, seed-dispatch, and scheduler dedupe. **Strengthened in 0.8.14** (#741) — `.do_nothing()` no longer 500s when its conflict predicate references an `@default(...)`-excluded column (Postgres `42703`), and can now target a partial unique index via `.where_index(...)`. #745 (0.8.14, the `.upsert(..).run(..)` Created-vs-Updated race fix) explicitly does not touch `.do_nothing()`. |
-| Can a generated `PATCH` route clear a nullable field at all? | [cratestack#567](https://github.com/cratestack/cratestack/issues/567) | **Closed 2026-08-13, cratestack 0.7.15** (PR [cratestack#574](https://github.com/cratestack/cratestack/pull/574), "distinguish PATCH null-clear from omitted field on nullable columns" — marked breaking upstream). `@vsms/gateway/senders.ts`'s `foldClearedSentinel` empty-string workaround for `SenderId.notes`/`SenderIdRegistration.reference`/`rejectionReason` is now removable in principle, but the fixed wire shape has not been verified live against this exact schema, and the workaround lives in `frontends/packages/gateway` (adjacent to `frontends/apps/admin/`, which a concurrent console redesign is actively touching) — reverting it is left as a deliberate follow-up, not attempted here. |
+| Question                                                                            | Where                                                                 | State                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Does `cratestack studio`'s direct-DB mode intend to bypass `@version` and `@@emit`? | [cratestack#507](https://github.com/cratestack/cratestack/issues/507) | **Closed 2026-08-13, cratestack 0.7.13** (PR [cratestack#553](https://github.com/cratestack/cratestack/pull/553): `[target.db]` writes now route through the same descriptor path every other write does, rather than being refused outright; PR [cratestack#557](https://github.com/cratestack/cratestack/pull/557) fixed a related no-payload SQL-preview duplication in the same window). Not verified live against `cratestack studio` by this PR — `docs/roadmap.md`'s own #46 section already disqualified Studio from any deployed vsms surface for unrelated reasons (no procedure surface, bypasses `@@allow`), so nothing here currently depends on the fix.                                               |
+| Should `@length` on a nullable field compile?                                       | [cratestack#537](https://github.com/cratestack/cratestack/issues/537) | **Closed 2026-08-13, cratestack 0.7.13** (PR [cratestack#546](https://github.com/cratestack/cratestack/pull/546)). The two workarounds this repo carries — `AuditAnchor.prevChainHash`'s non-null sentinel, `RouteValidation.notes`'s dropped `@length` bound (#64) — are now removable in principle, but reverting either is a real `schema.cstack` edit with its own migration-regeneration and re-verification cost, not attempted in this dependency-bump PR. Left for a follow-up that wants to spend that budget deliberately.                                                                                                                                                                                 |
+| Should `auth().isSystem()` replace the `hasRole('system')` convention?              | [#176](https://github.com/vymalo/vsms/issues/176)                     | Not evaluated. Would touch the gap this codebase has hit **fifteen times**. **Moved in 0.11.0** — `auth().isSystem()` now also works in a `procedure`/`query` `@allow`, not only a model's `@@allow` (which is what #176 itself is actually about, and which has worked since 0.7.10/cratestack#500). The model-level calculus this question asks about is unchanged; the primitive itself is no longer static.                                                                                                                                                                                                                                                                                                      |
+| Should `.upsert().do_nothing()` replace create-then-catch-`23505`?                  | [#177](https://github.com/vymalo/vsms/issues/177)                     | Not evaluated. Affects `ClientAssertion`, seed-dispatch, and scheduler dedupe. **Strengthened in 0.8.14** (#741) — `.do_nothing()` no longer 500s when its conflict predicate references an `@default(...)`-excluded column (Postgres `42703`), and can now target a partial unique index via `.where_index(...)`. #745 (0.8.14, the `.upsert(..).run(..)` Created-vs-Updated race fix) explicitly does not touch `.do_nothing()`.                                                                                                                                                                                                                                                                                   |
+| Can a generated `PATCH` route clear a nullable field at all?                        | [cratestack#567](https://github.com/cratestack/cratestack/issues/567) | **Closed 2026-08-13, cratestack 0.7.15** (PR [cratestack#574](https://github.com/cratestack/cratestack/pull/574), "distinguish PATCH null-clear from omitted field on nullable columns" — marked breaking upstream). `@vsms/gateway/senders.ts`'s `foldClearedSentinel` empty-string workaround for `SenderId.notes`/`SenderIdRegistration.reference`/`rejectionReason` is now removable in principle, but the fixed wire shape has not been verified live against this exact schema, and the workaround lives in `frontends/packages/gateway` (adjacent to `frontends/apps/admin/`, which a concurrent console redesign is actively touching) — reverting it is left as a deliberate follow-up, not attempted here. |
 
 ---
 

@@ -10,20 +10,25 @@ it, and #194 is the ticket that closes that cut. Two paths were weighed:
 
 1. Delegate authentication to an external OIDC `IdP`, with `sms-auth`
    acting as both OP (to `sms-console`) and RP (to that `IdP`) — a
-   broker/federation pattern. Rejected for this PR: it needs a second,
-   equally security-sensitive OIDC client implementation (discovery,
-   its own token validation, its own callback), an actual external `IdP`
-   this deployment can point at (none is decided — see AGENTS.md's
-   "Open questions blocking later milestones" list, none of which this
-   PR resolves), and — critically for a change of this sensitivity —
-   nothing in this sandbox to prove it against end to end the way this
-   repo's own testing convention (a fake for every external dependency:
-   `sms-fake-orange`) demands. It remains the better long-term answer
-   for a multi-app or multi-tenant future; #194's own issue text left it
-   open rather than deciding it, and this PR doesn't decide it either —
-   it is *ruled out for now*, not closed.
+   broker/federation pattern. **Rejected for #194; built afterwards, as
+   a second path next to this one — see [`crate::sso`].** The case
+   against it at the time was real: it needed a second, equally
+   security-sensitive OIDC *client* implementation (discovery, its own
+   token validation, its own callback), an actual external `IdP` this
+   deployment could point at (none was decided), and nothing in the
+   sandbox to prove it against end to end the way this repo's testing
+   convention (a fake for every external dependency: `sms-fake-orange`)
+   demands. All three have since changed: the staff Keycloak realm
+   exists, `sms-fake-oidc` is that fake, and the broker was also run
+   against a real Keycloak container. It is a *broker* — `sms-gateway`
+   stays the console's OP, so `GatewayAuth::authenticate_human` and every
+   policy are unchanged — and it **does not replace this module**:
+   password sign-in is the break-glass path, so a broken `IdP` can never
+   lock operators out of the system that sends their OTPs. A user
+   provisioned through SSO has no `UserCredential` and therefore cannot
+   authenticate here at all.
 2. Local password authentication, entirely within this system, backed
-   by Argon2id. **Chosen.** It needs nothing this deployment doesn't
+   by Argon2id. **Chosen for #194, and kept.** It needs nothing this deployment doesn't
    already have, it's fully testable against a real Postgres with no
    external dependency, and it matches this codebase's own "no Redis,
    no external services, Postgres is the only coordination mechanism"
@@ -65,3 +70,5 @@ procedure (#58) needs to hash a freshly generated one-time password from
 `sms-api`, which cannot depend on this crate (`sms-auth` depends on
 `sms-api`, not the reverse). See that module's own doc for the full
 reasoning; this file now calls it exactly like any other caller.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

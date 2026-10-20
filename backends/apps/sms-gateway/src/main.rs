@@ -5,6 +5,7 @@ mod dlr;
 mod health;
 mod login;
 mod op;
+mod sso;
 mod token_rate_limit;
 
 use anyhow::Result;
@@ -309,7 +310,13 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "sms_gateway=info,sms_api=info,cratestack=info".into()),
+                // `sms_auth` joined the default with the SSO broker: its
+                // discovery, issuer-mismatch and invalid-client errors are
+                // the operator's only signal that the IdP side is broken,
+                // and under the old default they were silently dropped.
+                .unwrap_or_else(|_| {
+                    "sms_gateway=info,sms_api=info,sms_auth=info,cratestack=info".into()
+                }),
         )
         .init();
 

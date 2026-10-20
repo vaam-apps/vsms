@@ -1043,6 +1043,17 @@ Every one of `image.tag`, `oidcIssuer`, `orange.clientId`,
 function -- an install with any of them missing fails immediately with a
 named field, not a cryptic render error or a silently-broken Pod.
 
+=== Single sign-on (optional)
+
+Staff can sign in to the console through a Keycloak realm instead of a vsms
+password. It is off unless `sso.issuer` (Helm) / `SMS_SSO_ISSUER` (compose) is
+set; password sign-in is untouched and remains the break-glass path. Setup --
+the Keycloak client, the groups mapper, and the `amr` configuration that makes
+a second factor visible (Keycloak's `acr` does not) -- is in
+xref:sso.adoc[the SSO runbook]. For Helm, the extra values are the `sso:`
+block plus `existingSecrets.sso` for the client secret; the callback you
+register at Keycloak is `<oidcIssuer>/login/sso/callback`.
+
 === Verification actually performed for this PR
 
 `helm lint --strict` and `helm template` (with a full set of test values --

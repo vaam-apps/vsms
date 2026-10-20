@@ -2,6 +2,7 @@
 
 pub mod login;
 pub mod op;
+pub mod sso;
 
 use std::sync::Arc;
 

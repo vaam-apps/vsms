@@ -1172,6 +1172,91 @@ model UserCredential {
   @@allow("delete", hasRole('system'))
 }
 
+// A federated sign-in link: "this upstream-IdP identity IS that vsms User".
+// Written by the SSO callback (backends/crates/sms-auth/src/sso.rs) on a
+// user's first successful sign-in through the configured Keycloak realm,
+// and read on every later one.
+//
+// **Deliberately not `User.subject`.** `User.subject` is vsms's own OP
+// subject - the `sub` of the tokens *this* system mints, set to the row's
+// own `id` at creation (provision_user.rs, sso.rs) - and `@unique` on the
+// column alone. An upstream `sub` is a different thing: it is only unique
+// *within one issuer*, it is the IdP's to choose, and it must be matched
+// together with `iss`. Storing it in `subject` would make two meanings share
+// one column and would let an upstream-chosen string collide with (or
+// impersonate) a local user's id-shaped subject.
+//
+// **The link key is `(issuer, subject)` and nothing else - never `email`.**
+// An IdP-asserted email is display data: it can be re-pointed, recycled, or
+// (on a mis-configured realm) self-asserted, and treating it as an identity
+// key is the classic account-takeover shape of federated sign-in. The
+// composite UNIQUE index is hand-written in 0005_sso_federation (the
+// emitter writes no composite uniques - section 2.0), so two concurrent
+// first sign-ins for one identity cannot both create a link.
+//
+// Same isolation as UserCredential and for the same reason: every action
+// `hasRole('system')` only. No console screen may read or write this model
+// directly; an owner changing a user's role or deactivating them still goes
+// through `User`, which this model never overrides. `@@audit` so a link's
+// creation is attributable in `cratestack_audit` - there is no `update`
+// or `delete` action at all (a link is created once; unlinking is a
+// deliberate future operator action that does not exist yet, and
+// deny-by-default keeps it unreachable meanwhile).
+model FederatedLink {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  issuer String @length(min: 1, max: 512)
+  subject String @length(min: 1, max: 255)
+  userId Cuid
+  user User @relation(fields: [userId], references: [id])
+
+  @@audit
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+}
+
+// One in-flight federated sign-in, from the moment the browser leaves for
+// the upstream IdP until it returns (or the row expires). Postgres is the
+// only coordination mechanism in this system (AGENTS.md "Stack, pinned"), so
+// the SSO state lives here - not in a cookie the gateway would have to sign,
+// and not in process memory a second replica or a restart would lose.
+//
+// **Single use.** The callback consumes a row with `delete`; Postgres makes
+// a second concurrent `delete` of the same row affect zero rows, so a
+// replayed `state` finds nothing. **`state` is stored hashed**
+// (SHA-256 hex, `stateHash`, `@unique`) so a read of this table (a backup, a
+// SQL console) cannot be turned into a valid callback URL. `nonce` and
+// `codeVerifier` are the transaction's own secrets and are `@sensitive` -
+// which redacts audit snapshots only (section 2.0), the real control is the
+// system-only policy below; there is no `@@audit` on this model anyway
+// (one row per sign-in attempt, no value in an audit row about a row that
+// lives five minutes). `consoleRequest` is the console's own authorize
+// request as JSON, replayed into the unmodified `handle_authorize` after the
+// upstream sign-in succeeds. Expired rows are deleted by a background task in
+// `sms-gateway serve` (`sso.rs::spawn_transaction_reaper`).
+//
+// No `update` action: a transaction is created and then consumed, never
+// edited. No `@use(Timestamps)`: nothing updates a row, so there is no
+// `updatedAt` to keep (the same shape ClientAssertion has).
+model SsoTransaction {
+  id Cuid @id @default(dbgenerated())
+  stateHash String @unique @length(min: 64, max: 64)
+  nonce String @sensitive
+  codeVerifier String @sensitive
+  consoleRequest String @length(min: 2, max: 16384)
+  // True on the single prompt=login retry the callback starts when an
+  // otherwise-valid id_token lacks the MFA claim (see sso.rs): a retry whose
+  // token still fails the MFA rule is refused, never retried again.
+  isRetry Boolean
+  expiresAt DateTime
+  createdAt DateTime @default(dbgenerated())
+
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("delete", hasRole('system'))
+}
+
 // #68: periodic hash anchoring over `cratestack_audit` — see
 // backends/crates/sms-worker/src/jobs/anchor_audit.rs's own module doc for the full
 // design (hash-chain vs Merkle-snapshot vs external anchoring, and exactly

@@ -33,6 +33,9 @@ pub struct OpState {
     tokens: Arc<RwLock<Arc<TokenManager>>>,
     config: OpConfig,
     jwks: Arc<RwLock<Arc<Vec<Jwk>>>>,
+    /// The gateway's own `/login/sso/start` URL, advertised in discovery
+    /// when SSO is configured - see [`discovery_handler`].
+    sso_login_endpoint: Option<String>,
 }
 
 impl OpState {
@@ -48,7 +51,17 @@ impl OpState {
             tokens: Arc::new(RwLock::new(tokens)),
             config,
             jwks: Arc::new(RwLock::new(Arc::new(jwks))),
+            sso_login_endpoint: None,
         }
+    }
+
+    /// Advertises `endpoint` (the public `/login/sso/start` URL) in the
+    /// discovery document, which is how the console learns that SSO exists
+    /// and where to send the browser - see [`discovery_handler`].
+    #[must_use]
+    pub fn with_sso_login_endpoint(mut self, endpoint: Option<String>) -> Self {
+        self.sso_login_endpoint = endpoint;
+        self
     }
 
     /// The OP's store, for [`crate::login`]'s own call into
@@ -140,8 +153,26 @@ async fn jwks_handler(State(state): State<OpState>) -> Json<JwksResponse> {
 /// Builds the discovery document with `private_key_jwt` advertised in
 /// `token_endpoint_auth_methods_supported` — see this module's own doc for
 /// why `authkestra_axum::op::axum_discovery_handler` can't do this itself.
-async fn discovery_handler(State(state): State<OpState>) -> Json<OidcDiscovery> {
-    Json(OidcDiscovery::from_config(&state.config).with_private_key_jwt())
+///
+/// **`vsms_sso_login_endpoint`** is a vendor extension member (OIDC Discovery
+/// permits additional members), present only when SSO is configured: the
+/// absolute URL of `GET /login/sso/start`. It is how the console learns, at
+/// render time and from the one authority that knows, both *whether* to show
+/// "Sign in with Keycloak" and *where* to send the browser - no console env
+/// var to drift out of step with the gateway's, and the URL is the gateway's
+/// own public one (the console reaches the issuer over an internal address in
+/// some deployments, but the browser must be sent to a public one).
+async fn discovery_handler(State(state): State<OpState>) -> Json<serde_json::Value> {
+    let mut document =
+        serde_json::to_value(OidcDiscovery::from_config(&state.config).with_private_key_jwt())
+            .unwrap_or_default();
+    if let (Some(endpoint), Some(object)) = (&state.sso_login_endpoint, document.as_object_mut()) {
+        object.insert(
+            "vsms_sso_login_endpoint".to_owned(),
+            serde_json::Value::String(endpoint.clone()),
+        );
+    }
+    Json(document)
 }
 
 /// The OP's routes, already `.with_state(...)` — mergeable directly with

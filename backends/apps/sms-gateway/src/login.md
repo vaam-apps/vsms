@@ -11,7 +11,10 @@ of this route.
 established `authkestra_engine::auth::state::Identity` before it will
 issue an authorization code — it has no login form of its own, and
 §4.3/#194 chose local password auth over federating to an external `IdP`
-(see `sms_auth::login`'s own module doc for the full reasoning). So this
+(see `sms_auth::login`'s own module doc for the full reasoning) — and
+federation was added afterwards as a *second* way to establish the
+`Identity` (`sso.rs` in this directory, `sms_auth::sso`), not a
+replacement: this route stays as the break-glass path. So this
 route collapses what a spec-shaped OIDC deployment would split across a
 `GET /authorize` redirect and a separately-hosted login page into one
 step: the caller (`admin`'s own `/login` page and `/api/auth/login`
@@ -34,3 +37,5 @@ verifies either; that's `admin`'s own job, both ends (see
 `frontends/apps/admin/app/login/page.tsx` for where they're minted and
 `frontends/apps/admin/app/api/auth/callback/route.ts` for where they're checked against
 the redirect this route ultimately returns).
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
