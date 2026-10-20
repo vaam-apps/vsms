@@ -20,7 +20,9 @@ use serde::Deserialize;
 use serde_json::Value;
 use sms_api::schema::Cratestack;
 use sms_auth::sso::flow::{self, Completed};
-use sms_auth::sso::{AuthnSecrets, CALLBACK_PATH, START_PATH, SsoError, SsoProvider, store};
+use sms_auth::sso::{
+    AuthnSecrets, CALLBACK_PATH, Refusal, START_PATH, SsoError, SsoProvider, store,
+};
 
 use crate::op::OpState;
 
@@ -268,7 +270,10 @@ async fn callback_handler(
             // Unknown, replayed or expired: indistinguishable on purpose,
             // and with no console request to trust there is nowhere to
             // redirect.
-            tracing::warn!(reason = "no_such_transaction", "SSO sign-in refused");
+            tracing::warn!(
+                reason = Refusal::NoSuchTransaction.reason(),
+                "SSO sign-in refused"
+            );
             return plain(StatusCode::BAD_REQUEST, "Sign-in could not be completed.");
         }
         Err(error) => {
@@ -285,14 +290,17 @@ async fn callback_handler(
     };
 
     if query.error.is_some() {
-        tracing::warn!(reason = "upstream_denied", "SSO sign-in refused");
+        tracing::warn!(
+            reason = Refusal::UpstreamDenied.reason(),
+            "SSO sign-in refused"
+        );
         return console_error_redirect(&request_json, "access_denied");
     }
     let Some(code) = query
         .code
         .filter(|c| !c.is_empty() && c.len() <= MAX_PARAM_LEN)
     else {
-        tracing::warn!(reason = "no_code", "SSO sign-in refused");
+        tracing::warn!(reason = Refusal::NoCode.reason(), "SSO sign-in refused");
         return console_error_redirect(&request_json, "access_denied");
     };
 

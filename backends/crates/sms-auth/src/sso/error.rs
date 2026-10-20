@@ -60,6 +60,12 @@ pub enum Refusal {
     /// The upstream `IdP` itself answered with an error (the user pressed
     /// "cancel", or the realm denied the request).
     UpstreamDenied,
+    /// The callback's `state` matches no live transaction: unknown, replayed
+    /// or expired. There is no console request to trust, so the browser gets
+    /// a plain `400` rather than a redirect.
+    NoSuchTransaction,
+    /// The upstream callback carried neither a `code` nor an `error`.
+    NoCode,
 }
 
 impl Refusal {
@@ -87,6 +93,8 @@ impl Refusal {
             Self::EmailMissing => "email_missing",
             Self::EmailInUse => "email_in_use",
             Self::UpstreamDenied => "upstream_denied",
+            Self::NoSuchTransaction => "no_such_transaction",
+            Self::NoCode => "no_code",
         }
     }
 }

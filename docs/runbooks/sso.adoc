@@ -227,6 +227,7 @@ learn from the page why they were refused -- you can, here:
 | `email_missing` | First sign-in, but the token has no usable email (add the `email` scope / mapper).
 | `email_in_use` | First sign-in, but a local account already has that email. Resolve it by hand -- vsms will not merge by email.
 | `upstream_denied` | Keycloak rejected the code, or the user cancelled.
+| `no_code` | Keycloak redirected back with neither a `code` nor an `error`.
 | `no_such_transaction` | A callback with an unknown, replayed, or expired `state` (five-minute lifetime).
 |===
 

@@ -5,7 +5,7 @@
 use cratestack::CratestackContext;
 use sms_api::schema::Cratestack;
 
-use super::error::{Refusal, SsoError};
+use super::error::SsoError;
 use super::policy::{self, Verdict};
 use super::provider::SsoProvider;
 use super::store::{self, ResolvedUser, Transaction};
@@ -54,10 +54,4 @@ pub async fn complete(
             Ok(Completed::SignedIn(resolved))
         }
     }
-}
-
-/// A refusal for the upstream `error=` callback parameter.
-#[must_use]
-pub fn upstream_denied() -> SsoError {
-    Refusal::UpstreamDenied.into()
 }
