@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/vaam-apps/vsms/compare/v0.6.0...v0.7.0) (2026-10-20)
+
+
+### Features
+
+* **auth:** admin console sign-in through Keycloak (OIDC broker) ([#429](https://github.com/vaam-apps/vsms/issues/429)) ([7dfad66](https://github.com/vaam-apps/vsms/commit/7dfad661a828b63485b7e46bb056576c97e38d50))
+
 ## [0.6.0](https://github.com/vaam-apps/vsms/compare/v0.5.0...v0.6.0) (2026-10-19)
 
 
