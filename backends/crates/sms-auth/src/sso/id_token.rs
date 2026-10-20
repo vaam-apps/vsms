@@ -283,8 +283,11 @@ mod tests {
             string_list(Some(&serde_json::json!(["a", 1, "b"]))),
             vec!["a", "b"]
         );
-        assert!(string_list(Some(&serde_json::json!({"a": 1}))).is_empty());
-        assert!(string_list(None).is_empty());
+        assert_eq!(
+            string_list(Some(&serde_json::json!({"a": 1}))),
+            Vec::<String>::new()
+        );
+        assert_eq!(string_list(None), Vec::<String>::new());
     }
 
     #[test]

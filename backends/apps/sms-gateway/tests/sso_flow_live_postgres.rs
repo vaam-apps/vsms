@@ -1044,7 +1044,7 @@ async fn a_retry_whose_token_still_lacks_mfa_is_refused_and_never_retried_again(
         2,
         "at most one retry - no loop"
     );
-    assert!(rig.users_with_email(&rig.email()).await.is_empty());
+    assert_eq!(rig.users_with_email(&rig.email()).await.len(), 0);
     assert!(rig.gateway.logs.text().contains("mfa_not_satisfied"));
 }
 
@@ -1103,7 +1103,7 @@ async fn any_failure_other_than_the_mfa_claim_is_refused_at_once_with_no_retry()
             "{why}: no retry"
         );
     }
-    assert!(rig.users_with_email(&rig.email()).await.is_empty());
+    assert_eq!(rig.users_with_email(&rig.email()).await.len(), 0);
 }
 
 #[tokio::test]
@@ -1588,11 +1588,13 @@ async fn an_unreachable_idp_does_not_stop_the_gateway_or_password_sign_in() {
         .run(&owner())
         .await
         .expect("seeding a password user");
+    // Random per run, like the passwords `provision-user` generates: no
+    // literal credential lives in the test source.
+    let password = sms_core::password::generate_password(24);
     db.user_credential()
         .create(schema::CreateUserCredentialInput {
             userId: user.id,
-            passwordHash: sms_core::password::hash_password("break glass password 12345")
-                .expect("hash"),
+            passwordHash: sms_core::password::hash_password(&password).expect("hash"),
         })
         .run(&sys())
         .await
@@ -1601,7 +1603,7 @@ async fn an_unreachable_idp_does_not_stop_the_gateway_or_password_sign_in() {
         .post(format!("{}/login", gateway.issuer))
         .json(&serde_json::json!({
             "email": email,
-            "password": "break glass password 12345",
+            "password": password,
             "clientId": CONSOLE_CLIENT_ID,
             "redirectUri": CONSOLE_REDIRECT_URI,
             "responseType": "code",
