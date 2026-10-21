@@ -2870,6 +2870,76 @@ why none needed a code change in this console:
   (`0.3.0`'s gap was 2m40s). The `pnpm-workspace.yaml` comment gives the
   earlier one, because that is what pnpm enforces.
 
+## The console on `@vaam-apps/ui` 0.5.0: reloads, polls, and an M3 Expressive rebuild — landed 2026-10-21
+
+The owner reported that the console "reloads pages all the time". It did, for three
+independent reasons, each measured with Playwright against `next dev` and a real gateway
+(ten clicks through the navigation): **before, 10 document loads and 120 tRPC requests,
+110 of them the messages long-poll; after, 0 document loads and 9 tRPC requests**, and one
+long-poll every 2 s instead of about 12 a second.
+
+- **`SideNav` renders plain `<a href>`** (the library has no router dependency and no
+  link-component prop), and so did the messages table and the detail back link, so every
+  navigation was a full document load: middleware, RSC, hydration and an empty query cache.
+  `app/use-client-links.ts` installs one capture-phase click listener on `document` that
+  hands same-origin, unmodified, left-button clicks on an internal anchor to the App
+  Router, and leaves new-tab clicks, `target`, `download`, other origins and `/api/*`
+  alone. A wrapper element could not do this: the floating rails are portalled to
+  `document.body`. The decision is the pure `app/client-links.ts`, with tests. **If a
+  future `@vaam-apps/ui` gives `SideNav` a link-component prop, use it and delete this.**
+- **`SKIP_ENV_VALIDATION=1` skipped coercion along with validation**, and both demo compose
+  files run with it. Every tuning number reached its caller as a string, so the long-poll
+  deadline was `Date.now() + "2000"` (string concatenation: each poll returned in ~30 ms),
+  and TanStack Query silently ignores a string `refetchInterval`, so the dashboard, jobs,
+  workers and webhook-attempt polls never ran at all. The tuning values live in
+  `@vsms/env`'s `tuning.ts` and are coerced (or defaulted) even when validation is skipped.
+  A new tuning value goes there, not into a `z.coerce` that a skip bypasses.
+- **The query client had TanStack's default `staleTime: 0`**, so every remount and window
+  focus refetched everything. `QUERY_STALE_TIME_MS` (default 10 s) is a tuning value.
+
+Two more, found the same way: TanStack retried a 4xx three times with backoff, holding a
+not-found or forbidden screen on its skeleton for ~7 s (`shouldRetryQuery` in
+`@vsms/hooks` now retries only network and 5xx failures, with tests); and the jobs list
+fetched every job and paged nothing (it now pages on the server with `offset`/`limit`,
+`LIST_PAGE_SIZE` default 25, the page in the URL).
+
+**What changed for an operator, screen by screen** (the capability list is unchanged;
+nothing an operator could do before is gone):
+
+- **Shell.** `SideNav` runs in its default floating mode (bottom toolbar below 640 px, rail
+  to 1279 px, sidebar from 1280 px); the daisyUI drawer and hamburger are gone, and the
+  main column pads for the rails (`pb-28` below 640 px clears the toolbar). A sticky top
+  app bar carries a section/page breadcrumb (`nav-groups.ts`'s pure `locate`, tested) and a
+  light/dark toggle; the account slot has an Appearance select (system, light, dark). Roboto
+  Flex and JetBrains Mono are self-hosted.
+- **Information architecture.** The overview dashboard is the landing page at `/`; the
+  composer moved to `/composer`; `/dashboard` redirects to `/`. The dashboard lost the
+  provider-balance card (`poll_balance` was never built, so it only ever said
+  "unavailable").
+- **Lists.** Every list sits in a `ListSurface` with its filters in the toolbar. Messages
+  gained Today / Last 7 days / Last 30 days presets and whole-row navigation; jobs gained
+  state chips and server paging; webhook attempts gained state chips; Workers became role
+  cards, Providers became cards; the Routes table shows the provider's name. Primary
+  actions ("New route", "New app", "Record opt-out", ...) moved into the page header.
+  Developer-voiced banners became one-line captions.
+- **Forms and details.** The composer is two columns with a handset preview of the message;
+  the simulator picks an app from a list instead of a typed id; the opt-out search is a
+  real form (Enter searches); the audit log uses the library's `Pagination` and shows a
+  readable actor (`role · sub`) and primary key; Settings gained Appearance.
+
+**Small shared pieces, all dumb components under `frontends/apps/admin/components/`:**
+`PageHeader`, `SectionHeader`, `ListSurface`, `ListToolbarRow`, `ChipGroup` (a `<fieldset>`
+with a hidden legend: biome refuses `role="group"`), `FilterChip`, `LiveChip`, `Caption`,
+`LinkButton`, and one `ErrorBanner` that replaces three byte-identical route-local copies.
+`PageHeader` never clamps its description: a clamp hid the end of the Workers sentence at
+375 px. An icon absolutely positioned inside an `Input` wrapper needs `z-10`, or the input
+paints over it.
+
+**Not done, and why.** No root `loading.tsx` (#308). The library still has no
+`SideNav` link prop, no `ScreenHeader` actions slot, no compact `ThemeSwitcher`, and no
+secondary-container token that cannot be mistaken for a status at this seed; those are
+proposals for `vaam-apps/ui`, not changes made there.
+
 ## Bumping `@vaam-apps/ui` to `0.3.0` — the first release that breaks the API
 
 `0.3.0` (pnpm's policy check reads it as published `2026-09-24T16:39:45Z`;

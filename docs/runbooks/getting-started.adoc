@@ -285,7 +285,7 @@ pnpm --filter admin exec next dev -p 3100
 bind -- that file is only loaded once the server process is already up. Pass `-p` explicitly
 (or export `PORT` in the shell that launches it) rather than relying on the env file.
 
-Open `+http://localhost:3100/+`, sign in with the account you just provisioned, send a message from the composer, and watch it move to
+Open `+http://localhost:3100/+` and sign in with the account you just provisioned; you land on the dashboard. Send a message from the composer (`+http://localhost:3100/composer+`), and watch it move to
 `delivered` on `+http://localhost:3100/messages+` (polling, ~2s per `MESSAGE_STREAM_POLL_MS`
 above) -- confirmed working end to end, composer through ``sms-fake-orange``'s DLR, in the
 session that added this section.
