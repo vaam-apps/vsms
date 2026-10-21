@@ -1,9 +1,9 @@
-// Dumb component (R6): the "Delivery rate by operator" card. `OPERATOR_LABELS`
-// is presentational label text for the operator this component renders,
-// not business logic — kept beside the markup that uses it, the same way
-// `providers-screen.tsx`'s `StatePill` keeps its own state labels.
+// Dumb component (R6): delivered over terminal, per operator, trailing 24h.
+// Messages whose outcome was never learned (uncertain, undelivered) are left
+// out of both sides: counting them as failed would overstate failure, and as
+// delivered would be a claim nobody made.
 
-import { Card, CardBody, CardHeader, InlineBanner } from "@vaam-apps/ui";
+import { Card, CardBody, CardHeader, InlineEmptyState } from "@vaam-apps/ui";
 import { formatCount, formatPercent } from "../format";
 
 export type Operator = "mtn" | "orange" | "camtel" | "nexttel" | "unknown";
@@ -13,7 +13,7 @@ const OPERATOR_LABELS: Record<Operator, string> = {
   orange: "Orange",
   camtel: "Camtel",
   nexttel: "Nexttel",
-  unknown: "Unknown",
+  unknown: "Other",
 };
 
 export interface OperatorRow {
@@ -24,56 +24,49 @@ export interface OperatorRow {
 
 export interface DeliveryRateCardProps {
   rows: OperatorRow[];
-  allOperatorsQuiet: boolean;
   stuckMessages: number;
 }
 
-export function DeliveryRateCard({
-  rows,
-  allOperatorsQuiet,
-  stuckMessages,
-}: DeliveryRateCardProps) {
+export function DeliveryRateCard({ rows, stuckMessages }: DeliveryRateCardProps) {
   return (
     <Card>
       <CardHeader
-        title="Delivery rate by operator"
-        meta="trailing 24 hours, terminal messages only"
+        title="Delivery by operator"
+        headingLevel={2}
+        meta={`Last 24 hours · ${formatCount(stuckMessages)} with no outcome yet, not counted`}
       />
       <CardBody>
-        {allOperatorsQuiet && (
-          <p className="text-caption text-muted-foreground">
-            No terminal messages in the last 24 hours for this app.
-          </p>
-        )}
-        {rows.length > 0 && (
-          <div className="flex flex-col gap-3">
+        {rows.length === 0 ? (
+          <InlineEmptyState message="No message reached a final state in the last 24 hours." />
+        ) : (
+          <ul className="flex flex-col gap-4">
             {rows.map((row) => {
               const ratio = row.delivered / row.terminalTotal;
               return (
-                <div key={row.operator} className="flex items-center gap-2 sm:gap-3">
-                  <span className="w-14 shrink-0 text-caption text-foreground sm:w-20">
-                    {OPERATOR_LABELS[row.operator]}
-                  </span>
-                  <div className="h-2 min-w-8 flex-1 overflow-hidden rounded-full bg-surface-3">
+                <li key={row.operator} className="flex flex-col gap-1.5">
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="font-medium text-label-large">
+                      {OPERATOR_LABELS[row.operator]}
+                    </span>
+                    <span className="font-mono text-body-medium tabular-nums">
+                      {formatPercent(ratio)}
+                      <span className="text-muted-foreground">
+                        {" "}
+                        · {formatCount(row.delivered)} of {formatCount(row.terminalTotal)}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-surface-3">
                     <div
                       className="h-full rounded-full bg-state-success-fg"
                       style={{ width: `${Math.round(ratio * 100)}%` }}
                     />
                   </div>
-                  <span className="w-20 shrink-0 text-right font-mono text-caption text-muted-foreground sm:w-32">
-                    {formatPercent(ratio)} ({formatCount(row.delivered)}/
-                    {formatCount(row.terminalTotal)})
-                  </span>
-                </div>
+                </li>
               );
             })}
-          </div>
+          </ul>
         )}
-        <InlineBanner variant="plain" className="mt-3">
-          Excludes {formatCount(stuckMessages)} stuck message
-          {stuckMessages === 1 ? "" : "s"} (uncertain/undelivered) — see the tile above. Counting
-          those as failed would overstate failure; counting them as delivered would be a lie.
-        </InlineBanner>
       </CardBody>
     </Card>
   );

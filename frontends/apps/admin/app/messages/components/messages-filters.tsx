@@ -1,7 +1,8 @@
-// Dumb — route-local to messages (R6). The filter row: state, client
-// reference, a from/to date range, and the three quick-range buttons.
-// Every value and every change is handed in or reported out via props —
-// this component holds no URL state and doesn't know `nuqs` exists.
+// Dumb component (R6): the Messages list's filters, drawn as the list's own
+// toolbar. The state picker, the client reference and the date range on one
+// row; the date presets as M3 filter chips under it, selected when the range
+// matches. Every value comes in as a prop and goes out through a callback:
+// the URL (nuqs) owns the state in `messages-screen.tsx`.
 
 import {
   Button,
@@ -13,108 +14,98 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@vaam-apps/ui";
+import { FilterChip } from "@/components/filter-chip";
 import { MESSAGE_STATES, MESSAGE_STATUS_META, type MessageState } from "@/components/status";
+import type { DatePreset } from "../date-range";
 
 export interface MessagesFiltersProps {
   state: MessageState | null;
   clientRef: string;
   from: string;
   to: string;
+  preset: DatePreset | null;
   hasFilters: boolean;
   onStateChange: (state: MessageState | null) => void;
   onClientRefChange: (value: string) => void;
   onFromChange: (value: string) => void;
   onToChange: (value: string) => void;
-  onSelectToday: () => void;
-  onSelectLast7Days: () => void;
-  onSelectLast30Days: () => void;
+  onPreset: (preset: DatePreset) => void;
   onClear: () => void;
 }
 
-export function MessagesFilters({
-  state,
-  clientRef,
-  from,
-  to,
-  hasFilters,
-  onStateChange,
-  onClientRefChange,
-  onFromChange,
-  onToChange,
-  onSelectToday,
-  onSelectLast7Days,
-  onSelectLast30Days,
-  onClear,
-}: MessagesFiltersProps) {
+const PRESETS: { value: DatePreset; label: string }[] = [
+  { value: "today", label: "Today" },
+  { value: "7d", label: "Last 7 days" },
+  { value: "30d", label: "Last 30 days" },
+];
+
+export function MessagesFilters(props: MessagesFiltersProps) {
   return (
-    <div className="flex flex-col flex-wrap gap-4 sm:flex-row sm:items-end">
-      <FormField label="State" htmlFor="filter-state" className="sm:w-[180px]">
-        <Select
-          value={state ?? "__all"}
-          onValueChange={(value) =>
-            onStateChange(value === "__all" ? null : (value as MessageState))
-          }
-        >
-          <SelectTrigger id="filter-state">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all">All states</SelectItem>
-            {MESSAGE_STATES.map((s) => (
-              <SelectItem key={s} value={s}>
-                {MESSAGE_STATUS_META[s].label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FormField>
-
-      <FormField label="Client reference" htmlFor="filter-client-ref" className="sm:w-[200px]">
-        <Input
-          id="filter-client-ref"
-          placeholder="exact match"
-          value={clientRef}
-          onChange={(e) => onClientRefChange(e.target.value)}
-        />
-      </FormField>
-
-      <div className="flex gap-4">
-        <FormField label="From" htmlFor="filter-from" className="flex-1 sm:w-[160px] sm:flex-none">
+    <>
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-[180px_minmax(0,1fr)_160px_160px]">
+        <FormField label="State" htmlFor="filter-state">
+          <Select
+            value={props.state ?? "__all"}
+            onValueChange={(value) =>
+              props.onStateChange(value === "__all" ? null : (value as MessageState))
+            }
+          >
+            <SelectTrigger id="filter-state">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__all">All states</SelectItem>
+              {MESSAGE_STATES.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {MESSAGE_STATUS_META[s].label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
+        <FormField label="Client reference" htmlFor="filter-client-ref">
+          <Input
+            id="filter-client-ref"
+            placeholder="Exact match"
+            value={props.clientRef}
+            onChange={(e) => props.onClientRefChange(e.target.value)}
+          />
+        </FormField>
+        <FormField label="From" htmlFor="filter-from">
           <Input
             id="filter-from"
             type="date"
-            value={from}
-            max={to || undefined}
-            onChange={(e) => onFromChange(e.target.value)}
+            value={props.from}
+            max={props.to || undefined}
+            onChange={(e) => props.onFromChange(e.target.value)}
           />
         </FormField>
-        <FormField label="To" htmlFor="filter-to" className="flex-1 sm:w-[160px] sm:flex-none">
+        <FormField label="To" htmlFor="filter-to">
           <Input
             id="filter-to"
             type="date"
-            value={to}
-            min={from || undefined}
-            onChange={(e) => onToChange(e.target.value)}
+            value={props.to}
+            min={props.from || undefined}
+            onChange={(e) => props.onToChange(e.target.value)}
           />
         </FormField>
       </div>
-
-      <div className="flex flex-wrap items-center gap-2 sm:pb-0.5">
-        <Button type="button" variant="secondary" size="sm" onClick={onSelectToday}>
-          Today
-        </Button>
-        <Button type="button" variant="secondary" size="sm" onClick={onSelectLast7Days}>
-          Last 7 days
-        </Button>
-        <Button type="button" variant="secondary" size="sm" onClick={onSelectLast30Days}>
-          Last 30 days
-        </Button>
-        {hasFilters && (
-          <Button type="button" variant="ghost" size="sm" onClick={onClear}>
+      <div className="flex flex-wrap items-center gap-2">
+        {PRESETS.map((preset) => (
+          <FilterChip
+            key={preset.value}
+            selected={props.preset === preset.value}
+            onClick={() => props.onPreset(preset.value)}
+          >
+            {preset.label}
+          </FilterChip>
+        ))}
+        {props.hasFilters && (
+          <Button type="button" variant="ghost" size="sm" onClick={props.onClear}>
             Clear filters
           </Button>
         )}
       </div>
-    </div>
+    </>
   );
 }

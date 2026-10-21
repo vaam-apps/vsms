@@ -21,3 +21,23 @@ export function nextDayIso(dateOnly: string): string {
   date.setUTCDate(date.getUTCDate() + 1);
   return date.toISOString();
 }
+
+/** The one-tap ranges the list offers. */
+export type DatePreset = "today" | "7d" | "30d";
+
+/** The `from`/`to` pair a preset selects. */
+export function presetRange(preset: DatePreset): { from: string; to: string } {
+  const to = todayIsoDate();
+  if (preset === "today") return { from: to, to };
+  return { from: daysAgoIsoDate(preset === "7d" ? 7 : 30), to };
+}
+
+/** Which preset, if any, the current range is — so its chip shows as
+ * selected, and stops showing the moment either date is edited by hand. */
+export function activePreset(from: string | null, to: string | null): DatePreset | null {
+  for (const preset of ["today", "7d", "30d"] as const) {
+    const range = presetRange(preset);
+    if (range.from === from && range.to === to) return preset;
+  }
+  return null;
+}

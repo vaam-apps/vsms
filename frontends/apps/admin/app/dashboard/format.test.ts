@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatCount, formatPercent } from "./format";
+import { describeDelta, formatCount, formatPercent, overallDeliveryRate } from "./format";
 
 describe("formatCount", () => {
   it("adds thousands separators", () => {
@@ -24,5 +24,30 @@ describe("formatPercent", () => {
 
   it("formats a zero ratio as 0.0%, not 0%, matching the below-10% branch", () => {
     expect(formatPercent(0)).toBe("0.0%");
+  });
+});
+
+describe("overallDeliveryRate", () => {
+  it("sums delivered and terminal across operators", () => {
+    expect(
+      overallDeliveryRate([
+        { delivered: 8, terminalTotal: 10 },
+        { delivered: 1, terminalTotal: 2 },
+      ]),
+    ).toEqual({ ratio: 0.75, delivered: 9, terminal: 12 });
+  });
+
+  it("is null when nothing reached a final state, never a 0% that reads as an outage", () => {
+    expect(overallDeliveryRate([])).toBeNull();
+    expect(overallDeliveryRate([{ delivered: 0, terminalTotal: 0 }])).toBeNull();
+  });
+});
+
+describe("describeDelta", () => {
+  it("signs a change and says when there was none", () => {
+    expect(describeDelta(8)).toBe("+8 on the previous hour");
+    expect(describeDelta(-1200)).toBe("−1,200 on the previous hour");
+    expect(describeDelta(0)).toBe("Level with the previous hour");
+    expect(describeDelta(null)).toBeNull();
   });
 });

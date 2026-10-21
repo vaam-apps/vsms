@@ -1,33 +1,18 @@
 "use client";
 
-// The console's app shell (docs/design/console-redesign.md §6.2, Phase 0).
-// Replaces `console-nav.tsx`'s per-screen header pattern with one shared
-// chrome mounted once from `frontends/apps/admin/app/layout.tsx` — see that file's own
-// module doc for what a per-screen re-skin must NOT change about data
-// fetching (messages-screen.tsx's live-poll loop, AsyncLocalStorage token
-// forwarding, Layer-2 403 surfacing, nuqs URL state, the OIDC session
-// handling — none of that lives here or is touched by this file).
-//
-// `console-nav.tsx` no longer exists — a grep across the whole tree found
-// zero imports and zero JSX usages of it (the two screens whose own
-// comments once described using it, `opt-outs-screen.tsx`/
-// `settings-screen.tsx`, already say they dropped it in favour of this
-// shell's sidebar), so it was deleted rather than left as dead code this
-// PR's own R6 audit would otherwise have to explain away.
-//
-// # R6
-//
-// This file is the smart half of the shell: it decides *whether* to render
-// chrome at all (the `/login` bare-render case) and builds the data
-// `ConsoleChrome`/`AccountSlot` need (`usePathname()`, the account email).
-// Every class and every piece of markup that used to live here now lives
-// in `./components/console-chrome.tsx` and `./components/account-slot.tsx`.
+// The console's app shell: mounted once from `layout.tsx`, it decides
+// whether to draw any chrome at all (not on `/login`, a pre-auth gate) and
+// builds the data the dumb chrome components need: the current path, the
+// page's place in the navigation for the top bar, the theme, and the
+// account block. Every class lives in `./components/` (R6).
 
+import { useTheme } from "@vaam-apps/ui";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import { AccountSlot } from "./components/account-slot";
 import { ConsoleChrome } from "./components/console-chrome";
-import { NAV_FOOTER, NAV_GROUPS, NAV_TOP } from "./nav-groups";
+import { TopAppBar } from "./components/top-app-bar";
+import { locate, NAV_FOOTER, NAV_GROUPS, NAV_TOP } from "./nav-groups";
 import { useClientLinks } from "./use-client-links";
 
 export function ConsoleShell({
@@ -36,31 +21,44 @@ export function ConsoleShell({
 }: {
   children: ReactNode;
   /** The signed-in human's email, read server-side in `layout.tsx` off the
-   * `x-vsms-actor` header `frontends/apps/admin/middleware.ts` already sets on every
-   * authenticated request (the same header `frontends/packages/api/src/context.ts`
-   * reads for the tRPC `actor` field) — display only, not an auth check;
-   * `middleware.ts` has already decided whether this request is allowed
-   * through by the time this component ever renders. */
+   * `x-vsms-actor` header `middleware.ts` sets on every authenticated
+   * request. Display only, not an auth check: `middleware.ts` has already
+   * decided whether this request may render. */
   accountEmail?: string | null;
 }) {
   const pathname = usePathname();
-  // Every plain `<a href>` in the console, `SideNav`'s rows included, navigates
-  // client-side instead of reloading the document (see `client-links.ts`).
+  const { preference, resolvedTheme, setPreference } = useTheme();
+  // Every plain `<a href>` in the console, `SideNav`'s rows included,
+  // navigates client-side instead of reloading the document
+  // (`client-links.ts`).
   useClientLinks();
 
-  // `/login` is a pre-auth gate with no shell (§4) — render it bare rather
-  // than teaching this component anything about the auth flow itself.
   if (pathname === "/login") {
     return <>{children}</>;
   }
 
+  const here = locate(pathname);
   return (
     <ConsoleChrome
       topItem={NAV_TOP}
       groups={NAV_GROUPS}
       footerItems={NAV_FOOTER}
       currentPath={pathname}
-      accountSlot={<AccountSlot email={accountEmail} />}
+      accountSlot={
+        <AccountSlot
+          email={accountEmail}
+          themePreference={preference}
+          onThemePreferenceChange={setPreference}
+        />
+      }
+      topBar={
+        <TopAppBar
+          section={here?.section}
+          page={here?.page}
+          resolvedTheme={resolvedTheme}
+          onToggleTheme={() => setPreference(resolvedTheme === "dark" ? "light" : "dark")}
+        />
+      }
     >
       {children}
     </ConsoleChrome>

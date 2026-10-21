@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { daysAgoIsoDate, nextDayIso, todayIsoDate } from "./date-range";
+import { activePreset, daysAgoIsoDate, nextDayIso, presetRange, todayIsoDate } from "./date-range";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -43,5 +43,20 @@ describe("nextDayIso", () => {
 
   it("crosses a UTC year boundary correctly", () => {
     expect(nextDayIso("2026-12-31")).toBe("2027-01-01T00:00:00.000Z");
+  });
+});
+
+describe("presetRange and activePreset", () => {
+  it("maps each preset to an inclusive range ending today", () => {
+    expect(presetRange("today")).toEqual({ from: "2026-08-14", to: "2026-08-14" });
+    expect(presetRange("7d")).toEqual({ from: "2026-08-07", to: "2026-08-14" });
+    expect(presetRange("30d")).toEqual({ from: "2026-07-15", to: "2026-08-14" });
+  });
+
+  it("recognises a range a preset selected, and nothing else", () => {
+    expect(activePreset("2026-08-07", "2026-08-14")).toBe("7d");
+    expect(activePreset("2026-08-14", "2026-08-14")).toBe("today");
+    expect(activePreset("2026-08-08", "2026-08-14")).toBeNull();
+    expect(activePreset(null, null)).toBeNull();
   });
 });

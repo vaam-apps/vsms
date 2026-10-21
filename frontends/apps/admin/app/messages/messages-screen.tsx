@@ -40,8 +40,8 @@
 // console's own machine credential's app can appear in the initial list,
 // but will never receive a live state-change update from the stream — it
 // sits on screen until the next full refetch. Accepted, not silently
-// shipped: `CrossAppScopeBanner` states the list's own scope so an
-// operator doesn't misread a frozen out-of-scope row as a bug.
+// shipped: the list's footer says live updates cover this console's own app
+// and that a refresh updates the rest.
 //
 // # Live reconciliation, briefly
 //
@@ -73,24 +73,25 @@
 // 6. Row identity is the message id — `key={row.id}` throughout
 //    (`MessagesTable`), `LiveRow` itself requires a stable identity to
 //    wash correctly.
-// 8. Connection loss is visible — a `degraded` frame flips `DegradedBanner`
-//    on; a `recovered` frame flips it off.
+// 8. Connection loss is visible — a `degraded` frame turns the header's
+//    `LiveChip` to "Reconnecting"; a `recovered` frame turns it back.
 
 import { ScreenStack } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
+import { SquarePen } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { LinkButton } from "@/components/link-button";
+import { ListSurface } from "@/components/list-surface";
+import { LiveChip } from "@/components/live-chip";
+import { PageHeader } from "@/components/page-header";
 import { MESSAGE_STATES, type MessageState } from "@/components/status";
-import { CrossAppScopeBanner } from "./components/cross-app-scope-banner";
-import { DegradedBanner } from "./components/degraded-banner";
 import { ListErrorBanner } from "./components/list-error-banner";
 import { MessagesFilters } from "./components/messages-filters";
-import { MessagesHeader } from "./components/messages-header";
-import { MessagesListPanel } from "./components/messages-list-panel";
 import { MessagesTable } from "./components/messages-table";
 import { PendingMessagesPill } from "./components/pending-messages-pill";
-import { TruncatedNotice } from "./components/truncated-notice";
-import { daysAgoIsoDate, nextDayIso, todayIsoDate } from "./date-range";
+import { activePreset, nextDayIso, presetRange } from "./date-range";
 import { INITIAL_RECONCILE_STATE, reconcileReducer } from "./reconcile-reducer";
 
 export interface MessagesScreenProps {
@@ -101,6 +102,7 @@ export interface MessagesScreenProps {
 }
 
 export function MessagesScreen({ pollMs }: MessagesScreenProps) {
+  const router = useRouter();
   const [filters, setFilters] = useQueryStates(
     {
       state: parseAsStringEnum<MessageState>([...MESSAGE_STATES]),
@@ -127,7 +129,7 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
   const utils = trpc.useUtils();
 
   const [state, dispatch] = useReducer(reconcileReducer, INITIAL_RECONCILE_STATE);
-  // `degraded` toggles a banner, so it has to trigger a render — none of
+  // `degraded` toggles the header's chip, so it has to trigger a render — none of
   // the usual `useState` replacements fit it (it's neither URL state, nor
   // server data from a query, nor form state, nor several values changing
   // together), so it stays `useState` deliberately, the one case R6 itself
@@ -239,40 +241,61 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
     filters.from !== null ||
     filters.to !== null;
 
+  const total = listQuery.data?.items.length;
+  const footer =
+    listQuery.data?.truncated === true
+      ? "The newest 1,000 messages. Filters apply within them; older matches do not appear."
+      : total !== undefined
+        ? `${total.toLocaleString("en-US")} message${total === 1 ? "" : "s"}. Live updates cover this console's own app; refresh for other apps' rows.`
+        : undefined;
+
   return (
     <ScreenStack>
-      <MessagesHeader pollMs={pollMs} />
-      <CrossAppScopeBanner />
-      {degraded && <DegradedBanner />}
+      <PageHeader
+        title="Messages"
+        description="Every message across every app, newest first. Status changes appear within a few seconds."
+        actions={
+          <>
+            <LiveChip live={!degraded} label={`Updating every ${Math.round(pollMs / 1000)} s`} />
+            <LinkButton href="/composer" variant="primary">
+              <SquarePen size={18} aria-hidden="true" />
+              Compose
+            </LinkButton>
+          </>
+        }
+      />
       {listQuery.isError && <ListErrorBanner message={listQuery.error.message} />}
 
-      <MessagesFilters
-        state={filters.state}
-        clientRef={filters.clientRef ?? ""}
-        from={filters.from ?? ""}
-        to={filters.to ?? ""}
-        hasFilters={hasFilters}
-        onStateChange={(next) => void setFilters({ state: next })}
-        onClientRefChange={(value) => void setFilters({ clientRef: value === "" ? null : value })}
-        onFromChange={(value) => void setFilters({ from: value === "" ? null : value })}
-        onToChange={(value) => void setFilters({ to: value === "" ? null : value })}
-        onSelectToday={() => void setFilters({ from: todayIsoDate(), to: todayIsoDate() })}
-        onSelectLast7Days={() => void setFilters({ from: daysAgoIsoDate(7), to: todayIsoDate() })}
-        onSelectLast30Days={() => void setFilters({ from: daysAgoIsoDate(30), to: todayIsoDate() })}
-        onClear={clearFilters}
-      />
-
-      {listQuery.data?.truncated && <TruncatedNotice />}
-
-      <MessagesListPanel>
+      <ListSurface
+        toolbar={
+          <MessagesFilters
+            state={filters.state}
+            clientRef={filters.clientRef ?? ""}
+            from={filters.from ?? ""}
+            to={filters.to ?? ""}
+            preset={activePreset(filters.from, filters.to)}
+            hasFilters={hasFilters}
+            onStateChange={(next) => void setFilters({ state: next })}
+            onClientRefChange={(value) =>
+              void setFilters({ clientRef: value === "" ? null : value })
+            }
+            onFromChange={(value) => void setFilters({ from: value === "" ? null : value })}
+            onToChange={(value) => void setFilters({ to: value === "" ? null : value })}
+            onPreset={(preset) => void setFilters(presetRange(preset))}
+            onClear={clearFilters}
+          />
+        }
+        footer={footer}
+      >
         <PendingMessagesPill count={state.pending.length} onClick={insertPending} />
         <MessagesTable
           rows={state.rows}
+          onOpen={(id) => router.push(`/messages/${id}`)}
           isLoading={listQuery.isLoading}
           hasFilters={hasFilters}
           onClearFilters={clearFilters}
         />
-      </MessagesListPanel>
+      </ListSurface>
     </ScreenStack>
   );
 }

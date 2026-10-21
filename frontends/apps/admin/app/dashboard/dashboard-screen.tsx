@@ -21,25 +21,16 @@
 // schema's own `WebhookAttempt` rows (`outboxDepth` below, delivered by
 // the `hooks` role). Building a second, disagreeing "outbox" number here
 // would be exactly the mistake AGENTS.md warns against; the outbox card's
-// own caption says so and points at `deploy/prometheus/alerts.yml` instead
+// own comment says so and points at `deploy/prometheus/alerts.yml` instead
 // of restating those two numbers.
 //
-// # Why the scope banner
+// # Scope
 //
-// **Changed by #211.** Before it, this call always ran as the console's
-// own machine credential, so `Message`/`WebhookAttempt` numbers were
-// scoped to that credential's one fixed `appId`. #211 forwards the
-// signed-in human's own session token instead, and `Message`/
-// `WebhookAttempt`'s own `@@allow` (`schema.cstack`) admits
-// `auth().kind == "user"` unconditionally — unscoped by `appId`, for
-// *any* signed-in human regardless of role. So the numbers below now
-// cover every app in this deployment, not one — a real widening of what a
-// signed-in operator sees, not a bug: it is the "cross-app visibility"
-// #211's own issue named as one of the things it unblocks (#50). The
-// banner still renders off `summary.appId`'s presence/absence rather than
-// assuming either shape, matching `messages-screen.tsx`'s own precedent.
-// `jobBacklog` was always system-wide regardless, because `Job` has no
-// `appId` to scope by at all (`jobs-screen.tsx`'s own banner).
+// Since #211 this call runs as the signed-in human, and `Message`/
+// `WebhookAttempt`'s `@@allow` admits any `kind == "user"` unscoped, so the
+// figures cover every app in the deployment. The panel's caption says so,
+// read off `summary.appId`'s presence rather than assumed. `jobBacklog` is
+// system-wide regardless: `Job` has no `appId` to scope by.
 //
 // # Delivery rate, and what "uncertain" means for it
 //
@@ -51,12 +42,10 @@
 //
 // # Balance
 //
-// No card claims a number here. `poll_balance` (§7.5) was never built —
-// AGENTS.md's own status section names it as one of the eight job kinds
-// "named but never built" — so there is no source of truth for provider
-// balance anywhere in this system yet. A tile showing a fabricated "0
-// XAF" would be actively misleading; the card below says exactly that
-// instead.
+// No card. `poll_balance` (§7.5) was never built, so there is no source of
+// truth for provider balance anywhere in this system; the old card said so
+// in a paragraph on every load, which told an operator nothing they could
+// act on. It comes back as a figure when the job exists.
 //
 // # R6
 //
@@ -69,15 +58,7 @@ import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@vsms/api";
 import { trpc } from "@vsms/hooks";
 import { DashboardView } from "./components/dashboard-view";
-import { formatCount } from "./format";
-
-// Console-redesign Phase 2: this screen used to hand-roll its own <header>
-// nav strip (links to every other route in the console) and its own
-// <main max-w-[1400px] px-6 py-10> wrapper — both pre-date `ConsoleShell`
-// (Phase 0), which now mounts once from `admin/app/layout.tsx` and already
-// gives every route a persistent sidebar (`SideNav`, all eighteen routes,
-// grouped) plus a shared <main> with its own max-width and padding. That
-// block is gone; `DashboardView` renders only this screen's own content.
+import { describeDelta, formatCount, formatPercent, overallDeliveryRate } from "./format";
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 type DashboardSummary = RouterOutputs["dashboard"]["summary"];
@@ -118,27 +99,72 @@ export function DashboardScreen({ refetchIntervalMs }: DashboardScreenProps) {
     currentRatio != null && previousRatio != null && currentRatio - previousRatio >= 0.25;
 
   const operatorRows = (data?.operatorStats ?? []).filter((row) => row.terminalTotal > 0);
-  const allOperatorsQuiet = data != null && operatorRows.length === 0;
   const stuckMessagesCount = data?.stuckMessages ?? 0;
+  const overall = overallDeliveryRate(operatorRows);
+  const appScoped = data?.appId !== undefined;
 
   return (
     <DashboardView
-      refetchIntervalMs={refetchIntervalMs}
-      appScoped={data?.appId !== undefined}
+      refreshSeconds={Math.round(refetchIntervalMs / 1000)}
+      scopeCaption={
+        appScoped
+          ? "This console's own app only. Jobs are system-wide."
+          : "Every app in this deployment. Jobs are system-wide."
+      }
       errorMessage={summaryQuery.isError ? summaryQuery.error.message : null}
       isLoading={summaryQuery.isLoading}
-      queueDepth={formatCount(data?.queueDepth ?? 0)}
-      jobBacklog={formatCount(data?.jobBacklog ?? 0)}
-      outboxDepth={formatCount(data?.outboxDepth ?? 0)}
-      stuckMessages={formatCount(stuckMessagesCount)}
-      stuckMessagesCount={stuckMessagesCount}
+      sentThisHour={{
+        value: formatCount(currentHour?.totalCount ?? 0),
+        caption: describeDelta(throughputDelta) ?? "No previous hour to compare",
+      }}
+      deliveryRate={
+        overall == null
+          ? { value: "—", caption: "Nothing reached a final state" }
+          : {
+              value: formatPercent(overall.ratio),
+              caption: `${formatCount(overall.delivered)} of ${formatCount(overall.terminal)} final`,
+            }
+      }
+      queueDepth={{
+        value: formatCount(data?.queueDepth ?? 0),
+        caption: "Accepted, queued or routed",
+      }}
+      stuck={{
+        value: formatCount(stuckMessagesCount),
+        caption: "Uncertain or undelivered",
+        attention: stuckMessagesCount > 0,
+      }}
+      pipeline={[
+        {
+          label: "Queued messages",
+          value: formatCount(data?.queueDepth ?? 0),
+          caption: "Accepted, queued or routed, not yet with a provider",
+          href: "/messages?state=queued",
+        },
+        {
+          label: "Messages with no outcome",
+          value: formatCount(stuckMessagesCount),
+          caption: "Sent, but never confirmed delivered or failed",
+          href: "/messages?state=uncertain",
+        },
+        {
+          label: "Job backlog",
+          value: formatCount(data?.jobBacklog ?? 0),
+          caption: "Pending or running, across the whole system",
+          href: "/jobs",
+        },
+        {
+          label: "Webhook deliveries",
+          value: formatCount(data?.outboxDepth ?? 0),
+          caption: "Attempts pending or in flight",
+          href: "/webhooks",
+        },
+      ]}
       buckets={buckets}
-      throughputDelta={throughputDelta}
       currentRatio={currentRatio}
-      previousRatio={previousRatio}
       ucs2Jumped={ucs2Jumped}
       operatorRows={operatorRows}
-      allOperatorsQuiet={allOperatorsQuiet}
+      stuckMessagesCount={stuckMessagesCount}
     />
   );
 }

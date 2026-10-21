@@ -71,9 +71,13 @@ export function RouteTable({
             </TableCell>
             <TableCell>
               {route.enabled ? (
-                <StateChip tone="success" size="sm">enabled</StateChip>
+                <StateChip tone="success" size="sm">
+                  enabled
+                </StateChip>
               ) : (
-                <StateChip tone="danger" size="sm">disabled</StateChip>
+                <StateChip tone="danger" size="sm">
+                  disabled
+                </StateChip>
               )}
             </TableCell>
             <TableCell>{route.name}</TableCell>

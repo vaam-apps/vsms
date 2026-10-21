@@ -36,14 +36,14 @@
 // `delivered` changes nothing) — see `backends/crates/sms-api/src/dlr.rs`'s
 // own `next_state`.
 
-import { Separator } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
 import { isTerminalMessageState } from "@/components/status";
-import { MessageDetailHeader } from "./components/message-detail-header";
+import { MessageBodyCard } from "./components/message-body-card";
 import { MessageDetailLayout } from "./components/message-detail-layout";
+import { MessageFields } from "./components/message-fields";
+import { MessageHeading } from "./components/message-heading";
 import { MessageLoadingCard } from "./components/message-loading-card";
 import { MessageNotFoundCard } from "./components/message-not-found-card";
-import { MessageSummaryCard } from "./components/message-summary-card";
 import { MessageTimelineCard } from "./components/message-timeline-card";
 import { ReceiptsCard } from "./components/receipts-card";
 import { buildTimeline } from "./timeline";
@@ -55,30 +55,40 @@ export interface MessageDetailScreenProps {
 export function MessageDetailScreen({ messageId }: MessageDetailScreenProps) {
   const byIdQuery = trpc.messages.byId.useQuery({ id: messageId });
   const receiptsQuery = trpc.messages.receipts.useQuery({ id: messageId });
+  const message = byIdQuery.data ?? undefined;
+
+  if (message === undefined) {
+    return (
+      <MessageDetailLayout
+        header={<MessageHeading message={undefined} />}
+        main={byIdQuery.error != null ? <MessageNotFoundCard /> : <MessageLoadingCard />}
+      />
+    );
+  }
 
   return (
-    <MessageDetailLayout>
-      <MessageDetailHeader messageId={messageId} />
-
-      {byIdQuery.isLoading && <MessageLoadingCard />}
-      {byIdQuery.error != null && <MessageNotFoundCard />}
-
-      {byIdQuery.data != null && (
+    <MessageDetailLayout
+      header={<MessageHeading message={message} />}
+      main={
         <>
-          <MessageSummaryCard message={byIdQuery.data} />
-          <MessageTimelineCard
-            transitions={buildTimeline(byIdQuery.data)}
-            currentState={byIdQuery.data.state}
-            isTerminal={isTerminalMessageState(byIdQuery.data.state)}
-          />
-          <Separator />
-          <ReceiptsCard
-            receipts={receiptsQuery.data?.receipts}
-            isLoading={receiptsQuery.isLoading}
-            errorMessage={receiptsQuery.isError ? receiptsQuery.error.message : undefined}
-          />
+          <MessageBodyCard message={message} />
+          <MessageFields message={message} />
         </>
-      )}
-    </MessageDetailLayout>
+      }
+      aside={
+        <MessageTimelineCard
+          transitions={buildTimeline(message)}
+          currentState={message.state}
+          isTerminal={isTerminalMessageState(message.state)}
+        />
+      }
+      footer={
+        <ReceiptsCard
+          receipts={receiptsQuery.data?.receipts}
+          isLoading={receiptsQuery.isLoading}
+          errorMessage={receiptsQuery.isError ? receiptsQuery.error.message : undefined}
+        />
+      }
+    />
   );
 }

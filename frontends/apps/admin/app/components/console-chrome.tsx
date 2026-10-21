@@ -1,46 +1,33 @@
-// Dumb component (R6): the console's own drawer/top-bar/sidebar structure.
-// Markup moved verbatim out of `console-shell.tsx` — that file now only
-// decides *whether* to render this chrome (the `/login` bare-render check)
-// and builds the `accountSlot`/`NAV_*` data it hands down; every
-// `className` and every piece of layout markup lives here, `SideNav`
-// included.
+// Dumb component (R6): the console's frame — the navigation, the top app
+// bar and the content column. `console-shell.tsx` decides whether to render
+// it (not on `/login`) and hands it the data; every class lives here.
 //
-// `CONSOLE_NAV_TOGGLE_ID` moved from a screen-level const into this
-// component's own internal wiring — it only exists to link the drawer
-// checkbox to its two toggle labels (the mobile hamburger, the overlay),
-// which are both rendered by this file alone now, so no caller ever needs
-// to know the id exists.
+// # Why the floating `SideNav`, not the drawer it replaced
 //
-// A prior revision of `console-shell.tsx` wrapped `SideNav` in
-// `next/dynamic({ ssr: false })`, working around a real bug (`@vaam-apps/ui`'s
-// `SideNav` used to call `@uidotdev/usehooks`' `useMediaQuery` (D12), and
-// that hook's own `getServerSnapshot` is a hard
-// `throw new Error("useMediaQuery is a client-only hook")` — every full
-// page load under this shell 500'd) by never server-rendering the nav at
-// all — paid for with an empty sidebar slab on every first paint,
-// hydrating in afterward. Reworked instead: `side-nav.tsx` no longer reads
-// the viewport in JS anywhere — the three breakpoint bands are plain
-// Tailwind `lg:`/`xl:` responsive classes, so `SideNav` is an ordinary
-// import again and renders in the initial server-rendered HTML like
-// everything else in this shell. See `side-nav.tsx`'s own module doc for
-// the full mechanism, and its `NavLink`/`GroupSection` doc comments for
-// why a JS breakpoint read isn't needed here in the first place.
+// The shell used to own a daisyUI drawer and pass `smallScreen="off-canvas"`,
+// so a phone got a hamburger, a full-height sheet of eighteen rows, and a
+// sign-out link at the very bottom of it. `@vaam-apps/ui`'s default mode is
+// Material 3 Expressive's navigation as the platform draws it: a floating
+// toolbar along the bottom below 640px (four destinations and a More sheet
+// holding the rest and the account block), a floating vertical toolbar from
+// 640px, and the full sidebar from 1280px. The account block is reachable at
+// every width without a drawer of our own, which is the one thing the old
+// shell could not do in the 1024-1279px band.
 //
-// Postscript: `@uidotdev/usehooks` is no longer a dependency of this repo
-// at all. Once the rework above removed the only call site, it was a
-// declared package with zero live imports — and its last real publish was
-// 2023-10-23, predating React 19, which this console runs on. D12 in
-// `docs/design/console-redesign.md` carries the full reasoning. The
-// package name survives in this comment only as the record of a bug worth
-// not repeating: a hook that throws in `getServerSnapshot` fails every
-// server-rendered page while `pnpm build` stays green, because every route
-// here is dynamic and build-time generation never executes them.
+// The rails are `position: fixed` and portalled to `document.body`, so they
+// cannot reserve their own space: the paddings on the top bar and on `main`
+// are this file's job (`primitives-layout.md`, "Only the sidebar takes space
+// out of the page"). Below 640px `pb-28` clears the 80px bottom toolbar;
+// from 640px `sm:pl-24` clears the 80px vertical one; from 1280px the
+// sidebar is in flow and both go back to the normal gutter.
+//
+// The sidebar is `sticky` at full viewport height so it does not scroll away
+// with a long table. No `display` class is passed to `SideNav`: its own
+// `hidden` below 1280px is what keeps a second "Primary" landmark out of the
+// accessibility tree.
 
 import { type NavGroup, type NavItem, SideNav } from "@vaam-apps/ui";
-import { Menu } from "lucide-react";
 import type { ReactNode } from "react";
-
-const CONSOLE_NAV_TOGGLE_ID = "console-nav";
 
 export interface ConsoleChromeProps {
   topItem: NavItem;
@@ -48,6 +35,7 @@ export interface ConsoleChromeProps {
   footerItems: NavItem[];
   currentPath: string;
   accountSlot: ReactNode;
+  topBar: ReactNode;
   children: ReactNode;
 }
 
@@ -57,60 +45,27 @@ export function ConsoleChrome({
   footerItems,
   currentPath,
   accountSlot,
+  topBar,
   children,
 }: ConsoleChromeProps) {
   return (
-    <div className="drawer lg:drawer-open">
-      <input id={CONSOLE_NAV_TOGGLE_ID} type="checkbox" className="drawer-toggle" />
-
-      <div className="drawer-content flex min-h-dvh flex-col">
-        {/* Slim sticky top bar — visible at every breakpoint; carries the
-            hamburger below `lg`, wordmark always. §6.2's own sketch also
-            names a search field and account control living here; neither
-            exists yet (no search backend, and the account control already
-            lives in the sidebar's own footer per `accountSlot` above) —
-            left for a later screen agent to add, not stubbed. */}
-        <header className="sticky top-0 z-30 flex h-14 shrink-0 items-center gap-3 border-edge border-b bg-base-200 px-4">
-          <label
-            htmlFor={CONSOLE_NAV_TOGGLE_ID}
-            className="btn btn-square btn-ghost btn-sm lg:hidden"
-            aria-label="Open navigation"
-          >
-            <Menu size={18} aria-hidden="true" />
-          </label>
-          <span className="font-mono text-caption text-subtle-foreground">vsms</span>
-        </header>
-
-        <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-6 lg:px-8 lg:py-10">
+    <div className="flex min-h-dvh bg-base-100">
+      <SideNav
+        topItem={topItem}
+        groups={groups}
+        footerItems={footerItems}
+        currentPath={currentPath}
+        accountSlot={accountSlot}
+        className="xl:sticky xl:top-0 xl:h-dvh xl:w-72 xl:bg-surface-container-low xl:pt-3"
+      />
+      <div className="flex min-w-0 flex-1 flex-col">
+        {topBar}
+        <main
+          id="main"
+          className="mx-auto w-full min-w-0 max-w-[1440px] flex-1 px-4 pt-2 pb-28 sm:pr-6 sm:pb-10 sm:pl-24 xl:px-10"
+        >
           {children}
         </main>
-      </div>
-
-      <div className="drawer-side z-40">
-        <label
-          htmlFor={CONSOLE_NAV_TOGGLE_ID}
-          aria-label="Close navigation"
-          className="drawer-overlay"
-        />
-        <SideNav
-          topItem={topItem}
-          groups={groups}
-          footerItems={footerItems}
-          currentPath={currentPath}
-          accountSlot={accountSlot}
-          // `@vaam-apps/ui@0.1.2` changed the default from the off-canvas
-          // tree this shell was built against to a `fixed`, portalled
-          // floating rail — correct for a caller with no drawer of its
-          // own, but this shell already owns one (the `drawer`/
-          // `drawer-side` above), so the default left it with an empty
-          // drawer below `lg` and a permanently floating rail on top of
-          // it, with no `accountSlot`/"Sign out" reachable below `xl` at
-          // all. `"off-canvas"` is the single below-`lg` experience this
-          // shell was designed around: fully in-flow at every width, the
-          // full-label accordion tree inside the drawer.
-          smallScreen="off-canvas"
-          className="min-h-dvh w-[260px] border-edge border-r lg:w-[64px] xl:w-[260px]"
-        />
       </div>
     </div>
   );

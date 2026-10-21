@@ -23,19 +23,8 @@ export function MessageTimelineCard({
 }: MessageTimelineCardProps) {
   return (
     <Card>
-      <CardHeader
-        title="Timeline"
-        meta="What sms-api actually timestamps — not a full transition log"
-      />
+      <CardHeader title="Timeline" headingLevel={2} meta="Timestamped steps only" />
       <CardBody>
-        <p className="mb-4 rounded-sm border border-edge bg-surface-2 px-3 py-2 text-caption text-muted-foreground">
-          This timeline shows only what sms-api directly timestamps: acceptance, submission (if it
-          happened), and the current state below. Intermediate hops —{" "}
-          <span className="font-mono">queued</span>, <span className="font-mono">routed</span> —
-          aren't individually recorded anywhere, so they aren't shown as dated steps. A state
-          reached with no delivery receipt behind it (see the card below) is shown exactly as such,
-          not smoothed into a clean chronology.
-        </p>
         <StateTimeline
           transitions={transitions}
           system={MESSAGE_STATUS_META}
@@ -43,6 +32,10 @@ export function MessageTimelineCard({
           currentState={currentState}
           isTerminal={isTerminal}
         />
+        <p className="mt-4 text-body-small text-muted-foreground">
+          sms-api records when a message was accepted and submitted, and its state now. The queued
+          and routed hops in between carry no timestamp, so they are not drawn as steps.
+        </p>
       </CardBody>
     </Card>
   );
