@@ -28,6 +28,7 @@ import type { ReactNode } from "react";
 import { AccountSlot } from "./components/account-slot";
 import { ConsoleChrome } from "./components/console-chrome";
 import { NAV_FOOTER, NAV_GROUPS, NAV_TOP } from "./nav-groups";
+import { useClientLinks } from "./use-client-links";
 
 export function ConsoleShell({
   children,
@@ -43,6 +44,9 @@ export function ConsoleShell({
   accountEmail?: string | null;
 }) {
   const pathname = usePathname();
+  // Every plain `<a href>` in the console, `SideNav`'s rows included, navigates
+  // client-side instead of reloading the document (see `client-links.ts`).
+  useClientLinks();
 
   // `/login` is a pre-auth gate with no shell (§4) — render it bare rather
   // than teaching this component anything about the auth flow itself.

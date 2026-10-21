@@ -1,3 +1,4 @@
+import { env } from "@vsms/env";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
@@ -23,7 +24,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   return (
     <html lang="en" data-theme="dark">
       <body>
-        <Providers>
+        <Providers queryStaleTimeMs={env.QUERY_STALE_TIME_MS}>
           <ConsoleShell accountEmail={accountEmail}>{children}</ConsoleShell>
         </Providers>
       </body>

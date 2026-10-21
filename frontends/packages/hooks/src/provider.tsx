@@ -26,10 +26,23 @@ export interface TrpcProviderProps {
   children: ReactNode;
   /** The Next.js tRPC route handler's own endpoint, e.g. `"/api/trpc"`. */
   url: string;
+  /** How long a result counts as fresh (`@vsms/env`'s `QUERY_STALE_TIME_MS`).
+   * TanStack's own default is 0: every remount and every window focus
+   * refetched every query on the screen, so returning to a screen always
+   * started a round trip, and tabbing back to the console re-fired every
+   * list at once. Polled queries keep their own `refetchInterval`. */
+  staleTimeMs: number;
 }
 
-export function TrpcProvider({ children, url }: TrpcProviderProps) {
-  const [queryClient] = useState(() => new QueryClient());
+export function TrpcProvider({ children, url, staleTimeMs }: TrpcProviderProps) {
+  const [queryClient] = useState(
+    () =>
+      new QueryClient({
+        defaultOptions: {
+          queries: { staleTime: staleTimeMs },
+        },
+      }),
+  );
   const [trpcClient] = useState(() =>
     trpc.createClient({
       links: [

@@ -5,10 +5,17 @@ import { TrpcProvider } from "@vsms/hooks";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import type { ReactNode } from "react";
 
-export function Providers({ children }: { children: ReactNode }) {
+export function Providers({
+  children,
+  queryStaleTimeMs,
+}: {
+  children: ReactNode;
+  /** `@vsms/env`'s `QUERY_STALE_TIME_MS`, read server-side in `layout.tsx`. */
+  queryStaleTimeMs: number;
+}) {
   return (
     <NuqsAdapter>
-      <TrpcProvider url="/api/trpc">
+      <TrpcProvider url="/api/trpc" staleTimeMs={queryStaleTimeMs}>
         {children}
         {/* #54: the Providers/Routes screens are the first consumers of
          * `toast()` — mounted once, here, rather than per-screen (`toast.tsx`'s
