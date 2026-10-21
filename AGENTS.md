@@ -2924,7 +2924,7 @@ nothing an operator could do before is gone):
   Developer-voiced banners became one-line captions.
 - **Forms and details.** The composer is two columns with a handset preview of the message;
   the simulator picks an app from a list instead of a typed id; the opt-out search is a
-  real form (Enter searches); the audit log uses the library's `Pagination` and shows a
+  real form (Enter searches); the message detail names its provider and route; the audit log uses the library's `Pagination` and shows a
   readable actor (`role · sub`) and primary key; Settings gained Appearance.
 
 **Small shared pieces, all dumb components under `frontends/apps/admin/components/`:**
