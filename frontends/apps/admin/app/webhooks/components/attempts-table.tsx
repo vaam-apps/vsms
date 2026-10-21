@@ -62,7 +62,7 @@ export function AttemptsTable({
         {attempts?.map((attempt) => (
           <TableRow key={attempt.id} className="cursor-pointer" onClick={() => onRowClick(attempt)}>
             <TableCell>
-              <AttemptStatusPill state={attempt.state} />
+              <AttemptStatusPill state={attempt.state} size="sm" />
             </TableCell>
             <TableCell mono hideBelow="md">
               {attempt.eventType}

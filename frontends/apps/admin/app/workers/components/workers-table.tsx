@@ -28,9 +28,9 @@ function StatusIndicator({ lock }: { lock: WorkerLockInfo }) {
     return <Badge variant="outline">scale-to-N — no lock</Badge>;
   }
   if (lock.held) {
-    return <StateChip tone="success">held</StateChip>;
+    return <StateChip tone="success" size="sm">held</StateChip>;
   }
-  return <StateChip tone="danger">unheld</StateChip>;
+  return <StateChip tone="danger" size="sm">unheld</StateChip>;
 }
 
 export interface WorkersTableProps {

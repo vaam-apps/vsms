@@ -109,7 +109,7 @@ export function JobsTable({
             }}
           >
             <TableCell>
-              <JobStatusPill state={job.state} />
+              <JobStatusPill state={job.state} size="sm" />
             </TableCell>
             <TableCell mono className="max-w-[160px] truncate">
               {job.kind}

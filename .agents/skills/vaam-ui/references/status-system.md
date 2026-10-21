@@ -86,7 +86,13 @@ six loud ones reads instantly; one with forty reads as noise.
 - **`StatusPill`** — glyph + label, optionally the raw enum `literal` and
   a `detail` (an error code, a provider response). Its accessible name is
   built from its content, so whatever you put in `detail` is announced.
-- **`StateChip`** — compact, for dense tables.
+  `size` defaults to `"md"`: M3's chip, 32px tall when loud, a 14px label
+  and an 18px glyph. **Pass `size="sm"` in table rows** — the dense 20px
+  pill every size used to render as — or a column of loud pills makes
+  those rows taller than their quiet neighbours.
+- **`StateChip`** — a state-toned chip for a word or phrase that is not a
+  state machine. `size` defaults to `"md"` (28px, 14px label); `"sm"` is
+  the dense chip for table cells.
 - **`StateMark`** — the glyph alone, `aria-hidden`, for when a nearby
   label already says the word.
 

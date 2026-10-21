@@ -2588,8 +2588,8 @@ that touched such a file turned the lint red. Measured with markdownlint-cli2
 from** — so it can tell you the copy no longer matches upstream, not which
 upstream it last matched. That fact lives here instead, and #384 is why:
 the copy used to carry its own provenance header naming the tag, and the
-move to `.agents/` dropped it. **Currently synced from `v0.4.0`
-(commit `54283c9`).** Update this line and the copy together, or the next
+move to `.agents/` dropped it. **Currently synced from `v0.5.0`
+(commit `678cb0a`).** Update this line and the copy together, or the next
 person has a hash that disagrees with something and no way to tell what.
 The `0.2.0` -> `0.2.4` bump (#419) did neither, so for that one release the
 copy described `0.2.0` while the console ran `0.2.4`; the `0.3.0` bump below
@@ -2601,7 +2601,7 @@ The sort is the part that bites: `localeCompare` puts `references/…` before
 `SKILL.md`, and a byte-order sort (Python's `sorted`, `sort` in C locale) puts
 `SKILL.md` first and gives a different hash (found when this paragraph's
 earlier wording, "sorted by relative path", failed to reproduce anything).
-Recomputed that way, it matches the lock for `v0.3.0` and for `v0.4.0`.
+Recomputed that way, it matches the lock for `v0.3.0`, `v0.4.0` and `v0.5.0`.
 
 ## CI runs only what a change can affect — and two ways that goes silently wrong
 

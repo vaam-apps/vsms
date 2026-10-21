@@ -75,7 +75,7 @@ export function MessagesTable({ rows, isLoading, hasFilters, onClearFilters }: M
             washHue={MESSAGE_STATUS_META[row.state].hue}
           >
             <TableCell>
-              <StatusPill state={row.state} />
+              <StatusPill state={row.state} size="sm" />
             </TableCell>
             <TableCell>
               <MsisdnDisplay value={row.msisdn} operator={row.operator} />

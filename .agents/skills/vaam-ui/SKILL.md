@@ -1,6 +1,6 @@
 ---
 name: vaam-ui
-description: Build operator-console screens with @vaam-apps/ui — the dark-first React component library used by vpay and vsms. Use when installing or configuring the package, wiring Tailwind v4 + daisyUI for it, declaring a status system, choosing a component, or debugging a screen that renders unstyled, uncoloured, or with the wrong surface.
+description: Build operator-console screens with @vaam-apps/ui — the dark-first, Material 3 Expressive React component library used by vpay and vsms. Use when installing or configuring the package, wiring Tailwind v4 + daisyUI for it, reading its M3 tokens (--md-sys-color-*, shape, type, motion), declaring a status system, choosing a component, or debugging a screen that renders unstyled, uncoloured, or with the wrong surface.
 ---
 
 # @vaam-apps/ui
@@ -8,6 +8,13 @@ description: Build operator-console screens with @vaam-apps/ui — the dark-firs
 A dark-first React component library for operator consoles — screens where
 someone is answering *"what happened to this one record, and does anybody
 need to do something?"* about one row out of a hundred thousand.
+
+It is **Material 3 Expressive, and only that**: colour generated from one
+seed (`#4f46e5`, indigo) with Material's colour science, M3's corner scale,
+type scale (Roboto Flex) and spring motion. Every token is a CSS custom
+property a screen can read — `var(--md-sys-color-primary-container)`,
+`var(--md-sys-shape-corner-large)`, `var(--md-sys-typescale-title-medium-size)`,
+`var(--md-sys-motion-spring-spatial-fast)` — see `references/setup.md`.
 
 Peer dependencies: `react` ^18.3 || ^19, `react-dom`, `tailwindcss` ^4.1,
 `daisyui` ^5.
@@ -23,9 +30,10 @@ the console's colours and starts reading every label.
 
 So: **never hardcode a colour for a state.** Declare it in a status
 system (`references/status-system.md`) and let `StatusPill` / `StateChip`
-/ `StateMark` render it. Decorative colour — the aurora glow and mesh —
-deliberately carries no state and cannot be tinted, which is the only
-thing that keeps a coloured surface safe in a system like this.
+/ `StateMark` render it. Decorative colour — the aurora glow, and
+`InstrumentPanel`'s `primary-container` shapes — deliberately carries no
+state and cannot be tinted, which is the only thing that keeps a coloured
+surface safe in a system like this.
 
 ## Setup, and the two ways it fails silently
 
@@ -82,8 +90,12 @@ Three orientation rules:
   examples and the two bugs that forced its custom configuration.
 - **Don't reach past the API for a colour.** The tokens are
   `bg-surface-*`, `border-edge*`, `text-foreground` /
-  `text-muted-foreground` / `text-subtle-foreground`. An undeclared token
-  generates nothing and fails invisibly.
+  `text-muted-foreground` / `text-subtle-foreground`, plus the M3 roles
+  components use (`bg-primary`, `bg-primary-container`,
+  `text-on-surface-variant`, `bg-inverse-surface`, …). An undeclared token
+  generates nothing and fails invisibly. Only the seed's `primary` family
+  is chrome: Expressive's `secondary`/`tertiary` rotate toward the status
+  greens at this seed, so do not paint them on a screen with status on it.
 
 ## Before you ship a screen
 
@@ -98,8 +110,9 @@ shipped. The ones that bite integrators most:
   build floating account chrome (a "Menu" pill) of your own. That sheet
   is a drawer: confirm inside the slot with `InlineConfirm`, not a
   `Dialog`.
-- `text-subtle-foreground` is banned on the aurora mesh (it falls below
-  AA there); `InstrumentPanel` already steps its own caption up.
+- `text-subtle-foreground` is banned on an `InstrumentPanel` (it falls
+  below AA on the panel's clover shape); the panel already steps its own
+  caption up.
 - A tooltip inside a scrolling ancestor is clipped. Use a native `title`.
 
 ## Where the real documentation is

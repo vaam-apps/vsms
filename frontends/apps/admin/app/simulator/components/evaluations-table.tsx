@@ -70,7 +70,7 @@ export function EvaluationsTable({ rows, winnerRouteId }: EvaluationsTableProps)
             <TableCell>
               {evaluation.routeName}
               {evaluation.routeId === winnerRouteId && (
-                <StateChip tone="success" className="ml-2">
+                <StateChip tone="success" size="sm" className="ml-2">
                   winner
                 </StateChip>
               )}
