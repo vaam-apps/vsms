@@ -17,11 +17,29 @@ function Mono({ children }: { children: ReactNode }) {
   return <span className="break-all font-mono">{children}</span>;
 }
 
-function OptionalId({ value }: { value: string | undefined | null }) {
-  return value != null ? <IdDisplay value={value} /> : <span>—</span>;
+/** A name when one is known, else the id; absent reads "—". */
+function NamedId({
+  value,
+  names,
+}: {
+  value: string | undefined | null;
+  names: ReadonlyMap<string, string>;
+}) {
+  if (value == null) return <span>—</span>;
+  return <>{names.get(value) ?? <IdDisplay value={value} />}</>;
 }
 
-export function MessageFields({ message }: { message: MessageDetail }) {
+export function MessageFields({
+  message,
+  providerNames,
+  routeNames,
+}: {
+  message: MessageDetail;
+  /** Provider display name by id; a caller without `provider:read` passes an empty map. */
+  providerNames: ReadonlyMap<string, string>;
+  /** Route name by id; a caller without `route:read` passes an empty map. */
+  routeNames: ReadonlyMap<string, string>;
+}) {
   return (
     <Card>
       <CardHeader title="Details" headingLevel={2} />
@@ -37,10 +55,10 @@ export function MessageFields({ message }: { message: MessageDetail }) {
             </Mono>
           </DetailRow>
           <DetailRow label="Provider">
-            <OptionalId value={message.providerId} />
+            <NamedId value={message.providerId} names={providerNames} />
           </DetailRow>
           <DetailRow label="Route">
-            <OptionalId value={message.routeId} />
+            <NamedId value={message.routeId} names={routeNames} />
           </DetailRow>
           <DetailRow label="Provider reference">
             <Mono>{message.providerMessageRef ?? "—"}</Mono>

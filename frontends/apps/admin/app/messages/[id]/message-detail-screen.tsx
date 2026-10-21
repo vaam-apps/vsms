@@ -55,6 +55,14 @@ export interface MessageDetailScreenProps {
 export function MessageDetailScreen({ messageId }: MessageDetailScreenProps) {
   const byIdQuery = trpc.messages.byId.useQuery({ id: messageId });
   const receiptsQuery = trpc.messages.receipts.useQuery({ id: messageId });
+  // Names for the provider and route ids. A role without provider:read or
+  // route:read gets a 403, which is not retried; the fields then show ids.
+  const providersQuery = trpc.providers.list.useQuery();
+  const routesQuery = trpc.routes.list.useQuery();
+  const providerNames = new Map(
+    (providersQuery.data ?? []).map((p) => [p.id, p.displayName] as const),
+  );
+  const routeNames = new Map((routesQuery.data ?? []).map((r) => [r.id, r.name] as const));
   const message = byIdQuery.data ?? undefined;
 
   if (message === undefined) {
@@ -72,7 +80,7 @@ export function MessageDetailScreen({ messageId }: MessageDetailScreenProps) {
       main={
         <>
           <MessageBodyCard message={message} />
-          <MessageFields message={message} />
+          <MessageFields message={message} providerNames={providerNames} routeNames={routeNames} />
         </>
       }
       aside={
