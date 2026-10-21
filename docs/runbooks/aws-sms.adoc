@@ -71,10 +71,16 @@ sms-worker --SendTextMessage (SigV4)--> AWS End User Messaging SMS --> carrier -
 * `/dlr/aws_sms` is public and unauthenticated by design (a provider webhook
   carries no bearer token). The gateway authenticates every call itself: the
   `TopicArn` must equal the configured one, `SignatureVersion` must be `2`,
-  the signing-certificate URL must be on `sns.<topic-region>.amazonaws.com`,
-  and the RSA-SHA256 signature must verify. A refused call is answered `403`;
-  a check that could not run (certificate fetch failed) is answered `503` so
-  SNS retries. See `backends/crates/sms-provider-aws-sms/src/sns.md`.
+  the signing-certificate URL must be
+  `https://sns.<topic-region>.amazonaws.com/SimpleNotificationService-<32 hex>.pem`
+  with no query or fragment, and the RSA-SHA256 signature must verify.
+  Certificate fetches that are not already cached are rate-limited, so a
+  forged request can cost the gateway at most an occasional fetch. A refused
+  call is answered `403`; a check that could not run (certificate fetch failed
+  or was rate-limited) is answered `503` so SNS retries. See
+  `backends/crates/sms-provider-aws-sms/src/sns.md`.
+* A **subscription is confirmed by you, not by the gateway** (step 6). The
+  gateway logs the exact command to run.
 
 Why End User Messaging and not plain SNS `Publish`: SNS can send an SMS
 directly, but it reports what happened to it only through CloudWatch Logs.
@@ -151,6 +157,17 @@ Until that is approved you can still test: add your own phone as a verified
 destination number in the console (_Verified destination numbers_), which
 AWS verifies with a code.
 
+**What the sandbox looks like from vsms.** A send to a number that is not a
+verified destination is refused by AWS with a `ConflictException` whose reason
+is `DESTINATION_PHONE_NUMBER_NOT_VERIFIED`. vsms treats that as a problem with
+this route, not with the message (`Permanent`): the message fails over to the
+next route. If `aws_sms` is the only route there is nothing to fail over to
+and the message ends `failed` with a "no alternate route available" reason.
+So a deployment that sends to real customers while the account is still in
+the sandbox shows `failed` messages, not an outage and not an open circuit.
+A recipient who opted out at AWS is a different `ConflictException` and is
+`Rejected`: the message fails with no failover.
+
 The **monthly spend limit** is separate and has two parts: the account's
 ceiling (set by AWS, raised through the same Support route) and the limit
 you enforce under it.
@@ -226,6 +243,9 @@ export TOPIC_ARN=arn:aws:sns:$REGION:$ACCOUNT:vsms-sms-events
 **Set the signature version to 2.** SNS topics default to `SignatureVersion`
 1 (SHA1). The gateway refuses version 1 outright, and if you skip this step
 every notification and the subscription confirmation will be answered `403`.
+SNS treats a `403` as a permanent failure and does not retry it, so those
+receipts are not delayed, they are lost; the gateway logs each one at `error`
+with the reason. Messages sent in that window end `expired`.
 
 [source,bash]
 ----
@@ -334,8 +354,11 @@ events at all** and every message ends `expired`.
 == 6. Subscribe the gateway URL to the topic
 
 The gateway has to know the topic ARN _before_ you subscribe, because it
-checks `TopicArn` on the confirmation message too. So do step 8 (set
-`AWS_SMS_EVENTS_TOPIC_ARN` on the gateway and restart it) first, then:
+checks `TopicArn` on the confirmation message too. So set
+`AWS_SMS_EVENTS_TOPIC_ARN` on the gateway first (step 8), **after seeding the
+`aws_sms` Provider row** (step 9, first command): the gateway refuses to start
+if that variable is set and no Provider row keyed `aws_sms` exists. Then
+restart the gateway and subscribe:
 
 [source,bash]
 ----
@@ -351,11 +374,35 @@ the signature SNS makes lives in the JSON envelope, and raw delivery strips
 the envelope (the AWS `subscribe` page describes it as removing the JSON
 formatting).
 
+=== Confirm the subscription yourself
+
 SNS posts a `SubscriptionConfirmation` to that URL. The gateway verifies it
-exactly as it verifies a notification and, if it passes, visits the
-`SubscribeURL` itself, so there is nothing to click and no token to paste.
-Confirmation tokens are valid for two days; if the gateway was down, subscribe
-again.
+exactly as it verifies a notification, but it does **not** confirm the
+subscription. It logs, at `warn`, the topic ARN, the token and the command to
+run, and you run it:
+
+[source,bash]
+----
+aws sns confirm-subscription --region $REGION \
+  --topic-arn <topic arn from the log> \
+  --token <token from the log> \
+  --authenticate-on-unsubscribe true
+----
+
+Why it is manual: the gateway could confirm by fetching the message's
+`SubscribeURL`, but a subscription confirmed that way has
+`AuthenticateOnUnsubscribe` set to `false`. Every notification SNS sends carries
+an `UnsubscribeURL`, and vsms stores each receipt's raw payload
+(`DeliveryReceipt.rawPayload`), so anyone able to read one could unsubscribe
+the endpoint with a plain request and silence every future receipt. With
+`--authenticate-on-unsubscribe true`, AWS's `confirm-subscription` page says an
+authenticated request is required, and then only the topic owner and the
+subscription owner can unsubscribe
+(https://docs.aws.amazon.com/cli/latest/reference/sns/confirm-subscription.html).
+
+The pages read for this runbook do not state how long a confirmation token is
+valid. An older version of this page said two days; treat that as unverified.
+If the token has stopped working, delete the subscription and subscribe again.
 
 Check that it worked:
 
@@ -366,15 +413,103 @@ aws sns list-subscriptions-by-topic --region $REGION --topic-arn $TOPIC_ARN
 # and the literal "PendingConfirmation" until then.
 ----
 
-On the gateway side, a confirmed subscription logs, at `info`:
+Keep the confirmed `SubscriptionArn`; the next section needs it. Every later
+notification either ingests quietly or logs a `warn` that names the refusal
+(see <<troubleshooting>>). If the subscription is ever removed (by anyone,
+including AWS), SNS posts an `UnsubscribeConfirmation`; the gateway logs it at
+`error` and does nothing else. Receipts stop until you subscribe and confirm
+again.
 
-[source]
+=== Survive a gateway outage: delivery policy and dead-letter queue
+
+SNS's default for an HTTP/S endpoint is three retries about 20 seconds apart,
+and anything other than a `5xx` or `429` reply is a permanent failure that is
+never retried. A gateway restart or deploy longer than a minute can therefore
+lose receipts, and a lost receipt leaves its message `submitted` until it
+expires. Two settings on the subscription reduce that. Both are subscription
+attributes, set with `aws sns set-subscription-attributes`; `DeliveryPolicy`
+and `RedrivePolicy` are among the attribute names that command accepts
+(https://docs.aws.amazon.com/cli/latest/reference/sns/set-subscription-attributes.html).
+
+*A longer retry policy.* Save as `delivery-policy.json`. This is the retry
+block from AWS's own HTTP/S example (50 retries: 3 immediate, 2 one second
+apart, 10 exponential from 1 to 60 seconds, 35 at 60 seconds); the retry
+phases there add up to well under the one-hour cap on total retry time for an
+HTTP/S policy
+(https://docs.aws.amazon.com/sns/latest/dg/sns-message-delivery-retries.html):
+
+[source,json]
 ----
-provider callback handled; nothing to ingest   provider_key="aws_sms" detail="subscription confirmed"
+{
+  "healthyRetryPolicy": {
+    "minDelayTarget": 1,
+    "maxDelayTarget": 60,
+    "numRetries": 50,
+    "numNoDelayRetries": 3,
+    "numMinDelayRetries": 2,
+    "numMaxDelayRetries": 35,
+    "backoffFunction": "exponential"
+  }
+}
 ----
 
-and every later notification either ingests quietly or logs a `warn` that
-names the refusal (see <<troubleshooting>>).
+[source,bash]
+----
+aws sns set-subscription-attributes --region $REGION \
+  --subscription-arn <the confirmed SubscriptionArn> \
+  --attribute-name DeliveryPolicy \
+  --attribute-value file://delivery-policy.json
+----
+
+AWS states that the total retry time cannot exceed 3,600 seconds and that this
+is a hard limit, so a retry policy alone cannot cover an outage longer than an
+hour.
+
+*A dead-letter queue.* After retries are exhausted, SNS discards the message
+unless the subscription has a dead-letter queue, which is an ordinary SQS
+queue in the same account and Region
+(https://docs.aws.amazon.com/sns/latest/dg/sns-dead-letter-queues.html).
+Create a standard queue, let SNS write to it, then attach it:
+
+[source,json]
+----
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": { "Service": "sns.amazonaws.com" },
+      "Action": "SQS:SendMessage",
+      "Resource": "arn:aws:sqs:REGION:ACCOUNT:vsms-sms-events-dlq",
+      "Condition": {
+        "ArnEquals": { "aws:SourceArn": "arn:aws:sns:REGION:ACCOUNT:vsms-sms-events" }
+      }
+    }
+  ]
+}
+----
+
+[source,bash]
+----
+aws sqs create-queue --queue-name vsms-sms-events-dlq --region $REGION
+# set the queue policy above on it (aws sqs set-queue-attributes, attribute Policy), then:
+aws sns set-subscription-attributes --region $REGION \
+  --subscription-arn <the confirmed SubscriptionArn> \
+  --attribute-name RedrivePolicy \
+  --attribute-value '{"deadLetterTargetArn":"arn:aws:sqs:REGION:ACCOUNT:vsms-sms-events-dlq"}'
+----
+
+(Queue policy and `RedrivePolicy` shape:
+https://docs.aws.amazon.com/sns/latest/dg/sns-configure-dead-letter-queue.html.)
+AWS recommends a 14-day retention period on the dead-letter queue, and an
+alarm on the SQS metric `ApproximateNumberOfMessagesVisible` so you hear about
+anything that lands there.
+
+What is not settled by the pages read: the form of a dead-lettered message
+body for an HTTP/S subscription, and whether a reply of `403` from the gateway
+sends the message to the queue. Inspect a real dead-lettered message before
+you build any replay. Nothing in vsms replays them; a receipt that was lost
+is not recovered, and its message resolves by expiry.
 
 == 7. IAM user for the worker
 
@@ -482,6 +617,10 @@ Optional:
 | `false`
 | Whether the account sends under alphanumeric sender IDs to your destinations. Informational (it feeds the adapter's advertised capabilities); it does not change what is sent.
 
+| `AWS_SMS_TIME_TO_LIVE_SECONDS`
+| _(unset)_
+| How long AWS keeps trying to deliver one message, 5 to 259200 seconds. **Unset means AWS's default of 72 hours**, so an OTP can reach a handset days after vsms expired it (an OTP's default validity in vsms is 15 minutes). For OTP traffic set `900`. It is a worker-wide setting, applied to every message sent through this provider whatever its class, so if the same provider also carries traffic that is valid for longer (the other classes default to 24 hours) a short value cuts those short; choose the value for the traffic you actually send.
+
 | `AWS_SMS_ENDPOINT_URL`
 | _(unset)_
 | Overrides the AWS endpoint. For tests against a fake only.
@@ -493,7 +632,7 @@ Optional:
 | Variable | Meaning
 
 | `AWS_SMS_EVENTS_TOPIC_ARN`
-| The topic ARN from step 4. Setting it enables `POST /dlr/aws_sms`. No AWS credentials go on the gateway.
+| The topic ARN from step 4. Setting it enables `POST /dlr/aws_sms`. No AWS credentials go on the gateway. **The gateway exits at startup if this is set and no `Provider` row keyed `aws_sms` exists**, so seed that row (step 9) before you set it.
 |===
 
 Do **not** leave any of the required worker variables present but empty
@@ -502,14 +641,16 @@ that fails to parse stops the process before any of this repository's
 validation runs. Comment the block out instead. The same hazard is documented
 for MTN in `AGENTS.md` ("MTN reaches the Helm chart").
 
-Restart the gateway first (so it knows the topic before you subscribe), then
-the worker.
+Order: seed the Provider row (step 9, first command), then restart the
+gateway (so it knows the topic before you subscribe), then the worker.
 
 == 9. Seed the provider and the route, then send a test
 
 The worker builds the adapter from its environment, but the routing layer and
 the database need a `Provider` row with the same `key`. `seed-dispatch` creates
-it, activates it, and creates a catch-all `Route` pointing at it:
+it, activates it, and creates a catch-all `Route` pointing at it. Run it
+**before** you start the gateway with `AWS_SMS_EVENTS_TOPIC_ARN` set (step 8):
+it needs only the database.
 
 [source,bash]
 ----
@@ -530,7 +671,38 @@ record, the adapter's own values are the ones the worker uses. Flags and
 defaults are in `backends/apps/sms-gateway/src/commands/seed_dispatch.rs`;
 `--max-daily-submissions` defaults to 100000.)
 
-Two things about that command are deliberate and worth knowing:
+**AWS-only go-live: do not seed Orange by accident.** `sms-gateway bootstrap`
+seeds an `orange_cm` Provider and a catch-all Route as one of its steps, and so
+does a bare `seed-dispatch`. In a deployment where the worker has no Orange
+credentials that Route is live, and it shares priority 0 and weight 1 with the
+AWS catch-all, so about half of all messages are routed to a provider the worker
+cannot send through. Those messages are not failed: the worker finds no adapter
+for them and retries with backoff indefinitely (see the warning in
+<<routing-now-and-later>>). The fix is to never create that Route:
+
+[source,bash]
+----
+# first run on a fresh database: everything bootstrap does, except the orange_cm seed
+# (add --console-redirect-uri / --owner-email / --owner-display-name if you run the console)
+docker compose --env-file .env run --rm sms-gateway bootstrap --skip-seed-dispatch
+# then the AWS provider and its catch-all route, with the seed-dispatch command above
+----
+
+How each deployment path avoids it (read from the files, not run):
+
+* **Compose** (`deploy/docker-compose.yml`): use the two commands above, and not
+  `bootstrap` without the flag or a bare `seed-dispatch`. The file's own comment
+  next to the one-shot commands says the same.
+* **Helm** (`deploy/charts/vsms`): the chart does not run `bootstrap`; it uses
+  granular pre-install and pre-upgrade hooks. The `seedDispatch` hook (Orange) is
+  switched off by the chart when `orange.clientId` is empty, and the separate
+  `seedDispatchAws` hook is switched on when `awsSms.region` or
+  `awsSms.eventsTopicArn` is set. An AWS-only values file therefore leaves
+  `orange.clientId` and `mtn.clientId` empty and sets the `awsSms` block. If you
+  already seeded Orange by mistake, disable the `orange_cm` route and provider in
+  the console (_Routes_, _Providers_) rather than leaving it.
+
+Two things about the `seed-dispatch` command are deliberate and worth knowing:
 
 * **There is no `aws_sms` `ProviderKind`.** `--kind` takes one of
   `orange_cm_http`, `mtn_http`, `aggregator_http`, `smpp`, and the row uses
@@ -544,7 +716,8 @@ Two things about that command are deliberate and worth knowing:
   was disabled. If you already run another provider with its own catch-all,
   you now have two wildcard routes at equal priority and weight, and traffic
   splits between them. That is the starting point for the split described
-  below, but make it deliberate: see <<routing-now-and-later>>.
+  below, but make it deliberate, and only once the other provider's adapter is
+  configured in the worker: see <<routing-now-and-later>>.
 
 Now send a message to a number you control (while in the sandbox, a verified
 destination number) and watch it:
@@ -571,7 +744,9 @@ final `TEXT_SUCCESSFUL` or `TEXT_DELIVERED`. `raw_status` keeps AWS's own
 event name, so you can always tell a carrier acceptance from a handset
 confirmation (see <<known-limits>>).
 . On the gateway, a `warn` line with `provider_key="aws_sms"` means a
-  callback was refused or failed; none means every call passed.
+  callback was refused or failed, and an `error` means receipts are being
+  lost (topic on `SignatureVersion` 1, or the subscription was removed); none
+  means every call passed.
 
 == Routing, now and later
 
@@ -604,7 +779,7 @@ What fails over and what does not (from
 |===
 | Provider outcome | Effect
 
-| `Permanent` (e.g. sender identity or country refused)
+| `Permanent` (e.g. sender identity or country refused, or the account still in the SMS sandbox and the number unverified)
 | Fail over to the next route.
 
 | `Unavailable` (connect failure, 5xx, spend limit, credential or access error)
@@ -726,19 +901,27 @@ sender ID that is rewritten downstream is invisible to every delivery receipt.
 | Set it, restart the gateway.
 
 | `403` on every call, gateway log "refusing an unauthenticated provider callback"
-| The log's `reason` says which check failed. Usually `TopicArn` differs from `AWS_SMS_EVENTS_TOPIC_ARN` (different Region, account or name), or the topic is still on `SignatureVersion` 1, or `RawMessageDelivery` is on
-| Compare the ARN in the reason with the env value byte for byte. Re-run step 4's `SignatureVersion 2` command (`aws sns get-topic-attributes` shows it; absent means 1). Remove raw delivery from the subscription.
+| The log's `reason` says which check failed. Usually `TopicArn` differs from `AWS_SMS_EVENTS_TOPIC_ARN` (different Region, account or name), or the topic is still on `SignatureVersion` 1 (logged at `error`), or `RawMessageDelivery` is on, or the signing-certificate URL is not the expected `https://sns.<topic-region>.amazonaws.com/SimpleNotificationService-<32 hex>.pem`
+| Compare the ARN in the reason with the env value byte for byte. Re-run step 4's `SignatureVersion 2` command (`aws sns get-topic-attributes` shows it; absent means 1). Remove raw delivery from the subscription. **Receipts refused with `403` are not retried by SNS and are lost**; their messages end `expired`.
 
 | `503` on calls, log "could not authenticate a provider callback; asking for redelivery"
-| The gateway could not fetch the signing certificate from `sns.<region>.amazonaws.com` (egress blocked, DNS, TLS)
-| Fix outbound HTTPS from the gateway to that host. SNS retries, so receipts are not lost while it is fixed.
+| The gateway could not complete the check: it could not fetch the signing certificate from `sns.<topic-region>.amazonaws.com` (egress blocked, DNS, TLS), or the fetch was refused because uncached certificate fetches are rate-limited
+| Fix outbound HTTPS from the gateway to that host. The rate limit only matters under a burst of uncached certificate URLs (normally a flood of forged requests, since genuine traffic reuses one cached certificate); it clears by itself. SNS retries `503`, so receipts are not lost while it is fixed, within the retry policy in step 6.
+
+| Gateway exits at startup, "no Provider row has key aws_sms"
+| `AWS_SMS_EVENTS_TOPIC_ARN` is set but the `aws_sms` Provider row does not exist
+| Run the `seed-dispatch --key aws_sms ...` command from step 9, then start the gateway. For an AWS-only deployment, use `bootstrap --skip-seed-dispatch`, not plain `bootstrap`.
 
 | Subscription stays `PendingConfirmation`
-| The confirmation was refused (see the `403` row) or never arrived (URL not publicly reachable, wrong path); tokens expire after two days
-| Fix the cause, delete the subscription, subscribe again.
+| The confirmation was refused (see the `403` row), never arrived (URL not publicly reachable, wrong path), or arrived and nobody ran `aws sns confirm-subscription` (the gateway never confirms)
+| Look for the gateway `warn` with the topic ARN, token and command. Run it. If there is none, or the token has stopped working, fix the cause, delete the subscription, subscribe again, and confirm with `--authenticate-on-unsubscribe true`.
+
+| Receipts stopped arriving; the gateway logged an `UnsubscribeConfirmation` at `error`
+| The subscription was removed, by someone with the topic, or by anyone holding an `UnsubscribeURL` if it was confirmed without `--authenticate-on-unsubscribe true`
+| `aws sns list-subscriptions-by-topic` to confirm it is gone. Subscribe and confirm again (step 6), this time with `--authenticate-on-unsubscribe true`, and re-apply the delivery policy and dead-letter queue to the new `SubscriptionArn`. Messages sent while it was missing end `expired`.
 
 | Messages reach `submitted` and stay there, then become `expired`
-| No receipts are arriving: configuration set has no SNS event destination, the destination's event types are too narrow, the topic policy does not allow `sms-voice.amazonaws.com`, the subscription is unconfirmed, or `AWS_SMS_CONFIGURATION_SET` names a different set
+| No receipts are arriving: configuration set has no SNS event destination (AWS then emits no events at all), the destination's event types are too narrow, the topic policy does not allow `sms-voice.amazonaws.com`, the subscription is unconfirmed or was removed, receipts are being refused with `403` (see the first row), or `AWS_SMS_CONFIGURATION_SET` names a different set
 | Walk the chain in order: the set exists, its destination exists (`aws pinpoint-sms-voice-v2 describe-configuration-sets`), the topic policy allows publish from that set, the subscription is confirmed, the gateway receives. A message sent before the fix is not rescued; it expires.
 
 | Every send fails and the provider's circuit opens (new messages route elsewhere, or are `rejected` when there is no other route)
@@ -748,6 +931,14 @@ sender ID that is rewritten downstream is invisible to every delivery receipt.
 | A message is `rejected` immediately with a "no route" reason
 | Zero eligible routes: the only route's provider is not `active` or its circuit is open
 | Check `Provider.state` and `circuitOpenUntil`; fix the cause above.
+
+| Messages `failed` while the account is new, "no alternate route available"
+| The account is still in the SMS sandbox and the destination is not a verified number (`ConflictException`, `DESTINATION_PHONE_NUMBER_NOT_VERIFIED`). vsms fails over to another route, and with none the message fails
+| Leave the sandbox (step 2), or send only to verified destination numbers meanwhile.
+
+| An OTP arrived on a handset long after it should have expired
+| `AWS_SMS_TIME_TO_LIVE_SECONDS` is unset, so AWS keeps trying for its default 72 hours
+| Set it (step 8); `900` for OTP traffic. It only affects messages sent afterwards.
 
 | A message is `failed` with a sender-identity or country error
 | `ValidationException` about the origination identity, country or price that vsms treats as permanent for that route
@@ -781,6 +972,12 @@ From `backends/crates/sms-provider-aws-sms/src/lib.md` and the notes above:
   expire every such message, so it is recorded as delivered. It is an
   overstatement: it means the network took it, not that the handset
   confirmed. `DeliveryReceipt.rawStatus` keeps `TEXT_SUCCESSFUL`.
+* **A non-final event never moves a message toward a retry.** Any event with
+  `isFinal` false other than `TEXT_DELIVERED` is recorded as in-flight, even a
+  failure-looking one, because the carrier may still deliver the original and
+  acting on it would send a duplicate. The cost is that a message AWS will
+  later report as failed waits for that final event (or for expiry) instead
+  of being retried early.
 * **No delivering-network field.** Events carry `mcc`/`mnc`, but they are not
   mapped onto vsms's operator codes, so grey-route divergence analysis gets
   nothing per-operator from AWS receipts.
@@ -792,6 +989,15 @@ From `backends/crates/sms-provider-aws-sms/src/lib.md` and the notes above:
 * **Timestamp freshness is not checked.** Replaying a genuine receipt is
   harmless: ingestion is idempotent and an out-of-order transition is refused
   by the state machine.
+* **A receipt SNS gives up on is lost.** SNS drops a message after its retry
+  policy is exhausted (or on the first reply other than `5xx` or `429`) unless
+  a dead-letter queue holds it, and nothing in vsms reads the queue. Its message
+  ends `expired`. The delivery policy and dead-letter queue in step 6 shrink the
+  window; they do not close it.
+* **The subscription's protection depends on a command you run.** Confirmed
+  without `--authenticate-on-unsubscribe true`, anyone with a notification's
+  `UnsubscribeURL` can unsubscribe the endpoint. vsms cannot check how a
+  subscription was confirmed.
 * **AWS keeps its own opt-out list**, separate from vsms's `OptOut`.
 * **One provider, one carrier partner per country.** AWS says SMS numbers are
   provisioned through a single carrier partner in each Region and country.
@@ -816,6 +1022,7 @@ changes these, so check the page if a step disagrees with what you see):
 * Configuration sets and SNS destinations: https://docs.aws.amazon.com/sms-voice/latest/userguide/configuration-sets.html, https://docs.aws.amazon.com/sms-voice/latest/userguide/configuration-sets-sns-add.html, https://docs.aws.amazon.com/sms-voice/latest/userguide/configuration-sets-sns-creating-role.html
 * Event types and format: https://docs.aws.amazon.com/sms-voice/latest/userguide/configuration-sets-event-types.html, https://docs.aws.amazon.com/sms-voice/latest/userguide/configuration-sets-event-format.html, https://docs.aws.amazon.com/cli/latest/reference/pinpoint-sms-voice-v2/create-event-destination.html
 * SNS signature version and verification: https://docs.aws.amazon.com/sns/latest/dg/sns-verify-signature-of-message-configure-message-signature.html, https://docs.aws.amazon.com/sns/latest/dg/sns-verify-signature-of-message.html
-* SNS CLI: https://docs.aws.amazon.com/cli/latest/reference/sns/subscribe.html, https://docs.aws.amazon.com/cli/latest/reference/sns/set-topic-attributes.html
+* SNS CLI: https://docs.aws.amazon.com/cli/latest/reference/sns/subscribe.html, https://docs.aws.amazon.com/cli/latest/reference/sns/set-topic-attributes.html, https://docs.aws.amazon.com/cli/latest/reference/sns/confirm-subscription.html, https://docs.aws.amazon.com/cli/latest/reference/sns/set-subscription-attributes.html
+* SNS HTTP/S retries, delivery policy and dead-letter queues: https://docs.aws.amazon.com/sns/latest/dg/sns-message-delivery-retries.html, https://docs.aws.amazon.com/sns/latest/dg/sns-dead-letter-queues.html, https://docs.aws.amazon.com/sns/latest/dg/sns-configure-dead-letter-queue.html
 * IAM actions and resource ARNs: https://docs.aws.amazon.com/sms-voice/latest/userguide/permissions-actions.html
 * `SendTextMessage`: https://docs.aws.amazon.com/pinpoint/latest/apireference_smsvoicev2/API_SendTextMessage.html

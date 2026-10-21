@@ -48,8 +48,10 @@ flowchart TB
     M5 -.-> M7
 
     D4["Decision #4 · Own ART title?"]
+    D5["Open question 1.5 · Cross-border transfer to AWS"]
 
     D4 -.gates.-> M7
+    D5 -.gates AWS as the provider.-> PROD
 
     PROD{{"First production traffic"}}
     M3 --> PROD
@@ -73,7 +75,7 @@ flowchart TB
 
 ## What actually blocks first production traffic
 
-This is the part milestone numbering hides. **Phase 4 is not a prerequisite.** A single-operator gateway that only reaches Orange subscribers is a smaller product, not an unsafe one — losing MTN traffic is a commercial limitation, and #63's failover is a resilience upgrade over a system that already delivers.
+This is the part milestone numbering hides. **Phase 4 is not a prerequisite.** A single-operator gateway that only reaches Orange subscribers is a smaller product, not an unsafe one — losing MTN traffic is a commercial limitation, and #63's failover is a resilience upgrade over a system that already delivers. Nor does first traffic have to wait for an Orange or MTN contract: `aws_sms` (AWS End User Messaging SMS, `docs/runbooks/aws-sms.adoc`) can carry go-live traffic on its own, at the cost of item 5 below.
 
 What does block it:
 
@@ -88,7 +90,8 @@ What does block it:
 
    **Status 2026-09-17: blocked on physical presence. It was also blocked on engineering, which nobody knew until Orange's own DLR documentation was read properly.** That earlier "not on engineering" claim was wrong, and is corrected here rather than quietly edited away: `sms-provider-orange-cm`'s DLR parser expected `deliveryInfo` to be an array where Orange sends a single object, so **no real Orange delivery receipt could ever have parsed** — #36's core assertion (a real handset reaching `delivered` within 15s) would have failed with a phone in hand, for a reason the whole live suite was blind to because `sms-fake-orange` emitted the same wrong shape. That, the `202`-instead-of-`200` acknowledgement, and a progress-report mapping that silently destroyed a message's retry path are all fixed (see `AGENTS.md`'s own section on it). The gate is now genuinely physical-presence-blocked, which is what this line previously claimed prematurely. `v0.3.0` shipped with #36 and #65 deliberately open. The maintainer is in Germany; Orange's SMS Cameroon product delivers only to Cameroon numbers, so nothing can be tested toward a German phone, and a German SIM roaming in Cameroon receives via its home operator and proves nothing about MTN or Orange delivery. What can be done remotely is the Orange developer-portal app registration; what cannot is the Orange Money bundle top-up and the handset observation. The runbook is written to be handed to a person in Cameroon with a phone and a terminal — that is the intended way to close it. #65's second, engineering-side precondition is **resolved as of 2026-09-17**: `sms-provider-mtn`'s request/response shape was a documented placeholder, and is now rewritten against MTN's real Swagger (vendored in-crate; see §6.2 and `OPEN_QUESTIONS.md` §2.1). The maintainer's call was to target **MTN direct (MADAPI)** rather than a licensed aggregator, which also sets aside §6.4's sender-ID pre-registration argument for going via one. The adapter is wired into `sms-worker`'s provider registry and `sms-gateway`'s DLR route, so what #65 now needs is a real MTN account and a human in Cameroon with a phone — credentials and physical presence, not engineering. Note MTN DLRs must be switched on (`requestDeliveryReceipt` plus a registered `deliveryReportUrl`), which is an API call and therefore automatable, unlike Orange's manual whitelisting ticket.
 
-5. **Decision #4 below** — though note it gates M7 only, not first traffic.
+5. **Cross-border authorisation, if AWS is the provider.** Sending through `aws_sms` hands every recipient number and message body to AWS in a Region outside Cameroon, and Law No. 2024/017 requires prior authorisation for any cross-border transfer of personal data (`OPEN_QUESTIONS.md` §1.5). Nothing in vsms can grant or substitute for that; the runbook makes clearing it the first prerequisite. This is a blocker only for traffic that goes through AWS. Orange and MTN through their own APIs have a simpler position, which is one reason to move traffic back to them once their contracts exist. The adapter itself is built and tested against fakes and AWS's published formats, but, like item 4, has never run against a live account.
+6. **Decision #4 below** — though note it gates M7 only, not first traffic.
 
 Deliberately *not* on that list: **#187** (webhook secrets readable by every human role) is latent, because no human-login flow exists yet to hold such a token. It becomes live exactly when M4 ships real logins, which is why it sits on M4 rather than M3.
 
@@ -125,7 +128,9 @@ needs an aggregator with coverage there, and vsms has two adapters: one Cameroon
 wire shape is still an unverified placeholder. §6.2's config-driven `AggregatorHttpProvider` was
 specified and never built, and it is now on the critical path for every market outside Cameroon.
 Sender-ID regimes (10DLC in the USA, TRAI DLT in India) and data-residency conflicts are the other
-two, and none of the three is fixed by the five staged schema changes.
+two, and none of the three is fixed by the five staged schema changes. `aws_sms` is a possible first
+answer to the coverage half for destinations AWS reaches (per-market coverage is not verified here); it does
+nothing for sender-ID regimes, and it adds a data-residency question of its own rather than answering one.
 
 **What it unblocks immediately.** Stage 1 alone, replacing the hand-rolled Cameroon numbering plan
 with libphonenumber metadata, lets any customer's numbers be parsed, validated and masked correctly.
@@ -147,9 +152,10 @@ in neither: it is a GitHub issue.
 
 Belongs to the maintainer, not to engineering. Not answerable by reading more code.
 
-| Decision                                                       | Blocks                                                                                                                                                                                                                                                   | State |
-| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
-| [#4 — own ART title?](https://github.com/vymalo/vsms/issues/4) | **Whether M7 exists at all.** Direct MNO interconnect or a short code unambiguously requires an ART title; whether a pure API consumer buying capacity from a licensed aggregator needs one is unverified. Settle before committing to SMPP, not during. | Open  |
+| Decision                                                                        | Blocks                                                                                                                                                                                                                                                   | State |
+| ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| [#4 — own ART title?](https://github.com/vymalo/vsms/issues/4)                  | **Whether M7 exists at all.** Direct MNO interconnect or a short code unambiguously requires an ART title; whether a pure API consumer buying capacity from a licensed aggregator needs one is unverified. Settle before committing to SMPP, not during. | Open  |
+| [`OPEN_QUESTIONS.md` §1.5 — cross-border transfer to AWS](../OPEN_QUESTIONS.md) | **Go-live on `aws_sms`.** Sending numbers and bodies to AWS needs prior authorisation under Law No. 2024/017 (or a decision that the deployment is out of scope). Does not block Orange or MTN traffic.                                                  | Open  |
 
 Three earlier decisions are settled and recorded: [#3](https://github.com/vymalo/vsms/issues/3) (hosting), [#6](https://github.com/vymalo/vsms/issues/6) (`authkestra-op` stays, pinned exactly), and [#5](https://github.com/vymalo/vsms/issues/5) (**2026-08-11**: 90-day minimisation, no split ledger — Law 2010/012 art. 25's ten-year traffic-data requirement is left to infrastructure-level retention outside vsms's own schema, not a parallel table inside it; see `architecture.md` §10 and #67's own PR). `docs/legal/retention-briefing.md` reflected the still-open question and is now stale on this point — the maintainer decided ahead of counsel's answer, not after it.
 
@@ -160,6 +166,7 @@ Three earlier decisions are settled and recorded: [#3](https://github.com/vymalo
 Worth knowing so it isn't rebuilt. None of this appears complete in the milestone counts, because it was infrastructure rather than a numbered story:
 
 - **Deployment** — `deploy/` carries a Caddy-edge compose stack, a Helm chart, musl/distroless images for both binaries, an advisory-lock-guarded migrate job (`backends/apps/sms-migrate`), and a GHCR release workflow. Since 2026-09-04 a fresh deployment is one `sms-gateway bootstrap` (console steps optional, per R4) plus `create-app`; the console key is provisioned by a `provision-console-client`/`secrets-fix-perms` one-shot pair with real uid handling, and every image reference carries an owner knob because the repository has moved twice, to `vaam-store` and then to `vaam-apps` (the current default).
+- **A third provider, AWS End User Messaging SMS** — `backends/crates/sms-provider-aws-sms` (key `aws_sms`), built so go-live need not wait on the Orange and MTN contracts, with delivery receipts via a signed Amazon SNS callback authenticated by the new `SmsProvider::authenticate_callback` hook. No routing code changed: weights, priority bands and failover already cover splitting traffic between it and the operator routes. Operator procedure: `docs/runbooks/aws-sms.adoc`. Its data-residency prerequisite is a blocker (item 5 above), and it has not run against a live AWS account.
 - **Backup and restore** — `deploy/backup-tool` (`vsms-backup backup`/`restore`/`restore-drill`, a Rust rewrite of the original shell scripts) and a real restore drill (#69, the one M6 story already closed).
 - **A working demo, with an evaluator** — `just demo` brings up Postgres, a signing key, a provisioned client, a fake Orange, the gateway, the worker (all six roles, `hooks` included) and the console, then runs `examples/node/demo-app`, which sends an OTP over `private_key_jwt`, receives the signed webhooks, verifies them, and exits non-zero unless the message reached `delivered` with at least one verified webhook (2026-09-04). `--profile demo` alone gives the same proof without the console.
 - **A GHCR-only showcase** — `compose.demo.yaml` runs the same shape of demo from published images alone (no `cargo build`, no host binaries), with a `console` Compose profile keeping the admin console optional per R4. See that file's own header for how it differs from `compose.yml` and `deploy/docker-compose.yml`.

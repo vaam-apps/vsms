@@ -2147,6 +2147,16 @@ pub trait SmsProvider: Send + Sync + 'static {
     /// Submit one message. Returns the provider's reference for DLR correlation.
     async fn submit(&self, req: &SubmitRequest) -> Result<SubmitAck, ProviderError>;
 
+    /// Decide whether an inbound callback is authentic, before `parse_dlr` sees
+    /// it. Defaults to `Ingest`: Orange and MTN document no signature scheme.
+    /// An `Err` means the check could not run, not that the callback is forged.
+    async fn authenticate_callback(
+        &self,
+        _raw: &RawCallback,
+    ) -> Result<CallbackDisposition, ProviderError> {
+        Ok(CallbackDisposition::Ingest)
+    }
+
     /// Parse a provider-specific DLR callback into the canonical shape.
     fn parse_dlr(&self, raw: &RawCallback) -> Result<Vec<DeliveryUpdate>, ProviderError>;
 
@@ -2156,6 +2166,16 @@ pub trait SmsProvider: Send + Sync + 'static {
     }
 
     async fn health(&self) -> Health;
+}
+
+pub enum CallbackDisposition {
+    /// Authentic (or nothing to check): hand it to `parse_dlr`.
+    Ingest,
+    /// Authentic but carries no delivery update, e.g. a subscription handshake
+    /// the adapter already handled. The gateway answers 200 and parses nothing.
+    Acknowledged { detail: String },
+    /// Failed authentication. The gateway answers 403 and parses nothing.
+    Refused { reason: String },
 }
 
 pub enum ProviderError {
@@ -2178,6 +2198,8 @@ pub enum ProviderError {
 ```
 
 The error taxonomy is the important part. Most gateway failover bugs are really error-classification bugs: a provider returns a 400 that actually means "your sender ID isn't approved" and the router faithfully retries it on three more providers, burning credit each time. Six variants, each with exactly one routing consequence — five of the six map onto §7.4's `routed` failure edges the way you'd expect; `Indeterminate` is the odd one out, because none of "retry," "fail over," or "fail the message" is safe when the provider might have already sent the SMS. See `backends/crates/sms-provider/src/error.rs` for the full reasoning and `backends/crates/sms-provider-http/src/transport.rs`'s `classify_transport_error` — shared by every HTTP adapter, not duplicated per crate — for how a real transport failure gets sorted into `Unavailable` vs `Indeterminate`.
+
+`authenticate_callback` exists because `POST /dlr/{providerKey}` is public and unauthenticated (a provider webhook carries no bearer token), and `parse_dlr` is synchronous and pure while verifying an Amazon SNS signature needs a certificate fetch. The gateway calls it before parsing: `Refused` is `403`, `Acknowledged` is `200`, `Err` is `503` (so the provider redelivers rather than a genuine receipt being lost), `Ingest` continues to ingestion. Only `aws_sms` overrides it.
 
 ### 6.2 Adapters
 
@@ -2230,9 +2252,14 @@ The error taxonomy is the important part. Most gateway failover bugs are really 
 
 - Sends with `SendTextMessage` (the `pinpoint-sms-voice-v2` API), signed with a hand-written SigV4 so the AWS SDK's HTTP stack — and `aws-lc-rs` with it — stays out of the tree. Long-lived IAM user keys only.
 - **Why not classic SNS `Publish`:** it reports delivery only to CloudWatch Logs, so every message would sit in `submitted` until `expire_stale` marked it `expired`. End User Messaging is the same SMS backend with an API that can publish per-message events to an SNS topic.
-- **Receipts** come back through a configuration set whose event destination is an SNS topic, which SNS delivers, signed, to `POST /dlr/aws_sms`. That route is public, so the adapter authenticates each call itself through `SmsProvider::authenticate_callback` (a hook with a default of "ingest", so Orange and MTN are unchanged): the `TopicArn` must equal the configured topic, `SignatureVersion` must be `2`, the signing-certificate URL must be on `sns.<topic-region>.amazonaws.com`, and the RSA-SHA256 signature must verify. A refusal is `403`; a check that could not run (certificate fetch failed) is `503`, so SNS redelivers. A `SubscriptionConfirmation` for the configured topic is confirmed automatically.
+- **Receipts** come back through a configuration set whose event destination is an SNS topic, which SNS delivers, signed, to `POST /dlr/aws_sms`. That route is public, so the adapter authenticates each call itself through `SmsProvider::authenticate_callback` (a hook with a default of "ingest", so Orange and MTN are unchanged), in this order: the `TopicArn` must equal the configured topic; `SignatureVersion` must be `2`; the signing-certificate URL must be exactly `https://sns.<topic-region>.amazonaws.com/SimpleNotificationService-<32 hex>.pem` with no query or fragment; then the RSA-SHA256 signature must verify. Certificate fetches that are not already cached are rate-limited, so a forged request can cause at most an occasional fetch. A refusal is `403`; a check that could not run (certificate fetch failed or was rate-limited) is `503`, so SNS redelivers. A topic left on `SignatureVersion` 1 therefore has every receipt refused and, because SNS treats a `403` as a permanent failure, dropped for good; the gateway logs that case at `error`.
+- **Subscriptions are confirmed by the operator, not by the gateway.** On an authentic `SubscriptionConfirmation` the gateway logs, at `warn`, the topic ARN, the token and the command to run (`aws sns confirm-subscription --topic-arn <arn> --token <token> --authenticate-on-unsubscribe true`). Visiting the `SubscribeURL` instead would confirm with `AuthenticateOnUnsubscribe` left `false`, and every notification carries an `UnsubscribeURL` (stored in `DeliveryReceipt.rawPayload`), so anyone able to read a receipt could then unsubscribe the endpoint and silence all receipts. An `UnsubscribeConfirmation` means the subscription has been removed and is logged at `error`.
+- **SNS gives up quickly on HTTP/S endpoints.** The default delivery policy retries three times about 20 seconds apart, and any status other than `5xx` or `429` is a permanent failure. A gateway outage longer than about a minute therefore loses receipts unless the subscription has a longer delivery policy (SNS caps the total retry time of an HTTP/S policy at one hour) and a dead-letter queue. The runbook recommends both.
+- **The message TTL is set explicitly.** `AWS_SMS_TIME_TO_LIVE_SECONDS` (5 to 259200) maps to `SendTextMessage`'s `TimeToLive`. Unset, AWS keeps trying for its default of 72 hours, so an OTP can reach a handset days after vsms expired it (`default_validity` for `otp` is 15 minutes). The runbook recommends 900.
 - **Two halves, so the gateway holds no AWS credentials:** `sms-worker` builds the sender (region, key, configuration set, TPS ceiling, price); `sms-gateway` builds a receiver from the topic ARN alone.
-- A final `TEXT_SUCCESSFUL` (carrier accepted, `isFinal`) is recorded as `Delivered`, because many carriers never return a handset receipt to AWS; `DeliveryReceipt.rawStatus` keeps the original value. `TEXT_UNKNOWN` (no final event within 72 hours) is `Uncertain`. The full table is `backends/crates/sms-provider-aws-sms/src/events.md`.
+- A final `TEXT_SUCCESSFUL` (carrier accepted, `isFinal`) is recorded as `Delivered`, because many carriers never return a handset receipt to AWS; `DeliveryReceipt.rawStatus` keeps the original value. `TEXT_UNKNOWN` (no final event within 72 hours) is `Uncertain`. Any event that is not final (`isFinal` false) and is not `TEXT_DELIVERED` is `InFlight`, whatever its type: acting on a non-final failure would move the message toward a retry while the carrier may still deliver the original, which sends a duplicate SMS. The full table is `backends/crates/sms-provider-aws-sms/src/events.md`.
+- **Error classes worth knowing.** A `ConflictException` with reason `DESTINATION_PHONE_NUMBER_NOT_VERIFIED` means the account is still in the AWS SMS sandbox and the number is not a verified destination; it is `Permanent`, so the message fails over to the next route instead of failing. A `ConflictException` for a number that opted out at AWS stays `Rejected`.
+- **Seeding for an AWS-only go-live.** `sms-gateway bootstrap` seeds an `orange_cm` `Provider` plus a catch-all `Route` unless it is run with `--skip-seed-dispatch`; left alone in an AWS-only deployment that route would take about half of all traffic to a provider the worker holds no credentials for. Run `bootstrap --skip-seed-dispatch`, then `seed-dispatch --key aws_sms --kind aggregator_http ...`. The gateway refuses to start if `AWS_SMS_EVENTS_TOPIC_ARN` is set and no `Provider` row keyed `aws_sms` exists.
 - No `ProviderKind` variant exists for it: the `Provider` row uses `aggregator_http`, since adding a variant would be a migration for a column nothing reads (adapters are chosen by `Provider.key`).
 - **Data residency:** sending recipient numbers and bodies to AWS is a cross-border transfer of personal data (§10 and §13, item 1). The runbook treats clearing it as a prerequisite, not a footnote.
 
@@ -2871,7 +2898,7 @@ fi
 
 - **Consent is opt-in and mandatory, and "legitimate interest" is *not* a recognised lawful basis** — stricter than GDPR. In practice you need explicit consent for essentially all processing, including merely holding a phone number to notify it.
 - **Prior registration with the Authority before processing personal data.**
-- **All cross-border transfers require prior authorisation.** Hosting the gateway and its database outside Cameroon is a cross-border transfer. So is routing through an offshore aggregator. **Host in Cameroon, or obtain the authorisation.**
+- **All cross-border transfers require prior authorisation.** Hosting the gateway and its database outside Cameroon is a cross-border transfer. So is routing through an offshore aggregator, or sending through a cloud SMS service such as AWS End User Messaging (§6.2): every recipient number and body leaves the country. **Host in Cameroon, or obtain the authorisation.**
 
 Sanctions run to 100,000,000 FCFA, suspension, withdrawal of authorisation, and criminal penalties up to ten years. Whether the supervisory Authority is operational and accepting registrations as of today is unverified — confirm with local counsel.
 
