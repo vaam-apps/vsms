@@ -3252,6 +3252,42 @@ Also corrected there while passing through: it claimed Orange's credentials were
 unconditionally by sms-gateway", which stopped being true when the gateway moved to an
 at-least-one-provider check.
 
+## AWS End User Messaging SMS: the go-live provider, receipts via SNS — landed 2026-10-21
+
+Orange and MTN contracts are slow to unlock, so `backends/crates/sms-provider-aws-sms` (key `aws_sms`) is the main provider for go-live. When either operator unlocks, traffic is split with the routing engine that already exists (#62/#63): a priority band per operator holding that operator's route and an AWS route with weights, plus a lower-priority wildcard AWS route as fallback. **No routing code changed** — weights, priority bands and failover over the whole route set were already there. `docs/runbooks/aws-sms.adoc` is the operator's side.
+
+**Classic SNS `Publish` was considered and rejected, and the reason is the whole design.** SNS can send an SMS directly, but it reports what happened only to CloudWatch Logs. vsms would never learn a message was delivered: every one would sit in `submitted` until `expire_stale` swept it to `expired`, firing `message.expired` for OTPs that arrived. The maintainer chose (2026-10-21) End User Messaging SMS (`pinpoint-sms-voice-v2` `SendTextMessage`, the same SMS backend as SNS — same sandbox, spend limits, sender IDs) for sending, with a configuration set whose event destination is an SNS topic that SNS posts, signed, to `/dlr/aws_sms`. SNS is still in the picture; it carries the receipts.
+
+**Every wire fact came from a primary source, not memory:** the request, response, error and event-type shapes are botocore 1.43.116's service model; the event record is AWS's documented example; the SNS string-to-sign is transcribed from AWS's own Java sample.
+
+- **SigV4 is hand-written** (`sigv4.rs`, ~40 lines over the `hmac`/`sha2` already in the tree), because the AWS SDK's HTTP stack is the obvious way `aws-lc-rs` comes back. It is checked against two independent references: AWS's published `get-vanilla` vector, and botocore signing the exact `SendTextMessage` request `submit` builds — the harness reproduced `get-vanilla` first, which is what makes its second answer trustworthy. `cargo tree -i aws-lc-rs` still matches nothing.
+- **The gateway holds no AWS credentials.** `AwsSmsProvider::receiver(topic_arn)` only authenticates and parses; `sender(config)` (worker) only sends. Each refuses the other's job. A compromised gateway cannot send an SMS on the account.
+
+**A new trait hook, `SmsProvider::authenticate_callback`, because `/dlr/{providerKey}` is public and `parse_dlr` is synchronous and pure.** Verifying SNS means fetching a certificate and, for a `SubscriptionConfirmation`, visiting a URL — neither fits `parse_dlr`. The hook returns `CallbackDisposition::{Ingest, Acknowledged, Refused}`, defaulting to `Ingest`, so Orange and MTN (no documented signature scheme) are unchanged. The gateway maps `Refused` → `403`, `Acknowledged` → `200` with nothing parsed, and an `Err` (the check could not *run*) → `503`, so SNS redelivers a genuine receipt rather than the gateway discarding it over a transient cert-fetch failure. Proven load-bearing: with the hook call replaced by a hard-coded `Ingest`, a forged AWS receipt on the real route got `200`.
+
+**SNS verification, in order, cheapest first and network last** (`sns.rs`, reasoning in `sns.md`):
+
+1. **`TopicArn` must equal the configured topic.** The check most implementations forget: a valid SNS signature proves SNS sent it, not that it is *ours* — anyone can create a topic in their own account, subscribe this URL, and publish perfectly signed notifications.
+2. **`SignatureVersion` must be `2`.** v1 is SHA1withRSA and `rustls-webpki` has no SHA1 algorithm at all (verified: zero occurrences in `ring_algs.rs`); the runbook has the operator set the topic attribute once.
+3. **`SigningCertURL` must be `https` on exactly `sns.<topic-region>.amazonaws.com`**, no port or userinfo, `.pem` — before anything is fetched, so a forger cannot make the gateway issue requests. Redirects are off on that client and bodies are capped at 64 KiB.
+4. **RSA-SHA256 verification** via `rustls-webpki` + `ring`, both already in the graph through rustls. Certificates are cached by URL.
+
+`SubscriptionConfirmation` is confirmed automatically, which is safe only because of check 1. `Timestamp` freshness is deliberately not checked (SNS retries for hours; replay of a genuine receipt is idempotent).
+
+**Test fixtures are third-party signed, and no private key is in the repo.** `tests/fixtures/` holds a self-signed test cert and two SNS envelopes whose string-to-sign was built by a separate Python implementation and signed by `openssl`, then re-verified with `openssl dgst -verify` before commit. The key was deleted after signing. The repo's `*.pem` gitignore (there to keep `provision-client` private keys out) would have silently dropped the public cert and broken `include_bytes!` in CI; it has a single-file negation now, rather than a weakened rule.
+
+**Decisions recorded where the code makes them:**
+
+- **A final `TEXT_SUCCESSFUL` ("accepted by carrier", `isFinal: true`) is `Delivered`.** Many carriers never return a handset receipt to AWS; mapping it to `InFlight` would mean every such message ends `expired`. A deliberate overstatement; `rawStatus` keeps `TEXT_SUCCESSFUL` so it stays distinguishable. Non-final `TEXT_SUCCESSFUL` is `InFlight`.
+- **Error classes:** spend limit / quota, access denied, bad credentials, missing configuration set → `Unavailable` (nothing sent; fail over, count toward the breaker); `ValidationException` about the country, sender identity or price → `Permanent` (next route may carry it); other validation and `ConflictException` (opted out at AWS) → `Rejected`; `ThrottlingException` → `Transient(1s)`; a 200 without `MessageId` or a post-connect timeout → `Indeterminate`.
+- **`ProviderKind` gained no variant.** `aggregator_http` is used for the `Provider` row, because a new enum value is a forward migration against deployed databases for a column nothing reads (routing resolves adapters by `Provider.key`). `seed-dispatch --key aws_sms --kind aggregator_http` already works.
+- **Long-lived IAM user keys only** — instance roles / IRSA / STS need the SDK's credential chain.
+- **An `Indeterminate` submit is not rescued by a later receipt**: its `MessageId` was never learned. `Context.vsmsMessageId` = our `Message.id` is stamped on every message so a human can tie a raw receipt back, but correlation does not use it — same trade-off as Orange's after #119.
+
+**Guard-failure proofs, run then reverted:** topic pinning removed → `another_topic_is_refused_before_any_fetch` fails; signature result ignored → `a_tampered_message_is_refused` and `a_forged_subscription_confirmation_is_never_visited` fail; cert host check removed → `a_certificate_url_off_the_topics_sns_host_is_refused_without_fetching` fails; gateway hook bypassed → four `dlr` tests fail including the real-AWS-receiver one (`left: 200, right: 403`); `hide_env_values` removed from `--aws-sms-secret-access-key` → `cargo xtask secret-env-args` fails (the list now guards `AWS_SMS_SECRET_ACCESS_KEY`).
+
+**Data residency is not solved by any of this.** Sending recipient numbers and bodies to AWS is a cross-border transfer of personal data, which Law No. 2024/017 subjects to prior authorisation (open question 1 below). The runbook states it as a go-live blocker for the operator to clear.
+
 ## release-please proposes the version bump, and three things had to be true first
 
 `Release prep: v0.3.0` (#347) and `Release prep: v0.3.1` (#351) were written by

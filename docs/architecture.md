@@ -1,6 +1,6 @@
 # SMS Gateway — Architecture Design
 
-**Scope:** a self-hosted A2P SMS gateway, Cameroon-first (MTN + Orange) and extensible to any
+**Scope:** a self-hosted A2P SMS gateway, Cameroon-first (MTN + Orange direct, with AWS End User Messaging SMS as an additional route) and extensible to any
 country, serving OTP and notification traffic for one organisation's own applications, with a
 Next.js admin console.
 
@@ -2225,6 +2225,18 @@ The error taxonomy is the important part. Most gateway failover bugs are really 
 - The DLR carries no delivering-network field, so `delivering_network` is always `None` here — §6.4's grey-route detection gets nothing from MTN DLRs.
 
 **Caveat on provenance:** `developers.mtn.com`'s TLS certificate was expired when the Swagger was fetched (Let's Encrypt, `notAfter Sep 16 06:02:41 2026 GMT`), so verification was bypassed for that one download at the maintainer's direction, with the chain otherwise intact. Re-download over a valid certificate and diff against the vendored copy before trusting it for anything commercial.
+
+**`AwsSmsProvider`** (`backends/crates/sms-provider-aws-sms`, key `aws_sms`) — AWS End User Messaging SMS, the go-live route while the Orange and MTN contracts are pending and a standing second route for the same numbers afterwards. Operator procedure: [`docs/runbooks/aws-sms.adoc`](runbooks/aws-sms.adoc).
+
+- Sends with `SendTextMessage` (the `pinpoint-sms-voice-v2` API), signed with a hand-written SigV4 so the AWS SDK's HTTP stack — and `aws-lc-rs` with it — stays out of the tree. Long-lived IAM user keys only.
+- **Why not classic SNS `Publish`:** it reports delivery only to CloudWatch Logs, so every message would sit in `submitted` until `expire_stale` marked it `expired`. End User Messaging is the same SMS backend with an API that can publish per-message events to an SNS topic.
+- **Receipts** come back through a configuration set whose event destination is an SNS topic, which SNS delivers, signed, to `POST /dlr/aws_sms`. That route is public, so the adapter authenticates each call itself through `SmsProvider::authenticate_callback` (a hook with a default of "ingest", so Orange and MTN are unchanged): the `TopicArn` must equal the configured topic, `SignatureVersion` must be `2`, the signing-certificate URL must be on `sns.<topic-region>.amazonaws.com`, and the RSA-SHA256 signature must verify. A refusal is `403`; a check that could not run (certificate fetch failed) is `503`, so SNS redelivers. A `SubscriptionConfirmation` for the configured topic is confirmed automatically.
+- **Two halves, so the gateway holds no AWS credentials:** `sms-worker` builds the sender (region, key, configuration set, TPS ceiling, price); `sms-gateway` builds a receiver from the topic ARN alone.
+- A final `TEXT_SUCCESSFUL` (carrier accepted, `isFinal`) is recorded as `Delivered`, because many carriers never return a handset receipt to AWS; `DeliveryReceipt.rawStatus` keeps the original value. `TEXT_UNKNOWN` (no final event within 72 hours) is `Uncertain`. The full table is `backends/crates/sms-provider-aws-sms/src/events.md`.
+- No `ProviderKind` variant exists for it: the `Provider` row uses `aggregator_http`, since adding a variant would be a migration for a column nothing reads (adapters are chosen by `Provider.key`).
+- **Data residency:** sending recipient numbers and bodies to AWS is a cross-border transfer of personal data (§10 and §13, item 1). The runbook treats clearing it as a prerequisite, not a footnote.
+
+Routing between `aws_sms` and the operator routes needs no new code. A priority band per operator holds that operator's direct route and an `aws_sms` route with weights, and a lower-priority wildcard `aws_sms` route catches everything else and serves as the failover target (§6.3; worked table in the runbook).
 
 **`AggregatorHttpProvider`** — config-driven generic adapter so adding an aggregator is a config row, not a crate. Covers Nexah, Africa's Talking, Infobip, Twilio.
 

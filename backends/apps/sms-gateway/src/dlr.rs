@@ -331,6 +331,41 @@ mod tests {
         assert_eq!(status, axum::http::StatusCode::OK);
     }
 
+    /// The real AWS receiver behind the real route: a body that is not a
+    /// signed SNS envelope for the configured topic is refused with 403 and
+    /// never ingested — before this hook existed, the same body would have
+    /// gone straight to `parse_dlr`.
+    #[tokio::test]
+    async fn an_unsigned_body_on_the_aws_route_is_403() {
+        let app = router(
+            lazy_db(),
+            sms_api::system_context("dlr-test"),
+            vec![DlrProvider {
+                provider: Arc::new(
+                    sms_provider_aws_sms::AwsSmsProvider::receiver(
+                        "arn:aws:sns:eu-west-1:123456789012:vsms-sms-events".to_owned(),
+                    )
+                    .unwrap(),
+                ),
+                provider_row_id: "aws-provider-row-id".to_owned(),
+            }],
+        );
+        let forged = r#"{"Type":"Notification","MessageId":"m","TopicArn":"arn:aws:sns:eu-west-1:999999999999:attacker","Message":"{\"eventType\":\"TEXT_DELIVERED\",\"messageId\":\"x\"}","Timestamp":"t","SignatureVersion":"2","Signature":"AAAA","SigningCertURL":"https://sns.eu-west-1.amazonaws.com/c.pem"}"#;
+        assert_eq!(
+            post_dlr(app.clone(), "/dlr/aws_sms", forged).await,
+            axum::http::StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post_dlr(
+                app,
+                "/dlr/aws_sms",
+                r#"{"eventType":"TEXT_DELIVERED","messageId":"x"}"#
+            )
+            .await,
+            axum::http::StatusCode::FORBIDDEN
+        );
+    }
+
     /// An adapter whose `authenticate_callback` answers whatever it is told
     /// to, so the handler's three non-`Ingest` arms are tested on their own,
     /// independent of any one provider's signature scheme.
