@@ -368,6 +368,16 @@ jobs:
       # backends/crates/sms-encoding/tests/french_corpus.rs.
       - run: cargo test --workspace
 
+      # sms-gateway's off-by-default `fake-aws` feature (compose.dev.yaml's
+      # gateway trusts sms-fake-aws's receipt-signing certificate). Nothing
+      # above builds it, so without this step its code could rot, and its
+      # one test — that such a build accepts a receipt the fake signed —
+      # would never run.
+      - name: sms-gateway with the fake-aws feature — clippy and test
+        run: |
+          cargo clippy -p sms-gateway --features fake-aws --all-targets -- -D warnings
+          cargo test -p sms-gateway --features fake-aws --bins
+
       # The lock file is committed; a build must not silently change it.
       - name: Cargo.lock is up to date
         run: cargo metadata --locked --format-version 1 > /dev/null

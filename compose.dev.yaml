@@ -130,6 +130,12 @@ services:
     build:
       context: .
       dockerfile: backends/apps/sms-gateway/Dockerfile
+      args:
+        # See the `sms-gateway` service below: this stack's gateway trusts
+        # `sms-fake-aws`'s receipt-signing certificate. Every service that
+        # shares the `vsms-dev/sms-gateway:local` tag passes the same value,
+        # so whichever one Compose builds, the image is the same.
+        CARGO_FEATURES: fake-aws
     # Every `sms-gateway`-image service in this file shares this exact
     # `image:` tag, not just the same `build:` block — found live, not
     # assumed: with each service building its own separately-named image
@@ -162,12 +168,50 @@ services:
     build:
       context: .
       dockerfile: backends/apps/sms-gateway/Dockerfile
+      args:
+        # See the `sms-gateway` service below: this stack's gateway trusts
+        # `sms-fake-aws`'s receipt-signing certificate. Every service that
+        # shares the `vsms-dev/sms-gateway:local` tag passes the same value,
+        # so whichever one Compose builds, the image is the same.
+        CARGO_FEATURES: fake-aws
     image: vsms-dev/sms-gateway:local
     command: ['seed-dispatch']
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
     depends_on:
       seed-signing-key:
+        condition: service_completed_successfully
+    restart: 'no'
+
+  # A second `Provider` + catch-all `Route`, for AWS End User Messaging
+  # SMS (`aws_sms`), at the same priority and weight as Orange's above: the
+  # routing engine (#62) draws between the two 50/50, so `just demo` sends
+  # through both and each message's detail page names which one it took.
+  # That is the go-live arrangement (AWS beside an operator) with the
+  # weights left even; change them on the console's Routes screen.
+  seed-dispatch-aws:
+    build:
+      context: .
+      dockerfile: backends/apps/sms-gateway/Dockerfile
+      args:
+        CARGO_FEATURES: fake-aws
+    image: vsms-dev/sms-gateway:local
+    command:
+      - seed-dispatch
+      - --key
+      - aws_sms
+      - --display-name
+      - AWS End User Messaging SMS (sms-fake-aws)
+      - --kind
+      - aggregator_http
+      - --credential-ref
+      - env:AWS_SMS_SECRET_ACCESS_KEY
+      - --cost-per-segment-xaf
+      - '30'
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
+    depends_on:
+      seed-dispatch:
         condition: service_completed_successfully
     restart: 'no'
 
@@ -257,6 +301,12 @@ services:
     build:
       context: .
       dockerfile: backends/apps/sms-gateway/Dockerfile
+      args:
+        # See the `sms-gateway` service below: this stack's gateway trusts
+        # `sms-fake-aws`'s receipt-signing certificate. Every service that
+        # shares the `vsms-dev/sms-gateway:local` tag passes the same value,
+        # so whichever one Compose builds, the image is the same.
+        CARGO_FEATURES: fake-aws
     image: vsms-dev/sms-gateway:local
     user: '0:0'
     command:
@@ -330,6 +380,12 @@ services:
     build:
       context: .
       dockerfile: backends/apps/sms-gateway/Dockerfile
+      args:
+        # See the `sms-gateway` service below: this stack's gateway trusts
+        # `sms-fake-aws`'s receipt-signing certificate. Every service that
+        # shares the `vsms-dev/sms-gateway:local` tag passes the same value,
+        # so whichever one Compose builds, the image is the same.
+        CARGO_FEATURES: fake-aws
     image: vsms-dev/sms-gateway:local
     command:
       - seed-console-client
@@ -353,6 +409,12 @@ services:
     build:
       context: .
       dockerfile: backends/apps/sms-gateway/Dockerfile
+      args:
+        # See the `sms-gateway` service below: this stack's gateway trusts
+        # `sms-fake-aws`'s receipt-signing certificate. Every service that
+        # shares the `vsms-dev/sms-gateway:local` tag passes the same value,
+        # so whichever one Compose builds, the image is the same.
+        CARGO_FEATURES: fake-aws
     image: vsms-dev/sms-gateway:local
     command:
       - provision-user
@@ -394,10 +456,35 @@ services:
     ports:
       - '127.0.0.1:${VSMS_DEMO_ORANGE_PORT:-8090}:8090'
 
+  # A development/demo impersonation of AWS End User Messaging SMS and of
+  # the SNS topic its receipts arrive through — see
+  # backends/apps/sms-fake-aws/src/main.md. It checks the worker's
+  # Signature Version 4 signing and posts receipts it signs itself to the
+  # gateway, which accepts them only because this stack builds it with the
+  # `fake-aws` feature. **Never point a real deployment at this.**
+  sms-fake-aws:
+    build:
+      context: .
+      dockerfile: backends/apps/sms-fake-aws/Dockerfile
+    restart: unless-stopped
+    command:
+      - --bind-addr
+      - 0.0.0.0:8095
+      - --dlr-endpoint
+      - http://sms-gateway:8080/dlr/aws_sms
+    ports:
+      - '127.0.0.1:${VSMS_DEMO_AWS_PORT:-8095}:8095'
+
   sms-gateway:
     build:
       context: .
       dockerfile: backends/apps/sms-gateway/Dockerfile
+      args:
+        # See the `sms-gateway` service below: this stack's gateway trusts
+        # `sms-fake-aws`'s receipt-signing certificate. Every service that
+        # shares the `vsms-dev/sms-gateway:local` tag passes the same value,
+        # so whichever one Compose builds, the image is the same.
+        CARGO_FEATURES: fake-aws
     image: vsms-dev/sms-gateway:local
     restart: unless-stopped
     environment:
@@ -432,6 +519,12 @@ services:
       ORANGE_CM_CLIENT_SECRET: placeholder
       ORANGE_CM_SENDER_NUMBER: '+2370000'
       ORANGE_CM_BASE_URL: http://sms-fake-orange:8090
+      # AWS receipts come from sms-fake-aws, signed with a key it made at
+      # start-up. The topic is the fake's default; the certificate base is
+      # the `fake-aws`-build-only flag that fetches the signing certificate
+      # from the fake instead of from AWS. Every other check still applies.
+      AWS_SMS_EVENTS_TOPIC_ARN: arn:aws:sns:eu-west-1:000000000000:vsms-sms-events
+      AWS_SMS_FAKE_SNS_CERT_BASE: http://sms-fake-aws:8095/
       SMS_HASH_PEPPER: vsms-dev-hash-pepper-DO-NOT-USE-IN-PRODUCTION-1234567890
       SMS_CONSOLE_OIDC_CLIENT_ID: sms-console
     depends_on:
@@ -442,6 +535,9 @@ services:
       seed-signing-key:
         condition: service_completed_successfully
       seed-dispatch:
+        condition: service_completed_successfully
+      # The DLR route refuses to start without a Provider row per adapter.
+      seed-dispatch-aws:
         condition: service_completed_successfully
     # Readiness, not the image's own baked-in liveness-only HEALTHCHECK —
     # same override, same reasoning as `deploy/docker-compose.yml`'s own
@@ -481,6 +577,16 @@ services:
       ORANGE_CM_CLIENT_SECRET: placeholder
       ORANGE_CM_SENDER_NUMBER: '+2370000'
       ORANGE_CM_BASE_URL: http://sms-fake-orange:8090
+      # sms-fake-aws's default demo account (`sms_fake_aws::DEFAULT_*`):
+      # public, fixed, accepted by nothing but the fake.
+      AWS_SMS_REGION: eu-west-1
+      AWS_SMS_ACCESS_KEY_ID: AKIAFAKEAWSSMSDEMO00
+      AWS_SMS_SECRET_ACCESS_KEY: fake-aws-secret-access-key-not-a-real-one
+      AWS_SMS_CONFIGURATION_SET: vsms-fake
+      AWS_SMS_TPS_CEILING: '10'
+      AWS_SMS_COST_PER_SEGMENT_XAF: '30'
+      AWS_SMS_ENDPOINT_URL: http://sms-fake-aws:8095/
+      AWS_SMS_TIME_TO_LIVE_SECONDS: '900'
     depends_on:
       postgres:
         condition: service_healthy
@@ -488,9 +594,13 @@ services:
         condition: service_completed_successfully
       seed-dispatch:
         condition: service_completed_successfully
+      seed-dispatch-aws:
+        condition: service_completed_successfully
       seed-demo-app:
         condition: service_completed_successfully
       sms-fake-orange:
+        condition: service_started
+      sms-fake-aws:
         condition: service_started
 
   # R4: everything above this line is the whole backend, and it is healthy

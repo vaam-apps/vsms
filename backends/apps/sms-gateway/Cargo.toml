@@ -29,6 +29,8 @@ sms-provider.workspace = true
 sms-provider-orange-cm.workspace = true
 sms-provider-mtn.workspace = true
 sms-provider-aws-sms.workspace = true
+# Only with the `fake-aws` feature, below.
+sms-fake-aws = { workspace = true, optional = true }
 # commands/serve.rs's --mtn-cost-per-segment-xaf flag — money, never a
 # float (see `MtnConfig::cost_per_segment_xaf`'s own doc).
 rust_decimal.workspace = true
@@ -58,6 +60,17 @@ serde_json.workspace = true
 # sso.rs: the SSO routes' expiry stamps and the console error redirect's URL.
 chrono.workspace = true
 url.workspace = true
+
+[features]
+default = []
+# Demo and test builds only: `serve --aws-sms-fake-sns-cert-base` trusts SNS
+# signing certificates served by `sms-fake-aws`, so `just demo` can show an
+# AWS receipt arriving without an AWS account. Off by default; the release
+# workflow builds every image without it, and a build without it has neither
+# the flag nor the code (`commands/serve.rs`'s `aws_sms_receiver`). The
+# Dockerfile's `CARGO_FEATURES` build argument is how compose.dev.yaml turns
+# it on.
+fake-aws = ["dep:sms-fake-aws"]
 
 [dev-dependencies]
 # #25's acceptance gate spawns the real `sms-gateway` binary as two
