@@ -49,3 +49,5 @@ one). [`owner_grant`](crate::owner_grant) is the first: only an `owner` may set
 a `User`'s `roleKey` to `owner`. It reuses `authenticate_request` (the same
 re-authentication this module's gate runs) and follows the same rule — it only
 ever adds a refusal in front of Layer 1, never a bypass of it.
+
+<!-- markdownlint-disable-file MD041 -->

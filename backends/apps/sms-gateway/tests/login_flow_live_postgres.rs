@@ -90,7 +90,11 @@ const ORANGE_PROVIDER_KEY: &str = "orange_cm";
 const TEST_HASH_PEPPER: &str = "login-flow-live-postgres-test-pepper-over-the-minimum-length";
 const CONSOLE_CLIENT_ID: &str = "sms-console";
 const REDIRECT_URI: &str = "http://127.0.0.1:1/callback";
-const TEST_PASSWORD: &str = "correct horse battery staple login flow test";
+/// Generated per run rather than a literal: `CodeQL`'s
+/// `rust/hard-coded-cryptographic-value` flags a literal that reaches a
+/// password sink, even in a test, and a random value is just as good here.
+static TEST_PASSWORD: std::sync::LazyLock<String> =
+    std::sync::LazyLock::new(|| sms_core::password::generate_password(32));
 
 fn owner() -> CratestackContext {
     Principal {
@@ -275,7 +279,7 @@ async fn seed_login_account(db: &Cratestack, suffix: &str) -> String {
     db.user_credential()
         .create(schema::CreateUserCredentialInput {
             userId: user.id,
-            passwordHash: sms_core::password::hash_password(TEST_PASSWORD)
+            passwordHash: sms_core::password::hash_password(TEST_PASSWORD.as_str())
                 .expect("hashing the test password"),
         })
         .run(&sys())
@@ -470,7 +474,7 @@ async fn a_correct_login_completes_the_full_authorization_code_pkce_round_trip()
         .post(format!("{}/login", process.issuer))
         .json(&login_body(
             &email,
-            TEST_PASSWORD,
+            TEST_PASSWORD.as_str(),
             &state,
             &challenge,
             &nonce,
@@ -596,7 +600,7 @@ async fn a_wrong_pkce_code_verifier_is_refused_at_the_token_exchange() {
         .post(format!("{}/login", process.issuer))
         .json(&login_body(
             &email,
-            TEST_PASSWORD,
+            TEST_PASSWORD.as_str(),
             &state,
             &challenge,
             &nonce,
@@ -867,7 +871,7 @@ async fn seed_reserved_role_login_account(
         .user_credential()
         .create(schema::CreateUserCredentialInput {
             userId: user.id.clone(),
-            passwordHash: sms_core::password::hash_password(TEST_PASSWORD)
+            passwordHash: sms_core::password::hash_password(TEST_PASSWORD.as_str())
                 .expect("hashing the test password"),
         })
         .run(&sys())
@@ -928,7 +932,7 @@ async fn a_role_keyed_system_never_authenticates_even_past_the_database_check() 
         .post(format!("{}/login", process.issuer))
         .json(&login_body(
             &email,
-            TEST_PASSWORD,
+            TEST_PASSWORD.as_str(),
             &state,
             &challenge,
             &nonce,
@@ -1006,7 +1010,7 @@ async fn a_role_keyed_system_never_authenticates_even_past_the_database_check() 
 
 /// A seeded staff `User` with a login credential, on one of §5.2's built-in
 /// roles (seeded by `0002_bootstrap`, not by this suite).
-struct StaffAccount {
+struct StaffUser {
     id: String,
     email: String,
 }
@@ -1014,12 +1018,7 @@ struct StaffAccount {
 /// An `owner`-context create (always allowed) of a `User` on `role_key`, plus
 /// a `UserCredential` so the account can sign in. `label` keeps the rows of
 /// one test apart and readable in a failure.
-async fn seed_staff_account(
-    db: &Cratestack,
-    suffix: &str,
-    label: &str,
-    role_key: &str,
-) -> StaffAccount {
+async fn seed_staff_user(db: &Cratestack, suffix: &str, label: &str, role_key: &str) -> StaffUser {
     let email = format!("owner-grant-{label}-{suffix}@example.test");
     let user = db
         .user()
@@ -1037,13 +1036,13 @@ async fn seed_staff_account(
     db.user_credential()
         .create(schema::CreateUserCredentialInput {
             userId: user.id.clone(),
-            passwordHash: sms_core::password::hash_password(TEST_PASSWORD)
+            passwordHash: sms_core::password::hash_password(TEST_PASSWORD.as_str())
                 .expect("hashing the test password"),
         })
         .run(&sys())
         .await
         .expect("seeding a UserCredential");
-    StaffAccount { id: user.id, email }
+    StaffUser { id: user.id, email }
 }
 
 /// The full `/login` -> `/token` round trip for `email`, returning the
@@ -1058,7 +1057,7 @@ async fn sign_in(process: &GatewayProcess, email: &str, suffix: &str) -> String 
         .post(format!("{}/login", process.issuer))
         .json(&login_body(
             email,
-            TEST_PASSWORD,
+            TEST_PASSWORD.as_str(),
             &state,
             &challenge,
             &nonce,
@@ -1096,7 +1095,7 @@ struct OwnerGrantRig {
     process: GatewayProcess,
     client: reqwest::Client,
     suffix: String,
-    admin: StaffAccount,
+    admin: StaffUser,
     admin_token: String,
     owner_token: String,
 }
@@ -1111,13 +1110,13 @@ async fn owner_grant_rig() -> OwnerGrantRig {
         .expect("rotating in a signing key");
     ensure_orange_cm_provider(&db).await;
     ensure_console_client(&db).await;
-    let admin = seed_staff_account(&db, &suffix, "admin", "admin").await;
-    let owner_account = seed_staff_account(&db, &suffix, "owner", "owner").await;
+    let admin = seed_staff_user(&db, &suffix, "admin", "admin").await;
+    let owner_user = seed_staff_user(&db, &suffix, "owner", "owner").await;
 
     let port = free_port();
     let process = GatewayProcess::spawn(&db_url, port).await;
     let admin_token = sign_in(&process, &admin.email, &suffix).await;
-    let owner_token = sign_in(&process, &owner_account.email, &suffix).await;
+    let owner_token = sign_in(&process, &owner_user.email, &suffix).await;
     OwnerGrantRig {
         db,
         process,
@@ -1218,7 +1217,7 @@ async fn an_admin_cannot_promote_itself_to_owner() {
 async fn an_admin_cannot_promote_another_user_to_owner() {
     let _guard = TEST_MUTEX.lock().await;
     let rig = owner_grant_rig().await;
-    let target = seed_staff_account(&rig.db, &rig.suffix, "target", "support").await;
+    let target = seed_staff_user(&rig.db, &rig.suffix, "target", "support").await;
     let before = rig.user(&target.id).await;
 
     let response = rig
@@ -1245,7 +1244,7 @@ async fn an_admin_cannot_promote_another_user_to_owner() {
 async fn an_admin_cannot_smuggle_owner_past_the_guard_in_another_encoding() {
     let _guard = TEST_MUTEX.lock().await;
     let rig = owner_grant_rig().await;
-    let target = seed_staff_account(&rig.db, &rig.suffix, "smuggle", "support").await;
+    let target = seed_staff_user(&rig.db, &rig.suffix, "smuggle", "support").await;
     let before = rig.user(&target.id).await;
     let url = format!("{}/users/{}", rig.process.issuer, target.id);
     let if_match = format!("\"{}\"", before.version);
@@ -1361,7 +1360,7 @@ async fn an_admin_still_manages_non_owners_and_an_owner_may_grant_owner() {
     let rig = owner_grant_rig().await;
 
     // admin -> operator on another user: allowed.
-    let target = seed_staff_account(&rig.db, &rig.suffix, "control", "support").await;
+    let target = seed_staff_user(&rig.db, &rig.suffix, "control", "support").await;
     let before = rig.user(&target.id).await;
     let response = rig
         .patch_user(
@@ -1400,7 +1399,7 @@ async fn an_admin_still_manages_non_owners_and_an_owner_may_grant_owner() {
     );
 
     // owner -> owner: allowed (the middleware does not inspect an owner).
-    let promote = seed_staff_account(&rig.db, &rig.suffix, "promote", "admin").await;
+    let promote = seed_staff_user(&rig.db, &rig.suffix, "promote", "admin").await;
     let before = rig.user(&promote.id).await;
     let response = rig
         .patch_user(

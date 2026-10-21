@@ -61,3 +61,5 @@ refuses an admin provisioning an owner (proven end to end in
 Adding a user-write route (a batch or upsert route, a new codec) means adding
 it to `GUARDED_ROUTES` — `every_generated_user_write_route_is_guarded` fails
 the build until it is classified.
+
+<!-- markdownlint-disable-file MD041 -->
