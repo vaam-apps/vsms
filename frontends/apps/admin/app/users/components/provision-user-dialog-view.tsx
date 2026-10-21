@@ -23,9 +23,9 @@ import {
   toast,
 } from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
+import { ErrorBanner } from "@/components/error-banner";
 import type { RoleRecord } from "../types";
 import type { ProvisionUserValues } from "../user-forms";
-import { ErrorBanner } from "./error-banner";
 
 export interface ProvisionedUser {
   email: string;

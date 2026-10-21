@@ -83,11 +83,16 @@ describe("JobsTable hideBelow breakpoints (real render, not just types)", () => 
     expect(headByLabel("Id")).toContain("hidden");
     expect(headByLabel("Id")).toContain("lg:table-cell");
 
-    // State/Kind/Updated/Action never hide.
+    // Action hides on phones: the whole row opens the detail drawer, which
+    // carries Requeue too, and the column pushed the table into a sideways
+    // scroll at 375px.
+    expect(headByLabel("Action")).toContain("hidden");
+    expect(headByLabel("Action")).toContain("sm:table-cell");
+
+    // State/Kind/Updated never hide.
     expect(headByLabel("State")).not.toContain("hidden");
     expect(headByLabel("Kind")).not.toContain("hidden");
     expect(headByLabel("Updated")).not.toContain("hidden");
-    expect(headByLabel("Action")).not.toContain("hidden");
 
     // Body cells: same breakpoint per column, read positionally since cell
     // text isn't a stable label the way head text is.
@@ -100,6 +105,6 @@ describe("JobsTable hideBelow breakpoints (real render, not just types)", () => 
     expect(cells[0]).not.toContain("hidden");
     expect(cells[1]).not.toContain("hidden");
     expect(cells[6]).not.toContain("hidden");
-    expect(cells[7]).not.toContain("hidden");
+    expect(cells[7]).toContain("sm:table-cell");
   });
 });

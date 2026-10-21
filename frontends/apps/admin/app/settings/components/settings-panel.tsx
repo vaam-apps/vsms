@@ -1,67 +1,88 @@
-// Dumb view for the Settings screen (R6) — markup and classes only, no data
-// fetching, no business rules. Content is static by design; see
-// `settings-screen.tsx`'s own module doc for why there is nothing to fetch
-// or edit here.
+// Dumb component (R6, route-local): the Settings screen.
+//
+// Two sections. Appearance is the one setting this console really owns:
+// the theme preference `useTheme` stores in the browser, shown with the
+// library's own `ThemeSwitcher` (the same choice the account menu offers
+// as a compact select). "Configured elsewhere" says where each of the
+// deployment's settings actually lives, because none of them is a
+// database row this console can write (see `settings-screen.tsx`).
 
-import { Code, InlineBanner, ScreenHeader, ScreenStack } from "@vaam-apps/ui";
+import { Code, ScreenStack, ThemeSwitcher } from "@vaam-apps/ui";
+import { Clock3, KeyRound, Route, SlidersHorizontal } from "lucide-react";
+import Link from "next/link";
+import type { ReactNode } from "react";
+import { PageHeader } from "@/components/page-header";
+import { SectionHeader } from "@/components/section-header";
+
+function Elsewhere({
+  icon,
+  title,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <li className="flex gap-4 rounded-[20px] border border-edge-subtle bg-base-100 p-5">
+      <span
+        aria-hidden="true"
+        className="flex size-10 shrink-0 items-center justify-center rounded-full bg-primary-container text-on-primary-container"
+      >
+        {icon}
+      </span>
+      <span className="flex min-w-0 flex-col gap-1">
+        <span className="text-title-medium text-foreground">{title}</span>
+        <span className="text-body-medium text-muted-foreground">{children}</span>
+      </span>
+    </li>
+  );
+}
 
 export function SettingsPanel() {
   return (
     <ScreenStack>
-      <ScreenHeader
+      <PageHeader
         title="Settings"
-        description="There is no runtime-configurable settings model in this system today."
+        description="Your appearance in this browser, and where the deployment's own settings live."
       />
 
-      <InlineBanner variant="neutral">
-        This screen exists because #58 named &quot;settings&quot; as one of the remaining pages, not
-        because there is a <Code>Settings</Code> model to build a form around — there isn&apos;t
-        one. Rather than invent switches that don&apos;t connect to anything, here is where the
-        things a &quot;settings&quot; screen might otherwise show actually live today.
-      </InlineBanner>
-
-      <div className="flex flex-col divide-y divide-edge rounded-sm border border-edge">
-        <div className="flex flex-col gap-1 px-4 py-3">
-          <p className="font-medium text-body text-foreground">Marketing quiet hours</p>
-          <p className="text-caption text-muted-foreground">
-            A self-imposed policy constant (§10), not a database row —{" "}
-            <Code>backends/crates/sms-api/src/consent.rs::MARKETING_QUIET_HOURS_START_WAT</Code> /{" "}
-            <Code>_END_WAT</Code>. Deliberately not runtime-editable: the source comment is explicit
-            that "the next reader should see a value to reconsider, not a rule to trust."
-          </p>
-        </div>
-        <div className="flex flex-col gap-1 px-4 py-3">
-          <p className="font-medium text-body text-foreground">MSISDN/body hashing pepper</p>
-          <p className="text-caption text-muted-foreground">
-            <Code>SMS_HASH_PEPPER</Code>, a process environment variable the gateway validates at
-            startup — never read or writable from this console. Rotating it does not rehash stored
-            rows; see <Code>OPEN_QUESTIONS.md</Code> §3.1.
-          </p>
-        </div>
-        <div className="flex flex-col gap-1 px-4 py-3">
-          <p className="font-medium text-body text-foreground">Provider routing rules</p>
-          <p className="text-caption text-muted-foreground">
-            Configurable, and already has a real screen — see{" "}
-            <a href="/routes" className="underline decoration-edge-strong underline-offset-2">
-              Routes
-            </a>{" "}
-            and the{" "}
-            <a href="/simulator" className="underline decoration-edge-strong underline-offset-2">
-              route simulator
-            </a>
-            .
-          </p>
-        </div>
-        <div className="flex flex-col gap-1 px-4 py-3">
-          <p className="font-medium text-body text-foreground">
-            Rate limits, idempotency TTLs, and other operational knobs
-          </p>
-          <p className="text-caption text-muted-foreground">
-            Process CLI flags/environment variables on <Code>sms-gateway serve</Code>, set at deploy
-            time — not database rows, and out of this console&apos;s reach by design.
-          </p>
-        </div>
+      <SectionHeader
+        title="Appearance"
+        description="Saved in this browser only. System follows your operating system."
+      />
+      <div className="rounded-[20px] border border-edge-subtle bg-base-100 p-5">
+        <ThemeSwitcher aria-label="Theme" />
       </div>
+
+      <SectionHeader
+        title="Configured elsewhere"
+        description="None of these is a database row, so none is editable from the console."
+      />
+      <ul className="grid gap-3 lg:grid-cols-2">
+        <Elsewhere icon={<Route size={20} />} title="Routing rules">
+          Editable, on their own screens:{" "}
+          <Link href="/routes" className="text-primary underline underline-offset-2">
+            Routes
+          </Link>{" "}
+          and the{" "}
+          <Link href="/simulator" className="text-primary underline underline-offset-2">
+            route simulator
+          </Link>
+          .
+        </Elsewhere>
+        <Elsewhere icon={<Clock3 size={20} />} title="Marketing quiet hours">
+          A policy constant in the gateway (<Code>MARKETING_QUIET_HOURS_START_WAT</Code>,{" "}
+          <Code>_END_WAT</Code>), changed by a release rather than a switch.
+        </Elsewhere>
+        <Elsewhere icon={<KeyRound size={20} />} title="Hashing pepper">
+          <Code>SMS_HASH_PEPPER</Code>, set where the gateway is deployed and never readable here.
+          Rotating it does not rehash stored rows.
+        </Elsewhere>
+        <Elsewhere icon={<SlidersHorizontal size={20} />} title="Rate limits and other knobs">
+          Flags and environment variables on <Code>sms-gateway serve</Code>, set at deploy time.
+        </Elsewhere>
+      </ul>
     </ScreenStack>
   );
 }

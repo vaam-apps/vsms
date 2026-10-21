@@ -2,8 +2,8 @@
 
 import { FormField, Input, StaleWriteBanner, Textarea } from "@vaam-apps/ui";
 import type { UseFormReturn } from "react-hook-form";
+import { ErrorBanner } from "@/components/error-banner";
 import { KNOWN_PERMISSIONS, type RoleEditValues } from "../role-forms";
-import { ErrorBanner } from "./error-banner";
 
 export function RoleEditForm({
   form,

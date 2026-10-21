@@ -26,8 +26,9 @@
 //   at runtime without SSH access to the process, which is out of scope
 //   for an admin screen.
 //
-// So: this screen states plainly that there is nothing here to edit yet,
-// names where each of the above actually lives, and does not invent a
+// So: this screen shows the one setting the console really owns (the
+// theme, a per-browser preference `useTheme` stores, also offered in the
+// account menu), names where each of the above actually lives, and does not invent a
 // screen with switches that don't connect to anything — matching this
 // project's own "no dormant code" convention applied to UI rather than
 // server code.

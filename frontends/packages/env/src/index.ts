@@ -59,6 +59,7 @@ const created = createEnv({
     // server-side in `audit-log/page.tsx` and handed down as a prop, the
     // identical shape that file already uses.
     AUDIT_LOG_PAGE_SIZE: TUNING.AUDIT_LOG_PAGE_SIZE,
+    LIST_PAGE_SIZE: TUNING.LIST_PAGE_SIZE,
     // Dashboard screen (#49). Same "operational tuning value, not
     // protocol/security" reasoning AGENTS.md's R6 already gives for
     // `MESSAGE_STREAM_POLL_MS` — a hoisted `REFETCH_INTERVAL_MS` in the
@@ -89,6 +90,7 @@ const created = createEnv({
     MESSAGE_STREAM_POLL_MS: process.env.MESSAGE_STREAM_POLL_MS,
     DIAGNOSTICS_POLL_MS: process.env.DIAGNOSTICS_POLL_MS,
     AUDIT_LOG_PAGE_SIZE: process.env.AUDIT_LOG_PAGE_SIZE,
+    LIST_PAGE_SIZE: process.env.LIST_PAGE_SIZE,
     DASHBOARD_REFETCH_INTERVAL_MS: process.env.DASHBOARD_REFETCH_INTERVAL_MS,
     QUERY_STALE_TIME_MS: process.env.QUERY_STALE_TIME_MS,
     NODE_ENV: process.env.NODE_ENV,

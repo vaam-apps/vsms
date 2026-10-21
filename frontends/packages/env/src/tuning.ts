@@ -16,6 +16,10 @@ export const TUNING = {
   // R6 (`audit-log-screen.tsx`): a page size is a tuning value, not a
   // protocol constant.
   AUDIT_LOG_PAGE_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+  // Rows per page on the lists that page client-side over a window the
+  // gateway already returned (Jobs, delivery attempts). Same reasoning as
+  // AUDIT_LOG_PAGE_SIZE: how many rows fit a screen is tuning, not protocol.
+  LIST_PAGE_SIZE: z.coerce.number().int().min(5).max(500).default(25),
   // Dashboard (#49): an overview cadence, materially slower than the
   // diagnostics tables'.
   DASHBOARD_REFETCH_INTERVAL_MS: z.coerce.number().int().min(1000).default(15_000),

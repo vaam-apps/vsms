@@ -28,6 +28,9 @@ export interface CandidateFormProps {
   isFetching: boolean;
   hasRun: boolean;
   canRun: boolean;
+  /** The apps this caller may read, for the App picker. Empty falls back to
+   * a free-text id field (a role that cannot list apps still simulates). */
+  apps: ReadonlyArray<{ id: string; name: string }>;
 }
 
 export function CandidateForm({
@@ -38,6 +41,7 @@ export function CandidateForm({
   isFetching,
   hasRun,
   canRun,
+  apps,
 }: CandidateFormProps) {
   return (
     <Card>
@@ -67,17 +71,43 @@ export function CandidateForm({
               )}
             />
           </FormField>
-          <FormField
-            label="App id (required)"
-            htmlFor="sim-app-id"
-            hint="Simulate stays disabled until this is filled in — paste an id from /apps."
-          >
-            <Input
-              id="sim-app-id"
-              placeholder="the App this message would be sent from"
-              {...register("appId")}
-            />
-          </FormField>
+          {apps.length > 0 ? (
+            <FormField label="App" htmlFor="sim-app-id">
+              <Controller
+                control={control}
+                name="appId"
+                render={({ field }) => (
+                  <Select
+                    value={field.value === "" ? undefined : field.value}
+                    onValueChange={field.onChange}
+                  >
+                    <SelectTrigger id="sim-app-id">
+                      <SelectValue placeholder="Choose the sending app" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {apps.map((app) => (
+                        <SelectItem key={app.id} value={app.id}>
+                          {app.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              />
+            </FormField>
+          ) : (
+            <FormField
+              label="App id (required)"
+              htmlFor="sim-app-id"
+              hint="Simulate stays disabled until this is filled in."
+            >
+              <Input
+                id="sim-app-id"
+                placeholder="the App this message would be sent from"
+                {...register("appId")}
+              />
+            </FormField>
+          )}
           <FormField label="Draw (0–1, optional — a tie-break replay value)" htmlFor="sim-draw">
             <Input
               id="sim-draw"
@@ -92,7 +122,7 @@ export function CandidateForm({
             type="button"
             onClick={onRun}
             disabled={isFetching || !canRun}
-            title={!canRun ? "Enter an App id above to enable Simulate" : undefined}
+            title={!canRun ? "Choose an app above to enable Simulate" : undefined}
           >
             {isFetching ? "Simulating…" : "Simulate"}
           </Button>

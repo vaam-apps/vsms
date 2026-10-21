@@ -5,9 +5,9 @@
 import { Button, IdDisplay, MoreDetailDrawer, SkeletonText } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import type { UseFormReturn } from "react-hook-form";
+import { ErrorBanner } from "@/components/error-banner";
 import type { AppEditValues } from "../app-forms";
 import { AppEditForm } from "./app-edit-form";
-import { ErrorBanner } from "./error-banner";
 
 export function AppDetailDrawerView({
   appId,

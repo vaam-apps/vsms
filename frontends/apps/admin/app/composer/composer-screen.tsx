@@ -18,9 +18,10 @@ import { trpc } from "@vsms/hooks";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import type { EncodingPreviewResult } from "@/components/encoding-preview";
+import { PageHeader } from "@/components/page-header";
 import { ComposerForm } from "./components/composer-form";
-import { ComposerHeader } from "./components/composer-header";
 import { ComposerLayout } from "./components/composer-layout";
+import { ComposerPhonePreview } from "./components/composer-phone-preview";
 import { ComposerResultCard } from "./components/composer-result-card";
 import {
   type ComposerFormValues,
@@ -54,6 +55,7 @@ export function ComposerScreen() {
 
   const toValue = form.watch("to");
   const bodyValue = form.watch("body");
+  const senderIdValue = form.watch("senderId") ?? "";
   const debouncedTo = useDebouncedValue(toValue, 250);
   const debouncedBody = useDebouncedValue(bodyValue, 250);
   const previewTo = looksLikeAttemptedMsisdn(debouncedTo) ? debouncedTo : undefined;
@@ -124,8 +126,23 @@ export function ComposerScreen() {
   const generalError = sendMutation.isError && !hasFieldErrors ? sendMutation.error.message : null;
 
   return (
-    <ComposerLayout>
-      <ComposerHeader />
+    <ComposerLayout
+      header={
+        <PageHeader
+          title="Composer"
+          description="Send one message and see what it costs first: GSM-7 or UCS-2, how many segments, and which characters force the dearer encoding."
+        />
+      }
+      preview={
+        <ComposerPhonePreview
+          senderId={senderIdValue}
+          to={previewQuery.data?.normalizedTo ?? toValue}
+          body={bodyValue}
+          encoding={encodingPreview?.encoding ?? null}
+          segments={encodingPreview?.segments ?? null}
+        />
+      }
+    >
       <ComposerForm
         form={form}
         onSubmit={onSubmit}

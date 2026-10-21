@@ -98,11 +98,15 @@
 // pure modules carry tests").
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { InlineConfirm, ScreenStack, toast } from "@vaam-apps/ui";
+import { Button, InlineConfirm, ScreenStack, toast } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
 import { useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { Caption } from "@/components/caption";
+import { ErrorBanner } from "@/components/error-banner";
+import { ListSurface } from "@/components/list-surface";
+import { PageHeader } from "@/components/page-header";
 import {
   type AppCreateValues,
   type AppEditValues,
@@ -115,10 +119,8 @@ import {
 } from "./app-forms";
 import { AppClientsPanelView } from "./components/app-clients-panel-view";
 import { AppDetailDrawerView } from "./components/app-detail-drawer-view";
-import { AppsHeader } from "./components/apps-header";
 import { AppsTable } from "./components/apps-table";
 import { CreateAppDialogView } from "./components/create-app-dialog-view";
-import { ErrorBanner } from "./components/error-banner";
 import { ProvisionClientPanelView } from "./components/provision-client-panel-view";
 import { parseIpAllowlistLines, toIpAllowlistLines } from "./ip-allowlist";
 import type { AppClientListItem, AppListItem } from "./types";
@@ -478,17 +480,32 @@ export function AppsScreen() {
 
   return (
     <ScreenStack>
-      <AppsHeader onCreateClick={() => setCreateOpen(true)} />
+      <PageHeader
+        title="Apps"
+        description="Every integrated product, its sending quota and its service-account clients."
+        actions={
+          <Button type="button" onClick={() => setCreateOpen(true)}>
+            New app
+          </Button>
+        }
+      />
 
       {listQuery.isError && (
         <ErrorBanner>Could not read apps: {listQuery.error.message}</ErrorBanner>
       )}
 
-      <AppsTable
-        apps={listQuery.data ?? []}
-        isLoading={listQuery.isLoading}
-        onRowClick={(app: AppListItem) => void setPanelId(app.id)}
-      />
+      <ListSurface>
+        <AppsTable
+          apps={listQuery.data ?? []}
+          isLoading={listQuery.isLoading}
+          onRowClick={(app: AppListItem) => void setPanelId(app.id)}
+        />
+      </ListSurface>
+
+      <Caption>
+        Changes are saved as you. Saving an app, and provisioning or retiring a client, need the
+        owner or admin role.
+      </Caption>
 
       <CreateAppDialog open={createOpen} onOpenChange={setCreateOpen} />
 

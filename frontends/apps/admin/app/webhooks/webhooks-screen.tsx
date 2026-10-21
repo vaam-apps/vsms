@@ -71,10 +71,10 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import {
   Button,
   IdDisplay,
+  InlineBanner,
   MoreDetailDrawer,
   PayloadInspector,
   QuickDetailDrawer,
-  ScreenHeader,
   ScreenStack,
   toast,
 } from "@vaam-apps/ui";
@@ -82,12 +82,17 @@ import { trpc } from "@vsms/hooks";
 import { parseAsString, parseAsStringEnum, useQueryState, useQueryStates } from "nuqs";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { Caption } from "@/components/caption";
+import { ListSurface } from "@/components/list-surface";
+import { LiveChip } from "@/components/live-chip";
+import { PageHeader } from "@/components/page-header";
+import { SectionHeader } from "@/components/section-header";
 import { ATTEMPT_STATES, type AttemptState } from "@/components/status";
 import { AttemptQuickDetailBody } from "./components/attempt-quick-detail-body";
 import { AttemptQuickDetailFooter } from "./components/attempt-quick-detail-footer";
 import { AttemptReplayConfirm } from "./components/attempt-replay-confirm";
+import { AttemptsFilters } from "./components/attempts-filters";
 import { AttemptsTable } from "./components/attempts-table";
-import { AttemptsToolbar } from "./components/attempts-toolbar";
 import { CreateEndpointDialog } from "./components/create-endpoint-dialog";
 import { EndpointDeleteConfirm } from "./components/endpoint-delete-confirm";
 import { EndpointEditFooter } from "./components/endpoint-edit-footer";
@@ -95,7 +100,6 @@ import { EndpointMoreDetailBody } from "./components/endpoint-more-detail-body";
 import { EndpointQuickDetailBody } from "./components/endpoint-quick-detail-body";
 import { EndpointRotateConfirm } from "./components/endpoint-rotate-confirm";
 import { EndpointTable } from "./components/endpoint-table";
-import { EndpointToolbar } from "./components/endpoint-toolbar";
 import {
   type CreateEndpointFormValues,
   createEndpointSchema,
@@ -278,21 +282,30 @@ export function WebhooksScreen({
 
   return (
     <ScreenStack>
-      <ScreenHeader
+      <PageHeader
         title="Webhooks"
-        description="Endpoints, delivery attempts, and secret rotation."
+        description="Where each app is told about its messages, what was delivered, and the signing secrets."
+        actions={
+          <Button type="button" onClick={() => setCreateOpen(true)}>
+            New endpoint
+          </Button>
+        }
       />
 
-      <EndpointToolbar
-        listErrorMessage={endpointsQuery.error?.message}
-        onNewEndpoint={() => setCreateOpen(true)}
-      />
+      {endpointsQuery.error != null && (
+        <InlineBanner variant="danger">
+          Could not read webhook endpoints: {endpointsQuery.error.message}
+        </InlineBanner>
+      )}
 
-      <EndpointTable
-        endpoints={endpointsQuery.data}
-        isLoading={endpointsQuery.isLoading}
-        onRowClick={(e) => setQuickId(e.id)}
-      />
+      <SectionHeader title="Endpoints" />
+      <ListSurface>
+        <EndpointTable
+          endpoints={endpointsQuery.data}
+          isLoading={endpointsQuery.isLoading}
+          onRowClick={(e) => setQuickId(e.id)}
+        />
+      </ListSurface>
 
       {/* Quick detail — a peek, no route (D14). */}
       <QuickDetailDrawer
@@ -400,24 +413,52 @@ export function WebhooksScreen({
         errorMessage={createMutation.error?.message}
       />
 
-      <AttemptsToolbar
-        refetchIntervalMs={attemptsRefetchIntervalMs}
-        endpoints={endpointsQuery.data}
-        endpointId={filters.endpointId}
-        state={filters.state}
-        onEndpointIdChange={(value) => void setFilters({ endpointId: value })}
-        onStateChange={(value) => void setFilters({ state: value })}
-        onClearFilters={() => void setFilters({ endpointId: null, state: null })}
-        truncated={attemptsQuery.data?.truncated ?? false}
-        errorMessage={attemptsQuery.error?.message}
+      <SectionHeader
+        title="Delivery attempts"
+        actions={
+          <LiveChip
+            live={!attemptsQuery.isError}
+            label={`Updating every ${Math.round(attemptsRefetchIntervalMs / 1000)} s`}
+          />
+        }
       />
 
-      <AttemptsTable
-        attempts={attemptsQuery.data?.items}
-        isLoading={attemptsQuery.isLoading}
-        endpointUrlFor={endpointUrlFor}
-        onRowClick={(a) => setQuickAttemptId(a.id)}
-      />
+      {attemptsQuery.error != null && (
+        <InlineBanner variant="danger">
+          Could not read attempts: {attemptsQuery.error.message}
+        </InlineBanner>
+      )}
+
+      <ListSurface
+        toolbar={
+          <AttemptsFilters
+            endpoints={endpointsQuery.data}
+            endpointId={filters.endpointId}
+            state={filters.state}
+            onEndpointIdChange={(value) => void setFilters({ endpointId: value })}
+            onStateChange={(value) => void setFilters({ state: value })}
+            onClearFilters={() => void setFilters({ endpointId: null, state: null })}
+          />
+        }
+        footer={
+          attemptsQuery.data?.truncated === true
+            ? "Showing the 1000 most recent attempts; filters apply within that window."
+            : undefined
+        }
+      >
+        <AttemptsTable
+          attempts={attemptsQuery.data?.items}
+          isLoading={attemptsQuery.isLoading}
+          endpointUrlFor={endpointUrlFor}
+          onRowClick={(a) => setQuickAttemptId(a.id)}
+        />
+      </ListSurface>
+
+      <Caption>
+        Changes are saved as you and need the webhook:manage permission, which owner, admin and
+        developer hold. Secrets are the live values, masked on screen only so they do not leak in a
+        screen share.
+      </Caption>
 
       {/* Attempt quick detail — a peek, no route (D14). Body/footer swap to
           the inline replay confirmation when armed. */}

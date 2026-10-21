@@ -19,10 +19,13 @@ import { predicateSummary } from "../route-domain";
 export function RouteTable({
   routes,
   isLoading,
+  providerNames,
   onRowClick,
 }: {
   routes: RouteListItem[] | undefined;
   isLoading: boolean;
+  /** Provider display name by id; a route whose provider is missing shows its id. */
+  providerNames: ReadonlyMap<string, string>;
   onRowClick: (route: RouteListItem) => void;
 }) {
   return (
@@ -85,7 +88,7 @@ export function RouteTable({
               {predicateSummary(route)}
             </TableCell>
             <TableCell hideBelow="lg">
-              <IdDisplay value={route.providerId} />
+              {providerNames.get(route.providerId) ?? <IdDisplay value={route.providerId} />}
             </TableCell>
             <TableCell align="end" hideBelow="md">
               <TimestampDisplay value={route.updatedAt} />

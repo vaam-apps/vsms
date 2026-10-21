@@ -13,8 +13,8 @@ import {
   TableHeader,
   TableRow,
 } from "@vaam-apps/ui";
+import { ErrorBanner } from "@/components/error-banner";
 import type { AppClientListItem } from "../types";
-import { ErrorBanner } from "./error-banner";
 
 export function AppClientsTable({
   clients,

@@ -31,9 +31,7 @@ export function PageHeader({ title, description, actions, eyebrow }: PageHeaderP
         )}
         <h1 className="font-display text-headline-medium text-foreground">{title}</h1>
         {description !== undefined && (
-          <p className="line-clamp-2 max-w-3xl text-body-medium text-muted-foreground">
-            {description}
-          </p>
+          <p className="max-w-3xl text-body-medium text-muted-foreground">{description}</p>
         )}
       </div>
       {actions !== undefined && (

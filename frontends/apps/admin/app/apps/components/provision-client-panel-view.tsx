@@ -14,9 +14,9 @@ import {
   toast,
 } from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
+import { ErrorBanner } from "@/components/error-banner";
 import type { ProvisionClientValues } from "../app-forms";
 import { KNOWN_SCOPES, parseScopes, SCOPE_DESCRIPTIONS, serializeScopes } from "../scopes";
-import { ErrorBanner } from "./error-banner";
 
 export interface ProvisionedClientKey {
   clientId: string;

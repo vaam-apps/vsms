@@ -13,8 +13,8 @@ import {
   Textarea,
 } from "@vaam-apps/ui";
 import type { UseFormReturn } from "react-hook-form";
+import { ErrorBanner } from "@/components/error-banner";
 import { KNOWN_PERMISSIONS, type RoleCreateValues } from "../role-forms";
-import { ErrorBanner } from "./error-banner";
 
 export function CreateRoleDialogView({
   open,

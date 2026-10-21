@@ -6,9 +6,9 @@
 
 import { SkeletonText } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
-import { ErrorBanner } from "./error-banner";
+import { ErrorBanner } from "@/components/error-banner";
+import { PageHeader } from "@/components/page-header";
 import { NoRoutesBanner } from "./no-routes-banner";
-import { SimulatorHeader } from "./simulator-header";
 
 export interface SimulatorViewProps {
   candidateForm: ReactNode;
@@ -26,10 +26,13 @@ export function SimulatorView({
   result,
 }: SimulatorViewProps) {
   return (
-    <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-6">
-      <SimulatorHeader />
+    <div className="flex w-full flex-col gap-6">
+      <PageHeader
+        title="Route simulator"
+        description="Which route a message would take, and why, without sending anything. This is the real routing engine's own decision."
+      />
       {candidateForm}
-      {errorMessage != null && <ErrorBanner message={errorMessage} />}
+      {errorMessage != null && <ErrorBanner>{errorMessage}</ErrorBanner>}
       {/* SkeletonText, not a flat slab: the real result card is a decision
           summary plus a per-route evaluation list, and a paragraph-shaped
           placeholder with a short last line reads as that arriving rather

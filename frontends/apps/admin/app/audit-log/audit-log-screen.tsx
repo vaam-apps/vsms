@@ -60,14 +60,14 @@
 // `MESSAGE_STREAM_POLL_MS` already sets a precedent for — read server-side
 // in `page.tsx` and passed down as `pageSize`.
 
-import { ScreenStack } from "@vaam-apps/ui";
+import { Pagination, ScreenStack } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
 import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
 import { useEffect, useState } from "react";
+import { ListSurface } from "@/components/list-surface";
+import { PageHeader } from "@/components/page-header";
 import { AuditEntryDrawer } from "./components/audit-entry-drawer";
 import { AuditFilters } from "./components/audit-filters";
-import { AuditLogHeader } from "./components/audit-log-header";
-import { AuditLogPagination } from "./components/audit-log-pagination";
 import { AuditLogTable } from "./components/audit-log-table";
 import { ChainStatusPanel, type ChainStatusPanelProps } from "./components/chain-status-panel";
 import { type AuditOperation, OPERATIONS } from "./types";
@@ -155,54 +155,69 @@ export function AuditLogScreen({ pageSize }: { pageSize: number }) {
 
   return (
     <ScreenStack>
-      <AuditLogHeader />
+      <PageHeader
+        title="Audit log"
+        description="Every audited write, and whether the tamper-evidence chain over it still verifies. Read-only: no role can write here."
+      />
 
       <ChainStatusBanner />
 
-      <AuditFilters
-        model={filters.model ?? ""}
-        operation={filters.operation}
-        actorId={filters.actorId ?? ""}
-        since={filters.since ?? ""}
-        until={filters.until ?? ""}
-        hasFilters={hasFilters}
-        onModelChange={(value) => {
-          void setFilters({ model: value === "" ? null : value });
-          resetToFirstPage();
-        }}
-        onOperationChange={(value) => {
-          void setFilters({ operation: value });
-          resetToFirstPage();
-        }}
-        onActorIdChange={(value) => {
-          void setFilters({ actorId: value === "" ? null : value });
-          resetToFirstPage();
-        }}
-        onSinceChange={(value) => {
-          void setFilters({ since: value === "" ? null : value });
-          resetToFirstPage();
-        }}
-        onUntilChange={(value) => {
-          void setFilters({ until: value === "" ? null : value });
-          resetToFirstPage();
-        }}
-        onClear={clearFilters}
-      />
-
-      <AuditLogTable
-        entries={entries}
-        isLoading={listQuery.isLoading}
-        errorMessage={listQuery.isError ? listQuery.error.message : null}
-        onRowClick={(entry) => setSelectedEntryId(entry.eventId)}
-      />
-
-      <AuditLogPagination
-        shownCount={entries.length}
-        offset={offset.offset}
-        hasMore={listQuery.data?.hasMore === true}
-        onPrevious={() => void setOffset({ offset: Math.max(0, offset.offset - pageSize) })}
-        onNext={() => void setOffset({ offset: offset.offset + pageSize })}
-      />
+      <ListSurface
+        toolbar={
+          <AuditFilters
+            model={filters.model ?? ""}
+            operation={filters.operation}
+            actorId={filters.actorId ?? ""}
+            since={filters.since ?? ""}
+            until={filters.until ?? ""}
+            hasFilters={hasFilters}
+            onModelChange={(value) => {
+              void setFilters({ model: value === "" ? null : value });
+              resetToFirstPage();
+            }}
+            onOperationChange={(value) => {
+              void setFilters({ operation: value });
+              resetToFirstPage();
+            }}
+            onActorIdChange={(value) => {
+              void setFilters({ actorId: value === "" ? null : value });
+              resetToFirstPage();
+            }}
+            onSinceChange={(value) => {
+              void setFilters({ since: value === "" ? null : value });
+              resetToFirstPage();
+            }}
+            onUntilChange={(value) => {
+              void setFilters({ until: value === "" ? null : value });
+              resetToFirstPage();
+            }}
+            onClear={clearFilters}
+          />
+        }
+        footer={
+          <Pagination
+            label="Audit log pages"
+            position={{ kind: "cursor", count: entries.length }}
+            onPrevious={
+              offset.offset > 0
+                ? () => void setOffset({ offset: Math.max(0, offset.offset - pageSize) })
+                : undefined
+            }
+            onNext={
+              listQuery.data?.hasMore === true
+                ? () => void setOffset({ offset: offset.offset + pageSize })
+                : undefined
+            }
+          />
+        }
+      >
+        <AuditLogTable
+          entries={entries}
+          isLoading={listQuery.isLoading}
+          errorMessage={listQuery.isError ? listQuery.error.message : null}
+          onRowClick={(entry) => setSelectedEntryId(entry.eventId)}
+        />
+      </ListSurface>
 
       <AuditEntryDrawer
         entry={stickyEntry}

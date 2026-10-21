@@ -3,7 +3,7 @@
 
 import { DetailList, DetailRow, TimestampDisplay } from "@vaam-apps/ui";
 import { roleLabel } from "../role-labels";
-import { StatusIndicator, type WorkerLockInfo } from "./workers-table";
+import { StatusIndicator, type WorkerLockInfo } from "./worker-status";
 
 export interface WorkerDetailFieldsProps {
   lock: WorkerLockInfo;

@@ -1,17 +1,12 @@
-// Dumb component (R6): the State/Kind filter row, moved verbatim out of
-// `jobs-screen.tsx`. Owns no state of its own — `state`/`kind` are the
-// smart screen's URL state, echoed back here for rendering.
+// Dumb component (R6, route-local): the Jobs list's toolbar. One chip per
+// job state (plus All) instead of a dropdown, because there are only five
+// states and the operator's question is usually exactly one of them
+// ("anything dead?"); the free-text kind filter sits beside them.
 
-import {
-  Button,
-  FormField,
-  Input,
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@vaam-apps/ui";
+import { Button, Input } from "@vaam-apps/ui";
+import { Search } from "lucide-react";
+import { ChipGroup } from "@/components/chip-group";
+import { FilterChip } from "@/components/filter-chip";
 import { JOB_STATES, JOB_STATUS_META, type JobState } from "@/components/status";
 
 export interface JobFiltersBarProps {
@@ -32,41 +27,39 @@ export function JobFiltersBar({
   onClear,
 }: JobFiltersBarProps) {
   return (
-    <div className="flex flex-wrap items-end gap-4">
-      <FormField label="State" htmlFor="filter-state">
-        <Select
-          value={state ?? "__all"}
-          onValueChange={(value) => onStateChange(value === "__all" ? null : (value as JobState))}
-        >
-          <SelectTrigger id="filter-state" className="w-[180px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__all">All states</SelectItem>
-            {JOB_STATES.map((s) => (
-              <SelectItem key={s} value={s}>
-                {JOB_STATUS_META[s].label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </FormField>
-
-      <FormField label="Kind" htmlFor="filter-kind">
-        <Input
-          id="filter-kind"
-          placeholder="e.g. expire_stale"
-          className="w-[200px]"
-          value={kind}
-          onChange={(e) => onKindChange(e.target.value)}
-        />
-      </FormField>
-
-      {hasFilters && (
-        <Button type="button" variant="ghost" size="sm" onClick={onClear}>
-          Clear filters
-        </Button>
-      )}
+    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <ChipGroup label="Job state">
+        <FilterChip selected={state === null} onClick={() => onStateChange(null)}>
+          All
+        </FilterChip>
+        {JOB_STATES.map((s) => (
+          <FilterChip key={s} selected={state === s} onClick={() => onStateChange(s)}>
+            {JOB_STATUS_META[s].label}
+          </FilterChip>
+        ))}
+      </ChipGroup>
+      <div className="flex items-center gap-2">
+        <div className="relative w-full lg:w-64">
+          <Search
+            size={16}
+            aria-hidden="true"
+            className="pointer-events-none absolute top-1/2 left-3 z-10 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            id="filter-kind"
+            aria-label="Job kind"
+            placeholder="Filter by kind"
+            className="w-full pl-9"
+            value={kind}
+            onChange={(e) => onKindChange(e.target.value)}
+          />
+        </div>
+        {hasFilters && (
+          <Button type="button" variant="ghost" size="sm" onClick={onClear}>
+            Clear
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
