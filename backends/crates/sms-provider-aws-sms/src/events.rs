@@ -47,7 +47,7 @@ pub(crate) fn parse(message: &str) -> Result<Vec<DeliveryUpdate>, ProviderError>
         });
     }
 
-    let outcome = outcome_of(&event.event_type, event.is_final.unwrap_or(false));
+    let outcome = outcome_of(&event.event_type, event.is_final == Some(true));
     let error_code = match outcome {
         DeliveryOutcome::Delivered | DeliveryOutcome::InFlight => None,
         _ => event.message_status.clone(),
@@ -65,15 +65,15 @@ pub(crate) fn parse(message: &str) -> Result<Vec<DeliveryUpdate>, ProviderError>
     }])
 }
 
-/// One event type onto one outcome. `is_final` only matters for
-/// `TEXT_SUCCESSFUL` — see `events.md` for why.
+/// One event type onto one outcome. Only a final event can be a verdict
+/// other than `TEXT_DELIVERED`; anything else is progress — see `events.md`
+/// for why.
 fn outcome_of(event_type: &str, is_final: bool) -> DeliveryOutcome {
     match event_type {
         "TEXT_DELIVERED" => DeliveryOutcome::Delivered,
-        "TEXT_SUCCESSFUL" if is_final => DeliveryOutcome::Delivered,
-        "TEXT_SUCCESSFUL" | "TEXT_QUEUED" | "TEXT_PENDING" | "TEXT_SENT" => {
-            DeliveryOutcome::InFlight
-        }
+        _ if !is_final => DeliveryOutcome::InFlight,
+        "TEXT_SUCCESSFUL" => DeliveryOutcome::Delivered,
+        "TEXT_QUEUED" | "TEXT_PENDING" | "TEXT_SENT" => DeliveryOutcome::InFlight,
         "TEXT_INVALID"
         | "TEXT_INVALID_MESSAGE"
         | "TEXT_BLOCKED"
@@ -168,12 +168,53 @@ mod tests {
             ("TEXT_PROTECT_BLOCKED", DeliveryOutcome::Rejected),
         ];
         for (event_type, expected) in cases {
-            assert_eq!(outcome_of(event_type, false), expected, "{event_type}");
+            assert_eq!(outcome_of(event_type, true), expected, "{event_type}");
         }
         assert_eq!(
             outcome_of("TEXT_SOMETHING_NEW", true),
             DeliveryOutcome::Unknown
         );
+    }
+
+    /// A failure that is not final may still be followed by a delivery, so
+    /// treating it as a verdict could resubmit a message that then arrives:
+    /// a duplicate SMS. `TEXT_DELIVERED` is the one event that needs no
+    /// finality.
+    #[test]
+    fn a_non_final_failure_is_progress_not_a_verdict() {
+        for event_type in [
+            "TEXT_INVALID",
+            "TEXT_INVALID_MESSAGE",
+            "TEXT_UNREACHABLE",
+            "TEXT_CARRIER_UNREACHABLE",
+            "TEXT_BLOCKED",
+            "TEXT_CARRIER_BLOCKED",
+            "TEXT_SPAM",
+            "TEXT_UNKNOWN",
+            "TEXT_TTL_EXPIRED",
+            "TEXT_PROTECT_BLOCKED",
+            "TEXT_SOMETHING_NEW",
+        ] {
+            assert_eq!(
+                outcome_of(event_type, false),
+                DeliveryOutcome::InFlight,
+                "{event_type}"
+            );
+        }
+        assert_eq!(
+            outcome_of("TEXT_DELIVERED", false),
+            DeliveryOutcome::Delivered
+        );
+    }
+
+    #[test]
+    fn a_failure_with_no_is_final_field_is_treated_as_not_final() {
+        let updates = parse(
+            r#"{"eventType":"TEXT_CARRIER_UNREACHABLE","messageId":"m-1","messageStatus":"CARRIER_UNREACHABLE"}"#,
+        )
+        .unwrap();
+        assert_eq!(updates[0].outcome, DeliveryOutcome::InFlight);
+        assert_eq!(updates[0].error_code, None);
     }
 
     #[test]
@@ -192,7 +233,7 @@ mod tests {
     #[test]
     fn a_non_text_event_is_ignored_not_rejected() {
         let updates = parse(r#"{"eventType":"VOICE_COMPLETED","messageId":"v-1"}"#).unwrap();
-        assert!(updates.is_empty());
+        assert_eq!(updates.len(), 0);
     }
 
     #[test]

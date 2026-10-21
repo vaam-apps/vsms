@@ -20,3 +20,5 @@ against two independent references, never against itself:
 
 Both fixtures use AWS's documentation credentials (`AKIDEXAMPLE`), which
 authenticate nothing.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

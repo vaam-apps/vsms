@@ -164,7 +164,7 @@ needs its own seed.
 */}}
 {{- if not .Values.awsSms.region }}
 {{- $env := (index $.Values.controllers "worker" "containers" "main" "env") }}
-{{- range $key := list "AWS_SMS_REGION" "AWS_SMS_ACCESS_KEY_ID" "AWS_SMS_SECRET_ACCESS_KEY" "AWS_SMS_CONFIGURATION_SET" "AWS_SMS_TPS_CEILING" "AWS_SMS_COST_PER_SEGMENT_XAF" "AWS_SMS_ORIGINATION_IDENTITY" "AWS_SMS_MESSAGE_TYPE" "AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER" "AWS_SMS_ENDPOINT_URL" }}
+{{- range $key := list "AWS_SMS_REGION" "AWS_SMS_ACCESS_KEY_ID" "AWS_SMS_SECRET_ACCESS_KEY" "AWS_SMS_CONFIGURATION_SET" "AWS_SMS_TPS_CEILING" "AWS_SMS_COST_PER_SEGMENT_XAF" "AWS_SMS_ORIGINATION_IDENTITY" "AWS_SMS_MESSAGE_TYPE" "AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER" "AWS_SMS_ENDPOINT_URL" "AWS_SMS_TIME_TO_LIVE_SECONDS" }}
 {{- $_ := unset $env $key }}
 {{- end }}
 {{- else }}
@@ -172,6 +172,7 @@ needs its own seed.
 {{- if not .Values.awsSms.originationIdentity }}{{- $_ := unset $env "AWS_SMS_ORIGINATION_IDENTITY" }}{{- end }}
 {{- if not .Values.awsSms.messageType }}{{- $_ := unset $env "AWS_SMS_MESSAGE_TYPE" }}{{- end }}
 {{- if not .Values.awsSms.endpointUrl }}{{- $_ := unset $env "AWS_SMS_ENDPOINT_URL" }}{{- end }}
+{{- if not .Values.awsSms.timeToLiveSeconds }}{{- $_ := unset $env "AWS_SMS_TIME_TO_LIVE_SECONDS" }}{{- end }}
 {{- end }}
 {{- if not .Values.awsSms.eventsTopicArn }}
 {{- $_ := unset (index $.Values.controllers "gateway" "containers" "main" "env") "AWS_SMS_EVENTS_TOPIC_ARN" }}

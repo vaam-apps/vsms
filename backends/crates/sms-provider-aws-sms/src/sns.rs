@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -25,6 +25,12 @@ const MAX_FETCH_BYTES: usize = 64 * 1024;
 /// cache is cleared rather than grown past this.
 const MAX_CACHED_CERTS: usize = 8;
 
+/// Fetches of a certificate not in the cache are spaced at least this far
+/// apart, process-wide. SNS has one signing certificate per region at a
+/// time, so a legitimate miss is rare (start-up, rotation); the limit is
+/// what bounds the outbound requests a stream of forged messages can cause.
+const MIN_UNCACHED_FETCH_INTERVAL: Duration = Duration::from_secs(5);
+
 /// One SNS HTTP(S) delivery, as SNS posts it (raw message delivery off).
 /// Field names are SNS's own; see `sns.md` for the source.
 #[derive(Debug, Deserialize)]
@@ -34,7 +40,7 @@ pub(crate) struct Envelope {
     #[serde(rename = "MessageId")]
     message_id: String,
     #[serde(rename = "Token", default)]
-    token: Option<String>,
+    pub(crate) token: Option<String>,
     #[serde(rename = "TopicArn")]
     pub(crate) topic_arn: String,
     #[serde(rename = "Subject", default)]
@@ -133,13 +139,27 @@ fn sns_url(raw: &str, region: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-/// Outbound HTTP the verifier needs: fetching a signing certificate and
-/// visiting a `SubscribeURL`. A trait so tests can serve a fixture
-/// certificate without a TLS server pretending to be `amazonaws.com`.
+/// Whether `url` has the shape of an SNS signing certificate:
+/// `/SimpleNotificationService-<32 hex digits>.pem`, no query, no fragment.
+/// Together with the host check this leaves a forger 128 bits of path on
+/// AWS's own host and nothing else to choose.
+fn is_signing_cert_url(url: &Url) -> bool {
+    url.query().is_none()
+        && url.fragment().is_none()
+        && url
+            .path()
+            .strip_prefix("/SimpleNotificationService-")
+            .and_then(|rest| rest.strip_suffix(".pem"))
+            .is_some_and(|id| id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// Outbound HTTP the verifier needs: fetching a signing certificate. A
+/// trait so tests can serve a fixture certificate without a TLS server
+/// pretending to be `amazonaws.com`.
 #[async_trait]
 pub trait SnsHttp: Send + Sync {
     /// GET `url` and return the body. Only ever called with a URL that
-    /// already passed [`sns_url`].
+    /// already passed [`sns_url`] and [`is_signing_cert_url`].
     async fn get(&self, url: &Url) -> Result<Vec<u8>, String>;
 }
 
@@ -166,7 +186,7 @@ impl ReqwestSnsHttp {
 #[async_trait]
 impl SnsHttp for ReqwestSnsHttp {
     async fn get(&self, url: &Url) -> Result<Vec<u8>, String> {
-        let response = self
+        let mut response = self
             .client
             .get(url.clone())
             .send()
@@ -175,20 +195,27 @@ impl SnsHttp for ReqwestSnsHttp {
         if !response.status().is_success() {
             return Err(format!("GET {url} returned {}", response.status()));
         }
+        let too_large = || format!("GET {url} is larger than {MAX_FETCH_BYTES} bytes");
         if response
             .content_length()
             .is_some_and(|len| len > MAX_FETCH_BYTES as u64)
         {
-            return Err(format!("GET {url} is larger than {MAX_FETCH_BYTES} bytes"));
+            return Err(too_large());
         }
-        let body = response
-            .bytes()
+        // Read in chunks and stop at the cap, so a body that lies about (or
+        // omits) its length is never held in memory beyond it.
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|error| format!("reading GET {url} failed: {error}"))?;
-        if body.len() > MAX_FETCH_BYTES {
-            return Err(format!("GET {url} is larger than {MAX_FETCH_BYTES} bytes"));
+            .map_err(|error| format!("reading GET {url} failed: {error}"))?
+        {
+            if body.len() + chunk.len() > MAX_FETCH_BYTES {
+                return Err(too_large());
+            }
+            body.extend_from_slice(&chunk);
         }
-        Ok(body.to_vec())
+        Ok(body)
     }
 }
 
@@ -197,6 +224,10 @@ impl SnsHttp for ReqwestSnsHttp {
 pub(crate) enum Verdict {
     Authentic,
     Refused(String),
+    /// Addressed to the configured topic, but signed with a version this
+    /// module does not verify. Not a forgery: the topic is misconfigured,
+    /// and every receipt is being dropped.
+    UnsupportedSignatureVersion(String),
 }
 
 /// Checks SNS envelopes for one configured topic.
@@ -204,7 +235,9 @@ pub(crate) struct Verifier {
     topic_arn: String,
     region: String,
     http: Arc<dyn SnsHttp>,
+    /// Keyed by URL path; the host is always this topic's region's.
     certs: Mutex<HashMap<String, Arc<CertificateDer<'static>>>>,
+    last_uncached_fetch: Mutex<Option<Instant>>,
 }
 
 impl Verifier {
@@ -216,19 +249,22 @@ impl Verifier {
             region,
             http,
             certs: Mutex::new(HashMap::new()),
+            last_uncached_fetch: Mutex::new(None),
         })
     }
 
     /// Decide whether `envelope` came from SNS, for the configured topic.
     ///
     /// The order is cheapest first and network last: nothing is fetched
-    /// for a message that names the wrong topic or the wrong certificate
-    /// host, so a forger cannot make this process issue requests.
+    /// for a message that names the wrong topic or a certificate URL that
+    /// is not exactly an SNS signing certificate on the region's SNS host.
+    /// What remains for a forger to cause is bounded; see `sns.md`.
     ///
     /// # Errors
     ///
     /// [`ProviderError::Unavailable`] when the signing certificate could not
-    /// be fetched — the check did not run, which is not a refusal.
+    /// be fetched, or an uncached fetch was refused by the rate limit — the
+    /// check did not run, which is not a refusal.
     pub(crate) async fn verify(&self, envelope: &Envelope) -> Result<Verdict, ProviderError> {
         if envelope.topic_arn != self.topic_arn {
             return Ok(Verdict::Refused(format!(
@@ -237,22 +273,17 @@ impl Verifier {
             )));
         }
         if envelope.signature_version != ACCEPTED_SIGNATURE_VERSION {
-            return Ok(Verdict::Refused(format!(
+            return Ok(Verdict::UnsupportedSignatureVersion(format!(
                 "SignatureVersion {:?} refused; set the topic's SignatureVersion attribute to 2",
                 envelope.signature_version
             )));
         }
         let cert_url = match sns_url(&envelope.signing_cert_url, &self.region) {
-            Ok(url)
-                if std::path::Path::new(url.path())
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("pem")) =>
-            {
-                url
-            }
+            Ok(url) if is_signing_cert_url(&url) => url,
             Ok(url) => {
                 return Ok(Verdict::Refused(format!(
-                    "SigningCertURL {url} is not a .pem file"
+                    "SigningCertURL {url} is not /SimpleNotificationService-<32 hex digits>.pem \
+                     without a query or fragment"
                 )));
             }
             Err(reason) => return Ok(Verdict::Refused(format!("SigningCertURL: {reason}"))),
@@ -286,36 +317,21 @@ impl Verifier {
         }
     }
 
-    /// Visit an authenticated `SubscriptionConfirmation`'s `SubscribeURL`,
-    /// which is how an HTTPS subscription is confirmed.
-    ///
-    /// # Errors
-    ///
-    /// [`ProviderError::Rejected`] for a `SubscribeURL` off the topic's own
-    /// SNS host; [`ProviderError::Unavailable`] when visiting it failed.
-    pub(crate) async fn confirm_subscription(
-        &self,
-        envelope: &Envelope,
-    ) -> Result<(), ProviderError> {
+    /// Whether a `SubscribeURL` is on the topic's own SNS host. It is
+    /// never visited; this only keeps a URL SNS could not have written out
+    /// of the operator's hands.
+    pub(crate) fn check_subscribe_url(&self, envelope: &Envelope) -> Result<(), String> {
         let raw = envelope.subscribe_url.as_deref().unwrap_or_default();
-        let url = sns_url(raw, &self.region).map_err(|reason| ProviderError::Rejected {
-            code: "BAD_SUBSCRIBE_URL".to_owned(),
-            message: reason,
-        })?;
-        self.http
-            .get(&url)
-            .await
+        sns_url(raw, &self.region)
             .map(|_| ())
-            .map_err(|message| ProviderError::Unavailable {
-                message,
-                source: None,
-            })
+            .map_err(|reason| format!("SubscribeURL: {reason}"))
     }
 
     async fn certificate(&self, url: &Url) -> Result<Arc<CertificateDer<'static>>, ProviderError> {
-        if let Some(cert) = self.lock_certs().get(url.as_str()) {
+        if let Some(cert) = self.lock_certs().get(url.path()) {
             return Ok(cert.clone());
         }
+        self.permit_uncached_fetch()?;
         let pem = self
             .http
             .get(url)
@@ -331,11 +347,33 @@ impl Verifier {
             })?;
         let cert = Arc::new(cert.into_owned());
         let mut certs = self.lock_certs();
+        // Unreachable in practice: only a successfully fetched, parseable
+        // certificate is cached, and the rate limit spaces those out.
         if certs.len() >= MAX_CACHED_CERTS {
             certs.clear();
         }
-        certs.insert(url.as_str().to_owned(), cert.clone());
+        certs.insert(url.path().to_owned(), cert.clone());
         Ok(cert)
+    }
+
+    /// Records an uncached fetch, or refuses it when another happened less
+    /// than [`MIN_UNCACHED_FETCH_INTERVAL`] ago. The refusal is
+    /// `Unavailable`, so the gateway answers `503` and SNS redelivers.
+    fn permit_uncached_fetch(&self) -> Result<(), ProviderError> {
+        let mut last = self
+            .last_uncached_fetch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = Instant::now();
+        if last.is_some_and(|at| now.duration_since(at) < MIN_UNCACHED_FETCH_INTERVAL) {
+            return Err(ProviderError::Unavailable {
+                message: "signing certificate fetches are rate limited; try again shortly"
+                    .to_owned(),
+                source: None,
+            });
+        }
+        *last = Some(now);
+        Ok(())
     }
 
     fn lock_certs(
@@ -352,7 +390,24 @@ impl Verifier {
 
 #[cfg(test)]
 mod tests {
-    use super::{Envelope, region_of_topic_arn, sns_url, string_to_sign};
+    use std::sync::Arc;
+
+    use async_trait::async_trait;
+    use url::Url;
+
+    use super::{
+        Envelope, SnsHttp, Verifier, is_signing_cert_url, region_of_topic_arn, sns_url,
+        string_to_sign,
+    };
+
+    struct NoHttp;
+
+    #[async_trait]
+    impl SnsHttp for NoHttp {
+        async fn get(&self, url: &Url) -> Result<Vec<u8>, String> {
+            panic!("unexpected GET {url}");
+        }
+    }
 
     fn envelope(json: &str) -> Envelope {
         Envelope::parse(json.as_bytes()).unwrap()
@@ -424,6 +479,55 @@ mod tests {
         assert_eq!(region_of_topic_arn("arn:aws:sqs:eu-west-1:1:t"), None);
         assert_eq!(region_of_topic_arn("arn:aws:sns:eu-west-1:1"), None);
         assert_eq!(region_of_topic_arn("not an arn"), None);
+    }
+
+    #[test]
+    fn a_signing_certificate_url_is_exactly_the_documented_shape() {
+        let cert = |path: &str| is_signing_cert_url(&Url::parse(path).unwrap());
+        let id = "0123456789abcdef0123456789abcdef";
+        assert!(cert(&format!(
+            "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-{id}.pem"
+        )));
+        assert!(cert(&format!(
+            "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-{}.pem",
+            id.to_uppercase()
+        )));
+        for bad in [
+            format!("https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-{id}.pem?a=b"),
+            format!("https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-{id}.pem#f"),
+            format!("https://sns.eu-west-1.amazonaws.com/a/SimpleNotificationService-{id}.pem"),
+            format!("https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-{id}.crt"),
+            "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-abc.pem".to_owned(),
+            "https://sns.eu-west-1.amazonaws.com/".to_owned(),
+        ] {
+            assert!(!cert(&bad), "{bad}");
+        }
+    }
+
+    /// A `SubscribeURL` is never visited, but one SNS could not have
+    /// written is still refused rather than logged for an operator.
+    #[test]
+    fn a_subscribe_url_must_be_on_the_topics_sns_host() {
+        let verifier =
+            Verifier::new("arn:aws:sns:eu-west-1:1:t".to_owned(), Arc::new(NoHttp)).unwrap();
+        let with = |url: &str| {
+            envelope(&format!(
+                r#"{{"Type":"SubscriptionConfirmation","MessageId":"m","Token":"t","TopicArn":"a",
+                    "Message":"b","SubscribeURL":"{url}","Timestamp":"t","SignatureVersion":"2",
+                    "Signature":"s","SigningCertURL":"u"}}"#
+            ))
+        };
+        assert!(
+            verifier
+                .check_subscribe_url(&with(
+                    "https://sns.eu-west-1.amazonaws.com/?Action=ConfirmSubscription&Token=t"
+                ))
+                .is_ok()
+        );
+        let refused = verifier
+            .check_subscribe_url(&with("https://evil.example/?Action=ConfirmSubscription"))
+            .unwrap_err();
+        assert!(refused.starts_with("SubscribeURL"), "{refused}");
     }
 
     #[test]

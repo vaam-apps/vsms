@@ -325,8 +325,11 @@ async fn main() -> Result<()> {
                 // discovery, issuer-mismatch and invalid-client errors are
                 // the operator's only signal that the IdP side is broken,
                 // and under the old default they were silently dropped.
+                // `sms_provider_aws_sms` for the same reason: the SNS
+                // subscription-confirmation command (with its token) and the
+                // SignatureVersion-1 / unsubscribe errors are logged there.
                 .unwrap_or_else(|_| {
-                    "sms_gateway=info,sms_api=info,sms_auth=info,cratestack=info".into()
+                    "sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info".into()
                 }),
         )
         .init();

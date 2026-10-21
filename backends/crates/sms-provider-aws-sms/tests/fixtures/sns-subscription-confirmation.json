@@ -8,5 +8,5 @@
   "Timestamp": "2026-10-21T11:59:00.000Z",
   "SignatureVersion": "2",
   "Signature": "OyhXWXnbcq5eJYSUgq9OKgbmMW8tG+HXPPfuKs+GsmbDZiCqlKoFoc3vpn/7p18oAyilUxXvMOyczGvy2Nd6ROetAoJpJI9Bt1GhyOPFTgxyxnE4z0bVEJedszTZ/4QPShbgVjdXWla8Lktica9nB0NtjgcvNpimO5RqoQhjCVesjxy5uD17byINYTs21nrPEL3x5wU3vPiU12ix4NBOFEUaRFZbC/fIBPTPpRsKMfM26ydG46KuEqts/4cXsY+2Eq3w3TKF3Lg/dueGDwGvJF2MuXWVwU4vS/czGMkbySYtasbwYUB7Ma1ezugVKq7kOUAi4RNOqiYjEnZRfYD1yQ==",
-  "SigningCertURL": "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-00000000000000000000000000test.pem"
+  "SigningCertURL": "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-00000000000000000000000000c0ffee.pem"
 }

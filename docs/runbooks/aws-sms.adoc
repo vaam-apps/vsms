@@ -792,7 +792,7 @@ What fails over and what does not (from
 | Fail the message. No failover.
 
 | `Indeterminate` (timed out after connecting; response unreadable)
-| `uncertain`. **Never** fails over or resubmits, because AWS may have sent it. Resolved by a later receipt it can still match, or by expiry.
+| `uncertain`. **Never** fails over or resubmits, because AWS may have sent it. Resolved by expiry: its `MessageId` was never learned, so no later receipt can match it (see Known limits).
 |===
 
 === Now: AWS is the only provider

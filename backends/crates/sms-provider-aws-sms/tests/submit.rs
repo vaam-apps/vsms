@@ -25,6 +25,7 @@ fn config(endpoint: &str) -> AwsSmsConfig {
         cost_per_segment_xaf: Decimal::new(30, 0),
         supports_alphanumeric_sender: true,
         endpoint_url: Some(endpoint.to_owned()),
+        time_to_live: None,
         connect_timeout: Duration::from_secs(2),
         request_timeout: Duration::from_secs(2),
     }
@@ -102,6 +103,71 @@ async fn a_successful_send_returns_the_message_id_and_sends_the_documented_reque
         !String::from_utf8_lossy(&received.body).contains("wJalrXUtnFEMI"),
         "the secret key must never be sent"
     );
+}
+
+#[tokio::test]
+async fn a_time_to_live_is_sent_in_seconds_and_omitted_when_unset() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"MessageId": "m"})))
+        .mount(&server)
+        .await;
+
+    let mut with_ttl = config(&server.uri());
+    with_ttl.time_to_live = Some(Duration::from_mins(15));
+    send(with_ttl).await.unwrap();
+    send(config(&server.uri())).await.unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let second: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert_eq!(first["TimeToLive"], 900);
+    assert!(second.get("TimeToLive").is_none(), "{second}");
+}
+
+#[test]
+fn a_time_to_live_outside_what_aws_accepts_is_refused_at_construction() {
+    for secs in [0, 4, 259_201] {
+        let mut config = config("https://sms-voice.eu-west-1.amazonaws.com/");
+        config.time_to_live = Some(Duration::from_secs(secs));
+        assert!(
+            matches!(
+                AwsSmsProvider::sender(config),
+                Err(sms_provider_aws_sms::ConfigError::TimeToLive(_))
+            ),
+            "{secs}"
+        );
+    }
+    for secs in [5, 259_200] {
+        let mut config = config("https://sms-voice.eu-west-1.amazonaws.com/");
+        config.time_to_live = Some(Duration::from_secs(secs));
+        assert!(AwsSmsProvider::sender(config).is_ok(), "{secs}");
+    }
+}
+
+/// An empty environment variable reaches the config as `Some("")`.
+#[tokio::test]
+async fn blank_optional_values_are_treated_as_unset() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"MessageId": "m"})))
+        .mount(&server)
+        .await;
+    let mut blank_identity = config(&server.uri());
+    blank_identity.origination_identity = Some("  ".to_owned());
+    send(blank_identity).await.unwrap();
+    let body: Value =
+        serde_json::from_slice(&server.received_requests().await.unwrap()[0].body).unwrap();
+    assert_eq!(
+        body["OriginationIdentity"], "VYMALO",
+        "a blank override must fall back to the message's own sender"
+    );
+
+    // A blank endpoint override falls back to the regional endpoint
+    // rather than failing construction as an unusable URL.
+    let mut blank_endpoint = config("");
+    blank_endpoint.endpoint_url = Some(String::new());
+    assert!(AwsSmsProvider::sender(blank_endpoint).is_ok());
 }
 
 #[tokio::test]
@@ -216,6 +282,38 @@ async fn a_reached_spend_limit_is_unavailable_so_routing_fails_over() {
         }
         other => panic!("expected Unavailable, got {other:?}"),
     }
+}
+
+/// A message's own sender ID that AWS does not know fails that sender on
+/// this route; it must not open the provider breaker for everyone. A
+/// configured identity is account configuration, so the same error there
+/// is account-level.
+#[tokio::test]
+async fn an_unknown_request_sender_is_permanent_but_an_unknown_configured_identity_is_not() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+            "__type": "ResourceNotFoundException",
+            "Message": "Sender ID not found",
+            "ResourceType": "sender-id",
+            "ResourceId": "VYMALO"
+        })))
+        .mount(&server)
+        .await;
+
+    let error = send(config(&server.uri())).await.unwrap_err();
+    assert!(
+        matches!(error, ProviderError::Permanent { .. }),
+        "{error:?}"
+    );
+
+    let mut configured = config(&server.uri());
+    configured.origination_identity = Some("pool-abc".to_owned());
+    let error = send(configured).await.unwrap_err();
+    assert!(
+        matches!(error, ProviderError::Unavailable { .. }),
+        "{error:?}"
+    );
 }
 
 #[tokio::test]

@@ -194,7 +194,7 @@ struct Cli {
     mtn_supports_alphanumeric_sender: bool,
 
     /// AWS region the End User Messaging SMS account sends from (e.g.
-    /// `eu-west-1`). One of the five `--aws-sms-*` flags that must be set
+    /// `eu-west-1`). One of the six `--aws-sms-*` flags that must be set
     /// together or not at all — see [`aws_sms_provider`].
     #[arg(long, env = "AWS_SMS_REGION")]
     aws_sms_region: Option<String>,
@@ -248,6 +248,14 @@ struct Cli {
     /// `https://sms-voice.<region>.amazonaws.com/`.
     #[arg(long, env = "AWS_SMS_ENDPOINT_URL")]
     aws_sms_endpoint_url: Option<String>,
+
+    /// Seconds AWS keeps trying to deliver one message (5 to 259200).
+    /// Unset, AWS tries for up to 72 hours, so an OTP vsms already expired
+    /// can still arrive days later; match the shortest validity of the
+    /// traffic routed to AWS (15 minutes, `900`, for OTPs). Optional, and
+    /// not part of the all-or-none group.
+    #[arg(long, env = "AWS_SMS_TIME_TO_LIVE_SECONDS")]
+    aws_sms_time_to_live_seconds: Option<u64>,
 }
 
 /// The one Orange provider `dispatch` submits through. `None` when
@@ -337,10 +345,11 @@ fn mtn_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
 }
 
 /// The AWS End User Messaging SMS provider, `"aws_sms"`. Same all-or-none
-/// shape as [`mtn_provider`], over the five values that have no safe
+/// shape as [`mtn_provider`], over the six values that have no safe
 /// default: region, both halves of the access key, the configuration set
 /// that carries receipts, and the two commercial terms. The origination
-/// identity, message type, alphanumeric flag and endpoint each have one.
+/// identity, message type, alphanumeric flag, endpoint and time to live
+/// each have one.
 fn aws_sms_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
     match (
         &cli.aws_sms_region,
@@ -370,6 +379,9 @@ fn aws_sms_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
                     cost_per_segment_xaf: cost,
                     supports_alphanumeric_sender: cli.aws_sms_supports_alphanumeric_sender,
                     endpoint_url: cli.aws_sms_endpoint_url.clone(),
+                    time_to_live: cli
+                        .aws_sms_time_to_live_seconds
+                        .map(std::time::Duration::from_secs),
                     connect_timeout: std::time::Duration::from_secs(10),
                     request_timeout: std::time::Duration::from_secs(30),
                 })?;
@@ -779,6 +791,7 @@ mod tests {
             aws_sms_message_type: sms_provider_aws_sms::MessageType::Transactional,
             aws_sms_supports_alphanumeric_sender: false,
             aws_sms_endpoint_url: None,
+            aws_sms_time_to_live_seconds: None,
         }
     }
 
@@ -846,9 +859,20 @@ mod tests {
     }
 
     #[test]
+    fn the_aws_sms_time_to_live_is_optional_and_range_checked() {
+        let with = |seconds| Cli {
+            aws_sms_time_to_live_seconds: Some(seconds),
+            ..aws_cli()
+        };
+        assert!(build_provider_registry(&with(900)).is_ok());
+        assert!(build_provider_registry(&with(4)).is_err());
+        assert!(build_provider_registry(&with(259_201)).is_err());
+    }
+
+    #[test]
     fn no_credentials_configured_is_an_empty_registry_not_an_error() {
         let providers = build_provider_registry(&base_cli()).unwrap();
-        assert!(providers.is_empty());
+        assert_eq!(providers.len(), 0);
     }
 
     #[test]

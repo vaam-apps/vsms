@@ -6,6 +6,6 @@
   "Timestamp": "2026-10-21T12:00:00.456Z",
   "SignatureVersion": "2",
   "Signature": "gAVrePGUHLLHo5rH6J4uU3bydYqqsSiEVzWjHPIMEUxTkdyJ8Els+/LvqvYOZ9bmlMrKbwTkhscfrR2saMcZJfkzbxsVl3u1BMjwwWdXgZUj7I4qzONtDqvL0oVGectNpFW7sFPQqy4gucoATvcvLOH+FFIJwqJDVpMTHNuz6t8D6PdN304gSAAXojlKOE7WKUcz4XdacWGMNm0s8b9yIRYbjkbwNJgTmudYbcyKygNVHPMJ2+76f4b7Pp4EtFart/sSChQ+bwWRmTpJ7pOSBJ02w0G7vAYfXPwawL9GxJDU6b/b7X3i4qY23X5+P8JzlhNryxglF8080qXM4L6IMA==",
-  "SigningCertURL": "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-00000000000000000000000000test.pem",
+  "SigningCertURL": "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-00000000000000000000000000c0ffee.pem",
   "UnsubscribeURL": "https://sns.eu-west-1.amazonaws.com/?Action=Unsubscribe&SubscriptionArn=arn:aws:sns:eu-west-1:123456789012:vsms-sms-events:11111111-2222-3333-4444-555555555555"
 }

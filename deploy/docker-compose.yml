@@ -185,7 +185,7 @@ services:
       SMS_SSO_ACCEPTED_AMR: ${SMS_SSO_ACCEPTED_AMR:-}
       SMS_SSO_ACCEPTED_ACR: ${SMS_SSO_ACCEPTED_ACR:-}
       SMS_SSO_JIT_ROLE: ${SMS_SSO_JIT_ROLE:-}
-      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,sms_auth=info,cratestack=info}
+      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info}
     depends_on:
       postgres:
         condition: service_healthy
@@ -304,7 +304,7 @@ services:
       # unconfigured AWS leaves no variable behind - an empty
       # AWS_SMS_TPS_CEILING aborts startup with `cannot parse float from
       # empty string`, and an empty AWS_SMS_REGION trips the all-or-none
-      # check. The last four are optional.
+      # check. The last five are optional.
       AWS_SMS_REGION:
       AWS_SMS_ACCESS_KEY_ID:
       AWS_SMS_SECRET_ACCESS_KEY:
@@ -315,6 +315,7 @@ services:
       AWS_SMS_MESSAGE_TYPE:
       AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER:
       AWS_SMS_ENDPOINT_URL:
+      AWS_SMS_TIME_TO_LIVE_SECONDS:
       RUST_LOG: ${SMS_WORKER_LOG:-sms_worker=info,sms_worker_bin=info}
     depends_on:
       postgres:

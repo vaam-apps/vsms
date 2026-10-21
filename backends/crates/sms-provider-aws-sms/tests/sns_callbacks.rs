@@ -18,7 +18,7 @@ use sms_provider_aws_sms::{AwsSmsProvider, SnsHttp};
 use url::Url;
 
 const TOPIC: &str = "arn:aws:sns:eu-west-1:123456789012:vsms-sms-events";
-const CERT_URL: &str = "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-00000000000000000000000000test.pem";
+const CERT_URL: &str = "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-00000000000000000000000000c0ffee.pem";
 const CERT: &[u8] = include_bytes!("fixtures/test-sns-signing-cert.pem");
 const NOTIFICATION: &str = include_str!("fixtures/sns-notification-delivered.json");
 const CONFIRMATION: &str = include_str!("fixtures/sns-subscription-confirmation.json");
@@ -151,8 +151,9 @@ async fn another_topic_is_refused_before_any_fetch() {
         refused(&disposition).contains("TopicArn"),
         "{disposition:?}"
     );
-    assert!(
-        fake.calls.lock().unwrap().is_empty(),
+    assert_eq!(
+        fake.calls.lock().unwrap().len(),
+        0,
         "nothing may be fetched for a foreign topic"
     );
 }
@@ -178,21 +179,50 @@ async fn a_certificate_url_off_the_topics_sns_host_is_refused_without_fetching()
         "http://sns.eu-west-1.amazonaws.com/SimpleNotificationService-x.pem",
         "https://sns.eu-west-1.amazonaws.com/not-a-certificate.txt",
     ] {
-        let fake = Arc::new(FakeSns::default());
-        let forged = with(NOTIFICATION, "SigningCertURL", url);
-        let disposition = receiver(fake.clone())
-            .authenticate_callback(&raw(&forged))
-            .await
-            .unwrap();
-        assert!(
-            refused(&disposition).contains("SigningCertURL"),
-            "{url}: {disposition:?}"
-        );
-        assert!(
-            fake.calls.lock().unwrap().is_empty(),
-            "{url} must not be fetched"
-        );
+        assert_cert_url_refused(url).await;
     }
+}
+
+/// Bounds what a forger can make the gateway fetch: only
+/// `/SimpleNotificationService-<32 hex>.pem` on the region's SNS host,
+/// nothing after the path.
+#[tokio::test]
+async fn a_certificate_url_that_is_not_exactly_an_sns_signing_certificate_is_refused() {
+    for url in [
+        // Right host and extension, wrong path.
+        "https://sns.eu-west-1.amazonaws.com/other/SimpleNotificationService-0123456789abcdef0123456789abcdef.pem",
+        "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-0123456789abcdef0123456789abcdef.pem/extra",
+        "https://sns.eu-west-1.amazonaws.com/Evil-0123456789abcdef0123456789abcdef.pem",
+        "https://sns.eu-west-1.amazonaws.com/",
+        "https://sns.eu-west-1.amazonaws.com/x.pem",
+        // Not 32 hex digits.
+        "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-0123456789abcdef0123456789abcde.pem",
+        "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-0123456789abcdef0123456789abcdef0.pem",
+        "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-0123456789abcdef0123456789abcdeg.pem",
+        // Query and fragment.
+        "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-0123456789abcdef0123456789abcdef.pem?x=1",
+        "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-0123456789abcdef0123456789abcdef.pem#frag",
+    ] {
+        assert_cert_url_refused(url).await;
+    }
+}
+
+async fn assert_cert_url_refused(url: &str) {
+    let fake = Arc::new(FakeSns::default());
+    let forged = with(NOTIFICATION, "SigningCertURL", url);
+    let disposition = receiver(fake.clone())
+        .authenticate_callback(&raw(&forged))
+        .await
+        .unwrap();
+    assert!(
+        refused(&disposition).contains("SigningCertURL"),
+        "{url}: {disposition:?}"
+    );
+    assert_eq!(
+        fake.calls.lock().unwrap().len(),
+        0,
+        "{url} must not be fetched"
+    );
 }
 
 #[tokio::test]
@@ -224,8 +254,11 @@ async fn an_unreachable_certificate_is_an_error_not_a_refusal() {
     );
 }
 
+/// Confirming by GET leaves `AuthenticateOnUnsubscribe` false, so an
+/// authentic confirmation is acknowledged and left for the operator: the
+/// only request made is the certificate fetch.
 #[tokio::test]
-async fn a_genuine_subscription_confirmation_is_confirmed_by_visiting_its_subscribe_url() {
+async fn a_genuine_subscription_confirmation_is_acknowledged_but_never_visited() {
     let json: Value = serde_json::from_str(CONFIRMATION).unwrap();
     let subscribe_url = json["SubscribeURL"].as_str().unwrap().to_owned();
     let fake = Arc::new(FakeSns {
@@ -242,20 +275,17 @@ async fn a_genuine_subscription_confirmation_is_confirmed_by_visiting_its_subscr
         .await
         .unwrap();
     assert!(
-        matches!(disposition, CallbackDisposition::Acknowledged { .. }),
+        matches!(&disposition, CallbackDisposition::Acknowledged { detail } if detail.contains("not confirmed")),
         "{disposition:?}"
     );
-    let calls = fake.calls.lock().unwrap().clone();
     assert_eq!(
-        calls,
-        [
-            CERT_URL.to_owned(),
-            Url::parse(&subscribe_url).unwrap().to_string()
-        ]
+        fake.calls.lock().unwrap().as_slice(),
+        [CERT_URL],
+        "the SubscribeURL must not be visited"
     );
 
     // A handshake carries no delivery update.
-    assert!(provider.parse_dlr(&raw(CONFIRMATION)).unwrap().is_empty());
+    assert_eq!(provider.parse_dlr(&raw(CONFIRMATION)).unwrap().len(), 0);
 }
 
 /// A confirmation whose signature does not verify (here: a `SubscribeURL`
@@ -280,6 +310,47 @@ async fn a_forged_subscription_confirmation_is_never_visited() {
     );
 }
 
+/// A forger cannot make the gateway fetch more than one uncached
+/// certificate per interval, however many distinct valid-looking URLs
+/// it signs messages with.
+#[tokio::test]
+async fn uncached_certificate_fetches_are_rate_limited() {
+    let fake = Arc::new(FakeSns::default());
+    let provider = receiver(fake.clone());
+    let url = |n: u8| {
+        format!("https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-{n:032x}.pem")
+    };
+
+    // The first miss is fetched (and fails: the fake has no such file).
+    let first = provider
+        .authenticate_callback(&raw(&with(NOTIFICATION, "SigningCertURL", &url(1))))
+        .await;
+    assert!(matches!(first, Err(ProviderError::Unavailable { .. })));
+
+    // A second, different miss straight after is refused without a fetch.
+    let second = provider
+        .authenticate_callback(&raw(&with(NOTIFICATION, "SigningCertURL", &url(2))))
+        .await;
+    assert!(
+        matches!(&second, Err(ProviderError::Unavailable { message, .. }) if message.contains("rate limited")),
+        "{second:?}"
+    );
+    assert_eq!(fake.calls.lock().unwrap().len(), 1, "{:?}", fake.calls);
+}
+
+/// Hex digits are case-insensitive in the certificate's file name.
+#[tokio::test]
+async fn an_uppercase_hex_certificate_name_is_accepted_for_fetching() {
+    let fake = Arc::new(FakeSns::default());
+    let url = "https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-0123456789ABCDEF0123456789ABCDEF.pem";
+    let result = receiver(fake.clone())
+        .authenticate_callback(&raw(&with(NOTIFICATION, "SigningCertURL", url)))
+        .await;
+    // Fetched (the fake has no such file, so Unavailable), not Refused.
+    assert!(matches!(result, Err(ProviderError::Unavailable { .. })));
+    assert_eq!(fake.calls.lock().unwrap().len(), 1);
+}
+
 #[tokio::test]
 async fn a_sender_refuses_every_callback() {
     let sender = AwsSmsProvider::sender(sms_provider_aws_sms::AwsSmsConfig {
@@ -293,6 +364,7 @@ async fn a_sender_refuses_every_callback() {
         cost_per_segment_xaf: rust_decimal::Decimal::ONE,
         supports_alphanumeric_sender: true,
         endpoint_url: None,
+        time_to_live: None,
         connect_timeout: std::time::Duration::from_secs(1),
         request_timeout: std::time::Duration::from_secs(1),
     })

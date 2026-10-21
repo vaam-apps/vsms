@@ -43,6 +43,11 @@ const JSON_1_0: &str = "application/x-amz-json-1.0";
 /// `SendTextMessage`'s own `MessageBody` maximum length (botocore model).
 const MAX_BODY_CHARS: usize = 1600;
 
+/// `SendTextMessage`'s `TimeToLive` bounds in seconds (botocore model:
+/// `min` 5, `max` 259200).
+const MIN_TIME_TO_LIVE_SECS: u64 = 5;
+const MAX_TIME_TO_LIVE_SECS: u64 = 259_200;
+
 /// Retry delay after a `ThrottlingException`. AWS documents no
 /// `Retry-After` for this API; one second matches the per-second
 /// message-part quotas the throttle enforces.
@@ -118,6 +123,11 @@ pub struct AwsSmsConfig {
     /// Override for the endpoint, for tests and for VPC endpoints. `None`
     /// is `https://sms-voice.<region>.amazonaws.com/`.
     pub endpoint_url: Option<String>,
+    /// How long AWS keeps trying to deliver one message, sent as
+    /// `TimeToLive` (5 seconds to 72 hours). `None` leaves AWS's own
+    /// default of 72 hours, so an OTP vsms already expired can still
+    /// arrive days later; see `lib.md`.
+    pub time_to_live: Option<Duration>,
     /// TCP/TLS connect timeout.
     pub connect_timeout: Duration,
     /// Whole-request timeout. A timeout after connecting is `Indeterminate`.
@@ -141,6 +151,7 @@ impl std::fmt::Debug for AwsSmsConfig {
                 &self.supports_alphanumeric_sender,
             )
             .field("endpoint_url", &self.endpoint_url)
+            .field("time_to_live", &self.time_to_live)
             .field("connect_timeout", &self.connect_timeout)
             .field("request_timeout", &self.request_timeout)
             .finish()
@@ -160,6 +171,9 @@ pub enum ConfigError {
     /// A required value is empty.
     #[error("{0} must not be empty")]
     Empty(&'static str),
+    /// `TimeToLive` is outside what AWS accepts.
+    #[error("time to live {0:?} must be between 5 seconds and 72 hours")]
+    TimeToLive(Duration),
     /// The events topic is not an `aws`-partition SNS topic ARN.
     #[error("{0:?} is not an SNS topic ARN (arn:aws:sns:<region>:<account>:<name>)")]
     TopicArn(String),
@@ -191,7 +205,7 @@ impl AwsSmsProvider {
     ///
     /// Never in practice: building a `reqwest` client with only timeouts
     /// set cannot fail.
-    pub fn sender(config: AwsSmsConfig) -> Result<Self, ConfigError> {
+    pub fn sender(mut config: AwsSmsConfig) -> Result<Self, ConfigError> {
         if !is_region(&config.region) {
             return Err(ConfigError::Region(config.region));
         }
@@ -203,6 +217,15 @@ impl AwsSmsProvider {
             if value.trim().is_empty() {
                 return Err(ConfigError::Empty(name));
             }
+        }
+        // An empty environment variable reaches here as `Some("")`; it
+        // means "unset", not an identity or endpoint named "".
+        config.origination_identity.take_if(|v| v.trim().is_empty());
+        config.endpoint_url.take_if(|v| v.trim().is_empty());
+        if let Some(ttl) = config.time_to_live
+            && !(MIN_TIME_TO_LIVE_SECS..=MAX_TIME_TO_LIVE_SECS).contains(&ttl.as_secs())
+        {
+            return Err(ConfigError::TimeToLive(ttl));
         }
         let raw_endpoint = config
             .endpoint_url
@@ -244,7 +267,7 @@ impl AwsSmsProvider {
     }
 
     /// [`Self::receiver`] with the HTTP client used for certificate fetches
-    /// and subscription confirmation supplied by the caller — the seam
+    /// supplied by the caller — the seam
     /// tests use to serve a fixture certificate.
     ///
     /// # Errors
@@ -286,6 +309,8 @@ struct SendTextMessageRequest<'a> {
     message_body: &'a str,
     message_type: &'static str,
     configuration_set_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time_to_live: Option<u64>,
     context: BTreeMap<&'static str, &'a str>,
 }
 
@@ -303,6 +328,8 @@ struct AwsErrorBody {
     message: Option<String>,
     #[serde(rename = "Reason", default)]
     reason: Option<String>,
+    #[serde(rename = "ResourceType", default)]
+    resource_type: Option<String>,
 }
 
 /// `ValidationException` reasons that mean "AWS cannot carry *this*
@@ -322,10 +349,11 @@ const ROUTE_SPECIFIC_VALIDATION_REASONS: &[&str] = &[
 ];
 
 /// Error types that mean this account cannot send right now, for any
-/// message: credentials, account standing, a quota or spend limit, or a
-/// configuration set / identity that does not exist. Each fails over and
-/// counts toward the provider circuit breaker, and none of them sent
-/// anything.
+/// message: credentials, account standing, or a quota or spend limit. Each
+/// fails over and counts toward the provider circuit breaker, and none of
+/// them sent anything. `AccessDeniedException` and
+/// `ResourceNotFoundException` are here too, except where they can only be
+/// about the message's own sender identity; see [`is_sender_specific`].
 const ACCOUNT_LEVEL_ERRORS: &[&str] = &[
     "AccessDeniedException",
     "ExpiredTokenException",
@@ -339,25 +367,64 @@ const ACCOUNT_LEVEL_ERRORS: &[&str] = &[
     "UnrecognizedClientException",
 ];
 
+/// `ConflictException` reasons where retrying anywhere fails the same way:
+/// the destination itself refuses this account.
+const CONFLICT_REJECTED: &[&str] = &[
+    "DESTINATION_PHONE_NUMBER_BLOCKED_BY_PROTECT_NUMBER_OVERRIDE",
+    "DESTINATION_PHONE_NUMBER_OPTED_OUT",
+];
+
+/// `ConflictException` reasons that mean this account's setup cannot send
+/// right now, whatever the message: fail over and count toward the breaker.
+const CONFLICT_UNAVAILABLE: &[&str] = &["MESSAGE_TYPE_MISMATCH", "RESOURCE_NOT_ACTIVE"];
+
+/// Whether a `SendTextMessage` error is about the message's own sender
+/// identity rather than the account. Only possible when the identity came
+/// from the request (no configured override): `AccessDeniedException`
+/// without a `Reason`, or `ResourceNotFoundException` for anything but the
+/// configuration set, then name that identity, and counting them toward the
+/// breaker would let one app's unregistered sender ID take every other
+/// app's traffic off AWS.
+fn is_sender_specific(kind: &str, parsed: &AwsErrorBody) -> bool {
+    match kind {
+        "AccessDeniedException" => parsed.reason.is_none(),
+        "ResourceNotFoundException" => parsed.resource_type.as_deref() != Some("configuration-set"),
+        _ => false,
+    }
+}
+
 /// Classify a non-2xx `SendTextMessage` response. `error_type` is the
 /// `x-amzn-ErrorType` header when present; the body's `__type` otherwise.
-fn classify_error(status: StatusCode, error_type: Option<&str>, body: &str) -> ProviderError {
+/// `sender_from_request` is whether `OriginationIdentity` came from the
+/// message's own sender ID rather than the configured override.
+fn classify_error(
+    status: StatusCode,
+    error_type: Option<&str>,
+    body: &str,
+    sender_from_request: bool,
+) -> ProviderError {
     let parsed: AwsErrorBody = serde_json::from_str(body).unwrap_or_default();
     // Either source may be `com.amazonaws.…#ThrottlingException`, and the
     // header may carry a `:http://…` suffix; the bare name is what matters.
     let kind = error_type
         .map(str::to_owned)
-        .or(parsed.kind)
+        .or_else(|| parsed.kind.clone())
         .map(|raw| {
             let name = raw.rsplit('#').next().unwrap_or(&raw);
             name.split(':').next().unwrap_or(name).to_owned()
         })
         .unwrap_or_default();
-    let message = parsed.message.unwrap_or_else(|| body.to_owned());
+    let message = parsed.message.clone().unwrap_or_else(|| body.to_owned());
 
     if kind == "ThrottlingException" {
         return ProviderError::Transient {
             retry_after: THROTTLE_RETRY_AFTER,
+            message,
+        };
+    }
+    if sender_from_request && is_sender_specific(&kind, &parsed) {
+        return ProviderError::Permanent {
+            code: kind,
             message,
         };
     }
@@ -385,10 +452,26 @@ fn classify_error(status: StatusCode, error_type: Option<&str>, body: &str) -> P
         };
     }
     if kind == "ConflictException" {
-        // Most often the destination has opted out of this account
-        // (replied STOP to an AWS number). Not retryable here.
-        return ProviderError::Rejected {
-            code: parsed.reason.unwrap_or(kind),
+        let reason = parsed.reason.unwrap_or(kind);
+        if CONFLICT_REJECTED.contains(&reason.as_str()) {
+            return ProviderError::Rejected {
+                code: reason,
+                message,
+            };
+        }
+        if CONFLICT_UNAVAILABLE.contains(&reason.as_str()) {
+            return ProviderError::Unavailable {
+                message: format!("AWS cannot send from this account setup: {reason}: {message}"),
+                source: None,
+            };
+        }
+        // Anything else is about this message on this route (an unverified
+        // sandbox destination, no origination identity for the country, a
+        // blocked country: another route may carry it) or an
+        // administrative operation `SendTextMessage` cannot raise. Failing
+        // over is the safe default; see `lib.md`.
+        return ProviderError::Permanent {
+            code: reason,
             message,
         };
     }
@@ -447,6 +530,8 @@ impl SmsProvider for AwsSmsProvider {
             .origination_identity
             .as_deref()
             .or_else(|| (!req.sender_id.trim().is_empty()).then_some(req.sender_id.as_str()));
+        let sender_from_request =
+            send.config.origination_identity.is_none() && origination_identity.is_some();
 
         // Serialised once: these exact bytes are both what is signed and
         // what is sent.
@@ -456,6 +541,7 @@ impl SmsProvider for AwsSmsProvider {
             message_body: &req.body,
             message_type: send.config.message_type.wire(),
             configuration_set_name: &send.config.configuration_set,
+            time_to_live: send.config.time_to_live.map(|ttl| ttl.as_secs()),
             context: BTreeMap::from([(CONTEXT_MESSAGE_ID, req.reference.as_str())]),
         })
         .expect("a struct of strings always serialises");
@@ -523,6 +609,7 @@ impl SmsProvider for AwsSmsProvider {
             status,
             error_type.as_deref(),
             &text.unwrap_or_default(),
+            sender_from_request,
         ))
     }
 
@@ -539,20 +626,48 @@ impl SmsProvider for AwsSmsProvider {
             Ok(envelope) => envelope,
             Err(reason) => return Ok(CallbackDisposition::Refused { reason }),
         };
-        if let sns::Verdict::Refused(reason) = verifier.verify(&envelope).await? {
-            return Ok(CallbackDisposition::Refused { reason });
+        match verifier.verify(&envelope).await? {
+            sns::Verdict::Authentic => {}
+            sns::Verdict::Refused(reason) => return Ok(CallbackDisposition::Refused { reason }),
+            sns::Verdict::UnsupportedSignatureVersion(reason) => {
+                // The topic is ours, so this is a misconfiguration, and SNS
+                // treats the 403 as permanent: every receipt is lost.
+                tracing::error!(
+                    topic_arn = %envelope.topic_arn,
+                    "dropping an SNS delivery for the AWS SMS events topic: {reason}"
+                );
+                return Ok(CallbackDisposition::Refused { reason });
+            }
         }
         match envelope.kind.as_str() {
             "Notification" => Ok(CallbackDisposition::Ingest),
             "SubscriptionConfirmation" => {
-                verifier.confirm_subscription(&envelope).await?;
+                if let Err(reason) = verifier.check_subscribe_url(&envelope) {
+                    return Ok(CallbackDisposition::Refused { reason });
+                }
+                // Deliberately not visited: confirming by GET leaves
+                // `AuthenticateOnUnsubscribe` false, so anyone holding a
+                // notification's `UnsubscribeURL` could remove the
+                // subscription. See `sns.md`.
+                let token = envelope.token.as_deref().unwrap_or_default();
+                tracing::warn!(
+                    topic_arn = %envelope.topic_arn,
+                    token,
+                    "SNS subscription awaiting confirmation; confirm it with: aws sns \
+                     confirm-subscription --topic-arn {} --token {token} \
+                     --authenticate-on-unsubscribe true",
+                    envelope.topic_arn
+                );
                 Ok(CallbackDisposition::Acknowledged {
-                    detail: format!("confirmed the SNS subscription to {}", envelope.topic_arn),
+                    detail: format!(
+                        "SNS subscription to {} is not confirmed; see the gateway log",
+                        envelope.topic_arn
+                    ),
                 })
             }
             "UnsubscribeConfirmation" => {
-                tracing::warn!(
-                    topic_arn = envelope.topic_arn,
+                tracing::error!(
+                    topic_arn = %envelope.topic_arn,
                     "the SNS subscription delivering AWS SMS receipts was removed; no further \
                      receipts will arrive until it is re-created"
                 );
@@ -588,9 +703,18 @@ impl SmsProvider for AwsSmsProvider {
 
 #[cfg(test)]
 mod tests {
-    use super::{MessageType, classify_error, is_region};
+    use super::{AwsErrorBody, MessageType, classify_error, is_region, is_sender_specific};
     use reqwest::StatusCode;
     use sms_provider::ProviderError;
+
+    fn classify(kind: &str, body: &str, sender_from_request: bool) -> ProviderError {
+        classify_error(
+            StatusCode::BAD_REQUEST,
+            Some(kind),
+            body,
+            sender_from_request,
+        )
+    }
 
     #[test]
     fn throttling_is_transient() {
@@ -598,6 +722,7 @@ mod tests {
             StatusCode::BAD_REQUEST,
             Some("ThrottlingException"),
             r#"{"message":"Rate exceeded"}"#,
+            false,
         );
         assert!(matches!(error, ProviderError::Transient { .. }));
     }
@@ -608,6 +733,7 @@ mod tests {
             StatusCode::BAD_REQUEST,
             None,
             r#"{"__type":"com.amazonaws.pinpointsmsvoicev2#ThrottlingException","Message":"slow down"}"#,
+            false,
         );
         assert!(
             matches!(error, ProviderError::Transient { message, .. } if message == "slow down")
@@ -616,12 +742,10 @@ mod tests {
 
     #[test]
     fn the_header_suffix_is_stripped() {
-        let error = classify_error(
-            StatusCode::BAD_REQUEST,
-            Some(
-                "UnrecognizedClientException:http://internal.amazon.com/coral/com.amazon.coral.service/",
-            ),
+        let error = classify(
+            "UnrecognizedClientException:http://internal.amazon.com/coral/com.amazon.coral.service/",
             "{}",
+            false,
         );
         assert!(matches!(error, ProviderError::Unavailable { .. }));
     }
@@ -637,17 +761,86 @@ mod tests {
             "ResourceNotFoundException",
             "InvalidSignatureException",
         ] {
-            let error = classify_error(StatusCode::BAD_REQUEST, Some(kind), r#"{"Reason":"X"}"#);
+            let error = classify(kind, r#"{"Reason":"X"}"#, false);
             assert!(matches!(error, ProviderError::Unavailable { .. }), "{kind}");
         }
     }
 
+    /// With a configured identity there is nothing per-message to blame, so
+    /// a missing resource or a denial is the account's.
+    #[test]
+    fn without_a_request_sender_access_and_lookup_failures_are_account_level() {
+        for kind in ["AccessDeniedException", "ResourceNotFoundException"] {
+            let error = classify(kind, r#"{"Message":"nope"}"#, false);
+            assert!(matches!(error, ProviderError::Unavailable { .. }), "{kind}");
+        }
+    }
+
+    /// One app's unregistered sender ID must not open the breaker for
+    /// everyone else's traffic.
+    #[test]
+    fn a_request_sender_that_does_not_exist_or_is_denied_fails_the_route_only() {
+        for (kind, body) in [
+            ("AccessDeniedException", r#"{"Message":"not allowed"}"#),
+            (
+                "ResourceNotFoundException",
+                r#"{"Message":"no such sender","ResourceType":"sender-id","ResourceId":"VYMALO"}"#,
+            ),
+            (
+                "ResourceNotFoundException",
+                r#"{"Message":"no such thing"}"#,
+            ),
+        ] {
+            let error = classify(kind, body, true);
+            assert!(
+                matches!(&error, ProviderError::Permanent { code, .. } if code == kind),
+                "{kind}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn account_standing_and_a_missing_configuration_set_stay_account_level_with_a_request_sender() {
+        for (kind, body) in [
+            (
+                "AccessDeniedException",
+                r#"{"Reason":"ACCOUNT_DISABLED","Message":"x"}"#,
+            ),
+            (
+                "AccessDeniedException",
+                r#"{"Reason":"INSUFFICIENT_ACCOUNT_REPUTATION","Message":"x"}"#,
+            ),
+            (
+                "ResourceNotFoundException",
+                r#"{"ResourceType":"configuration-set","ResourceId":"vsms-events","Message":"x"}"#,
+            ),
+        ] {
+            let error = classify(kind, body, true);
+            assert!(
+                matches!(error, ProviderError::Unavailable { .. }),
+                "{kind} {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_those_two_error_types_can_be_sender_specific() {
+        let parsed = AwsErrorBody::default();
+        assert!(is_sender_specific("AccessDeniedException", &parsed));
+        assert!(is_sender_specific("ResourceNotFoundException", &parsed));
+        assert!(!is_sender_specific(
+            "ServiceQuotaExceededException",
+            &parsed
+        ));
+        assert!(!is_sender_specific("InvalidSignatureException", &parsed));
+    }
+
     #[test]
     fn a_route_specific_validation_failure_tries_the_next_route() {
-        let error = classify_error(
-            StatusCode::BAD_REQUEST,
-            Some("ValidationException"),
+        let error = classify(
+            "ValidationException",
             r#"{"Message":"no","Reason":"DESTINATION_COUNTRY_BLOCKED"}"#,
+            false,
         );
         assert!(
             matches!(error, ProviderError::Permanent { code, .. } if code == "DESTINATION_COUNTRY_BLOCKED")
@@ -656,10 +849,10 @@ mod tests {
 
     #[test]
     fn a_request_validation_failure_is_rejected() {
-        let error = classify_error(
-            StatusCode::BAD_REQUEST,
-            Some("ValidationException"),
+        let error = classify(
+            "ValidationException",
             r#"{"Message":"bad number","Reason":"FIELD_VALIDATION_FAILED"}"#,
+            false,
         );
         assert!(
             matches!(error, ProviderError::Rejected { code, .. } if code == "FIELD_VALIDATION_FAILED")
@@ -668,12 +861,137 @@ mod tests {
 
     #[test]
     fn an_opted_out_destination_is_rejected() {
-        let error = classify_error(
-            StatusCode::BAD_REQUEST,
-            Some("ConflictException"),
+        let error = classify(
+            "ConflictException",
             r#"{"Reason":"DESTINATION_PHONE_NUMBER_OPTED_OUT"}"#,
+            false,
         );
         assert!(matches!(error, ProviderError::Rejected { .. }));
+    }
+
+    /// What the classifier must do with each of `ConflictExceptionReason`.
+    #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+    enum Expected {
+        Rejected,
+        Permanent,
+        Unavailable,
+    }
+
+    /// `ConflictExceptionReason` from botocore 1.43.116's
+    /// `pinpoint-sms-voice-v2` model, every member, each with the outcome
+    /// it must have. Most are administrative operations `SendTextMessage`
+    /// cannot raise and take the default, `Permanent`.
+    const CONFLICT_REASONS: &[(&str, Expected)] = &[
+        (
+            "CREATE_REGISTRATION_VERSION_NOT_ALLOWED",
+            Expected::Permanent,
+        ),
+        ("DELETION_PROTECTION_ENABLED", Expected::Permanent),
+        ("DESTINATION_PHONE_NUMBER_NOT_VERIFIED", Expected::Permanent),
+        ("DESTINATION_PHONE_NUMBER_OPTED_OUT", Expected::Rejected),
+        ("DISASSOCIATE_REGISTRATION_NOT_ALLOWED", Expected::Permanent),
+        (
+            "DISCARD_REGISTRATION_VERSION_NOT_ALLOWED",
+            Expected::Permanent,
+        ),
+        (
+            "EDIT_REGISTRATION_FIELD_VALUES_NOT_ALLOWED",
+            Expected::Permanent,
+        ),
+        ("EVENT_DESTINATION_MISMATCH", Expected::Permanent),
+        ("KEYWORD_MISMATCH", Expected::Permanent),
+        ("LAST_PHONE_NUMBER", Expected::Permanent),
+        ("NUMBER_CAPABILITIES_MISMATCH", Expected::Permanent),
+        ("MESSAGE_TYPE_MISMATCH", Expected::Unavailable),
+        ("NO_ORIGINATION_IDENTITIES_FOUND", Expected::Permanent),
+        ("OPT_OUT_LIST_MISMATCH", Expected::Permanent),
+        ("PHONE_NUMBER_ASSOCIATED_TO_POOL", Expected::Permanent),
+        (
+            "PHONE_NUMBER_ASSOCIATED_TO_REGISTRATION",
+            Expected::Permanent,
+        ),
+        ("PHONE_NUMBER_NOT_ASSOCIATED_TO_POOL", Expected::Permanent),
+        (
+            "PHONE_NUMBER_NOT_IN_REGISTRATION_REGION",
+            Expected::Permanent,
+        ),
+        ("REGISTRATION_ALREADY_SUBMITTED", Expected::Permanent),
+        ("REGISTRATION_NOT_COMPLETE", Expected::Permanent),
+        ("RESOURCE_ALREADY_ASSOCIATED", Expected::Permanent),
+        ("SENDER_ID_ASSOCIATED_TO_POOL", Expected::Permanent),
+        ("RCS_AGENT_ASSOCIATED_TO_POOL", Expected::Permanent),
+        (
+            "POOL_ASSOCIATED_TO_NOTIFY_CONFIGURATION",
+            Expected::Permanent,
+        ),
+        ("RESOURCE_ALREADY_EXISTS", Expected::Permanent),
+        ("RESOURCE_DELETION_NOT_ALLOWED", Expected::Permanent),
+        ("RESOURCE_MODIFICATION_NOT_ALLOWED", Expected::Permanent),
+        ("RESOURCE_NOT_ACTIVE", Expected::Unavailable),
+        ("RESOURCE_NOT_EMPTY", Expected::Permanent),
+        ("SELF_MANAGED_OPT_OUTS_MISMATCH", Expected::Permanent),
+        (
+            "SUBMIT_REGISTRATION_VERSION_NOT_ALLOWED",
+            Expected::Permanent,
+        ),
+        ("TWO_WAY_CONFIG_MISMATCH", Expected::Permanent),
+        ("VERIFICATION_CODE_EXPIRED", Expected::Permanent),
+        ("VERIFICATION_ALREADY_COMPLETE", Expected::Permanent),
+        (
+            "PROTECT_CONFIGURATION_IS_ACCOUNT_DEFAULT",
+            Expected::Permanent,
+        ),
+        (
+            "PROTECT_CONFIGURATION_ASSOCIATED_WITH_CONFIGURATION_SET",
+            Expected::Permanent,
+        ),
+        (
+            "PROTECT_CONFIGURATION_NOT_ASSOCIATED_WITH_CONFIGURATION_SET",
+            Expected::Permanent,
+        ),
+        (
+            "DESTINATION_COUNTRY_BLOCKED_BY_PROTECT_CONFIGURATION",
+            Expected::Permanent,
+        ),
+        (
+            "DESTINATION_PHONE_NUMBER_BLOCKED_BY_PROTECT_NUMBER_OVERRIDE",
+            Expected::Rejected,
+        ),
+        (
+            "RCS_AGENT_ALREADY_ASSOCIATED_TO_REGISTRATION_TYPE",
+            Expected::Permanent,
+        ),
+        ("NOTIFY_CONFIGURATION_NOT_ACTIVE", Expected::Permanent),
+    ];
+
+    #[test]
+    fn every_conflict_reason_has_a_deliberate_outcome() {
+        assert_eq!(CONFLICT_REASONS.len(), 41, "botocore 1.43.116 lists 41");
+        for (reason, expected) in CONFLICT_REASONS {
+            let error = classify(
+                "ConflictException",
+                &format!(r#"{{"Message":"m","Reason":"{reason}"}}"#),
+                false,
+            );
+            let actual = match error {
+                ProviderError::Rejected { .. } => Expected::Rejected,
+                ProviderError::Permanent { .. } => Expected::Permanent,
+                ProviderError::Unavailable { .. } => Expected::Unavailable,
+                other => panic!("{reason}: unexpected {other:?}"),
+            };
+            assert_eq!(actual, *expected, "{reason}");
+        }
+    }
+
+    #[test]
+    fn a_conflict_with_no_or_an_unknown_reason_fails_the_route_not_the_message() {
+        for body in [
+            r#"{"Message":"m"}"#,
+            r#"{"Reason":"A_REASON_AWS_ADDED_LATER"}"#,
+        ] {
+            let error = classify("ConflictException", body, false);
+            assert!(matches!(error, ProviderError::Permanent { .. }), "{body}");
+        }
     }
 
     #[test]
@@ -682,6 +1000,7 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR,
             Some("InternalServerException"),
             "{}",
+            false,
         );
         assert!(matches!(error, ProviderError::Unavailable { .. }));
     }

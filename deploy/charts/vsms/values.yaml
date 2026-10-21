@@ -277,6 +277,13 @@ awsSms:
   # Optional. Overrides https://sms-voice.<region>.amazonaws.com/ (VPC
   # endpoints, a local emulator). Stripped when empty.
   endpointUrl: ""
+  # Optional. Seconds AWS keeps trying to deliver one message (5..259200),
+  # a quoted string like tpsCeiling. Unset, AWS tries for up to 72 hours,
+  # so an OTP vsms already expired (15 minutes by default) can still
+  # arrive days later. Match the shortest validity of the traffic routed
+  # to AWS: "900" for an OTP-only route (other classes default to 24
+  # hours, so "900" would cut them short). Stripped when empty.
+  timeToLiveSeconds: ""
   # sms-gateway only - see above.
   eventsTopicArn: ""
 
@@ -671,7 +678,7 @@ controllers:
                 name: '{{ required "existingSecrets.hashPepper.name is required" .Values.existingSecrets.hashPepper.name }}'
                 key: '{{ .Values.existingSecrets.hashPepper.key }}'
           RUST_LOG:
-            value: 'sms_gateway=info,sms_api=info,sms_auth=info,cratestack=info'
+            value: 'sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info'
         probes:
           # #157: /healthz stays liveness-only by design
           # (backends/apps/sms-gateway/src/health.rs's own doc: "It does not touch the
@@ -839,6 +846,8 @@ controllers:
             value: '{{ .Values.awsSms.supportsAlphanumericSender }}'
           AWS_SMS_ENDPOINT_URL:
             value: '{{ .Values.awsSms.endpointUrl }}'
+          AWS_SMS_TIME_TO_LIVE_SECONDS:
+            value: '{{ .Values.awsSms.timeToLiveSeconds }}'
           RUST_LOG:
             value: 'sms_worker=info,sms_worker_bin=info'
         probes:

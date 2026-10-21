@@ -17,6 +17,14 @@ and signed with `openssl dgst -sha256 -sign`, so the Rust verifier is checked
 against a third tool rather than against its own canonicalisation. Each was
 then re-verified with `openssl dgst -sha256 -verify` before being committed.
 
+Both files' `SigningCertURL` is
+`https://sns.eu-west-1.amazonaws.com/SimpleNotificationService-00000000000000000000000000c0ffee.pem`,
+which has the 32-hex-digit shape the verifier requires of a certificate URL.
+`SigningCertURL` is not part of the string SNS signs (a `Notification` signs
+`Message`, `MessageId`, `Subject`, `Timestamp`, `TopicArn` and `Type`; a
+confirmation adds `SubscribeURL` and `Token`), so changing it needed no
+re-signing.
+
 To change a fixture, generate a fresh key and certificate
 (`openssl req -x509 -newkey rsa:2048 -nodes …`), re-sign both files the same
 way, replace the certificate, and delete the new key again.
