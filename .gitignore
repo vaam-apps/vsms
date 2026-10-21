@@ -96,3 +96,7 @@ deploy/charts/vsms/charts/
 
 # Personal scratch for the real-handset (#36) test 
 real-send/
+
+# The VitePress docs site (docs/.vitepress): build output and Vite's cache.
+docs/.vitepress/dist/
+docs/.vitepress/cache/

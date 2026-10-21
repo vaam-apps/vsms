@@ -1,0 +1,22 @@
+{
+  "name": "vsms-docs",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.14.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "vitepress dev",
+    "build": "vitepress build",
+    "preview": "vitepress preview"
+  },
+  "devDependencies": {
+    "@asciidoctor/core": "3.0.4",
+    "@vaam-apps/vitepress-md3": "^1.0.0",
+    "mermaid": "^12.2.0",
+    "parse5": "^8.0.1",
+    "vitepress": "2.0.0-alpha.20",
+    "vue": "^3.5.44"
+  }
+}

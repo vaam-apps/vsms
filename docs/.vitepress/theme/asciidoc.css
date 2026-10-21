@@ -1,0 +1,17 @@
+/* Asciidoctor wraps every table cell's text in <p class="tableblock">, and
+   .vp-doc gives paragraphs a 16px margin; inside a cell that only pads. */
+.vp-doc td > p.tableblock,
+.vp-doc th > p.tableblock {
+  margin: 0;
+}
+
+.vp-doc td > p.tableblock + p.tableblock {
+  margin-top: 8px;
+}
+
+/* A titled code block (".Title" above a listing in AsciiDoc). */
+.vp-doc div.title {
+  margin: 16px 0 -8px;
+  font-weight: 600;
+  font-size: 14px;
+}
