@@ -1,19 +1,32 @@
-//! Who may hand out `owner`.
+//! Who may hand out `owner` — the half of the answer the *data layer* owns.
 //!
 //! `owner` is the top of the console's role ladder: only an owner may delete a
 //! `User` or change a `Role`'s permissions (`schema.cstack`, `model User` and
-//! `model Role`). `User`'s `create`/`update` policy admits `admin` with no
-//! condition on the *value* written, so an admin could, until this file's
-//! fix, assign `owner` to anyone, itself included, or demote and deactivate an
-//! owner. Production showed it on 2026-10-20: a user whose role was `admin`
-//! updated its own record from `admin` to `owner` (cratestack_audit).
+//! `model Role`). `User`'s `create`/`update` policy used to admit `admin` with
+//! no condition on the *value* written. Production showed it on 2026-10-20: a
+//! user whose role was `admin` updated its own record from `admin` to `owner`
+//! (`cratestack_audit`).
+//!
+//! The schema clause `hasRole('admin') && roleKey != 'owner'` is what this file
+//! pins: a `create` policy is evaluated against the **input**, so an admin
+//! cannot create an owner; an `update` policy compiles to `UPDATE … WHERE
+//! <policy>` on the **stored** row, so an admin cannot demote or deactivate an
+//! existing owner. An `update` policy cannot see the **new** value, so
+//! "an admin promotes itself, or someone else, to owner" is *not* decidable
+//! here by design — that is `sms_api::owner_grant::enforce_owner_grant_guard`'s
+//! job (a request middleware) and is proven over real HTTP in
+//! `backends/apps/sms-gateway/tests/login_flow_live_postgres.rs`
+//! (`an_admin_cannot_promote_*`), not in this data-layer file.
 //!
 //! Every case asserts the outcome, not the error type: a policy denial on an
 //! update can surface as an error or as zero rows matched, and either is fine
 //! as long as the row is unchanged when read back.
 //!
 //! Ignored by default like the other live suites:
+//!
+//! ```bash
 //! cargo test -p sms-api --test role_escalation_live_postgres -- --ignored
+//! ```
 
 use cratestack::CratestackContext;
 use cratestack::sqlx::postgres::PgPoolOptions;
@@ -93,50 +106,6 @@ async fn set(
         .if_match(user.version)
         .run(ctx)
         .await;
-}
-
-#[tokio::test]
-#[ignore = "needs a live Postgres (sms-test-support)"]
-async fn an_admin_cannot_promote_itself_to_owner() {
-    let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
-    let admin = seed_user(&db, "admin").await;
-    let as_admin = principal(&admin.id, "admin");
-
-    set(
-        &db,
-        &as_admin,
-        &admin,
-        schema::UpdateUserInput {
-            roleKey: Some("owner".to_owned()),
-            ..Default::default()
-        },
-    )
-    .await;
-
-    assert_eq!(role_of(&db, &admin.id).await.0, "admin");
-}
-
-#[tokio::test]
-#[ignore = "needs a live Postgres (sms-test-support)"]
-async fn an_admin_cannot_promote_another_user_to_owner() {
-    let _guard = TEST_MUTEX.lock().await;
-    let db = db().await;
-    let admin = seed_user(&db, "admin").await;
-    let target = seed_user(&db, "support").await;
-
-    set(
-        &db,
-        &principal(&admin.id, "admin"),
-        &target,
-        schema::UpdateUserInput {
-            roleKey: Some("owner".to_owned()),
-            ..Default::default()
-        },
-    )
-    .await;
-
-    assert_eq!(role_of(&db, &target.id).await.0, "support");
 }
 
 #[tokio::test]
