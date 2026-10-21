@@ -1,10 +1,12 @@
 // Dumb view: the "Roles" tab body — permission note, "New role" button,
 // and table.
 
-import { Button, Code, InlineBanner } from "@vaam-apps/ui";
+import { Button } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
+import { ErrorBanner } from "@/components/error-banner";
+import { ListSurface } from "@/components/list-surface";
+import { ListToolbarRow } from "@/components/list-toolbar-row";
 import type { RoleRecord } from "../types";
-import { ErrorBanner } from "./error-banner";
 import { RolesTable } from "./roles-table";
 
 export function RolesTabView({
@@ -24,19 +26,22 @@ export function RolesTabView({
 }) {
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <InlineBanner variant="neutral">
-          Creating, editing, and deleting roles all require <Code>owner</Code> — the narrowest write
-          action in this console.
-        </InlineBanner>
-        <Button type="button" onClick={onCreateClick}>
-          New role
-        </Button>
-      </div>
-
       {errorMessage !== null && <ErrorBanner>Could not read roles: {errorMessage}</ErrorBanner>}
 
-      <RolesTable roles={roles} isLoading={isLoading} onRowClick={onRowClick} />
+      <ListSurface
+        toolbar={
+          <ListToolbarRow
+            note="Creating, editing and deleting roles need the owner role."
+            action={
+              <Button type="button" onClick={onCreateClick}>
+                New role
+              </Button>
+            }
+          />
+        }
+      >
+        <RolesTable roles={roles} isLoading={isLoading} onRowClick={onRowClick} />
+      </ListSurface>
 
       {children}
     </div>

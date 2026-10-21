@@ -16,7 +16,8 @@ export function ReceiptsCard({ receipts, isLoading, errorMessage }: ReceiptsCard
     <Card>
       <CardHeader
         title="Delivery receipts"
-        meta="Raw DeliveryReceipt evidence, oldest first — including duplicates and out-of-order arrivals"
+        headingLevel={2}
+        meta="As the provider sent them, oldest first, duplicates included"
       />
       <CardBody>
         <ReceiptsTable receipts={receipts} isLoading={isLoading} errorMessage={errorMessage} />

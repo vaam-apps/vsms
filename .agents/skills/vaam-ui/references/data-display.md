@@ -299,7 +299,7 @@ One headline number with its label and context.
 | `value`      | `React.ReactNode` | The figure. **This component does no formatting** — a tile cannot know whether it is showing a count, a currency or a rate. Pass a `Money` or a formatted string. Never clamped: a truncated figure is a wrong figure, so a long one wraps inside the tile instead. |
 | `caption`    | `React.ReactNode` | One line under the value: the comparison, the window, the caveat. Clamped to two lines — tiles stretch to the tallest in the row.                                                                                                                                   |
 | `tone`       | `StatusHue`       | Tints the value. Leave unset unless the number's own colour carries meaning; a wall of coloured tiles makes the one that matters harder to find.                                                                                                                    |
-| `emphasized` | `boolean`         | Singles this tile's value out among peers by weight (`font-medium`), not colour — colour is reserved for status. Set it on at most one tile in a row; a row where every tile is emphasised has no emphasis.                                                         |
+| `emphasized` | `boolean`         | Singles this tile's value out among peers by weight (`font-medium`), not colour — colour is reserved for status. Inside an `InstrumentPanel` it also grows to display-small (36px). At most one tile per row; if every tile is emphasised, none is.                 |
 | `action`     | `React.ReactNode` | Top-right slot — a sparkline, a `StateChip`, a refresh button.                                                                                                                                                                                                      |
 
 The `caption` slot exists because a bare number with no denominator is the
@@ -314,8 +314,11 @@ navigable to a screen reader instead of a wall of text.
 
 ### `InstrumentPanel`
 
-The **instrument register**: an aurora mesh ground, no border, for data you
-_scan_ rather than read.
+The **instrument register**, as an M3 Expressive container: a
+`surface-container` fill, the extra-large (28px) corner, 24px of padding,
+no border and no shadow, with two of M3 Expressive's shapes — a 4-leaf
+clover over a quieter 9-sided cookie — tucked into its top-right corner.
+For data you _scan_ rather than read.
 
 ```tsx
 <InstrumentPanel
@@ -323,7 +326,12 @@ _scan_ rather than read.
   caption="Last 24 hours, across all providers"
 >
   <div className="grid gap-3 sm:grid-cols-3">
-    <StatTile label="Paid" value="12,481" caption="98.2% of 12,710 terminal" />
+    <StatTile
+      label="Paid"
+      value="12,481"
+      caption="98.2% of 12,710 terminal"
+      emphasized
+    />
     <StatTile
       label="Unresolved"
       value="37"
@@ -342,23 +350,36 @@ _scan_ rather than read.
 `title` and `caption` are both `React.ReactNode` and optional; everything else
 spreads onto the `<div>` (`title` is deliberately omitted from the DOM
 attributes it accepts, since this slot is a node and the attribute is a
-string). `Card` with `glow` is the same register at card scale.
+string). The title is title-large emphasized (22/28, 500), the caption
+body-medium in muted. `Card` with `glow` is the same register at card scale.
 
-Three things to know:
+Five things to know:
 
 - **Use it sparingly.** A screen where every panel glows has no glow. The
   library's default surface is a hairline on a surface step, and should stay
   most of your screen.
-- **The mesh carries no meaning.** It is drawn from the `--aurora-*` ramp,
-  bound to the system's own hues so it cannot drift, but it is chrome: no
-  status is inferable from it, there is no per-state variant, and a caller
-  cannot tint it. That is the only reason a coloured surface is safe in a
-  system whose premise is that colour means something.
-- **`text-subtle-foreground` is banned on this surface.** A gradient ground
-  breaks the assumption every contrast check here rests on — that a
-  foreground sits on _one_ known surface. Measured over `--surface-1` at the
-  shipped 14% cap, worst case across the four blobs, subtle falls to
-  **4.41:1 in dark and 4.45:1 in light**, below the 4.5:1 bar, while muted
-  holds at 5.29:1 and above. The component already steps its own caption up
-  to muted; do not push it back down, and do not reach for subtle on
-  anything else you put here.
+- **`StatTile`s inside it change register with it.** They drop their
+  hairline for a filled `surface-container-highest` with a 20px corner and
+  20px of padding, and an `emphasized` tile grows its figure to
+  display-small (36/44) — the Expressive hero figure. This is CSS
+  (`in-[.instrument-panel]:` variants), so it works from a server component
+  and needs nothing from you; outside a panel a tile is unchanged. Put the
+  `emphasized` tile first, and expect a long emphasised figure to wrap
+  sooner in a narrow column.
+- **Don't add a border or a shadow, and don't set `overflow-visible`.** No
+  border is what keeps it from being a big `Card`; no shadow is what keeps
+  it from reading as a floating layer; the panel clips its own shapes. A
+  `bg-*` class does override the fill, but the shapes are mixed from the
+  default fill and will no longer match — leave the fill alone.
+- **The shapes carry no meaning.** They are the seed's `primary-container`
+  mixed into the container — the one hue family this system reserves for
+  chrome — static, and not interactive. No status is inferable from them,
+  there is no per-state variant, and a caller cannot tint them.
+- **`text-subtle-foreground` is banned on this surface.** The shapes are
+  opaque, so the panel has exactly three grounds — container, halo,
+  clover — and the contrast gate measures every tier on each. On the
+  clover, subtle falls to **4.05:1 in dark and 4.28:1 in light**, below the
+  4.5:1 bar, while muted holds at 5.95:1 and 4.71:1 and every status
+  foreground at 5.95:1 and 4.76:1 or better. The component already steps
+  its own caption up to muted; do not push it back down, and do not reach
+  for subtle on anything else you put here.

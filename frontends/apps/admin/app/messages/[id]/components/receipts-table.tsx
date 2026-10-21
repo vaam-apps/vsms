@@ -46,9 +46,7 @@ export function ReceiptsTable({ receipts, isLoading, errorMessage }: ReceiptsTab
   }
 
   if (receipts === undefined || receipts.length === 0) {
-    return (
-      <InlineEmptyState message="No delivery receipts recorded for this message — see the note above the timeline for what that does and doesn't mean." />
-    );
+    return <InlineEmptyState message="No delivery receipt has arrived for this message." />;
   }
 
   return (

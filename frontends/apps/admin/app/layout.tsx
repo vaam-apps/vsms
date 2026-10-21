@@ -1,3 +1,7 @@
+import "@fontsource-variable/roboto-flex/standard.css";
+import "@fontsource-variable/jetbrains-mono/index.css";
+import { themeInitScript } from "@vaam-apps/ui";
+import { env } from "@vsms/env";
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import "./globals.css";
@@ -5,25 +9,37 @@ import { ConsoleShell } from "./console-shell";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "vsms Admin Console",
-  description: "A2P SMS gateway admin dashboard",
+  title: { default: "vsms console", template: "%s · vsms console" },
+  description: "A2P SMS gateway admin console",
 };
 
+// Fonts are self-hosted from npm (`@fontsource-variable/*`, OFL-1.1) rather
+// than linked from Google Fonts: the console must render the same in a
+// deployment with no route to the public internet, and Next serves the woff2
+// files from its own origin. `theme.css` already names "Roboto Flex
+// Variable" and "JetBrains Mono Variable" in its stacks. `standard.css`
+// carries the weight, width, slant and optical-size axes; the slant axis is
+// what `--font-italic` draws with.
+//
+// `themeInitScript` sets `data-theme` from the stored preference before the
+// first paint, so a visitor who chose "light" never sees a dark flash; it is
+// why `<html>` carries `suppressHydrationWarning` (the script changes an
+// attribute React did not render). It is a fixed literal from the library.
+
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  // `frontends/apps/admin/middleware.ts` forwards the signed-in human's email as
-  // `x-vsms-actor` on every authenticated request — the same header
-  // `frontends/packages/api/src/context.ts` already reads for the tRPC `actor`
-  // field. Reading it here, rather than importing `frontends/apps/admin/lib/session.ts`
-  // directly, keeps this file free of auth *logic*: it only displays a
-  // value middleware has already validated and set (or left absent, on
-  // `/login`, where `ConsoleShell` renders no chrome at all).
+  // `middleware.ts` forwards the signed-in human's email as `x-vsms-actor`;
+  // this only displays a value middleware has already validated.
   const headerList = await headers();
   const accountEmail = headerList.get("x-vsms-actor");
 
   return (
-    <html lang="en" data-theme="dark">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* biome-ignore lint/security/noDangerouslySetInnerHtml: a fixed literal exported by @vaam-apps/ui */}
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body>
-        <Providers>
+        <Providers queryStaleTimeMs={env.QUERY_STALE_TIME_MS}>
           <ConsoleShell accountEmail={accountEmail}>{children}</ConsoleShell>
         </Providers>
       </body>

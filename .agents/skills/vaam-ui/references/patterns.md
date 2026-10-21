@@ -35,7 +35,7 @@ A standing notice or an error _around_ content that is showing.
 | `plain`             | A caption-only note, no border or fill, for something that does not need the weight of a box. |
 
 One thing worth knowing, because it looks like a bug and is not:
-`success` draws the same achromatic chrome as `neutral` — `border-edge` and
+`success` draws the same neutral chrome as `neutral` — `border-edge` and
 `bg-surface-2` — keeping only its own green text. `--state-success-bg` and
 `--state-success-border` are declared `transparent` on purpose (success is
 one of the two quiet status hues), so painting them rendered a bare line of

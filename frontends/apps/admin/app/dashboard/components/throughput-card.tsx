@@ -1,13 +1,7 @@
-// Dumb component (R6): the "Throughput" trend card. Markup moved verbatim
-// out of `dashboard-screen.tsx`; this component owns building the bar
-// labels off the raw hourly buckets it's handed (iteration/presentation,
-// not a business decision), while `delta` — a derived comparison across
-// two specific hours — stays a value the smart component computes and
-// hands down, since the same comparison also feeds the UCS-2 card's own
-// "jumped" flag.
+// Dumb component (R6): messages accepted per hour over the last six hours.
 
 import { Card, CardBody, CardHeader } from "@vaam-apps/ui";
-import { formatCount } from "../format";
+import { formatCount, hourOf } from "../format";
 import { HourlyBars } from "./hourly-bars";
 
 export interface ThroughputBucket {
@@ -17,43 +11,25 @@ export interface ThroughputBucket {
 
 export interface ThroughputCardProps {
   buckets: ThroughputBucket[];
-  /** `null` when there's no prior hour to compare against yet. */
-  delta: number | null;
 }
 
-export function ThroughputCard({ buckets, delta }: ThroughputCardProps) {
-  const currentHourTotal = buckets.at(-1)?.totalCount ?? 0;
-
+export function ThroughputCard({ buckets }: ThroughputCardProps) {
+  const total = buckets.reduce((sum, bucket) => sum + bucket.totalCount, 0);
   return (
     <Card>
-      <CardHeader title="Throughput" meta="last 6 hours, oldest first" />
+      <CardHeader
+        title="Throughput"
+        headingLevel={2}
+        meta={`${formatCount(total)} messages in the last 6 hours`}
+      />
       <CardBody>
-        {buckets.length > 0 ? (
-          <>
-            <HourlyBars
-              bars={buckets.map((bucket) => ({
-                value: bucket.totalCount,
-                label: `${new Date(bucket.bucketStart).toLocaleTimeString([], {
-                  hour: "2-digit",
-                })}: ${formatCount(bucket.totalCount)} messages`,
-              }))}
-              colorClassName="bg-state-neutral-fg"
-            />
-            <p className="mt-3 text-body text-foreground">
-              {formatCount(currentHourTotal)}{" "}
-              <span className="text-caption text-muted-foreground">this hour</span>
-            </p>
-            <p className="text-caption text-muted-foreground">
-              {delta == null
-                ? "no prior hour to compare yet"
-                : delta === 0
-                  ? "flat vs. the previous hour"
-                  : `${delta > 0 ? "+" : ""}${formatCount(delta)} vs. the previous hour`}
-            </p>
-          </>
-        ) : (
-          <p className="text-caption text-muted-foreground">Loading…</p>
-        )}
+        <HourlyBars
+          bars={buckets.map((bucket) => ({
+            value: bucket.totalCount,
+            hour: hourOf(bucket.bucketStart),
+            label: `${hourOf(bucket.bucketStart)}:00 — ${formatCount(bucket.totalCount)} messages`,
+          }))}
+        />
       </CardBody>
     </Card>
   );

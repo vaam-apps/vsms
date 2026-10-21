@@ -1,7 +1,8 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
+import { TUNING, withTuningCoerced } from "./tuning";
 
-export const env = createEnv({
+const created = createEnv({
   server: {
     SMS_API_URL: z.string().url(),
     SMS_API_CLIENT_CERT_PATH: z.string().optional(),
@@ -39,7 +40,7 @@ export const env = createEnv({
     // that would still "work" (any string hashes to 32 bytes) but with far
     // less real keyspace than the cookie's own encryption implies.
     SMS_CONSOLE_SESSION_SECRET: z.string().min(32),
-    MESSAGE_STREAM_POLL_MS: z.coerce.number().int().min(500).default(2000),
+    MESSAGE_STREAM_POLL_MS: TUNING.MESSAGE_STREAM_POLL_MS,
     // R6 (AGENTS.md): a tuning value, same shape as `MESSAGE_STREAM_POLL_MS`
     // above — one place, validated at boot, instead of a `REFETCH_INTERVAL_MS
     // = 5000` const copy-pasted per screen. This is the Jobs (#56), Workers
@@ -51,13 +52,14 @@ export const env = createEnv({
     // `dashboard-screen.tsx`'s 15_000ms is a materially different cadence
     // (an overview, not a diagnostics table) and deliberately gets no entry
     // here — it needs its own, sized for what it actually polls.
-    DIAGNOSTICS_POLL_MS: z.coerce.number().int().min(500).default(5000),
+    DIAGNOSTICS_POLL_MS: TUNING.DIAGNOSTICS_POLL_MS,
     // R6 (Administration group, `audit-log-screen.tsx`): a page size is an
     // operational tuning value, not a protocol constant — the same test
     // `MESSAGE_STREAM_POLL_MS` already sets a precedent for. Read
     // server-side in `audit-log/page.tsx` and handed down as a prop, the
     // identical shape that file already uses.
-    AUDIT_LOG_PAGE_SIZE: z.coerce.number().int().min(1).max(500).default(50),
+    AUDIT_LOG_PAGE_SIZE: TUNING.AUDIT_LOG_PAGE_SIZE,
+    LIST_PAGE_SIZE: TUNING.LIST_PAGE_SIZE,
     // Dashboard screen (#49). Same "operational tuning value, not
     // protocol/security" reasoning AGENTS.md's R6 already gives for
     // `MESSAGE_STREAM_POLL_MS` — a hoisted `REFETCH_INTERVAL_MS` in the
@@ -65,7 +67,8 @@ export const env = createEnv({
     // shared constant, since the dashboard's own 15_000ms overview cadence
     // is materially different from `DIAGNOSTICS_POLL_MS`'s diagnostics-table
     // cadence above, not merely a fourth independent copy of the same value.
-    DASHBOARD_REFETCH_INTERVAL_MS: z.coerce.number().int().min(1000).default(15_000),
+    DASHBOARD_REFETCH_INTERVAL_MS: TUNING.DASHBOARD_REFETCH_INTERVAL_MS,
+    QUERY_STALE_TIME_MS: TUNING.QUERY_STALE_TIME_MS,
     NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   },
   client: {
@@ -87,13 +90,29 @@ export const env = createEnv({
     MESSAGE_STREAM_POLL_MS: process.env.MESSAGE_STREAM_POLL_MS,
     DIAGNOSTICS_POLL_MS: process.env.DIAGNOSTICS_POLL_MS,
     AUDIT_LOG_PAGE_SIZE: process.env.AUDIT_LOG_PAGE_SIZE,
+    LIST_PAGE_SIZE: process.env.LIST_PAGE_SIZE,
     DASHBOARD_REFETCH_INTERVAL_MS: process.env.DASHBOARD_REFETCH_INTERVAL_MS,
+    QUERY_STALE_TIME_MS: process.env.QUERY_STALE_TIME_MS,
     NODE_ENV: process.env.NODE_ENV,
     // Client
     NEXT_PUBLIC_APP_NAME: process.env.NEXT_PUBLIC_APP_NAME,
   },
   skipValidation: !!process.env.SKIP_ENV_VALIDATION,
 });
+
+/**
+ * `SKIP_ENV_VALIDATION` skips the whole schema, coercion included, so
+ * without this every tuning number reaches its caller as the raw string from
+ * `process.env` (or `undefined`). Both demo compose files run the console
+ * with it set. Measured there: `"2000"` made the messages long-poll's
+ * deadline a string concatenation, every poll returned in ~30ms instead of
+ * waiting 2s, and the Messages screen sent ~12 requests a second; and
+ * TanStack Query ignores a string `refetchInterval` outright, so the
+ * dashboard, jobs, workers and webhook-attempt polls never ran at all.
+ * The tuning values are coerced (or defaulted) even when validation is
+ * skipped; everything else is untouched.
+ */
+export const env = process.env.SKIP_ENV_VALIDATION ? withTuningCoerced(created) : created;
 
 // Cross-field validation rules
 // The cross-field rules below read `env` values directly. When

@@ -1,60 +1,79 @@
-// Dumb — route-local to the message detail screen (R6). The record's own
-// fields, laid out as a label/value grid.
+// Dumb component (R6): the message's routing and accounting facts as a
+// definition list. Ids and references are mono; absent values read "—".
 
-import { TimestampDisplay } from "@vaam-apps/ui";
+import {
+  Card,
+  CardBody,
+  CardHeader,
+  DetailList,
+  DetailRow,
+  IdDisplay,
+  TimestampDisplay,
+} from "@vaam-apps/ui";
 import type { ReactNode } from "react";
-import { MsisdnDisplay } from "@/components/msisdn-display";
 import type { MessageDetail } from "../message-record";
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <p className="text-caption text-subtle-foreground">{label}</p>
-      <div className="break-all font-mono text-body text-foreground">{children}</div>
-    </div>
-  );
+function Mono({ children }: { children: ReactNode }) {
+  return <span className="break-all font-mono">{children}</span>;
 }
 
-export interface MessageFieldsProps {
+/** A name when one is known, else the id; absent reads "—". */
+function NamedId({
+  value,
+  names,
+}: {
+  value: string | undefined | null;
+  names: ReadonlyMap<string, string>;
+}) {
+  if (value == null) return <span>—</span>;
+  return <>{names.get(value) ?? <IdDisplay value={value} />}</>;
+}
+
+export function MessageFields({
+  message,
+  providerNames,
+  routeNames,
+}: {
   message: MessageDetail;
-}
-
-export function MessageFields({ message }: MessageFieldsProps) {
+  /** Provider display name by id; a caller without `provider:read` passes an empty map. */
+  providerNames: ReadonlyMap<string, string>;
+  /** Route name by id; a caller without `route:read` passes an empty map. */
+  routeNames: ReadonlyMap<string, string>;
+}) {
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-      <Field label="Recipient">
-        <MsisdnDisplay value={message.msisdn} operator={message.operator} />
-      </Field>
-      <Field label="Sender">{message.senderIdValue}</Field>
-      <Field label="Class">{message.class}</Field>
-      <Field label="Client ref">{message.clientRef ?? "—"}</Field>
-      <Field label="Encoding">
-        {message.encoding.toUpperCase()} · {message.segments} segment
-        {message.segments === 1 ? "" : "s"}
-      </Field>
-      <Field label="Attempts">
-        {message.attempts} / {message.maxAttempts}
-      </Field>
-      <Field label="Provider ref">{message.providerMessageRef ?? "—"}</Field>
-      <Field label="Route">{message.routeId ?? "—"}</Field>
-      <Field label="Provider">{message.providerId ?? "—"}</Field>
-      <Field label="Cost (XAF)">{message.costXaf}</Field>
-      <Field label="Expires">
-        <TimestampDisplay value={message.expiresAt} />
-      </Field>
-      <Field label="Version">{message.version}</Field>
-      {message.stateReason != null && (
-        <div className="col-span-full flex flex-col gap-1">
-          <p className="text-caption text-subtle-foreground">State reason</p>
-          <p className="font-mono text-body text-foreground">{message.stateReason}</p>
-        </div>
-      )}
-      {message.body != null && (
-        <div className="col-span-full flex flex-col gap-1">
-          <p className="text-caption text-subtle-foreground">Body</p>
-          <p className="whitespace-pre-wrap font-mono text-body text-foreground">{message.body}</p>
-        </div>
-      )}
-    </div>
+    <Card>
+      <CardHeader title="Details" headingLevel={2} />
+      <CardBody>
+        <DetailList variant="divided">
+          <DetailRow label="Class">{message.class}</DetailRow>
+          <DetailRow label="Client reference">
+            <Mono>{message.clientRef ?? "—"}</Mono>
+          </DetailRow>
+          <DetailRow label="Attempts">
+            <Mono>
+              {message.attempts} of {message.maxAttempts}
+            </Mono>
+          </DetailRow>
+          <DetailRow label="Provider">
+            <NamedId value={message.providerId} names={providerNames} />
+          </DetailRow>
+          <DetailRow label="Route">
+            <NamedId value={message.routeId} names={routeNames} />
+          </DetailRow>
+          <DetailRow label="Provider reference">
+            <Mono>{message.providerMessageRef ?? "—"}</Mono>
+          </DetailRow>
+          <DetailRow label="Cost">
+            <Mono>{message.costXaf} XAF</Mono>
+          </DetailRow>
+          <DetailRow label="Expires">
+            <TimestampDisplay value={message.expiresAt} />
+          </DetailRow>
+          <DetailRow label="Version">
+            <Mono>{message.version}</Mono>
+          </DetailRow>
+        </DetailList>
+      </CardBody>
+    </Card>
   );
 }

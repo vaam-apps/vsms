@@ -47,7 +47,6 @@ import {
   IdDisplay,
   MoreDetailDrawer,
   QuickDetailDrawer,
-  ScreenHeader,
   ScreenStack,
   toast,
 } from "@vaam-apps/ui";
@@ -55,13 +54,17 @@ import { trpc } from "@vsms/hooks";
 import { parseAsString, useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { Caption } from "@/components/caption";
+import { LinkButton } from "@/components/link-button";
+import { ListSurface } from "@/components/list-surface";
+import { PageHeader } from "@/components/page-header";
 import type { MessageClass } from "@/components/status";
 import { RouteDeleteConfirm } from "./components/route-delete-confirm";
 import { RouteEditFooter } from "./components/route-edit-footer";
 import { RouteForm } from "./components/route-form";
+import { RouteNotices } from "./components/route-notices";
 import { RouteQuickDetailBody } from "./components/route-quick-detail-body";
 import { RouteTable } from "./components/route-table";
-import { RouteToolbar } from "./components/route-toolbar";
 import {
   ANY_PREDICATE,
   EMPTY_ROUTE_FORM_VALUES,
@@ -73,6 +76,9 @@ import {
 export function RoutesScreen() {
   const listQuery = trpc.routes.list.useQuery();
   const providersQuery = trpc.providers.list.useQuery();
+  const providerNames = new Map(
+    (providersQuery.data ?? []).map((p) => [p.id, p.displayName] as const),
+  );
   const utils = trpc.useUtils();
 
   const [quickId, setQuickId] = useState<string | null>(null);
@@ -182,22 +188,39 @@ export function RoutesScreen() {
 
   return (
     <ScreenStack>
-      <ScreenHeader
+      <PageHeader
         title="Routes"
-        description="Priority, weight, and match predicates — sorted by priority, highest first."
+        description="Which provider carries which traffic. Highest priority first; weights split a band."
+        actions={
+          <>
+            <LinkButton href="/simulator" variant="ghost">
+              Simulate a send
+            </LinkButton>
+            <Button type="button" onClick={() => void setPanelId("new")}>
+              New route
+            </Button>
+          </>
+        }
       />
 
-      <RouteToolbar
+      <RouteNotices
         isEmpty={!listQuery.isLoading && (listQuery.data?.length ?? 0) === 0}
         listErrorMessage={listQuery.error?.message}
-        onNewRoute={() => void setPanelId("new")}
       />
 
-      <RouteTable
-        routes={listQuery.data}
-        isLoading={listQuery.isLoading}
-        onRowClick={(r) => setQuickId(r.id)}
-      />
+      <ListSurface>
+        <RouteTable
+          routes={listQuery.data}
+          isLoading={listQuery.isLoading}
+          providerNames={providerNames}
+          onRowClick={(r) => setQuickId(r.id)}
+        />
+      </ListSurface>
+
+      <Caption>
+        Changes are saved as you, and need the owner or admin role; other roles, operator included,
+        get a Forbidden error.
+      </Caption>
 
       {/* Quick detail — a peek, no route, closes back to exactly where the
           list was. */}

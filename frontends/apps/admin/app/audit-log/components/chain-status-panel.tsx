@@ -28,9 +28,8 @@ export function ChainStatusPanel(props: ChainStatusPanelProps) {
   if (props.kind === "no-anchor") {
     return (
       <InlineBanner variant="neutral">
-        No audit anchor has been written yet — the <span className="font-mono">anchor_audit</span>{" "}
-        job (§7.5) runs hourly once a worker with the <span className="font-mono">jobs</span> role
-        is up.
+        No audit anchor has been written yet. The <span className="font-mono">anchor_audit</span>{" "}
+        job writes one hourly once a worker runs the <span className="font-mono">jobs</span> role.
       </InlineBanner>
     );
   }
@@ -49,17 +48,16 @@ export function ChainStatusPanel(props: ChainStatusPanelProps) {
         </>
       ) : (
         <>
-          The audit chain verifies. Latest anchor covers {props.kind === "ok" ? props.rowCount : 0}{" "}
-          row(s) through{" "}
+          The audit chain verifies. The latest anchor covers{" "}
+          {props.kind === "ok" ? props.rowCount : 0} rows through{" "}
           {props.kind === "ok" && props.periodEnd !== undefined && (
             <TimestampDisplay value={props.periodEnd} />
           )}
           .
         </>
       )}
-      <span className="ml-2 text-micro text-subtle-foreground">
-        (Cannot detect deletion of the single newest anchor before anything else references it — see
-        OPEN_QUESTIONS.md §3.3.)
+      <span className="mt-1 block text-body-small text-muted-foreground">
+        One limit: deleting the newest anchor, before a later one references it, cannot be detected.
       </span>
     </InlineBanner>
   );

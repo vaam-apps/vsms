@@ -5,8 +5,8 @@
 import { Button, MoreDetailDrawer, Skeleton } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
 import type { UseFormReturn } from "react-hook-form";
+import { ErrorBanner } from "@/components/error-banner";
 import type { RoleEditValues } from "../role-forms";
-import { ErrorBanner } from "./error-banner";
 import { RoleEditForm } from "./role-edit-form";
 
 export function RoleDetailDrawerView({

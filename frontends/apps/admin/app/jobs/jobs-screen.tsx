@@ -43,15 +43,22 @@
 // screen is for — an operator checking "is anything stuck," not watching a
 // feed. `trpc.jobs.list.useQuery` with a `refetchInterval` is enough.
 //
-// # Why the visible whole-system-scope banner
+// # Why the description says "every app"
 //
 // `Job` has no `appId` at all — unlike `Message`, there is no "this app's
 // jobs" to scope to (`schema.cstack`'s own comment on `Job`'s `@@allow`).
-// This screen shows the entire system's backlog. Same reasoning
-// `messages-screen.tsx`'s own banner documents, opposite direction: that
-// screen explains a narrower-than-expected scope, this one explains a
-// broader one — both exist so an operator with no context for either
-// doesn't mistake the shape for a bug.
+// This screen shows the entire system's backlog, and the header says so in
+// one clause rather than a banner, so an operator with no context does not
+// mistake the breadth for a filter.
+//
+// # Paging
+//
+// The screen used to ask for 200 rows and render them all, a page
+// thousands of pixels tall. `jobs.list` already takes `limit`/`offset` and
+// answers `totalCount` (the gateway filters its own 1000-row window), so the
+// screen asks for one page of `LIST_PAGE_SIZE` rows (`@vsms/env`) and keeps
+// the page number in the URL beside the filters. A filter change resets it
+// to the first page.
 //
 // # Re-enqueue, precisely
 //
@@ -91,9 +98,12 @@
 // opening a drawer or a confirm dialog while browsing the backlog
 // shouldn't grow a back-button trail one entry per row inspected.
 
-import { Button, InlineBanner, QuickDetailDrawer, ScreenHeader, ScreenStack } from "@vaam-apps/ui";
+import { Button, InlineBanner, Pagination, QuickDetailDrawer, ScreenStack } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
-import { parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
+import { parseAsInteger, parseAsString, parseAsStringEnum, useQueryStates } from "nuqs";
+import { ListSurface } from "@/components/list-surface";
+import { LiveChip } from "@/components/live-chip";
+import { PageHeader } from "@/components/page-header";
 import { JOB_STATES, type JobState } from "@/components/status";
 import { JobDetailFields } from "./components/job-detail-fields";
 import { JobFiltersBar } from "./components/job-filters-bar";
@@ -104,13 +114,16 @@ export interface JobsScreenProps {
   /** `DIAGNOSTICS_POLL_MS`, read server-side (`page.tsx`) — see this file's
    * own module doc. */
   pollMs: number;
+  /** `LIST_PAGE_SIZE`, read server-side (`page.tsx`). */
+  pageSize: number;
 }
 
-export function JobsScreen({ pollMs }: JobsScreenProps) {
+export function JobsScreen({ pollMs, pageSize }: JobsScreenProps) {
   const [urlState, setUrlState] = useQueryStates(
     {
       state: parseAsStringEnum<JobState>([...JOB_STATES]),
       kind: parseAsString,
+      page: parseAsInteger.withDefault(1),
       detail: parseAsString.withOptions({ history: "replace" }),
       confirm: parseAsString.withOptions({ history: "replace" }),
     },
@@ -120,7 +133,8 @@ export function JobsScreen({ pollMs }: JobsScreenProps) {
   const listInput = {
     state: urlState.state ?? undefined,
     kind: urlState.kind && urlState.kind !== "" ? urlState.kind : undefined,
-    limit: 200,
+    limit: pageSize,
+    offset: (Math.max(1, urlState.page) - 1) * pageSize,
   };
 
   const listQuery = trpc.jobs.list.useQuery(listInput, {
@@ -134,12 +148,15 @@ export function JobsScreen({ pollMs }: JobsScreenProps) {
   });
 
   function clearFilters() {
-    void setUrlState({ state: null, kind: null });
+    void setUrlState({ state: null, kind: null, page: null });
   }
 
   const hasFilters = urlState.state !== null || (urlState.kind ?? "") !== "";
 
   const items: JobListItem[] = listQuery.data?.items ?? [];
+  const page = Math.max(1, urlState.page);
+  const total = listQuery.data?.totalCount ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const detailJob =
     urlState.detail === null ? null : (items.find((j) => j.id === urlState.detail) ?? null);
   const confirmJob =
@@ -171,15 +188,16 @@ export function JobsScreen({ pollMs }: JobsScreenProps) {
 
   return (
     <ScreenStack>
-      <ScreenHeader
+      <PageHeader
         title="Jobs"
-        description={`The background job queue — backlog, retries, and dead jobs with their last error. Refreshes every ${Math.round(pollMs / 1000)}s.`}
+        description="The background queue for every app: backlog, retries and dead jobs with their last error."
+        actions={
+          <LiveChip
+            live={!listQuery.isError}
+            label={`Updating every ${Math.round(pollMs / 1000)} s`}
+          />
+        }
       />
-
-      <InlineBanner variant="neutral">
-        Whole-system backlog, not scoped to one app — the "Job" model has no app boundary to scope
-        by. This is not a filter and not a bug.
-      </InlineBanner>
 
       {requeueMutation.isError && (
         <InlineBanner variant="danger">
@@ -187,32 +205,40 @@ export function JobsScreen({ pollMs }: JobsScreenProps) {
         </InlineBanner>
       )}
 
-      <JobFiltersBar
-        state={urlState.state}
-        kind={urlState.kind ?? ""}
-        hasFilters={hasFilters}
-        onStateChange={(state) => void setUrlState({ state })}
-        onKindChange={(kind) => void setUrlState({ kind: kind === "" ? null : kind })}
-        onClear={clearFilters}
-      />
-
-      {truncatedNotice && (
-        <InlineBanner variant="plain">
-          Showing the most recently updated 1000 jobs — sms-api's `GET /jobs` has no server-side
-          filter for state or kind, so filtering happens over that window. Older matches outside it
-          won't appear.
-        </InlineBanner>
-      )}
-
-      <JobsTable
-        items={items}
-        isLoading={listQuery.isLoading}
-        hasFilters={hasFilters}
-        onClearFilters={clearFilters}
-        onRowClick={openDetail}
-        onRequeueClick={openConfirm}
-        requeuePending={requeueMutation.isPending}
-      />
+      <ListSurface
+        toolbar={
+          <JobFiltersBar
+            state={urlState.state}
+            kind={urlState.kind ?? ""}
+            hasFilters={hasFilters}
+            onStateChange={(state) => void setUrlState({ state, page: null })}
+            onKindChange={(kind) =>
+              void setUrlState({ kind: kind === "" ? null : kind, page: null })
+            }
+            onClear={clearFilters}
+          />
+        }
+        footer={
+          <Pagination
+            label="Jobs pages"
+            position={{ kind: "offset", offset: (page - 1) * pageSize, pageSize, total }}
+            onPrevious={page > 1 ? () => void setUrlState({ page: page - 1 }) : undefined}
+            onNext={page < pageCount ? () => void setUrlState({ page: page + 1 }) : undefined}
+          >
+            {truncatedNotice ? "Within the 1000 most recently updated jobs" : undefined}
+          </Pagination>
+        }
+      >
+        <JobsTable
+          items={items}
+          isLoading={listQuery.isLoading}
+          hasFilters={hasFilters}
+          onClearFilters={clearFilters}
+          onRowClick={openDetail}
+          onRequeueClick={openConfirm}
+          requeuePending={requeueMutation.isPending}
+        />
+      </ListSurface>
 
       <QuickDetailDrawer
         open={detailJob !== null}

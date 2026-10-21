@@ -19,10 +19,13 @@ import { predicateSummary } from "../route-domain";
 export function RouteTable({
   routes,
   isLoading,
+  providerNames,
   onRowClick,
 }: {
   routes: RouteListItem[] | undefined;
   isLoading: boolean;
+  /** Provider display name by id; a route whose provider is missing shows its id. */
+  providerNames: ReadonlyMap<string, string>;
   onRowClick: (route: RouteListItem) => void;
 }) {
   return (
@@ -71,9 +74,13 @@ export function RouteTable({
             </TableCell>
             <TableCell>
               {route.enabled ? (
-                <StateChip tone="success">enabled</StateChip>
+                <StateChip tone="success" size="sm">
+                  enabled
+                </StateChip>
               ) : (
-                <StateChip tone="danger">disabled</StateChip>
+                <StateChip tone="danger" size="sm">
+                  disabled
+                </StateChip>
               )}
             </TableCell>
             <TableCell>{route.name}</TableCell>
@@ -81,7 +88,7 @@ export function RouteTable({
               {predicateSummary(route)}
             </TableCell>
             <TableCell hideBelow="lg">
-              <IdDisplay value={route.providerId} />
+              {providerNames.get(route.providerId) ?? <IdDisplay value={route.providerId} />}
             </TableCell>
             <TableCell align="end" hideBelow="md">
               <TimestampDisplay value={route.updatedAt} />

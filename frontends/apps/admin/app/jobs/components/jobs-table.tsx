@@ -64,7 +64,9 @@ export function JobsTable({
           <TableHead hideBelow="md">Run at</TableHead>
           <TableHead hideBelow="lg">Id</TableHead>
           <TableHead align="end">Updated</TableHead>
-          <TableHead align="end">Action</TableHead>
+          <TableHead align="end" hideBelow="sm">
+            Action
+          </TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -109,7 +111,7 @@ export function JobsTable({
             }}
           >
             <TableCell>
-              <JobStatusPill state={job.state} />
+              <JobStatusPill state={job.state} size="sm" />
             </TableCell>
             <TableCell mono className="max-w-[160px] truncate">
               {job.kind}
@@ -138,7 +140,7 @@ export function JobsTable({
             <TableCell align="end">
               <TimestampDisplay value={job.updatedAt} />
             </TableCell>
-            <TableCell align="end">
+            <TableCell align="end" hideBelow="sm">
               <div className="flex items-center justify-end gap-1.5">
                 {job.state === "dead" && (
                   <Button

@@ -26,7 +26,9 @@
 //
 // # Quick vs. more detail (console-redesign.md §3/D14)
 //
-// A row click opens `QuickDetailDrawer` — a narrow, undimmed peek at the
+// A provider card opens `QuickDetailDrawer` (the providers render as
+// cards, `components/provider-card-grid.tsx`, not a table: there are one to
+// four of them, and a card keeps capacity and cost visible on a phone) — a narrow, undimmed peek at the
 // fields already on the list row plus the ones one fetch away (credential
 // wiring, healthy/last-probed). "Edit" upgrades to `MoreDetailDrawer`,
 // which owns a shallow `?panel=<id>` route (survives refresh, linkable)
@@ -59,9 +61,9 @@ import { trpc } from "@vsms/hooks";
 import { parseAsString, useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { ProviderCardGrid } from "./components/provider-card-grid";
 import { ProviderEditDrawer } from "./components/provider-edit-drawer";
 import { ProviderQuickDetail } from "./components/provider-quick-detail";
-import { ProvidersTable } from "./components/providers-table";
 import { ProvidersView } from "./components/providers-view";
 import { type EditFormValues, editSchema } from "./edit-schema";
 
@@ -131,11 +133,11 @@ export function ProvidersScreen() {
   return (
     <ProvidersView
       errorMessage={listQuery.isError ? listQuery.error.message : null}
-      table={
-        <ProvidersTable
+      cards={
+        <ProviderCardGrid
           rows={listQuery.data ?? []}
           isLoading={listQuery.isLoading}
-          onRowClick={setQuickId}
+          onOpen={setQuickId}
         />
       }
       quickDetail={

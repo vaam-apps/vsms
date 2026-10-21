@@ -3,8 +3,8 @@
 
 import { FormField, Input, StaleWriteBanner, Textarea } from "@vaam-apps/ui";
 import type { UseFormReturn } from "react-hook-form";
+import { ErrorBanner } from "@/components/error-banner";
 import type { AppEditValues } from "../app-forms";
-import { ErrorBanner } from "./error-banner";
 
 export function AppEditForm({
   form,

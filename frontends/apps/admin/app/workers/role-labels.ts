@@ -24,3 +24,14 @@ export const ROLE_LABELS: Record<string, string> = {
 export function roleLabel(role: string): string {
   return ROLE_LABELS[role] ?? role;
 }
+
+/** One line on what each role does, for the role cards. A role the backend
+ * adds before this table is updated simply shows no line. */
+export const ROLE_PURPOSES: Record<string, string> = {
+  dispatch: "Routes queued messages and submits them to providers.",
+  drain: "Retries event-outbox rows whose subscriber failed.",
+  scheduler: "Enqueues recurring jobs on their cadence.",
+  hooks: "Delivers signed webhooks to app endpoints.",
+  jobs: "Runs queued background jobs.",
+  smpp: "Holds SMPP binds to operators.",
+};

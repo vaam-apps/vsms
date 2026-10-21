@@ -21,7 +21,7 @@ export default function JobsPage() {
   // underlying rAF-gated reveal.
   return (
     <Suspense fallback={<RouteSkeleton />}>
-      <JobsScreen pollMs={env.DIAGNOSTICS_POLL_MS} />
+      <JobsScreen pollMs={env.DIAGNOSTICS_POLL_MS} pageSize={env.LIST_PAGE_SIZE} />
     </Suspense>
   );
 }

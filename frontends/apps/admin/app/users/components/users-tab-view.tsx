@@ -2,10 +2,12 @@
 // table. The provision dialog and detail drawer are rendered by the smart
 // `UsersTab` as `children`, since each owns its own mutation state.
 
-import { Button, Code, InlineBanner } from "@vaam-apps/ui";
+import { Button } from "@vaam-apps/ui";
 import type { ReactNode } from "react";
+import { ErrorBanner } from "@/components/error-banner";
+import { ListSurface } from "@/components/list-surface";
+import { ListToolbarRow } from "@/components/list-toolbar-row";
 import type { UserListItem } from "../types";
-import { ErrorBanner } from "./error-banner";
 import { UsersTable } from "./users-table";
 
 export function UsersTabView({
@@ -25,20 +27,22 @@ export function UsersTabView({
 }) {
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <InlineBanner variant="neutral">
-          Provisioning and editing both require your role to be <Code>owner</Code> or{" "}
-          <Code>admin</Code>. The backend checks that role directly; no <Code>user:manage</Code>{" "}
-          permission is enforced here. Missing the role gets a real error, not a silent no-op.
-        </InlineBanner>
-        <Button type="button" onClick={onProvisionClick}>
-          Provision user
-        </Button>
-      </div>
-
       {errorMessage !== null && <ErrorBanner>Could not read users: {errorMessage}</ErrorBanner>}
 
-      <UsersTable users={users} isLoading={isLoading} onRowClick={onRowClick} />
+      <ListSurface
+        toolbar={
+          <ListToolbarRow
+            note="Provisioning and editing users need the owner or admin role."
+            action={
+              <Button type="button" onClick={onProvisionClick}>
+                Provision user
+              </Button>
+            }
+          />
+        }
+      >
+        <UsersTable users={users} isLoading={isLoading} onRowClick={onRowClick} />
+      </ListSurface>
 
       {children}
     </div>

@@ -274,11 +274,11 @@ bar's fill is the only thing separating it from what scrolls under it.
   the same as `Card` and `StatTile` in both themes, so over those its
   edge disappears (same colour, no shadow). If your screen scrolls cards
   or stat tiles under the bar, use `"vibrant"`.
-- `"vibrant"` — a `primary` bar, i.e. the inverse of the page (near-white
-  on dark, near-black on light), with the current page cut out in
-  `surface-2`. Loud, and its edge holds over every surface — though not
-  over a filled `primary` control (a primary `Button`), which is its own
-  colour.
+- `"vibrant"` — M3's `primary-container` bar with `on-primary-container`
+  icons, the current page cut out in `surface-2`. Loud, and its edge holds
+  over every surface — though in dark it is a near neighbour of a filled
+  `primary` control (a primary `Button`), which Expressive draws within a
+  few tones of it.
 
 The bottom toolbar hides itself while any `Select` is open below 640px
 (a sheet, a full-screen search view, or a `SelectDropdown`), so the popup

@@ -28,8 +28,8 @@
 // `dispatch`, that would be a bug bypassing the lease mechanism entirely,
 // and this screen would still show exactly one holder — the mismatch
 // between "one holder here" and "double-submission observed elsewhere"
-// would be the diagnostic signal, not two rows on this screen. The banner
-// below says this plainly rather than leaving an operator to assume the
+// would be the diagnostic signal, not two rows on this screen. The caption
+// under the role cards says this plainly rather than leaving an operator to assume the
 // screen would catch that shape of bug directly.
 //
 // Only the four singleton roles (`dispatch`/`drain`/`scheduler`/`smpp`)
@@ -37,9 +37,13 @@
 // `pg_try_advisory_lock` at all. Both are still shown, clearly marked, so
 // their permanent `held: false` doesn't read as a problem.
 //
+// The six roles render as cards (`components/worker-role-grid.tsx`), not a
+// table: a fixed set of six whose node and lease age should be visible at
+// every width, which the old table's hidden-below-md columns were not.
+//
 // R6 (AGENTS.md): this file is the smart component. Markup and classes
-// moved verbatim into `components/workers-table.tsx` (`StatusIndicator`
-// included) and `components/worker-detail-fields.tsx`
+// live in `components/worker-role-grid.tsx`, `components/worker-status.tsx`
+// (`StatusIndicator`) and `components/worker-detail-fields.tsx`
 // (`WorkerDetailField` included); `ROLE_LABELS` moved into
 // `role-labels.ts`, a pure module with its own test (`role-labels.test.ts`)
 // per R6's own rule for extracted pure modules. `REFETCH_INTERVAL_MS` is
@@ -56,15 +60,19 @@
 // screen now needs its own `Suspense` boundary in `page.tsx` (previously
 // none, since nothing here read `useSearchParams()`).
 
-import { InlineBanner, QuickDetailDrawer, ScreenHeader, ScreenStack } from "@vaam-apps/ui";
+import { InlineBanner, QuickDetailDrawer, ScreenStack } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
 import { parseAsString, useQueryState } from "nuqs";
+import { Caption } from "@/components/caption";
+import { LiveChip } from "@/components/live-chip";
+import { PageHeader } from "@/components/page-header";
 import {
   WorkerDetailFields,
   workerDetailDescription,
   workerDetailTitle,
 } from "./components/worker-detail-fields";
-import { type WorkerLockInfo, WorkersTable } from "./components/workers-table";
+import { WorkerRoleGrid } from "./components/worker-role-grid";
+import type { WorkerLockInfo } from "./components/worker-status";
 
 export interface WorkersScreenProps {
   /** `DIAGNOSTICS_POLL_MS`, read server-side (`page.tsx`) — see this file's
@@ -95,16 +103,16 @@ export function WorkersScreen({ pollMs }: WorkersScreenProps) {
 
   return (
     <ScreenStack>
-      <ScreenHeader
+      <PageHeader
         title="Workers"
-        description={`Which node holds which singleton-role advisory lock. Refreshes every ${Math.round(pollMs / 1000)}s.`}
+        description="Which node runs each worker role. Dispatch, drain, scheduler and SMPP run on one node at a time, under a lease."
+        actions={
+          <LiveChip
+            live={!locksQuery.isError}
+            label={`Updating every ${Math.round(pollMs / 1000)} s`}
+          />
+        }
       />
-
-      <InlineBanner variant="neutral">
-        A two-key advisory lock can never be held by two sessions at once — Postgres itself prevents
-        that. This screen can show "unheld when it should be held," never "two holders." See
-        backends/crates/sms-api/src/worker_locks.rs for what was verified live.
-      </InlineBanner>
 
       {locksQuery.isError && (
         <InlineBanner variant="danger">
@@ -112,7 +120,12 @@ export function WorkersScreen({ pollMs }: WorkersScreenProps) {
         </InlineBanner>
       )}
 
-      <WorkersTable locks={locks} isLoading={locksQuery.isLoading} onRowClick={openDetail} />
+      <WorkerRoleGrid locks={locks} isLoading={locksQuery.isLoading} onOpen={openDetail} />
+
+      <Caption>
+        Postgres lets exactly one session hold a role's lease, so this screen can show a role unheld
+        but never held twice.
+      </Caption>
 
       <QuickDetailDrawer
         open={detailLock !== null}

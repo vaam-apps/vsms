@@ -14,8 +14,8 @@ import {
   Input,
 } from "@vaam-apps/ui";
 import type { UseFormReturn } from "react-hook-form";
+import { ErrorBanner } from "@/components/error-banner";
 import type { AppCreateValues } from "../app-forms";
-import { ErrorBanner } from "./error-banner";
 
 export function CreateAppDialogView({
   open,

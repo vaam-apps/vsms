@@ -1,64 +1,67 @@
-"use client";
-
-// A dependency-free bar sparkline for the Dashboard screen (#49). No chart
-// library exists anywhere in this workspace (`frontends/apps/admin/package.json`,
-// `frontends/packages/ui/package.json` — checked before writing this rather than
-// added one for a single screen's two small trends), so this is plain
-// divs sized by percentage height, themed with the same CSS variables
-// every other screen already uses (`frontends/packages/ui/src/styles/theme.css`).
-//
-// Deliberately not in `@vaam-apps/ui`: this has exactly one consumer today
-// (`dashboard-screen.tsx`), and promoting it to the shared package before
-// a second screen needs it would be speculative reuse — the opposite of
-// this repo's own "composition over re-implementation" rule, which is
-// about reusing what already exists, not about pre-building for a future
-// that may not arrive the same shape.
+// Dumb component (R6): six hourly bars, oldest first, with the hour under
+// each and the newest hour drawn in the primary colour so the reader's eye
+// lands on "now". `primary` is chrome in this design system, not a status
+// hue, so a bar chart in it does not read as a verdict. A bar with no data
+// (`value: null`) is a short hollow stub: "no data" is not "zero".
 
 import { cn } from "@vaam-apps/ui";
 
 export interface HourlyBar {
-  /** 0–1. A bar at `null` renders hollow/muted — "no data", not "zero". */
   value: number | null;
-  /** Shown as the bar's `title` (native tooltip) and under narrow bars on
-   * hover-less devices via `aria-label`. */
+  /** The hour, shown under the bar, e.g. "14". */
+  hour: string;
+  /** The bar's accessible name and native tooltip. */
   label: string;
 }
 
-interface HourlyBarsProps {
+export interface HourlyBarsProps {
   bars: HourlyBar[];
-  colorClassName: string;
-  className?: string;
+  /** A fixed top of the scale (`1` for ratios), or the tallest bar. */
+  ceiling?: number | undefined;
 }
 
-/** Six short bars, oldest first, sized against the tallest non-null value
- * in the set (or against `1` when every bar is already a 0–1 ratio and the
- * caller wants a fixed ceiling — pass `fixedCeiling` in that case). */
-export function HourlyBars({ bars, colorClassName, className }: HourlyBarsProps) {
-  const max = Math.max(0.0001, ...bars.map((bar) => bar.value ?? 0));
-
+export function HourlyBars({ bars, ceiling }: HourlyBarsProps) {
+  const max = ceiling ?? Math.max(0.0001, ...bars.map((bar) => bar.value ?? 0));
   return (
-    <div className={cn("flex h-16 items-end gap-1.5", className)}>
-      {bars.map((bar, i) => {
-        const pct = bar.value == null ? 0 : Math.max(4, Math.round((bar.value / max) * 100));
-        return (
-          <div
+    <div className="flex flex-col gap-2">
+      <div className="flex h-36 items-end gap-2">
+        {bars.map((bar, i) => {
+          const last = i === bars.length - 1;
+          const pct = bar.value == null ? 0 : Math.max(3, Math.round((bar.value / max) * 100));
+          return (
+            <div
+              // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length, oldest-first, never reordered
+              key={i}
+              role="img"
+              className="flex h-full flex-1 items-end"
+              title={bar.label}
+              aria-label={bar.label}
+            >
+              <div
+                className={cn(
+                  "w-full rounded-t-[10px] rounded-b-[4px] transition-[height] duration-[var(--dur-spatial-default)]",
+                  bar.value == null ? "h-1.5 bg-surface-3" : last ? "bg-primary" : "bg-primary/35",
+                )}
+                style={bar.value == null ? undefined : { height: `${pct}%` }}
+              />
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex gap-2" aria-hidden="true">
+        {bars.map((bar, i) => (
+          <span
             // biome-ignore lint/suspicious/noArrayIndexKey: fixed-length, oldest-first, never reordered
             key={i}
-            role="img"
-            className="flex h-full flex-1 items-end"
-            title={bar.label}
-            aria-label={bar.label}
+            className={cn(
+              "flex-1 text-center font-mono text-label-small",
+              i === bars.length - 1 ? "text-foreground" : "text-muted-foreground",
+            )}
           >
-            <div
-              className={cn(
-                "w-full rounded-[2px] transition-[height]",
-                bar.value == null ? "bg-surface-3" : colorClassName,
-              )}
-              style={{ height: bar.value == null ? "6%" : `${pct}%` }}
-            />
-          </div>
-        );
-      })}
+            {bar.hour}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

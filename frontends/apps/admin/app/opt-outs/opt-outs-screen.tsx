@@ -41,7 +41,7 @@
 // R6 (AGENTS.md): this file is the smart component. Markup and classes
 // moved verbatim into `components/opt-outs-search-panel.tsx`,
 // `components/opt-outs-table.tsx`, `components/opt-out-detail-fields.tsx`,
-// `components/opt-outs-toolbar.tsx`, `components/record-opt-out-
+// `components/record-opt-out-
 // dialog.tsx` and `components/remove-confirm-dialog.tsx`.
 //
 // Two real fixes, not just a move:
@@ -78,22 +78,17 @@
 // single-value presentational state."
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import {
-  Button,
-  InlineBanner,
-  QuickDetailDrawer,
-  ScreenHeader,
-  ScreenStack,
-  toast,
-} from "@vaam-apps/ui";
+import { Button, InlineBanner, QuickDetailDrawer, ScreenStack, toast } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
 import { parseAsBoolean, parseAsString, useQueryStates } from "nuqs";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
+import { ListSurface } from "@/components/list-surface";
+import { PageHeader } from "@/components/page-header";
+import { SectionHeader } from "@/components/section-header";
 import { OptOutDetailFields } from "./components/opt-out-detail-fields";
 import { OptOutsSearchPanel } from "./components/opt-outs-search-panel";
 import { type OptOutListItem, OptOutsTable } from "./components/opt-outs-table";
-import { OptOutsToolbar } from "./components/opt-outs-toolbar";
 import { RecordOptOutDialog } from "./components/record-opt-out-dialog";
 import { RemoveConfirmDialog } from "./components/remove-confirm-dialog";
 import {
@@ -195,9 +190,14 @@ export function OptOutsScreen() {
 
   return (
     <ScreenStack>
-      <ScreenHeader
+      <PageHeader
         title="Opt-outs"
-        description="Search by MSISDN, record a new opt-out, or browse recent activity."
+        description="Numbers that must not receive marketing or notification traffic. OTP and transactional messages are exempt."
+        actions={
+          <Button type="button" onClick={openRecord}>
+            Record opt-out
+          </Button>
+        }
       />
 
       <OptOutsSearchPanel
@@ -212,7 +212,7 @@ export function OptOutsScreen() {
         result={searchQuery.data}
       />
 
-      <OptOutsToolbar onRecordClick={openRecord} />
+      <SectionHeader title="Recent" />
 
       {listQuery.isError && (
         <InlineBanner variant="danger">
@@ -220,12 +220,14 @@ export function OptOutsScreen() {
         </InlineBanner>
       )}
 
-      <OptOutsTable
-        items={items}
-        isLoading={listQuery.isLoading}
-        onRowClick={openDetail}
-        onRemoveClick={(row) => openRemoveConfirm(row.id)}
-      />
+      <ListSurface>
+        <OptOutsTable
+          items={items}
+          isLoading={listQuery.isLoading}
+          onRowClick={openDetail}
+          onRemoveClick={(row) => openRemoveConfirm(row.id)}
+        />
+      </ListSurface>
 
       <RecordOptOutDialog
         open={urlState.record}

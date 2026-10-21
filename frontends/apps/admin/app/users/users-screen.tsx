@@ -85,11 +85,12 @@
 // enforced permission vocabulary.
 
 import { zodResolver } from "@hookform/resolvers/zod";
-import { InlineConfirm, ScreenHeader, ScreenStack, toast } from "@vaam-apps/ui";
+import { InlineConfirm, ScreenStack, toast } from "@vaam-apps/ui";
 import { trpc } from "@vsms/hooks";
 import { parseAsStringEnum, useQueryState } from "nuqs";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
+import { PageHeader } from "@/components/page-header";
 import { CreateRoleDialogView } from "./components/create-role-dialog-view";
 import {
   type ProvisionedUser,
@@ -540,7 +541,7 @@ export function UsersScreen() {
 
   return (
     <ScreenStack>
-      <ScreenHeader
+      <PageHeader
         title="Users & roles"
         description="Console accounts and the permission sets their roles carry."
       />

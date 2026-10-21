@@ -65,10 +65,11 @@
 
 import { zodResolver } from "@hookform/resolvers/zod";
 import {
+  Button,
   IdDisplay,
+  InlineBanner,
   MoreDetailDrawer,
   QuickDetailDrawer,
-  ScreenHeader,
   ScreenStack,
   toast,
 } from "@vaam-apps/ui";
@@ -76,6 +77,9 @@ import { trpc } from "@vsms/hooks";
 import { parseAsString, useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 import { useForm } from "react-hook-form";
+import { Caption } from "@/components/caption";
+import { ListSurface } from "@/components/list-surface";
+import { PageHeader } from "@/components/page-header";
 import { CreateSenderDialog } from "./components/create-sender-dialog";
 import { RegisterProviderConfirm } from "./components/register-provider-confirm";
 import { RegistrationReviewFields } from "./components/registration-review-fields";
@@ -86,7 +90,6 @@ import { SenderMoreDetailBody } from "./components/sender-more-detail-body";
 import { SenderQuickDetailBody } from "./components/sender-quick-detail-body";
 import { SenderQuickDetailFooter } from "./components/sender-quick-detail-footer";
 import { SenderTable } from "./components/sender-table";
-import { SenderToolbar } from "./components/sender-toolbar";
 import {
   asRegistrationStatus,
   asSenderIdKind,
@@ -304,24 +307,35 @@ export function SenderIdsScreen() {
 
   return (
     <ScreenStack>
-      <ScreenHeader
+      <PageHeader
         title="Sender IDs"
-        description={
-          'Brand identifiers and their per-provider registration status — a sender ID isn\'t "approved" or "rejected" globally, only against one provider at a time.'
+        description="Brand names you send as, and their registration with each provider. A sender ID is approved or rejected per provider, never globally."
+        actions={
+          <Button type="button" onClick={() => setCreateOpen(true)}>
+            New sender ID
+          </Button>
         }
       />
 
-      <SenderToolbar
-        errorMessage={listQuery.error?.message ?? registrationsQuery.error?.message}
-        onNewSenderId={() => setCreateOpen(true)}
-      />
+      {(listQuery.error ?? registrationsQuery.error) != null && (
+        <InlineBanner variant="danger">
+          Could not read sender IDs: {listQuery.error?.message ?? registrationsQuery.error?.message}
+        </InlineBanner>
+      )}
 
-      <SenderTable
-        senderIds={listQuery.data}
-        isLoading={listQuery.isLoading}
-        summaryFor={summaryFor}
-        onRowClick={(s) => setQuickId(s.id)}
-      />
+      <ListSurface>
+        <SenderTable
+          senderIds={listQuery.data}
+          isLoading={listQuery.isLoading}
+          summaryFor={summaryFor}
+          onRowClick={(s) => setQuickId(s.id)}
+        />
+      </ListSurface>
+
+      <Caption>
+        Changes are saved as you and need the sender:manage permission, which owner, admin and
+        operator hold.
+      </Caption>
 
       {/* Quick detail — a peek at the sender id plus its registrations,
           with a per-registration Review shortcut. */}

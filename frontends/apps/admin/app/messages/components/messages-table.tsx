@@ -16,6 +16,7 @@ import {
   TableRow,
   TimestampDisplay,
 } from "@vaam-apps/ui";
+import { ChevronRight } from "lucide-react";
 import { MsisdnDisplay } from "@/components/msisdn-display";
 import { MESSAGE_STATUS_META, StatusPill } from "@/components/status";
 import type { MessageListItem } from "../apply-event";
@@ -25,12 +26,21 @@ const COLUMN_COUNT = 7;
 
 export interface MessagesTableProps {
   rows: MessageListItem[];
+  /** Opens a message's detail page. The whole row is the target; the id
+   * cell keeps its own copy button, which this does not swallow. */
+  onOpen: (id: string) => void;
   isLoading: boolean;
   hasFilters: boolean;
   onClearFilters: () => void;
 }
 
-export function MessagesTable({ rows, isLoading, hasFilters, onClearFilters }: MessagesTableProps) {
+export function MessagesTable({
+  rows,
+  onOpen,
+  isLoading,
+  hasFilters,
+  onClearFilters,
+}: MessagesTableProps) {
   return (
     <Table>
       <TableHeader>
@@ -40,8 +50,8 @@ export function MessagesTable({ rows, isLoading, hasFilters, onClearFilters }: M
           <TableHead hideBelow="md">Client ref</TableHead>
           <TableHead hideBelow="sm">Sender</TableHead>
           <TableHead hideBelow="lg">Encoding</TableHead>
-          <TableHead>Id</TableHead>
-          <TableHead align="end">Time</TableHead>
+          <TableHead hideBelow="sm">Id</TableHead>
+          <TableHead align="end">Sent</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -73,9 +83,15 @@ export function MessagesTable({ rows, isLoading, hasFilters, onClearFilters }: M
             key={row.id}
             washTrigger={row.version}
             washHue={MESSAGE_STATUS_META[row.state].hue}
+            className="cursor-pointer"
+            onClick={(event) => {
+              // A click on the copy button or the link already did its job.
+              if ((event.target as HTMLElement).closest("button, a") !== null) return;
+              onOpen(row.id);
+            }}
           >
             <TableCell>
-              <StatusPill state={row.state} />
+              <StatusPill state={row.state} size="sm" />
             </TableCell>
             <TableCell>
               <MsisdnDisplay value={row.msisdn} operator={row.operator} />
@@ -84,7 +100,7 @@ export function MessagesTable({ rows, isLoading, hasFilters, onClearFilters }: M
                * this compact line keeps that same information reachable
                * at a glance instead of losing it. Hidden again once those
                * columns return at `md`, so nothing renders twice. */}
-              <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 font-mono text-[11px] text-subtle-foreground md:hidden">
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 font-mono text-label-small text-muted-foreground md:hidden">
                 <span>{row.senderIdValue}</span>
                 <span aria-hidden="true">·</span>
                 <span>
@@ -107,25 +123,22 @@ export function MessagesTable({ rows, isLoading, hasFilters, onClearFilters }: M
             <TableCell hideBelow="lg" mono>
               {row.encoding.toUpperCase()} · {row.segments}
             </TableCell>
-            <TableCell>
-              <div className="flex items-center gap-2">
-                <IdDisplay value={row.id} />
-                {/* #50: the detail route. A plain `<a>`, matching the rest
-                 * of this console's internal navigation — not `next/
-                 * link`'s `Link`. Separate from `IdDisplay` itself rather
-                 * than wrapping it: `IdDisplay`'s own copy button doesn't
-                 * stop propagation, so wrapping it in an `<a>` would fire
-                 * a navigation on every copy click. */}
-                <a
-                  href={`/messages/${row.id}`}
-                  className="text-caption text-muted-foreground underline decoration-edge-strong underline-offset-2 hover:decoration-foreground"
-                >
-                  View
-                </a>
-              </div>
+            <TableCell hideBelow="sm">
+              <IdDisplay value={row.id} />
             </TableCell>
             <TableCell align="end">
-              <TimestampDisplay value={row.createdAt} />
+              <span className="inline-flex items-center gap-1">
+                <TimestampDisplay value={row.createdAt} />
+                {/* The keyboard and middle-click route to the detail page;
+                 * the row's own click handler is the pointer shortcut. */}
+                <a
+                  href={`/messages/${row.id}`}
+                  aria-label={`Open message ${row.id}`}
+                  className="inline-flex size-8 items-center justify-center rounded-full text-muted-foreground hover:bg-foreground/8 hover:text-foreground focus-visible:outline-2 focus-visible:outline-primary"
+                >
+                  <ChevronRight size={18} aria-hidden="true" />
+                </a>
+              </span>
             </TableCell>
           </LiveRow>
         ))}

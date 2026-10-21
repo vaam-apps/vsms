@@ -307,10 +307,18 @@ interface DetailDrawerProps {
   panel survives a refresh and can be linked to; the component owns the
   weight, never the routing.
 
+Both are M3 sheets: **no outline and no dividers** (regions are
+separated by space), filled `surface-container-low`, at elevation level 1
+(level 2 for the undimmed quick drawer, which has no scrim to set it off).
+From 768px up they are a side sheet with 16px (`corner-large`) on the
+leading edge only. Do not add a `border-*` through `className` to get the
+old look back — a sheet set off by a hairline is the "not M3" this
+replaced.
+
 Below 768px both are a phone bottom sheet with M3's own shape: 28px top
 corners (`rounded-t-sheet`, the `--radius-sheet` token — M3's corner for
-sheets and dialogs only; do not put it on a card) and M3's 32×4 drag handle, with
-22px above it and 22px below. That handle used to be a 5px bar 8px from
+sheets and dialogs only; do not put it on a card) and M3's 32×4 drag handle
+(`on-surface-variant` at 40%), with 22px above it and 22px below. That handle used to be a 5px bar 8px from
 the top, so the title row now sits about 19px lower than it did — worth
 knowing if a screenshot test pins it. Below 640px a `Select` inside one
 opens as a second sheet over it with the same corner and handle — or, if
@@ -374,6 +382,8 @@ click or a tap cannot reach its buttons (`primitives-layout.md`,
 ### The generic composition
 
 For a one-off drawer with no quick-vs-more distinction to encode.
+`DrawerContent` is the same M3 side sheet as the two above: right edge,
+`surface-container-low`, no border, 16px corners on the leading edge.
 `DrawerTrigger` and `DrawerClose` are Radix-shaped here, not Headless
 UI-shaped: they take **`asChild`**, not `as`.
 

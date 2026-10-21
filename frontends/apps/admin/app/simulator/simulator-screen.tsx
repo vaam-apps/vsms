@@ -64,6 +64,10 @@ import { SIMULATE_FORM_DEFAULTS, type SimulateFormValues } from "./simulate-form
 
 export function SimulatorScreen() {
   const form = useForm<SimulateFormValues>({ defaultValues: SIMULATE_FORM_DEFAULTS });
+  // The App picker's options. Typing a cuid by hand, copied from /apps, was
+  // the only way to fill this field before; a role that cannot list apps
+  // gets an empty list and the free-text field back.
+  const appsQuery = trpc.apps.list.useQuery();
   const values = useWatch({ control: form.control, defaultValue: SIMULATE_FORM_DEFAULTS });
 
   const msisdn = values.msisdn ?? SIMULATE_FORM_DEFAULTS.msisdn;
@@ -110,6 +114,7 @@ export function SimulatorScreen() {
           isFetching={query.isFetching}
           hasRun={hasRun}
           canRun={appId !== ""}
+          apps={appsQuery.data ?? []}
         />
       }
       errorMessage={query.isError ? `Simulation failed: ${query.error.message}` : null}

@@ -30,14 +30,17 @@ import {
   Webhook,
 } from "lucide-react";
 
-/** Flat, ungrouped, always first (§4). */
-export const NAV_TOP: NavItem = { label: "Dashboard", href: "/dashboard", icon: LayoutDashboard };
+/** Flat, ungrouped, always first (§4). The dashboard is the console's
+ * landing page: an operator opens the console to see whether traffic is
+ * flowing before they do anything else. It lived at `/dashboard` with the
+ * composer at `/`; `/dashboard` still answers, with a redirect to `/`. */
+export const NAV_TOP: NavItem = { label: "Dashboard", href: "/", icon: LayoutDashboard };
 
 export const NAV_GROUPS: NavGroup[] = [
   {
     label: "Messaging",
     items: [
-      { label: "Composer", href: "/", icon: SquarePen },
+      { label: "Composer", href: "/composer", icon: SquarePen },
       { label: "Messages", href: "/messages", icon: MessageSquare },
       { label: "Simulator", href: "/simulator", icon: FlaskConical },
     ],
@@ -75,3 +78,27 @@ export const NAV_GROUPS: NavGroup[] = [
  * out") is not data, it depends on the signed-in session, so it is built
  * directly in `console-shell.tsx` instead of listed here. */
 export const NAV_FOOTER: NavItem[] = [];
+
+/** Where a path sits in the navigation: its group's label (absent for the
+ * top item) and its own label. The longest matching `href` wins, so
+ * `/messages/abc` is "Messages" and `/` matches only itself. `undefined`
+ * for a path the navigation does not list. Pure, for the top app bar. */
+export function locate(pathname: string): { section?: string; page: string } | undefined {
+  const matches = (href: string) =>
+    href === "/" ? pathname === "/" : pathname === href || pathname.startsWith(`${href}/`);
+  let best: { section?: string; page: string; length: number } | undefined;
+  const consider = (item: NavItem, section?: string) => {
+    if (!matches(item.href)) return;
+    if (best !== undefined && best.length >= item.href.length) return;
+    best =
+      section === undefined
+        ? { page: item.label, length: item.href.length }
+        : { section, page: item.label, length: item.href.length };
+  };
+  consider(NAV_TOP);
+  for (const group of NAV_GROUPS) for (const item of group.items) consider(item, group.label);
+  for (const item of NAV_FOOTER) consider(item);
+  if (best === undefined) return undefined;
+  const { length: _length, ...rest } = best;
+  return rest;
+}

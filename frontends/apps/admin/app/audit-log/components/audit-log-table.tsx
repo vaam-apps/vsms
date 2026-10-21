@@ -13,6 +13,7 @@ import {
   TableRow,
   TimestampDisplay,
 } from "@vaam-apps/ui";
+import { actorLabel, primaryKeyLabel } from "../audit-log-format";
 import type { AuditLogEntry } from "../types";
 
 export function AuditLogTable({
@@ -69,10 +70,10 @@ export function AuditLogTable({
               <TableCell mono>{entry.model}</TableCell>
               <TableCell mono>{entry.operation}</TableCell>
               <TableCell mono hideBelow="md" className="max-w-[220px] truncate text-caption">
-                {entry.primaryKey}
+                {primaryKeyLabel(entry.primaryKey)}
               </TableCell>
               <TableCell mono hideBelow="sm" className="max-w-[260px] truncate text-caption">
-                {entry.actor}
+                {actorLabel(entry.actor)}
               </TableCell>
             </TableRow>
           ))}

@@ -27,7 +27,40 @@ uncoloured text. The real names:
   … `bg-surface-3`
 - edges: `border-edge-subtle`, `border-edge`, `border-edge-strong`
 - text: `text-foreground`, `text-muted-foreground`, `text-subtle-foreground`
+- M3 roles with utilities: `bg-primary` / `text-primary-content`
+  (daisyUI's), `bg-primary-container`, `text-on-primary-container`,
+  `bg-surface-container-low`, `bg-surface-container-highest`,
+  `text-on-surface`, `text-on-surface-variant`, `bg-inverse-surface`,
+  `border-outline-variant`
 - other: `bg-scrim`, `ring-ring`
+
+Every other M3 role exists only as a custom property —
+`bg-[var(--md-sys-color-tertiary-container)]` works, `bg-tertiary-container`
+does not.
+
+## I upgraded and everything is indigo and rounder
+
+That is the Material 3 Expressive release: colour from a seed, buttons and
+nav indicators as full pills, M3's corner and type scales. `text-body` is
+14px and `text-prose` 16px now (M3's `body-medium` and `body-large`), so a
+screen that budgeted for 13px rows may need a look. Nothing was renamed —
+the same components and class names, re-skinned.
+
+The polish release after it made four more defaults bigger or rounder:
+fields rest as stadiums (and round in on focus), `Switch` is M3's 52×32,
+drawers and sheets lose their borders, and `StatusPill`/`StateChip`
+default to `size="md"`. In a dense table, pass `size="sm"` to the pills.
+
+## A button or a field doesn't animate between states
+
+Almost always a radius animating from `rounded-full`. That class is
+`calc(infinity * 1px)`, and a transition between infinity and a finite
+radius holds round, overshoots to square and snaps — it never reads as a
+morph. Rest at a finite length instead (half the height, or `50%` on a
+square box); the library's own controls do. The second cause is a
+`transition-property` list that does not name the property: two
+`transition-*` utilities on one element clobber each other, so write one
+`[transition-property:…]` list.
 
 ## My class didn't apply to a component
 
@@ -42,10 +75,13 @@ Two causes, both real:
 
 ## Text over an `InstrumentPanel` or a glowing card is hard to read
 
-`text-subtle-foreground` is banned on the aurora mesh — measured, it falls
-to 4.41:1 in dark and 4.45:1 in light, below the 4.5:1 AA bar, while
-`text-muted-foreground` holds at 5.29:1 and above. `InstrumentPanel`
-already steps its own caption up; do not push it back down.
+`text-subtle-foreground` is banned on an `InstrumentPanel` — on the
+panel's clover shape it measures 4.05:1 in dark and 4.28:1 in light, below
+the 4.5:1 AA bar, while `text-muted-foreground` holds at 5.95:1 and
+4.71:1. On the bare container beside it subtle passes, which is why it
+looks fine until a caption runs into the corner. `InstrumentPanel` already
+steps its own caption up; do not push it back down. The same ban applies
+to the `.aurora-mesh` class, if you apply it by hand.
 
 ## My content sits under the nav rail
 

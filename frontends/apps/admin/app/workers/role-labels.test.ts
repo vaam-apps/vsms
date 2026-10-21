@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ROLE_LABELS, roleLabel } from "./role-labels";
+import { ROLE_LABELS, ROLE_PURPOSES, roleLabel } from "./role-labels";
 
 describe("ROLE_LABELS", () => {
   it("covers every §7.1 role", () => {
@@ -19,5 +19,11 @@ describe("roleLabel", () => {
     // A seventh role landing on the backend before this table is updated
     // must still render something readable, not throw or disappear.
     expect(roleLabel("some_future_role")).toBe("some_future_role");
+  });
+});
+
+describe("ROLE_PURPOSES", () => {
+  it("describes every role ROLE_LABELS names", () => {
+    expect(Object.keys(ROLE_PURPOSES).sort()).toEqual(Object.keys(ROLE_LABELS).sort());
   });
 });
