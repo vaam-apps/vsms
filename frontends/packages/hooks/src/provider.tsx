@@ -20,6 +20,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { httpBatchStreamLink } from "@trpc/client";
 import { type ReactNode, useState } from "react";
 import superjson from "superjson";
+import { shouldRetryQuery } from "./retry";
 import { trpc } from "./trpc";
 
 export interface TrpcProviderProps {
@@ -39,7 +40,7 @@ export function TrpcProvider({ children, url, staleTimeMs }: TrpcProviderProps) 
     () =>
       new QueryClient({
         defaultOptions: {
-          queries: { staleTime: staleTimeMs },
+          queries: { staleTime: staleTimeMs, retry: shouldRetryQuery },
         },
       }),
   );
