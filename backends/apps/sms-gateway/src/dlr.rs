@@ -10,8 +10,8 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use cratestack::CratestackContext;
 use sms_api::schema::Cratestack;
-use sms_provider::{ProviderError, RawCallback, SmsProvider};
-use tracing::warn;
+use sms_provider::{CallbackDisposition, ProviderError, RawCallback, SmsProvider};
+use tracing::{info, warn};
 
 /// One configured adapter's own DLR-ingestion identity: the [`SmsProvider`]
 /// itself (to call [`SmsProvider::parse_dlr`] against) and the `Provider`
@@ -69,6 +69,39 @@ async fn dlr_handler(
             .collect(),
         body: body.to_vec(),
     };
+
+    // Authenticate before parsing anything. The default for an adapter
+    // whose provider documents no signature scheme (Orange, MTN) is
+    // `Ingest`; an adapter that can check — AWS's SNS-delivered receipts
+    // — refuses a forged body here, before a single byte of it reaches
+    // `parse_dlr` or the database.
+    match entry.provider.authenticate_callback(&raw).await {
+        Ok(CallbackDisposition::Ingest) => {}
+        Ok(CallbackDisposition::Acknowledged { detail }) => {
+            info!(
+                provider_key,
+                detail, "provider callback handled; nothing to ingest"
+            );
+            return StatusCode::OK;
+        }
+        Ok(CallbackDisposition::Refused { reason }) => {
+            // The reason is logged, never returned: telling a forger which
+            // check failed only helps the next attempt.
+            warn!(
+                provider_key,
+                reason, "refusing an unauthenticated provider callback"
+            );
+            return StatusCode::FORBIDDEN;
+        }
+        // The check itself could not run (a signing certificate could not
+        // be fetched). Not proof of forgery, so not a 403: a 503 makes the
+        // provider redeliver, where a 4xx would make it drop a genuine
+        // receipt.
+        Err(error) => {
+            warn!(provider_key, %error, "could not authenticate a provider callback; asking for redelivery");
+            return StatusCode::SERVICE_UNAVAILABLE;
+        }
+    }
 
     match sms_api::dlr::ingest(
         &state.db,
@@ -296,5 +329,155 @@ mod tests {
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);
+    }
+
+    /// The real AWS receiver behind the real route: a body that is not a
+    /// signed SNS envelope for the configured topic is refused with 403 and
+    /// never ingested — before this hook existed, the same body would have
+    /// gone straight to `parse_dlr`.
+    #[tokio::test]
+    async fn an_unsigned_body_on_the_aws_route_is_403() {
+        let app = router(
+            lazy_db(),
+            sms_api::system_context("dlr-test"),
+            vec![DlrProvider {
+                provider: Arc::new(
+                    sms_provider_aws_sms::AwsSmsProvider::receiver(
+                        "arn:aws:sns:eu-west-1:123456789012:vsms-sms-events".to_owned(),
+                    )
+                    .unwrap(),
+                ),
+                provider_row_id: "aws-provider-row-id".to_owned(),
+            }],
+        );
+        let forged = r#"{"Type":"Notification","MessageId":"m","TopicArn":"arn:aws:sns:eu-west-1:999999999999:attacker","Message":"{\"eventType\":\"TEXT_DELIVERED\",\"messageId\":\"x\"}","Timestamp":"t","SignatureVersion":"2","Signature":"AAAA","SigningCertURL":"https://sns.eu-west-1.amazonaws.com/c.pem"}"#;
+        assert_eq!(
+            post_dlr(app.clone(), "/dlr/aws_sms", forged).await,
+            axum::http::StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post_dlr(
+                app,
+                "/dlr/aws_sms",
+                r#"{"eventType":"TEXT_DELIVERED","messageId":"x"}"#
+            )
+            .await,
+            axum::http::StatusCode::FORBIDDEN
+        );
+    }
+
+    /// An adapter whose `authenticate_callback` answers whatever it is told
+    /// to, so the handler's three non-`Ingest` arms are tested on their own,
+    /// independent of any one provider's signature scheme.
+    struct ScriptedAuth {
+        verdict: fn() -> Result<CallbackDisposition, ProviderError>,
+        parsed: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    #[async_trait::async_trait]
+    impl SmsProvider for ScriptedAuth {
+        #[allow(clippy::unnecessary_literal_bound)]
+        fn key(&self) -> &str {
+            "scripted"
+        }
+        fn capabilities(&self) -> sms_provider::Capabilities {
+            sms_provider::Capabilities {
+                dlr: true,
+                alphanumeric_sender: true,
+                ucs2: true,
+                concatenation: true,
+                tps_ceiling: 1.0,
+                cost_per_segment_xaf: rust_decimal::Decimal::ONE,
+            }
+        }
+        async fn submit(
+            &self,
+            _req: &sms_provider::SubmitRequest,
+        ) -> Result<sms_provider::SubmitAck, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+        fn parse_dlr(
+            &self,
+            _raw: &RawCallback,
+        ) -> Result<Vec<sms_provider::DeliveryUpdate>, ProviderError> {
+            self.parsed.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+        async fn authenticate_callback(
+            &self,
+            _raw: &RawCallback,
+        ) -> Result<CallbackDisposition, ProviderError> {
+            (self.verdict)()
+        }
+        async fn health(&self) -> sms_provider::Health {
+            sms_provider::Health::ok()
+        }
+    }
+
+    async fn post_scripted(
+        verdict: fn() -> Result<CallbackDisposition, ProviderError>,
+    ) -> (axum::http::StatusCode, bool) {
+        let parsed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let app = router(
+            lazy_db(),
+            sms_api::system_context("dlr-test"),
+            vec![DlrProvider {
+                provider: Arc::new(ScriptedAuth {
+                    verdict,
+                    parsed: parsed.clone(),
+                }),
+                provider_row_id: "scripted-row".to_owned(),
+            }],
+        );
+        let status = post_dlr(app, "/dlr/scripted", "{}").await;
+        (status, parsed.load(std::sync::atomic::Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn a_refused_callback_is_403_and_never_parsed() {
+        let (status, parsed) = post_scripted(|| {
+            Ok(CallbackDisposition::Refused {
+                reason: "bad signature".to_owned(),
+            })
+        })
+        .await;
+        assert_eq!(status, axum::http::StatusCode::FORBIDDEN);
+        assert!(!parsed, "a refused callback must never reach parse_dlr");
+    }
+
+    #[tokio::test]
+    async fn an_acknowledged_handshake_is_200_and_never_parsed() {
+        let (status, parsed) = post_scripted(|| {
+            Ok(CallbackDisposition::Acknowledged {
+                detail: "subscription confirmed".to_owned(),
+            })
+        })
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(!parsed, "a handshake carries no delivery update to parse");
+    }
+
+    /// A check that could not run must be retryable, not a 4xx: SNS (and
+    /// any provider that redelivers) drops a callback it got a 4xx for,
+    /// which would lose a genuine receipt to a transient certificate-fetch
+    /// failure.
+    #[tokio::test]
+    async fn an_authentication_check_that_could_not_run_is_503() {
+        let (status, parsed) = post_scripted(|| {
+            Err(ProviderError::Unavailable {
+                message: "certificate fetch failed".to_owned(),
+                source: None,
+            })
+        })
+        .await;
+        assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!parsed);
+    }
+
+    #[tokio::test]
+    async fn an_authenticated_callback_reaches_parse_dlr() {
+        let (status, parsed) = post_scripted(|| Ok(CallbackDisposition::Ingest)).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(parsed);
     }
 }

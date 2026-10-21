@@ -6,7 +6,10 @@ mod types;
 
 pub use capabilities::Capabilities;
 pub use error::{BoxDynError, ProviderError, RoutingConsequence};
-pub use types::{DeliveryOutcome, DeliveryUpdate, Health, RawCallback, SubmitAck, SubmitRequest};
+pub use types::{
+    CallbackDisposition, DeliveryOutcome, DeliveryUpdate, Health, RawCallback, SubmitAck,
+    SubmitRequest,
+};
 
 use async_trait::async_trait;
 
@@ -35,6 +38,29 @@ pub trait SmsProvider: Send + Sync + 'static {
     /// [`ProviderError::routing`].
     async fn submit(&self, req: &SubmitRequest) -> Result<SubmitAck, ProviderError>;
 
+    /// Decide whether an inbound callback is authentic before
+    /// [`Self::parse_dlr`] sees it — see [`CallbackDisposition`].
+    ///
+    /// Defaults to [`CallbackDisposition::Ingest`]: Orange and MTN document
+    /// no signature scheme, so for them there is nothing to check here yet
+    /// (the gap `sms_api::dlr`'s own module doc already names). An adapter
+    /// whose provider *does* sign its callbacks must override this, because
+    /// the default trusts every caller of the public `/dlr/{providerKey}`
+    /// route.
+    ///
+    /// # Errors
+    ///
+    /// An `Err` means the check could not be completed (a certificate could
+    /// not be fetched), not that the callback is forged — the caller answers
+    /// with a retryable `503` so the provider redelivers it, rather than a
+    /// `403` that would discard a genuine receipt.
+    async fn authenticate_callback(
+        &self,
+        _raw: &RawCallback,
+    ) -> Result<CallbackDisposition, ProviderError> {
+        Ok(CallbackDisposition::Ingest)
+    }
+
     /// Turn a provider-specific DLR callback into the canonical shape.
     /// `Vec` because some providers batch multiple delivery updates into one
     /// callback.
@@ -57,8 +83,8 @@ pub trait SmsProvider: Send + Sync + 'static {
 #[cfg(test)]
 mod tests {
     use super::{
-        Capabilities, DeliveryOutcome, DeliveryUpdate, Health, ProviderError, RawCallback,
-        SmsProvider, SubmitAck, SubmitRequest,
+        CallbackDisposition, Capabilities, DeliveryOutcome, DeliveryUpdate, Health, ProviderError,
+        RawCallback, SmsProvider, SubmitAck, SubmitRequest,
     };
     use async_trait::async_trait;
     use rust_decimal::Decimal;
@@ -149,6 +175,16 @@ mod tests {
     async fn poll_status_defaults_to_unsupported() {
         let error = provider().poll_status(&[]).await.unwrap_err();
         assert!(matches!(error, ProviderError::Unsupported));
+    }
+
+    #[tokio::test]
+    async fn authenticate_callback_defaults_to_ingest() {
+        let raw = RawCallback {
+            headers: Vec::new(),
+            body: b"anything".to_vec(),
+        };
+        let disposition = provider().authenticate_callback(&raw).await.unwrap();
+        assert_eq!(disposition, CallbackDisposition::Ingest);
     }
 
     #[tokio::test]

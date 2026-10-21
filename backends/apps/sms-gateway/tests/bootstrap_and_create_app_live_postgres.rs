@@ -593,6 +593,86 @@ async fn bootstrap_backend_only_skips_the_console_client_and_owner_user_steps() 
     );
 }
 
+/// `--skip-seed-dispatch` must skip step 2 entirely: no `Provider` row and
+/// no `Route` row may be created by *this* run, and the output must say why.
+///
+/// The database is shared with the sibling tests in this binary (see the
+/// R4 test above), and they all create the `orange_cm` `Provider` by running
+/// `bootstrap` without the flag — so a global "no such row" assertion would
+/// depend on test order. Instead compare the `Provider` and `Route` counts
+/// before and after this one call: a skipped step leaves both unchanged
+/// whether or not a sibling already seeded them.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn bootstrap_with_skip_seed_dispatch_creates_no_provider_or_route() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db_url = sms_test_support::database_url().await;
+    let db = db().await;
+
+    let provider_count_before = db
+        .provider()
+        .find_many()
+        .run(&sys())
+        .await
+        .expect("reading back Provider rows before the run")
+        .len();
+    let route_count_before = db
+        .route()
+        .find_many()
+        .run(&sys())
+        .await
+        .expect("reading back Route rows before the run")
+        .len();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_sms-gateway"))
+        .arg("bootstrap")
+        .arg("--database-url")
+        .arg(&db_url)
+        .arg("--skip-seed-dispatch")
+        .env("SMS_HASH_PEPPER", TEST_HASH_PEPPER)
+        .output()
+        .expect("running `sms-gateway bootstrap --skip-seed-dispatch`");
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "bootstrap --skip-seed-dispatch must succeed (status {:?}); stdout: {stdout}\nstderr: \
+         {stderr}",
+        output.status
+    );
+    assert!(
+        stdout.contains("skipped — run seed-dispatch for the provider you will send through"),
+        "the skipped step must say what to do instead: {stdout}"
+    );
+    assert!(
+        !stdout.contains("created Provider"),
+        "a skipped seed-dispatch step must not report creating anything: {stdout}"
+    );
+
+    let provider_count_after = db
+        .provider()
+        .find_many()
+        .run(&sys())
+        .await
+        .expect("reading back Provider rows after the run")
+        .len();
+    let route_count_after = db
+        .route()
+        .find_many()
+        .run(&sys())
+        .await
+        .expect("reading back Route rows after the run")
+        .len();
+    assert_eq!(
+        provider_count_after, provider_count_before,
+        "--skip-seed-dispatch must not create a Provider row"
+    );
+    assert_eq!(
+        route_count_after, route_count_before,
+        "--skip-seed-dispatch must not create a Route row"
+    );
+}
+
 /// R4 (blocker 1): `--owner-email` with no `--console-redirect-uri` is
 /// a named, refused misconfiguration, not a silent no-op — an operator
 /// who wants an owner account almost certainly also wants the console

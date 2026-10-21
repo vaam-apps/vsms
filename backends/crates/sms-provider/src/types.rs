@@ -53,6 +53,36 @@ pub struct RawCallback {
     pub body: Vec<u8>,
 }
 
+/// What [`crate::SmsProvider::authenticate_callback`] decided about one
+/// inbound callback, before anything parses it as a DLR.
+///
+/// A separate, async step rather than a check inside
+/// [`crate::SmsProvider::parse_dlr`], because `parse_dlr` is synchronous and
+/// pure on purpose and real callback authentication is neither: verifying an
+/// Amazon SNS notification means fetching (and caching) the certificate it
+/// was signed with, and an SNS subscription announces itself with a
+/// `SubscriptionConfirmation` that has to be confirmed by an outbound GET.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallbackDisposition {
+    /// The callback is authentic (or the provider has no scheme to check)
+    /// and carries delivery updates: hand it to `parse_dlr`.
+    Ingest,
+    /// The callback is authentic but carries no delivery update — a
+    /// subscription handshake the adapter has already dealt with. The caller
+    /// acknowledges it (`200`) and parses nothing.
+    Acknowledged {
+        /// What was handled, for the log line.
+        detail: String,
+    },
+    /// The callback failed authentication: a bad signature, an unexpected
+    /// sender, a certificate from a host that is not the provider's. Never
+    /// parsed, never ingested; the caller answers `403`.
+    Refused {
+        /// Why, for the log line. Never echoed to the caller.
+        reason: String,
+    },
+}
+
 /// What actually happened to a message, canonicalised across providers.
 ///
 /// Deliberately not [`crate::SmsProvider`]-specific and not the schema's

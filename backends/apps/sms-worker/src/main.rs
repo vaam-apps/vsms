@@ -192,6 +192,70 @@ struct Cli {
         default_value_t = false
     )]
     mtn_supports_alphanumeric_sender: bool,
+
+    /// AWS region the End User Messaging SMS account sends from (e.g.
+    /// `eu-west-1`). One of the six `--aws-sms-*` flags that must be set
+    /// together or not at all — see [`aws_sms_provider`].
+    #[arg(long, env = "AWS_SMS_REGION")]
+    aws_sms_region: Option<String>,
+
+    /// Access key id of an IAM user allowed `sms-voice:SendTextMessage`.
+    /// Long-lived keys only — see `sms-provider-aws-sms`'s module doc.
+    #[arg(long, env = "AWS_SMS_ACCESS_KEY_ID")]
+    aws_sms_access_key_id: Option<String>,
+
+    /// The secret half of that access key. Never logged.
+    #[arg(long, env = "AWS_SMS_SECRET_ACCESS_KEY", hide_env_values = true)]
+    aws_sms_secret_access_key: Option<String>,
+
+    /// The configuration set whose SNS event destination delivers receipts
+    /// to the gateway's `/dlr/aws_sms`. Required with the other
+    /// `--aws-sms-*` flags: without one AWS reports nothing, and every
+    /// message would end `expired`.
+    #[arg(long, env = "AWS_SMS_CONFIGURATION_SET")]
+    aws_sms_configuration_set: Option<String>,
+
+    /// Message parts per second the account may send — an account quota,
+    /// so never defaulted. Required with the other `--aws-sms-*` flags.
+    #[arg(long, env = "AWS_SMS_TPS_CEILING")]
+    aws_sms_tps_ceiling: Option<f64>,
+
+    /// What one segment costs, converted to XAF (AWS prices in USD per
+    /// destination country). Required with the other `--aws-sms-*` flags.
+    #[arg(long, env = "AWS_SMS_COST_PER_SEGMENT_XAF")]
+    aws_sms_cost_per_segment_xaf: Option<rust_decimal::Decimal>,
+
+    /// A fixed origination identity for every message: a sender ID, phone
+    /// number, pool, or one of their ARNs. When unset, each message's own
+    /// approved sender ID is passed, and has to exist in the AWS account.
+    #[arg(long, env = "AWS_SMS_ORIGINATION_IDENTITY")]
+    aws_sms_origination_identity: Option<String>,
+
+    /// `transactional` (OTPs, notifications) or `promotional`.
+    #[arg(long, env = "AWS_SMS_MESSAGE_TYPE", default_value = "transactional")]
+    aws_sms_message_type: sms_provider_aws_sms::MessageType,
+
+    /// Whether the account sends under alphanumeric sender IDs to this
+    /// deployment's destinations. Informational, like MTN's.
+    #[arg(
+        long,
+        env = "AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER",
+        default_value_t = false
+    )]
+    aws_sms_supports_alphanumeric_sender: bool,
+
+    /// Endpoint override (a VPC endpoint, or a test double). Unset is
+    /// `https://sms-voice.<region>.amazonaws.com/`.
+    #[arg(long, env = "AWS_SMS_ENDPOINT_URL")]
+    aws_sms_endpoint_url: Option<String>,
+
+    /// Seconds AWS keeps trying to deliver one message (5 to 259200).
+    /// Unset, AWS tries for up to 72 hours, so an OTP vsms already expired
+    /// can still arrive days later; match the shortest validity of the
+    /// traffic routed to AWS (15 minutes, `900`, for OTPs). Optional, and
+    /// not part of the all-or-none group.
+    #[arg(long, env = "AWS_SMS_TIME_TO_LIVE_SECONDS")]
+    aws_sms_time_to_live_seconds: Option<u64>,
 }
 
 /// The one Orange provider `dispatch` submits through. `None` when
@@ -280,6 +344,58 @@ fn mtn_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
     }
 }
 
+/// The AWS End User Messaging SMS provider, `"aws_sms"`. Same all-or-none
+/// shape as [`mtn_provider`], over the six values that have no safe
+/// default: region, both halves of the access key, the configuration set
+/// that carries receipts, and the two commercial terms. The origination
+/// identity, message type, alphanumeric flag, endpoint and time to live
+/// each have one.
+fn aws_sms_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
+    match (
+        &cli.aws_sms_region,
+        &cli.aws_sms_access_key_id,
+        &cli.aws_sms_secret_access_key,
+        &cli.aws_sms_configuration_set,
+        cli.aws_sms_tps_ceiling,
+        cli.aws_sms_cost_per_segment_xaf,
+    ) {
+        (
+            Some(region),
+            Some(access_key_id),
+            Some(secret_access_key),
+            Some(configuration_set),
+            Some(tps_ceiling),
+            Some(cost),
+        ) => {
+            let provider =
+                sms_provider_aws_sms::AwsSmsProvider::sender(sms_provider_aws_sms::AwsSmsConfig {
+                    region: region.clone(),
+                    access_key_id: access_key_id.clone(),
+                    secret_access_key: secret_access_key.clone(),
+                    configuration_set: configuration_set.clone(),
+                    origination_identity: cli.aws_sms_origination_identity.clone(),
+                    message_type: cli.aws_sms_message_type,
+                    tps_ceiling,
+                    cost_per_segment_xaf: cost,
+                    supports_alphanumeric_sender: cli.aws_sms_supports_alphanumeric_sender,
+                    endpoint_url: cli.aws_sms_endpoint_url.clone(),
+                    time_to_live: cli
+                        .aws_sms_time_to_live_seconds
+                        .map(std::time::Duration::from_secs),
+                    connect_timeout: std::time::Duration::from_secs(10),
+                    request_timeout: std::time::Duration::from_secs(30),
+                })?;
+            Ok(Some(Arc::new(provider)))
+        }
+        (None, None, None, None, None, None) => Ok(None),
+        _ => bail!(
+            "--aws-sms-region, --aws-sms-access-key-id, --aws-sms-secret-access-key, \
+             --aws-sms-configuration-set, --aws-sms-tps-ceiling and \
+             --aws-sms-cost-per-segment-xaf must all be set together, or none of them"
+        ),
+    }
+}
+
 /// Build the [`sms_worker::ProviderRegistry`] this process holds
 /// credentials for, keyed by each adapter's own [`SmsProvider::key`] — #62:
 /// `dispatch::resolve_provider` looks a routed message's provider up by
@@ -298,6 +414,9 @@ fn build_provider_registry(cli: &Cli) -> Result<HashMap<String, Arc<dyn SmsProvi
     }
     if let Some(mtn) = mtn_provider(cli)? {
         providers.insert(mtn.key().to_owned(), mtn);
+    }
+    if let Some(aws) = aws_sms_provider(cli)? {
+        providers.insert(aws.key().to_owned(), aws);
     }
     Ok(providers)
 }
@@ -389,8 +508,8 @@ async fn main() -> Result<()> {
             "--roles includes dispatch, which needs at least one provider's credentials to \
              submit anything: either --orange-client-id, --orange-client-secret and \
              --orange-sender-number, or --mtn-client-id, --mtn-client-secret, \
-             --mtn-service-code, --mtn-tps-ceiling and --mtn-cost-per-segment-xaf (or their \
-             env vars)"
+             --mtn-service-code, --mtn-tps-ceiling and --mtn-cost-per-segment-xaf, or the six \
+             --aws-sms-* flags (or their env vars)"
         );
     }
 
@@ -662,13 +781,98 @@ mod tests {
             mtn_tps_ceiling: None,
             mtn_cost_per_segment_xaf: None,
             mtn_supports_alphanumeric_sender: false,
+            aws_sms_region: None,
+            aws_sms_access_key_id: None,
+            aws_sms_secret_access_key: None,
+            aws_sms_configuration_set: None,
+            aws_sms_tps_ceiling: None,
+            aws_sms_cost_per_segment_xaf: None,
+            aws_sms_origination_identity: None,
+            aws_sms_message_type: sms_provider_aws_sms::MessageType::Transactional,
+            aws_sms_supports_alphanumeric_sender: false,
+            aws_sms_endpoint_url: None,
+            aws_sms_time_to_live_seconds: None,
         }
+    }
+
+    fn aws_cli() -> Cli {
+        Cli {
+            aws_sms_region: Some("eu-west-1".to_owned()),
+            aws_sms_access_key_id: Some("AKIDEXAMPLE".to_owned()),
+            aws_sms_secret_access_key: Some("secret".to_owned()),
+            aws_sms_configuration_set: Some("vsms-events".to_owned()),
+            aws_sms_tps_ceiling: Some(20.0),
+            aws_sms_cost_per_segment_xaf: Some(rust_decimal::Decimal::new(30, 0)),
+            ..base_cli()
+        }
+    }
+
+    /// The go-live shape: AWS alone, no Orange or MTN contract yet.
+    #[test]
+    fn aws_sms_alone_registers_under_its_own_key() {
+        let providers = build_provider_registry(&aws_cli()).unwrap();
+        assert_eq!(providers.len(), 1);
+        assert!(providers.contains_key("aws_sms"));
+    }
+
+    /// The later shape the routing weights split between: every adapter in
+    /// one process, each under its own key.
+    #[test]
+    fn aws_sms_registers_alongside_orange_and_mtn() {
+        let cli = Cli {
+            orange_client_id: Some("id".to_owned()),
+            orange_client_secret: Some("secret".to_owned()),
+            orange_sender_number: Some("+237677000000".to_owned()),
+            mtn_client_id: Some("client-id".to_owned()),
+            mtn_client_secret: Some("client-secret".to_owned()),
+            mtn_service_code: Some("131".to_owned()),
+            mtn_tps_ceiling: Some(20.0),
+            mtn_cost_per_segment_xaf: Some(rust_decimal::Decimal::new(15, 0)),
+            ..aws_cli()
+        };
+        let providers = build_provider_registry(&cli).unwrap();
+        let mut keys: Vec<_> = providers.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["aws_sms", "mtn_cm", "orange_cm"]);
+    }
+
+    #[test]
+    fn a_partial_aws_sms_configuration_is_an_error() {
+        let cli = Cli {
+            aws_sms_configuration_set: None,
+            ..aws_cli()
+        };
+        let error = build_provider_registry(&cli).map(|_| ()).unwrap_err();
+        assert!(
+            error.to_string().contains("--aws-sms-configuration-set"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_aws_sms_configuration_that_could_never_send_is_an_error() {
+        let cli = Cli {
+            aws_sms_region: Some("Not A Region".to_owned()),
+            ..aws_cli()
+        };
+        assert!(build_provider_registry(&cli).is_err());
+    }
+
+    #[test]
+    fn the_aws_sms_time_to_live_is_optional_and_range_checked() {
+        let with = |seconds| Cli {
+            aws_sms_time_to_live_seconds: Some(seconds),
+            ..aws_cli()
+        };
+        assert!(build_provider_registry(&with(900)).is_ok());
+        assert!(build_provider_registry(&with(4)).is_err());
+        assert!(build_provider_registry(&with(259_201)).is_err());
     }
 
     #[test]
     fn no_credentials_configured_is_an_empty_registry_not_an_error() {
         let providers = build_provider_registry(&base_cli()).unwrap();
-        assert!(providers.is_empty());
+        assert_eq!(providers.len(), 0);
     }
 
     #[test]

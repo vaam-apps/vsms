@@ -114,10 +114,25 @@ services:
       # mints carries this as `iss`; get it wrong and every token this
       # deployment issues validates against the wrong issuer.
       SMS_OIDC_ISSUER: ${SMS_OIDC_ISSUER:?set to the public https origin, e.g. https://api.example.com}
-      ORANGE_CM_CLIENT_ID: ${ORANGE_CM_CLIENT_ID:?}
-      ORANGE_CM_CLIENT_SECRET: ${ORANGE_CM_CLIENT_SECRET:?}
-      ORANGE_CM_SENDER_NUMBER: ${ORANGE_CM_SENDER_NUMBER:?}
+      # Pass-through (a bare `NAME:` with no value), not `${NAME:?}` and
+      # not `${NAME:-}`: Orange is one of three providers now, and an
+      # AWS-only (or MTN-only) deployment must leave these *absent* from the
+      # container. `NAME:` forwards the value from the shell/.env when one is
+      # set and sets nothing at all when it is not, whereas `${NAME:-}` would
+      # hand the binary an empty string, which clap reads as a value
+      # (`Some("")`) and rejects. The binary itself still refuses to start
+      # with no provider at all, and with a half-filled Orange triple.
+      ORANGE_CM_CLIENT_ID:
+      ORANGE_CM_CLIENT_SECRET:
+      ORANGE_CM_SENDER_NUMBER:
       ORANGE_CM_BASE_URL: ${ORANGE_CM_BASE_URL:-https://api.orange.com}
+      # Receiving side of AWS End User Messaging SMS: the ARN of the SNS
+      # topic the configuration set publishes delivery events to. Setting it
+      # mounts POST /dlr/aws_sms. This is the ONLY AWS variable the gateway
+      # reads and it needs no AWS credentials (it verifies SNS message
+      # signatures). Pass-through for the same reason as Orange above: unset
+      # must mean absent, never empty. See deploy/.env.example.
+      AWS_SMS_EVENTS_TOPIC_ARN:
       # #134/#140: the server-held pepper behind Message.msisdnHash/bodyHash
       # (HMAC-SHA256, sms_api::pepper) — real secret material, minimum 32
       # bytes, validated at startup (`sms-gateway serve` refuses to bind on
@@ -170,7 +185,7 @@ services:
       SMS_SSO_ACCEPTED_AMR: ${SMS_SSO_ACCEPTED_AMR:-}
       SMS_SSO_ACCEPTED_ACR: ${SMS_SSO_ACCEPTED_ACR:-}
       SMS_SSO_JIT_ROLE: ${SMS_SSO_JIT_ROLE:-}
-      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,sms_auth=info,cratestack=info}
+      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info}
     depends_on:
       postgres:
         condition: service_healthy
@@ -235,6 +250,21 @@ services:
     # later too, not just on a fresh database:
     #   docker compose run --rm sms-gateway seed-dispatch
     #
+    # `seed-dispatch` seeds ONE provider per invocation (default
+    # `orange_cm`), and the gateway resolves a Provider row for every
+    # provider it is configured with before binding. For AWS End User
+    # Messaging SMS run it once more with that provider's key:
+    #   docker compose run --rm sms-gateway seed-dispatch \
+    #     --key aws_sms --kind aggregator_http \
+    #     --display-name 'AWS End User Messaging SMS' \
+    #     --credential-ref env:AWS_SMS_SECRET_ACCESS_KEY \
+    #     --max-tps "$AWS_SMS_TPS_CEILING" \
+    #     --cost-per-segment-xaf "$AWS_SMS_COST_PER_SEGMENT_XAF"
+    # For an AWS-ONLY deployment run exactly that and NOT the bare
+    # `seed-dispatch` or `bootstrap` below: both seed `orange_cm` with a
+    # catch-all Route, which would take about half of all traffic to a
+    # provider the worker holds no credentials for.
+    #
     # Production-readiness audit (N2): `docker compose run --rm sms-gateway
     # bootstrap --console-redirect-uri ... --owner-email ... --owner-display-name ...`
     # chains both steps above plus seed-console-client and provision-user
@@ -261,10 +291,31 @@ services:
       # docs/runbooks/deployment.adoc for that as a documented day-2 step
       # rather than a service this compose file stands up unused.
       SMS_WORKER_ROLES: ${SMS_WORKER_ROLES:-dispatch,drain,scheduler,hooks,jobs}
-      ORANGE_CM_CLIENT_ID: ${ORANGE_CM_CLIENT_ID:?}
-      ORANGE_CM_CLIENT_SECRET: ${ORANGE_CM_CLIENT_SECRET:?}
-      ORANGE_CM_SENDER_NUMBER: ${ORANGE_CM_SENDER_NUMBER:?}
+      # Pass-through, not required - see sms-gateway's Orange block above.
+      # With `dispatch` in SMS_WORKER_ROLES the worker refuses to start
+      # unless at least one provider is fully configured.
+      ORANGE_CM_CLIENT_ID:
+      ORANGE_CM_CLIENT_SECRET:
+      ORANGE_CM_SENDER_NUMBER:
       ORANGE_CM_BASE_URL: ${ORANGE_CM_BASE_URL:-https://api.orange.com}
+      # Sending side of AWS End User Messaging SMS (provider key `aws_sms`).
+      # The first six are all-or-none: set all of them or none. AWS_SMS_
+      # SECRET_ACCESS_KEY is a secret. Every one is a pass-through so an
+      # unconfigured AWS leaves no variable behind - an empty
+      # AWS_SMS_TPS_CEILING aborts startup with `cannot parse float from
+      # empty string`, and an empty AWS_SMS_REGION trips the all-or-none
+      # check. The last five are optional.
+      AWS_SMS_REGION:
+      AWS_SMS_ACCESS_KEY_ID:
+      AWS_SMS_SECRET_ACCESS_KEY:
+      AWS_SMS_CONFIGURATION_SET:
+      AWS_SMS_TPS_CEILING:
+      AWS_SMS_COST_PER_SEGMENT_XAF:
+      AWS_SMS_ORIGINATION_IDENTITY:
+      AWS_SMS_MESSAGE_TYPE:
+      AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER:
+      AWS_SMS_ENDPOINT_URL:
+      AWS_SMS_TIME_TO_LIVE_SECONDS:
       RUST_LOG: ${SMS_WORKER_LOG:-sms_worker=info,sms_worker_bin=info}
     depends_on:
       postgres:

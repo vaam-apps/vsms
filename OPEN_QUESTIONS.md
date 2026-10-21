@@ -57,7 +57,7 @@ interconnect (M7), and nothing in M5 touches it.
 tRPC route-handler boundary, via `AsyncLocalStorage` — not a per-request
 token exchange.**
 
-#194 shipped a real authorization_code + PKCE login, but `frontends/packages/gateway`
+Issue #194 shipped a real authorization_code + PKCE login, but `frontends/packages/gateway`
 kept authenticating **upstream** with its own machine credential regardless
 of who was signed in — verified by signing in as a freshly provisioned
 `owner` and watching a `Provider` edit fail with `missing required
@@ -136,7 +136,7 @@ live `Forbidden` on the identical edit.
 **Answered: both — federate to the staff Keycloak realm, brokered by the
 gateway, and keep local passwords as the break-glass path.**
 
-#194 chose local Argon2id passwords and recorded federation as "ruled out for
+Issue #194 chose local Argon2id passwords and recorded federation as "ruled out for
 now, not closed", for three reasons: it needed a second OIDC client
 implementation, there was no identity provider to point at, and there was
 nothing to prove it against under this repo's fake-for-every-external-
@@ -177,6 +177,7 @@ reopen them by accident:
 - **Hosting** ([#3](https://github.com/vymalo/vsms/issues/3)) — settled.
   Law No. 2024/017 requires prior authorisation for *all* cross-border
   personal-data transfers, and "legitimate interest" is not a lawful basis.
+  Using AWS as an SMS provider is such a transfer; see §1.5.
 - **Retention** ([#5](https://github.com/vymalo/vsms/issues/5)) — settled
   2026-08-11: **90-day minimisation, no split ledger.** vsms purges content
   *and* plaintext MSISDN at 90 days and carries no ten-year traffic ledger.
@@ -187,6 +188,41 @@ The residual risk in the second is worth stating once rather than leaving
 implicit: Law 2010/012 art. 25 is the reason the question was open, and
 delegating long-horizon retention to infrastructure is only true if somebody
 actually configures it. **Nothing in this repository fails if nobody does.**
+
+### 1.5 Is sending to AWS an authorised cross-border transfer? (opened 2026-10-21)
+
+**Blocks:** go-live on `aws_sms`, the AWS End User Messaging SMS provider
+(`docs/runbooks/aws-sms.adoc`). Does not block Orange or MTN traffic.
+
+§1.3 settled that Law No. 2024/017 requires prior authorisation for *all*
+cross-border transfers of personal data, and that "legitimate interest" is not
+a lawful basis. That was abstract while every provider was an in-country
+operator API. `aws_sms` makes it concrete: `SendTextMessage` hands each
+recipient's phone number and the full message body to AWS, in whichever Region
+`AWS_SMS_REGION` names, and AWS has no Cameroon Region (the nearest, `af-south-1`,
+is in South Africa). A phone number is personal data, and an OTP or
+notification body usually is too.
+
+What vsms does and does not do about it:
+
+- It cannot grant the authorisation or decide the deployment is out of scope.
+  Choosing a Region only chooses *which* foreign Region receives the data.
+- The 90-day purge (`purge_retention`) clears vsms's own copy of the number
+  and body. It does nothing about what AWS retains, and AWS keeps its own
+  opt-out list that vsms's `OptOut` table does not see.
+- Nothing in the code refuses to send until someone has cleared this. The
+  runbook makes it the first prerequisite, and the decision has to be recorded
+  somewhere the next operator can find it.
+
+**Needs from a human:** the authorisation (or a documented decision that the
+deployment is out of that law's scope, for example because the recipients are
+not in Cameroon), obtained before production traffic goes through AWS. Whether
+the supervisory Authority is operational and accepting requests is itself
+unverified (`docs/architecture.md` §10).
+
+Orange and MTN through their own APIs have a simpler position, which is one
+reason to move traffic back to them once their contracts exist; the routing
+engine already supports splitting by operator with AWS as the fallback.
 
 ---
 
@@ -242,6 +278,14 @@ provider.
 Everything automated around it — the chaos suite, the fake-Orange fault
 injection, the kill-9 reclaim gate — proves the *system's* behaviour under
 faults. None of it proves Orange behaves the way this code assumes.
+
+The same is true of `aws_sms` (2026-10-21): its request, error and event
+shapes come from AWS's published documentation and botocore's service model,
+the SigV4 signer is checked against two independent references, and the SNS
+verification is tested against third-party-signed fixtures, but nothing has
+been sent through a live AWS account or received from a live SNS topic. The
+first real send (`docs/runbooks/aws-sms.adoc`, step 9) is the first real
+verification.
 
 ### 2.3 A crash between submit and persistence sends the message twice
 
@@ -350,8 +394,7 @@ failure that screen exists to catch, since it means a blocked provider account
 — it would be a bug bypassing the lease check entirely, and invisible there.
 The screen states this rather than implying otherwise.
 
-### 3.6 Neither a console-account password nor a service-account client key
-### has a rotation/reset path — only provision-a-replacement
+### 3.6 Neither a console-account password nor a service-account client key has a rotation/reset path — only provision-a-replacement
 
 `provisionUser` (#52/#58) and `provisionAppClient` (#23) both mint a secret
 exactly once — a one-time password, a private key — with no companion

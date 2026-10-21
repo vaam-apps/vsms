@@ -28,6 +28,7 @@ form_urlencoded.workspace = true
 sms-provider.workspace = true
 sms-provider-orange-cm.workspace = true
 sms-provider-mtn.workspace = true
+sms-provider-aws-sms.workspace = true
 # commands/serve.rs's --mtn-cost-per-segment-xaf flag — money, never a
 # float (see `MtnConfig::cost_per_segment_xaf`'s own doc).
 rust_decimal.workspace = true
@@ -66,6 +67,7 @@ url.workspace = true
 # exchange, and one hand-signed test-only token standing in for a
 # human-login path that doesn't exist yet (see
 # `tests/m1_acceptance_gate_live_postgres.rs`'s own module doc).
+async-trait.workspace = true
 base64.workspace = true
 jsonwebtoken.workspace = true
 rand.workspace = true

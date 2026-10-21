@@ -247,47 +247,88 @@ async fn ingest_one(
 }
 
 /// The target `MessageState` a DLR outcome implies, given the message's
-/// *current* state — not a fixed outcome-to-state table, because §7.4's
-/// own transition table doesn't admit `uncertain -> undelivered` (§2.10):
-/// a message that already spent time ambiguous doesn't get a further
-/// retry on a later failure, it's terminal. See the `Failed` arm.
+/// *current* state — and only if that edge is legal for a DLR to propose.
 ///
-/// `None` for `DeliveryOutcome::Unknown` — per that variant's own doc, an
-/// unclassifiable status must never be guessed into `Failed` or
-/// `Delivered`. `None` also for any current state this function doesn't
-/// name a target for; the caller's `if_match` + the trigger are the real
-/// authority on legality regardless, this is just choosing the *intended*
-/// target among what might be several legal ones.
+/// Two reasons the current state matters, not a fixed outcome-to-state table:
+///
+/// 1. `uncertain -> undelivered` is not an edge in §2.10's table, so a
+///    retryable failure on an `uncertain` message is terminal (`failed`).
+/// 2. **A late receipt is normal, and `SM001` must mean a bug.** Providers
+///    report on their own schedule (AWS End User Messaging's final event can
+///    arrive up to 72 h after the send), long after `expire_stale` has moved
+///    a 15-minute OTP to `expired`. Proposing `expired -> delivered` would
+///    make the trigger raise `SM001`, bump `sms_sm001_total` and page
+///    `SMS001IllegalTransitionRateNonZero` for something that is not a
+///    fault. The receipt is still written (the caller does that before
+///    asking for a target); the message simply stays where it is.
+///
+/// The edges a DLR may drive, from `message_state_transitions`:
+/// `submitted -> {delivered, uncertain, undelivered, failed, expired}`,
+/// `uncertain -> {delivered, failed, expired}`,
+/// `undelivered -> {failed, expired}` (`undelivered -> queued` is the
+/// worker's retry, never a DLR's). Every other current state — pre-submit
+/// states, and the terminal `delivered`/`failed`/`expired`/`rejected`/
+/// `cancelled` — gets `None`. Same-state proposals (a duplicate `delivered`
+/// receipt) also come out as `None`; the caller treats that the same as the
+/// old no-op.
+///
+/// `None` for `DeliveryOutcome::Unknown` and `InFlight` regardless of state —
+/// per `Unknown`'s own doc an unclassifiable status must never be guessed
+/// into `Failed` or `Delivered`, and `InFlight` is progress, not a verdict.
+///
+/// The match on `current` is exhaustive on purpose: a new `MessageState`
+/// must be a compile error here, forcing a decision about whether a DLR may
+/// reach it.
 fn next_state(current: MessageState, outcome: DeliveryOutcome) -> Option<MessageState> {
-    match outcome {
-        DeliveryOutcome::Delivered => Some(MessageState::delivered),
-        DeliveryOutcome::Uncertain => Some(MessageState::uncertain),
-        DeliveryOutcome::Expired => Some(MessageState::expired),
-        DeliveryOutcome::Rejected => Some(MessageState::failed),
-        DeliveryOutcome::Failed => match current {
-            MessageState::submitted => Some(MessageState::undelivered),
-            MessageState::uncertain => Some(MessageState::failed),
-            _ => None,
+    match current {
+        MessageState::submitted => match outcome {
+            DeliveryOutcome::Delivered => Some(MessageState::delivered),
+            DeliveryOutcome::Uncertain => Some(MessageState::uncertain),
+            DeliveryOutcome::Expired => Some(MessageState::expired),
+            DeliveryOutcome::Rejected => Some(MessageState::failed),
+            // Retryable: goes to `undelivered`, which `claim.rs` retries.
+            DeliveryOutcome::Failed => Some(MessageState::undelivered),
+            // `InFlight` is progress, not a verdict: `submitted` already
+            // means "handed to the provider, awaiting its outcome", which is
+            // exactly what `DeliveredToNetwork`/`MessageWaiting` report.
+            // Mapping these to `uncertain` instead destroyed the retry path
+            // (`uncertain -> undelivered` is not legal). `Unknown` is an
+            // unrecognised status, never guessed into a verdict.
+            DeliveryOutcome::InFlight | DeliveryOutcome::Unknown => None,
         },
-        // Two different reasons to propose nothing, deliberately sharing
-        // one arm (clippy's `match_same_arms` is right that the bodies are
-        // identical; the reasoning is not, so it is written out here rather
-        // than lost):
-        //
-        // `InFlight` is progress, not a verdict. `submitted` already means
-        // "handed to the provider, awaiting its outcome", which is exactly
-        // what `DeliveredToNetwork`/`MessageWaiting` report, so there is
-        // nothing to transition *to*. Mapping these to `uncertain`
-        // instead — what happened before `DeliveryOutcome::InFlight`
-        // existed — silently destroyed the message's retry path, because
-        // `uncertain -> undelivered` is not a legal edge and a later
-        // retryable failure would therefore land in `failed` forever. See
-        // that variant's own doc for the full mechanism.
-        //
-        // `Unknown` is an unrecognised status, which per that variant's own
-        // doc must never be guessed into `Failed` or `Delivered`. The
-        // receipt still carries `rawStatus` for a human to read.
-        DeliveryOutcome::InFlight | DeliveryOutcome::Unknown => None,
+        MessageState::uncertain => match outcome {
+            DeliveryOutcome::Delivered => Some(MessageState::delivered),
+            DeliveryOutcome::Expired => Some(MessageState::expired),
+            // A retryable failure on a message that already spent time
+            // ambiguous is terminal: there is no `uncertain -> undelivered`.
+            DeliveryOutcome::Rejected | DeliveryOutcome::Failed => Some(MessageState::failed),
+            // `uncertain -> uncertain` is a same-state no-op.
+            DeliveryOutcome::Uncertain | DeliveryOutcome::InFlight | DeliveryOutcome::Unknown => {
+                None
+            }
+        },
+        MessageState::undelivered => match outcome {
+            DeliveryOutcome::Expired => Some(MessageState::expired),
+            DeliveryOutcome::Rejected => Some(MessageState::failed),
+            // No `undelivered -> delivered` or `-> uncertain` edge, and a
+            // second retryable failure changes nothing (already
+            // `undelivered`). The receipt row still records what arrived.
+            DeliveryOutcome::Delivered
+            | DeliveryOutcome::Uncertain
+            | DeliveryOutcome::Failed
+            | DeliveryOutcome::InFlight
+            | DeliveryOutcome::Unknown => None,
+        },
+        // Not DLR-reachable: either not yet handed to a provider, or already
+        // terminal. A receipt arriving here is recorded and nothing more.
+        MessageState::accepted
+        | MessageState::queued
+        | MessageState::routed
+        | MessageState::delivered
+        | MessageState::failed
+        | MessageState::expired
+        | MessageState::rejected
+        | MessageState::cancelled => None,
     }
 }
 
@@ -406,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn delivered_uncertain_expired_rejected_are_state_independent() {
+    fn delivered_expired_rejected_map_the_same_from_submitted_and_uncertain() {
         for current in [MessageState::submitted, MessageState::uncertain] {
             assert_eq!(
                 next_state(current, DeliveryOutcome::Delivered),
@@ -454,6 +495,69 @@ mod tests {
             next_state(MessageState::delivered, DeliveryOutcome::Failed),
             None
         );
+    }
+
+    #[test]
+    fn a_late_receipt_never_proposes_an_edge_the_trigger_would_refuse() {
+        // The AWS shape: `expire_stale` moved the OTP to `expired`, then the
+        // provider's final event arrives hours later. Must not be SM001.
+        assert_eq!(
+            next_state(MessageState::expired, DeliveryOutcome::Delivered),
+            None
+        );
+        assert_eq!(
+            next_state(MessageState::delivered, DeliveryOutcome::Rejected),
+            None
+        );
+        assert_eq!(
+            next_state(MessageState::undelivered, DeliveryOutcome::Uncertain),
+            None
+        );
+        assert_eq!(
+            next_state(MessageState::undelivered, DeliveryOutcome::Delivered),
+            None
+        );
+    }
+
+    #[test]
+    fn legal_dlr_edges_still_propose_their_target() {
+        assert_eq!(
+            next_state(MessageState::submitted, DeliveryOutcome::Delivered),
+            Some(MessageState::delivered)
+        );
+        assert_eq!(
+            next_state(MessageState::uncertain, DeliveryOutcome::Delivered),
+            Some(MessageState::delivered)
+        );
+        assert_eq!(
+            next_state(MessageState::undelivered, DeliveryOutcome::Rejected),
+            Some(MessageState::failed)
+        );
+    }
+
+    #[test]
+    fn a_duplicate_terminal_receipt_proposes_nothing() {
+        for terminal in [
+            MessageState::delivered,
+            MessageState::failed,
+            MessageState::expired,
+            MessageState::rejected,
+            MessageState::cancelled,
+        ] {
+            for outcome in [
+                DeliveryOutcome::Delivered,
+                DeliveryOutcome::Uncertain,
+                DeliveryOutcome::Failed,
+                DeliveryOutcome::Expired,
+                DeliveryOutcome::Rejected,
+            ] {
+                assert_eq!(
+                    next_state(terminal, outcome),
+                    None,
+                    "{outcome:?} against terminal {terminal:?} must not propose an edge"
+                );
+            }
+        }
     }
 
     #[test]

@@ -22,6 +22,9 @@ members = [
   "backends/crates/sms-provider-http",
   "backends/crates/sms-provider-orange-cm",
   "backends/crates/sms-provider-mtn",
+  # AWS End User Messaging SMS, with receipts delivered by SNS — the
+  # go-live provider while the Orange and MTN contracts are pending.
+  "backends/crates/sms-provider-aws-sms",
   "backends/crates/sms-routing",
   "backends/crates/sms-fake-orange",
   # Dev/test-only fake upstream OpenID Provider (Keycloak stand-in) for the
@@ -119,6 +122,7 @@ sms-provider-orange-cm = { path = "./backends/crates/sms-provider-orange-cm" }
 # parts of the request/response shape are a verified pattern vs. an
 # invented placeholder pending a real aggregator contract.
 sms-provider-mtn = { path = "./backends/crates/sms-provider-mtn" }
+sms-provider-aws-sms = { path = "./backends/crates/sms-provider-aws-sms" }
 # #62's pure route-selection engine — no cratestack, no I/O. sms-worker
 # (backends/crates/sms-worker/src/routing.rs) is the I/O glue; a future #54
 # simulator procedure in sms-api is expected to depend on this directly
@@ -273,6 +277,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # workspace-wide (0.23.x, verified against Cargo.lock) — this doesn't fork
 # the rustls tree, just names the one version already there.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# sms-provider-aws-sms verifies Amazon SNS message signatures (RSA,
+# SHA-256) against the signing certificate SNS publishes. Both crates are
+# already in the graph through rustls, at these versions; naming them here
+# only lets that crate call them. `ring`, never `aws-lc-rs`, for the same
+# reason as `rustls` above.
+rustls-webpki = { version = "0.103", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = { version = "1", features = ["std"] }
 # #70/#71: backends/crates/sms-metrics's registry/counters/gauges and text
 # exposition encoder. `default-features = false` drops the `protobuf`
 # feature (Prometheus's older binary scrape format, via the `protobuf`

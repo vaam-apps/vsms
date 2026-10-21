@@ -107,6 +107,85 @@ repo's own explicit all-or-none error rather than a silent half-config.
 {{- end -}}
 
 {{/*
+Providers. The gateway refuses to start with no provider configured at all
+(Orange, MTN, or AWS' events topic), and the worker refuses `--roles
+dispatch` likewise. Failing here instead gives the operator the message at
+`helm template` time rather than as a crash-looping Pod.
+*/}}
+{{- if not (or .Values.orange.clientId .Values.mtn.clientId .Values.awsSms.region .Values.awsSms.eventsTopicArn) }}
+{{- fail "no SMS provider is configured: set orange.clientId, mtn.clientId, awsSms.region and/or awsSms.eventsTopicArn" }}
+{{- end }}
+
+{{/*
+Orange is optional now that it is not the only provider, and an AWS-only (or
+MTN-only) deployment must leave *no* Orange env var behind - the same
+present-but-empty hazard as MTN above (`ORANGE_CM_CLIENT_ID=""` is
+`Some("")` to clap and trips the all-or-none check). ORANGE_CM_BASE_URL is
+left alone: it always has a value and the binary defaults it anyway.
+
+Stripping them also removes the chart's former render-time `required` on
+orange.clientId; the "no provider at all" check above replaces it.
+
+seedDispatch is switched off with it, for a reason beyond tidiness: it
+seeds an `orange_cm` Provider row *and a catch-all Route*. In a deployment
+whose worker holds no Orange credentials that route would still win the
+weighted draw for about half of all messages, and dispatch would keep
+retrying a provider it cannot resolve.
+*/}}
+{{- if not .Values.orange.clientId }}
+{{- range $controller := list "gateway" "worker" }}
+{{- $env := (index $.Values.controllers $controller "containers" "main" "env") }}
+{{- range $key := list "ORANGE_CM_CLIENT_ID" "ORANGE_CM_CLIENT_SECRET" "ORANGE_CM_SENDER_NUMBER" }}
+{{- $_ := unset $env $key }}
+{{- end }}
+{{- end }}
+{{- $_ := set .Values.controllers.seedDispatch "enabled" false -}}
+{{- end -}}
+
+{{/*
+AWS End User Messaging SMS is optional, and an unconfigured AWS must leave
+*no* AWS_SMS_* env var behind, for the MTN reasons above. Two independent
+switches because the two binaries are independent:
+
+  - the worker's whole AWS block is keyed on `awsSms.region` (the first of
+    the six it requires together, so a half-filled block gets the binary's
+    own all-or-none error). Its three optional variables are additionally
+    stripped one by one when empty, because an empty `Option<String>` is
+    `Some("")` and an empty `AWS_SMS_MESSAGE_TYPE` fails to parse;
+  - the gateway needs only `AWS_SMS_EVENTS_TOPIC_ARN` (no credentials), keyed
+    on `awsSms.eventsTopicArn`.
+
+`seedDispatchAws` is switched on by either, and its args are assembled here
+because a controller's `args` list is not passed through `tpl`. Flags are
+appended only when their value is set, so the subcommand's own defaults
+apply otherwise. The gateway resolves a Provider row for every provider it
+is configured with before binding its listener, which is why each provider
+needs its own seed.
+*/}}
+{{- if not .Values.awsSms.region }}
+{{- $env := (index $.Values.controllers "worker" "containers" "main" "env") }}
+{{- range $key := list "AWS_SMS_REGION" "AWS_SMS_ACCESS_KEY_ID" "AWS_SMS_SECRET_ACCESS_KEY" "AWS_SMS_CONFIGURATION_SET" "AWS_SMS_TPS_CEILING" "AWS_SMS_COST_PER_SEGMENT_XAF" "AWS_SMS_ORIGINATION_IDENTITY" "AWS_SMS_MESSAGE_TYPE" "AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER" "AWS_SMS_ENDPOINT_URL" "AWS_SMS_TIME_TO_LIVE_SECONDS" }}
+{{- $_ := unset $env $key }}
+{{- end }}
+{{- else }}
+{{- $env := (index $.Values.controllers "worker" "containers" "main" "env") }}
+{{- if not .Values.awsSms.originationIdentity }}{{- $_ := unset $env "AWS_SMS_ORIGINATION_IDENTITY" }}{{- end }}
+{{- if not .Values.awsSms.messageType }}{{- $_ := unset $env "AWS_SMS_MESSAGE_TYPE" }}{{- end }}
+{{- if not .Values.awsSms.endpointUrl }}{{- $_ := unset $env "AWS_SMS_ENDPOINT_URL" }}{{- end }}
+{{- if not .Values.awsSms.timeToLiveSeconds }}{{- $_ := unset $env "AWS_SMS_TIME_TO_LIVE_SECONDS" }}{{- end }}
+{{- end }}
+{{- if not .Values.awsSms.eventsTopicArn }}
+{{- $_ := unset (index $.Values.controllers "gateway" "containers" "main" "env") "AWS_SMS_EVENTS_TOPIC_ARN" }}
+{{- end }}
+{{- if or .Values.awsSms.region .Values.awsSms.eventsTopicArn }}
+{{- $seed := list "seed-dispatch" "--key" "aws_sms" "--kind" "aggregator_http" "--display-name" "AWS End User Messaging SMS" "--credential-ref" "env:AWS_SMS_SECRET_ACCESS_KEY" }}
+{{- if .Values.awsSms.tpsCeiling }}{{- $seed = concat $seed (list "--max-tps" (toString .Values.awsSms.tpsCeiling)) }}{{- end }}
+{{- if .Values.awsSms.costPerSegmentXaf }}{{- $seed = concat $seed (list "--cost-per-segment-xaf" (toString .Values.awsSms.costPerSegmentXaf)) }}{{- end }}
+{{- $_ := set .Values.controllers.seedDispatchAws "enabled" true -}}
+{{- $_ := set .Values.controllers.seedDispatchAws.containers.main "args" $seed -}}
+{{- end -}}
+
+{{/*
 SSO is optional, and an unconfigured SSO must leave *no* SSO env var behind
 on the gateway - the same hazard as MTN above, for the same reason: a
 present-but-empty env var is a value to clap, not an absence (and, for the

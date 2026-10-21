@@ -131,6 +131,15 @@ existingSecrets:
   mtn:
     name: ""
     key: MTN_CLIENT_SECRET
+  # AWS End User Messaging SMS: the IAM user's secret access key. Only
+  # consulted when .Values.awsSms.region is set - templates/common.yaml
+  # strips every worker-side AWS_SMS_* env var (this secretKeyRef included)
+  # when it is not. The access key ID is a plain value (.Values.awsSms
+  # below), the same id/secret split Orange and MTN use. The gateway never
+  # needs this: it verifies SNS signatures, not AWS credentials.
+  awsSms:
+    name: ""
+    key: AWS_SMS_SECRET_ACCESS_KEY
   # The gateway's confidential-client secret at the staff identity provider
   # (Keycloak) for single sign-on. Only consulted when .Values.sso.issuer is
   # set — templates/common.yaml strips every SSO env var (this secretKeyRef
@@ -215,6 +224,68 @@ mtn:
   # are explicit that the DR webhook is pre-registered, account-level, and
   # whitelisted via a support web form — not a per-request field, so
   # OrangeCmConfig carries no such knob for a chart value to plumb into.
+
+# AWS End User Messaging SMS (provider key `aws_sms`). Entirely optional:
+# leave `region` and `eventsTopicArn` empty and every AWS_SMS_* env var is
+# stripped from both controllers before rendering (templates/common.yaml) -
+# never rendered empty, because a present-but-empty env var is a value to
+# clap, not an absence (`AWS_SMS_TPS_CEILING=""` aborts the binary with
+# `cannot parse float from empty string`; an empty Option<String> trips the
+# all-or-none check).
+#
+# Two halves, two binaries, deliberately independent:
+#
+#   * SENDING - sms-worker (`--roles dispatch`). `region` is the switch:
+#     set it and `accessKeyId`, `configurationSet`, `tpsCeiling` and
+#     `costPerSegmentXaf` (plus existingSecrets.awsSms) are all required;
+#     the worker refuses to start on a half-filled block, by design.
+#     `tpsCeiling` and `costPerSegmentXaf` have no defaults for the same
+#     reason MTN's have none: they are commercial terms of your AWS account
+#     (AWS prices in USD per destination country; this is that price in
+#     XAF), and an invented value either throttles you or misprices
+#     estimatedCostXaf.
+#
+#   * RECEIVING - sms-gateway. `eventsTopicArn` is the switch: the ARN of
+#     the Amazon SNS topic the configuration set publishes delivery events
+#     to. Setting it mounts POST /dlr/aws_sms, which authenticates every
+#     delivery by verifying the SNS message signature against this topic.
+#     The gateway needs NO AWS credentials. Without it, messages submit
+#     fine, reach `submitted`, and sit there - AWS reports nothing.
+#     Subscribe the topic to https://<gateway host>/dlr/aws_sms (https
+#     endpoint; SNS then sends a SubscriptionConfirmation).
+#
+# An AWS-only go-live sets orange.clientId/mtn.clientId to nothing and both
+# halves here; the seedDispatchAws hook then seeds the `aws_sms` Provider
+# row and a catch-all Route. If AWS runs beside another provider, both
+# seed hooks add a catch-all Route at the same priority and weight, so
+# traffic splits evenly until you edit the Routes in the console.
+awsSms:
+  region: ""
+  accessKeyId: ""
+  # The configuration set whose event destination publishes to the SNS
+  # topic above. Required by the worker: without one AWS reports nothing.
+  configurationSet: ""
+  # Quoted strings, not YAML numbers - see mtn.tpsCeiling.
+  tpsCeiling: ""
+  costPerSegmentXaf: ""
+  # Optional. A pool/phone number/sender ID in the AWS account; used when
+  # no approved per-message sender ID is passed. Stripped when empty.
+  originationIdentity: ""
+  # `transactional` (default) or `promotional`.
+  messageType: transactional
+  supportsAlphanumericSender: false
+  # Optional. Overrides https://sms-voice.<region>.amazonaws.com/ (VPC
+  # endpoints, a local emulator). Stripped when empty.
+  endpointUrl: ""
+  # Optional. Seconds AWS keeps trying to deliver one message (5..259200),
+  # a quoted string like tpsCeiling. Unset, AWS tries for up to 72 hours,
+  # so an OTP vsms already expired (15 minutes by default) can still
+  # arrive days later. Match the shortest validity of the traffic routed
+  # to AWS: "900" for an OTP-only route (other classes default to 24
+  # hours, so "900" would cut them short). Stripped when empty.
+  timeToLiveSeconds: ""
+  # sms-gateway only - see above.
+  eventsTopicArn: ""
 
 # Single sign-on through the staff Keycloak realm (docs/runbooks/sso.adoc).
 # Entirely optional, and active exactly when `issuer` is set — there is no
@@ -404,11 +475,50 @@ controllers:
         # The image ENTRYPOINT is already the binary (see
         # backends/apps/sms-gateway/Dockerfile) — only the subcommand goes here.
         # No --key/--kind/etc. overrides: the subcommand's own defaults
-        # (key=orange_cm, kind=orange_cm_http) already match the only
-        # adapter Serve/dispatch actually wire up (see .Values.orange
-        # above), the same "nothing speculative" convention this file's
-        # own header documents. The Route half has no flags at all — a
-        # hardcoded catch-all, per the subcommand's own doc.
+        # (key=orange_cm, kind=orange_cm_http) are this provider's. Each
+        # provider has its own seed hook (seedDispatchAws below), because
+        # sms-gateway resolves a Provider row for EVERY provider it is
+        # configured with at startup. The Route half has no flags at all —
+        # a hardcoded catch-all, per the subcommand's own doc.
+        #
+        # Switched off by templates/common.yaml when orange.clientId is
+        # empty: seeding an Orange row and catch-all Route in an AWS-only
+        # deployment would send half of all traffic to a provider the
+        # worker holds no credentials for.
+        args: ['seed-dispatch']
+        env:
+          DATABASE_URL:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.database.name is required" .Values.existingSecrets.database.name }}'
+                key: '{{ .Values.existingSecrets.database.key }}'
+        resources: {}
+
+  # The `aws_sms` counterpart of seedDispatch: same subcommand, same
+  # idempotency, same Provider row + catch-all Route. Disabled unless
+  # templates/common.yaml finds awsSms.region or awsSms.eventsTopicArn set,
+  # and its args are built there too (a controller's `args` is not passed
+  # through `tpl`, so the values cannot be referenced from here). Weight -14
+  # puts it directly after seedDispatch (-15) rather than racing it; the
+  # two touch different rows, so the order is cosmetic.
+  seedDispatchAws:
+    enabled: false
+    type: job
+    annotations:
+      helm.sh/hook: pre-install,pre-upgrade
+      helm.sh/hook-weight: '-14'
+      helm.sh/hook-delete-policy: before-hook-creation
+    job:
+      backoffLimit: 3
+      ttlSecondsAfterFinished: 300
+    pod:
+      restartPolicy: Never
+    containers:
+      main:
+        image:
+          repository: '{{ printf "%s/%s/vsms-sms-gateway" .Values.image.registry .Values.image.repositoryOwner }}'
+          tag: '{{ .Values.image.tag }}'
+          pullPolicy: IfNotPresent
         args: ['seed-dispatch']
         env:
           DATABASE_URL:
@@ -534,6 +644,11 @@ controllers:
             value: '{{ .Values.mtn.costPerSegmentXaf }}'
           MTN_SUPPORTS_ALPHANUMERIC_SENDER:
             value: '{{ .Values.mtn.supportsAlphanumericSender }}'
+          # Receiving side of AWS End User Messaging SMS - the one variable
+          # the gateway needs (no AWS credentials). Stripped by
+          # templates/common.yaml when awsSms.eventsTopicArn is empty.
+          AWS_SMS_EVENTS_TOPIC_ARN:
+            value: '{{ .Values.awsSms.eventsTopicArn }}'
           SMS_SSO_ISSUER:
             value: '{{ .Values.sso.issuer }}'
           SMS_SSO_CLIENT_ID:
@@ -563,7 +678,7 @@ controllers:
                 name: '{{ required "existingSecrets.hashPepper.name is required" .Values.existingSecrets.hashPepper.name }}'
                 key: '{{ .Values.existingSecrets.hashPepper.key }}'
           RUST_LOG:
-            value: 'sms_gateway=info,sms_api=info,sms_auth=info,cratestack=info'
+            value: 'sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info'
         probes:
           # #157: /healthz stays liveness-only by design
           # (backends/apps/sms-gateway/src/health.rs's own doc: "It does not touch the
@@ -702,6 +817,37 @@ controllers:
             value: '{{ .Values.mtn.costPerSegmentXaf }}'
           MTN_SUPPORTS_ALPHANUMERIC_SENDER:
             value: '{{ .Values.mtn.supportsAlphanumericSender }}'
+          # Sending side of AWS End User Messaging SMS. The first six are
+          # all-or-none; the rest optional. Every one is stripped by
+          # templates/common.yaml when awsSms.region is empty (and the
+          # optional ones individually when empty).
+          AWS_SMS_REGION:
+            value: '{{ .Values.awsSms.region }}'
+          AWS_SMS_ACCESS_KEY_ID:
+            value: '{{ required "awsSms.accessKeyId is required when awsSms.region is set" .Values.awsSms.accessKeyId }}'
+          AWS_SMS_SECRET_ACCESS_KEY:
+            valueFrom:
+              # Short message on purpose: toYaml folds a long line inside
+              # this valueFrom block and splits the quoted template string.
+              secretKeyRef:
+                name: '{{ required "existingSecrets.awsSms.name is required" .Values.existingSecrets.awsSms.name }}'
+                key: '{{ .Values.existingSecrets.awsSms.key }}'
+          AWS_SMS_CONFIGURATION_SET:
+            value: '{{ required "awsSms.configurationSet is required when awsSms.region is set" .Values.awsSms.configurationSet }}'
+          AWS_SMS_TPS_CEILING:
+            value: '{{ required "awsSms.tpsCeiling is required when awsSms.region is set" .Values.awsSms.tpsCeiling }}'
+          AWS_SMS_COST_PER_SEGMENT_XAF:
+            value: '{{ required "awsSms.costPerSegmentXaf is required when awsSms.region is set" .Values.awsSms.costPerSegmentXaf }}'
+          AWS_SMS_ORIGINATION_IDENTITY:
+            value: '{{ .Values.awsSms.originationIdentity }}'
+          AWS_SMS_MESSAGE_TYPE:
+            value: '{{ .Values.awsSms.messageType }}'
+          AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER:
+            value: '{{ .Values.awsSms.supportsAlphanumericSender }}'
+          AWS_SMS_ENDPOINT_URL:
+            value: '{{ .Values.awsSms.endpointUrl }}'
+          AWS_SMS_TIME_TO_LIVE_SECONDS:
+            value: '{{ .Values.awsSms.timeToLiveSeconds }}'
           RUST_LOG:
             value: 'sms_worker=info,sms_worker_bin=info'
         probes:

@@ -61,6 +61,12 @@ pub(crate) struct BootstrapArgs {
     /// Passed through to the `provision-user` step as `--role-key`.
     #[arg(long, default_value = "owner")]
     pub(crate) owner_role_key: String,
+
+    /// Skip step 2 (the hardcoded `orange_cm` `Provider` + catch-all
+    /// `Route`). See `Command::Bootstrap`'s own doc for when this is the
+    /// right call.
+    #[arg(long)]
+    pub(crate) skip_seed_dispatch: bool,
 }
 
 /// Bootstrap step 1/4 — see `bootstrap_command`'s own doc for the whole
@@ -204,6 +210,7 @@ pub(crate) async fn bootstrap_command(args: BootstrapArgs) -> Result<()> {
         owner_email,
         owner_display_name,
         owner_role_key,
+        skip_seed_dispatch,
     } = args;
 
     // R4: `--owner-email` with no `--console-redirect-uri` would
@@ -235,7 +242,18 @@ pub(crate) async fn bootstrap_command(args: BootstrapArgs) -> Result<()> {
     let sys = system_context("sms-gateway:op");
 
     bootstrap_step_signing_key(&db, &sys).await?;
-    bootstrap_step_seed_dispatch(&db).await?;
+    if skip_seed_dispatch {
+        // Not a silent no-op: the operator asked for this, but the step's
+        // header and the follow-up are printed like every other skip so
+        // the output still reads as the four-step chain it is.
+        println!("== bootstrap: step 2/4 — orange_cm Provider + catch-all Route ==");
+        println!(
+            "skipped — run seed-dispatch for the provider you will send through \
+             (--skip-seed-dispatch given)"
+        );
+    } else {
+        bootstrap_step_seed_dispatch(&db).await?;
+    }
     bootstrap_step_console(
         &db,
         &sys,

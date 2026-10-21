@@ -214,6 +214,17 @@ enum Command {
     /// are already idempotent, `seed-console-client`'s is a `23505`
     /// catch, and `provision-user`'s duplicate-email case is reported and
     /// skipped rather than failing the whole chain.
+    ///
+    /// `--skip-seed-dispatch` skips step 2 (the hardcoded `orange_cm`
+    /// `Provider` + catch-all `Route`, priority 0, weight 1). Use it when
+    /// the deployment will not send through Orange — an AWS-only go-live,
+    /// say — and run `seed-dispatch` yourself for the provider you will
+    /// actually use. Without it, a later `seed-dispatch --key aws_sms ...`
+    /// adds a *second* identical catch-all, the routing engine draws 50/50
+    /// between them, and half of all traffic is routed to `orange_cm`,
+    /// which the worker has no credentials for (dispatch retries those
+    /// messages forever). Default off, so existing invocations are
+    /// unchanged.
     Bootstrap(commands::bootstrap::BootstrapArgs),
     /// Records the result of a monthly handset check — #64's own "the
     /// structure that records validations," the CLI half of
@@ -314,8 +325,11 @@ async fn main() -> Result<()> {
                 // discovery, issuer-mismatch and invalid-client errors are
                 // the operator's only signal that the IdP side is broken,
                 // and under the old default they were silently dropped.
+                // `sms_provider_aws_sms` for the same reason: the SNS
+                // subscription-confirmation command (with its token) and the
+                // SignatureVersion-1 / unsubscribe errors are logged there.
                 .unwrap_or_else(|_| {
-                    "sms_gateway=info,sms_api=info,sms_auth=info,cratestack=info".into()
+                    "sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info".into()
                 }),
         )
         .init();
