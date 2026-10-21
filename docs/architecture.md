@@ -884,8 +884,8 @@ model User {
   @@audit
   @@paged
   @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('auditor'))
-  @@allow("create", hasRole('owner') || hasRole('admin'))
-  @@allow("update", hasRole('owner') || hasRole('admin'))
+  @@allow("create", hasRole('owner') || (hasRole('admin') && roleKey != 'owner'))
+  @@allow("update", hasRole('owner') || (hasRole('admin') && roleKey != 'owner'))
   @@allow("delete", hasRole('owner'))
   @@emit(created, updated, deleted)
 }
@@ -1469,6 +1469,8 @@ ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_fo
 ALTER TABLE roles ADD CONSTRAINT roles_key_not_reserved_check
     CHECK (key NOT IN ('system', 'app'));
 ```
+
+**Who may hand out `owner`** is the same kind of invariant, guarded the same two-independent-ways way, but in Rust and in the schema rather than in a `CHECK` — see §5.2 ("Only an owner may hand out `owner`"). It needs no DDL: the schema half is a policy-only change to `User`'s `@@allow`, which the migration emitter never sees.
 
 **Client-registration invariants.** The schema can say a client names one auth method; it cannot say that the method and the rest of the row agree. Both of these are the difference between a misconfigured client failing at `INSERT` and failing at `/token`, where the symptom is an authentication error nobody can explain:
 
@@ -2079,6 +2081,40 @@ Humans get roles. Service accounts get OAuth scopes. Different vocabularies on p
 | `auditor`   | Read-only oversight       | `*:read`, `audit:read`. No mutations anywhere.                                                                                                                 |
 | `support`   | First-line                | `sms:read`, `optout:manage`, `delivery:read`                                                                                                                   |
 | `system`    | Internal only             | `message:create/update`, `receipt:create`, `job:update`. **Never issued to a human, never reachable from any HTTP route.**                                     |
+
+**Only an owner may hand out `owner` (2026-10-20).** `owner` is the top of the human ladder — only an owner may delete a `User` or edit a `Role` — but `User`'s `create`/`update` policy used to admit `admin` with no condition on the *value* written, and in production an `admin` updated **its own** record to `roleKey = owner` (`cratestack_audit`: actor role `admin`, before `admin`, after `owner`). The policy engine can decide only half of this, so the fix is two guards that each cover what the other cannot see:
+
+```mermaid
+sequenceDiagram
+    participant A as admin (non-owner)
+    participant M as enforce_owner_grant_guard (owner_grant.rs)
+    participant R as generated PATCH /users/{id}
+    participant P as User @@allow update (SQL)
+    A->>M: PATCH /users/{id} {"roleKey":"owner"}
+    M->>M: authenticate, role is not owner, decode body
+    M-->>A: 403 Forbidden
+    A->>M: PATCH /users/{id} {"roleKey":"operator"}
+    M->>R: original bytes
+    R->>P: UPDATE users ... AND policy(stored row)
+    P-->>R: stored roleKey = owner gives 0 rows, Forbidden
+    P-->>A: otherwise 200
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> NonOwner: create by owner or admin
+    [*] --> Owner: create by owner only
+    NonOwner --> NonOwner: owner or admin changes role
+    NonOwner --> Owner: owner only
+    Owner --> NonOwner: owner only
+    Owner --> Owner: owner only
+    NonOwner --> NonOwner: admin tries owner, 403 from the middleware
+    Owner --> Owner: admin edit or deactivate, 0 rows from the policy
+```
+
+- **`User` `@@allow("create")` / `@@allow("update")`** are `hasRole('owner') || (hasRole('admin') && roleKey != 'owner')`. A `create` policy is evaluated against the **input**, so an admin cannot create an owner (also through `provisionUser`, whose `User` create runs under the caller's own context). An `update` policy compiles to `UPDATE … WHERE <policy>` against the **stored** row, so an admin cannot demote, deactivate or otherwise edit an existing owner. It cannot see the **new** value (`cratestack-sqlx` `update_exec.rs` appends the policy to the `WHERE` and checks nothing after the write), so on its own it lets `admin → owner` through.
+- **`sms_api::owner_grant::enforce_owner_grant_guard`** (`backends/crates/sms-api/src/owner_grant.rs`, mounted in `router::router`) is the other half: for `POST /users` and `PATCH /users/{id}`, when the authenticated role is not `owner`, it buffers the body, decodes it with the router's own codec into the same generated input type the handler decodes, and answers 403 if `roleKey` is `owner`. An undecodable body from a non-owner is refused (400, or 415 for a content type the router cannot decode), never forwarded. An owner's request is not inspected. Adding a user-write route fails `every_generated_user_write_route_is_guarded` until it is guarded or classified.
+- **Proof**: `backends/crates/sms-api/tests/role_escalation_live_postgres.rs` (the data-layer half) and `backends/apps/sms-gateway/tests/login_flow_live_postgres.rs` (`an_admin_cannot_*`, real sign-in, real HTTP, the incident replayed). Each guard was broken for real and the matching test failed; see `AGENTS.md`.
 
 Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`, and (#56/#57) `job:read`, `job:enqueue`, `worker:read`, and (#49) `dashboard:read` — the same literals `operator`'s own `perms` carry, reused verbatim rather than invented separately, since `require_permission` (§5.1) checks either claim for the identical string. Registered per `AppClient` and enforced verbatim — scopes are rejected rather than filtered, and an omitted `scope` yields `scope: None`, which your check must treat as denial.
 
