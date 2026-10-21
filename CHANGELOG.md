@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.8.0](https://github.com/vaam-apps/vsms/compare/v0.7.0...v0.8.0) (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **admin:** rebuild the console on M3 Expressive and stop the page reloads ([#436](https://github.com/vaam-apps/vsms/issues/436))
+
+### Features
+
+* **admin:** rebuild the console on M3 Expressive and stop the page reloads ([#436](https://github.com/vaam-apps/vsms/issues/436)) ([90c0c70](https://github.com/vaam-apps/vsms/commit/90c0c70525e55636dec39e8e8da7fbff4a95e8db))
+* **provider:** AWS End User Messaging SMS as the go-live provider, receipts via SNS ([#435](https://github.com/vaam-apps/vsms/issues/435)) ([f2662c7](https://github.com/vaam-apps/vsms/commit/f2662c7d8806d1c92f0905a688b2baf7121b66ff))
+
+
+### Bug Fixes
+
+* **rbac:** only an owner may grant, remove or deactivate owner ([#434](https://github.com/vaam-apps/vsms/issues/434)) ([181a087](https://github.com/vaam-apps/vsms/commit/181a08749f9338066cc0b004f2c7156773a48eba))
+
+
+### Documentation
+
+* add a VitePress docs site with the vaam-apps Material 3 theme ([#431](https://github.com/vaam-apps/vsms/issues/431)) ([7e8a9b4](https://github.com/vaam-apps/vsms/commit/7e8a9b416c4f3204af69acaa5049f42728ebfb9e))
+
 ## [0.7.0](https://github.com/vaam-apps/vsms/compare/v0.6.0...v0.7.0) (2026-10-20)
 
 
