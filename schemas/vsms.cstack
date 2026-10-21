@@ -1095,12 +1095,27 @@ model User {
   // denial is row-level filtering, not a 403) and every login would fail
   // as though the account didn't exist.
   @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('auditor') || hasRole('system'))
-  @@allow("create", hasRole('owner') || hasRole('admin'))
+  // create/update: `owner` is the top of the console's role ladder — only an
+  // owner may delete a User or edit a Role — so an `admin` must not be able
+  // to mint one (2026-10-20, production: an admin updated its OWN record to
+  // roleKey = owner). Two different mechanics, one clause each:
+  //   * create — CrateStack evaluates the policy against the INPUT values,
+  //     so `roleKey != 'owner'` refuses an admin creating an owner.
+  //   * update — the policy compiles to `UPDATE ... WHERE <policy>` on the
+  //     STORED row, so `roleKey != 'owner'` stops an admin editing
+  //     (demoting, deactivating) an existing owner. It CANNOT see the NEW
+  //     value (cratestack-sqlx update_exec.rs: `UPDATE ... AND policy(...)
+  //     RETURNING`, no post-write check), so on its own it does not stop an
+  //     admin promoting a non-owner — itself included — to owner. That half
+  //     is `sms_api::owner_grant::enforce_owner_grant_guard`, a request
+  //     middleware on `POST /users` and `PATCH /users/{id}` (router.rs).
+  //     Do not remove either half without re-reading this comment.
+  @@allow("create", hasRole('owner') || (hasRole('admin') && roleKey != 'owner'))
   // update: hasRole('system') added alongside — a successful login stamps
   // lastLoginAt (backends/crates/sms-auth/src/login.rs), and that write runs under
   // the same system context the read above does, for the same reason: it
   // happens before any human principal exists to hold owner/admin.
-  @@allow("update", hasRole('owner') || hasRole('admin') || hasRole('system'))
+  @@allow("update", hasRole('owner') || (hasRole('admin') && roleKey != 'owner') || hasRole('system'))
   @@allow("delete", hasRole('owner'))
   @@emit(created, updated, deleted)
 }

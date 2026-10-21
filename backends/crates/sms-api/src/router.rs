@@ -21,10 +21,17 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use crate::auth::GatewayAuth;
+use crate::owner_grant::{OwnerGrantState, enforce_owner_grant_guard};
 use crate::pepper::HashPepper;
 use crate::procedures::Procedures;
 use crate::rbac::{RbacState, RoutePermission, enforce_route_permission};
 use crate::schema;
+
+/// The one transport (codec) the generated router is built with. Named so
+/// the request-body guard in [`crate::owner_grant`] decodes with the *same*
+/// codec the handlers do: a body the guard cannot read is a body the handler
+/// would not be reading the same way.
+pub(crate) const ROUTER_CODEC: JsonCodec = JsonCodec;
 
 /// #24's concrete write-route anchor, for #25's gate test to target (see
 /// `docs/architecture.md` §5.2's role table: `operator` has
@@ -750,6 +757,11 @@ pub fn router(
         auth: auth.clone(),
         requirements: SENDER_AND_WEBHOOK_WRITE_ROUTES,
     };
+    // Who may hand out `owner`: the write-path half of the guard whose
+    // schema half is `User`'s `@@allow("create"/"update")` — see
+    // `owner_grant.md`. Another independent layer, for the reason every
+    // `RbacState` above is one.
+    let owner_grant_state = OwnerGrantState { auth: auth.clone() };
     let idempotency_auth_state = IdempotencyAuthState { auth: auth.clone() };
     let idempotency_store: Arc<dyn IdempotencyStore> =
         Arc::new(SqlxIdempotencyStore::new(db.pool().clone()));
@@ -786,7 +798,7 @@ pub fn router(
         db,
         Procedures::new(pepper),
         (),
-        JsonCodec,
+        ROUTER_CODEC,
         auth,
         cratestack::DEFAULT_BODY_LIMIT_BYTES,
     )
@@ -799,6 +811,10 @@ pub fn router(
     .layer(from_fn_with_state(
         sender_and_webhook_rbac_state,
         enforce_route_permission,
+    ))
+    .layer(from_fn_with_state(
+        owner_grant_state,
+        enforce_owner_grant_guard,
     ))
     .layer(
         IdempotencyLayer::new(idempotency_store, idempotency_ttl)
