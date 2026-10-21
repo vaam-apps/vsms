@@ -39,3 +39,13 @@ fully closes that route to every token this deployment can mint today.
 Layer 2's gate on it is real, tested, and load-bearing the moment a
 role-bearing (human) token exists; until then it is defense in depth,
 not the thing actually stopping a live request.
+
+# A second kind of Layer-2 middleware: guarding the *value* written
+
+`enforce_route_permission` asks "may this caller use this route at all". Some
+rules are about the **value** a permitted caller writes, which a Layer-1
+`UPDATE … WHERE <policy>` cannot see (it checks the stored row, never the new
+one). [`owner_grant`](crate::owner_grant) is the first: only an `owner` may set
+a `User`'s `roleKey` to `owner`. It reuses `authenticate_request` (the same
+re-authentication this module's gate runs) and follows the same rule — it only
+ever adds a refusal in front of Layer 1, never a bypass of it.

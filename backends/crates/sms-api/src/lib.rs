@@ -33,6 +33,7 @@ pub mod consent;
 pub mod dlr;
 pub mod errors;
 pub mod metrics;
+pub mod owner_grant;
 pub mod pepper;
 pub mod procedures;
 pub mod rbac;

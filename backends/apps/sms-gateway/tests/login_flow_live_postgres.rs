@@ -43,6 +43,19 @@
 //! (schema DDL, not a data-access bypass; every actual data write in the
 //! test still goes through the real `CrateStack` delegates).
 //!
+//! The last group, `an_admin_cannot_*` / `an_owner_may_*` below, is the
+//! end-to-end half of the "who may hand out `owner`" fix (2026-10-20, a
+//! production `admin` promoted itself to `owner`). `User`'s `@@allow` can
+//! refuse an admin *creating* an owner or *editing a stored* owner, but an
+//! update policy runs against the stored row and cannot see the new
+//! `roleKey`, so promotion is refused by
+//! `sms_api::owner_grant::enforce_owner_grant_guard`, a request middleware —
+//! which only a real HTTP request through the real gateway can exercise. These
+//! tests sign a real `admin` / `owner` in and drive `PATCH /users/{id}`,
+//! `POST /users` and `POST /$procs/provisionUser` with the same JSON the
+//! console's `updateUser` / `provisionUser` send
+//! (`frontends/packages/gateway/src/users.ts`).
+//!
 //! Ignored by default, same convention as this workspace's other live
 //! suites. Run explicitly:
 //!
@@ -985,4 +998,424 @@ async fn a_role_keyed_system_never_authenticates_even_past_the_database_check() 
     // observes the gap — only a genuine failure here would need a
     // follow-up `just test-live-clean`).
     fixture.cleanup(&db).await;
+}
+
+// ---------------------------------------------------------------------------
+// Who may hand out `owner` — over real HTTP.
+// ---------------------------------------------------------------------------
+
+/// A seeded staff `User` with a login credential, on one of §5.2's built-in
+/// roles (seeded by `0002_bootstrap`, not by this suite).
+struct StaffAccount {
+    id: String,
+    email: String,
+}
+
+/// An `owner`-context create (always allowed) of a `User` on `role_key`, plus
+/// a `UserCredential` so the account can sign in. `label` keeps the rows of
+/// one test apart and readable in a failure.
+async fn seed_staff_account(
+    db: &Cratestack,
+    suffix: &str,
+    label: &str,
+    role_key: &str,
+) -> StaffAccount {
+    let email = format!("owner-grant-{label}-{suffix}@example.test");
+    let user = db
+        .user()
+        .create(schema::CreateUserInput {
+            subject: format!("owner-grant-subject-{label}-{suffix}"),
+            email: email.clone(),
+            displayName: format!("Owner Grant {label}"),
+            roleKey: role_key.to_owned(),
+            lastLoginAt: None,
+            deletedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a staff User");
+    db.user_credential()
+        .create(schema::CreateUserCredentialInput {
+            userId: user.id.clone(),
+            passwordHash: sms_core::password::hash_password(TEST_PASSWORD)
+                .expect("hashing the test password"),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a UserCredential");
+    StaffAccount { id: user.id, email }
+}
+
+/// The full `/login` -> `/token` round trip for `email`, returning the
+/// resulting access token — what the console's BFF holds after sign-in.
+async fn sign_in(process: &GatewayProcess, email: &str, suffix: &str) -> String {
+    let client = reqwest::Client::new();
+    let (verifier, challenge) = pkce_pair();
+    let state = format!("state-{suffix}");
+    let nonce = format!("nonce-{suffix}");
+
+    let login_response = client
+        .post(format!("{}/login", process.issuer))
+        .json(&login_body(
+            email,
+            TEST_PASSWORD,
+            &state,
+            &challenge,
+            &nonce,
+        ))
+        .send()
+        .await
+        .expect("POSTing to /login");
+    assert_eq!(login_response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = login_response.json().await.expect("parsing /login's body");
+    let (code, _) = parse_code_and_state(body["redirect"].as_str().expect("a redirect string"));
+
+    let token_response = client
+        .post(format!("{}/token", process.issuer))
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", REDIRECT_URI),
+            ("client_id", CONSOLE_CLIENT_ID),
+            ("code_verifier", verifier.as_str()),
+        ])
+        .send()
+        .await
+        .expect("POSTing to /token");
+    let token_body: serde_json::Value = token_response.json().await.expect("parsing /token's body");
+    token_body["access_token"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no access_token in {token_body}"))
+        .to_owned()
+}
+
+/// A signed-in `admin`, a signed-in `owner`, and a third, lower-privileged
+/// user for them to act on, all behind one real spawned gateway.
+struct OwnerGrantRig {
+    db: Cratestack,
+    process: GatewayProcess,
+    client: reqwest::Client,
+    suffix: String,
+    admin: StaffAccount,
+    admin_token: String,
+    owner_token: String,
+}
+
+async fn owner_grant_rig() -> OwnerGrantRig {
+    let db_url = sms_test_support::database_url().await;
+    let db = db().await;
+    let suffix = unique_suffix();
+
+    sms_auth::op::rotate_signing_key(&db, &sys(), sms_auth::op::ROTATION_OVERLAP)
+        .await
+        .expect("rotating in a signing key");
+    ensure_orange_cm_provider(&db).await;
+    ensure_console_client(&db).await;
+    let admin = seed_staff_account(&db, &suffix, "admin", "admin").await;
+    let owner_account = seed_staff_account(&db, &suffix, "owner", "owner").await;
+
+    let port = free_port();
+    let process = GatewayProcess::spawn(&db_url, port).await;
+    let admin_token = sign_in(&process, &admin.email, &suffix).await;
+    let owner_token = sign_in(&process, &owner_account.email, &suffix).await;
+    OwnerGrantRig {
+        db,
+        process,
+        client: reqwest::Client::new(),
+        suffix,
+        admin,
+        admin_token,
+        owner_token,
+    }
+}
+
+impl OwnerGrantRig {
+    async fn user(&self, id: &str) -> schema::User {
+        self.db
+            .user()
+            .find_unique(id.to_owned())
+            .run(&owner())
+            .await
+            .expect("reading the user back")
+            .expect("the user exists")
+    }
+
+    async fn user_by_email(&self, email: &str) -> Option<schema::User> {
+        self.db
+            .user()
+            .find_many()
+            .where_expr(FilterExpr::from(schema::user::email().eq(email.to_owned())))
+            .run(&owner())
+            .await
+            .expect("listing users by email")
+            .into_iter()
+            .next()
+    }
+
+    /// `PATCH /users/{id}` the way the console's `updateUser` sends it:
+    /// JSON body, `If-Match` the row's current version.
+    async fn patch_user(
+        &self,
+        token: &str,
+        target: &schema::User,
+        body: serde_json::Value,
+    ) -> reqwest::Response {
+        self.client
+            .patch(format!("{}/users/{}", self.process.issuer, target.id))
+            .bearer_auth(token)
+            .header("if-match", format!("\"{}\"", target.version))
+            .json(&body)
+            .send()
+            .await
+            .expect("PATCHing /users/{id}")
+    }
+
+    async fn finish(self) {
+        self.process.kill_and_wait().await;
+    }
+}
+
+async fn assert_forbidden(response: reqwest::Response, what: &str) {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert_eq!(
+        status,
+        reqwest::StatusCode::FORBIDDEN,
+        "{what} must be refused with 403, got {status}: {body}"
+    );
+}
+
+/// The incident, replayed: an `admin` sends `PATCH` for its OWN record to
+/// `roleKey = owner`. Refused by the request middleware (an `UPDATE` policy
+/// cannot see the new value), and the row is unchanged.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_admin_cannot_promote_itself_to_owner() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = owner_grant_rig().await;
+    let before = rig.user(&rig.admin.id).await;
+
+    let response = rig
+        .patch_user(
+            &rig.admin_token,
+            &before,
+            serde_json::json!({ "roleKey": "owner" }),
+        )
+        .await;
+    assert_forbidden(response, "an admin promoting itself to owner").await;
+
+    let after = rig.user(&rig.admin.id).await;
+    assert_eq!(after.roleKey, "admin");
+    assert_eq!(
+        after.version, before.version,
+        "the refused write must not bump the row"
+    );
+    rig.finish().await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_admin_cannot_promote_another_user_to_owner() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = owner_grant_rig().await;
+    let target = seed_staff_account(&rig.db, &rig.suffix, "target", "support").await;
+    let before = rig.user(&target.id).await;
+
+    let response = rig
+        .patch_user(
+            &rig.admin_token,
+            &before,
+            serde_json::json!({ "roleKey": "owner", "displayName": "Promoted" }),
+        )
+        .await;
+    assert_forbidden(response, "an admin promoting another user to owner").await;
+
+    let after = rig.user(&target.id).await;
+    assert_eq!(after.roleKey, "support");
+    assert_eq!(after.displayName, before.displayName);
+    rig.finish().await;
+}
+
+/// The same refusal with a body the console would never send but an attacker
+/// might: a `Content-Type` with parameters, and a CBOR body (the generated
+/// route lists CBOR as an accepted request type; this router is wired with
+/// `JsonCodec` only, so CBOR is a 415 — never forwarded, never applied).
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_admin_cannot_smuggle_owner_past_the_guard_in_another_encoding() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = owner_grant_rig().await;
+    let target = seed_staff_account(&rig.db, &rig.suffix, "smuggle", "support").await;
+    let before = rig.user(&target.id).await;
+    let url = format!("{}/users/{}", rig.process.issuer, target.id);
+    let if_match = format!("\"{}\"", before.version);
+
+    // JSON with a charset parameter and odd casing of the value.
+    for value in ["owner", "Owner", " owner "] {
+        let response = rig
+            .client
+            .patch(&url)
+            .bearer_auth(&rig.admin_token)
+            .header("if-match", &if_match)
+            .header("content-type", "application/json; charset=utf-8")
+            .body(format!("{{\"roleKey\":\"{value}\"}}"))
+            .send()
+            .await
+            .expect("PATCHing /users/{id}");
+        assert_forbidden(response, &format!("roleKey {value:?} in charset-JSON")).await;
+    }
+
+    // CBOR {"roleKey": "owner"}.
+    let mut cbor = vec![0xA1, 0x67];
+    cbor.extend_from_slice(b"roleKey");
+    cbor.push(0x65);
+    cbor.extend_from_slice(b"owner");
+    let response = rig
+        .client
+        .patch(&url)
+        .bearer_auth(&rig.admin_token)
+        .header("if-match", &if_match)
+        .header("content-type", "application/cbor")
+        .body(cbor)
+        .send()
+        .await
+        .expect("PATCHing /users/{id} with CBOR");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+        "a CBOR body the router cannot decode is refused, not forwarded"
+    );
+
+    // An undecodable body from a non-owner fails closed.
+    let response = rig
+        .client
+        .patch(&url)
+        .bearer_auth(&rig.admin_token)
+        .header("if-match", &if_match)
+        .header("content-type", "application/json")
+        .body("{not json")
+        .send()
+        .await
+        .expect("PATCHing /users/{id} with garbage");
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+
+    assert_eq!(rig.user(&target.id).await.roleKey, "support");
+    rig.finish().await;
+}
+
+/// Creating an owner is refused two ways, on purpose: `POST /users` by the
+/// request middleware, and `POST /$procs/provisionUser` (whose `User` create
+/// runs under the caller's own context) by `User`'s `create` policy.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_admin_cannot_create_an_owner() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = owner_grant_rig().await;
+
+    let post_email = format!("owner-grant-post-{}@example.test", rig.suffix);
+    let response = rig
+        .client
+        .post(format!("{}/users", rig.process.issuer))
+        .bearer_auth(&rig.admin_token)
+        .json(&serde_json::json!({
+            "subject": format!("owner-grant-post-{}", rig.suffix),
+            "email": post_email,
+            "displayName": "Created Owner",
+            "roleKey": "owner",
+        }))
+        .send()
+        .await
+        .expect("POSTing /users");
+    assert_forbidden(response, "an admin creating an owner via POST /users").await;
+    assert!(rig.user_by_email(&post_email).await.is_none());
+
+    let prov_email = format!("owner-grant-prov-{}@example.test", rig.suffix);
+    let response = rig
+        .client
+        .post(format!("{}/$procs/provisionUser", rig.process.issuer))
+        .bearer_auth(&rig.admin_token)
+        .json(&serde_json::json!({ "args": {
+            "email": prov_email,
+            "displayName": "Provisioned Owner",
+            "roleKey": "owner",
+        }}))
+        .send()
+        .await
+        .expect("POSTing provisionUser");
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_client_error(),
+        "an admin provisioning an owner must be refused, got {status}: {body}"
+    );
+    assert!(rig.user_by_email(&prov_email).await.is_none());
+
+    rig.finish().await;
+}
+
+/// Controls: the guard must not break what admins and owners legitimately do.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_admin_still_manages_non_owners_and_an_owner_may_grant_owner() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = owner_grant_rig().await;
+
+    // admin -> operator on another user: allowed.
+    let target = seed_staff_account(&rig.db, &rig.suffix, "control", "support").await;
+    let before = rig.user(&target.id).await;
+    let response = rig
+        .patch_user(
+            &rig.admin_token,
+            &before,
+            serde_json::json!({ "roleKey": "operator" }),
+        )
+        .await;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_success(),
+        "admin -> operator was refused ({status}): {body}"
+    );
+    assert_eq!(rig.user(&target.id).await.roleKey, "operator");
+
+    // admin creating a non-owner via the provisioning procedure: allowed.
+    let prov_email = format!("owner-grant-ok-{}@example.test", rig.suffix);
+    let response = rig
+        .client
+        .post(format!("{}/$procs/provisionUser", rig.process.issuer))
+        .bearer_auth(&rig.admin_token)
+        .json(&serde_json::json!({ "args": {
+            "email": prov_email,
+            "displayName": "Provisioned Operator",
+            "roleKey": "operator",
+        }}))
+        .send()
+        .await
+        .expect("POSTing provisionUser");
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_success(),
+        "admin provisioning an operator was refused ({status}): {body}"
+    );
+
+    // owner -> owner: allowed (the middleware does not inspect an owner).
+    let promote = seed_staff_account(&rig.db, &rig.suffix, "promote", "admin").await;
+    let before = rig.user(&promote.id).await;
+    let response = rig
+        .patch_user(
+            &rig.owner_token,
+            &before,
+            serde_json::json!({ "roleKey": "owner" }),
+        )
+        .await;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_success(),
+        "owner -> owner was refused ({status}): {body}"
+    );
+    assert_eq!(rig.user(&promote.id).await.roleKey, "owner");
+
+    rig.finish().await;
 }

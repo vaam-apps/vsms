@@ -50,7 +50,7 @@ pub struct RoutePermission {
     pub permission: &'static str,
 }
 
-fn path_matches(template: &str, actual: &str) -> bool {
+pub(crate) fn path_matches(template: &str, actual: &str) -> bool {
     let mut template_segments = template.split('/');
     let mut actual_segments = actual.split('/');
     loop {
@@ -67,7 +67,7 @@ fn path_matches(template: &str, actual: &str) -> bool {
     }
 }
 
-fn error_response(error: &CratestackError) -> Response {
+pub(crate) fn error_response(error: &CratestackError) -> Response {
     let status = error.status_code();
     let body = CratestackErrorResponse {
         code: error.code().to_owned(),
@@ -75,6 +75,55 @@ fn error_response(error: &CratestackError) -> Response {
         details: None,
     };
     (status, Json(body)).into_response()
+}
+
+/// Authenticates `request` exactly the way the generated router's own
+/// handler is about to — [`GatewayAuth::authenticate`] against the request's
+/// method, path, query and headers — for the middlewares in this crate that
+/// must decide *before* the generated router runs ([`enforce_route_permission`]
+/// here, `owner_grant::enforce_owner_grant_guard`). Cheap: cached JWKS and a
+/// 60s-TTL `AppClient`/`User` lookup, the same cost the generated router pays
+/// a moment later on the same request.
+///
+/// A plain `fn` returning an owned (`'static`) future rather than an
+/// `async fn` borrowing `request`: an axum `Request` is `!Sync` (its body
+/// is), so a `&Request` held across the `.await` would make the calling
+/// middleware's future `!Send` and `from_fn_with_state` would refuse it.
+pub(crate) fn authenticate_request(
+    auth: &GatewayAuth,
+    request: &Request,
+) -> impl core::future::Future<Output = Result<CratestackContext, CratestackError>> + Send + 'static
+{
+    let auth = auth.clone();
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let headers = request.headers().clone();
+    let query = request.uri().query().map(str::to_owned);
+    // cratestack 0.7.13 (cratestack#552): `RequestContext` gained an
+    // `extensions: &http::Extensions` field so an `AuthProvider` can read
+    // whatever a preceding tower/axum layer inserted (`ConnectInfo`, an
+    // mTLS peer identity, ...). `GatewayAuth::authenticate` doesn't read it
+    // today, but the field is mandatory to construct `RequestContext` at
+    // all, so this helper — which builds one by hand, outside the
+    // generated dispatch path that already threads it through — has to
+    // supply *a* value. Cloning `request`'s own extensions is the correct
+    // one regardless of whether anything reads it yet: it is exactly what
+    // the generated router's own handler would see for this same request.
+    let extensions = request.extensions().clone();
+    async move {
+        let request_ctx = RequestContext {
+            method: method.as_str(),
+            path: &path,
+            query: query.as_deref(),
+            headers: &headers,
+            // `GatewayAuth::authenticate` never reads the body — only the
+            // generated router's own handler does, and the middlewares
+            // calling this leave `request`'s body for it.
+            body: &[],
+            extensions: &extensions,
+        };
+        auth.authenticate(&request_ctx).await
+    }
 }
 
 /// State for [`enforce_route_permission`] — a `GatewayAuth` to
@@ -115,32 +164,7 @@ pub async fn enforce_route_permission(
         return next.run(request).await;
     };
 
-    let headers = request.headers().clone();
-    let query = request.uri().query().map(str::to_owned);
-    // cratestack 0.7.13 (cratestack#552): `RequestContext` gained an
-    // `extensions: &http::Extensions` field so an `AuthProvider` can read
-    // whatever a preceding tower/axum layer inserted (`ConnectInfo`, an
-    // mTLS peer identity, ...). `GatewayAuth::authenticate` doesn't read it
-    // today, but the field is mandatory to construct `RequestContext` at
-    // all, so this middleware — which builds one by hand, outside the
-    // generated dispatch path that already threads it through — has to
-    // supply *a* value. Cloning `request`'s own extensions is the correct
-    // one regardless of whether anything reads it yet: it is exactly what
-    // the generated router's own handler would see for this same request.
-    let extensions = request.extensions().clone();
-    let request_ctx = RequestContext {
-        method: method.as_str(),
-        path: &path,
-        query: query.as_deref(),
-        headers: &headers,
-        // `GatewayAuth::authenticate` never reads the body — only the
-        // generated router's own handler does, and this middleware leaves
-        // `request`'s body untouched for it.
-        body: &[],
-        extensions: &extensions,
-    };
-
-    let ctx = match state.auth.authenticate(&request_ctx).await {
+    let ctx = match authenticate_request(&state.auth, &request).await {
         Ok(ctx) => ctx,
         Err(error) => return error_response(&error),
     };
