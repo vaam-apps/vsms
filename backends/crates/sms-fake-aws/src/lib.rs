@@ -29,8 +29,10 @@ use signing::SigningIdentity;
 
 /// Region the fake's defaults use.
 pub const DEFAULT_REGION: &str = "eu-west-1";
-/// Access key id the fake's defaults recognise. Not an AWS key.
-pub const DEFAULT_ACCESS_KEY_ID: &str = "AKIAFAKEAWSSMSDEMO00";
+/// Access key id the fake's defaults recognise. Deliberately not shaped like
+/// an AWS key id (`AKIA` + 16 characters), so no secret scanner mistakes it
+/// for one.
+pub const DEFAULT_ACCESS_KEY_ID: &str = "FAKE-AWS-SMS-DEMO-KEY";
 /// Secret the fake's defaults recognise. Not an AWS secret.
 pub const DEFAULT_SECRET_ACCESS_KEY: &str = "fake-aws-secret-access-key-not-a-real-one";
 /// Configuration set the fake's defaults expect.

@@ -580,7 +580,7 @@ services:
       # sms-fake-aws's default demo account (`sms_fake_aws::DEFAULT_*`):
       # public, fixed, accepted by nothing but the fake.
       AWS_SMS_REGION: eu-west-1
-      AWS_SMS_ACCESS_KEY_ID: AKIAFAKEAWSSMSDEMO00
+      AWS_SMS_ACCESS_KEY_ID: FAKE-AWS-SMS-DEMO-KEY
       AWS_SMS_SECRET_ACCESS_KEY: fake-aws-secret-access-key-not-a-real-one
       AWS_SMS_CONFIGURATION_SET: vsms-fake
       AWS_SMS_TPS_CEILING: '10'

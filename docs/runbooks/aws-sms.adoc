@@ -967,7 +967,7 @@ acknowledged, with an RSA key and certificate it generates at start-up.
 catch-all route beside Orange's, at the same priority and weight, so messages
 split between the two fakes and each message's detail page names its
 provider. The worker gets the fake's fixed demo account
-(`AKIAFAKEAWSSMSDEMO00`, configuration set `vsms-fake`), and the gateway gets
+(`FAKE-AWS-SMS-DEMO-KEY`, configuration set `vsms-fake`), and the gateway gets
 `AWS_SMS_EVENTS_TOPIC_ARN` plus `AWS_SMS_FAKE_SNS_CERT_BASE`.
 
 That second variable exists only in an `sms-gateway` built with the

@@ -36,3 +36,5 @@ code, they are held to AWS's published vectors rather than to the adapter
 Not modelled: carriers, real delivery times, prices, the sandbox's verified
 numbers (a decision decides), opt-out lists, spend accounting, and
 `UnsubscribeURL` (present, never served).
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

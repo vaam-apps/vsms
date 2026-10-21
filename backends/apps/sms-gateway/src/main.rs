@@ -377,17 +377,15 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
-
-    use super::Cli;
-
     /// A build without the `fake-aws` feature — every release image — has
     /// no way to be told to trust `sms-fake-aws`'s certificate: the flag is
     /// not merely ignored, it does not parse.
     #[cfg(not(feature = "fake-aws"))]
     #[test]
     fn a_release_build_has_no_fake_certificate_flag() {
-        let error = Cli::try_parse_from([
+        use clap::Parser;
+
+        let error = super::Cli::try_parse_from([
             "sms-gateway",
             "serve",
             "--aws-sms-fake-sns-cert-base",

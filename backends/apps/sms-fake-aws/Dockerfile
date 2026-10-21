@@ -25,7 +25,12 @@ FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 
 COPY --from=builder /tmp/sms-fake-aws /usr/local/bin/sms-fake-aws
 
+# Bind every interface inside the container (as the other images do), and
+# give `healthcheck` the port to probe.
+ENV FAKE_AWS_BIND_ADDR=0.0.0.0:8095
 EXPOSE 8095
 
 USER 65532:65532
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/usr/local/bin/sms-fake-aws", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/sms-fake-aws"]

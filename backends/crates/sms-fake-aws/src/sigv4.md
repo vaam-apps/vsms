@@ -19,3 +19,5 @@ of them as `Unavailable`, the same as against AWS.
 AWS's documentation requires `host` and `x-amz-date` to be signed. The fake
 also requires `x-amz-target`, which the adapter signs: a signature that left
 it out would let a captured request be replayed as another operation.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

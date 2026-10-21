@@ -11,3 +11,5 @@ certificate is fetched from, and only when the caller opts in (see
 The file name is `SimpleNotificationService-<first 16 bytes of the
 certificate's SHA-256, hex>.pem`. AWS's own names have the same shape, which
 is all the receiver checks.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

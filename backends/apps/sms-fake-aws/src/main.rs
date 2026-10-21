@@ -103,6 +103,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // `sms-fake-aws healthcheck`: the image's HEALTHCHECK, which has no shell
+    // or curl to run (distroless). Handled before clap so it needs none of
+    // the serving flags.
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        return healthcheck();
+    }
+
     let cli = Cli::parse();
     let delay = Duration::from_millis(cli.delivery_delay_ms);
     let decision = match cli.fault_mode {
@@ -158,6 +165,24 @@ async fn main() -> anyhow::Result<()> {
         submits_received = fake.ledger().submits().len(),
         "sms-fake-aws shutting down"
     );
+    Ok(())
+}
+
+/// Exit 0 if something accepts a TCP connection on this process's port.
+/// Reads `FAKE_AWS_BIND_ADDR` (the image sets it), connecting to loopback
+/// when it names every interface.
+fn healthcheck() -> anyhow::Result<()> {
+    let bind = std::env::var("FAKE_AWS_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1:8095".to_owned());
+    let addr: std::net::SocketAddr = bind
+        .parse()
+        .with_context(|| format!("FAKE_AWS_BIND_ADDR {bind:?} is not an address"))?;
+    let target = if addr.ip().is_unspecified() {
+        std::net::SocketAddr::from(([127, 0, 0, 1], addr.port()))
+    } else {
+        addr
+    };
+    std::net::TcpStream::connect_timeout(&target, Duration::from_secs(2))
+        .with_context(|| format!("nothing is listening on {target}"))?;
     Ok(())
 }
 
