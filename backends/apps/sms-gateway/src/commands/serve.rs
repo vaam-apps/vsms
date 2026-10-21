@@ -163,6 +163,15 @@ pub(crate) struct ServeArgs {
     )]
     pub(crate) mtn_supports_alphanumeric_sender: bool,
 
+    /// The SNS topic AWS End User Messaging publishes delivery events to
+    /// (`arn:aws:sns:<region>:<account>:<name>`). Setting it serves
+    /// `POST /dlr/aws_sms`: every delivery is authenticated against this
+    /// exact topic and SNS's signature before it is ingested, and a
+    /// subscription confirmation for it is confirmed automatically. The
+    /// gateway needs no AWS credentials — sending happens in `sms-worker`.
+    #[arg(long, env = "AWS_SMS_EVENTS_TOPIC_ARN")]
+    pub(crate) aws_sms_events_topic_arn: Option<String>,
+
     /// #134: the server-held pepper behind `Message.msisdnHash`/
     /// `Message.bodyHash` — real secret material, config only, never
     /// the database, a migration, or a log line (see `sms_api::pepper`'s
@@ -436,6 +445,15 @@ struct MtnCredentials {
     supports_alphanumeric_sender: bool,
 }
 
+/// The four raw `--orange-*` values, grouped like [`RawMtnArgs`] below so
+/// [`orange_credentials`]'s inputs travel together.
+struct RawOrangeArgs {
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    sender_number: Option<String>,
+    base_url: String,
+}
+
 /// [`mtn_credentials`]'s own raw input, one field per `--mtn-*` flag —
 /// grouped into a struct rather than eight positional parameters
 /// because a plain eight-argument function trips clippy's own
@@ -533,8 +551,21 @@ async fn build_dlr_router(
     sys: &cratestack::CratestackContext,
     orange: Option<OrangeCredentials>,
     mtn: Option<MtnCredentials>,
+    aws_sms_events_topic_arn: Option<String>,
 ) -> Result<axum::Router> {
     let mut providers = Vec::new();
+
+    if let Some(topic_arn) = aws_sms_events_topic_arn {
+        let provider: Arc<dyn SmsProvider> = Arc::new(
+            sms_provider_aws_sms::AwsSmsProvider::receiver(topic_arn)
+                .context("--aws-sms-events-topic-arn")?,
+        );
+        let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
+        providers.push(dlr::DlrProvider {
+            provider,
+            provider_row_id,
+        });
+    }
 
     if let Some(orange) = orange {
         let mut orange_config = sms_provider_orange_cm::OrangeCmConfig::production(
@@ -584,7 +615,7 @@ async fn build_dlr_router(
             "at least one provider must be configured to serve the DLR route: either \
              --orange-client-id, --orange-client-secret and --orange-sender-number, or \
              --mtn-client-id, --mtn-client-secret, --mtn-service-code, --mtn-tps-ceiling and \
-             --mtn-cost-per-segment-xaf (or their env vars)"
+             --mtn-cost-per-segment-xaf, or --aws-sms-events-topic-arn (or their env vars)"
         );
     }
 
@@ -598,27 +629,38 @@ async fn build_dlr_router(
 /// [`build_dlr_router`]'s and [`build_op_state`]'s own doc comments
 /// already record — this time it was MTN's own `--mtn-client-secret`/
 /// `--mtn-service-code` split landing on top of an already-tight budget.
-/// Seven parameters, not eight: `mtn`'s own five raw CLI values are
-/// already grouped into [`RawMtnArgs`] (see that struct's own doc for
-/// why), so this function doesn't just move the `too_many_arguments`
-/// problem one level up.
+/// Reads every provider flag off `args` itself, so adding a provider
+/// grows neither this signature nor [`serve_command`].
 async fn build_provider_routers(
     db: &Cratestack,
     sys: &cratestack::CratestackContext,
-    orange_client_id: Option<String>,
-    orange_client_secret: Option<String>,
-    orange_sender_number: Option<String>,
-    orange_base_url: String,
-    mtn: RawMtnArgs,
+    args: &ServeArgs,
 ) -> Result<(axum::Router, axum::Router)> {
+    let orange = RawOrangeArgs {
+        client_id: args.orange_client_id.clone(),
+        client_secret: args.orange_client_secret.clone(),
+        sender_number: args.orange_sender_number.clone(),
+        base_url: args.orange_base_url.clone(),
+    };
+    let mtn = RawMtnArgs {
+        client_id: args.mtn_client_id.clone(),
+        client_secret: args.mtn_client_secret.clone(),
+        service_code: args.mtn_service_code.clone(),
+        tps_ceiling: args.mtn_tps_ceiling,
+        cost_per_segment_xaf: args.mtn_cost_per_segment_xaf,
+        sender_id: args.mtn_sender_id.clone(),
+        supports_alphanumeric_sender: args.mtn_supports_alphanumeric_sender,
+        base_url: args.mtn_base_url.clone(),
+    };
     let orange = orange_credentials(
-        orange_client_id,
-        orange_client_secret,
-        orange_sender_number,
-        orange_base_url,
+        orange.client_id,
+        orange.client_secret,
+        orange.sender_number,
+        orange.base_url,
     )?;
     let mtn = mtn_credentials(mtn)?;
-    let dlr_router = build_dlr_router(db, sys, orange, mtn).await?;
+    let dlr_router =
+        build_dlr_router(db, sys, orange, mtn, args.aws_sms_events_topic_arn.clone()).await?;
     // #157: /readyz needs the same pooled handle every other router
     // shares — cloned here, before `sms_api::router` (in `serve_command`)
     // takes `db` by value as its own last use.
@@ -791,25 +833,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
             .map(|_| format!("{}{}", args.issuer, sms_auth::sso::START_PATH)),
     );
 
-    let (dlr_router, health_router) = build_provider_routers(
-        &db,
-        &sys,
-        args.orange_client_id.clone(),
-        args.orange_client_secret.clone(),
-        args.orange_sender_number.clone(),
-        args.orange_base_url.clone(),
-        RawMtnArgs {
-            client_id: args.mtn_client_id.clone(),
-            client_secret: args.mtn_client_secret.clone(),
-            service_code: args.mtn_service_code.clone(),
-            tps_ceiling: args.mtn_tps_ceiling,
-            cost_per_segment_xaf: args.mtn_cost_per_segment_xaf,
-            sender_id: args.mtn_sender_id.clone(),
-            supports_alphanumeric_sender: args.mtn_supports_alphanumeric_sender,
-            base_url: args.mtn_base_url.clone(),
-        },
-    )
-    .await?;
+    let (dlr_router, health_router) = build_provider_routers(&db, &sys, &args).await?;
 
     let ServeArgs {
         listen,

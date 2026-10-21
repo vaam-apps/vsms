@@ -24,6 +24,7 @@ sms-worker.workspace = true
 sms-provider.workspace = true
 sms-provider-orange-cm.workspace = true
 sms-provider-mtn.workspace = true
+sms-provider-aws-sms.workspace = true
 sms-api.workspace = true
 # mtn_provider's --mtn-cost-per-segment-xaf flag — money, never a float
 # (this repo's own standing rule; see `MtnConfig::cost_per_segment_xaf`'s

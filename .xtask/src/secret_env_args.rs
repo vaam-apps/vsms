@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 /// Variables whose value is credential material. Adding one here makes
 /// every existing `#[arg(..., env = "…")]` binding it a hard failure
 /// until it also carries `hide_env_values = true`.
-const SECRET_ENV_VARS: [&str; 5] = [
+const SECRET_ENV_VARS: [&str; 6] = [
     "DATABASE_URL",
     "SMS_HASH_PEPPER",
     "ORANGE_CM_CLIENT_SECRET",
@@ -41,6 +41,10 @@ const SECRET_ENV_VARS: [&str; 5] = [
     // provider (single sign-on). `SMS_SSO_CLIENT_ID` is not credential
     // material and stays visible, like the other `*_CLIENT_ID`s above.
     "SMS_SSO_CLIENT_SECRET",
+    // The secret half of the IAM access key the worker signs AWS End User
+    // Messaging requests with. `AWS_SMS_ACCESS_KEY_ID` identifies the key
+    // and is not credential material on its own, like the client ids.
+    "AWS_SMS_SECRET_ACCESS_KEY",
 ];
 
 /// Directory names never worth walking into — build output, VCS

@@ -16,6 +16,9 @@ sdks/node/*/dist/
 .env.*
 !.env.example
 *.pem
+# A public, self-signed test certificate (no private key exists for it);
+# see backends/crates/sms-provider-aws-sms/tests/fixtures/README.md.
+!backends/crates/sms-provider-aws-sms/tests/fixtures/test-sns-signing-cert.pem
 *.key
 /secrets/
 # deploy/secrets/ holds real, host-specific credentials at runtime
