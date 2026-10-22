@@ -109,6 +109,10 @@ socket2.workspace = true
 sms-test-support.workspace = true
 # chaos_live_postgres.rs's own fault-injecting Orange fake.
 sms-fake-orange.workspace = true
+# tests/aws_sms_fake_live_postgres.rs: AWS End User Messaging SMS and its
+# SNS receipts, through dispatch and DLR ingest, without an AWS account.
+sms-fake-aws.workspace = true
+sms-provider-aws-sms.workspace = true
 # chaos_live_postgres.rs stands up a minimal in-process axum server for
 # `POST /dlr/{providerKey}` — the real one lives in `backends/apps/sms-gateway`, a
 # binary crate with no `lib.rs` (same reason `oidc_flow_live.rs` duplicates

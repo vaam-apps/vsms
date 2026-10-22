@@ -58,9 +58,14 @@ COPY . .
 # real path before the RUN ends. `-musl` in both cache ids, distinct from
 # any glibc-targeted cache that might exist on the same builder host, since
 # the two produce incompatible `target/` artifacts.
+# Cargo features to build with. Empty for every published image: the release
+# workflow (.github/workflows/images.yml) never sets it. compose.dev.yaml sets
+# `fake-aws` so `just demo` can accept receipts from sms-fake-aws; see that
+# feature's comment in this crate's Cargo.toml.
+ARG CARGO_FEATURES=""
 RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-musl \
     --mount=type=cache,target=/app/target,id=cargo-target-workspace-musl \
-    cargo build --release --locked -p sms-gateway \
+    cargo build --release --locked -p sms-gateway --features "$CARGO_FEATURES" \
     && cp target/release/sms-gateway /tmp/sms-gateway
 
 # --- runtime -------------------------------------------------------------

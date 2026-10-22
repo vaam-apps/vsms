@@ -1,0 +1,52 @@
+[package]
+name = "sms-fake-aws"
+description = "A fake of AWS End User Messaging SMS (SendTextMessage, SigV4 checked) and of the Amazon SNS topic that carries its delivery events (signed notifications, a signing certificate generated at start-up). Dev/test-only: backs the live suites and the standalone backends/apps/sms-fake-aws demo process. Proves the code agrees with our reading of AWS's documentation, not that AWS agrees."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+# For the `SnsHttp` trait `RedirectSnsHttp` implements, and nothing else:
+# the fake's own SigV4 check and SNS string-to-sign are written again here
+# rather than reused, so the two sides are not one implementation agreeing
+# with itself.
+sms-provider-aws-sms.workspace = true
+
+async-trait.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+hex.workspace = true
+hmac.workspace = true
+rand.workspace = true
+# Signs SNS notifications (RSA PKCS#1 v1.5, SHA-256) with the key `rsa`
+# generates. Already in the graph through rustls; named directly here.
+ring.workspace = true
+# A self-signed X.509 certificate around that key, so the receiver's real
+# `webpki` path parses and verifies it exactly as it would AWS's. The `ring`
+# backend only: rcgen's other backend is aws-lc-rs, which this workspace
+# keeps out of the graph.
+rcgen.workspace = true
+reqwest.workspace = true
+rsa.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["net", "time", "sync"] }
+tracing.workspace = true
+url.workspace = true
+
+
+[dev-dependencies]
+sms-encoding.workspace = true
+sms-provider.workspace = true
+rust_decimal.workspace = true
+rustls.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "time", "sync"] }
+
+[lints]
+workspace = true

@@ -953,6 +953,73 @@ sender ID that is rewritten downstream is invisible to every delivery receipt.
 | Expected, and a deliberate trade (a possibly lost message over a duplicate). It is not retried. Check AWS's own logs if you need to know.
 |===
 
+[[without-an-aws-account]]
+== Without an AWS account: `sms-fake-aws`
+
+`backends/crates/sms-fake-aws` stands in for AWS the way `sms-fake-orange`
+stands in for Orange. It answers `SendTextMessage` (checking the worker's
+Signature Version 4 signature against its own implementation, held to AWS's
+published `get-vanilla` vector), and plays the SNS topic: for every accepted
+message it publishes signed `Notification`s to `/dlr/aws_sms`, retrying until
+acknowledged, with an RSA key and certificate it generates at start-up.
+
+`just demo` runs it. `compose.dev.yaml` seeds an `aws_sms` provider and
+catch-all route beside Orange's, at the same priority and weight, so messages
+split between the two fakes and each message's detail page names its
+provider. The worker gets the fake's fixed demo account
+(`FAKE-AWS-SMS-DEMO-KEY`, configuration set `vsms-fake`), and the gateway gets
+`AWS_SMS_EVENTS_TOPIC_ARN` plus `AWS_SMS_FAKE_SNS_CERT_BASE`.
+
+That second variable exists only in an `sms-gateway` built with the
+off-by-default `fake-aws` cargo feature. It changes where the signing
+certificate is fetched from and nothing else: the topic, the signature version,
+the certificate URL's shape (`https://sns.<region>.amazonaws.com/SimpleNotificationService-<hex>.pem`,
+which is what the fake's notifications carry) and the signature are checked
+exactly as in production. Every published image is built without the feature,
+so it cannot be told to trust the fake: the flag does not parse.
+
+[cols="1,3"]
+|===
+| `sms-fake-aws --fault-mode` | What every submit gets
+
+| `happy` (default)
+| Accepted; `TEXT_PENDING`, then `TEXT_DELIVERED` after `--delivery-delay-ms`.
+
+| `carrier-only`
+| Accepted; a final `TEXT_SUCCESSFUL`, as carriers without handset receipts report.
+
+| `silent`
+| Accepted, never reported: the message ends `expired`.
+
+| `sandbox`
+| Refused with `DESTINATION_PHONE_NUMBER_NOT_VERIFIED`: traffic fails over to Orange.
+
+| `unreachable`
+| Accepted; a final `TEXT_CARRIER_UNREACHABLE`.
+|===
+
+[,bash]
+----
+docker compose -f compose.dev.yaml stop sms-fake-aws
+docker compose -f compose.dev.yaml run --rm --service-ports sms-fake-aws \
+  --bind-addr 0.0.0.0:8095 \
+  --dlr-endpoint http://sms-gateway:8080/dlr/aws_sms \
+  --fault-mode sandbox
+----
+
+The same fake backs `backends/crates/sms-fake-aws/tests/round_trip.rs` (the
+real adapter against the fake over HTTP, no database: signing, every error
+class, tampering, redelivery, a subscription confirmation) and
+`backends/crates/sms-worker/tests/aws_sms_fake_live_postgres.rs` (dispatch to a
+signed receipt and `delivered`; the sandbox refusal failing over to Orange; a
+response without a `MessageId` held `uncertain` and never resent; a tampered
+receipt refused on the route).
+
+Both sides were written from the same reading of AWS's documentation, so all
+of this proves the code agrees with that reading, over real HTTP and through
+the real signature code. It does not prove AWS behaves that way; step 9 with a
+real account does.
+
 [[known-limits]]
 == Known limits
 

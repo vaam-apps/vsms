@@ -166,11 +166,21 @@ pub(crate) struct ServeArgs {
     /// The SNS topic AWS End User Messaging publishes delivery events to
     /// (`arn:aws:sns:<region>:<account>:<name>`). Setting it serves
     /// `POST /dlr/aws_sms`: every delivery is authenticated against this
-    /// exact topic and SNS's signature before it is ingested, and a
-    /// subscription confirmation for it is confirmed automatically. The
-    /// gateway needs no AWS credentials — sending happens in `sms-worker`.
+    /// exact topic and SNS's signature before it is ingested. A
+    /// subscription confirmation is never confirmed by the gateway: it is
+    /// logged with the command that confirms it. The gateway needs no AWS
+    /// credentials — sending happens in `sms-worker`.
     #[arg(long, env = "AWS_SMS_EVENTS_TOPIC_ARN")]
     pub(crate) aws_sms_events_topic_arn: Option<String>,
+
+    /// **Demo and test builds only** (the off-by-default `fake-aws` cargo
+    /// feature; no release image has this flag). Fetch SNS signing
+    /// certificates from this base URL (an `sms-fake-aws` process) instead
+    /// of from AWS, so receipts that fake signs are accepted. Every other
+    /// check on a receipt still applies. A blank value counts as unset.
+    #[cfg(feature = "fake-aws")]
+    #[arg(long, env = "AWS_SMS_FAKE_SNS_CERT_BASE")]
+    pub(crate) aws_sms_fake_sns_cert_base: Option<String>,
 
     /// #134: the server-held pepper behind `Message.msisdnHash`/
     /// `Message.bodyHash` — real secret material, config only, never
@@ -551,15 +561,12 @@ async fn build_dlr_router(
     sys: &cratestack::CratestackContext,
     orange: Option<OrangeCredentials>,
     mtn: Option<MtnCredentials>,
-    aws_sms_events_topic_arn: Option<String>,
+    aws_sms: Option<sms_provider_aws_sms::AwsSmsProvider>,
 ) -> Result<axum::Router> {
     let mut providers = Vec::new();
 
-    if let Some(topic_arn) = aws_sms_events_topic_arn {
-        let provider: Arc<dyn SmsProvider> = Arc::new(
-            sms_provider_aws_sms::AwsSmsProvider::receiver(topic_arn)
-                .context("--aws-sms-events-topic-arn")?,
-        );
+    if let Some(aws_sms) = aws_sms {
+        let provider: Arc<dyn SmsProvider> = Arc::new(aws_sms);
         let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
         providers.push(dlr::DlrProvider {
             provider,
@@ -659,13 +666,68 @@ async fn build_provider_routers(
         orange.base_url,
     )?;
     let mtn = mtn_credentials(mtn)?;
-    let dlr_router =
-        build_dlr_router(db, sys, orange, mtn, args.aws_sms_events_topic_arn.clone()).await?;
+    let aws_sms = aws_sms_receiver(args)?;
+    let dlr_router = build_dlr_router(db, sys, orange, mtn, aws_sms).await?;
     // #157: /readyz needs the same pooled handle every other router
     // shares — cloned here, before `sms_api::router` (in `serve_command`)
     // takes `db` by value as its own last use.
     let health_router = health::router(db.clone());
     Ok((dlr_router, health_router))
+}
+
+/// The AWS receipt receiver, when an events topic is configured.
+///
+/// In a `fake-aws` build, `--aws-sms-fake-sns-cert-base` swaps where signing
+/// certificates are fetched from; see [`fake_aws_receiver`]. A release build
+/// has neither the flag nor the code.
+fn aws_sms_receiver(args: &ServeArgs) -> Result<Option<sms_provider_aws_sms::AwsSmsProvider>> {
+    #[cfg(feature = "fake-aws")]
+    {
+        tracing::warn!(
+            "this sms-gateway was built with the `fake-aws` feature, for demos and tests only; \
+             a release image is never built with it"
+        );
+        if let Some(base) = args
+            .aws_sms_fake_sns_cert_base
+            .as_deref()
+            .filter(|base| !base.trim().is_empty())
+        {
+            return fake_aws_receiver(args.aws_sms_events_topic_arn.clone(), base).map(Some);
+        }
+    }
+    args.aws_sms_events_topic_arn
+        .clone()
+        .map(|topic_arn| {
+            sms_provider_aws_sms::AwsSmsProvider::receiver(topic_arn)
+                .context("--aws-sms-events-topic-arn")
+        })
+        .transpose()
+}
+
+/// A receiver that trusts SNS signing certificates served by
+/// `sms-fake-aws` at `cert_base`, and so accepts receipts it signed. Only
+/// the certificate's source changes: the topic, the signature version, the
+/// certificate URL's shape and the signature itself are all still checked.
+#[cfg(feature = "fake-aws")]
+pub(crate) fn fake_aws_receiver(
+    topic_arn: Option<String>,
+    cert_base: &str,
+) -> Result<sms_provider_aws_sms::AwsSmsProvider> {
+    let topic_arn = topic_arn.context(
+        "--aws-sms-fake-sns-cert-base needs --aws-sms-events-topic-arn: it changes how AWS \
+         receipts are verified, and without a topic there are none",
+    )?;
+    let http = sms_fake_aws::RedirectSnsHttp::new(cert_base)
+        .map_err(anyhow::Error::msg)
+        .context("--aws-sms-fake-sns-cert-base")?;
+    tracing::warn!(
+        cert_base,
+        topic_arn,
+        "TRUSTING SNS SIGNING CERTIFICATES FROM sms-fake-aws: receipts on /dlr/aws_sms are \
+         accepted if the fake signed them. Never run this against a real deployment."
+    );
+    sms_provider_aws_sms::AwsSmsProvider::receiver_with(topic_arn, Arc::new(http))
+        .context("--aws-sms-events-topic-arn")
 }
 
 /// Loads the OP's signing keys, assembles its state, and starts the
@@ -1118,5 +1180,47 @@ mod tests {
         })
         .expect("supports_alphanumeric_sender alone must not trip the all-or-none check");
         assert!(result.is_none());
+    }
+
+    /// The `fake-aws` build's receiver accepts a receipt `sms-fake-aws`
+    /// signed, through the adapter's real verification.
+    #[cfg(feature = "fake-aws")]
+    #[tokio::test]
+    async fn a_fake_aws_build_trusts_the_fakes_certificate_and_nothing_else_changes() {
+        use sms_provider::{CallbackDisposition, RawCallback, SmsProvider};
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let fake = sms_fake_aws::FakeAws::start(
+            sms_fake_aws::FakeAwsConfig::with_defaults("http://127.0.0.1:9/unused"),
+            sms_fake_aws::FaultPolicy::always(sms_fake_aws::SubmitDecision::accepted_silently()),
+        )
+        .await;
+        let receiver =
+            super::fake_aws_receiver(Some(fake.topic_arn().to_owned()), fake.base_url()).unwrap();
+        let raw = |body: String| RawCallback {
+            headers: Vec::new(),
+            body: body.into_bytes(),
+        };
+        let genuine = fake.signed_notification(r#"{"eventType":"TEXT_DELIVERED","messageId":"a"}"#);
+        assert_eq!(
+            receiver
+                .authenticate_callback(&raw(genuine.clone()))
+                .await
+                .unwrap(),
+            CallbackDisposition::Ingest
+        );
+        // Still the configured topic only.
+        let other_topic = genuine.replace(
+            fake.topic_arn(),
+            "arn:aws:sns:eu-west-1:999999999999:attacker",
+        );
+        assert!(matches!(
+            receiver
+                .authenticate_callback(&raw(other_topic))
+                .await
+                .unwrap(),
+            CallbackDisposition::Refused { .. }
+        ));
+        assert!(super::fake_aws_receiver(None, fake.base_url()).is_err());
     }
 }

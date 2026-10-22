@@ -327,9 +327,10 @@ client-check: client-gen
 # blocking `docker compose build <service>` invocations, one at a time —
 # so below.
 #
-# Seven loop entries, not all fifteen `--profile console` services: the
-# other eight (`provision-client`, `provision-user`, `seed-console-client`,
-# `seed-dispatch`, `seed-signing-key`, plus non-building services) either
+# Eight loop entries, not every `--profile console` service: the
+# rest (`provision-client`, `provision-user`, `seed-console-client`,
+# `seed-dispatch`, `seed-dispatch-aws`, `seed-signing-key`, plus
+# non-building services) either
 # share `sms-gateway`'s own explicit `image: vsms-dev/sms-gateway:local`
 # tag (building `sms-gateway` once already produces the image every one
 # of those needs — confirmed via `docker compose ... config --format
@@ -423,7 +424,7 @@ client-check: client-gen
 # do with what `e2e-integration` is trying to prove.
 demo-up:
 	docker compose -f compose.dev.yaml --profile console --profile demo down -v --remove-orphans
-	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-worker admin demo-app; do \
+	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-fake-aws sms-worker admin demo-app; do \
 		COMPOSE_BAKE=false docker compose -f compose.dev.yaml --profile console --profile demo build "$svc"; \
 	done
 	docker compose -f compose.dev.yaml --profile console --profile demo up -d
@@ -670,8 +671,12 @@ ci-inner:
 	step 2 23 "lint (fmt --check, clippy -D warnings)"
 	just lint
 
-	step 3 23 "cargo test --workspace (unit + in-process)"
+	step 3 23 "cargo test --workspace (unit + in-process), and sms-gateway's fake-aws feature"
 	{{_cargo}} test --workspace
+	# Folded into this step rather than a 24th: the counter is hardcoded at
+	# every call site. Mirrors ci.yml's `rust` job.
+	{{_cargo}} clippy -p sms-gateway --features fake-aws --all-targets -- -D warnings
+	{{_cargo}} test -p sms-gateway --features fake-aws --bins
 
 	step 4 23 "Cargo.lock is up to date"
 	cargo metadata --locked --format-version 1 > /dev/null

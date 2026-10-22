@@ -13,7 +13,7 @@ This is the runbook for daily development, whether you are working on vsms or ag
 just demo
 ----
 
-Everything runs as a container, built from this checkout's own source -- `compose.dev.yaml` (see that file's own header for the full design, including why it's a third, separate compose file alongside `compose.yml` and `compose.demo.yaml` rather than a reuse of either). From a cold start this takes a few minutes (it builds every image). It brings up, in order: a scratch Postgres, both migrations, an OP signing key, an `App` + `Provider` + `Route` + `SenderId`, a machine client, the `sms-console` OIDC client, a human operator account, `sms-fake-orange`, `sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs,drain,hooks`), the admin console, and (since `just demo` passes both `--profile console` and `--profile demo`) a `WebhookEndpoint` and `demo-app` -- see "The demo app" below for why that pair is its own, separately-gated profile rather than unconditional.
+Everything runs as a container, built from this checkout's own source -- `compose.dev.yaml` (see that file's own header for the full design, including why it's a third, separate compose file alongside `compose.yml` and `compose.demo.yaml` rather than a reuse of either). From a cold start this takes a few minutes (it builds every image). It brings up, in order: a scratch Postgres, both migrations, an OP signing key, an `App` + `Provider` + `Route` + `SenderId`, a machine client, the `sms-console` OIDC client, a human operator account, `sms-fake-orange`, `sms-fake-aws`, `sms-gateway`, `sms-worker` (`dispatch,scheduler,jobs,drain,hooks`), the admin console, and (since `just demo` passes both `--profile console` and `--profile demo`) a `WebhookEndpoint` and `demo-app` -- see "The demo app" below for why that pair is its own, separately-gated profile rather than unconditional.
 
 [,bash]
 ----
@@ -38,6 +38,10 @@ Default ports (override via env if these collide with something already running 
 | `VSMS_DEMO_ORANGE_PORT`
 | `8090`
 | `sms-fake-orange`
+
+| `VSMS_DEMO_AWS_PORT`
+| `8095`
+| `sms-fake-aws`
 
 | `VSMS_DEMO_CONSOLE_PORT`
 | `3100`
@@ -100,6 +104,8 @@ To see signature verification genuinely fail closed rather than trust it: run `d
 Nothing in the gateway or the worker knows it exists. The only difference from production is `ORANGE_CM_BASE_URL`. Every other code path -- routing, submission, DLR ingestion, the state machine, webhooks -- is the one that runs in production.
 
 *Never point a deployment at it.* It logs a `WARN` saying so on every start, and no production compose file (`deploy/docker-compose.yml`) references it.
+
+`sms-fake-aws` (link:../../backends/apps/sms-fake-aws[`backends/apps/sms-fake-aws`]) does the same for AWS End User Messaging SMS: it checks the worker's signed `SendTextMessage` calls and posts SNS receipts it signs itself to `/dlr/aws_sms`. A second provider and catch-all route (`seed-dispatch-aws`) at Orange's priority and weight make the demo split traffic between the two. The one difference from production on this side is in the gateway: this stack builds it with the `fake-aws` feature and sets `AWS_SMS_FAKE_SNS_CERT_BASE`, so it fetches the signing certificate from the fake. Published images are built without that feature. xref:aws-sms.adoc#without-an-aws-account[`aws-sms.adoc`] has the fault modes.
 
 == Where everything actually is
 

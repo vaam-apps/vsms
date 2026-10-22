@@ -27,6 +27,9 @@ members = [
   "backends/crates/sms-provider-aws-sms",
   "backends/crates/sms-routing",
   "backends/crates/sms-fake-orange",
+  # Dev/test-only fake of AWS End User Messaging SMS and its SNS receipt
+  # topic, for sms-provider-aws-sms — same discipline as sms-fake-orange.
+  "backends/crates/sms-fake-aws",
   # Dev/test-only fake upstream OpenID Provider (Keycloak stand-in) for the
   # SSO broker's tests - same discipline as sms-fake-orange above.
   "backends/crates/sms-fake-oidc",
@@ -34,6 +37,7 @@ members = [
   "backends/apps/sms-gateway",
   "backends/apps/sms-worker",
   "backends/apps/sms-fake-orange",
+  "backends/apps/sms-fake-aws",
   "backends/apps/sms-migrate",
   # Demo-only: seeds the App/SenderId fixtures compose.demo.yaml needs.
   # Moved out of backends/apps/sms-gateway (formerly `Command::SeedDemoApp`) so no
@@ -142,6 +146,10 @@ sms-fake-orange = { path = "./backends/crates/sms-fake-orange" }
 # stand-in) that signs whatever id_token a test scripts, malformed ones
 # included. No production binary links against it.
 sms-fake-oidc = { path = "./backends/crates/sms-fake-oidc" }
+# Dev-only, same discipline: a fake of AWS End User Messaging SMS and of the
+# SNS topic its delivery events arrive through. Linked into sms-gateway only
+# behind its off-by-default `fake-aws` feature, which no release image builds.
+sms-fake-aws = { path = "./backends/crates/sms-fake-aws" }
 
 # The rename is mandatory: generated code emits absolute `::cratestack::*`
 # paths, so the facade has to be in scope under exactly that name. Pinned
@@ -211,6 +219,12 @@ authkestra-axum = { version = "=0.8.0", default-features = false, features = ["o
 # verification belongs.
 rsa = "0.9"
 rand = "0.8"
+# sms-fake-aws only: a self-signed certificate around a generated RSA key
+# for its fake SNS signing identity. `ring` backend, never aws-lc-rs.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+# sms-fake-aws only: signs fake SNS notifications. The same `ring` rustls
+# already resolves; named directly, never a second copy.
+ring = "0.17"
 # #194: sms-auth::login's password hashing for human console logins — the
 # one place this system now stores a secret derived from user input rather
 # than generating its own key material. Argon2id (the `password-hash`
