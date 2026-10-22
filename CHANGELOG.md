@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0](https://github.com/vaam-apps/vsms/compare/v0.8.0...v0.9.0) (2026-10-22)
+
+
+### Features
+
+* **provider:** sms-fake-aws, the AWS SMS provider end to end without an account ([#437](https://github.com/vaam-apps/vsms/issues/437)) ([69afaf0](https://github.com/vaam-apps/vsms/commit/69afaf0b931d12388e1361a74b9da7aba72ca1db))
+
 ## [0.8.0](https://github.com/vaam-apps/vsms/compare/v0.7.0...v0.8.0) (2026-10-21)
 
 
