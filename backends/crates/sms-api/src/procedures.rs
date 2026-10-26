@@ -2123,6 +2123,43 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         async move { crate::client_keys::revoke(db, &sys, args.args).await }
     }
 
+    fn register_console_key(
+        &self,
+        db: &schema::IsolatedCratestack,
+        ctx: &CratestackContext,
+        args: schema::procedures::register_console_key::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::register_console_key::Authorized,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::register_console_key::Output, CratestackError>,
+    > + Send {
+        let sys = Self::sys();
+        // Layer 2: `@allow(auth().kind == "app")` cannot say which app. The
+        // scope is checked here, before any work, so a refused caller costs
+        // no signature verification and no query.
+        let scope = crate::console_keys::require_pair_scope(ctx);
+        async move {
+            scope?;
+            crate::console_keys::register(db, &sys, args.args, chrono::Utc::now()).await
+        }
+    }
+
+    fn revoke_console_key(
+        &self,
+        db: &schema::IsolatedCratestack,
+        _ctx: &CratestackContext,
+        args: schema::procedures::revoke_console_key::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::revoke_console_key::Authorized,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::revoke_console_key::Output, CratestackError>,
+    > + Send {
+        let sys = Self::sys();
+        async move { crate::console_keys::revoke(db, &sys, args.args).await }
+    }
+
     fn rotate_webhook_secret(
         &self,
         db: &schema::IsolatedCratestack,

@@ -1038,6 +1038,114 @@ The design is in `backends/crates/sms-api/src/client_keys.md` (sequence and stat
 - The thumbprint lookup made to find nothing — failed
   `running_it_twice_leaves_one_key_and_exits_zero_both_times`.
 
+## `ConsoleKey`: a human console's request-signing public key (VS-5a)
+
+The backend half of console pairing, and like VS-2 only that: a `ConsoleKey` row can be registered
+and revoked, **nothing verifies against one yet** (VS-3 gives the envelope `AuthProvider` its second
+signer kind, `ConsoleKey` -> user principal, beside `ClientKey` -> app principal). The password login,
+the Keycloak SSO and the OP's tokens are untouched until VS-4; the console app is VS-5b. VS-3 cannot
+make the envelope Required until the human-principal suites (login, SSO, the developer token, the
+owner-grant guard tests) can authenticate by signing, and a human has no signing key until a console
+key exists, which is why this comes first. The design is in `backends/crates/sms-api/src/console_keys.md`
+(sequence and state diagrams) and `docs/architecture.md` §2.9.
+
+- **The `publicKey` encoding is SEC1 uncompressed, 65 bytes (`0x04 || X || Y`), base64url on the wire.**
+  It is what a browser's `crypto.subtle.exportKey("raw", publicKey)` returns for a non-extractable
+  ECDSA P-256 key (the public half is always exportable), what `CoseVerifyKey::p256_sec1` takes and
+  `p256_sec1_uncompressed` returns, and what vaam's admin pairing already uses. One canonical form: a
+  compressed point is a valid key in a second spelling and is **refused**, not normalised.
+  cratestack 0.16.0 has no `CoseVerifyKey::esp256`; the constructor is `p256_sec1`. The thumbprint is
+  `cratestack::cose`'s RFC 9679 EC2/P-256 value (a unit test rebuilds it by hand as
+  `a4 01 02 20 01 21 58 20 x 22 58 20 y`), lowercase hex, `@unique`.
+- **The proof of possession is a bare ECDSA signature, checked with `p256` directly.** cratestack-cose's
+  `verify_message` is crate-private (it verifies COSE structures, not a raw signature), and the proof is
+  what WebCrypto's `sign` returns: 64 bytes `r || s` over `"vsms.console-pair.v1\n" + publicKey + "\n" +
+  issuedAt` (unix seconds). `p256 = 0.14` with `ecdsa` is cratestack-cose's own requirement, so
+  `Cargo.lock` gained no new crate. **A high `s` is accepted**: WebCrypto does not normalise it, so half
+  of an honest console's signatures have one; the low-`s` rule cratestack applies to envelopes exists
+  because a response hashes the request bytes, and nothing hashes this signature.
+- **`registerConsoleKey` is `@allow(auth().kind == "app")` plus a Layer 2 scope check in the body.**
+  `console:pair` is a token scope, not a field of `auth Principal`, so the policy language cannot say
+  it. `require_pair_scope` reads only the `scope` extension, never `perms`, and is not
+  `require_permission` on purpose: that function's literals must each be granted to a seeded role
+  (`permission_vocabulary.rs`), and no role may ever hold this one. The internal system context is
+  kind `app` and has no scope, so it fails the check. No new scope list exists to update: the scope is
+  an ordinary `AppClient.scopes` token, granted with `register-client --scope console:pair`. (The
+  console's own scope picker, `frontends/apps/admin/app/apps/scopes.ts`, does not list it; that is
+  VS-5b's.)
+- **Order inside `register`: scope, then key shape, then clock, then signature, then the database.** A
+  refused pairing writes nothing, which `a_bad_proof_is_refused_and_writes_nothing` and
+  `only_an_app_with_the_pair_scope_may_register` assert (no `User`, no `FederatedLink`, no key).
+- **The role is `admin`, never `owner` (R2), held twice.** `PAIRED_ROLE` is `"admin"`, and the `User` is
+  written under a creator context whose role is the *literal* `"admin"` rather than that constant, so
+  `User.create`'s own `roleKey != 'owner'` clause (#434) refuses `owner` independently. A person who is
+  already linked keeps whatever role they have (pairing never changes a role, up or down), and a
+  deactivated account is refused with 403, not revived.
+- **No email at vsms, so a synthetic one.** `User.email` is required and unique; the row gets
+  `<vaamUserId>@vaam.invalid` (`.invalid` is RFC 2606's never-resolves TLD), with `vaamUserId`
+  restricted to `[A-Za-z0-9_-]{1,64}`. `User.subject` is the row's own id, as in `provision-user` and
+  the SSO broker.
+- **A key lasts 30 days (R3) and is never extended.** `expiresAt = pairedAt + 30 days`. An expired or
+  revoked key presented again is a 409, so the console pairs with a new key. Expiry is data: VS-3's
+  resolver must treat `expiresAt <= now` and `revokedAt IS NOT NULL` as no key.
+- **`revokeConsoleKey` is `@allow(auth().kind == "user")` + `@authorize(ConsoleKey, detail, args.keyId)`**,
+  so the generated read policy decides: owner and admin revoke any key, anyone else only their own, and
+  an app or `system` cannot. An admin can therefore revoke an owner's key; the owner re-enrols with the
+  break-glass command.
+- **`sms-gateway pair-console-key --user <email|id> --public-key <…> [--label]` is the break-glass (Q2).**
+  It attaches a key to an existing active user with no proof (the operator holding the database is the
+  authority, as for `provision-user`), creates no user and changes no role, so it cannot mint an owner,
+  but it can attach to an existing one, which is the point. It shares `console_keys::parse_public_key`,
+  the idempotency/conflict rules (`same_registration`) and `new_key_input` with the procedure; the
+  two database paths are separate because the procedure's `IsolatedCratestack` cannot be built outside
+  the generated dispatch. `--database-url` carries `hide_env_values`. **`--public-key` carries
+  `allow_hyphen_values`** after VS-2's `register-client` shipped without it (a base64url value can start
+  with `-` and clap read it as a flag); a unit test parses such a value. An uncompressed P-256 key starts
+  `B`, so no real key trips it, and the live tests do not rely on random keys to cover it.
+- **Q5 needs nothing here.** The composer keeps an Ed25519 service key registered as a `ClientKey`
+  through VS-2's `register-client`.
+- **Not done, deliberately:** no cap on live keys per person (vaam caps browsers at three; nothing
+  here was ruled), no sweep of expired rows, no console app change, no deletion of SSO/password/OP.
+
+**Guard-failure proofs** (each guard was loosened, seen to fail, and restored; the whole list was
+run by one script that applies an edit, runs the named gate, and `git checkout`s the file):
+
+- `ConsoleKey` `create`/`update` widened to also admit `owner` — failed
+  `the_generated_routes_cannot_write_a_key_except_as_system`.
+- `hasRole('system')` removed from `ConsoleKey`'s `read` — failed
+  `every_system_readable_model_actually_admits_a_system_read` and 7 of the 15 tests in
+  `console_keys_live_postgres` (duplicate key on re-register, revoke finding no row).
+- The own-user read clause widened to every `kind == "user"` — failed `owner_admin_system_and_the_keys_own_user_can_read_it`
+  ("another support user must not read the key") and `owner_admin_and_the_keys_own_user_may_revoke_nobody_else`.
+- `@authorize(ConsoleKey, detail, args.keyId)` removed from `revokeConsoleKey` — failed
+  `owner_admin_and_the_keys_own_user_may_revoke_nobody_else` ("another user's own session" revoked it).
+- The `console:pair` check removed from `registerConsoleKey` — failed `only_an_app_with_the_pair_scope_may_register`
+  ("an app with no scope claim" paired); with `@allow` also loosened to `auth() != null`, the same
+  test fails at the same first case (the human cases are behind it in one test body).
+- `PAIRED_ROLE` set to `owner` with the creator context left `admin` — `User.create`'s policy refused it
+  (`pairing: Forbidden("create policy denied this operation")` in every pairing test) and the unit
+  test failed; with the creator context also `owner` — `a_paired_user_is_an_admin_and_the_schema_would_refuse_an_owner`
+  failed on `R2: admin`.
+- The `issuedAt` window widened (stale proof accepted) — failed `a_bad_proof_is_refused_and_writes_nothing`
+  ("a stale request, correctly signed") and the unit test.
+- The signature check replaced by `Ok(())` (wrong-key proof accepted) — failed `a_bad_proof_is_refused_and_writes_nothing`
+  ("signed by another key") and three unit tests (other key, other `issuedAt`, other domain's message).
+- The expiry check removed from `same_registration` — failed `a_revoked_or_expired_key_is_never_registered_again`
+  ("an expired key is never extended") and the unit test.
+- `KEY_LIFETIME_DAYS` 30 -> 31 — failed `pairing_creates_an_admin_a_vaam_link_and_a_thirty_day_key` and the unit test.
+- The `get_byte(public_key, 0) = 4` CHECK removed from `0007` — failed `the_database_refuses_a_malformed_key_row`.
+- The `0007` `ADDED_BY_LATER` entry removed, and separately a column edited in `0007/up.sql` — both failed
+  `cargo xtask migrations-current`.
+- `ConsoleKey` dropped from `SYSTEM_READABLE_MODELS` — failed `every_model_in_the_schema_is_classified`.
+  **That test is not `#[ignore]`**; `-- --ignored` skips it and reports green (the proof first read "exit 0" for
+  exactly that reason).
+- `allow_hyphen_values` removed from `--public-key` — failed the unit test with clap's
+  `UnknownArgument "-S"`.
+- `hide_env_values` removed from `--database-url` — failed `cargo xtask secret-env-args` and
+  `every_subcommand_help_hides_secret_env_values`.
+- The CLI's thumbprint lookup made to find nothing — failed
+  `running_it_twice_leaves_one_key_and_exits_zero_both_times` and `a_revoked_key_or_another_users_key_is_refused_with_a_non_zero_exit`.
+
 ## cratestack bumped to `=0.15.0` (from `=0.11.0`)
 
 Four minor lines (0.12, 0.13, 0.14, 0.15). `cratestack-pg`, `cratestack-codec-json` and both

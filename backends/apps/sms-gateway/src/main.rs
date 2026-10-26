@@ -80,6 +80,26 @@ enum Command {
     /// `ClientKey` is VS-3; `provision-client` and the token server are
     /// unchanged until VS-4.
     RegisterClient(commands::register_client::RegisterClientArgs),
+    /// Break-glass: registers a console public key (P-256, from a browser's
+    /// `WebCrypto`) for an **existing, active** user, so that person can sign
+    /// in to the console without a phone pairing (signed transport, VS-5a).
+    /// Run it inside the cluster; it is the operator action behind "owner
+    /// ruling Q2: break-glass is CLI key enrolment", and replaces the
+    /// password login's role as the way back in.
+    ///
+    /// No proof of possession is asked for: whoever can run this against the
+    /// database already holds more authority than a pairing grants, the same
+    /// reasoning `provision-user` rests on. For the same reason it never
+    /// creates a user and never changes a role - it cannot mint an owner,
+    /// and `--user` must name someone who already exists (a locked-out
+    /// owner included). The key lasts 30 days, as a paired one does.
+    ///
+    /// Idempotent on the key's RFC 9679 thumbprint: running it twice with the
+    /// same key and user leaves one `ConsoleKey` and exits 0. A key that is
+    /// revoked, expired or another user's is refused, never reinstated or
+    /// moved. **Nothing verifies the key yet** - VS-3 wires it into the
+    /// envelope layer.
+    PairConsoleKey(commands::pair_console_key::PairConsoleKeyArgs),
     /// Seed (or reactivate) the `Provider` row `resolve_provider_row_id`
     /// (this file) resolves at startup, **and** a catch-all `Route`
     /// pointing at it — an operator action, not a generated-CRUD route,
@@ -369,6 +389,10 @@ async fn main() -> Result<()> {
 
         Command::RegisterClient(args) => {
             commands::register_client::register_client_command(args).await
+        }
+
+        Command::PairConsoleKey(args) => {
+            commands::pair_console_key::pair_console_key_command(args).await
         }
 
         Command::SeedDispatch(args) => commands::seed_dispatch::seed_dispatch_command(args).await,

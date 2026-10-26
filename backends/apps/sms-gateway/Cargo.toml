@@ -82,6 +82,8 @@ fake-aws = ["dep:sms-fake-aws"]
 # `tests/m1_acceptance_gate_live_postgres.rs`'s own module doc).
 async-trait.workspace = true
 base64.workspace = true
+# pair_console_key_cli_live_postgres.rs mints a P-256 public key to enrol.
+p256.workspace = true
 jsonwebtoken.workspace = true
 rand.workspace = true
 reqwest.workspace = true
