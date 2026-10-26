@@ -319,7 +319,7 @@ impl SignerPrincipal {
 impl PrincipalMapper for SignerPrincipal {
     async fn principal(&self, verified: &VerifiedRequest<'_>) -> Result<String, CratestackError> {
         self.directory
-            .standing(verified.signer().thumbprint(), Utc::now())
+            .standing(verified.signer(), Utc::now())
             .await
             .map(|standing| standing.principal())
     }

@@ -19,8 +19,9 @@ mod sealed_fixtures;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
+use cratestack::cose::{CoseAlg, CoseVerifierResolver as _};
 use cratestack::sqlx::postgres::PgPoolOptions;
-use cratestack::{CratestackContext, CratestackError, FilterExpr, NonceStore as _};
+use cratestack::{CratestackContext, CratestackError, FilterExpr, NonceStore as _, VerifiedSigner};
 use sealed_fixtures::{
     api_router, client, deactivate_app_client, deactivate_user, owner, pair_console_key,
     register_app_key, seed_user_with_console_key, serve,
@@ -28,6 +29,7 @@ use sealed_fixtures::{
 use sms_api::auth::system_context;
 use sms_api::envelope::PgNonceStore;
 use sms_api::schema::{self, Cratestack, SenderIdKind, SenderIdRegistrationStatus, message};
+use sms_api::signers::{DirectoryKeys, SignerDirectory, Standing};
 use sms_test_support::sealed::TestKey;
 
 const PEPPER: &str = "envelope-live-test-pepper-well-over-the-minimum-length";
@@ -767,15 +769,247 @@ async fn the_directory_refuses_an_unknown_thumbprint_as_unauthorized() {
     let db = db().await;
     let directory = sms_api::signers::SignerDirectory::new(db);
 
-    let error = directory
-        .standing(&[9; 32], Utc::now())
-        .await
-        .expect_err("nothing is registered under this thumbprint");
+    for alg in [CoseAlg::Ed25519, CoseAlg::Esp256] {
+        let error = directory
+            .standing(&signer_of_thumbprint(&[9; 32], alg), Utc::now())
+            .await
+            .expect_err("nothing is registered under this thumbprint");
+        assert!(
+            matches!(error, CratestackError::Unauthorized(_)),
+            "{alg:?}: {error:?}"
+        );
+    }
+}
 
+// ---------------------------------------------------------------------------
+// The two places a key is looked up, each tested alone.
+//
+// Revocation and expiry are checked twice: by the verifier-side resolver
+// (`DirectoryKeys`, which stops a dead key from verifying at all) and by the
+// directory (`SignerDirectory::standing`, which decides who a verified key is).
+// Through the router either one is enough to give the unsigned 401, so a
+// request-level test cannot tell which of the two checks it is exercising.
+// These call each component directly, so loosening any one check fails exactly
+// its own test.
+// ---------------------------------------------------------------------------
+
+fn thumbprint_of(key: &TestKey) -> [u8; 32] {
+    let bytes = (0..32)
+        .map(|i| u8::from_str_radix(&key.thumbprint_hex()[2 * i..2 * i + 2], 16).unwrap())
+        .collect::<Vec<_>>();
+    bytes.try_into().expect("a 32-byte thumbprint")
+}
+
+fn signer_of_thumbprint(thumbprint: &[u8; 32], alg: CoseAlg) -> VerifiedSigner {
+    VerifiedSigner::new(thumbprint[..8].to_vec(), *thumbprint, alg.id())
+}
+
+fn signer_of(key: &TestKey, alg: CoseAlg) -> VerifiedSigner {
+    signer_of_thumbprint(&thumbprint_of(key), alg)
+}
+
+async fn resolved(db: &Cratestack, key: &TestKey, alg: CoseAlg) -> usize {
+    let thumbprint = thumbprint_of(key);
+    DirectoryKeys::new(db.clone())
+        .resolve(&thumbprint[..8], alg)
+        .await
+        .expect("the resolver reads under the system context")
+        .len()
+}
+
+async fn revoke_client_key(db: &Cratestack, key_id: String) {
+    db.client_key()
+        .update(key_id)
+        .set(schema::UpdateClientKeyInput {
+            revokedAt: Some(Some(Utc::now())),
+            ..Default::default()
+        })
+        .run(&sys())
+        .await
+        .expect("revoking the client key");
+}
+
+async fn revoke_console_key(db: &Cratestack, user_id: &str) {
+    let paired = db
+        .console_key()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            schema::console_key::userId().eq(user_id.to_owned()),
+        ))
+        .run(&sys())
+        .await
+        .unwrap()
+        .remove(0);
+    db.console_key()
+        .update(paired.id)
+        .set(schema::UpdateConsoleKeyInput {
+            revokedAt: Some(Some(Utc::now())),
+            ..Default::default()
+        })
+        .run(&sys())
+        .await
+        .expect("revoking the console key");
+}
+
+async fn standing_is_refused(directory: &SignerDirectory, key: &TestKey, alg: CoseAlg) -> bool {
+    matches!(
+        directory.standing(&signer_of(key, alg), Utc::now()).await,
+        Err(CratestackError::Unauthorized(_))
+    )
+}
+
+/// The control for the tests below: live keys resolve and have a standing, so
+/// a refusal elsewhere is the check's and not a fixture that never worked.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn live_keys_resolve_and_have_a_standing() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let directory = SignerDirectory::new(db.clone());
+    let (row_id, client_id, _) = seed_app_client(&db, " sms:send ").await;
+    let app_key = TestKey::app();
+    register_app_key(&db, &row_id, &app_key).await;
+    let console_key = TestKey::console();
+    let user = seed_user_with_console_key(&db, "admin", &console_key).await;
+
+    assert_eq!(resolved(&db, &app_key, CoseAlg::Ed25519).await, 1);
+    assert_eq!(resolved(&db, &console_key, CoseAlg::Esp256).await, 1);
+    let app = directory
+        .standing(&signer_of(&app_key, CoseAlg::Ed25519), Utc::now())
+        .await
+        .expect("a live client key");
+    assert!(matches!(app, Standing::App(app) if app.client_id == client_id));
+    let person = directory
+        .standing(&signer_of(&console_key, CoseAlg::Esp256), Utc::now())
+        .await
+        .expect("a live console key");
+    assert!(matches!(person, Standing::User(person) if person.user_id == user.id));
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_resolver_alone_stops_resolving_a_revoked_client_key() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let (row_id, ..) = seed_app_client(&db, " sms:send ").await;
+    let key = TestKey::app();
+    let registered = register_app_key(&db, &row_id, &key).await;
+    assert_eq!(resolved(&db, &key, CoseAlg::Ed25519).await, 1);
+
+    revoke_client_key(&db, registered.id).await;
+
+    assert_eq!(resolved(&db, &key, CoseAlg::Ed25519).await, 0);
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_directory_alone_refuses_a_revoked_client_key() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let directory = SignerDirectory::new(db.clone());
+    let (row_id, ..) = seed_app_client(&db, " sms:send ").await;
+    let key = TestKey::app();
+    let registered = register_app_key(&db, &row_id, &key).await;
+    assert!(!standing_is_refused(&directory, &key, CoseAlg::Ed25519).await);
+
+    revoke_client_key(&db, registered.id).await;
+
+    assert!(standing_is_refused(&directory, &key, CoseAlg::Ed25519).await);
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_resolver_alone_stops_resolving_a_revoked_console_key() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let key = TestKey::console();
+    let user = seed_user_with_console_key(&db, "admin", &key).await;
+    assert_eq!(resolved(&db, &key, CoseAlg::Esp256).await, 1);
+
+    revoke_console_key(&db, &user.id).await;
+
+    assert_eq!(resolved(&db, &key, CoseAlg::Esp256).await, 0);
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_directory_alone_refuses_a_revoked_console_key() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let directory = SignerDirectory::new(db.clone());
+    let key = TestKey::console();
+    let user = seed_user_with_console_key(&db, "admin", &key).await;
+    assert!(!standing_is_refused(&directory, &key, CoseAlg::Esp256).await);
+
+    revoke_console_key(&db, &user.id).await;
+
+    assert!(standing_is_refused(&directory, &key, CoseAlg::Esp256).await);
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_resolver_alone_stops_resolving_an_expired_console_key() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let person = seed_user_with_console_key(&db, "admin", &TestKey::console()).await;
+    let key = TestKey::console();
+    pair_console_key(&db, &person.id, &key, Duration::seconds(-30)).await;
+
+    assert_eq!(resolved(&db, &key, CoseAlg::Esp256).await, 0);
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_directory_alone_refuses_an_expired_console_key() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let directory = SignerDirectory::new(db.clone());
+    let person = seed_user_with_console_key(&db, "admin", &TestKey::console()).await;
+    let key = TestKey::console();
+    pair_console_key(&db, &person.id, &key, Duration::minutes(5)).await;
+    // Alive now, expired five minutes later: the directory reads the clock it
+    // is handed, so this fails only if it checks the key's expiry.
+    assert!(!standing_is_refused(&directory, &key, CoseAlg::Esp256).await);
+    let later = Utc::now() + Duration::minutes(10);
+    let verdict = directory
+        .standing(&signer_of(&key, CoseAlg::Esp256), later)
+        .await;
     assert!(
-        matches!(error, CratestackError::Unauthorized(_)),
-        "{error:?}"
+        matches!(verdict, Err(CratestackError::Unauthorized(_))),
+        "{verdict:?}"
     );
+}
+
+/// A thumbprint names one key of one algorithm. A `ClientKey`'s presented
+/// under ESP256, or a `ConsoleKey`'s under Ed25519, is a contradiction the
+/// directory refuses rather than resolving by whichever table holds the row.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_client_key_presented_under_esp256_is_refused() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let directory = SignerDirectory::new(db.clone());
+    let (row_id, ..) = seed_app_client(&db, " sms:send ").await;
+    let key = TestKey::app();
+    register_app_key(&db, &row_id, &key).await;
+
+    assert!(!standing_is_refused(&directory, &key, CoseAlg::Ed25519).await);
+    assert!(standing_is_refused(&directory, &key, CoseAlg::Esp256).await);
+    assert_eq!(resolved(&db, &key, CoseAlg::Esp256).await, 0);
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_console_key_presented_under_ed25519_is_refused() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let directory = SignerDirectory::new(db.clone());
+    let key = TestKey::console();
+    seed_user_with_console_key(&db, "admin", &key).await;
+
+    assert!(!standing_is_refused(&directory, &key, CoseAlg::Esp256).await);
+    assert!(standing_is_refused(&directory, &key, CoseAlg::Ed25519).await);
+    assert_eq!(resolved(&db, &key, CoseAlg::Ed25519).await, 0);
 }
 
 // ---------------------------------------------------------------------------

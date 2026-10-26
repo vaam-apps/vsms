@@ -215,9 +215,7 @@ impl AuthProvider for SignedAuth {
             }
             let signer = signer
                 .ok_or_else(|| CratestackError::Unauthorized("no verified signer".to_owned()))?;
-            let standing = directory
-                .standing(signer.thumbprint(), chrono::Utc::now())
-                .await?;
+            let standing = directory.standing(&signer, chrono::Utc::now()).await?;
             // #71: `with_request_id` returns `Self`, so it is the last thing
             // done to the context.
             Ok(Self::context_for(standing).with_request_id(request_id))

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use cratestack::cose::{CoseAlg, CoseVerifierResolver, CoseVerifyKey};
-use cratestack::{CratestackContext, CratestackError, FilterExpr};
+use cratestack::{CratestackContext, CratestackError, FilterExpr, VerifiedSigner};
 
 use crate::auth::{RESERVED_ROLE_KEYS, system_context};
 use crate::cache::TtlCache;
@@ -107,7 +107,13 @@ impl SignerDirectory {
         }
     }
 
-    /// What the key with this RFC 9679 `thumbprint` stands as at `now`.
+    /// What the verified `signer` stands as at `now`.
+    ///
+    /// The algorithm the message was verified with decides which table is
+    /// asked: Ed25519 reads `ClientKey` only and ESP256 `ConsoleKey` only. A
+    /// thumbprint names one key of one algorithm, so a client key's thumbprint
+    /// presented under ESP256 (or the reverse) is a contradiction and is refused
+    /// instead of being resolved by whichever table happens to hold it.
     ///
     /// An unknown, revoked or (for a console key) expired key, and a key whose
     /// client or person is inactive, retired, deleted or holds a reserved
@@ -121,36 +127,42 @@ impl SignerDirectory {
     /// database failure and surfaces as a 5xx, never as a refusal.
     pub async fn standing(
         &self,
-        thumbprint: &[u8; 32],
+        signer: &VerifiedSigner,
         now: DateTime<Utc>,
     ) -> Result<Standing, CratestackError> {
-        let hex = hex::encode(thumbprint);
+        let hex = hex::encode(signer.thumbprint());
 
-        if let Some(key) = self.live_client_key(&hex).await? {
-            let app = self
-                .apps
-                .get_or_fetch(key.appClientId, |id| {
-                    let db = self.db.clone();
-                    let sys = self.sys.clone();
-                    async move { load_app(&db, &sys, &id).await }
-                })
-                .await?;
-            return Ok(Standing::App(app));
+        match CoseAlg::from_id(signer.alg()) {
+            Some(CoseAlg::Ed25519) => {
+                let key = self.live_client_key(&hex).await?.ok_or_else(unknown)?;
+                let app = self
+                    .apps
+                    .get_or_fetch(key.appClientId, |id| {
+                        let db = self.db.clone();
+                        let sys = self.sys.clone();
+                        async move { load_app(&db, &sys, &id).await }
+                    })
+                    .await?;
+                Ok(Standing::App(app))
+            }
+            Some(CoseAlg::Esp256) => {
+                let key = self
+                    .live_console_key(&hex, now)
+                    .await?
+                    .ok_or_else(unknown)?;
+                let user = self
+                    .users
+                    .get_or_fetch(key.userId, |id| {
+                        let db = self.db.clone();
+                        let sys = self.sys.clone();
+                        async move { load_user(&db, &sys, &id).await }
+                    })
+                    .await?;
+                Ok(Standing::User(user))
+            }
+            // vsms accepts no shared secret and no other signature algorithm.
+            _ => Err(unknown()),
         }
-
-        if let Some(key) = self.live_console_key(&hex, now).await? {
-            let user = self
-                .users
-                .get_or_fetch(key.userId, |id| {
-                    let db = self.db.clone();
-                    let sys = self.sys.clone();
-                    async move { load_user(&db, &sys, &id).await }
-                })
-                .await?;
-            return Ok(Standing::User(user));
-        }
-
-        Err(unknown())
     }
 
     async fn live_client_key(
