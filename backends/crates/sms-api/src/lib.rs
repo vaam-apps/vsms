@@ -37,6 +37,7 @@ pub mod envelope;
 pub mod errors;
 pub mod metrics;
 pub mod owner_grant;
+pub mod pair_scope;
 pub mod pepper;
 pub mod procedures;
 pub mod rbac;

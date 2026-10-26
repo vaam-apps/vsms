@@ -837,6 +837,14 @@ impl Procedures {
     ) -> Result<schema::ProvisionClientResult, CratestackError> {
         let sys = Self::sys();
 
+        let scopes_packed =
+            pack(&args.scopes).map_err(|error| CratestackError::Validation(error.to_string()))?;
+        // `console:pair` lets a client attach a console key to any linked
+        // person, so an owner or admin handing it out over HTTP is a way to
+        // become someone else. It is granted by `sms-gateway register-client`.
+        // Refused before the app is read or a keypair is generated.
+        crate::pair_scope::refuse_pair_scope(&scopes_packed)?;
+
         // The app must exist and be active before a client is allowed to
         // speak for it — provisioning a client for a deleted/deactivated
         // app would silently mint working credentials for nothing.
@@ -897,8 +905,6 @@ impl Procedures {
         })?;
         let jwks_json = serde_json::json!({ "keys": [public_jwk] }).to_string();
 
-        let scopes_packed =
-            pack(&args.scopes).map_err(|error| CratestackError::Validation(error.to_string()))?;
         // client_credentials only — the only grant type a machine caller in
         // this system ever uses (§4.2; see `sms_auth::op`'s own module doc).
         let grant_types_packed =
@@ -2103,7 +2109,15 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         Output = Result<schema::procedures::register_app_client_key::Output, CratestackError>,
     > + Send {
         let sys = Self::sys();
-        async move { crate::client_keys::register(db, &sys, args.args).await }
+        async move {
+            crate::client_keys::register(
+                db,
+                &sys,
+                args.args,
+                crate::client_keys::Registrant::Caller,
+            )
+            .await
+        }
     }
 
     fn revoke_app_client_key(

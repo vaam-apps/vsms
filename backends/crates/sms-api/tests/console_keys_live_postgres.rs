@@ -410,14 +410,14 @@ async fn a_second_key_of_the_same_person_joins_the_same_user() {
     assert_eq!(links_for(&db, &vaam).await.len(), 1);
 }
 
-/// Pairing never touches a role, in either direction: an owner who is
-/// already linked stays an owner, a support user stays support.
+/// Pairing never touches a role: an admin who is already linked stays an
+/// admin, a support user stays support. (An owner is refused outright, below.)
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres - see module docs"]
 async fn a_linked_person_keeps_the_role_they_have() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    for role in ["support", "owner"] {
+    for role in ["support", "admin"] {
         let vaam = vaam_user_id();
         let seeded = seed_linked_user(&db, &vaam, role).await;
 
@@ -441,6 +441,38 @@ async fn a_linked_person_keeps_the_role_they_have() {
             "{role}: nor the name"
         );
     }
+}
+
+/// A pairing client with `console:pair` can name any linked person. Attaching a
+/// key to an owner would make that scope an owner's key, so the procedure
+/// refuses it and an owner pairs through `sms-gateway pair-console-key`.
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres - see module docs"]
+async fn a_linked_owner_is_refused_and_nothing_is_written() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let vaam = vaam_user_id();
+    let seeded = seed_linked_user(&db, &vaam, "owner").await;
+    let key = fresh_key();
+
+    let error = register(&db, &pairing_app(), pairing(&vaam, &key, Utc::now()))
+        .await
+        .expect_err("an owner must not be paired by the procedure");
+
+    assert!(matches!(error, CratestackError::Forbidden(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("pair-console-key"),
+        "the refusal names the way in: {error}"
+    );
+    assert_eq!(
+        keys_for_thumbprint(&db, &thumbprint_of(&key)).await.len(),
+        0,
+        "no key was attached"
+    );
+    let after = users_with_email(&db, &synthetic_email(&vaam)).await;
+    assert_eq!(after.len(), 1);
+    assert_eq!(after[0].id, seeded.id);
+    assert_eq!(after[0].roleKey, "owner");
 }
 
 #[tokio::test]

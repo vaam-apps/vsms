@@ -16,6 +16,8 @@
 #[path = "support/sealed_fixtures.rs"]
 mod sealed_fixtures;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{Duration, Utc};
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, CratestackError, FilterExpr, NonceStore as _};
@@ -774,4 +776,323 @@ async fn the_directory_refuses_an_unknown_thumbprint_as_unauthorized() {
         matches!(error, CratestackError::Unauthorized(_)),
         "{error:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The pairing chain: an admin must not be able to become the owner.
+//
+// `console:pair` lets an app client attach a console key to any linked person.
+// With it, three sealed steps would turn an admin into an owner without ever
+// writing a role (so the owner-grant guard never fires):
+//
+//   1. give an app client `console:pair`            (guard 1)
+//   2. register the admin's own key for that client (guard 2)
+//   3. sign as it and attach a console key to the owner (guard 3)
+//
+// Each guard is enough on its own, and the tests below show it by walking the
+// chain with the other two steps done by fixtures.
+// ---------------------------------------------------------------------------
+
+/// Which steps of the chain a fixture performs instead of the admin's own
+/// sealed call, standing for "that guard is not there".
+#[derive(Clone, Copy, Default)]
+struct Bypass {
+    grant: bool,
+    key: bool,
+    attach: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Chain {
+    /// The sealed call of this step was refused, with this status.
+    StoppedAt(&'static str, u16),
+    /// Every step went through and the owner-only action ran with this status.
+    Reached(u16),
+}
+
+/// A linked owner (the person vaam would name) and the vaam id that names them.
+async fn seed_linked_owner(db: &Cratestack) -> (schema::User, String) {
+    let vaam = format!("vaam-owner-{}", suffix());
+    let user = db
+        .user()
+        .create(schema::CreateUserInput {
+            subject: format!("pending-{}", suffix()),
+            email: format!("{vaam}@vaam.invalid"),
+            displayName: "The Owner".to_owned(),
+            roleKey: "owner".to_owned(),
+            lastLoginAt: None,
+            deletedAt: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the owner");
+    db.federated_link()
+        .create(schema::CreateFederatedLinkInput {
+            issuer: sms_api::console_keys::FEDERATION_ISSUER.to_owned(),
+            subject: vaam.clone(),
+            userId: user.id.clone(),
+        })
+        .run(&sys())
+        .await
+        .expect("linking the owner");
+    (user, vaam)
+}
+
+async fn set_client_scopes(db: &Cratestack, row_id: &str, scopes: &str) {
+    let row = db
+        .app_client()
+        .find_unique(row_id.to_owned())
+        .run(&sys())
+        .await
+        .expect("reading the client")
+        .expect("the client exists");
+    db.app_client()
+        .update(row.id)
+        .set(schema::UpdateAppClientInput {
+            scopes: Some(scopes.to_owned()),
+            ..Default::default()
+        })
+        .if_match(row.version)
+        .run(&owner())
+        .await
+        .expect("setting the scopes");
+}
+
+fn possession(
+    scalar: &[u8; 32],
+    public_key: &str,
+    issued_at: chrono::DateTime<Utc>,
+) -> schema::RegisterConsoleKeyInput {
+    use p256::ecdsa::signature::Signer as _;
+    let signing = p256::ecdsa::SigningKey::from_slice(scalar).expect("a valid scalar");
+    let signature: p256::ecdsa::Signature = signing.sign(
+        &sms_api::console_keys::possession_message(public_key, issued_at.timestamp()),
+    );
+    schema::RegisterConsoleKeyInput {
+        vaamUserId: String::new(),
+        displayName: None,
+        publicKey: public_key.to_owned(),
+        possessionProof: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+        issuedAt: issued_at,
+    }
+}
+
+/// An admin with a paired console key walks the chain, step by step, against
+/// the real router. Returns where it stopped, or what the owner-only action
+/// the finished chain unlocks answered.
+async fn walk_the_chain(rig: &Rig, bypass: Bypass) -> Chain {
+    let admin_key = TestKey::console();
+    seed_user_with_console_key(&rig.db, "admin", &admin_key).await;
+    let admin = client(&rig.base, &admin_key);
+
+    // An ordinary client of the admin's choosing, and a key the admin holds.
+    let (client_row, ..) = seed_app_client(&rig.db, " sms:send ").await;
+    let app_key = TestKey::app();
+    let (victim, vaam) = seed_linked_owner(&rig.db).await;
+
+    // 1. Give the client `console:pair`.
+    if bypass.grant {
+        set_client_scopes(&rig.db, &client_row, " sms:send console:pair ").await;
+    } else {
+        let row = rig
+            .db
+            .app_client()
+            .find_unique(client_row.clone())
+            .run(&sys())
+            .await
+            .unwrap()
+            .unwrap();
+        let reply = admin
+            .request("PATCH", "/app_clients/{id}")
+            .params(&[&client_row])
+            .if_match(&format!("\"{}\"", row.version))
+            .json(&serde_json::json!({"scopes": " sms:send console:pair "}))
+            .send()
+            .await;
+        if reply.status >= 400 {
+            return Chain::StoppedAt("grant the scope", reply.status);
+        }
+    }
+
+    // 2. Register the admin's own key for it.
+    if bypass.key {
+        register_app_key(&rig.db, &client_row, &app_key).await;
+    } else {
+        let reply = admin
+            .request("POST", "/$procs/registerAppClientKey")
+            .json(&serde_json::json!({"args": {
+                "appClientId": client_row,
+                "publicKey": app_key.public_key_b64u(),
+            }}))
+            .send()
+            .await;
+        if reply.status >= 400 {
+            return Chain::StoppedAt("register a key", reply.status);
+        }
+    }
+
+    // 3. Sign as the client and attach a console key to the owner.
+    let mut scalar = [0_u8; 32];
+    scalar[..16].copy_from_slice(cratestack::uuid::Uuid::new_v4().as_bytes());
+    scalar[0] = 0x01;
+    scalar[31] |= 0x01;
+    let console_key = TestKey::console_from_scalar(&scalar);
+    if bypass.attach {
+        pair_console_key(&rig.db, &victim.id, &console_key, Duration::days(30)).await;
+    } else {
+        let mut input = possession(&scalar, &console_key.public_key_b64u(), Utc::now());
+        input.vaamUserId = vaam;
+        let reply = client(&rig.base, &app_key)
+            .request("POST", "/$procs/registerConsoleKey")
+            .json(&serde_json::json!({"args": input}))
+            .send()
+            .await;
+        if reply.status >= 400 {
+            return Chain::StoppedAt("attach a key to the owner", reply.status);
+        }
+    }
+
+    // 4. Act as the owner: an owner-only write (`User` deletion is owner-only).
+    let target = seed_user_with_console_key(&rig.db, "support", &TestKey::console()).await;
+    let reply = client(&rig.base, &console_key)
+        .request("DELETE", "/users/{id}")
+        .params(&[&target.id])
+        .if_match(&format!("\"{}\"", target.version))
+        .send()
+        .await;
+    Chain::Reached(reply.status)
+}
+
+/// The control that keeps the three tests below honest: with every step done
+/// by a fixture the chain does reach an owner-only action, so a refusal in the
+/// other tests is the guard's and not a fixture that never worked.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_pairing_chain_reaches_owner_standing_when_no_guard_stands_in_the_way() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let outcome = walk_the_chain(
+        &rig,
+        Bypass {
+            grant: true,
+            key: true,
+            attach: true,
+        },
+    )
+    .await;
+    assert!(
+        matches!(outcome, Chain::Reached(status) if status < 300),
+        "{outcome:?}"
+    );
+}
+
+/// Guard 1: an admin cannot give a client `console:pair`, by PATCH or by
+/// `provisionAppClient`, and the other two steps are not what stops it here.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_admin_cannot_grant_the_pair_scope() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let outcome = walk_the_chain(
+        &rig,
+        Bypass {
+            grant: false,
+            key: true,
+            attach: true,
+        },
+    )
+    .await;
+    assert_eq!(outcome, Chain::StoppedAt("grant the scope", 403));
+
+    // The other way to hand it out, and the owner is no exception over HTTP.
+    let admin_key = TestKey::console();
+    seed_user_with_console_key(&rig.db, "admin", &admin_key).await;
+    let (_, _, app_id) = seed_app_client(&rig.db, " sms:send ").await;
+    let label = format!("pairing-{}", suffix());
+    let reply = client(&rig.base, &admin_key)
+        .request("POST", "/$procs/provisionAppClient")
+        .json(&serde_json::json!({"args": {
+            "appId": app_id,
+            "label": label,
+            "scopes": ["sms:send", "console:pair"],
+        }}))
+        .send()
+        .await;
+    assert_eq!(reply.status, 403, "{}", reply.text());
+    let made = rig
+        .db
+        .app_client()
+        .find_many()
+        .where_expr(FilterExpr::from(schema::app_client::label().eq(label)))
+        .run(&sys())
+        .await
+        .unwrap();
+    assert!(made.is_empty(), "no client was provisioned");
+
+    let owner_key = TestKey::console();
+    seed_user_with_console_key(&rig.db, "owner", &owner_key).await;
+    let (row, ..) = seed_app_client(&rig.db, " sms:send ").await;
+    let version = rig
+        .db
+        .app_client()
+        .find_unique(row.clone())
+        .run(&sys())
+        .await
+        .unwrap()
+        .unwrap()
+        .version;
+    let reply = client(&rig.base, &owner_key)
+        .request("PATCH", "/app_clients/{id}")
+        .params(&[&row])
+        .if_match(&format!("\"{version}\""))
+        .json(&serde_json::json!({"scopes": " console:pair "}))
+        .send()
+        .await;
+    assert_eq!(reply.status, 403, "{}", reply.text());
+}
+
+/// Guard 2: a client that holds `console:pair` takes no key from a signed call.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn an_admin_cannot_register_a_key_for_a_pairing_client() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let outcome = walk_the_chain(
+        &rig,
+        Bypass {
+            grant: true,
+            key: false,
+            attach: true,
+        },
+    )
+    .await;
+    assert_eq!(outcome, Chain::StoppedAt("register a key", 403));
+}
+
+/// Guard 3: even a pairing client with the admin's key cannot reach an owner.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn a_pairing_client_cannot_attach_a_key_to_an_owner() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let outcome = walk_the_chain(
+        &rig,
+        Bypass {
+            grant: true,
+            key: true,
+            attach: false,
+        },
+    )
+    .await;
+    assert_eq!(outcome, Chain::StoppedAt("attach a key to the owner", 403));
+}
+
+/// With nothing bypassed the first step stops it, and the owner is untouched.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_whole_pairing_chain_is_stopped_at_its_first_step() {
+    let _guard = TEST_MUTEX.lock().await;
+    let rig = rig().await;
+    let outcome = walk_the_chain(&rig, Bypass::default()).await;
+    assert_eq!(outcome, Chain::StoppedAt("grant the scope", 403));
 }

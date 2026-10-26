@@ -9,7 +9,7 @@ use cratestack::SqlxIdempotencyStore;
 use cratestack::axum::Router;
 use cratestack::axum::extract::{ConnectInfo, Request};
 use cratestack::axum::http::Method;
-use cratestack::axum::middleware::from_fn_with_state;
+use cratestack::axum::middleware::{from_fn, from_fn_with_state};
 use cratestack::cose::Ed25519Signer;
 use cratestack::idempotency::{IdempotencyLayer, IdempotencyStore};
 use cratestack::ratelimit::{
@@ -19,6 +19,7 @@ use cratestack_codec_json::JsonCodec;
 
 use crate::auth::SignedAuth;
 use crate::owner_grant::{OwnerGrantState, enforce_owner_grant_guard};
+use crate::pair_scope::enforce_pair_scope_guard;
 use crate::pepper::HashPepper;
 use crate::procedures::Procedures;
 use crate::rbac::{RbacState, RoutePermission, enforce_route_permission};
@@ -488,6 +489,7 @@ pub fn router(
         owner_grant_state,
         enforce_owner_grant_guard,
     ))
+    .layer(from_fn(enforce_pair_scope_guard))
     .layer(IdempotencyLayer::new(idempotency_store, idempotency_ttl))
     // cratestack 0.11.0 (cratestack#846): `RateLimitLayer` defaults to
     // `StoreErrorPolicy::Allow`, right for a capacity control and wrong for a

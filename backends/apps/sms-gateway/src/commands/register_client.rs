@@ -4,7 +4,7 @@
 use anyhow::{Context, Result, bail};
 use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use sms_api::client_keys::{parse_public_key, register};
+use sms_api::client_keys::{Registrant, parse_public_key, register};
 use sms_api::schema::procedures::register_app_client_key;
 use sms_api::schema::{
     Cratestack, CreateAppClientInput, RegisterClientKeyInput, app as app_filter,
@@ -181,7 +181,7 @@ pub(crate) async fn register_client_command(args: RegisterClientArgs) -> Result<
     // procedure body, shared with `Procedures`.
     let key = register_app_client_key::invoke_with_db(&db, &call, &ctx, |db, _authorized| {
         let (sys, input) = (sys.clone(), call.args.clone());
-        async move { register(&db, &sys, input).await }
+        async move { register(&db, &sys, input, Registrant::Operator).await }
     })
     .await
     .context("registering the client key")?;

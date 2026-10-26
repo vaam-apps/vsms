@@ -90,7 +90,18 @@ impl TestKey {
         let mut scalar = random_32();
         scalar[0] &= 0x7f;
         scalar[0] |= 0x01;
-        let signer = P256Signer::from_scalar(&scalar).expect("a scalar below the curve order");
+        Self::console_from_scalar(&scalar)
+    }
+
+    /// The P-256 key of this scalar, for a test that must also sign something
+    /// else with it (a pairing's possession proof) through `p256` itself.
+    ///
+    /// # Panics
+    ///
+    /// When `scalar` is zero or not below the curve order.
+    #[must_use]
+    pub fn console_from_scalar(scalar: &[u8; 32]) -> Self {
+        let signer = P256Signer::from_scalar(scalar).expect("a scalar below the curve order");
         let verify = signer.verify_key();
         Self {
             signer: Arc::new(signer),

@@ -70,7 +70,10 @@ fn names_owner(role_key: &str) -> bool {
 /// The capabilities the generated route declares for `method path`, read from
 /// the schema's own route table so the guard negotiates the request
 /// `Content-Type` exactly as the handler will.
-fn route_capabilities(method: &Method, path: &str) -> Option<RouteTransportCapabilities> {
+pub(crate) fn route_capabilities(
+    method: &Method,
+    path: &str,
+) -> Option<RouteTransportCapabilities> {
     schema::axum::ROUTE_TRANSPORTS
         .iter()
         .find(|route| route.method == method.as_str() && route.path == path)
@@ -134,7 +137,7 @@ fn refuse_owner_grant(
 
 /// A decode failure is the caller's fault: keep 415, report everything else
 /// as 400 rather than whatever internal class the codec used.
-fn as_client_error(error: CratestackError) -> CratestackError {
+pub(crate) fn as_client_error(error: CratestackError) -> CratestackError {
     match error {
         CratestackError::UnsupportedMediaType(_) | CratestackError::BadRequest(_) => error,
         _ => CratestackError::BadRequest("request body could not be decoded".to_owned()),
