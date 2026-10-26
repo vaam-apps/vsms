@@ -393,6 +393,10 @@ async fn an_answer_from_a_redirect_hop_is_refused() {
         .respond_with(SealingGateway::new(PINNED_SERVER_SEED, &client_key))
         .mount(&gateway)
         .await;
+    // A caller-supplied client is built before the SDK has had a chance to
+    // install its `ring` provider, and the SDK's reqwest carries no provider of
+    // its own; a caller has to install one, as this test does.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let following = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::limited(5))
         .build()
