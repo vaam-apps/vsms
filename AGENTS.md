@@ -937,6 +937,47 @@ a code_verifier that doesn't match the original code_challenge must be refused, 
 
 A real, live-minted access token and `id_token` came back — proof the test would have silently passed through a real PKCE bypass had this guard not been checking the right thing. Reverted immediately (`git diff --stat` on the file confirmed byte-identical to its pre-sabotage state before re-running), and the real command re-run clean: `test a_wrong_pkce_code_verifier_is_refused_at_the_token_exchange ... ok`.
 
+## cratestack bumped to `=0.16.0` (from `=0.15.0`), `envelope` and `cose` enabled (VS-1)
+
+One minor line. `cratestack-pg`, `cratestack-codec-json` and the unpublished e2e
+`cratestack-client` manifest move to `0.16.0`; the published SDK keeps its `~` range, now
+`~0.16.0`; `ci/runner/Dockerfile`'s `ARG CRATESTACK_VERSION` and both `install-cratestack-cli`
+refs in `ci.yml` (now the commit of the `v0.16.0` tag, `f90ddbfcf94f...`) follow, and
+`cargo xtask cratestack-pin-check` reads all five copies. Four lockfiles moved by `cargo update`
+(the root, `sdks/rust`, `ci/e2e-integration`, `examples/rust`); `deploy/backup-tool` has no
+cratestack and is untouched. MSRV is unchanged (1.98.0).
+
+**The root `cratestack` dependency now carries `features = ["envelope", "cose"]`.** `cose` already
+implies `envelope`; both are written so the intent reads. They compile `cratestack::envelope_layer`
+and the COSE types into the server, and pull `cratestack-cose` with its RustCrypto stack (ed25519
+3, p256 0.14) into `Cargo.lock`. **Nothing uses them yet and behaviour is unchanged**: no
+`EnvelopeLayer` is on the generated router, auth is still `private_key_jwt`/authkestra, and the
+SDK and e2e manifests do not enable the client-side `cose` feature. The features are on the
+facade only, so a later ticket adds the layer without touching the pin.
+
+What was checked against 0.16.0, none of it needing a schema change (`schemas/vsms.cstack` and the
+SDK's vendored copy are byte-identical and unchanged; `cratestack check` says `schema OK`):
+
+- `@default(autoincrement())` refused, `dbgenerated()` must be the whole expression: the schema uses
+  neither `autoincrement` nor any `dbgenerated` with arguments.
+- Field attributes are a closed list per declaration kind (0.15.4): `check` passes.
+- CBOR bodies with trailing bytes are refused: a server-side tightening; the SDK and the e2e client use
+  the JSON codec, and nothing here sends CBOR with bytes after the item.
+- The generated Dart client's transport change: vsms generates no Dart.
+- TypeScript client fixes: `just client-gen`'s command still runs and its emitted `package.json` is
+  identical to the tracked one.
+
+**The generator's output changed, but only in comments, and `0001_init` is untouched.** 0.16.0
+(#1129) no longer calls a `CHECK` on a table the migration itself creates "blocking". The 0.15
+emitter put a `WARNING: this migration contains blocking operations` header on `up.sql` and
+scaffolded a comment-only `up.pre.sql`; 0.16.0 emits neither. Every statement is the same (compared
+statement by statement, with the existing `REWRITTEN_BY_LATER` and `ADDED_BY_LATER_TABLES`
+exemptions). `0001_init` has been applied to deployed databases and stays byte-for-byte as it was, so
+`cargo xtask migrations-current` now compares the executable SQL of each file and ignores `--` comment
+lines and blank lines (`executable_sql`, with unit tests that a changed statement still differs; also
+proven by sabotaging one column in `up.sql`, which fails the gate). No new migration, no DDL change. When
+`0001_init` is squashed and regenerated, the header and `up.pre.sql` go with it.
+
 ## cratestack bumped to `=0.15.0` (from `=0.11.0`)
 
 Four minor lines (0.12, 0.13, 0.14, 0.15). `cratestack-pg`, `cratestack-codec-json` and both
@@ -944,8 +985,9 @@ Four minor lines (0.12, 0.13, 0.14, 0.15). `cratestack-pg`, `cratestack-codec-js
 `~0.15.0`; `cargo xtask cratestack-pin-check` still reads all five copies), the CLI the gates
 use is `0.15.0`, and both `install-cratestack-cli` refs in `ci.yml` are pinned to the commit of
 the `v0.15.0` tag (`da143158cd46...`) instead of a movable tag. MSRV is unchanged (1.98.0).
-No `@cratestack/*` npm package is used here. COSE and the signed transport are **not** enabled:
-auth stays `private_key_jwt`/authkestra.
+No `@cratestack/*` npm package is used here. COSE and the signed transport were **not** enabled at
+this bump (the next section turns the facade features on; nothing uses them yet): auth stays
+`private_key_jwt`/authkestra.
 
 Four breaks, each found by running the toolchain, not by reading the changelog first:
 
@@ -1923,12 +1965,12 @@ Retained because they are cheap and still correct, not because they are load-bea
 
 | | |
 |---|---|
-| [CrateStack](https://cratestack.dev/) `=0.15.0` | Schema-first. `.cstack` generates models, policies, audit, events, REST. Pre-1.0 and moving fast — pin exactly, and **keep the installed CLI on the same version**: a mismatched CLI emits DDL the compiled library never produces. Never below 0.6.0 (see `#87`) and never below 0.5.0 (see the build-cost section). |
+| [CrateStack](https://cratestack.dev/) `=0.16.0` | Schema-first. `.cstack` generates models, policies, audit, events, REST. Pre-1.0 and moving fast — pin exactly, and **keep the installed CLI on the same version**: a mismatched CLI emits DDL the compiled library never produces. Never below 0.6.0 (see `#87`) and never below 0.5.0 (see the build-cost section). |
 | [Authkestra](https://github.com/marcjazz/authkestra) `=0.8.0` | OIDC provider. 0.3.2 fixed the `GrantType` serde bug that shaped early M1 design (#6). Pin exactly — still moving fast, and the whole family (`-op`/`-engine`/`-resource`/`-axum`) must move in lockstep. The row used to say `authkestra-macros` was transitive and needed `cargo update -p authkestra-macros` to stay in lockstep — checked while bumping to 0.8.0 and found stale for a while already: `authkestra-macros` sits behind a `macros` feature none of the four pins enable (`default-features = false` on all four, root `Cargo.toml`), so it has never actually been in `Cargo.lock` since that flag was set (confirmed absent both before and after this bump). This row itself had already drifted before this bump, the identical shape as the `authkestra-macros` correction two sentences up: it read `=0.5.1` while the real `Cargo.toml` pin had already moved to `=0.5.4` (#329, "chore(deps): bump authkestra family 0.5.1 -> 0.5.4") without this table being touched. See AGENTS.md's authkestra-0.8 section for the 0.5.4 -> 0.8.0 upgrade itself. |
 | PostgreSQL 16 | The only coordination mechanism. Queues (`SKIP LOCKED`), leader election (advisory locks), state machines (triggers). No broker, no Redis. |
 | Rust 2021, TypeScript / Next.js 15 | |
 
-`sms-api` depends on `cratestack = { package = "cratestack-pg", version = "=0.15.0" }` — the rename is mandatory, generated code emits absolute `::cratestack::*` paths. `JsonCodec` lives in the separate `cratestack-codec-json` crate. (An earlier revision of this line said `=0.5.0` — stale even before the 0.7.10 bump, and never the actual root `Cargo.toml` pin; corrected while touching this section for that bump, and the version number itself kept current at every bump since.)
+`sms-api` depends on `cratestack = { package = "cratestack-pg", version = "=0.16.0", features = ["envelope", "cose"] }` — the rename is mandatory, generated code emits absolute `::cratestack::*` paths. `JsonCodec` lives in the separate `cratestack-codec-json` crate. (An earlier revision of this line said `=0.5.0` — stale even before the 0.7.10 bump, and never the actual root `Cargo.toml` pin; corrected while touching this section for that bump, and the version number itself kept current at every bump since.)
 
 ## The three rules
 
