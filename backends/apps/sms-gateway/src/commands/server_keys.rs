@@ -140,12 +140,12 @@ mod tests {
         assert!(text.contains("absent.pem"), "{text}");
     }
 
-    #[test]
-    fn serve_does_not_parse_without_the_key_flags() {
+    /// `serve` with the flags it needs apart from the two key files, plus
+    /// `extra`.
+    fn parse_serve(extra: &[&str]) -> Result<crate::Cli, clap::Error> {
         use clap::Parser;
 
-        // `serve` is `Required`-or-nothing: no flag, no boot.
-        let error = crate::Cli::try_parse_from([
+        let mut args = vec![
             "sms-gateway",
             "serve",
             "--database-url",
@@ -154,13 +154,57 @@ mod tests {
             "http://localhost",
             "--hash-pepper",
             "p",
-        ])
-        .unwrap_err();
-        assert_eq!(
-            error.kind(),
-            clap::error::ErrorKind::MissingRequiredArgument
+        ];
+        args.extend_from_slice(extra);
+        crate::Cli::try_parse_from(args)
+    }
+
+    /// `serve` is `Required`-or-nothing: no flag, no boot, for each of the two
+    /// files on its own - a default on either would let a deployment boot
+    /// without having chosen its keys.
+    #[test]
+    fn serve_does_not_parse_without_the_key_flags() {
+        const CURRENT: &str = "--envelope-signing-key-file";
+        const NEXT: &str = "--envelope-next-signing-key-file";
+
+        // The arguments clap reports as missing - not the usage line, which
+        // names both flags whatever was passed.
+        let missing = |extra: &[&str]| -> Vec<String> {
+            use clap::error::{ContextKind, ContextValue};
+
+            let error = parse_serve(extra)
+                .err()
+                .expect("serve needs both key files");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+            match error.get(ContextKind::InvalidArg) {
+                Some(ContextValue::Strings(names)) => names.clone(),
+                other => panic!("clap did not name the missing arguments: {other:?}"),
+            }
+        };
+        let names = |missing: &[String], flag: &str| {
+            missing
+                .iter()
+                .any(|name| name.starts_with(&format!("{flag} ")))
+        };
+
+        let neither = missing(&[]);
+        assert!(
+            names(&neither, CURRENT) && names(&neither, NEXT),
+            "{neither:?}"
         );
-        let text = error.to_string();
-        assert!(text.contains("envelope-signing-key-file"), "{text}");
+
+        let only_current = missing(&[CURRENT, "current.pem"]);
+        assert!(names(&only_current, NEXT), "{only_current:?}");
+        assert!(!names(&only_current, CURRENT), "{only_current:?}");
+
+        let only_next = missing(&[NEXT, "next.pem"]);
+        assert!(names(&only_next, CURRENT), "{only_next:?}");
+        assert!(!names(&only_next, NEXT), "{only_next:?}");
+
+        // The control: with both, it parses.
+        assert!(parse_serve(&[CURRENT, "current.pem", NEXT, "next.pem"]).is_ok());
     }
 }

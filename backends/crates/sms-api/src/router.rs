@@ -616,6 +616,14 @@ mod tests {
                 Some("application/cose"),
                 "a refusal the layer makes itself is never sealed"
             );
+            // The layer's own coarse answer: with `EnvelopeMode::Optional` the
+            // request would reach the auth provider, which also says 401 but in
+            // its own words, so only the body tells the modes apart.
+            let body = response.text().await.expect("reading the refusal");
+            assert!(
+                body.contains("request could not be authenticated"),
+                "bearer {bearer:?}: the envelope refused it itself, got {body}"
+            );
         }
     }
 

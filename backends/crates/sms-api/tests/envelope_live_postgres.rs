@@ -34,6 +34,10 @@ use sms_test_support::sealed::TestKey;
 
 const PEPPER: &str = "envelope-live-test-pepper-well-over-the-minimum-length";
 
+/// What the envelope layer says to anything it will not open, byte for byte.
+const COARSE_REFUSAL: &str =
+    r#"{"code":"UNAUTHORIZED","message":"request could not be authenticated","details":null}"#;
+
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -363,14 +367,24 @@ async fn an_unsigned_request_is_a_401_and_runs_nothing() {
         }
         let response = request.send().await.expect("sending");
         assert_eq!(response.status().as_u16(), 401, "bearer: {bearer:?}");
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
         assert!(
-            !response
-                .headers()
-                .get("content-type")
-                .and_then(|value| value.to_str().ok())
-                .unwrap_or_default()
-                .starts_with("application/cose"),
+            !content_type.starts_with("application/cose"),
             "the refusal is unsigned"
+        );
+        // The envelope layer's own coarse answer, not the inner auth provider's:
+        // with `EnvelopeMode::Optional` an unsigned request would reach
+        // `SignedAuth`, which also says 401 but in its own words (and 400 for a
+        // bearer), so the status alone cannot tell the two modes apart.
+        let body = response.text().await.expect("reading the refusal");
+        assert_eq!(
+            body, COARSE_REFUSAL,
+            "bearer {bearer:?}: the envelope refused it itself"
         );
     }
     assert_eq!(
