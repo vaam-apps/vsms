@@ -292,7 +292,7 @@ async fn an_unknown_app_or_a_first_run_without_scopes_writes_nothing() {
         "{}",
         stderr(&unknown)
     );
-    assert!(client_rows(&db, "appc_no-such-app-slug").await.is_empty());
+    assert_eq!(client_rows(&db, "appc_no-such-app-slug").await.len(), 0);
 
     let slug = seed_app(&db).await;
     let unscoped = run(&url, &["--app", &slug, "--public-key", &key]);

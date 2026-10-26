@@ -348,7 +348,7 @@ async fn bad_input_is_a_clean_error_and_writes_nothing() {
             .try_into()
             .expect("32 bytes"),
     ));
-    assert!(rows_for_thumbprint(&db, &thumbprint).await.is_empty());
+    assert_eq!(rows_for_thumbprint(&db, &thumbprint).await.len(), 0);
 }
 
 #[tokio::test]
