@@ -193,10 +193,10 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass,
     OperatorCode, OptOutSource, ProviderKind, SenderIdKind, SenderIdRegistrationStatus, app,
-    app_client, audit_anchor, client_assertion, consent_record, delivery_receipt, federated_link,
-    job, message, oauth_client, oauth_signing_key, operator_prefix_rule, opt_out, provider, role,
-    route, route_validation, sender_id, sender_id_registration, sso_transaction, user,
-    user_credential, webhook_attempt, webhook_endpoint,
+    app_client, audit_anchor, client_assertion, client_key, consent_record, delivery_receipt,
+    federated_link, job, message, oauth_client, oauth_signing_key, operator_prefix_rule, opt_out,
+    provider, role, route, route_validation, sender_id, sender_id_registration, sso_transaction,
+    user, user_credential, webhook_attempt, webhook_endpoint,
 };
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
@@ -262,6 +262,13 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 ///   models are `hasRole('system')` on every action from the moment they were
 ///   written (see their `schema.cstack` comments) - listed so the live half of
 ///   this guard proves it on day one, not found live.
+/// - `ClientKey` - signed transport (VS-2). `registerAppClientKey` reads it
+///   under `sys` (the thumbprint lookup that makes registration idempotent)
+///   and so does `revokeAppClientKey`; VS-3's database-backed key resolver
+///   reads every row the same way. Its `read` clause admits owner/admin for
+///   the console and `system` for these; `create`/`update` are system-only.
+///   Listed so the live half proves it on day one - the sixteenth instance
+///   of this file's gap is the one this entry exists to prevent.
 const SYSTEM_READABLE_MODELS: &[&str] = &[
     "App",
     "AppClient",
@@ -313,6 +320,9 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     // under sys() by sms_auth::sso::store from day one.
     "FederatedLink",
     "SsoTransaction",
+    // VS-2: registerAppClientKey / revokeAppClientKey read it under sys(),
+    // and VS-3's resolver will. Not a "found live" instance.
+    "ClientKey",
 ];
 
 /// Models with no internal `system`-role reader anywhere in this codebase
@@ -1133,6 +1143,40 @@ async fn seed_and_verify_user_credential(db: &Cratestack, user_id: &str) -> sche
     seeded
 }
 
+/// Signed transport's `ClientKey`: written and read under `sys` by
+/// `registerAppClientKey`/`revokeAppClientKey`. The row is seeded through the
+/// generated delegate under `sys` - the one writer the policy admits - with a
+/// public key that is not a real point, because the delegate does no key
+/// validation (the procedure does) and this test only asks about the read.
+async fn seed_and_verify_client_key(
+    db: &Cratestack,
+    suffix: &str,
+    app_client_id: &str,
+) -> schema::ClientKey {
+    let seeded = db
+        .client_key()
+        .create(schema::CreateClientKeyInput {
+            appClientId: app_client_id.to_owned(),
+            alg: schema::ClientKeyAlg::ed25519,
+            publicKey: vec![7; 32],
+            thumbprint: format!("{suffix:0>64}"),
+            label: None,
+            revokedAt: None,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a ClientKey");
+    assert_system_can_read_back!(
+        db,
+        client_key,
+        client_key,
+        seeded.id,
+        "ClientKey",
+        "@@allow(\"read\", hasRole('owner') || hasRole('admin') || hasRole('system'))"
+    );
+    seeded
+}
+
 /// The SSO broker's `FederatedLink`: read by `(issuer, subject)` under `sys`
 /// on every federated sign-in. `hasRole('system')` is its entire policy.
 async fn seed_and_verify_federated_link(
@@ -1345,6 +1389,7 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     let user = seed_and_verify_user(&db, &suffix, &role.key).await;
     seed_and_verify_user_credential(&db, &user.id).await;
     seed_and_verify_federated_link(&db, &suffix, &user.id).await;
+    seed_and_verify_client_key(&db, &suffix, &app_client.id).await;
     seed_and_verify_sso_transaction(&db, &suffix, now).await;
     seed_and_verify_audit_anchor(&db, &suffix, now).await;
     seed_and_verify_consent_record(&db, &suffix, &app.id).await;

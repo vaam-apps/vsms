@@ -56,10 +56,20 @@ const REWRITTEN_BY_LATER: [(&str, &str); 2] = [
 /// from the fresh output before the comparison with `0001_init`, and must
 /// appear verbatim in the later migration's `up.sql` (or, for the `DROP`s,
 /// `down.sql`) - so the forward migration cannot drift from the schema
-/// either. Delete an entry, and its statements, when the migrations are
-/// squashed into a regenerated `0001_init`.
-const ADDED_BY_LATER_DIR: &str = "backends/migrations/postgres/0005_sso_federation";
-const ADDED_BY_LATER_TABLES: [&str; 2] = ["federated_links", "sso_transactions"];
+/// either. One `(directory, tables)` entry per forward migration that adds
+/// tables; a new such migration appends an entry. Delete an entry, and its
+/// statements, when the migrations are squashed into a regenerated
+/// `0001_init`.
+const ADDED_BY_LATER: [(&str, &[&str]); 2] = [
+    (
+        "backends/migrations/postgres/0005_sso_federation",
+        &["federated_links", "sso_transactions"],
+    ),
+    (
+        "backends/migrations/postgres/0006_client_keys",
+        &["client_keys"],
+    ),
+];
 
 /// Removes its temp directory on drop, on every exit path — success,
 /// error-return, or an early `?` — matching the bash version's own
@@ -90,15 +100,15 @@ impl Drop for ScratchDir {
 }
 
 /// True when `block` (one blank-line-separated chunk of generator output) is
-/// DDL about one of [`ADDED_BY_LATER_TABLES`]. Matches the table name as a
-/// whole word (or as the prefix of an index/constraint name built from it)
-/// in a non-comment line.
-fn names_added_table(block: &str) -> bool {
+/// DDL about one of `tables`. Matches the table name as a whole word (or as
+/// the prefix of an index/constraint name built from it) in a non-comment
+/// line.
+fn names_added_table(block: &str, tables: &[&str]) -> bool {
     block
         .lines()
         .filter(|line| !line.trim_start().starts_with("--"))
         .any(|line| {
-            ADDED_BY_LATER_TABLES.iter().any(|table| {
+            tables.iter().any(|table| {
                 line.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                     .any(|word| word == *table || word.starts_with(&format!("{table}_")))
             })
@@ -109,11 +119,11 @@ fn names_added_table(block: &str) -> bool {
 /// forward migration must carry. The generator's header comment lists
 /// `dbgenerated()` columns as `--   - table.column` lines; those for an
 /// added table go too.
-fn split_added(fresh: &str) -> (String, Vec<String>) {
+fn split_added(fresh: &str, tables: &[&str]) -> (String, Vec<String>) {
     let mut kept = Vec::new();
     let mut moved = Vec::new();
     for block in fresh.split("\n\n") {
-        if names_added_table(block) {
+        if names_added_table(block, tables) {
             moved.push(block.trim_end_matches('\n').to_owned());
             continue;
         }
@@ -122,7 +132,7 @@ fn split_added(fresh: &str) -> (String, Vec<String>) {
             .filter(|line| {
                 let trimmed = line.trim_start();
                 !(trimmed.starts_with("--   - ")
-                    && ADDED_BY_LATER_TABLES
+                    && tables
                         .iter()
                         .any(|table| trimmed.starts_with(&format!("--   - {table}."))))
             })
@@ -132,24 +142,28 @@ fn split_added(fresh: &str) -> (String, Vec<String>) {
     (kept.join("\n\n"), moved)
 }
 
-/// Removes the statements about [`ADDED_BY_LATER_TABLES`] from `fresh` (the
-/// generator's `f`.sql) and checks each is present verbatim in the forward
-/// migration's own `f`.sql.
+/// Removes the statements about every table in [`ADDED_BY_LATER`] from
+/// `fresh` (the generator's `f`.sql) and checks each is present verbatim in
+/// the owning forward migration's own `f`.sql.
 fn strip_added_tables(root: &Path, f: &str, fresh: &str) -> Result<String, String> {
-    let carrier = root.join(ADDED_BY_LATER_DIR).join(format!("{f}.sql"));
-    let carrier_text =
-        fs::read_to_string(&carrier).map_err(|e| format!("{}: {e}", carrier.display()))?;
-    let (without_added, moved) = split_added(fresh);
-    for block in &moved {
-        if !carrier_text.contains(block.as_str()) {
-            return Err(format!(
-                "migrations-current: {} does not contain this statement the generator emits \
-                 for a table it carries:\n{block}",
-                carrier.display()
-            ));
+    let mut remaining = fresh.to_owned();
+    for (dir, tables) in ADDED_BY_LATER {
+        let carrier = root.join(dir).join(format!("{f}.sql"));
+        let carrier_text =
+            fs::read_to_string(&carrier).map_err(|e| format!("{}: {e}", carrier.display()))?;
+        let (without_added, moved) = split_added(&remaining, tables);
+        for block in &moved {
+            if !carrier_text.contains(block.as_str()) {
+                return Err(format!(
+                    "migrations-current: {} does not contain this statement the generator emits \
+                     for a table it carries:\n{block}",
+                    carrier.display()
+                ));
+            }
         }
+        remaining = without_added;
     }
-    Ok(without_added)
+    Ok(remaining)
 }
 
 /// The statements of a migration file, without its `--` comment lines and
@@ -323,6 +337,39 @@ mod tests {
         let fresh = "-- NOTE: y\nCREATE TABLE t (\n    c TEXT\n);\n";
         assert_eq!(executable_sql(applied), executable_sql(fresh));
         assert_eq!(executable_sql("-- only a comment\n"), executable_sql(""));
+    }
+
+    #[test]
+    fn each_forward_migration_claims_only_its_own_tables() {
+        let fresh = "-- header\n--   - client_keys.id\n--   - federated_links.id\n--   - apps.id\n\n\
+                     CREATE TABLE apps (\n    id TEXT\n);\n\n\
+                     CREATE TABLE client_keys (\n    id TEXT\n);\n\n\
+                     CREATE TABLE federated_links (\n    id TEXT\n);\n\n\
+                     CREATE UNIQUE INDEX client_keys_thumbprint_key ON client_keys (thumbprint);";
+        let (kept, moved) = split_added(fresh, &["client_keys"]);
+        assert_eq!(
+            moved.len(),
+            2,
+            "the table and its index, nothing else: {moved:?}"
+        );
+        assert!(moved.iter().all(|block| block.contains("client_keys")));
+        assert!(kept.contains("CREATE TABLE apps"));
+        assert!(
+            kept.contains("CREATE TABLE federated_links"),
+            "0005's table is not 0006's"
+        );
+        assert!(!kept.contains("--   - client_keys.id"));
+        assert!(kept.contains("--   - federated_links.id"));
+    }
+
+    #[test]
+    fn every_forward_migration_directory_is_listed_once() {
+        let dirs: Vec<&str> = ADDED_BY_LATER.iter().map(|(dir, _)| *dir).collect();
+        let mut unique = dirs.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(dirs.len(), unique.len());
+        assert!(ADDED_BY_LATER.iter().all(|(_, tables)| !tables.is_empty()));
     }
 
     #[test]

@@ -2093,6 +2093,36 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         self.provision_client(db, ctx, args.args)
     }
 
+    fn register_app_client_key(
+        &self,
+        db: &schema::IsolatedCratestack,
+        _ctx: &CratestackContext,
+        args: schema::procedures::register_app_client_key::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::register_app_client_key::Authorized,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::register_app_client_key::Output, CratestackError>,
+    > + Send {
+        let sys = Self::sys();
+        async move { crate::client_keys::register(db, &sys, args.args).await }
+    }
+
+    fn revoke_app_client_key(
+        &self,
+        db: &schema::IsolatedCratestack,
+        _ctx: &CratestackContext,
+        args: schema::procedures::revoke_app_client_key::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::revoke_app_client_key::Authorized,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::revoke_app_client_key::Output, CratestackError>,
+    > + Send {
+        let sys = Self::sys();
+        async move { crate::client_keys::revoke(db, &sys, args.args).await }
+    }
+
     fn rotate_webhook_secret(
         &self,
         db: &schema::IsolatedCratestack,

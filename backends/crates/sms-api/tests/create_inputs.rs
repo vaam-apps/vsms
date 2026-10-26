@@ -23,9 +23,10 @@
 use chrono::{TimeZone, Utc};
 use cratestack::Decimal;
 use sms_api::schema::{
-    ClientAuthMethod, CreateAppClientInput, CreateAuditAnchorInput, CreateClientAssertionInput,
-    CreateJobInput, CreateMessageInput, CreateOauthClientInput, CreateOauthSigningKeyInput,
-    CreateOperatorPrefixRuleInput, Encoding, MessageClass, OperatorCode,
+    ClientAuthMethod, ClientKeyAlg, CreateAppClientInput, CreateAuditAnchorInput,
+    CreateClientAssertionInput, CreateClientKeyInput, CreateJobInput, CreateMessageInput,
+    CreateOauthClientInput, CreateOauthSigningKeyInput, CreateOperatorPrefixRuleInput, Encoding,
+    MessageClass, OperatorCode,
 };
 
 /// Every field `sendMessage` must control on the row it creates.
@@ -219,6 +220,25 @@ fn app_client_can_set_every_field_it_owns() {
     };
 
     assert_eq!(input.clientId, "otp-svc-v1");
+}
+
+/// Every field `registerAppClientKey` must control on the `ClientKey` it
+/// writes (VS-2). A `@default` on `alg`, `publicKey` or `thumbprint` would
+/// drop it from the input and leave the procedure unable to say which key it
+/// registered; `revokedAt` is absent from nothing - it is `Option`, set on
+/// update by `revokeAppClientKey`, and `None` here.
+#[test]
+fn register_client_key_can_set_every_field_it_owns() {
+    let input = CreateClientKeyInput {
+        appClientId: "appclient0000000000001".to_owned(),
+        alg: ClientKeyAlg::ed25519,
+        publicKey: vec![0; 32],
+        thumbprint: "0".repeat(64),
+        label: Some("console composer".to_owned()),
+        revokedAt: None,
+    };
+
+    assert_eq!(input.publicKey.len(), 32);
 }
 
 /// The OP's signing key, as `sms-auth` writes it on first boot.
