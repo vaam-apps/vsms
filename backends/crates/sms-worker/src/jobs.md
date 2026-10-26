@@ -29,3 +29,5 @@ this is a Rust-side typed-boundary cleanup, not a schema change), and
 [`apply_outcome`] is still the one place a `JobError` is ever collapsed
 back into one, via its own `Display`, reproducing the exact wording every
 handler used to build by hand.
+
+<!-- markdownlint-disable-file MD041 -->

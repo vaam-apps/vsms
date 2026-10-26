@@ -41,3 +41,5 @@ error log on the rare startup-race collision, not a duplicate `Job`
 only Rust's ability to tell *why* it failed is what's missing). Written
 against the documented API, matching `sms-auth`'s own stated reasoning,
 so this goes fully quiet the moment the upstream pin moves.
+
+<!-- markdownlint-disable-file MD041 -->

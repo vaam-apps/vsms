@@ -363,3 +363,5 @@ public half (a `ClientKey` for an app, a paired `ConsoleKey` for a person), and
 or was the layer's unsigned refusal, which is how a test tells a refused
 signature from a refused operation. The server keys the suites boot with are
 fixed seeds, shared with the gateway-binary suites through key files.
+
+<!-- markdownlint-disable-file MD041 -->

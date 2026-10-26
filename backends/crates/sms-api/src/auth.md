@@ -91,3 +91,5 @@ survives into `sms-worker`'s dispatch and the DLR ingestion path,
 neither of which shares this process or this request. See
 `docs/runbooks/alerting.adoc`'s own "Correlating a message end to end"
 section for the worked example joining both.
+
+<!-- markdownlint-disable-file MD041 -->

@@ -58,15 +58,15 @@ To integrate from another language today, implement the signed transport directl
 
 `SendMessageInput` ([`schema.cstack`](../schemas/vsms.cstack)):
 
-| Field | Type | Notes |
-|---|---|---|
-| `to` | String, required | E.164, `+237…`. Validated and normalised; a non-Cameroon or unallocated number is refused before persistence. |
-| `body` | String, required | Encoding is analysed, not assumed — see below. |
-| `senderId` | String? | Must be a registered, approved sender id for your `App`. |
-| `class` | `otp` \| `transactional` \| `notification` \| `marketing` | Drives routing and quiet-hours rules. |
-| `clientRef` | String? | **Your** dedupe key, scoped to the `App`. See §5. |
-| `scheduledAt` | DateTime? | Send later. |
-| `validityMinutes` | Int? | After this, the message expires rather than delivering. |
+| Field             | Type                                                      | Notes                                                                                                         |
+| ----------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `to`              | String, required                                          | E.164, `+237…`. Validated and normalised; a non-Cameroon or unallocated number is refused before persistence. |
+| `body`            | String, required                                          | Encoding is analysed, not assumed — see below.                                                                |
+| `senderId`        | String?                                                   | Must be a registered, approved sender id for your `App`.                                                      |
+| `class`           | `otp` \| `transactional` \| `notification` \| `marketing` | Drives routing and quiet-hours rules.                                                                         |
+| `clientRef`       | String?                                                   | **Your** dedupe key, scoped to the `App`. See §5.                                                             |
+| `scheduledAt`     | DateTime?                                                 | Send later.                                                                                                   |
+| `validityMinutes` | Int?                                                      | After this, the message expires rather than delivering.                                                       |
 
 `SendMessageResult`:
 
@@ -89,12 +89,12 @@ To integrate from another language today, implement the signed transport directl
 
 Cameroonian law (Law No. 2024/017) and this system's own policy make `class` load-bearing. Getting it wrong means a rejected send, not a mis-tagged one:
 
-| Class | Consent record required | Quiet hours |
-|---|---|---|
-| `otp` | No | None |
-| `transactional` | No | None |
-| `notification` | **Yes** | None |
-| `marketing` | **Yes** | **08:00–20:00 WAT only** |
+| Class           | Consent record required | Quiet hours              |
+| --------------- | ----------------------- | ------------------------ |
+| `otp`           | No                      | None                     |
+| `transactional` | No                      | None                     |
+| `notification`  | **Yes**                 | None                     |
+| `marketing`     | **Yes**                 | **08:00–20:00 WAT only** |
 
 - **Consent** — sending `notification` or `marketing` to a recipient with no standing `ConsentRecord` for that class fails with a validation error naming the statute. An operator records consent; you cannot self-serve it.
 - **Quiet hours** — a `marketing` send is refused outside 08:00–20:00 WAT. The window is checked against the **delivery** time, so `scheduledAt` cannot be used to land one at 22:00. Schedule it inside the window instead.
@@ -106,19 +106,19 @@ Declaring `otp` on marketing traffic to dodge these checks is not prevented by t
 
 What a caller actually observes, in the order they normally occur:
 
-| State | Terminal | Meaning |
-|---|---|---|
-| `accepted` | | Persisted and validated. Your send succeeded. |
-| `queued` | | Claimed by a worker for routing. |
-| `routed` | | A provider was selected; submission is in flight. |
-| `submitted` | | The carrier accepted it. Awaiting a delivery receipt. |
-| `delivered` | ✓ | The carrier confirmed handset delivery. |
-| `failed` | ✓ | Permanently failed. `stateReason` says why. |
-| `expired` | ✓ | Passed `validityMinutes` without delivering. |
-| `rejected` | ✓ | Refused — opt-out, unapproved sender id, invalid recipient. |
-| `cancelled` | ✓ | Cancelled via `cancelMessage` before it went out. |
-| `uncertain` | | The submit timed out **after** the carrier may have accepted it. |
-| `undelivered` | | A retryable carrier failure. |
+| State         | Terminal | Meaning                                                          |
+| ------------- | -------- | ---------------------------------------------------------------- |
+| `accepted`    |          | Persisted and validated. Your send succeeded.                    |
+| `queued`      |          | Claimed by a worker for routing.                                 |
+| `routed`      |          | A provider was selected; submission is in flight.                |
+| `submitted`   |          | The carrier accepted it. Awaiting a delivery receipt.            |
+| `delivered`   | ✓        | The carrier confirmed handset delivery.                          |
+| `failed`      | ✓        | Permanently failed. `stateReason` says why.                      |
+| `expired`     | ✓        | Passed `validityMinutes` without delivering.                     |
+| `rejected`    | ✓        | Refused — opt-out, unapproved sender id, invalid recipient.      |
+| `cancelled`   | ✓        | Cancelled via `cancelMessage` before it went out.                |
+| `uncertain`   |          | The submit timed out **after** the carrier may have accepted it. |
+| `undelivered` |          | A retryable carrier failure.                                     |
 
 Two of these need care, and both are deliberate rather than accidental:
 
@@ -136,15 +136,15 @@ Both can surface as a `409`; `SdkError::is_idempotency_in_flight` and `is_confli
 
 ## 6. HTTP status codes
 
-| Status | Meaning | What to do |
-|---|---|---|
-| `200` | Accepted and persisted. | Record `messageId`. |
-| `401` | The request was not signed, or its key is unknown, revoked or expired, or its nonce was seen before. The answer is deliberately unsigned and says no more than that. | Do not retry blindly: seal a fresh request, and if it persists ask the operator whether your key is still registered. |
-| `403` | Your client lacks the scope or the policy denied it. | Do not retry — the credential needs different scopes. |
-| `404` | Unknown id, **or** a row your `App` cannot see. | Do not retry. Row-level policy filters rather than erroring. |
-| `409` | Idempotency replay in flight, a `clientRef` conflict, or an illegal state transition. | Distinguish before acting; none of the three is fixed by a blind retry. |
-| `429` | Rate limited. | Back off; honour `Retry-After`. |
-| `5xx` | Genuine server fault. | Retry with backoff **and** an `Idempotency-Key`. |
+| Status | Meaning                                                                                                                                                              | What to do                                                                                                            |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `200`  | Accepted and persisted.                                                                                                                                              | Record `messageId`.                                                                                                   |
+| `401`  | The request was not signed, or its key is unknown, revoked or expired, or its nonce was seen before. The answer is deliberately unsigned and says no more than that. | Do not retry blindly: seal a fresh request, and if it persists ask the operator whether your key is still registered. |
+| `403`  | Your client lacks the scope or the policy denied it.                                                                                                                 | Do not retry — the credential needs different scopes.                                                                 |
+| `404`  | Unknown id, **or** a row your `App` cannot see.                                                                                                                      | Do not retry. Row-level policy filters rather than erroring.                                                          |
+| `409`  | Idempotency replay in flight, a `clientRef` conflict, or an illegal state transition.                                                                                | Distinguish before acting; none of the three is fixed by a blind retry.                                               |
+| `429`  | Rate limited.                                                                                                                                                        | Back off; honour `Retry-After`.                                                                                       |
+| `5xx`  | Genuine server fault.                                                                                                                                                | Retry with backoff **and** an `Idempotency-Key`.                                                                      |
 
 Rate limiting runs at two points on the API: a per-principal bucket on the API (charged to the verified signer), and a coarser per-source-IP bucket that bounds what a flood of forged identities can reach. An honest client at normal volume sees none of them.
 
