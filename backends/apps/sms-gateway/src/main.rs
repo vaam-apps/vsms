@@ -60,6 +60,26 @@ enum Command {
     /// refuses to overwrite an existing file, and it is never logged or
     /// printed alongside anything else.
     ProvisionClient(commands::provision_client::ProvisionClientArgs),
+    /// Registers an Ed25519 public key for an `App`'s signing client - the
+    /// signed-transport replacement for `provision-client` (VS-2). The caller
+    /// generates the keypair and hands over only the public half; vsms never
+    /// sees a private key, so nothing is returned once and nothing can be
+    /// lost. Creates the app's signing client (`appc_<slug>`) the first time,
+    /// then attaches the key.
+    ///
+    /// Idempotent on the key's RFC 9679 thumbprint: running it twice with the
+    /// same key leaves one `ClientKey` and exits 0. A key that was revoked, or
+    /// that belongs to another client, is refused rather than reinstated or
+    /// moved. It goes through the real `registerAppClientKey` entry point, so
+    /// `@allow` is enforced here exactly as it is over HTTP (an operator
+    /// action rather than a generated-CRUD route for the same reason
+    /// `provision-client` is: no token this deployment issues carries
+    /// `owner`/`admin`).
+    ///
+    /// **Nothing verifies the key yet.** The envelope layer that reads
+    /// `ClientKey` is VS-3; `provision-client` and the token server are
+    /// unchanged until VS-4.
+    RegisterClient(commands::register_client::RegisterClientArgs),
     /// Seed (or reactivate) the `Provider` row `resolve_provider_row_id`
     /// (this file) resolves at startup, **and** a catch-all `Route`
     /// pointing at it — an operator action, not a generated-CRUD route,
@@ -345,6 +365,10 @@ async fn main() -> Result<()> {
 
         Command::ProvisionClient(args) => {
             commands::provision_client::provision_client_command(args).await
+        }
+
+        Command::RegisterClient(args) => {
+            commands::register_client::register_client_command(args).await
         }
 
         Command::SeedDispatch(args) => commands::seed_dispatch::seed_dispatch_command(args).await,

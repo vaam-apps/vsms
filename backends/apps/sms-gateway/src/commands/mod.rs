@@ -7,6 +7,7 @@ pub(crate) mod mtn_subscribe_dlr;
 pub(crate) mod provision_client;
 pub(crate) mod provision_user;
 pub(crate) mod record_route_validation;
+pub(crate) mod register_client;
 pub(crate) mod rotate_signing_key;
 pub(crate) mod routes;
 pub(crate) mod seed_console_client;
