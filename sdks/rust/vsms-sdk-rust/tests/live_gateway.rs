@@ -1,97 +1,82 @@
-//! Live, `#[ignore]`d verification against a real `sms-gateway` — the
-//! `just demo` stack, run from the main vsms repo root. Not part of any
-//! CI job yet (this crate has no CI wiring at all — see its own module
-//! doc's "measured build cost" section and `examples/rust`'s own
+//! Live, `#[ignore]`d verification against a real `sms-gateway`. Not part of
+//! any CI job (this crate has no live-stack wiring - see `examples/rust`'s own
 //! documented CI gap for the same shape of gap). Run by hand:
 //!
 //! ```bash
-//! just demo   # from the repo root; prints a client id and writes a key
+//! # 1. A gateway, started with its two envelope key files, and a database:
+//! #      sms-gateway serve --envelope-signing-key-file current.pem \
+//! #                        --envelope-next-signing-key-file next.pem ...
+//! # 2. A signing key whose public half is registered for an AppClient:
+//! #      openssl genpkey -algorithm ed25519 -out sdk-test-key.pem
+//! #      sms-gateway register-client --app <slug> --scope sms:send --scope sms:read \
+//! #        --public-key "$(cat <the key's base64url public half>)"
+//! # 3. The gateway's pinned keys:
+//! #      sms-gateway server-keys --envelope-signing-key-file current.pem \
+//! #                              --envelope-next-signing-key-file next.pem > server-keys.txt
 //! cd sdks/rust
-//! VSMS_SDK_TEST_CLIENT_ID=<clientId just demo printed> \
+//! VSMS_SDK_TEST_SIGNING_KEY_PATH=sdk-test-key.pem VSMS_SDK_TEST_SERVER_KEYS_PATH=server-keys.txt \
 //!   cargo test -p vsms-sdk-rust --test live_gateway -- --ignored --nocapture --test-threads=1
 //! ```
 //!
-//! `VSMS_SDK_TEST_ISSUER` (default `http://127.0.0.1:8080`),
-//! `VSMS_SDK_TEST_PRIVATE_KEY_PATH` (default `<repo root>/.demo/
-//! console-client-key.pem`, `just demo`'s own conventional location), and
-//! `DATABASE_URL` (default `just demo`'s own
-//! `postgres://postgres:postgres@localhost:15433/vsms_demo`) can override
-//! the rest. `VSMS_SDK_TEST_CLIENT_ID` has no sensible default — `just
-//! demo` mints a fresh `App`/client id on every run — so it must be
-//! passed explicitly; both tests panic with a clear message pointing back
-//! to this doc comment if it's missing.
+//! `VSMS_SDK_TEST_BASE_URL` (default `http://127.0.0.1:8080`) and
+//! `DATABASE_URL` (default the demo stack's own
+//! `postgres://postgres:postgres@localhost:15433/vsms_demo`) can override the
+//! rest. The two key paths have no defaults: they are per-run material, so the
+//! tests panic with a message pointing back here if one is missing.
 //!
-//! These three tests are this SDK's own version of issue #171's
-//! measurable acceptance criteria: "token reuse demonstrated: N sends do
-//! not mint N tokens," "a deliberate 401 triggers exactly one refresh,
-//! then surfaces the error," and — added once #153 (`IdempotencyLayer`)
-//! landed — "a replayed `Idempotency-Key` does not create a second
-//! `Message` row." A live run reaching `delivered` is proven separately
-//! by `examples/rust/sms-send` against this same stack (see its own
-//! README for the verification table); nothing here re-proves that part.
-//! `--test-threads=1` matters: these tests observe shared state
-//! (Postgres, in two of the three) that would race under parallel
-//! execution — the same reason the main vsms repo's own live suites all
-//! take a `tokio::sync::Mutex` (see `AGENTS.md`'s "live suites run in
-//! CI" note).
+//! These three tests are this SDK's own version of issue #171's measurable
+//! acceptance criteria, restated for the signed transport: "N sends are N
+//! signed requests, none of them minting or refreshing anything" (replacing
+//! "token reuse"), "a refused signature is surfaced after exactly one attempt"
+//! (replacing "a deliberate 401 triggers exactly one refresh"), and - added once
+//! #153 (`IdempotencyLayer`) landed - "a replayed `Idempotency-Key` does not
+//! create a second `Message` row". A live run reaching `delivered` is proven
+//! separately by `examples/rust/sms-send` against the same stack.
+//! `--test-threads=1` matters: these tests observe shared state (Postgres)
+//! that would race under parallel execution.
 
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine as _;
 use vsms_sdk::schema::SendMessageInput;
-use vsms_sdk::{PrivateKeyJwtConfig, SdkError, TokenStore, VsmsClient};
+use vsms_sdk::{ServerKeys, SigningKey, VsmsClient};
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
 }
 
-fn required_client_id() -> String {
-    std::env::var("VSMS_SDK_TEST_CLIENT_ID").unwrap_or_else(|_| {
-        panic!(
-            "VSMS_SDK_TEST_CLIENT_ID is required for this live test — run `just demo` from the \
-             repo root, then pass the client id it prints (\"provisioned client: <id>\"); see \
-             this test file's own module doc"
-        )
+fn required(key: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| {
+        panic!("{key} is required for this live test - see this test file's own module doc")
     })
 }
 
-fn default_key_path() -> String {
-    // CARGO_MANIFEST_DIR is sdks/rust/vsms-sdk-rust; `just demo`'s own
-    // conventional key location is <repo root>/.demo/console-client-key.pem.
-    concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../.demo/console-client-key.pem"
-    )
-    .to_owned()
-}
-
 fn default_database_url() -> String {
-    // Matches scripts/demo.sh's own DATABASE_URL exactly.
+    // Matches the demo stack's own DATABASE_URL.
     "postgres://postgres:postgres@localhost:15433/vsms_demo".to_owned()
 }
 
-/// The total row count in `client_assertions` — the table `authkestra-op`
-/// inserts into exactly once per successful `/token` exchange (it's how
-/// `record_jti`'s replay protection works — see `AGENTS.md`'s M1 section
-/// and this crate's own `token.rs` module doc). The table has no
-/// `client_id` column (it's a global replay-protection ledger, not
-/// scoped per client — confirmed with `\d client_assertions` against a
-/// real `just demo` database), so this is a whole-table count, not one
-/// scoped to the client under test. That's a real, stated limitation for
-/// this specific test: a concurrent `/token` exchange from something else
-/// against the same database during the test window would inflate the
-/// delta this test measures. Acceptable for a manual, by-hand
-/// verification run against a private `just demo` instance (nothing else
-/// in that stack calls `/token` on its own), not something this test
-/// tries to paper over as airtight in general.
-///
+/// A client signing with `VSMS_SDK_TEST_SIGNING_KEY_PATH`'s key against the
+/// gateway at `VSMS_SDK_TEST_BASE_URL`, pinning
+/// `VSMS_SDK_TEST_SERVER_KEYS_PATH`'s keys.
+fn live_client() -> (VsmsClient, SigningKey) {
+    let base_url = env_or("VSMS_SDK_TEST_BASE_URL", "http://127.0.0.1:8080");
+    let key = SigningKey::from_pem_file(required("VSMS_SDK_TEST_SIGNING_KEY_PATH"))
+        .expect("reading the signing key should succeed");
+    let report = std::fs::read_to_string(required("VSMS_SDK_TEST_SERVER_KEYS_PATH"))
+        .expect("reading the server keys file should succeed");
+    let server_keys = ServerKeys::parse_report(&report).expect("a valid `server-keys` report");
+    let client = VsmsClient::signed(base_url, key.clone(), server_keys)
+        .expect("building a VsmsClient against a reachable gateway should succeed");
+    (client, key)
+}
+
 /// Shells out to `psql` rather than adding a Postgres client crate as a
-/// dependency just for this test file — `psql` is already the tool every
+/// dependency just for this test file - `psql` is already the tool every
 /// script in the main vsms repo uses for exactly this kind of by-hand
-/// verification (`ci/apply-migrations.sh`, `justfile`'s `schema-check`,
-/// ...). `sql` must be a query returning a single row, single plain-integer
-/// column (`-tAc`, no header, no alignment).
+/// verification. `sql` must be a query returning a single row, single
+/// plain-integer column (`-tAc`, no header, no alignment).
 fn count_rows(database_url: &str, sql: &str) -> usize {
     let output = Command::new("psql")
         .arg(database_url)
@@ -114,21 +99,24 @@ fn count_rows(database_url: &str, sql: &str) -> usize {
         })
 }
 
-/// The total row count in `client_assertions` — see this function's own
-/// former doc, now folded into [`count_rows`]'s callers below: the table
-/// `authkestra-op` inserts into exactly once per successful `/token`
-/// exchange (`record_jti`'s replay protection — see `AGENTS.md`'s M1
-/// section and this crate's own `token.rs` module doc). It has no
-/// `client_id` column (a global replay-protection ledger, not scoped per
-/// client — confirmed with `\d client_assertions` against a real `just
-/// demo` database), so this is a whole-table count. A real, stated
-/// limitation: a concurrent `/token` exchange from something else against
-/// the same database during the test window would inflate the delta this
-/// test measures — acceptable for a manual, by-hand verification run
-/// against a private `just demo` instance (nothing else in that stack
-/// calls `/token` on its own).
-fn count_client_assertions(database_url: &str) -> usize {
-    count_rows(database_url, "SELECT count(*) FROM client_assertions")
+/// The rows in `envelope_nonces` recorded for `key`: the replay cache holds one
+/// row per accepted request, named `cose:<kid>:<cti>`, where `kid` is the first
+/// 8 bytes of the key's RFC 9679 thumbprint. Counting them for one key's `kid`
+/// is the gateway's own record of how many signed requests that key made, with
+/// no noise from other principals.
+fn count_nonces_for(database_url: &str, key: &SigningKey) -> usize {
+    let public = URL_SAFE_NO_PAD
+        .decode(key.public_key_b64u())
+        .expect("a base64url public key");
+    let public: [u8; 32] = public.try_into().expect("32 bytes");
+    let kid = cratestack::cose::CoseVerifyKey::ed25519(&public)
+        .expect("a valid public key")
+        .kid();
+    let kid_hex: String = kid.iter().map(|byte| format!("{byte:02x}")).collect();
+    count_rows(
+        database_url,
+        &format!("SELECT count(*) FROM envelope_nonces WHERE nonce LIKE 'cose:{kid_hex}:%'"),
+    )
 }
 
 /// The row count in `messages` whose `body` exactly matches `body` — used
@@ -157,39 +145,27 @@ fn psql_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-/// Issue #171: "token reuse demonstrated: N sends do not mint N tokens."
-/// Sends three real messages through one `VsmsClient`, each with a
-/// distinct `clientRef` (so none collide on the dedupe index and each is
-/// a genuine, separate `sendMessage` call), and asserts the number of
-/// real `/token` exchanges — read from the database's own replay-
-/// protection ledger, not a client-side count that could itself be
-/// wrong — increased by exactly 1, not 3.
+/// Issue #171, restated: N sends are N signed requests and nothing else.
+/// Sends three real messages through one `VsmsClient`, each with a distinct
+/// `clientRef` (so none collide on the dedupe index), and asserts the gateway
+/// recorded exactly three nonces for this key - one per request, each of them a
+/// fresh, never-reused `cti`. There is no token to mint, cache or refresh, so
+/// there is nothing else to count.
 #[tokio::test]
 #[ignore = "needs a live sms-gateway; see this file's own module doc"]
-async fn n_sends_reuse_one_token_live() {
-    let issuer = env_or("VSMS_SDK_TEST_ISSUER", "http://127.0.0.1:8080");
-    let client_id = required_client_id();
-    let key_path = env_or("VSMS_SDK_TEST_PRIVATE_KEY_PATH", &default_key_path());
+async fn n_sends_are_n_signed_requests_live() {
     let database_url = env_or("DATABASE_URL", &default_database_url());
+    let (client, key) = live_client();
 
-    let config =
-        PrivateKeyJwtConfig::from_key_path(&issuer, &client_id, &key_path, "sms:send sms:read")
-            .expect("reading the private key at VSMS_SDK_TEST_PRIVATE_KEY_PATH should succeed");
-    let client = VsmsClient::private_key_jwt(&issuer, config)
-        .expect("building a VsmsClient against a reachable gateway should succeed");
-
-    let before = count_client_assertions(&database_url);
+    let before = count_nonces_for(&database_url, &key);
 
     for i in 0..3 {
         let args = SendMessageInput {
             to: "+237677123456".to_owned(),
-            body: format!("vsms-sdk-rust token-reuse verification #{i}"),
+            body: format!("vsms-sdk-rust signed-request verification #{i}"),
             senderId: Some("VYMALO".to_owned()),
             class: None,
-            clientRef: Some(format!(
-                "vsms-sdk-rust-token-reuse-{}-{i}",
-                std::process::id()
-            )),
+            clientRef: Some(format!("vsms-sdk-rust-signed-{}-{i}", std::process::id())),
             scheduledAt: None,
             validityMinutes: None,
         };
@@ -199,39 +175,30 @@ async fn n_sends_reuse_one_token_live() {
             .unwrap_or_else(|error| panic!("send #{i} should succeed: {error}"));
     }
 
-    let after = count_client_assertions(&database_url);
+    let after = count_nonces_for(&database_url, &key);
     assert_eq!(
         after - before,
-        1,
-        "3 sends through one VsmsClient should mint exactly 1 token (1 new client_assertions \
-         row), not 3 — the cache in PrivateKeyJwtTokenStore::get_token isn't doing its job if \
-         this fails (before={before}, after={after})"
+        3,
+        "3 sends should record exactly 3 nonces for this key (before={before}, after={after})"
     );
 }
 
 /// Issue #171: `Idempotency-Key` support, added once #153 (which mounted
 /// `IdempotencyLayer` on the generated router) landed. Sends the exact
 /// same `SendMessageInput` twice under one `Idempotency-Key` and proves,
-/// by counting `messages` rows in the database — not by trusting
-/// `idempotency_replayed`, which is only an echo of a response header —
-/// that the second call created no second row: `after - before == 1`,
-/// not 2. Also checks the header echo agrees with that ground truth
-/// (`false` then `true`) and that both calls report the identical
-/// `messageId`, since a replay is defined as "the same response," not
-/// merely "no new row."
+/// by counting `messages` rows in the database - not by trusting
+/// `idempotency_replayed`, which is only an echo of an unauthenticated
+/// response header - that the second call created no second row:
+/// `after - before == 1`, not 2. Each call is a freshly sealed request (its own
+/// nonce), which is the point of the layering: the idempotency layer sits
+/// inside the envelope, so a re-sealed retry still replays. Also checks the
+/// header echo agrees with that ground truth (`false` then `true`) and that
+/// both calls report the identical `messageId`.
 #[tokio::test]
 #[ignore = "needs a live sms-gateway; see this file's own module doc"]
 async fn idempotency_key_replay_does_not_duplicate_the_message_live() {
-    let issuer = env_or("VSMS_SDK_TEST_ISSUER", "http://127.0.0.1:8080");
-    let client_id = required_client_id();
-    let key_path = env_or("VSMS_SDK_TEST_PRIVATE_KEY_PATH", &default_key_path());
     let database_url = env_or("DATABASE_URL", &default_database_url());
-
-    let config =
-        PrivateKeyJwtConfig::from_key_path(&issuer, &client_id, &key_path, "sms:send sms:read")
-            .expect("reading the private key at VSMS_SDK_TEST_PRIVATE_KEY_PATH should succeed");
-    let client = VsmsClient::private_key_jwt(&issuer, config)
-        .expect("building a VsmsClient against a reachable gateway should succeed");
+    let (client, _key) = live_client();
 
     // A unique marker per run so `count_messages_with_body` can never
     // match a row left over from an earlier run of this same test.
@@ -241,11 +208,10 @@ async fn idempotency_key_replay_does_not_duplicate_the_message_live() {
     );
     let idempotency_key = format!("vsms-sdk-rust-idem-{}", std::process::id());
     // No `clientRef`: replay must work off `Idempotency-Key` alone, and a
-    // replay requires the *exact same* request body on both calls — a
-    // `clientRef` would make that trivially true but would also mean the
-    // database-level dedupe (`messages_app_idem_key`) could be what's
-    // actually preventing a second row, muddying which layer this test
-    // is proving.
+    // replay requires the *exact same* request body on both calls - a
+    // `clientRef` would also mean the database-level dedupe
+    // (`messages_app_idem_key`) could be what's actually preventing a second
+    // row, muddying which layer this test is proving.
     let build_args = || SendMessageInput {
         to: "+237677123456".to_owned(),
         body: marker.clone(),
@@ -289,75 +255,43 @@ async fn idempotency_key_replay_does_not_duplicate_the_message_live() {
     );
 }
 
-/// A `TokenStore` double that always hands back a syntactically-plausible
-/// but invalid token, so every real call the SDK makes with it gets a
-/// genuine `401` from the real gateway. Counts how many times each trait
-/// method was actually called — the only way to prove "exactly one
-/// refresh, not a loop" from outside `VsmsClient` without reading its
-/// source. Needs no `/token` exchange at all (it never delegates to a
-/// real `PrivateKeyJwtTokenStore`), so unlike the test above this one
-/// needs no database access — only the real gateway's real RBAC/JWT
-/// validation rejecting a bogus Bearer token, twice.
-#[derive(Default)]
-struct AlwaysUnauthorizedTokenStore {
-    get_token_calls: AtomicUsize,
-    invalidate_calls: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl TokenStore for AlwaysUnauthorizedTokenStore {
-    async fn get_token(&self) -> Result<String, SdkError> {
-        self.get_token_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("this-is-not-a-real-token".to_owned())
-    }
-
-    async fn invalidate(&self) {
-        self.invalidate_calls.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
-/// Issue #171: "a deliberate 401 triggers exactly one refresh, then
-/// surfaces the error." A token that's never valid should make
-/// `VsmsClient::send_message` try exactly twice (the original attempt,
-/// then one retry after `invalidate()`) and then return the `401` to the
-/// caller — never loop, since `/token` has no rate limiting today (#156)
-/// and an unbounded refresh loop against it would be a self-inflicted
-/// denial of service.
+/// Issue #171, restated: "a refused signature is surfaced after exactly one
+/// attempt." A key nobody registered is refused by the gateway with its coarse
+/// unsigned 401 (an unknown key is indistinguishable from a forgery on
+/// purpose), and the SDK returns that to the caller without retrying - there
+/// is no token to refresh, and a retry is a new request with a new nonce, the
+/// caller's decision. The one-attempt half is proven without a gateway by
+/// `tests/transport.rs`; this is the half only a real gateway can answer: that
+/// it really does say 401, unsigned, to an unregistered key.
 #[tokio::test]
 #[ignore = "needs a live sms-gateway; see this file's own module doc"]
-async fn deliberate_401_triggers_exactly_one_refresh_live() {
-    let gateway_base_url = env_or("VSMS_SDK_TEST_ISSUER", "http://127.0.0.1:8080");
-
-    let store = Arc::new(AlwaysUnauthorizedTokenStore::default());
-    let client = VsmsClient::builder()
-        .base_url(gateway_base_url)
-        .token_store(store.clone())
-        .build()
-        .expect("building a VsmsClient with a hand-rolled TokenStore should succeed");
+async fn an_unregistered_key_is_refused_unsigned_live() {
+    let base_url = env_or("VSMS_SDK_TEST_BASE_URL", "http://127.0.0.1:8080");
+    let report = std::fs::read_to_string(required("VSMS_SDK_TEST_SERVER_KEYS_PATH"))
+        .expect("reading the server keys file should succeed");
+    let client = VsmsClient::signed(
+        base_url,
+        SigningKey::generate(),
+        ServerKeys::parse_report(&report).expect("a valid `server-keys` report"),
+    )
+    .expect("building a VsmsClient should succeed");
 
     let args = SendMessageInput {
         to: "+237677123456".to_owned(),
-        body: "vsms-sdk-rust 401-bound verification".to_owned(),
+        body: "vsms-sdk-rust unregistered-key verification".to_owned(),
         senderId: Some("VYMALO".to_owned()),
         class: None,
-        clientRef: Some(format!("vsms-sdk-rust-401-bound-{}", std::process::id())),
+        clientRef: Some(format!("vsms-sdk-rust-unregistered-{}", std::process::id())),
         scheduledAt: None,
         validityMinutes: None,
     };
     let result = client.send_message(args, None).await;
 
     assert!(
-        result.as_ref().err().is_some_and(SdkError::is_unauthorized),
+        result
+            .as_ref()
+            .err()
+            .is_some_and(vsms_sdk::SdkError::is_unauthorized),
         "expected a 401 to surface, got: {result:?}"
-    );
-    assert_eq!(
-        store.get_token_calls.load(Ordering::SeqCst),
-        2,
-        "expected exactly 2 get_token calls (original + one bounded refresh), not a loop"
-    );
-    assert_eq!(
-        store.invalidate_calls.load(Ordering::SeqCst),
-        1,
-        "expected exactly 1 invalidate call"
     );
 }

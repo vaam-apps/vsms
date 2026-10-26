@@ -4,7 +4,7 @@ version = "0.9.0" # x-release-please-version
 edition = "2021"
 rust-version = "1.98.0"
 license = "MIT"
-description = "Rust client for vsms: owns the private_key_jwt credential lifecycle so integrators stop hand-rolling token acquisition."
+description = "Rust client for vsms: signs every request with an Ed25519 key (COSE_Sign1) and verifies every answer, so integrators handle no tokens."
 repository = "https://github.com/vaam-apps/vsms"
 readme = "README.md"
 # Kept separate from the product workspace (see the root Cargo.toml's
@@ -54,28 +54,18 @@ path = "src/lib.rs"
 # `cratestack-pg`, correctly: that workspace ships binaries, where an exact
 # pin binds only itself. `cargo xtask cratestack-pin-check` still holds this
 # floor to the root pin, it just accepts the `~` operator here.
+#
+# `cose` is the signed transport (VS-3/VS-6): it makes the generated `Client`
+# seal every call and exposes `ClientEnvelope::seal_call` for `send_message`.
 cratestack = { package = "cratestack-client", version = "~0.16.0", default-features = false, features = [
   "codec-json",
   "decimal-rust-decimal",
+  "cose",
 ] }
-# Needed to implement `cratestack::client_rust::RequestAuthorizer` — its
-# `authorize` method is `#[async_trait]` as of cratestack-client-rust 0.7.x
-# (issue #453: a real credential provider needs to make an HTTP call on a
-# cache miss, which a sync `fn` can't do without `block_on`). The version
-# just has to match whatever `#[async_trait::async_trait]` the trait
-# definition itself was built with; not pinned exactly since this isn't
-# part of the cratestack family's own lockstep-release discipline.
-async-trait = "0.1"
-# RFC 7523 client-assertion signing. `rust_crypto`, not the default
-# `aws_lc_rs` backend — same choice `examples/rust/sms-send` and vsms
-# itself make, for the identical reason (AGENTS.md's aws-lc-rs section):
-# one fewer crypto backend in the dependency graph. `use_pem` has to be
-# named explicitly once `default-features = false` is set — it's what
-# makes `EncodingKey::from_rsa_pem`/`from_ec_pem` available.
-jsonwebtoken = { version = "11", default-features = false, features = [
-  "rust_crypto",
-  "use_pem",
-] }
+# PKCS#8 PEM framing of the signing key (`SigningKey::from_pem`/`to_pem`) and
+# the unpadded base64url the register commands and `server-keys` speak. Already
+# in the graph through `cratestack-cose`.
+base64 = "0.22"
 # `cratestack-client-rust` 0.7.8 (pulled in via the `cratestack` facade
 # above) forces the whole graph's `reqwest` to major 0.13 with
 # `rustls-no-provider` (see its own Cargo.toml) — matched here rather than
@@ -100,20 +90,16 @@ rustls = { version = "0.23", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["sync", "time"] }
+# `SigningKey::generate`: 32 bytes from two v4 UUIDs, which are the operating
+# system's CSPRNG (`getrandom`); no separate RNG crate for one call.
 uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-# Mocks the /token endpoint for `token.rs`'s own `connect_url` unit tests —
-# proving the physical POST address and the asserted `aud` identity can
-# genuinely diverge, not just reading the code and assuming it. Same
-# version pin the main vsms workspace uses (root Cargo.toml).
+# A local stand-in for the gateway in tests/transport.rs: proves what the SDK
+# puts on the wire (a sealed request, never a bearer) and what it does with an
+# unsigned refusal (surfaces it after exactly one attempt) without a live
+# stack. Same version pin the main vsms workspace uses (root Cargo.toml).
 wiremock = "0.6"
-# Parses the form-encoded /token request body captured by wiremock in the
-# same tests, to pull out `client_assertion` for decoding. Already present
-# transitively via `reqwest`; named explicitly since this crate depends on
-# it directly here.
-url = "2"
