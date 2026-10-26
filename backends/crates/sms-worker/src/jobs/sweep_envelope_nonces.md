@@ -44,6 +44,18 @@ clears over several runs rather than in one long statement. The deletes go
 through the generated delegate, one by one, because the delegate has no
 `delete_many` and R1 forbids raw SQL here; a row already gone is not an error.
 
+**The sweep's throughput is coupled to the source limiter.** One run deletes at
+most 500 x 40 = 20 000 rows every 15 minutes, about 22 rows a second, and the
+table gains one row per accepted request. Accepted requests are bounded by the
+coarse per-source limiter in `sms_api::router` (burst 1200, refilling 10 a second
+per peer address), and this deployment has two peers (Caddy, and `admin` talking
+to the gateway directly), so the sustained inflow is at most about 20 a second
+and the sweep keeps up. A deployment with more peers, or a raised
+`SMS_SOURCE_RATE_LIMIT_*`, can outrun it: raise `MAX_BATCHES`, or run the job
+more often, before raising the source budget past 22 requests a second in total.
+The table only grows meanwhile, it is never wrong: an expired row left behind is
+taken over by `PgNonceStore`, not refused.
+
 # Under which context
 
 The internal `system` context the jobs role runs under: `EnvelopeNonce`

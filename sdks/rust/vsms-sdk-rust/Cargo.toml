@@ -74,7 +74,7 @@ base64 = "0.22"
 # `Client::build()` unless one is installed first; `src/client.rs`'s
 # `ensure_crypto_provider` installs `ring` (matching every other reqwest
 # consumer in this repo — AGENTS.md's aws-lc-rs section) before building
-# either this crate's own token-fetch client or the `CratestackClient`'s
+# either this crate's own request-sealing client or the `CratestackClient`'s
 # internal one, whichever runs first.
 reqwest = { version = "0.13", default-features = false, features = [
   "json",

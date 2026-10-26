@@ -1197,11 +1197,11 @@ and the layer order; this section is what to know before touching it.
   accepted).
 - The replay check returning "unseen" for a live entry - failed `a_replayed_request_is_refused_and_runs_once`,
   `one_nonce_recorded_concurrently_is_unseen_exactly_once` and `the_nonce_store_records_once_and_takes_over_an_expired_entry`.
-- `revokedAt IS NULL` dropped from both the resolver and the directory for client keys - failed
-  `a_revoked_client_key_is_a_401`. **Dropped from either one alone, the test still passes**: the two are independent
-  guards on the same fact, so neither is proven by this test on its own.
-- The same for console keys' `revokedAt` - failed `a_revoked_console_key_is_a_401`; the `expiresAt` window dropped from
-  both - failed `an_expired_console_key_is_a_401`.
+- Revocation and expiry are each checked in two places, the resolver (`DirectoryKeys`) and the directory
+  (`SignerDirectory::standing`), and a request-level test cannot tell which one it is exercising. Each of the six
+  checks (client revocation, console revocation, console expiry, in each place) now has a test that calls only that
+  component, and loosening any one fails exactly its own test (see "Review fixes", below). Before that, dropping a
+  check from either place alone left `a_revoked_client_key_is_a_401` green.
 - `AppClient.active` dropped from the directory - failed `an_inactive_client_or_person_is_a_401`; `User.active` dropped
   likewise (the person case of the same test).
 - The reserved-role refusal replaced by `if false` - failed `a_reserved_role_key_is_never_a_signer` (a unit test: the
@@ -1219,6 +1219,59 @@ and the layer order; this section is what to know before touching it.
   `cargo xtask migrations-current`.
 - SDK: an `Authorization` header added to the sealed request - failed `send_message_is_sealed_and_carries_no_bearer`;
   an unsealed 2xx accepted as a fallback - failed `a_plain_200_is_not_believed`.
+
+### Review fixes to the signed transport (VS-3, VS-6)
+
+The adversarial review of vsms#443 found one privilege escalation and several tests that passed under the
+state they exist to forbid.
+
+- **An admin could become any linked person, an owner included, with sealed calls only.** The chain: give an app
+  client `console:pair` (PATCH `/app_clients/{id}` scopes, or `provisionAppClient`), register the admin's own Ed25519
+  key for it (`registerAppClientKey` is owner/admin with no scope check), sign as that client and call
+  `registerConsoleKey` with the owner's `vaamUserId` (it attaches the key to the existing linked user whatever
+  their role). No role is written, so the owner-grant guard never fires. Three independent guards now cut it
+  (`pair_scope.md`):
+  1. `console:pair` is granted only by `sms-gateway register-client`: `enforce_pair_scope_guard` refuses it on POST
+     and PATCH `/app_clients` for every caller, owner included, and `provisionAppClient` refuses it before reading
+     the app or generating a keypair.
+  2. `registerAppClientKey` refuses a client holding `console:pair` unless the caller is the operator's command
+     line (`client_keys::Registrant::Operator`, which `register-client` passes).
+  3. `registerConsoleKey` refuses a linked `owner` with a 403 naming `pair-console-key`. An admin keeps their role
+     (`a_linked_person_keeps_the_role_they_have` now pins support and admin).
+  `envelope_live_postgres` walks the chain against the real router: a control with every step done by a fixture
+  reaches an owner-only `DELETE /users/{id}`, and one test per guard bypasses the other two and shows the chain
+  stopping at that guard (403 at its step).
+- **`SignerDirectory::standing` takes the verified signer** and reads `ClientKey` only for Ed25519 and `ConsoleKey`
+  only for ESP256; any other algorithm is refused. The two exclusive arms mean a single-line loosening of one arm
+  fails both cross-algorithm tests together, not one each.
+- **The unsigned-refusal tests assert the envelope's own body** (`request could not be authenticated`), which
+  `SignedAuth` does not say, so `EnvelopeMode::Optional` fails them. `serve_does_not_parse_without_the_key_flags`
+  reads clap's list of missing arguments, not the usage line (which names both flags whatever was passed), and
+  checks each key file alone.
+- **SDK.** `send_message` refuses an answer from any URL other than the one it sealed for. `http_client` must not
+  follow redirects; the SDK cannot inspect a `reqwest` client's policy, and cannot un-send a request a hop already
+  received, so this is documented as the caller's requirement. `SigningKey::generate` fills its seed from
+  `getrandom` and the seed is zeroized on drop.
+
+**Guard-failure proofs** (each guard loosened, seen to fail, restored):
+
+- `enforce_pair_scope_guard` removed from the router - failed `an_admin_cannot_grant_the_pair_scope` and
+  `the_whole_pairing_chain_is_stopped_at_its_first_step` (the chain went on to step 2).
+- The `refuse_pair_scope` call removed from `provisionAppClient` - failed `an_admin_cannot_grant_the_pair_scope`
+  (a client with a private key was provisioned).
+- `registrant == Registrant::Caller` made `false` - failed `an_admin_cannot_register_a_key_for_a_pairing_client` and
+  `a_client_holding_the_pair_scope_takes_keys_only_from_the_operator`.
+- The owner refusal in `console_keys::register` made `if false` - failed `a_pairing_client_cannot_attach_a_key_to_an_owner`
+  and `a_linked_owner_is_refused_and_nothing_is_written`.
+- Each of the six revocation and expiry checks removed on its own - failed exactly its own
+  `the_resolver_alone_...` or `the_directory_alone_...` test.
+- A client key resolved under ESP256 (the Ed25519 arm widened) - failed `a_client_key_presented_under_esp256_is_refused`
+  and `a_console_key_presented_under_ed25519_is_refused`.
+- `EnvelopeMode::Required` -> `Optional` - failed `an_unsigned_request_is_a_401_and_runs_nothing` (the body check)
+  and the router unit test `a_plain_request_to_a_generated_route_is_refused_unsigned`.
+- A `default_value` on `--envelope-next-signing-key-file` - failed `serve_does_not_parse_without_the_key_flags`.
+- SDK: the response URL check removed - failed `an_answer_from_a_redirect_hop_is_refused`; a key that is not
+  pinned added to the pinned set - failed `an_answer_sealed_by_a_key_that_is_not_pinned_is_refused`.
 
 ## cratestack bumped to `=0.15.0` (from `=0.11.0`)
 

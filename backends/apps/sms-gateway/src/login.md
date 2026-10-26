@@ -1,9 +1,9 @@
 Mounting the raw `POST /login` route (#194).
 
 Not CrateStack-routed, for the same structural reason `dlr.rs`'s own
-route isn't: a login attempt carries no bearer token to validate
-against `GatewayAuth` — proving who the caller is is the entire point
-of this route.
+route isn't: a login attempt carries no signed envelope for the
+envelope layer to verify (the layer seals every generated route) — proving who
+the caller is is the entire point of this route.
 
 # What this is, precisely
 
