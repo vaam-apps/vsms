@@ -24,9 +24,10 @@ use chrono::{TimeZone, Utc};
 use cratestack::Decimal;
 use sms_api::schema::{
     ClientAuthMethod, ClientKeyAlg, ConsoleKeyAlg, CreateAppClientInput, CreateAuditAnchorInput,
-    CreateClientAssertionInput, CreateClientKeyInput, CreateConsoleKeyInput, CreateJobInput,
-    CreateMessageInput, CreateOauthClientInput, CreateOauthSigningKeyInput,
-    CreateOperatorPrefixRuleInput, Encoding, MessageClass, OperatorCode,
+    CreateClientAssertionInput, CreateClientKeyInput, CreateConsoleKeyInput,
+    CreateEnvelopeNonceInput, CreateJobInput, CreateMessageInput, CreateOauthClientInput,
+    CreateOauthSigningKeyInput, CreateOperatorPrefixRuleInput, Encoding, MessageClass,
+    OperatorCode,
 };
 
 /// Every field `sendMessage` must control on the row it creates.
@@ -294,6 +295,25 @@ fn client_assertion_can_set_every_field_it_owns() {
     };
 
     assert_eq!(input.expiresAt, now);
+}
+
+/// Recording a signed request's `(kid, cti)` (VS-3).
+///
+/// `nonce` is the uniqueness the `23505` catch depends on and `expiresAt` is
+/// what the worker's sweep reaps by; a `@default` on either would drop it from
+/// the input and leave the nonce store unable to say what it recorded or until
+/// when.
+#[test]
+fn envelope_nonce_can_set_every_field_it_owns() {
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+
+    let input = CreateEnvelopeNonceInput {
+        nonce: "cose:0011223344556677:00112233445566778899aabbccddeeff".to_owned(),
+        expiresAt: now,
+    };
+
+    assert_eq!(input.expiresAt, now);
+    assert!(input.nonce.starts_with("cose:"));
 }
 
 /// `Decimal` is reachable and is the money type.
