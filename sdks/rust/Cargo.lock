@@ -2113,14 +2113,15 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "cratestack-client",
+ "getrandom 0.4.3",
  "reqwest",
  "rustls",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
- "uuid",
  "wiremock",
+ "zeroize",
 ]
 
 [[package]]

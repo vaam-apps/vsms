@@ -1995,12 +1995,13 @@ version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "cratestack-client",
+ "getrandom 0.4.3",
  "reqwest",
  "rustls",
  "serde",
  "serde_json",
  "thiserror",
- "uuid",
+ "zeroize",
 ]
 
 [[package]]

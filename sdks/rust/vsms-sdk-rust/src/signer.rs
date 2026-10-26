@@ -33,6 +33,12 @@ pub struct SigningKey {
     seed: [u8; 32],
 }
 
+impl Drop for SigningKey {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.seed);
+    }
+}
+
 impl std::fmt::Debug for SigningKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SigningKey")
@@ -50,6 +56,11 @@ impl SigningKey {
 
     /// A fresh key from the operating system's random source.
     ///
+    /// # Panics
+    ///
+    /// When the operating system cannot supply random bytes, which leaves no
+    /// safe key to make.
+    ///
     /// ```
     /// let a = vsms_sdk::SigningKey::generate();
     /// let b = vsms_sdk::SigningKey::generate();
@@ -58,8 +69,7 @@ impl SigningKey {
     #[must_use]
     pub fn generate() -> Self {
         let mut seed = [0_u8; 32];
-        seed[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
-        seed[16..].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
+        getrandom::fill(&mut seed).expect("the operating system has a random source");
         Self { seed }
     }
 

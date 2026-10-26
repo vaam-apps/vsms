@@ -13,7 +13,8 @@
 //! headers the typed wrapper discards.
 
 use cratestack::client_rust::{
-    ClientConfig, ClientEnvelope, ClientError, CratestackClient, JsonCodec, RouteRef, SealCall,
+    ClientConfig, ClientEnvelope, ClientError, CratestackClient, EnvelopeError, JsonCodec,
+    RouteRef, SealCall,
 };
 use cratestack::cose::{CoseEnvelope, CoseMode, CoseVerifyKey, StaticVerifierResolver};
 use cratestack::{CratestackError, CratestackErrorResponse};
@@ -151,14 +152,22 @@ impl VsmsClient {
         }
         let sealed = self.envelope.seal_call(call).await?;
 
-        let mut request = self
-            .http
-            .post(format!("{}{SEND_MESSAGE_ROUTE}", self.base_url))
-            .body(sealed.body);
+        let url = reqwest::Url::parse(&format!("{}{SEND_MESSAGE_ROUTE}", self.base_url))
+            .map_err(|error| SdkError::Config(format!("invalid base_url: {error}")))?;
+        let mut request = self.http.post(url.clone()).body(sealed.body);
         for (name, value) in &sealed.headers {
             request = request.header(name, value);
         }
         let response = request.send().await.map_err(ClientError::from)?;
+        // A client that follows redirects (a caller-supplied one) may have
+        // answered from somewhere the request was never sealed for. The same
+        // refusal the generated client makes. It cannot un-send what a hop
+        // already received, which is why `http_client` must not follow them.
+        if response.url() != &url {
+            return Err(SdkError::Client(ClientError::Envelope(
+                EnvelopeError::Unverified,
+            )));
+        }
         let status = response.status();
         let headers = response.headers().clone();
         let bytes = response.bytes().await.map_err(ClientError::from)?;
@@ -269,9 +278,14 @@ impl VsmsClientBuilder {
     }
 
     /// Reuse an existing `reqwest::Client` (a proxy, a timeout, a pool). **It
-    /// must not follow redirects**: a sealed request is bound to one route and
-    /// one audience, and a hop that already received the sealed bytes cannot
-    /// be undone by the check after the fact.
+    /// must not follow redirects** (`redirect::Policy::none()`): a sealed
+    /// request is bound to one route and one audience, and a hop that already
+    /// received the sealed bytes (recipient and text included) cannot be undone
+    /// by the check after the fact. Every call refuses an answer that did not
+    /// come from the URL it was sealed for (`EnvelopeError::Unverified`), so a
+    /// redirect-following client is never *believed*, but it has still sent the
+    /// request on. `reqwest` cannot report a client's redirect policy, so this
+    /// is a requirement on the caller, not something the SDK can enforce.
     pub fn http_client(mut self, http: reqwest::Client) -> Self {
         self.http = Some(http);
         self
