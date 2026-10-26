@@ -1053,7 +1053,10 @@ async fn the_database_refuses_a_malformed_key_row() {
     let mut compressed_tag = valid(6);
     compressed_tag.publicKey[0] = 0x02;
     let mut uppercase_thumbprint = valid(7);
-    uppercase_thumbprint.thumbprint = uppercase_thumbprint.thumbprint.to_uppercase();
+    // Letters guaranteed: upper-casing a thumbprint that happens to be all
+    // digits (six hex digits of `unique_suffix` are, one time in sixteen)
+    // changes nothing, and the row would then be valid.
+    uppercase_thumbprint.thumbprint = "ABCDEF".repeat(11)[..64].to_owned();
     let mut backwards = valid(8);
     backwards.expiresAt = backwards.pairedAt;
     let mut orphan = valid(9);
