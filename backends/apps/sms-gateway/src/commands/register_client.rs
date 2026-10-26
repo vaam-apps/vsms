@@ -30,8 +30,11 @@ pub(crate) struct RegisterClientArgs {
 
     /// The client's Ed25519 public key: the raw 32 bytes, base64url without
     /// padding. The private half stays with whoever generated it and never
-    /// reaches vsms. Not secret, so it is a plain flag.
-    #[arg(long)]
+    /// reaches vsms. Not secret, so it is a plain flag. base64url's alphabet
+    /// includes `-`, so about one key in 64 starts with one: without
+    /// `allow_hyphen_values` clap read `--public-key -S…` as an unknown flag
+    /// and such a key could not be registered at all.
+    #[arg(long, allow_hyphen_values = true)]
     pub(crate) public_key: String,
 
     /// A human-readable label for the key (1-64 characters), e.g.
@@ -222,6 +225,29 @@ fn same_app(existing: sms_api::schema::AppClient, app_id: &str, client_id: &str)
 
 #[cfg(test)]
 mod tests {
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: super::RegisterClientArgs,
+    }
+
+    #[test]
+    fn a_public_key_that_starts_with_a_hyphen_is_a_value_not_a_flag() {
+        use clap::Parser as _;
+        let key = "-S0mEbase64urlKeyThatStartsWithAHyphen_xxxxxx";
+        let cli = Cli::try_parse_from([
+            "register-client",
+            "--database-url",
+            "postgres://unused",
+            "--app",
+            "an-app",
+            "--public-key",
+            key,
+        ])
+        .expect("a leading '-' is part of a base64url key");
+        assert_eq!(cli.args.public_key, key);
+    }
+
     use super::client_id_for;
 
     #[test]
