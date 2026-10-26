@@ -4,7 +4,7 @@
 use anyhow::{Context, Result, bail};
 use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use sms_api::client_keys::{parse_public_key, register};
+use sms_api::client_keys::{Registrant, parse_public_key, register};
 use sms_api::schema::procedures::register_app_client_key;
 use sms_api::schema::{
     Cratestack, CreateAppClientInput, RegisterClientKeyInput, app as app_filter,
@@ -37,6 +37,16 @@ pub(crate) struct RegisterClientArgs {
     #[arg(long, allow_hyphen_values = true)]
     pub(crate) public_key: String,
 
+    /// Registers the key under a second, separately named signing client of the
+    /// same App (`appc_<slug>_<name>`) instead of the App's default one
+    /// (`appc_<slug>`). Each client has its own scopes and is its own
+    /// principal, so two integrations of one App (vaam's pairing service and
+    /// the console's composer; an integrator and the console in the e2e
+    /// scenario) do not share a rate-limit bucket, an idempotency namespace or
+    /// a scope list. Lowercase letters, digits and hyphens, 1-24 characters.
+    #[arg(long = "client-name")]
+    pub(crate) client_name: Option<String>,
+
     /// A human-readable label for the key (1-64 characters), e.g.
     /// `"console composer"`.
     #[arg(long)]
@@ -60,8 +70,40 @@ pub(crate) struct RegisterClientArgs {
 /// `AppClient.clientId`'s unique index makes the find-or-create atomic.
 /// `provision-client` instead mints a random `appc_<uuid>` per run, which is
 /// why running it twice leaves two clients.
-fn client_id_for(slug: &str) -> String {
-    format!("appc_{slug}")
+///
+/// A `--client-name` gives the App another client, `appc_<slug>_<name>`,
+/// equally a pure function of its inputs.
+fn client_id_for(slug: &str, name: Option<&str>) -> String {
+    match name {
+        Some(name) => format!("appc_{slug}_{name}"),
+        None => format!("appc_{slug}"),
+    }
+}
+
+/// `AppClient.clientId` is `@length(max: 64)`.
+const CLIENT_ID_MAX_CHARS: usize = 64;
+
+/// Checks `--client-name` before the database is touched: a name that would
+/// make an id the schema refuses, or one an operator could not type back.
+fn check_client_name(slug: &str, name: &str) -> Result<()> {
+    let well_formed = !name.is_empty()
+        && name.len() <= 24
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && !name.starts_with('-');
+    if !well_formed {
+        bail!(
+            "--client-name must be 1-24 lowercase letters, digits or hyphens, not starting with a hyphen, got {name:?}"
+        );
+    }
+    let id = client_id_for(slug, Some(name));
+    if id.len() > CLIENT_ID_MAX_CHARS {
+        bail!(
+            "--app and --client-name together make the client id {id:?}, over the {CLIENT_ID_MAX_CHARS}-character limit"
+        );
+    }
+    Ok(())
 }
 
 /// `Command::RegisterClient`'s body. Idempotent: the key is identified by its
@@ -72,6 +114,7 @@ pub(crate) async fn register_client_command(args: RegisterClientArgs) -> Result<
         database_url,
         app_slug,
         public_key,
+        client_name,
         label,
         scopes,
         role,
@@ -85,6 +128,9 @@ pub(crate) async fn register_client_command(args: RegisterClientArgs) -> Result<
     }
     if app_slug.trim().is_empty() {
         bail!("--app must not be empty - pass the App.slug (see `sms-gateway create-app`)");
+    }
+    if let Some(name) = client_name.as_deref() {
+        check_client_name(&app_slug, name)?;
     }
     // Before the database, so a typo'd key fails with nothing touched.
     let parsed = parse_public_key(&public_key).context("--public-key")?;
@@ -119,7 +165,7 @@ pub(crate) async fn register_client_command(args: RegisterClientArgs) -> Result<
         bail!("App {app_slug:?} is not active");
     }
 
-    let client_id = client_id_for(&app_slug);
+    let client_id = client_id_for(&app_slug, client_name.as_deref());
     let (app_client_id, created) =
         create_or_find_client(&db, &sys, &app.id, &client_id, &scopes).await?;
 
@@ -135,7 +181,7 @@ pub(crate) async fn register_client_command(args: RegisterClientArgs) -> Result<
     // procedure body, shared with `Procedures`.
     let key = register_app_client_key::invoke_with_db(&db, &call, &ctx, |db, _authorized| {
         let (sys, input) = (sys.clone(), call.args.clone());
-        async move { register(&db, &sys, input).await }
+        async move { register(&db, &sys, input, Registrant::Operator).await }
     })
     .await
     .context("registering the client key")?;
@@ -248,13 +294,32 @@ mod tests {
         assert_eq!(cli.args.public_key, key);
     }
 
-    use super::client_id_for;
+    use super::{check_client_name, client_id_for};
 
     #[test]
-    fn the_client_id_is_a_pure_function_of_the_slug() {
-        assert_eq!(client_id_for("vaam"), "appc_vaam");
-        assert_eq!(client_id_for("vaam"), client_id_for("vaam"));
+    fn the_client_id_is_a_pure_function_of_the_slug_and_name() {
+        assert_eq!(client_id_for("vaam", None), "appc_vaam");
+        assert_eq!(client_id_for("vaam", None), client_id_for("vaam", None));
+        assert_eq!(client_id_for("vaam", Some("pairing")), "appc_vaam_pairing");
         // `AppClient.clientId` is `@length(min: 8)`; `App.slug` is at least 3.
-        assert!(client_id_for("abc").len() >= 8);
+        assert!(client_id_for("abc", None).len() >= 8);
+    }
+
+    #[test]
+    fn a_client_name_the_schema_or_an_operator_could_not_use_is_refused() {
+        assert!(check_client_name("vaam", "pairing").is_ok());
+        assert!(check_client_name("vaam", "e2e-1").is_ok());
+        for bad in [
+            "",
+            "-lead",
+            "Upper",
+            "has space",
+            "under_score",
+            &"x".repeat(25),
+        ] {
+            assert!(check_client_name("vaam", bad).is_err(), "{bad:?}");
+        }
+        // The combined id is held to the schema's 64 characters.
+        assert!(check_client_name(&"s".repeat(40), &"n".repeat(20)).is_err());
     }
 }

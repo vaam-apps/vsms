@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 publish = false
-description = "Runnable example: authenticate to vsms with private_key_jwt and send a message over real HTTP, using vsms-sdk-rust."
+description = "Runnable example: sign a request with an Ed25519 key and send a message to vsms over real HTTP, using vsms-sdk-rust."
 
 [[bin]]
 name = "vsms-example-send"

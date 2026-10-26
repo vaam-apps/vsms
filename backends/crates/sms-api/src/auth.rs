@@ -1,24 +1,17 @@
 #![doc = include_str!("auth.md")]
 
-use std::time::Duration;
-
-use authkestra_engine::auth::strategy::utils::extract_bearer_token;
-use authkestra_engine::token::Claims;
-use authkestra_resource::jwt::{JwksCache, validate_jwt_generic};
 use cratestack::{
-    AuthProvider, CratestackContext, CratestackError, FilterExpr, RequestContext, Value,
+    AuthProvider, CratestackContext, CratestackError, RequestContext, Value, VerifiedSigner,
 };
-use jsonwebtoken::{Algorithm, Validation};
 
-use crate::cache::TtlCache;
-use crate::schema::{self, Cratestack, app_client, role, user};
+use crate::signers::{SignerDirectory, Standing};
 
 /// The `OauthClient.clientId` #194's own `sms-console` provisioning
-/// (`sms-gateway seed-console-client`) registers under, and the default
-/// every construction site passes as `GatewayAuth::new`'s `human_client_id`
-/// unless a deployment genuinely runs a different console client id. Named
-/// once here rather than duplicated as a string literal at each of the
-/// (as of this PR) seven call sites across three crates.
+/// (`sms-gateway seed-console-client`) registers under, the OIDC client the
+/// password login and the SSO broker issue the console's tokens for. Nothing
+/// in this crate authenticates with that token any more (VS-3); it stays only
+/// for the OP routes that VS-4 deletes. Named once here rather than
+/// duplicated as a string literal across three crates.
 pub const DEFAULT_CONSOLE_CLIENT_ID: &str = "sms-console";
 
 /// Who a request is. Mirrors the `auth Principal` block in `schema.cstack`
@@ -80,225 +73,98 @@ impl Principal {
     }
 }
 
-/// JWKS-backed token validation, replacing the milestone-0 `DenyAll`. #21.
+/// Turns the key that signed a request into the [`Principal`] the schema's
+/// policies read. This is the only `AuthProvider` the generated router has.
 ///
-/// **Both realms as of #194.** A service-account (`client_credentials`)
-/// token, per `authkestra-op`'s real `handle_client_credentials` path,
-/// never carries `identity` — that remains the discriminator this uses, not
-/// a `kind` claim (nothing mints one on that path; see the design doc
-/// §5.3's own token shape and `authkestra_engine::token::Claims`'s real
-/// fields). A human (`authorization_code`) token always has one — see
-/// `sms-auth::login`'s own module doc for how the identity behind it was
-/// established, and `sms-auth::op::machine_only_config` for why the OP now
-/// advertises that grant at all.
+/// There is no credential in a request but its signature. The envelope layer
+/// (`crate::envelope`) has already verified it and recorded a
+/// `VerifiedSigner` in the request extensions; [`SignedAuth`] maps that signer
+/// through [`SignerDirectory`] and reads nothing else, so there is no token to
+/// validate, no JWKS to fetch and no `Authorization` header to trust:
 ///
-/// Builds its own [`JwksCache`]/[`Validation`] directly rather than going
-/// through `authkestra_resource::jwt::JwtStrategy` — verified against
-/// vendored 0.3.2 source that `JwtStrategy`'s cache/validation fields are
-/// private, with no accessor, so its own `AuthenticationStrategy::authenticate`
-/// (which wants an `http::request::Parts`, not this crate's
-/// [`RequestContext`]) is the only way to reach them through that type.
-/// [`extract_bearer_token`] plus [`validate_jwt_generic`] are the same two
-/// calls `JwtStrategy` itself makes internally, just callable directly
-/// against a `&HeaderMap`.
+/// - a `ClientKey` of an active `AppClient` is an **app** principal
+///   (`sub = AppClient.clientId`, `role = "app"`, the client's scopes);
+/// - a paired, unexpired `ConsoleKey` of an active `User` is a **user**
+///   principal, that person's role and the permissions of that role.
+///
+/// A request that carries an `Authorization` header is refused outright, even
+/// beside a good signature, rather than ignored: a stale client must not
+/// believe a bearer still counts, and nothing downstream may start reading
+/// one. A request with no verified signer cannot reach here (the envelope is
+/// `Required` for every op); if one ever did, it is refused rather than
+/// treated as anonymous, because no policy in this schema admits an
+/// unauthenticated caller.
 #[derive(Clone)]
-pub struct GatewayAuth {
-    jwks: std::sync::Arc<JwksCache>,
-    validation: Validation,
-    app_cache: std::sync::Arc<TtlCache<String, schema::AppClient>>,
-    // #194: a human token's role/perms are looked up here rather than
-    // baked into the token at issuance — see this field's own doc on
-    // `human_client_id` below for why `authkestra-op`'s real
-    // `handle_authorization_code` made that decision for this crate, not
-    // the other way around. Keyed by `User.id` (== `Identity.external_id`
-    // == the token's `sub`), same TTL and same reasoning as `app_cache`.
-    user_cache: std::sync::Arc<TtlCache<String, HumanPrincipal>>,
-    /// The one `OauthClient.clientId` a human (`authorization_code`) token
-    /// may legitimately carry as `aud` — `sms-console`, in practice. Real
-    /// audience validation for that realm, closing the gap this type's own
-    /// previous revision flagged: `validation.validate_aud` stays `false`
-    /// globally (service-account tokens have no fixed audience to check —
-    /// `aud == sub == client_id`, §4.2), so this is a manual, post-decode
-    /// check that runs *only* on the `claims.identity.is_some()` branch,
-    /// where a fixed audience genuinely exists to check against.
-    human_client_id: String,
-    db: Cratestack,
-    sys: CratestackContext,
+pub struct SignedAuth {
+    directory: SignerDirectory,
 }
 
-/// What `GatewayAuth` needs about a human token's subject, cached under
-/// [`GatewayAuth::user_cache`] — deliberately not a raw [`schema::User`],
-/// mirroring `sms-auth::login::AuthenticatedUser`'s own reasoning (a
-/// cache should hold exactly what its one caller needs, not an entire row
-/// a future field addition would silently start caching).
-#[derive(Debug, Clone)]
-struct HumanPrincipal {
-    role_key: String,
-    perms: Vec<String>,
-}
-
-impl GatewayAuth {
-    /// `jwks_url` is the OP's own `/jwks.json` (`sms-auth::op` stands it
-    /// up); `issuer` must match `OpConfig.issuer` exactly, or every token
-    /// this OP mints fails `iss` validation against itself. `human_client_id`
-    /// is the `OauthClient.clientId` the console's `authorization_code`
-    /// flow registers under (see [`GatewayAuth`]'s own field doc).
+impl SignedAuth {
+    /// An auth provider answering from `directory`.
     #[must_use]
-    pub fn new(db: Cratestack, jwks_url: String, issuer: String, human_client_id: String) -> Self {
-        // Found live while upgrading authkestra to 0.8.0 (AGENTS.md's
-        // authkestra-0.8 section): `JwksCache` gained an eagerly-built
-        // `client: reqwest::Client` field — `JwksCache::new` now calls
-        // `reqwest::Client::new()` directly, where 0.5.4's own `JwksCache`
-        // had no `client` field at all and never touched `reqwest` before
-        // an actual fetch. `reqwest::Client::new()` panics immediately,
-        // during construction, if `rustls-no-provider`'s crypto provider
-        // was never installed (AGENTS.md's "aws-lc-rs enters this tree
-        // from authkestra alone" section has the full mechanism) — so
-        // constructing a `JwksCache` now carries that precondition, not
-        // just *using* one. Both real production binaries already satisfy
-        // it (`rustls::crypto::ring::default_provider().install_default()`
-        // is the literal first line of each `main`), but nothing does for
-        // an in-process test — like this crate's own `auth::tests`/
-        // `router::tests` — that constructs a `GatewayAuth` without going
-        // through either `main`, which is exactly how this was found:
-        // `cargo test -p sms-api --lib` panicked on five tests that never
-        // perform an HTTP call at all, purely from building the
-        // `JwksCache` below.
-        //
-        // Installed here rather than fixed per test file, for the same
-        // reason `cratestack-client-rust`'s own `CratestackClient::new`
-        // already does this defensively (AGENTS.md, same section): a
-        // library that itself constructs a `reqwest::Client` internally
-        // should not depend on every caller remembering to install a
-        // provider first. Idempotent, not a `Once`/`OnceLock` — matching
-        // `sms_test_support::install_default_crypto_provider`'s own doc on
-        // why `let _ =`, never `.unwrap()`/`.expect(...)`: whichever of
-        // this call and a binary's own `main`-line call runs first wins,
-        // and every later call (by this same function running again, by a
-        // second `GatewayAuth` in the same process, or in principle by
-        // `reqwest`'s own lazy install happening first) is a harmless
-        // no-op `Err`, never a reason to fail.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-
-        // `require_kid(true)`: §5.4's own reasoning, re-verified against
-        // 0.3.2 — the default `false` falls back to `jwks.keys[0]` on a
-        // missing `kid`, which the moment two keys are published during
-        // rotation (`sms-auth::op::ROTATION_OVERLAP`) picks wrong close to
-        // half the time.
-        let jwks =
-            std::sync::Arc::new(JwksCache::new(jwks_url, Duration::from_mins(5)).require_kid(true));
-        let mut validation = Validation::new(Algorithm::RS256);
-        validation.set_issuer(&[issuer]);
-        // A service-account token's `aud` echoes `sub` (the client_id,
-        // §4.2) — there is no fixed value to check it against, so this
-        // stays `false` globally rather than set via `set_audience`. A
-        // human token's `aud` **is** fixed (`human_client_id`, always
-        // "sms-console" in practice) and **is** checked — just not here:
-        // `jsonwebtoken::Validation` applies one audience list to every
-        // token it decodes, and this type decodes both realms with one
-        // `Validation`, so a per-realm check has to run after decode, in
-        // `authenticate` itself, once `claims.identity` says which realm
-        // this token is. Verified live (not merely inferred from the
-        // library's docs) that leaving `validate_aud` at its `true`
-        // default while never calling `set_audience` does NOT skip the
-        // check the way "nothing configured" might suggest —
-        // `jsonwebtoken::Validation`'s default still rejects any token
-        // carrying an `aud` claim with `InvalidAudience` when `self.aud`
-        // is empty. The explicit `false` below is the only real off
-        // switch, and `authenticate`'s own manual check is what restores
-        // the guarantee for the one realm that has a fixed audience.
-        validation.validate_aud = false;
-        Self {
-            jwks,
-            validation,
-            // 60s: short enough that a revoked/retired AppClient stops
-            // being usable promptly, long enough that a hot client_id
-            // isn't a database hit per request — same tradeoff and TTL
-            // `Procedures::resolve_app` already makes for the same lookup
-            // shape.
-            app_cache: std::sync::Arc::new(TtlCache::new(Duration::from_mins(1))),
-            // Same 60s TTL and reasoning as app_cache — a deactivated or
-            // role-changed User takes effect within one TTL window rather
-            // than waiting out the access token's own 15-minute lifetime,
-            // which is *more* responsive than §5.3's own "roles resolve at
-            // issuance... up to 15 minutes to bite" framing describes.
-            // That framing assumed role/perms baked into the token at
-            // issuance (`issue_user_token_with_extra`); see
-            // `authenticate`'s own doc on why the real library shape ruled
-            // that out and made this per-request lookup the mechanism
-            // instead, not a choice made lightly.
-            user_cache: std::sync::Arc::new(TtlCache::new(Duration::from_mins(1))),
-            human_client_id,
-            db,
-            sys: system_context("sms-api:auth"),
-        }
+    pub fn new(directory: SignerDirectory) -> Self {
+        Self { directory }
     }
-}
 
-/// The one place that mints the `system`-role context — the most
-/// privileged construct in this system (it is what `OauthSigningKey.
-/// privateKeyPem` and every `UserCredential.passwordHash` are gated
-/// behind). Every internal system-context write in this workspace —
-/// `Procedures::sys()`, `webhooks.rs`'s own subscriber context, this
-/// provider's `AppClient` lookup, `sms-worker`'s `jobs` role,
-/// `sms-gateway`'s OP-adjacent writes, and `send_test_message.rs`'s
-/// standalone tool — calls this function rather than hand-rolling the
-/// same [`Principal`] literal, so the invariant below has exactly one
-/// place to hold, not six independently-drifting copies of it.
-///
-/// **The invariant: this must never be reachable from an HTTP request.**
-/// Nothing in [`GatewayAuth::authenticate`] ever produces `role: "system"`
-/// for a real bearer token — [`authenticate_app`] hardcodes `role: "app"`
-/// (see that function's own comment on why `"system"` specifically must
-/// never slip there), and [`load_human_principal`] refuses a human
-/// account whose `Role.key` is `"system"` (or `"app"`) before a
-/// `Principal` is ever built from it, backed a second, independent way by
-/// the database itself (`roles_key_not_reserved_check`, a `CHECK`
-/// constraint on `roles.key` — see [`RESERVED_ROLE_KEYS`]'s own doc for
-/// both layers). This function is the only source of a `role: "system"`
-/// context anywhere in this codebase; it exists in a process's own
-/// internal wiring, never behind a route a token can reach.
-///
-/// `sub` is the one thing that legitimately differs per caller — a
-/// human-readable label naming which subsystem is acting, not a secret or
-/// a policy input. It shows up verbatim in `cratestack_audit.actor.sub`
-/// on every write this context makes, which is the entire reason each
-/// call site passes its own value (`"sms-api:procedures"`,
-/// `"sms-worker:jobs:{worker}"`, …) rather than a shared constant — an
-/// audit row naming which caller performed a system-level write is worth
-/// more than one fewer function argument.
-#[must_use]
-pub fn system_context(sub: impl Into<String>) -> CratestackContext {
-    Principal {
-        sub: sub.into(),
-        kind: PrincipalKind::App,
-        role: "system".to_owned(),
-        app_id: String::new(),
+    /// The context of `standing`, with Layer 2's `perms` and `scope` set.
+    ///
+    /// `perms` and `scope` are stashed in `extensions`, not folded into
+    /// [`Principal::into_context`]'s four `auth.fields`: those are Layer 1's
+    /// vocabulary (`hasRole`, `inTenant`, `appId ==`), fixed by the schema's
+    /// own `auth Principal` block, and the extras are read only by
+    /// `require_permission`. Keeping them out of `auth.fields` means a typo'd
+    /// extra can never start matching a `hasRole(...)` clause it was never
+    /// meant to.
+    ///
+    /// ```
+    /// use sms_api::auth::SignedAuth;
+    /// use sms_api::signers::{AppStanding, Standing};
+    ///
+    /// let ctx = SignedAuth::context_for(Standing::App(AppStanding {
+    ///     client_id: "appc_demo".to_owned(),
+    ///     app_id: "app1".to_owned(),
+    ///     scopes: " sms:send ".to_owned(),
+    /// }));
+    /// assert!(sms_api::require_permission(&ctx, "sms:send").is_ok());
+    /// assert!(sms_api::require_permission(&ctx, "job:read").is_err());
+    /// ```
+    #[must_use]
+    pub fn context_for(standing: Standing) -> CratestackContext {
+        let (principal, perms, scope) = match standing {
+            Standing::App(app) => (
+                Principal {
+                    sub: app.client_id,
+                    kind: PrincipalKind::App,
+                    // Never "system": that role is minted only by
+                    // `system_context`, never from a signer. `"app"` is a
+                    // sentinel that matches no `hasRole(...)` clause on any
+                    // model: a machine caller's only access is the
+                    // procedures, never generated CRUD.
+                    role: "app".to_owned(),
+                    app_id: app.app_id,
+                },
+                Vec::new(),
+                Value::String(app.scopes),
+            ),
+            Standing::User(person) => (
+                Principal {
+                    sub: person.user_id,
+                    kind: PrincipalKind::User,
+                    role: person.role,
+                    app_id: String::new(),
+                },
+                person.perms,
+                Value::Null,
+            ),
+        };
+        let mut ctx = principal.into_context();
+        ctx.extensions.insert(
+            "perms".to_owned(),
+            Value::List(perms.into_iter().map(Value::String).collect()),
+        );
+        ctx.extensions.insert("scope".to_owned(), scope);
+        ctx
     }
-    .into_context()
-}
-
-/// The `perms` claim (§5.3's human/role-token shape), pulled out of
-/// [`Claims::extra`] — it isn't a first-class field on that type, only
-/// `scope` is. Not reachable from any token this deployment can currently
-/// issue (see [`GatewayAuth`]'s own doc: every accepted token is a
-/// `client_credentials` one, and nothing in `sms_auth::op` ever sets a
-/// `perms` claim), but extracted unconditionally rather than special-cased
-/// away — a future human-login issuer only has to start setting the claim,
-/// not wait on a second change here. Absent, or present but not an array of
-/// strings, both become `vec![]`: [`require_permission`]'s job is to treat
-/// "no perms" as denial, not this extraction's.
-fn extract_perms(extra: &std::collections::HashMap<String, serde_json::Value>) -> Vec<String> {
-    extra
-        .get("perms")
-        .and_then(serde_json::Value::as_array)
-        .map(|values| {
-            values
-                .iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// A caller-supplied `X-Request-Id` is bounded and reused verbatim — the
@@ -324,310 +190,84 @@ fn request_id_from(headers: &cratestack::axum::http::HeaderMap) -> String {
         )
 }
 
-impl AuthProvider for GatewayAuth {
+impl AuthProvider for SignedAuth {
     type Error = CratestackError;
 
     fn authenticate(
         &self,
         request: &RequestContext<'_>,
     ) -> impl core::future::Future<Output = Result<CratestackContext, Self::Error>> + Send {
-        let token = extract_bearer_token(request.headers).map(str::to_owned);
-        // #71: extracted synchronously, alongside `token` above, for the
-        // same reason — `request` itself is a borrow tied to this call's
-        // stack frame and cannot cross into the `async move` block below.
+        // Read out of the borrow first: the future owns what it needs.
+        let bearer = request
+            .headers
+            .contains_key(cratestack::axum::http::header::AUTHORIZATION);
+        let signer = request.extensions.get::<VerifiedSigner>().cloned();
+        // #71: see this module's own doc.
         let request_id = request_id_from(request.headers);
-        let jwks = self.jwks.clone();
-        let validation = self.validation.clone();
-        let app_cache = self.app_cache.clone();
-        let user_cache = self.user_cache.clone();
-        let human_client_id = self.human_client_id.clone();
-        let db = self.db.clone();
-        let sys = self.sys.clone();
+        let directory = self.directory.clone();
 
         async move {
-            let token =
-                token.ok_or_else(|| CratestackError::Unauthorized("no credentials".to_owned()))?;
-            let claims: Claims = validate_jwt_generic(&token, &jwks, &validation)
-                .await
-                .map_err(|error| {
-                    CratestackError::Unauthorized(format!("invalid token: {error}"))
-                })?;
-
-            // Layer 2 (#24, §5.1): read now, while `claims` is still whole —
-            // `scope` is a first-class field, `perms` lives in `extra`. Both
-            // survive into the returned `CratestackContext` below regardless of
-            // whether either is actually present; an absent claim becoming
-            // an absent/empty context field, rather than the request
-            // failing here, is what lets `require_permission` be the one
-            // place that decides what "no permission" means.
-            let scope = claims.scope.clone();
-
-            let ctx = if claims.identity.is_some() {
-                authenticate_human(claims, &human_client_id, &user_cache, &db, &sys).await?
-            } else {
-                authenticate_app(claims, &app_cache, &db, &sys).await?
-            };
-
-            let mut ctx = ctx;
-            let perms = match ctx.extensions.remove("__perms") {
-                Some(Value::List(items)) => items,
-                _ => Vec::new(),
-            };
-            // Stashed in `extensions`, not folded into `into_context`'s own
-            // four `auth.fields` — those four are Layer 1's vocabulary
-            // (`hasRole`/`inTenant`/`appId ==`), fixed by the schema's own
-            // `auth Principal` block (auth.rs's module doc). `perms`/`scope`
-            // are Layer 2's, read only by `require_permission`, never by a
-            // generated SQL policy — keeping them out of `auth.fields` means
-            // a typo'd extra claim can never accidentally start matching a
-            // `hasRole(...)` clause it was never meant to.
-            ctx.extensions
-                .insert("perms".to_owned(), Value::List(perms));
-            ctx.extensions
-                .insert("scope".to_owned(), scope.map_or(Value::Null, Value::String));
-
-            // #71: see this module's own doc. `with_request_id` returns
-            // `Self`, so this has to be the last thing done to `ctx` —
-            // consistent with `into_context()` already being called first
-            // above.
-            let ctx = ctx.with_request_id(request_id);
-
-            Ok(ctx)
+            if bearer {
+                return Err(CratestackError::BadRequest(
+                    "bearer credentials are not accepted: sign the request (`COSE_Sign1`)"
+                        .to_owned(),
+                ));
+            }
+            let signer = signer
+                .ok_or_else(|| CratestackError::Unauthorized("no verified signer".to_owned()))?;
+            let standing = directory.standing(&signer, chrono::Utc::now()).await?;
+            // #71: `with_request_id` returns `Self`, so it is the last thing
+            // done to the context.
+            Ok(Self::context_for(standing).with_request_id(request_id))
         }
     }
 }
 
-/// The service-account (`client_credentials`) path — unchanged behaviour
-/// from before #194, pulled out of `authenticate` so that function reads as
-/// "pick a realm, then project it" rather than one long branch. `perms` for
-/// this realm is `extra["perms"]` (never actually set on this path today —
-/// see [`extract_perms`]'s own doc), stashed under the same `"__perms"`
-/// sentinel key `authenticate_human` uses, for `authenticate` to promote
-/// into the real `"perms"` extension alongside `scope` once both realms
-/// have returned.
-async fn authenticate_app(
-    claims: Claims,
-    app_cache: &TtlCache<String, schema::AppClient>,
-    db: &Cratestack,
-    sys: &CratestackContext,
-) -> Result<CratestackContext, CratestackError> {
-    let perms = extract_perms(&claims.extra);
-    let client_id = claims.sub;
-    let app_client = app_cache
-        .get_or_fetch(client_id.clone(), |client_id| {
-            let db = db.clone();
-            let sys = sys.clone();
-            async move {
-                db.app_client()
-                    .find_many()
-                    .where_expr(
-                        FilterExpr::from(app_client::clientId().eq(client_id))
-                            .and(app_client::active().is_true()),
-                    )
-                    .limit(1)
-                    .run(&sys)
-                    .await?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| CratestackError::Unauthorized("unknown client".to_owned()))
-            }
-        })
-        .await?;
-
-    let mut ctx = Principal {
-        sub: client_id,
+/// The one place that mints the `system`-role context — the most
+/// privileged construct in this system (it is what `OauthSigningKey.
+/// privateKeyPem` and every `UserCredential.passwordHash` are gated
+/// behind). Every internal system-context write in this workspace —
+/// `Procedures::sys()`, `webhooks.rs`'s own subscriber context, the
+/// signer directory's key and standing lookups, `sms-worker`'s `jobs` role,
+/// `sms-gateway`'s OP-adjacent writes, and `send_test_message.rs`'s
+/// standalone tool — calls this function rather than hand-rolling the
+/// same [`Principal`] literal, so the invariant below has exactly one
+/// place to hold, not six independently-drifting copies of it.
+///
+/// **The invariant: this must never be reachable from an HTTP request.**
+/// Nothing in [`SignedAuth::authenticate`] ever produces `role: "system"`
+/// for a real signer — [`SignedAuth::context_for`] hardcodes `role: "app"`
+/// for an app key (see the comment there on why `"system"` specifically
+/// must never slip), and `crate::signers` refuses a person whose
+/// `Role.key` is `"system"` (or `"app"`) before a `Principal` is ever built
+/// from it, backed a second, independent way by
+/// the database itself (`roles_key_not_reserved_check`, a `CHECK`
+/// constraint on `roles.key` — see [`RESERVED_ROLE_KEYS`]'s own doc for
+/// both layers). This function is the only source of a `role: "system"`
+/// context anywhere in this codebase; it exists in a process's own
+/// internal wiring, never behind a route a token can reach.
+///
+/// `sub` is the one thing that legitimately differs per caller — a
+/// human-readable label naming which subsystem is acting, not a secret or
+/// a policy input. It shows up verbatim in `cratestack_audit.actor.sub`
+/// on every write this context makes, which is the entire reason each
+/// call site passes its own value (`"sms-api:procedures"`,
+/// `"sms-worker:jobs:{worker}"`, …) rather than a shared constant — an
+/// audit row naming which caller performed a system-level write is worth
+/// more than one fewer function argument.
+#[must_use]
+pub fn system_context(sub: impl Into<String>) -> CratestackContext {
+    Principal {
+        sub: sub.into(),
         kind: PrincipalKind::App,
-        // Never "system" — that role is minted only by `system_context`,
-        // above, never from a token. `"app"` is a sentinel that matches no
-        // `hasRole(...)` clause on any model in the schema: a machine
-        // caller's only access is the seven procedures, never generated
-        // CRUD. See `OauthSigningKey`'s own schema comment for why this
-        // specifically must never slip.
-        role: "app".to_owned(),
-        app_id: app_client.appId,
-    }
-    .into_context();
-    ctx.extensions.insert(
-        "__perms".to_owned(),
-        Value::List(perms.into_iter().map(Value::String).collect()),
-    );
-    Ok(ctx)
-}
-
-/// The human (`authorization_code`) path, new in #194.
-///
-/// # Why this looks up `User`/`Role` per request rather than reading role
-/// and `perms` straight off the token, the way §5.3's own token-shape
-/// table describes
-///
-/// Read directly, not assumed: `authkestra-op` 0.3.3's
-/// `handle_authorization_code` (`authkestra_op::handlers::token`) issues
-/// the access token with plain `tokens.issue_user_token(auth_code.identity,
-/// ...)` — never `issue_user_token_with_extra`, the only method that can
-/// stamp additional claims onto a token at issuance. So there is no library
-/// hook this crate can reach to put `role`/`perms` on the token the way the
-/// design doc's own worked example assumed; forking that handler to add one
-/// would mean re-implementing its PKCE/redirect-uri/client-binding checks
-/// ourselves, exactly the kind of security-critical duplication this
-/// codebase avoids elsewhere (see `sms-auth::login`'s own module doc on the
-/// same tradeoff, made the same way). A per-request lookup, cached the same
-/// way `app_cache` already caches `AppClient`, needs none of that — and, as
-/// a real upside rather than a consolation, makes a role change or account
-/// deactivation take effect within one cache TTL instead of waiting out the
-/// access token's full 15-minute lifetime, which is *more* responsive than
-/// what baking into the token would have given.
-///
-/// # Fail closed on every branch
-///
-/// A human token whose `aud` doesn't match `human_client_id`, whose
-/// `identity.external_id` names no `User` row, or whose account is
-/// inactive (or soft-deleted — excluded from the read itself, see
-/// `schema.cstack`'s own `@@soft_delete` note and this crate's read-source
-/// verification) is `Unauthorized`. There is no fallback role.
-async fn authenticate_human(
-    claims: Claims,
-    human_client_id: &str,
-    user_cache: &TtlCache<String, HumanPrincipal>,
-    db: &Cratestack,
-    sys: &CratestackContext,
-) -> Result<CratestackContext, CratestackError> {
-    // Real, per-realm audience validation — see `GatewayAuth::new`'s own
-    // doc on why this can't live in the shared `Validation` both realms
-    // decode through.
-    //
-    // `Audience::contains`, not string equality. authkestra 0.5 changed
-    // `Claims::aud` from `Option<String>` to `Option<Audience>`, an
-    // untagged `Single(String) | Multiple(Vec<String>)`, and its own doc
-    // says `contains` is "the 'matches ANY' membership test that replaces
-    // exact-string-equality comparisons against `aud`".
-    //
-    // That is a real semantic change and it is the correct one: RFC 7519
-    // §4.1.3 makes a token valid when its `aud` *contains* the intended
-    // recipient, and `aud` is permitted to be an array. Under 0.3.3's
-    // `Option<String>` an array-valued `aud` did not deserialize at all,
-    // so such a token was rejected as malformed rather than evaluated —
-    // accidental strictness, not a policy this repo chose. Membership is
-    // both spec-correct and strictly better-defined.
-    //
-    // It does mean a token minted for `["sms-console", "something-else"]`
-    // now authenticates here. That is intended: such a token *was* issued
-    // for this audience. Nothing in this deployment mints a multi-audience
-    // token today (`sms_auth::op` issues one `aud` per client), so the
-    // widening is theoretical against our own OP and correct against any
-    // future one.
-    if !claims
-        .aud
-        .as_ref()
-        .is_some_and(|aud| aud.contains(human_client_id))
-    {
-        return Err(CratestackError::Unauthorized(
-            "human token audience mismatch".to_owned(),
-        ));
-    }
-
-    let identity = claims
-        .identity
-        .ok_or_else(|| CratestackError::Unauthorized("human token missing identity".to_owned()))?;
-    let subject = identity.external_id;
-
-    let principal = user_cache
-        .get_or_fetch(subject.clone(), |subject| {
-            let db = db.clone();
-            let sys = sys.clone();
-            async move { load_human_principal(&db, &sys, &subject).await }
-        })
-        .await?;
-
-    let mut ctx = Principal {
-        sub: subject,
-        kind: PrincipalKind::User,
-        role: principal.role_key,
+        role: "system".to_owned(),
         app_id: String::new(),
     }
-    .into_context();
-    ctx.extensions.insert(
-        "__perms".to_owned(),
-        Value::List(principal.perms.into_iter().map(Value::String).collect()),
-    );
-    Ok(ctx)
-}
-
-/// `User` (active, not soft-deleted — see [`authenticate_human`]'s own
-/// doc) by id, plus its `Role`'s unpacked `permissions` — the one query
-/// [`authenticate_human`]'s cache actually runs on a miss.
-///
-/// # Errors
-///
-/// [`CratestackError::Unauthorized`] for anything that must not distinguish
-/// "no such user" from "deactivated" from "role deleted out from under
-/// them" to the caller — a revoked/renamed account must fail exactly like
-/// one that never existed, the same fail-closed posture
-/// `sms-auth::login::authenticate_user` already takes for the initial
-/// login itself.
-async fn load_human_principal(
-    db: &Cratestack,
-    sys: &CratestackContext,
-    subject: &str,
-) -> Result<HumanPrincipal, CratestackError> {
-    let user_row = db
-        .user()
-        .find_many()
-        .where_expr(
-            FilterExpr::from(user::id().eq(subject.to_owned())).and(user::active().is_true()),
-        )
-        .limit(1)
-        .run(sys)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| CratestackError::Unauthorized("unknown or inactive user".to_owned()))?;
-
-    let role_row = db
-        .role()
-        .find_many()
-        .where_expr(FilterExpr::from(role::key().eq(user_row.roleKey)))
-        .limit(1)
-        .run(sys)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| CratestackError::Unauthorized("user's role no longer exists".to_owned()))?;
-
-    // Fail closed at the point of use — the second of two independent
-    // guards, deliberately not the only one (see RESERVED_ROLE_KEYS' own
-    // doc for the first, a database-level CHECK). `Role.key`'s @regex
-    // (`^[a-z][a-z0-9_]{2,31}$`) happily accepts the literal "system": a
-    // Role row keyed "system", assigned to a human User via ordinary
-    // owner/admin-level generated CRUD (Role.create is hasRole('owner'),
-    // User.update is owner/admin), would otherwise project straight into
-    // Principal.role, and hasRole('system') would then match for that
-    // human exactly the way it matches for the real, synthetic system
-    // context — reading OauthSigningKey.privateKeyPem (the key that signs
-    // every token this system issues) and every UserCredential.passwordHash
-    // through generated CRUD. AGENTS.md's own §5.2 states the invariant
-    // this exists to protect: "system is not a row in roles... constructible
-    // only inside a process." This check is what makes that true even if
-    // the CHECK constraint below is ever bypassed (a raw migration, a
-    // future admin tool that writes past R1) — redundant with the CHECK
-    // on the common path, not redundant with the invariant itself, so
-    // don't remove either half without re-reading this comment.
-    if RESERVED_ROLE_KEYS.contains(&role_row.key.as_str()) {
-        return Err(CratestackError::Unauthorized(
-            "unknown or inactive user".to_owned(),
-        ));
-    }
-
-    Ok(HumanPrincipal {
-        role_key: role_row.key,
-        perms: sms_core::unpack(&role_row.permissions)
-            .into_iter()
-            .map(str::to_owned)
-            .collect(),
-    })
+    .into_context()
 }
 
 /// `Role.key` values no human account may ever carry, checked in
-/// [`load_human_principal`] and enforced a second, independent way by a
+/// `crate::signers` and enforced a second, independent way by a
 /// `CHECK` constraint on `roles.key` (`backends/migrations/postgres/0002_bootstrap`,
 /// generated from `docs/architecture.md` §2.10 — never hand-edited).
 ///
@@ -637,7 +277,7 @@ async fn load_human_principal(
 ///   the design doc. A `Role` row keyed `"system"` would let
 ///   `hasRole('system')` match for a real human.
 /// - `"app"` is reserved too, defensively, even though it is not
-///   currently a privilege escalation: [`authenticate_app`]'s own
+///   currently a privilege escalation: [`SignedAuth::context_for`]'s
 ///   `role: "app"` sentinel matches no `hasRole(...)` clause in the schema
 ///   (`OauthSigningKey`'s own comment is explicit about this), so a human
 ///   `Role` keyed `"app"` would be confusing, not exploitable — reserved
@@ -684,67 +324,141 @@ mod tests {
         assert_eq!(PrincipalKind::App.as_str(), "app");
     }
 
-    /// A lazy pool only parses the URL — never connects — matching the
-    /// same pattern `router.rs`'s own test uses. Neither test below ever
-    /// reaches a database query: both fail during token validation itself,
-    /// before `authenticate` would ever touch `AppClient`.
-    fn gateway_auth() -> GatewayAuth {
+    /// A lazy pool only parses the URL and never connects. The tests below
+    /// all fail before the directory is asked anything, so no database is
+    /// reached.
+    fn signed_auth() -> SignedAuth {
         let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://unused:unused@127.0.0.1/none")
             .expect("a lazy pool only parses the URL");
-        GatewayAuth::new(
-            schema::Cratestack::builder(pool).build(),
-            "https://auth.invalid/jwks.json".to_owned(),
-            "https://auth.invalid".to_owned(),
-            DEFAULT_CONSOLE_CLIENT_ID.to_owned(),
-        )
+        SignedAuth::new(SignerDirectory::new(
+            crate::schema::Cratestack::builder(pool).build(),
+        ))
     }
 
-    #[tokio::test]
-    async fn a_request_with_no_bearer_token_is_unauthorized() {
-        let headers = cratestack::axum::http::HeaderMap::new();
-        // cratestack 0.7.13 (cratestack#552): `RequestContext` gained an
-        // `extensions` field. Nothing in this test needs one to exist
-        // (`GatewayAuth::authenticate` never reads it), so an empty value
-        // is fine — see `rbac.rs`'s identical comment for the live version
-        // of this same construction.
-        let extensions = cratestack::axum::http::Extensions::new();
-        let request = RequestContext {
+    fn request<'a>(
+        headers: &'a cratestack::axum::http::HeaderMap,
+        extensions: &'a cratestack::axum::http::Extensions,
+    ) -> RequestContext<'a> {
+        RequestContext {
             method: "GET",
             path: "/messages",
             query: None,
-            headers: &headers,
+            headers,
             body: &[],
-            extensions: &extensions,
-        };
-        let error = gateway_auth().authenticate(&request).await.unwrap_err();
-        assert!(matches!(error, CratestackError::Unauthorized(_)));
+            extensions,
+        }
     }
 
     #[tokio::test]
-    async fn a_malformed_bearer_token_is_unauthorized_without_a_jwks_fetch() {
-        // "not-a-jwt" fails `decode_header` before validate_jwt_generic
-        // ever reaches the network for JWKS — this test would hang against
-        // "https://auth.invalid" otherwise, which is the point: a garbage
-        // token must be rejected on its own shape, not by however the
-        // network call to a real OP happens to fail.
+    async fn a_request_with_no_verified_signer_is_unauthorized() {
+        let headers = cratestack::axum::http::HeaderMap::new();
+        let extensions = cratestack::axum::http::Extensions::new();
+        let error = signed_auth()
+            .authenticate(&request(&headers, &extensions))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, CratestackError::Unauthorized(_)));
+    }
+
+    /// One caller, one credential: a bearer is refused even beside a verified
+    /// signature, and even from a caller who signed nothing, so no code path
+    /// can come to treat an `Authorization` header as an identity again.
+    #[tokio::test]
+    async fn an_authorization_header_is_refused_with_or_without_a_signer() {
         let mut headers = cratestack::axum::http::HeaderMap::new();
         headers.insert(
             cratestack::axum::http::header::AUTHORIZATION,
-            "Bearer not-a-jwt".parse().unwrap(),
+            "Bearer anything".parse().unwrap(),
         );
-        // cratestack 0.7.13 (cratestack#552): see the identical comment on
-        // the test above.
-        let extensions = cratestack::axum::http::Extensions::new();
-        let request = RequestContext {
-            method: "GET",
-            path: "/messages",
-            query: None,
-            headers: &headers,
-            body: &[],
-            extensions: &extensions,
-        };
-        let error = gateway_auth().authenticate(&request).await.unwrap_err();
-        assert!(matches!(error, CratestackError::Unauthorized(_)));
+        for signed in [true, false] {
+            let mut extensions = cratestack::axum::http::Extensions::new();
+            if signed {
+                extensions.insert(VerifiedSigner::new(vec![0_u8; 8], [7_u8; 32], -19));
+            }
+            let error = signed_auth()
+                .authenticate(&request(&headers, &extensions))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&error, CratestackError::BadRequest(message)
+                    if message.contains("bearer credentials are not accepted")),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_app_key_is_an_app_principal_with_its_scopes_and_no_permissions() {
+        let ctx = SignedAuth::context_for(Standing::App(crate::signers::AppStanding {
+            client_id: "appc_demo".to_owned(),
+            app_id: "app1".to_owned(),
+            scopes: "message:send job:read".to_owned(),
+        }));
+        assert_eq!(
+            ctx.auth_field("sub"),
+            Some(&Value::String("appc_demo".to_owned()))
+        );
+        assert_eq!(
+            ctx.auth_field("kind"),
+            Some(&Value::String("app".to_owned()))
+        );
+        assert_eq!(
+            ctx.auth_field("role"),
+            Some(&Value::String("app".to_owned()))
+        );
+        assert_eq!(
+            ctx.auth_field("appId"),
+            Some(&Value::String("app1".to_owned()))
+        );
+        assert!(crate::rbac::require_permission(&ctx, "job:read").is_ok());
+        assert!(crate::rbac::require_permission(&ctx, "provider:update").is_err());
+    }
+
+    #[test]
+    fn a_console_key_is_a_user_principal_with_its_roles_permissions_and_no_scope() {
+        let ctx = SignedAuth::context_for(Standing::User(crate::signers::UserStanding {
+            user_id: "usr1".to_owned(),
+            role: "operator".to_owned(),
+            perms: vec!["provider:update".to_owned()],
+        }));
+        assert_eq!(
+            ctx.auth_field("sub"),
+            Some(&Value::String("usr1".to_owned()))
+        );
+        assert_eq!(
+            ctx.auth_field("kind"),
+            Some(&Value::String("user".to_owned()))
+        );
+        assert_eq!(
+            ctx.auth_field("role"),
+            Some(&Value::String("operator".to_owned()))
+        );
+        assert_eq!(ctx.auth_field("appId"), Some(&Value::String(String::new())));
+        assert!(crate::rbac::require_permission(&ctx, "provider:update").is_ok());
+        assert!(crate::rbac::require_permission(&ctx, "job:read").is_err());
+    }
+
+    /// `system` is minted by [`system_context`] and by nothing a signer can
+    /// reach: neither standing produces it, whatever the row said.
+    #[test]
+    fn no_standing_ever_produces_the_system_role() {
+        for ctx in [
+            SignedAuth::context_for(Standing::App(crate::signers::AppStanding {
+                client_id: "system".to_owned(),
+                app_id: "system".to_owned(),
+                scopes: String::new(),
+            })),
+            SignedAuth::context_for(Standing::User(crate::signers::UserStanding {
+                user_id: "system".to_owned(),
+                role: "operator".to_owned(),
+                perms: Vec::new(),
+            })),
+        ] {
+            assert_ne!(
+                ctx.auth_field("role"),
+                Some(&Value::String("system".to_owned()))
+            );
+        }
     }
 }

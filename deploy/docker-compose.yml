@@ -160,15 +160,19 @@ services:
       # zones.
       SMS_TOKEN_RATE_LIMIT_BURST: ${SMS_TOKEN_RATE_LIMIT_BURST:-10}
       SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND:-0.3333333333333333}
-      # Production-readiness audit (B3): `serve --console-client-id`
-      # (`main.rs`) and `bootstrap --console-client-id` both read this —
-      # missing here entirely before this fix, even though `admin`'s own
-      # environment block already had it. A deployment that overrode
-      # `SMS_CONSOLE_OIDC_CLIENT_ID` away from its shared default would
-      # have silently broken every human login: `GatewayAuth`'s audience
-      # check compares the token's `aud` against *this* value, which
-      # would have stayed the old default forever.
+      # The OIDC client id `bootstrap`/`seed-console-client` register for
+      # the console's human login. `serve` itself no longer reads it (VS-3
+      # removed the bearer-token audience check it fed); it is passed here
+      # because `bootstrap` runs from this same service definition.
       SMS_CONSOLE_OIDC_CLIENT_ID: ${SMS_CONSOLE_OIDC_CLIENT_ID:-sms-console}
+      # VS-3: the signed transport's two Ed25519 server keys (PKCS#8 PEM,
+      # `openssl genpkey -algorithm ed25519`), mounted below. REQUIRED: the
+      # gateway refuses to start without both, and refuses the same key
+      # twice. Integrators pin the public halves printed by
+      # `docker compose run --rm sms-gateway server-keys`. Generate them
+      # once and keep them out of git (docs/runbooks/deployment.adoc).
+      SMS_ENVELOPE_SIGNING_KEY_FILE: /run/envelope/current.pem
+      SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE: /run/envelope/next.pem
       # Single sign-on through the staff Keycloak realm (docs/runbooks/sso.adoc).
       # Optional, and active exactly when SMS_SSO_ISSUER is set - there is no
       # other switch. Blank means unset to the gateway (it normalises blank
@@ -225,6 +229,11 @@ services:
     # `sms-gateway healthcheck --path /readyz` (backends/apps/sms-gateway/src/main.rs)
     # is the same plain HTTP/1.1-over-a-raw-socket check the old `curl`
     # command ran, reproduced in `std`-only Rust.
+    # The two envelope keys, read-only, owned by the gateway's uid (65532)
+    # at mode 0400 - see the comment on SMS_ENVELOPE_SIGNING_KEY_FILE above.
+    volumes:
+      - ./secrets/envelope-current.pem:/run/envelope/current.pem:ro
+      - ./secrets/envelope-next.pem:/run/envelope/next.pem:ro
     healthcheck:
       test: ['CMD', '/usr/local/bin/sms-gateway', 'healthcheck', '--path', '/readyz']
       interval: 5s

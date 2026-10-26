@@ -21,8 +21,8 @@ it, and #194 is the ticket that closes that cut. Two paths were weighed:
    demands. All three have since changed: the staff Keycloak realm
    exists, `sms-fake-oidc` is that fake, and the broker was also run
    against a real Keycloak container. It is a *broker* — `sms-gateway`
-   stays the console's OP, so `GatewayAuth::authenticate_human` and every
-   policy are unchanged — and it **does not replace this module**:
+   stays the console's OP, so every policy is unchanged (and since VS-3 the
+   token it issues is not what the API authenticates: a paired console key is) — and it **does not replace this module**:
    password sign-in is the break-glass path, so a broken `IdP` can never
    lock operators out of the system that sends their OTPs. A user
    provisioned through SSO has no `UserCredential` and therefore cannot

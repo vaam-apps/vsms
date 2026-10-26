@@ -1,10 +1,16 @@
 The request-signing public keys of an app client (signed transport, VS-2).
 
 `registerAppClientKey` and `revokeAppClientKey` are the only writers of the
-`ClientKey` model. **Nothing verifies against those rows yet**: VS-3 mounts
-the envelope layer and a database-backed resolver over this table. Until then
-a key registered here is recorded intent, and `provisionAppClient`, the RSA
-keys and the token server are untouched.
+`ClientKey` model. Since VS-3 the envelope layer verifies every request against
+a non-revoked row of this table (`crate::signers`), so a key registered here is
+a credential, and `provisionAppClient`, the RSA keys and the token server (which
+VS-4 removes) are the only thing left of the old path.
+
+**A client holding `console:pair` takes keys only from the operator.** That scope
+lets a client attach a console key to any linked person, so a key for such a
+client can speak as that person. [`Registrant::Caller`] (the signed procedure)
+refuses it with a 403, and [`Registrant::Operator`] (`sms-gateway
+register-client`, run against the database) does not; see `crate::pair_scope`.
 
 ```mermaid
 sequenceDiagram

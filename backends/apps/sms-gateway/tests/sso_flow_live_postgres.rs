@@ -46,6 +46,10 @@ use sms_api::schema::{
     sso_transaction, user,
 };
 use sms_fake_oidc::{FakeOidc, KidMode, LoginSpec, NonceMode, SigAlg, SigningKey};
+use sms_test_support::sealed::TestKey;
+
+#[path = "../../../crates/sms-api/tests/support/sealed_fixtures.rs"]
+mod sealed_fixtures;
 
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
@@ -243,6 +247,9 @@ struct GatewayProcess {
 impl GatewayProcess {
     fn command(db_url: &str, port: u16, sso: Option<&SsoFlags>) -> (Command, String) {
         let issuer = format!("http://127.0.0.1:{port}");
+        let (current_key, next_key) = sealed_fixtures::write_server_key_files(
+            &std::env::temp_dir().join(format!("sms-sso-flow-keys-{port}")),
+        );
         let mut command = Command::new(env!("CARGO_BIN_EXE_sms-gateway"));
         command
             .arg("serve")
@@ -257,7 +264,10 @@ impl GatewayProcess {
             ])
             .args(["--orange-sender-number", "+237600000000"])
             .args(["--hash-pepper", TEST_HASH_PEPPER])
-            .args(["--console-client-id", CONSOLE_CLIENT_ID])
+            .args(["--envelope-signing-key-file"])
+            .arg(&current_key)
+            .args(["--envelope-next-signing-key-file"])
+            .arg(&next_key)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(sso) = sso {
@@ -653,14 +663,33 @@ async fn a_first_sign_in_provisions_a_least_privilege_user_and_reaches_an_authen
         .expect("listing credentials");
     assert_eq!(credentials.len(), 0);
 
-    // And the token really authenticates, through GatewayAuth's human path.
+    // Since VS-3 the OP's access token is not a credential for the generated
+    // router: the same bearer that used to authenticate `GET /roles` is
+    // refused, unsigned.
     let roles = reqwest::Client::new()
         .get(format!("{}/roles", rig.gateway.issuer))
         .bearer_auth(access_token)
         .send()
         .await
         .expect("GET /roles");
-    assert_eq!(roles.status(), reqwest::StatusCode::OK);
+    assert_eq!(roles.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    // What authenticates the JIT-provisioned person is a console key paired
+    // to their account (the break-glass `pair-console-key`'s effect, until
+    // VS-5b pairs from the console): the sealed call resolves to the same
+    // user and role the SSO broker created.
+    let key = TestKey::console();
+    sealed_fixtures::pair_console_key(&rig.db, &user.id, &key, chrono::Duration::days(30)).await;
+    let sealed_roles = sealed_fixtures::client(&rig.gateway.issuer, &key)
+        .request("GET", "/roles")
+        .send()
+        .await;
+    assert!(
+        sealed_roles.sealed && sealed_roles.status == 200,
+        "a paired console key authenticates the SSO-provisioned user: {} {}",
+        sealed_roles.status,
+        sealed_roles.text()
+    );
 
     // Nothing sensitive reached the logs.
     let logs = rig.gateway.logs.text();

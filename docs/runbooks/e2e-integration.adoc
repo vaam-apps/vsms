@@ -6,7 +6,7 @@ Two halves of the integration story were proven separately and never joined:
 https://github.com/vymalo/vsms/issues/144[#144] proved a message sent from the admin
 console's own composer reaches `delivered`, and
 https://github.com/vymalo/vsms/issues/149[#149] proved a third-party Rust backend can
-complete a `private_key_jwt` exchange over real HTTP and send. Neither proved the thing a
+sign a request over real HTTP and send. Neither proved the thing a
 customer actually cares about: *an external client sends, and an operator sees that exact
 message in the dashboard reaching `delivered`.* This runbook is that observation.
 
@@ -17,8 +17,8 @@ just e2e-integration
 
 *Rewritten as part of the `containerize-tooling` PR* -- `scripts/e2e-integration.sh` (bash,
 `openssl dgst -sign`, `curl`, `jq`) is gone, replaced by link:../../ci/e2e-integration[`ci/e2e-integration`],
-a small Rust binary reusing ``vsms-sdk-rust``'s own `private_key_jwt` token exchange rather
-than hand-signing RFC 7523 assertions in shell a second time. `just e2e-integration` is
+a small Rust binary reusing ``vsms-sdk-rust``'s own request signing rather
+than hand-signing in shell. `just e2e-integration` is
 self-contained and safely rerunnable -- it brings up `compose.dev.yaml` fresh (`just
 demo-up`, which itself wipes and recreates every named volume) before every run, so
 running it twice in a row with no manual cleanup in between is the normal way to use it,
@@ -43,34 +43,29 @@ checkout's own source (`compose.dev.yaml`), including a scratch Postgres,
 admin console, and `demo-app` (started, per the `--profile demo` this recipe now passes,
 but never waited on or asserted against here -- see this file's own opening section), plus
 one `App` (`vsms-demo`) and a "demo console" `AppClient`.
-that same `App`, via `docker compose run --rm sms-gateway provision-client`. Two real
-credentials: different `clientId`, different RSA keypair, each provisioned separately.
-See "Why the same ``App``" below for why this is the right design, not a shortcut.
-. *Sends as the integrator, over real HTTP*, via `ci/e2e-integration` -- its own
-`private_key_jwt` exchange at `POST /token` (through ``vsms-sdk-rust``'s
-`PrivateKeyJwtTokenStore`), then `POST /$procs/sendMessage` with the resulting Bearer
-token. A `--client-ref` unique to the run is attached so the later assertion matches
-_the_ message, not _a_ message (#160's own acceptance criterion 5). Runs _inside_
-``compose.dev.yaml``'s own Compose network, reaching `sms-gateway` at its internal DNS
-name -- see that tool's own module doc for why it can't run as a bare host process
-against this specific stack (a real, live-verified limitation, not an assumption:
-``sms-gateway``'s configured OIDC issuer has to be the internal Compose DNS name for the
-admin console's own login flow to work at all, and a `private_key_jwt` client assertion's
-audience has to match that exact issuer -- a host process can only ever _connect_ to the
-host-published port, and ``vsms-sdk-rust``'s `base_url`/`issuer` split turned out not to
-decouple those two the way its own doc comment claims; see the tool's module doc for the
-live 401 that proved it).
-. *Builds a second, independent client* -- the console's own credential, extracted from
-the same Compose stack via `docker compose cp` (its long-lived `provision-client`
-container, still present after `up`, unlike the integrator's `run --rm` one) -- the exact
-identity the admin console's Next.js server holds.
+. *Registers two signing keys for the same `App`* -- `ci/e2e-integration keygen` mints an
+Ed25519 key per principal (the integrator and the console), `sms-gateway register-client
+--app vsms-demo --client-name integrator|console` makes each its own `AppClient` with its
+own `ClientKey`, and `sms-gateway server-keys` prints the two public keys the gateway signs
+its answers with. Two real credentials: different `clientId`, different key, each
+registered separately. See "Why the same ``App``" below for why this is the right design,
+not a shortcut.
+. *Sends as the integrator, over real HTTP*, via `ci/e2e-integration` -- a COSE_Sign1
+envelope sealed by ``vsms-sdk-rust`` around `POST /$procs/sendMessage` (no token exchange
+exists any more), the answer verified against the pinned `server-keys`. A `--client-ref`
+unique to the run is attached so the later assertion matches _the_ message, not _a_
+message (#160's own acceptance criterion 5). Runs _inside_ ``compose.dev.yaml``'s own
+Compose network, reaching `sms-gateway` at its internal DNS name -- see that tool's own
+module doc.
+. *Signs as a second, independent client* -- the console key registered above, a different
+`AppClient` of the same `App`.
 . *Polls `+GET /messages/{id}+` as the console*, once a second, until that exact id
 reaches `delivered` (or a terminal non-delivered state, or a 60s timeout -- either
 fails the tool loudly). This is the same route
 ``frontends/packages/gateway/src/messages.ts``'s `getMessageById` calls -- not a database query.
 Every poll also asserts the returned `appId` matches the App both clients share.
 
-The tool prints the exact message id, the App id, both client ids, and the observed state
+The tool prints the exact message id, the App id, both key paths, and the observed state
 progression.
 
 == Why the same `App` for both clients, not two
@@ -123,6 +118,16 @@ readiness* (the credential, transport, and visibility chain all work), not *carr
 readiness*. xref:36-handset-gate.adoc[`36-handset-gate.adoc`] -- a real Orange account and a
 real phone, run by a human -- remains the actual carrier gate and is untouched by this
 runbook.
+
+== VS-3: converted to signing, not re-run
+
+VS-3 sealed the gateway and this tool moved from `private_key_jwt` to signed requests. It
+type-checks and its SDK half is covered by the SDK's own transport tests and live suite, but
+`just e2e-integration` itself needs Docker and was *not* re-run for VS-3: the evidence below
+is the pre-VS-3 (token) run, kept as the record of the scenario, not of the new transport.
+The `admin` and `demo-app` services in this stack still speak the token protocol, so they
+cannot reach the sealed gateway until VS-5b and VS-7 move them; the e2e tool does not use
+either.
 
 == Evidence -- the `containerize-tooling` rewrite
 

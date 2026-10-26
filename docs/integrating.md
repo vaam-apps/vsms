@@ -2,39 +2,41 @@
 
 For a developer whose application sends SMS **through** vsms. If you are working *on* vsms itself, start with [`CONTRIBUTING.md`](../CONTRIBUTING.md) and [`architecture.md`](architecture.md) instead; if you want the whole stack running on your laptop, [`runbooks/local-development.adoc`](runbooks/local-development.adoc) is the shorter path and this guide is what you read next.
 
-Everything below works against a local stack with no Orange or MTN account, no real handset, and no SMS ever leaving the machine. The credential, the token exchange, the REST calls, and the webhooks are all real — only the carrier is faked.
+Everything below works against a local stack with no Orange or MTN account, no real handset, and no SMS ever leaving the machine. The signing key, the signed requests, the REST calls, and the webhooks are all real — only the carrier is faked.
 
 ## 1. Get a credential
 
-vsms has no API keys and no shared secrets. A caller is an **`AppClient`** holding an RSA private key, and authenticates with RFC 7523 `private_key_jwt`: sign a short-lived assertion, exchange it at `POST /token` for a `client_credentials` access token, send that as a Bearer token.
+vsms has no API keys, no shared secrets and no access tokens. A caller is an **`AppClient`** holding an Ed25519 private key, and every request is a COSE_Sign1 message signed with it. The gateway answers with a message signed by its own key, which you pin.
 
-An operator provisions your client and hands you two values:
+Make your key, then give the operator its public half:
 
 ```bash
-sms-gateway provision-client \
-  --app-id <an existing, active App.id> \
-  --label "billing service — alice" \
-  --scope sms:send --scope sms:read \
-  --key-out ./client-key.pem
+openssl genpkey -algorithm ed25519 -out vsms-signing-key.pem
+cargo run -p sms-send -- --print-public-key --signing-key-path vsms-signing-key.pem   # examples/rust/sms-send
 ```
 
-It prints `provisioned client: <clientId>` and writes the private key to `--key-out` — once, `0600`, never printed and never stored server-side. If you lose it, you get a new client; there is no recovery.
+The operator registers it for your `App` and gives you the gateway's two public keys:
 
-Give each service (and ideally each developer) its own client against the same `App`. Messages are visible per-`App`, not per-client, so two clients on one `App` can read each other's messages — see [`runbooks/e2e-integration.adoc`](runbooks/e2e-integration.adoc) for why that is the intended design.
+```bash
+sms-gateway register-client --app <App.slug> --public-key <what you printed> \
+  --scope sms:send --scope sms:read
+sms-gateway server-keys --envelope-signing-key-file ... --envelope-next-signing-key-file ... > server-keys.txt
+```
+
+The private key never leaves you and is never stored server-side. If you lose it, the operator registers a new one and revokes the old; there is no recovery. Pin **both** lines of `server-keys.txt` (`current` and `next`): a rotation then needs no flag day.
+
+Give each service (and ideally each developer) its own client, with `register-client --client-name <name>`, against the same `App`. Messages are visible per-`App`, not per-client, so two clients on one `App` can read each other's messages - see [`runbooks/e2e-integration.adoc`](runbooks/e2e-integration.adoc) for why that is the intended design.
 
 ## 2. Send
 
-Three supported paths. All do the identical thing over real HTTP.
+### Rust - the SDK
 
-### Rust — the SDK
-
-[`vsms-sdk-rust`](../sdks/rust/vsms-sdk-rust/README.md) owns the whole credential lifecycle, including refresh-on-401. You never touch a JWT.
+[`vsms-sdk-rust`](../sdks/rust/vsms-sdk-rust/README.md) seals every call and verifies every answer. You never touch a COSE message.
 
 ```rust
-let config = PrivateKeyJwtConfig::from_key_path(
-    "http://127.0.0.1:8080", "<clientId>", "./client-key.pem", "sms:send sms:read",
-)?;
-let client = VsmsClient::private_key_jwt("http://127.0.0.1:8080", config)?;
+let key = SigningKey::from_pem_file("./vsms-signing-key.pem")?;
+let server_keys = ServerKeys::parse_report(&std::fs::read_to_string("server-keys.txt")?)?;
+let client = VsmsClient::signed("http://127.0.0.1:8080", key, server_keys)?;
 
 let outcome = client.send_message(SendMessageInput {
     to: "+237677123456".to_owned(),
@@ -46,32 +48,25 @@ let outcome = client.send_message(SendMessageInput {
 
 Runnable: [`examples/rust/sms-send`](../examples/rust/sms-send).
 
-### Node — the example
+### Node and other languages
 
-[`examples/node/sms-send-example`](../examples/node/sms-send-example/src/index.mjs) is one file doing the assertion, the exchange, and the send. Copy it; it mirrors the admin console's own [`frontends/packages/gateway/src/token.ts`](../frontends/packages/gateway/src/token.ts) rather than inventing a second reading of the same spec.
+The Node example ([`examples/node/sms-send-example`](../examples/node/sms-send-example/src/index.mjs)) and the console's gateway package still speak the removed token protocol; they cannot reach a gateway until they sign (VS-5b and VS-7). There is no compatibility mode to fall back on.
 
-### Any language — raw HTTP
-
-1. Sign a JWT with your private key (RS256), claims `iss`/`sub` = your `clientId`, `aud` = the issuer, plus `jti` and a short `exp`.
-2. `POST {issuer}/token`, form-encoded: `grant_type=client_credentials`, `scope=sms:send sms:read`, `client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer`, `client_assertion=<the JWT>`.
-3. `POST {issuer}/$procs/sendMessage` with `Authorization: Bearer <token>`.
-4. `GET {issuer}/messages/{id}` to read state back.
-
-`sms-gateway routes` prints the full route table and needs no database.
+To integrate from another language today, implement the signed transport directly: a COSE_Sign1 envelope (Ed25519, `application/json` payloads only) bound to the method, route, audience `vsms`, a fresh nonce and the issued-at time, and verification of the answer against the pinned server keys. The wire contract is cratestack's signed transport (its ADR 0006); [`backends/crates/sms-api/src/envelope.md`](../backends/crates/sms-api/src/envelope.md) says what vsms adds to it. `sms-gateway routes` prints the full route table and needs no database.
 
 ## 3. Request and response
 
 `SendMessageInput` ([`schema.cstack`](../schemas/vsms.cstack)):
 
-| Field | Type | Notes |
-|---|---|---|
-| `to` | String, required | E.164, `+237…`. Validated and normalised; a non-Cameroon or unallocated number is refused before persistence. |
-| `body` | String, required | Encoding is analysed, not assumed — see below. |
-| `senderId` | String? | Must be a registered, approved sender id for your `App`. |
-| `class` | `otp` \| `transactional` \| `notification` \| `marketing` | Drives routing and quiet-hours rules. |
-| `clientRef` | String? | **Your** dedupe key, scoped to the `App`. See §5. |
-| `scheduledAt` | DateTime? | Send later. |
-| `validityMinutes` | Int? | After this, the message expires rather than delivering. |
+| Field             | Type                                                      | Notes                                                                                                         |
+| ----------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `to`              | String, required                                          | E.164, `+237…`. Validated and normalised; a non-Cameroon or unallocated number is refused before persistence. |
+| `body`            | String, required                                          | Encoding is analysed, not assumed — see below.                                                                |
+| `senderId`        | String?                                                   | Must be a registered, approved sender id for your `App`.                                                      |
+| `class`           | `otp` \| `transactional` \| `notification` \| `marketing` | Drives routing and quiet-hours rules.                                                                         |
+| `clientRef`       | String?                                                   | **Your** dedupe key, scoped to the `App`. See §5.                                                             |
+| `scheduledAt`     | DateTime?                                                 | Send later.                                                                                                   |
+| `validityMinutes` | Int?                                                      | After this, the message expires rather than delivering.                                                       |
 
 `SendMessageResult`:
 
@@ -94,12 +89,12 @@ Runnable: [`examples/rust/sms-send`](../examples/rust/sms-send).
 
 Cameroonian law (Law No. 2024/017) and this system's own policy make `class` load-bearing. Getting it wrong means a rejected send, not a mis-tagged one:
 
-| Class | Consent record required | Quiet hours |
-|---|---|---|
-| `otp` | No | None |
-| `transactional` | No | None |
-| `notification` | **Yes** | None |
-| `marketing` | **Yes** | **08:00–20:00 WAT only** |
+| Class           | Consent record required | Quiet hours              |
+| --------------- | ----------------------- | ------------------------ |
+| `otp`           | No                      | None                     |
+| `transactional` | No                      | None                     |
+| `notification`  | **Yes**                 | None                     |
+| `marketing`     | **Yes**                 | **08:00–20:00 WAT only** |
 
 - **Consent** — sending `notification` or `marketing` to a recipient with no standing `ConsentRecord` for that class fails with a validation error naming the statute. An operator records consent; you cannot self-serve it.
 - **Quiet hours** — a `marketing` send is refused outside 08:00–20:00 WAT. The window is checked against the **delivery** time, so `scheduledAt` cannot be used to land one at 22:00. Schedule it inside the window instead.
@@ -111,19 +106,19 @@ Declaring `otp` on marketing traffic to dodge these checks is not prevented by t
 
 What a caller actually observes, in the order they normally occur:
 
-| State | Terminal | Meaning |
-|---|---|---|
-| `accepted` | | Persisted and validated. Your send succeeded. |
-| `queued` | | Claimed by a worker for routing. |
-| `routed` | | A provider was selected; submission is in flight. |
-| `submitted` | | The carrier accepted it. Awaiting a delivery receipt. |
-| `delivered` | ✓ | The carrier confirmed handset delivery. |
-| `failed` | ✓ | Permanently failed. `stateReason` says why. |
-| `expired` | ✓ | Passed `validityMinutes` without delivering. |
-| `rejected` | ✓ | Refused — opt-out, unapproved sender id, invalid recipient. |
-| `cancelled` | ✓ | Cancelled via `cancelMessage` before it went out. |
-| `uncertain` | | The submit timed out **after** the carrier may have accepted it. |
-| `undelivered` | | A retryable carrier failure. |
+| State         | Terminal | Meaning                                                          |
+| ------------- | -------- | ---------------------------------------------------------------- |
+| `accepted`    |          | Persisted and validated. Your send succeeded.                    |
+| `queued`      |          | Claimed by a worker for routing.                                 |
+| `routed`      |          | A provider was selected; submission is in flight.                |
+| `submitted`   |          | The carrier accepted it. Awaiting a delivery receipt.            |
+| `delivered`   | ✓        | The carrier confirmed handset delivery.                          |
+| `failed`      | ✓        | Permanently failed. `stateReason` says why.                      |
+| `expired`     | ✓        | Passed `validityMinutes` without delivering.                     |
+| `rejected`    | ✓        | Refused — opt-out, unapproved sender id, invalid recipient.      |
+| `cancelled`   | ✓        | Cancelled via `cancelMessage` before it went out.                |
+| `uncertain`   |          | The submit timed out **after** the carrier may have accepted it. |
+| `undelivered` |          | A retryable carrier failure.                                     |
 
 Two of these need care, and both are deliberate rather than accidental:
 
@@ -141,17 +136,17 @@ Both can surface as a `409`; `SdkError::is_idempotency_in_flight` and `is_confli
 
 ## 6. HTTP status codes
 
-| Status | Meaning | What to do |
-|---|---|---|
-| `200` | Accepted and persisted. | Record `messageId`. |
-| `401` | Token missing, expired, or invalid. | Re-run the token exchange once. The Rust SDK does this for you. |
-| `403` | Your token lacks the scope or the policy denied it. | Do not retry — the credential needs different scopes. |
-| `404` | Unknown id, **or** a row your `App` cannot see. | Do not retry. Row-level policy filters rather than erroring. |
-| `409` | Idempotency replay in flight, a `clientRef` conflict, or an illegal state transition. | Distinguish before acting; none of the three is fixed by a blind retry. |
-| `429` | Rate limited. | Back off; honour `Retry-After`. |
-| `5xx` | Genuine server fault. | Retry with backoff **and** an `Idempotency-Key`. |
+| Status | Meaning                                                                                                                                                              | What to do                                                                                                            |
+| ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `200`  | Accepted and persisted.                                                                                                                                              | Record `messageId`.                                                                                                   |
+| `401`  | The request was not signed, or its key is unknown, revoked or expired, or its nonce was seen before. The answer is deliberately unsigned and says no more than that. | Do not retry blindly: seal a fresh request, and if it persists ask the operator whether your key is still registered. |
+| `403`  | Your client lacks the scope or the policy denied it.                                                                                                                 | Do not retry — the credential needs different scopes.                                                                 |
+| `404`  | Unknown id, **or** a row your `App` cannot see.                                                                                                                      | Do not retry. Row-level policy filters rather than erroring.                                                          |
+| `409`  | Idempotency replay in flight, a `clientRef` conflict, or an illegal state transition.                                                                                | Distinguish before acting; none of the three is fixed by a blind retry.                                               |
+| `429`  | Rate limited.                                                                                                                                                        | Back off; honour `Retry-After`.                                                                                       |
+| `5xx`  | Genuine server fault.                                                                                                                                                | Retry with backoff **and** an `Idempotency-Key`.                                                                      |
 
-Rate limiting runs at three points: a per-`client_id` bucket on `/token`, a per-principal bucket on the API, and a coarser per-source-IP bucket that bounds what a flood of forged identities can reach. An honest client at normal volume sees none of them.
+Rate limiting runs at two points on the API: a per-principal bucket on the API (charged to the verified signer), and a coarser per-source-IP bucket that bounds what a flood of forged identities can reach. An honest client at normal volume sees none of them.
 
 ## 7. Receiving webhooks
 

@@ -2,8 +2,9 @@ DLR ingestion and provider message-ref matching. #34.
 
 Mounted as a raw route (`POST /dlr/{providerKey}`, §7 of the design
 doc), not through `CrateStack`'s generated router — a provider webhook
-carries no bearer token to validate against `GatewayAuth`, so it can't
-go through the same auth path as every other route.
+carries no signature from a registered key (the envelope layer, which seals
+every generated route, has nothing to verify), so it can't go through the same
+auth path as every other route.
 `backends/apps/sms-gateway`'s own `dlr.rs` owns that route and the provider-key
 dispatch; this module owns matching an already-parsed
 [`sms_provider::DeliveryUpdate`] against a `Message` and driving the
@@ -29,3 +30,5 @@ immediately. A message whose `expiresAt` elapses before (or during) that
 backoff is reaped to `expired` by `expire_stale`
 (`backends/crates/sms-worker/src/jobs/expire_stale.rs`), not left to retry forever
 either.
+
+<!-- markdownlint-disable-file MD041 -->

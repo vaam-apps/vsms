@@ -1,29 +1,33 @@
 # vsms-sdk-rust
 
-A Rust client for [vsms](https://github.com/vaam-apps/vsms) that owns the
-`private_key_jwt` credential lifecycle, so a caller writes
-`client.send_message(...)` and never touches a JWT.
+A Rust client for [vsms](https://github.com/vaam-apps/vsms) that signs every
+request with your Ed25519 key and verifies every answer against the gateway's
+pinned public keys, so a caller writes `client.send_message(...)` and handles
+no token, no JWT and no session.
 
 See [issue #171](https://github.com/vymalo/vsms/issues/171) for the full
 brief and `src/lib.rs`'s module doc for what is generated
-(`cratestack::include_client_schema!` — models, inputs, procedure stubs)
-versus hand-written (the auth layer: `TokenStore`, `PrivateKeyJwtTokenStore`,
-`GatewayAuthorizer`, and `VsmsClient`'s bounded-refresh-on-401).
+(`cratestack::include_client_schema!` - models, inputs, procedure stubs)
+versus hand-written (`SigningKey`, `ServerKeys`, and `VsmsClient`'s sealing of
+`send_message`).
 
 ## Usage
 
 ```rust
-use vsms_sdk::{PrivateKeyJwtConfig, VsmsClient};
+use vsms_sdk::{ServerKeys, SigningKey, VsmsClient};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = PrivateKeyJwtConfig::from_key_path(
-        "http://127.0.0.1:8080",
-        "the client id provision-client printed",
-        "/path/to/console-client-key.pem",
-        "sms:send sms:read",
-    )?;
-    let client = VsmsClient::private_key_jwt("http://127.0.0.1:8080", config)?;
+    // Your key: `openssl genpkey -algorithm ed25519`. The private half never
+    // leaves you; the operator registers the public half for your app with
+    // `sms-gateway register-client` (print it with the example's
+    // `--print-public-key`).
+    let key = SigningKey::from_pem_file("/path/to/vsms-signing-key.pem")?;
+    // The gateway's two public keys (current and next), exactly as
+    // `sms-gateway server-keys` printed them. Pin both: a rotation then
+    // needs no flag day.
+    let server_keys = ServerKeys::parse_report(&std::fs::read_to_string("server-keys.txt")?)?;
+    let client = VsmsClient::signed("http://127.0.0.1:8080", key, server_keys)?;
 
     let outcome = client
         .send_message(
@@ -36,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
                 scheduledAt: None,
                 validityMinutes: None,
             },
-            // Optional `Idempotency-Key` — a retry under the same key
+            // Optional `Idempotency-Key` - a retry under the same key
             // replays the first response instead of sending twice. See
             // `VsmsClient::send_message`'s own doc for how this differs
             // from `clientRef` above.
@@ -51,6 +55,16 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 ```
+
+## How a call is made
+
+Every request is a COSE_Sign1 envelope bound to one route, one audience and one
+fresh nonce, so a captured request cannot be replayed or redirected. An answer
+that is not a sealed message, or does not verify against a pinned key, is an
+error whatever its status; the gateway's own refusals (an unknown, revoked or
+expired key, a replayed nonce) are one coarse unsigned `401`, surfaced as
+`SdkError::is_unauthorized`. The SDK never retries a refused signature and
+never follows a redirect.
 
 See `examples/rust/sms-send` in the main vsms repo for a complete, runnable
 version of this against a real gateway (`just demo`).
@@ -81,5 +95,7 @@ and `SdkError::is_conflict` distinguish them; see either method's own doc.
 
 ## Scope
 
-Not in scope, and unlikely to ever be: request signing — vsms dropped it
-in favour of `private_key_jwt` (see the design doc's §4).
+Not in scope: bearer tokens, `private_key_jwt` and any other OAuth grant. vsms
+removed them (VS-3); the old `VsmsClient::private_key_jwt` is gone with no
+replacement, and a gateway refuses a request that carries an `Authorization`
+header.

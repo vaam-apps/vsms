@@ -1,11 +1,11 @@
 The request-signing public keys of a human's console (signed transport, VS-5a).
 
 `registerConsoleKey`, `revokeConsoleKey` and `sms-gateway pair-console-key` are
-the only writers of the `ConsoleKey` model. **Nothing verifies against those
-rows yet**: VS-3 gives the envelope `AuthProvider` its second signer kind
-(`ConsoleKey` -> user principal, beside `ClientKey` -> app principal). Until
-then a key registered here is recorded intent, and the password login, the
-Keycloak SSO and the OP's tokens are untouched (they go in VS-4).
+the only writers of the `ConsoleKey` model. Since VS-3 the envelope
+`AuthProvider` verifies a request signed by an unexpired, non-revoked row here
+as a user principal (`crate::signers`), beside `ClientKey` -> app principal.
+The password login, the Keycloak SSO and the OP's tokens are untouched (they go
+in VS-4).
 
 A console key is a `WebCrypto` **non-extractable P-256 key** (ESP256, COSE `-9`).
 `ConsoleKey.publicKey` is its **SEC1 uncompressed point**, 65 bytes
@@ -45,6 +45,7 @@ sequenceDiagram
         R->>D: INSERT FederatedLink
     else already linked
         R->>D: SELECT active User (never touches the role)
+        Note over R: an owner is refused (403): owners pair by CLI
     end
     R->>D: INSERT ConsoleKey (pairedAt = now, expiresAt = now + 30 d)
     R-->>V: ConsoleKey
@@ -61,8 +62,11 @@ things hold it, and the tests break each: `PAIRED_ROLE` is `admin`, and the
 weakest role `User.create` admits, so that policy's own `roleKey != 'owner'`
 clause refuses `owner` even if the constant were edited. A person who is
 already linked keeps whatever role they have: pairing never changes a role in
-either direction. A deactivated or deleted account is refused (403), not
-resurrected.
+either direction. **An already-linked `owner` is refused (403)**: a service
+holding `console:pair` can name any linked person, so the procedure must not be
+a way to a key that speaks as an owner; owners pair through `sms-gateway
+pair-console-key`, run by an operator (`crate::pair_scope`). A deactivated or
+deleted account is refused (403), not resurrected.
 
 The person has no email at vsms, and `User.email` is required and unique, so
 the row gets `<vaamUserId>@vaam.invalid` (`.invalid` is reserved by RFC 2606

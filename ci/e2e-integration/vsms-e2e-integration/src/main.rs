@@ -6,86 +6,85 @@
 //! git history for the bash-and-`openssl`-and-`curl`-and-`jq` version this
 //! replaces.
 //!
+//! # What VS-3 changed
+//!
+//! Both principals now **sign**: the integrator and the console each hold an
+//! Ed25519 key (a PKCS#8 PEM this tool minted with `keygen`), registered for
+//! their own `AppClient` of the same `App` by `sms-gateway register-client
+//! --client-name`, and every request is a COSE_Sign1 message verified against
+//! the gateway's pinned `server-keys`. Nothing here acquires, caches or
+//! refreshes a token; the old `--*-client-id` flags are gone because a signed
+//! request names no client (the gateway finds it by the key).
+//!
 //! # Why this runs *inside* the compose network, not on the host
 //!
-//! The first cut of this tool took a `--gateway-base-url`/`--gateway-issuer`
-//! split, reasoning that `vsms_sdk::VsmsClient::private_key_jwt(base_url,
-//! config)` keeps "the address I connect to" and "the audience I sign
-//! into my assertion" separate, so a host-native process could connect to
-//! `compose.dev.yaml`'s host-published gateway port while still signing
-//! an assertion whose `aud` matches the gateway's *real*, internal-DNS
-//! issuer. **That was wrong, found live, not by inspection**: read
-//! directly from `sdks/rust/vsms-sdk-rust/src/token.rs::PrivateKeyJwtTokenStore::new`,
-//! the `/token` POST is always sent to `format!("{issuer}/token")` —
-//! `base_url` only ever backs the generated REST client, never the token
-//! exchange. `VsmsClient::private_key_jwt`'s own doc comment claims
-//! `base_url` is used "for both the OIDC `/token` endpoint and the REST
-//! API"; that's the aspiration, not what the code does — a real instance
-//! of this repo's own "documentation asserts something the code does not
-//! do" pattern, this time in the SDK rather than in vsms itself, flagged
-//! separately rather than fixed here (`sdks/rust/vsms-sdk-rust` is out of
-//! this PR's owned-files scope). Confirmed two ways: an assertion signed
-//! with `aud=http://127.0.0.1:<published-port>/token` (matching the
-//! *reachable* address) gets a real `401 invalid_client` from the real
-//! `/token` route, and `docker compose cp`ing `--gateway-base-url`
-//! separate from `--gateway-issuer` never got past the send step either
-//! — the token request itself always went to `--gateway-issuer`, which a
-//! host process cannot resolve (`sms-gateway` is Compose-internal DNS).
-//!
-//! The fix is structural, not a workaround: this binary is built into its
-//! own small image (`ci/e2e-integration/Dockerfile`, mirroring
-//! `deploy/backup-tool`'s own shape) and run as a one-shot container
-//! joined to `compose.dev.yaml`'s own network, where `http://sms-gateway:8080`
-//! is directly reachable — so the address this tool connects to and the
-//! address the gateway is actually configured with are simply the *same*
-//! string, and neither this tool nor the SDK needs to split anything.
-//! `examples/rust/sms-send`'s own single-`--issuer` shape was never wrong
-//! either, for the identical reason: a real integrator's `sms-gateway` is
-//! one address full stop, which is exactly what running in-network gives
-//! this tool too.
+//! The binary is built into its own small image (`ci/e2e-integration/
+//! Dockerfile`, mirroring `deploy/backup-tool`'s own shape) and run as a
+//! one-shot container joined to `compose.dev.yaml`'s own network, where
+//! `http://sms-gateway:8080` is directly reachable. A sealed request is bound to
+//! one audience (`vsms`) and one route, not to a host name, so a host process
+//! could in principle reach the published port; running in-network keeps the
+//! address this tool connects to the address the stack itself uses.
 //!
 //! # Why not `cargo xtask e2e-integration`
 //!
 //! `.xtask` deliberately depends on nothing that would slow its own
-//! "stays fast" build promise down (`AGENTS.md`'s xtask section) — adding
+//! "stays fast" build promise down (`AGENTS.md`'s xtask section) - adding
 //! `vsms-sdk-rust` (and, transitively, `cratestack-client`) to it would
 //! break that promise for every other `cargo xtask` subcommand, not just
 //! this one. `just e2e-integration` is the thin host-level orchestrator
-//! instead (bring the stack up, provision a second client, run this
-//! image on the same Compose network) — see the justfile's own recipe.
+//! instead (bring the stack up, mint and register two keys, run this image on
+//! the same Compose network) - see the justfile's own recipe.
 
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use cratestack::client_rust::ClientError;
 use vsms_sdk::schema::SendMessageInput;
-use vsms_sdk::{PrivateKeyJwtConfig, SdkError, VsmsClient};
+use vsms_sdk::{SdkError, ServerKeys, SigningKey, VsmsClient};
 
 #[derive(Parser, Debug)]
 #[command(
     about = "The joined integration story (#160): an integrator sends over real HTTP, the console's own credential reads it back, cross-principal, same App."
 )]
 struct Cli {
-    /// The gateway's own address, reachable — and, once inside the
-    /// Compose network this binary is meant to run in, *only* reachable —
-    /// as `http://sms-gateway:8080`. Used as both the connection target
-    /// and the client assertion's audience; see this file's own module
-    /// doc for why those can't be split in practice.
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Mints an Ed25519 key: writes the PKCS#8 PEM to `--out` (0600, refusing
+    /// to overwrite) and prints the public half, unpadded base64url - the
+    /// value `sms-gateway register-client --public-key` takes - on stdout.
+    Keygen {
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// Runs the scenario.
+    Run(Box<RunArgs>),
+}
+
+#[derive(Args, Debug)]
+struct RunArgs {
+    /// The gateway's own address, reachable - and, once inside the Compose
+    /// network this binary is meant to run in - as `http://sms-gateway:8080`.
     #[arg(long, env = "VSMS_E2E_GATEWAY_URL")]
     gateway_url: String,
 
-    #[arg(long, env = "VSMS_E2E_INTEGRATOR_CLIENT_ID")]
-    integrator_client_id: String,
-
+    /// The integrator's key (registered for its own `AppClient` of the App).
     #[arg(long, env = "VSMS_E2E_INTEGRATOR_KEY_PATH")]
     integrator_key_path: std::path::PathBuf,
 
-    #[arg(long, env = "VSMS_E2E_CONSOLE_CLIENT_ID")]
-    console_client_id: String,
-
+    /// The console's key (registered for a second `AppClient` of the same
+    /// App), the second, independent principal.
     #[arg(long, env = "VSMS_E2E_CONSOLE_KEY_PATH")]
     console_key_path: std::path::PathBuf,
+
+    /// `sms-gateway server-keys`' output: the gateway's two public keys.
+    #[arg(long, env = "VSMS_E2E_SERVER_KEYS_PATH")]
+    server_keys_path: std::path::PathBuf,
 
     /// E.164 recipient — the default matches `scripts/e2e-integration.sh`'s
     /// own former default.
@@ -109,7 +108,37 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = Cli::parse();
+    match Cli::parse().command {
+        Command::Keygen { out } => keygen(&out),
+        Command::Run(args) => run(*args).await,
+    }
+}
+
+fn keygen(out: &std::path::Path) -> Result<()> {
+    use std::io::Write as _;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    let key = SigningKey::generate();
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(out)
+        .with_context(|| format!("creating {} (refusing to overwrite)", out.display()))?;
+    file.write_all(key.to_pem().as_bytes())
+        .with_context(|| format!("writing {}", out.display()))?;
+    println!("{}", key.public_key_b64u());
+    Ok(())
+}
+
+async fn run(cli: RunArgs) -> Result<()> {
+    let server_keys = ServerKeys::parse_report(
+        &std::fs::read_to_string(&cli.server_keys_path)
+            .with_context(|| format!("reading {}", cli.server_keys_path.display()))?,
+    )
+    .context("the pinned server keys")?;
 
     let client_ref = cli.client_ref.unwrap_or_else(|| {
         format!(
@@ -122,12 +151,7 @@ async fn main() -> Result<()> {
     });
 
     println!("1/4 building the integrator's own client (a second, independent AppClient)");
-    let integrator = build_client(
-        &cli.gateway_url,
-        &cli.integrator_client_id,
-        &cli.integrator_key_path,
-        "sms:send sms:read",
-    )?;
+    let integrator = build_client(&cli.gateway_url, &cli.integrator_key_path, &server_keys)?;
 
     println!("2/4 sending as the integrator, over real HTTP (clientRef={client_ref})");
     let args = SendMessageInput {
@@ -161,12 +185,7 @@ async fn main() -> Result<()> {
     println!("    App: {app_id}");
 
     println!("3/4 building the console's own client (a second, independent principal)");
-    let console = build_client(
-        &cli.gateway_url,
-        &cli.console_client_id,
-        &cli.console_key_path,
-        "sms:read sms:send",
-    )?;
+    let console = build_client(&cli.gateway_url, &cli.console_key_path, &server_keys)?;
 
     println!(
         "4/4 polling GET /messages/{{id}} AS THE CONSOLE — the exact route \
@@ -231,8 +250,14 @@ async fn main() -> Result<()> {
     println!();
     println!("PASSED");
     println!("    App:                 {app_id}");
-    println!("    integrator client:   {}", cli.integrator_client_id);
-    println!("    console client:      {}", cli.console_client_id);
+    println!(
+        "    integrator key:      {}",
+        cli.integrator_key_path.display()
+    );
+    println!(
+        "    console key:         {}",
+        cli.console_key_path.display()
+    );
     println!("    message id:          {message_id}");
     println!("    clientRef:           {client_ref}");
     println!("    state progression:   {}", states_seen.join(" -> "));
@@ -246,13 +271,12 @@ async fn main() -> Result<()> {
 
 fn build_client(
     gateway_url: &str,
-    client_id: &str,
     key_path: &std::path::Path,
-    scope: &str,
+    server_keys: &ServerKeys,
 ) -> Result<VsmsClient> {
-    let config = PrivateKeyJwtConfig::from_key_path(gateway_url, client_id, key_path, scope)
-        .with_context(|| format!("loading the private key at {}", key_path.display()))?;
-    VsmsClient::private_key_jwt(gateway_url, config).context("building the vsms client")
+    let key = SigningKey::from_pem_file(key_path)
+        .with_context(|| format!("loading the signing key at {}", key_path.display()))?;
+    VsmsClient::signed(gateway_url, key, server_keys.clone()).context("building the vsms client")
 }
 
 fn is_not_found(error: &SdkError) -> bool {

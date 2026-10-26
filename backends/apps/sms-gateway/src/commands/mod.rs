@@ -14,3 +14,4 @@ pub(crate) mod routes;
 pub(crate) mod seed_console_client;
 pub(crate) mod seed_dispatch;
 pub(crate) mod serve;
+pub(crate) mod server_keys;

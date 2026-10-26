@@ -81,6 +81,10 @@ async fn db() -> Cratestack {
 /// A fresh App and one `AppClient` of it, written the way their sole writers
 /// (`create-app`, `provisionAppClient`) do: App as owner, `AppClient` as system.
 async fn seed_client(db: &Cratestack) -> schema::AppClient {
+    seed_client_scoped(db, " sms:send ").await
+}
+
+async fn seed_client_scoped(db: &Cratestack, scopes: &str) -> schema::AppClient {
     let suffix = unique_suffix();
     let app = db
         .app()
@@ -102,7 +106,7 @@ async fn seed_client(db: &Cratestack) -> schema::AppClient {
             appId: app.id,
             clientId: format!("appc_client-keys-test-{suffix}"),
             label: "client keys live test".to_owned(),
-            scopes: " sms:send ".to_owned(),
+            scopes: scopes.to_owned(),
             lastUsedAt: None,
             retiredAt: None,
         })
@@ -558,4 +562,51 @@ async fn only_owner_admin_and_system_can_read_keys() {
         assert_eq!(visible(human(role)).await, 0, "{role} must not list keys");
     }
     assert_eq!(visible(principal("app", PrincipalKind::App)).await, 0);
+}
+
+/// A client holding `console:pair` can attach a console key to any linked
+/// person, so a key for it is a key that can speak as that person. Over HTTP
+/// even an owner cannot register one; the operator's command line can.
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres - see module docs"]
+async fn a_client_holding_the_pair_scope_takes_keys_only_from_the_operator() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let client = seed_client_scoped(&db, " sms:send console:pair ").await;
+    let public = b64(&fresh_public_key());
+
+    for role in ["owner", "admin"] {
+        let error = register(&db, &human(role), &client.id, &public, None)
+            .await
+            .expect_err("a signed call must not register a key for a pairing client");
+        assert!(
+            matches!(error, CratestackError::Forbidden(_)),
+            "{role}: {error:?}"
+        );
+    }
+
+    // The same client, registered by the operator's command.
+    let args = register_app_client_key::Args {
+        args: schema::RegisterClientKeyInput {
+            appClientId: client.id.clone(),
+            publicKey: public.clone(),
+            label: None,
+        },
+    };
+    let ctx = human("owner");
+    let key = register_app_client_key::invoke_with_db(&db, &args, &ctx, |db, _authorized| {
+        let args = args.clone();
+        async move {
+            sms_api::client_keys::register(
+                &db,
+                &sys(),
+                args.args,
+                sms_api::client_keys::Registrant::Operator,
+            )
+            .await
+        }
+    })
+    .await
+    .expect("the operator registers it");
+    assert_eq!(key.appClientId, client.id);
 }

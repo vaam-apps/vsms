@@ -837,6 +837,14 @@ impl Procedures {
     ) -> Result<schema::ProvisionClientResult, CratestackError> {
         let sys = Self::sys();
 
+        let scopes_packed =
+            pack(&args.scopes).map_err(|error| CratestackError::Validation(error.to_string()))?;
+        // `console:pair` lets a client attach a console key to any linked
+        // person, so an owner or admin handing it out over HTTP is a way to
+        // become someone else. It is granted by `sms-gateway register-client`.
+        // Refused before the app is read or a keypair is generated.
+        crate::pair_scope::refuse_pair_scope(&scopes_packed)?;
+
         // The app must exist and be active before a client is allowed to
         // speak for it — provisioning a client for a deleted/deactivated
         // app would silently mint working credentials for nothing.
@@ -897,8 +905,6 @@ impl Procedures {
         })?;
         let jwks_json = serde_json::json!({ "keys": [public_jwk] }).to_string();
 
-        let scopes_packed =
-            pack(&args.scopes).map_err(|error| CratestackError::Validation(error.to_string()))?;
         // client_credentials only — the only grant type a machine caller in
         // this system ever uses (§4.2; see `sms_auth::op`'s own module doc).
         let grant_types_packed =
@@ -1013,11 +1019,9 @@ impl Procedures {
     /// (the caller's own context, for the permission check only) rather
     /// than the `_ctx` this function used to ignore; every read/write
     /// below still goes through `sys`, unaffected by this change. Same
-    /// latency as #187: `GatewayAuth` never mints a human-role token today
-    /// (#97/#98's scope cut), so Layer 1 alone already closes this
-    /// procedure to every token this deployment can currently issue, and
-    /// this check has no live *allow* path to prove yet — only *deny*,
-    /// covered by `rotate_webhook_secret_live_postgres.rs`'s
+    /// latency as #187: before VS-3 no credential carried a human role
+    /// (#97/#98's scope cut), so this check had no live *allow* path to
+    /// prove — only *deny*, covered by `rotate_webhook_secret_live_postgres.rs`'s
     /// `rotate_denies_a_caller_with_no_webhook_manage_permission`.
     async fn rotate_secret(
         &self,
@@ -1405,8 +1409,8 @@ impl Procedures {
     /// `DeliveryReceipt`'s own `list`/`detail` policy is
     /// `auth().kind == "user" || hasRole('system')` — it has never admitted
     /// `kind == "app"`, the only real caller kind this deployment mints
-    /// (`GatewayAuth::authenticate` hardcodes `role: "app"` for every
-    /// machine token; see `auth.rs`'s own doc). So the console's own
+    /// (`SignedAuth::context_for` hardcodes `role: "app"` for every
+    /// app key; see `auth.rs`'s own doc). So the console's own
     /// credential cannot read `GET /delivery_receipts` directly, the same
     /// structural wall #59's own finding already named for `Provider`/
     /// `WebhookEndpoint`. `@authorize(Message, detail, args.messageId)` on
@@ -2105,7 +2109,15 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         Output = Result<schema::procedures::register_app_client_key::Output, CratestackError>,
     > + Send {
         let sys = Self::sys();
-        async move { crate::client_keys::register(db, &sys, args.args).await }
+        async move {
+            crate::client_keys::register(
+                db,
+                &sys,
+                args.args,
+                crate::client_keys::Registrant::Caller,
+            )
+            .await
+        }
     }
 
     fn revoke_app_client_key(

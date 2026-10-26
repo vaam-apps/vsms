@@ -351,3 +351,17 @@ or plain unit test, remembering to install a provider first. This is a
 strictly stronger fix than adding another call to [`database_url`] would
 have been: it protects every current and future caller of `GatewayAuth::new`
 by construction, not just the ones that happen to be live-Postgres suites.
+
+# Sealed requests (VS-3)
+
+The API accepts only `COSE_Sign1` envelopes, so a live suite that drives it over
+real HTTP cannot send a bearer token. [`sealed`] is the one client for that:
+`TestKey::app()` and `TestKey::console()` mint a key, the suite registers its
+public half (a `ClientKey` for an app, a paired `ConsoleKey` for a person), and
+`SealedClient::request(method, template)` seals, sends and opens the answer.
+`Reply::sealed` says whether the answer verified against the pinned server key
+or was the layer's unsigned refusal, which is how a test tells a refused
+signature from a refused operation. The server keys the suites boot with are
+fixed seeds, shared with the gateway-binary suites through key files.
+
+<!-- markdownlint-disable-file MD041 -->

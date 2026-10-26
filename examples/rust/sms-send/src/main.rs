@@ -3,78 +3,91 @@
 //! shortcuts, no `Procedures::send_message` call, nothing this crate
 //! could not also do from a different repository entirely.
 //!
-//! Everything about the `private_key_jwt` token exchange (sign an RFC
-//! 7523 §3 assertion, exchange it at `POST {issuer}/token`, cache and
-//! attach the resulting Bearer token, refresh once on an unexpected 401)
-//! now lives in `vsms-sdk-rust` (#171) rather than here — this file used
-//! to hand-roll all of that in ~230 lines; see the git history of this
-//! file for what that looked like. `--idempotency-key`'s `Idempotency-Key`
-//! header attachment and `Idempotency-Replayed` echo (#153/#161) moved
-//! into the SDK too, once the SDK existed to move it into — see
-//! `VsmsClient::send_message`'s own doc for why that needed a lower-level
-//! call than the generated client's typed procedure method. What's left
-//! is the part an integrator actually cares about: build a
-//! `SendMessageInput`, call `client.send_message(...)`, read the result
-//! back.
+//! There is no token exchange: every request is signed with the caller's own
+//! Ed25519 key (COSE_Sign1) and every answer is verified against the gateway's
+//! pinned public keys. All of that (sealing, the nonce, opening the answer, the
+//! `Idempotency-Key` header and the `Idempotency-Replayed` echo, #153/#161)
+//! lives in `vsms-sdk-rust` (#171, VS-6); see `VsmsClient::send_message`'s own
+//! doc for why that needed a lower-level call than the generated client's typed
+//! procedure method. What's left is the part an integrator actually cares
+//! about: build a `SendMessageInput`, call `client.send_message(...)`, read the
+//! result back.
+//!
+//! One-time setup, by an operator with access to the gateway:
+//!
+//! ```bash
+//! # Your key. The private half stays with you; vsms never sees it.
+//! openssl genpkey -algorithm ed25519 -out vsms-signing-key.pem
+//! cargo run -- --print-public-key --signing-key-path vsms-signing-key.pem
+//! # -> register that public key for your app (the operator runs this):
+//! sms-gateway register-client --app <slug> --public-key <that value> --scope sms:send --scope sms:read
+//! # The gateway's two public keys, to pin (also the operator's):
+//! sms-gateway server-keys --envelope-signing-key-file ... --envelope-next-signing-key-file ... > server-keys.txt
+//! ```
+//!
+//! Then:
 //!
 //! ```bash
 //! cargo run -- \
-//!   --issuer http://127.0.0.1:8080 \
-//!   --client-id <clientId that provision-client printed> \
-//!   --private-key-path /path/to/console-client-key.pem \
+//!   --base-url http://127.0.0.1:8080 \
+//!   --signing-key-path vsms-signing-key.pem \
+//!   --server-keys-path server-keys.txt \
 //!   --to +237677123456 \
 //!   --sender-id VYMALO \
 //!   --body "Hello from the vsms Rust example"
 //! ```
 //!
-//! Every flag also reads from an env var (`VSMS_ISSUER`,
-//! `VSMS_CLIENT_ID`, `VSMS_PRIVATE_KEY_PATH`, `VSMS_SCOPE`) so a real
-//! integration never has to hardcode a credential path in argv.
+//! Every flag also reads from an env var (`VSMS_BASE_URL`,
+//! `VSMS_SIGNING_KEY_PATH`, `VSMS_SERVER_KEYS_PATH`) so a real integration never
+//! has to hardcode a credential path in argv.
 
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::Parser;
 use vsms_sdk::schema::SendMessageInput;
-use vsms_sdk::{PrivateKeyJwtConfig, VsmsClient};
+use vsms_sdk::{ServerKeys, SigningKey, VsmsClient};
 
 #[derive(Parser, Debug)]
 #[command(
-    about = "vsms integration example: private_key_jwt token exchange + sendMessage over real HTTP, via vsms-sdk-rust"
+    about = "vsms integration example: a signed (COSE_Sign1) sendMessage over real HTTP, via vsms-sdk-rust"
 )]
 struct Cli {
-    /// The gateway's externally reachable origin — both the OIDC issuer
-    /// and `/token` hang off this. `just demo` serves it at
+    /// The gateway's externally reachable origin. `just demo` serves it at
     /// http://127.0.0.1:8080 by default.
-    #[arg(long, env = "VSMS_ISSUER", default_value = "http://127.0.0.1:8080")]
-    issuer: String,
+    #[arg(long, env = "VSMS_BASE_URL", default_value = "http://127.0.0.1:8080")]
+    base_url: String,
 
-    /// The client id `sms-gateway provision-client` printed as
-    /// `provisioned client: <id>`.
-    #[arg(long, env = "VSMS_CLIENT_ID")]
-    client_id: String,
+    /// Path to your Ed25519 private key (PKCS#8 PEM, as `openssl genpkey
+    /// -algorithm ed25519` writes). Never commit this file, and never pass
+    /// its *contents* on the command line - only the path.
+    #[arg(long, env = "VSMS_SIGNING_KEY_PATH")]
+    signing_key_path: PathBuf,
 
-    /// Path to the PEM private key `sms-gateway provision-client` wrote
-    /// via `--key-out`. Never commit this file, and never pass its
-    /// *contents* on the command line — only the path.
-    #[arg(long, env = "VSMS_PRIVATE_KEY_PATH")]
-    private_key_path: PathBuf,
+    /// Path to the file holding `sms-gateway server-keys`' output (`current:`
+    /// and `next:` lines): the gateway's two public keys, which answers are
+    /// verified against. Public, so ordinary configuration.
+    #[arg(
+        long,
+        env = "VSMS_SERVER_KEYS_PATH",
+        required_unless_present = "print_public_key"
+    )]
+    server_keys_path: Option<PathBuf>,
 
-    /// Space-separated scopes to request. Must be a subset of what the
-    /// client was provisioned with (`sms-gateway provision-client
-    /// --scope ...`), or `/token` mints a narrower-than-requested token.
-    #[arg(long, env = "VSMS_SCOPE", default_value = "sms:send sms:read")]
-    scope: String,
+    /// Print the public half of `--signing-key-path` (unpadded base64url, the
+    /// form `register-client --public-key` takes) and exit. Sends nothing.
+    #[arg(long)]
+    print_public_key: bool,
 
     /// E.164 recipient.
-    #[arg(long)]
-    to: String,
+    #[arg(long, required_unless_present = "print_public_key")]
+    to: Option<String>,
 
     /// A sender id already `approved` for this deployment's Orange
     /// account (see the main repo's `send_test_message` example, or
     /// `just demo`'s own seeding, for what "approved" requires here).
-    #[arg(long)]
-    sender_id: String,
+    #[arg(long, required_unless_present = "print_public_key")]
+    sender_id: Option<String>,
 
     #[arg(long, default_value = "Hello from the vsms Rust integration example")]
     body: String,
@@ -95,8 +108,8 @@ struct Cli {
     /// the second call never re-executes `sendMessage` at all: it replays
     /// the exact first response, `Idempotency-Replayed: true`, with no
     /// second SMS and no second `Message` row. Distinct from
-    /// `--client-ref`: this key is scoped by the caller's own
-    /// `Authorization` header, not by `App`, and works even when the
+    /// `--client-ref`: this key is scoped by the caller's own verified
+    /// signing key, not by `App`, and works even when the
     /// request never reaches procedure code (a client that never learns
     /// whether its first attempt was received — a timeout, a dropped
     /// connection — is exactly the case this exists for). Reusing the
@@ -110,25 +123,30 @@ struct Cli {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let config = PrivateKeyJwtConfig::from_key_path(
-        &cli.issuer,
-        &cli.client_id,
-        &cli.private_key_path,
-        &cli.scope,
-    )
-    .with_context(|| {
+    let signing_key = SigningKey::from_pem_file(&cli.signing_key_path).with_context(|| {
         format!(
-            "loading the private key at {}",
-            cli.private_key_path.display()
+            "loading the signing key at {}",
+            cli.signing_key_path.display()
         )
     })?;
-    let client =
-        VsmsClient::private_key_jwt(&cli.issuer, config).context("building the vsms client")?;
+    if cli.print_public_key {
+        println!("{}", signing_key.public_key_b64u());
+        return Ok(());
+    }
+    let server_keys_path = cli
+        .server_keys_path
+        .as_ref()
+        .context("--server-keys-path is required")?;
+    let report = std::fs::read_to_string(server_keys_path)
+        .with_context(|| format!("reading the server keys at {}", server_keys_path.display()))?;
+    let server_keys = ServerKeys::parse_report(&report).context("the pinned server keys")?;
+    let client = VsmsClient::signed(&cli.base_url, signing_key, server_keys)
+        .context("building the vsms client")?;
 
     let args = SendMessageInput {
-        to: cli.to,
+        to: cli.to.context("--to is required")?,
         body: cli.body,
-        senderId: Some(cli.sender_id),
+        senderId: Some(cli.sender_id.context("--sender-id is required")?),
         class: None,
         clientRef: cli.client_ref,
         scheduledAt: None,

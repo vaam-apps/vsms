@@ -275,11 +275,11 @@ async fn removing_the_active_filter_would_let_a_deactivated_account_log_in() {
 /// (the key that signs every token this system issues) and every
 /// `UserCredential.passwordHash`, both `hasRole('system')`-gated.
 ///
-/// The second, independent guard — `sms_api::auth::load_human_principal`
+/// The second, independent guard — `sms_api::signers`
 /// refusing a `"system"`/`"app"` `role_key` at the point of use, in case
 /// this constraint is ever bypassed — is proven live in
 /// `backends/apps/sms-gateway/tests/login_flow_live_postgres.rs`, which has to spawn
-/// a real server to drive a token through `GatewayAuth`; that test
+/// a real server to drive a paired console key through the signer directory; that test
 /// temporarily drops this exact constraint to construct the otherwise-
 /// unreachable row the second guard needs to prove itself against.
 #[tokio::test]

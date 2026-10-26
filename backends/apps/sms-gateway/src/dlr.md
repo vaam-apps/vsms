@@ -3,7 +3,8 @@ issue #61) and for a third, AWS, with the callback-authentication hook.
 
 `POST /dlr/{providerKey}` — not CrateStack-routed (see
 `sms_api::dlr`'s own module doc for why: a provider webhook carries no
-bearer token to validate against `GatewayAuth`). The path segment must match
+signed envelope for the envelope layer to verify, which seals every generated
+route). The path segment must match
 one of the configured providers' own `key()`; that is the first access
 control. What happens next depends on whether the provider documents a way
 to prove a callback is its own:

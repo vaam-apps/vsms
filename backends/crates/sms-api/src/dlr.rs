@@ -187,7 +187,7 @@ async fn ingest_one(
             // `procedures.rs`'s own module doc for the first. No
             // `cratestack_request_id` here: a DLR arrives on its own
             // unauthenticated HTTP connection (this module's own doc — no
-            // bearer token, no `GatewayAuth`, so no `CratestackContext` was ever
+            // signature, no `SignedAuth`, so no `CratestackContext` was ever
             // constructed per-request the way `sendMessage`'s was), so
             // there is no HTTP-request-scoped id to carry forward. The
             // join across processes is `message_id` alone.

@@ -1,14 +1,23 @@
 //! The actual gate for #20/#21: a real signing key, a real client keypair,
 //! a real `private_key_jwt` client assertion, a real token minted by the
-//! OP, and `GatewayAuth` validating it against the OP's own real,
-//! HTTP-served JWKS — no part of this path is mocked.
+//! OP, the OP's real, HTTP-served discovery and JWKS - no part of this path
+//! is mocked.
+//!
+//! **VS-3 split this suite in two, and VS-4 deletes the first half.** The
+//! OP-only assertions (the token is minted, discovery advertises
+//! `private_key_jwt`, a rotation shows up in the served JWKS) test the OP's
+//! own issuance and are unchanged. What used to prove the *gateway accepted*
+//! that token (`previewMessage`, and a machine never seeing an
+//! `OauthSigningKey`) now proves it for the signature that replaced the token:
+//! the same client, registered with an Ed25519 key, calls the same routes
+//! sealed.
 //!
 //! Builds the same three OP routes `backends/apps/sms-gateway/src/op.rs` does,
 //! duplicated here rather than imported: `backends/apps/sms-gateway` is a binary
 //! crate with no `lib.rs`, so its own modules aren't reachable from an
 //! integration test in a different crate. The ~30 lines this duplicates
 //! are wiring, not logic — the logic under test
-//! (`sms_auth::op`/`sms_api::GatewayAuth`) is the real, shared code.
+//! (`sms_auth::op`/`sms_api::router`) is the real, shared code.
 //! Future changes to the real `op.rs` (`discovery_handler` included) should
 //! be mirrored here.
 //!
@@ -47,7 +56,11 @@ use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use rsa::traits::PublicKeyParts;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, Cratestack};
-use sms_api::{GatewayAuth, HashPepper};
+
+#[path = "../../sms-api/tests/support/sealed_fixtures.rs"]
+mod sealed_fixtures;
+
+use sms_test_support::sealed::TestKey;
 
 fn sys() -> CratestackContext {
     Principal {
@@ -237,7 +250,7 @@ fn sign_client_assertion(client_id: &str, issuer: &str, key: &RsaPrivateKey) -> 
     jsonwebtoken::encode(&header, &claims, &encoding_key).expect("signing the client assertion")
 }
 
-async fn seed_app_and_client(db: &Cratestack, jwks_json: &str) -> String {
+async fn seed_app_and_client(db: &Cratestack, jwks_json: &str) -> (String, String) {
     let suffix = unique_suffix();
     let app = db
         .app()
@@ -256,7 +269,8 @@ async fn seed_app_and_client(db: &Cratestack, jwks_json: &str) -> String {
         .expect("seeding the app");
 
     let client_id = format!("oidc-test-{suffix}");
-    db.app_client()
+    let app_client = db
+        .app_client()
         .create(schema::CreateAppClientInput {
             appId: app.id.clone(),
             clientId: client_id.clone(),
@@ -284,11 +298,11 @@ async fn seed_app_and_client(db: &Cratestack, jwks_json: &str) -> String {
         .await
         .expect("seeding the oauth client");
 
-    client_id
+    (client_id, app_client.id)
 }
 
 /// Rotates in a first signing key, builds the same three OP routes plus
-/// `GatewayAuth` that `backends/apps/sms-gateway/src/main.rs` itself wires, and
+/// sealed router that `backends/apps/sms-gateway/src/commands/serve.rs` itself wires, and
 /// serves them on an OS-assigned loopback port. Returns the issuer URL to
 /// reach it at, and how many keys were already in JWKS at that point — the
 /// baseline the rotation-overlap assertion measures growth against, since
@@ -319,31 +333,22 @@ async fn spawn_test_server(db: &Cratestack) -> (String, usize) {
     };
     spawn_key_refresh(op_state.clone(), db.clone(), sys(), issuer.clone());
 
-    let auth = GatewayAuth::new(
-        db.clone(),
-        format!("{issuer}/jwks.json"),
-        issuer.clone(),
-        sms_api::DEFAULT_CONSOLE_CLIENT_ID.to_owned(),
-    );
-    // #134: this suite never sends a message, so — like
-    // `provision_app_client_live_postgres.rs` — any pepper over the
+    // #134: this suite never sends a message, so - like
+    // `provision_app_client_live_postgres.rs` - any pepper over the
     // minimum length works.
-    let pepper = HashPepper::new("oidc-flow-live-test-pepper-well-over-the-minimum-length")
-        .expect("test pepper meets HashPepper::new's minimum length");
-    let app = sms_api::router(
-        db.clone(),
-        auth,
-        pepper,
-        sms_api::DEFAULT_IDEMPOTENCY_TTL,
-        sms_api::default_rate_limit_config(),
-        sms_api::default_source_rate_limit_config(),
+    let app = sealed_fixtures::api_router(
+        db,
+        "oidc-flow-live-test-pepper-well-over-the-minimum-length",
     )
     .merge(op_router(op_state));
 
     tokio::spawn(async move {
-        axum::serve(listener, app.into_make_service())
-            .await
-            .expect("serving the test app");
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .expect("serving the test app");
     });
 
     (issuer, baseline_jwks_count)
@@ -351,12 +356,12 @@ async fn spawn_test_server(db: &Cratestack) -> (String, usize) {
 
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn a_real_private_key_jwt_flow_mints_a_token_gatewayauth_accepts() {
+async fn a_real_private_key_jwt_flow_mints_a_token_and_the_gateway_accepts_the_signature_instead() {
     let db = db().await;
     let (issuer, baseline_jwks_count) = spawn_test_server(&db).await;
 
     let (client_key, client_jwks_json) = generate_client_keypair();
-    let client_id = seed_app_and_client(&db, &client_jwks_json).await;
+    let (client_id, app_client_row_id) = seed_app_and_client(&db, &client_jwks_json).await;
 
     let assertion = sign_client_assertion(&client_id, &issuer, &client_key);
     let client = reqwest::Client::new();
@@ -414,51 +419,50 @@ async fn a_real_private_key_jwt_flow_mints_a_token_gatewayauth_accepts() {
          token_endpoint_auth_methods_supported: {discovery}"
     );
 
-    // GatewayAuth accepts the token for a procedure call — the whole
-    // validate-then-project chain works end to end.
-    let preview = client
-        .post(format!("{issuer}/$procs/previewMessage"))
-        .bearer_auth(access_token)
-        // The router also serves CBOR and negotiates on `Accept` — without
-        // this, an unset `Accept` apparently resolves to CBOR rather than
-        // JSON, and this test's own `.json()` response parsing below fails
-        // on content type, not on anything GatewayAuth or previewMessage
-        // itself did.
-        .header(reqwest::header::ACCEPT, "application/json")
+    // The gateway accepts the *signature* that replaced the token: the same
+    // client, registered with an Ed25519 key, calls a procedure sealed - the
+    // whole verify-then-project chain works end to end.
+    let signing_key = TestKey::app();
+    sealed_fixtures::register_app_key(&db, &app_client_row_id, &signing_key).await;
+    let sealed = sealed_fixtures::client(&issuer, &signing_key);
+    let preview = sealed
+        .request("POST", "/$procs/previewMessage")
         .json(&serde_json::json!({"args": {"body": "hello from the live OIDC flow test"}}))
         .send()
-        .await
-        .expect("calling previewMessage");
+        .await;
     assert!(
-        preview.status().is_success(),
-        "previewMessage was rejected ({}) with a token GatewayAuth should have accepted: {}",
-        preview.status(),
-        preview.text().await.unwrap_or_default()
+        preview.sealed && preview.status == 200,
+        "previewMessage was rejected ({}) for a key the gateway should have accepted: {}",
+        preview.status,
+        preview.text()
     );
 
     // The P0 this rebuild exists to close: role "app" must never reach
     // OauthSigningKey, which is gated hasRole('system') only. This is a
     // "list" route, and CrateStack's policy enforcement on list/find_many
-    // reads is row-level filtering, not a request-level 403 — a denied
+    // reads is row-level filtering, not a request-level 403 - a denied
     // caller gets `200 OK` with zero rows, the same shape as a caller who
     // asked correctly and nothing matched. Confirmed live: the request
     // itself succeeds, and the array is empty.
-    let signing_keys = client
+    let signing_keys = sealed.request("GET", "/oauth_signing_keys").send().await;
+    assert_eq!(signing_keys.status, 200, "{}", signing_keys.text());
+    let signing_keys_body: Vec<serde_json::Value> =
+        serde_json::from_value(signing_keys.json()).expect("a JSON array of rows");
+    assert!(
+        signing_keys_body.is_empty(),
+        "a machine key must never see any OauthSigningKey row: got {signing_keys_body:?}"
+    );
+
+    // The old bearer path is gone, not merely unused: the token this very
+    // flow minted is refused on the same route, unsigned.
+    let bearer = client
         .get(format!("{issuer}/oauth_signing_keys"))
         .bearer_auth(access_token)
         .header(reqwest::header::ACCEPT, "application/json")
         .send()
         .await
-        .expect("calling GET /oauth_signing_keys");
-    assert_eq!(signing_keys.status(), reqwest::StatusCode::OK);
-    let signing_keys_body: Vec<serde_json::Value> = signing_keys
-        .json()
-        .await
-        .expect("parsing the oauth_signing_keys response as a JSON array");
-    assert!(
-        signing_keys_body.is_empty(),
-        "a machine token must never see any OauthSigningKey row: got {signing_keys_body:?}"
-    );
+        .expect("calling GET /oauth_signing_keys with the minted token");
+    assert_eq!(bearer.status(), reqwest::StatusCode::UNAUTHORIZED);
 
     // Rotation overlap, asserted against the actual served /jwks.json —
     // not just the database `load_signing_keys` itself reads from. An

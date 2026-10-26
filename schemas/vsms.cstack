@@ -478,6 +478,41 @@ model ClientAssertion {
   @@allow("delete", hasRole('system'))
 }
 
+// Spent signed-transport request nonces (VS-3): one row per `(kid, cti)` the
+// envelope layer has accepted, so a captured sealed request is refused the
+// second time it is delivered inside its freshness window. cratestack has no
+// Postgres nonce store (only in-memory, per process, and Redis, which this
+// deployment does not run), so this table is the store, shared by every
+// replica.
+//
+// Same shape and the same reasoning as `ClientAssertion`: insert-only, and
+// `create` plus catching SQLSTATE 23505 on the `@unique` index is the atomic
+// "record if unseen" - a read-then-write across two statements would be the
+// TOCTOU race this table exists to prevent. The one difference is the
+// takeover: a conflicting row whose `expiresAt` has passed (the worker has not
+// swept it yet) is deleted and the insert retried once, so a nonce space that
+// is reused after its window - the 1-4 byte counter `cti` shapes cratestack
+// allows - is not refused until the next sweep. A request that old would fail
+// the `iat` freshness check anyway; the takeover only keeps the table from
+// refusing a legitimate reuse.
+//
+// `nonce` is `cose:<kid hex>:<cti hex>`, cratestack's own key (at most 55
+// characters for a 16-byte `cti`). `expiresAt` is `iat + 2 * skew + 1`, which
+// cratestack computes; this table does not choose it. The worker's
+// `sweep_envelope_nonces` deletes what has expired. No @@audit: one row per
+// request, carrying nothing the row itself does not.
+model EnvelopeNonce {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  nonce String @unique @length(min: 1, max: 255)
+  expiresAt DateTime
+
+  @@allow("read", hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("delete", hasRole('system'))
+}
+
 model SenderId {
   @use(Timestamps)
 

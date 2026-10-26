@@ -122,7 +122,7 @@
 //! `UserCredential`, #194
 //!
 //! #194's human login flow (`sms_auth::login::authenticate_user`) and
-//! `sms_api::auth::GatewayAuth`'s own per-request human-token lookup both
+//! `sms_api::signers::SignerDirectory`'s own per-request console-key lookup both
 //! have to read `User` (by subject/email) and `Role` (by key) *before* any
 //! human principal exists to authorize the read with — necessarily a
 //! system context. Closed here in the same PR that adds both readers,
@@ -194,9 +194,9 @@ use sms_api::schema::{
     self, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass,
     OperatorCode, OptOutSource, ProviderKind, SenderIdKind, SenderIdRegistrationStatus, app,
     app_client, audit_anchor, client_assertion, client_key, consent_record, console_key,
-    delivery_receipt, federated_link, job, message, oauth_client, oauth_signing_key,
-    operator_prefix_rule, opt_out, provider, role, route, route_validation, sender_id,
-    sender_id_registration, sso_transaction, user, user_credential, webhook_attempt,
+    delivery_receipt, envelope_nonce, federated_link, job, message, oauth_client,
+    oauth_signing_key, operator_prefix_rule, opt_out, provider, role, route, route_validation,
+    sender_id, sender_id_registration, sso_transaction, user, user_credential, webhook_attempt,
     webhook_endpoint,
 };
 
@@ -211,10 +211,12 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// `backends/crates/sms-worker`, and `backends/crates/sms-auth`:
 ///
 /// - `App`, `AppClient` — `Procedures::resolve_app` (`backends/crates/sms-api/src/procedures.rs`)
-///   and `GatewayAuth`'s own `client_id` lookup (`backends/crates/sms-api/src/auth.rs`).
+///   and `SignerDirectory`'s own `AppClient` lookup (`backends/crates/sms-api/src/auth.rs`).
 /// - `OauthClient` — `SmsClientStore` (`backends/crates/sms-auth/src/lib.rs`).
 /// - `OauthSigningKey` — `sms_auth::op` load/rotate (`backends/crates/sms-auth/src/op.rs`).
 /// - `ClientAssertion` — `SmsClientAssertionStore` (`backends/crates/sms-auth/src/lib.rs`).
+/// - `EnvelopeNonce` — the signed transport's replay cache (VS-3): the nonce
+///   store records, takes over and the worker sweeps it, all under `sys`.
 /// - `SenderId`, `SenderIdRegistration` — `Procedures::resolve_sender_id`.
 /// - `Provider` — `backends/crates/sms-worker/src/routing.rs`'s `decide` (since #62;
 ///   formerly `cheapest_active_provider`, which this replaced) and
@@ -244,7 +246,7 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 ///   row's own endpoint but never the attempt a second time.
 /// - `User`, `Role` — #194's `sms_auth::login::authenticate_user` (the
 ///   login flow's User-by-subject and Role-by-key lookups) and
-///   `sms_api::auth::GatewayAuth`'s own human-token projection
+///   `sms_api::signers::SignerDirectory`'s own console-key projection
 ///   (`backends/crates/sms-api/src/auth.rs`), both necessarily running before any
 ///   human principal exists to authorize the read with.
 /// - `UserCredential` — #194, new in this PR. `sms_auth::login`'s own
@@ -282,6 +284,9 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     "OauthClient",
     "OauthSigningKey",
     "ClientAssertion",
+    // VS-3: the envelope layer's nonce store records and takes over under
+    // sys(). Not a "found live" instance.
+    "EnvelopeNonce",
     "SenderId",
     "SenderIdRegistration",
     "Provider",
@@ -295,7 +300,7 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     "WebhookAttempt",
     // #194: the tenth instance, closed in advance rather than found live —
     // sms_auth::login::authenticate_user's User-by-subject lookup and
-    // sms_api::auth::GatewayAuth's own human-token User/Role lookup both
+    // sms_api::signers::SignerDirectory's own console-key User/Role lookup both
     // necessarily run under a system context, since neither has a human
     // principal to authorize the read with yet (that's the read's whole
     // job). See schema.cstack's own User/Role @@allow comments.
@@ -643,6 +648,31 @@ async fn seed_and_verify_oauth_signing_key(db: &Cratestack) -> schema::OauthSign
         oauth_signing_key,
         seeded.id,
         "OauthSigningKey",
+        "@@allow(\"read\", hasRole('system'))"
+    );
+    seeded
+}
+
+async fn seed_and_verify_envelope_nonce(
+    db: &Cratestack,
+    suffix: &str,
+    now: chrono::DateTime<Utc>,
+) -> schema::EnvelopeNonce {
+    let seeded = db
+        .envelope_nonce()
+        .create(schema::CreateEnvelopeNonceInput {
+            nonce: format!("cose:sys-golden-{suffix}"),
+            expiresAt: now + Duration::minutes(11),
+        })
+        .run(&sys())
+        .await
+        .expect("seeding an EnvelopeNonce");
+    assert_system_can_read_back!(
+        db,
+        envelope_nonce,
+        envelope_nonce,
+        seeded.id,
+        "EnvelopeNonce",
         "@@allow(\"read\", hasRole('system'))"
     );
     seeded
@@ -1059,7 +1089,7 @@ async fn seed_and_verify_webhook_attempt(
 }
 
 /// #194: `sms_auth::login::authenticate_user`'s `Role`-by-key lookup, and
-/// `sms_api::auth::GatewayAuth`'s own human-token `Role`-by-key lookup,
+/// `sms_api::signers::SignerDirectory`'s own `Role`-by-key lookup,
 /// both run under `sys` — the first internal system-context readers this
 /// model has ever had, and the reason its `read` `@@allow` clause gained
 /// `hasRole('system')` in the same change that added both.
@@ -1087,7 +1117,7 @@ async fn seed_and_verify_role(db: &Cratestack, suffix: &str) -> schema::Role {
 }
 
 /// #194: `sms_auth::login::authenticate_user`'s `User`-by-email lookup, and
-/// `sms_api::auth::GatewayAuth`'s own human-token `User`-by-id lookup, both
+/// `sms_api::signers::SignerDirectory`'s own `User`-by-id lookup, both
 /// run under `sys` — the first internal system-context readers this model
 /// has ever had, and the reason its `read`/`update` `@@allow` clauses
 /// gained `hasRole('system')` in the same change that added both. Neither
@@ -1421,6 +1451,7 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     seed_and_verify_oauth_client(&db, &suffix, &app_client.id).await;
     seed_and_verify_oauth_signing_key(&db).await;
     seed_and_verify_client_assertion(&db, &suffix, now).await;
+    seed_and_verify_envelope_nonce(&db, &suffix, now).await;
     let sender_id = seed_and_verify_sender_id(&db, &suffix).await;
     let provider = seed_and_verify_provider(&db, &suffix).await;
     let route = seed_and_verify_route(&db, &suffix, &provider.id).await;

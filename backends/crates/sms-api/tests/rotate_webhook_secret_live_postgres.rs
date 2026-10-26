@@ -304,10 +304,10 @@ async fn rotating_an_unknown_endpoint_id_is_not_found() {
 /// lookup ran anyway.
 ///
 /// This is the denial half AGENTS.md and the issue both call for. The
-/// *allow* half has no live token to prove it with in this deployment —
-/// `GatewayAuth` never mints a human-role token today (#97/#98's scope
-/// cut) — so, same as `replayWebhookAttempt`'s own coverage, only denial
-/// is exercised live here.
+/// *allow* half had no live credential to prove it with when this was
+/// written (no human-role token existed, #97/#98's scope cut), so, same as
+/// `replayWebhookAttempt`'s own coverage, only denial is exercised live
+/// here; a paired console key makes the allow half reachable now (VS-3).
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
 async fn rotate_denies_a_caller_with_no_webhook_manage_permission() {

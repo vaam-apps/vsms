@@ -25,8 +25,8 @@ pub(crate) struct BootstrapArgs {
 
     /// Passed through to the `seed-console-client` step verbatim —
     /// see that variant's own doc for why it must match
-    /// `sms-gateway serve --console-client-id` and `admin`'s own
-    /// `SMS_CONSOLE_OIDC_CLIENT_ID` exactly. Irrelevant, and never
+    /// `admin`'s own `SMS_CONSOLE_OIDC_CLIENT_ID` exactly (`serve` no longer
+    /// reads it: the bearer token whose audience it checked is gone, VS-3). Irrelevant, and never
     /// read, when `--console-redirect-uri` is absent.
     #[arg(
         long,

@@ -3812,7 +3812,6 @@ dependencies = [
  "anyhow",
  "async-trait",
  "authkestra-engine",
- "authkestra-resource",
  "base64 0.22.1",
  "chrono",
  "clap",
@@ -3820,12 +3819,10 @@ dependencies = [
  "cratestack-pg",
  "hex",
  "hmac 0.12.1",
- "jsonwebtoken",
  "p256 0.14.0",
  "rand 0.8.7",
  "reqwest 0.12.28",
  "rsa",
- "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4137,8 +4134,12 @@ version = "0.9.0"
 name = "sms-test-support"
 version = "0.9.0"
 dependencies = [
+ "base64 0.22.1",
+ "bytes",
  "cratestack-pg",
+ "reqwest 0.12.28",
  "rustls",
+ "serde_json",
  "tokio",
 ]
 

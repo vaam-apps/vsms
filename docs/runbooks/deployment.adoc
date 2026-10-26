@@ -83,6 +83,14 @@ chmod 600 .env
 # section below for the full reasoning.
 cp secrets/rclone.conf.example secrets/rclone.conf
 chmod 600 secrets/rclone.conf
+
+# VS-3: the signed transport's two server keys. `sms-gateway serve` refuses
+# to start without both (and refuses the same key twice). Never reuse a dev
+# key here; the next key is the one a later rotation promotes.
+openssl genpkey -algorithm ed25519 -out secrets/envelope-current.pem
+openssl genpkey -algorithm ed25519 -out secrets/envelope-next.pem
+sudo chown 65532:65532 secrets/envelope-current.pem secrets/envelope-next.pem
+sudo chmod 0400 secrets/envelope-current.pem secrets/envelope-next.pem
 ----
 
 Fill in `.env` -- every var traces to a real `+#[arg(long, env = ...)]+` in
@@ -97,6 +105,13 @@ openssl rand -base64 24
 # a real, random SMS_HASH_PEPPER (minimum 32 bytes) — #134/#140
 openssl rand -base64 48
 ----
+
+`secrets/envelope-current.pem` signs every response and
+`secrets/envelope-next.pem` is the key the next rotation promotes. An
+integrator pins the public half of *both*; print them once the stack is up with
+`docker compose run --rm sms-gateway server-keys` (it needs no database) and
+hand the two lines to the integrator. They are paths, not secret values, in
+`.env`-land: the files are the secret.
 
 `SMS_OIDC_ISSUER` must equal `https://` + `SMS_GATEWAY_DOMAIN` exactly --
 every token this deployment issues carries it as `iss`, and a mismatch
@@ -283,9 +298,9 @@ docker compose --env-file .env run --rm sms-gateway provision-user \
 exactly* -- ``authkestra_op``'s authorize handler compares the whole string
 per RFC 6749 §3.1.2, not by prefix or origin, so a trailing slash or an
 `http`/`https` mismatch fails the exchange with no useful diagnostic.
-`--client-id` must equal the console's own `SMS_CONSOLE_OIDC_CLIENT_ID`
-and `sms-gateway serve --console-client-id`; ``GatewayAuth``'s audience
-check refuses any other value.
+`--client-id` must equal the console's own `SMS_CONSOLE_OIDC_CLIENT_ID`;
+`sms-gateway serve` no longer reads it (VS-3 removed the bearer-token
+audience check).
 
 `provision-user` prints a generated password *once* and never stores
 it. There is no password-rotation flow yet (https://github.com/vymalo/vsms/issues/58[#58]

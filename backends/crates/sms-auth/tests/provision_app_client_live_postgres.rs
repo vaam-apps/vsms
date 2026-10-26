@@ -19,9 +19,11 @@
 //!    accepts a well-formed `jwks` string, not that
 //!    `provision_app_client` writes one.
 //!
-//! Deliberately narrow, per this ticket's own scope: whether `GatewayAuth`
-//! accepts the *access token* `/token` returns for a resource call is
-//! already covered end-to-end by `oidc_flow_live.rs`'s hand-seeded client.
+//! Deliberately narrow, per this ticket's own scope: whether the gateway
+//! accepts a call from the client is not asked here. Since VS-3 it accepts a
+//! signature, not the *access token* `/token` returns, and
+//! `oidc_flow_live.rs` covers that end-to-end for a hand-seeded client. This
+//! suite is OP-only and goes with the OP in VS-4.
 //! Building #25's full acceptance gate (process restart, a
 //! developer-role-refused assertion, ...) is that later, separate ticket's
 //! job, not this one's.

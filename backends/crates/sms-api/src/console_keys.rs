@@ -20,6 +20,26 @@ use crate::schema::{self, console_key, federated_link, user};
 /// literal, which is why this has its own check, [`require_pair_scope`]).
 pub const PAIR_SCOPE: &str = "console:pair";
 
+/// Whether a packed scope column names [`PAIR_SCOPE`], compared the way the
+/// guards need it: exact on the sentinel-delimited value, with ASCII case
+/// folded, so a spelling [`require_pair_scope`] would not honour is refused
+/// too (over-refusing a scope that grants nothing is the safe error).
+///
+/// ```
+/// use sms_api::console_keys::names_pair_scope;
+///
+/// assert!(names_pair_scope(" sms:send console:pair "));
+/// assert!(names_pair_scope("Console:Pair"));
+/// assert!(!names_pair_scope(" sms:send console:pair2 "));
+/// assert!(!names_pair_scope(" "));
+/// ```
+#[must_use]
+pub fn names_pair_scope(scopes: &str) -> bool {
+    sms_core::unpack(scopes)
+        .into_iter()
+        .any(|scope| scope.eq_ignore_ascii_case(PAIR_SCOPE))
+}
+
 /// The `FederatedLink.issuer` of a person who signed in at vaam.
 pub const FEDERATION_ISSUER: &str = "vaam";
 
@@ -377,6 +397,12 @@ async fn create_user_and_link(
     Ok(created.id)
 }
 
+fn owner_pairs_by_cli() -> CratestackError {
+    CratestackError::Forbidden(
+        "an owner pairs a console only through `sms-gateway pair-console-key`".to_owned(),
+    )
+}
+
 /// `registerConsoleKey`: see the module doc. `sys` is the internal system
 /// context the key and link writes run under; the caller's `console:pair`
 /// scope was already checked by [`require_pair_scope`].
@@ -384,7 +410,9 @@ async fn create_user_and_link(
 /// # Errors
 ///
 /// [`CratestackError::Validation`] for a bad key, proof or `issuedAt`;
-/// [`CratestackError::Forbidden`] for a deactivated account;
+/// [`CratestackError::Forbidden`] for a deactivated account, and for a
+/// linked person whose role is `owner` (owners pair only through
+/// `sms-gateway pair-console-key`);
 /// [`CratestackError::Conflict`] for a key that is another user's, revoked or
 /// expired.
 pub async fn register(
@@ -455,6 +483,14 @@ pub async fn register(
                         .into_iter()
                         .next()
                         .ok_or_else(deactivated)?;
+                    // The app that calls this procedure is vaam's, and who
+                    // may hold that scope is an operator's decision made on
+                    // the command line; a procedure that attached a key to an
+                    // owner on its say-so would make that scope an owner's
+                    // key. An owner pairs through the break-glass command.
+                    if active.roleKey == crate::owner_grant::OWNER_ROLE_KEY {
+                        return Err(owner_pairs_by_cli());
+                    }
                     active.id
                 } else {
                     create_user_and_link(db, tx, sys, &creator, &vaam_user_id, &display_name)

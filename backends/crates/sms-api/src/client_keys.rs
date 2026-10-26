@@ -83,13 +83,36 @@ fn clean_label(label: Option<String>) -> Result<Option<String>, CratestackError>
     Ok(Some(trimmed.to_owned()))
 }
 
+/// Who is registering a key, which decides whether a client that holds
+/// `console:pair` may be given one.
+///
+/// A client with that scope can attach a console key to any linked person, so
+/// a key registered for it is a key that can speak as that person. Its keys are
+/// therefore an operator's to register, on the command line; an `owner` or
+/// `admin` calling the procedure over HTTP is not enough.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Registrant {
+    /// A signed `registerAppClientKey` call.
+    Caller,
+    /// `sms-gateway register-client`, run by an operator against the database.
+    Operator,
+}
+
 /// `registerAppClientKey`: see the module doc. `sys` is the internal system
 /// context the writes run under; the caller's own `owner`/`admin` role was
 /// already checked by the procedure's `@allow`.
+///
+/// # Errors
+///
+/// [`CratestackError::Forbidden`] when `registrant` is [`Registrant::Caller`]
+/// and the client holds `console:pair`; the errors of [`same_registration`]
+/// and [`CratestackError::Validation`] / [`CratestackError::NotFound`] as the
+/// module doc says.
 pub async fn register(
     db: &schema::IsolatedCratestack,
     sys: &CratestackContext,
     args: schema::RegisterClientKeyInput,
+    registrant: Registrant,
 ) -> Result<schema::ClientKey, CratestackError> {
     let parsed = parse_public_key(&args.publicKey)?;
     let label = clean_label(args.label)?;
@@ -120,6 +143,16 @@ pub async fn register(
                     return Err(CratestackError::Validation(format!(
                         "AppClient {} is retired or inactive",
                         client.id
+                    )));
+                }
+                if registrant == Registrant::Caller
+                    && crate::console_keys::names_pair_scope(&client.scopes)
+                {
+                    return Err(CratestackError::Forbidden(format!(
+                        "AppClient {} holds {}: its keys are registered only by \
+                         `sms-gateway register-client`",
+                        client.id,
+                        crate::console_keys::PAIR_SCOPE
                     )));
                 }
 

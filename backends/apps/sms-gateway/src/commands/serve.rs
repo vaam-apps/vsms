@@ -8,11 +8,11 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use sms_api::GatewayAuth;
 use sms_api::schema::{Cratestack, provider as provider_filter, role as role_filter};
 use sms_provider::SmsProvider;
 use tracing::info;
 
+use crate::commands::server_keys;
 use crate::{dlr, health, login, op, sso, token_rate_limit};
 use sms_api::system_context;
 
@@ -48,11 +48,19 @@ pub(crate) struct ServeArgs {
     #[arg(long, env = "SMS_DB_MAX_CONNECTIONS", default_value_t = 10)]
     pub(crate) max_connections: u32,
 
+    /// The signed transport's server keys (VS-3): every generated route
+    /// answers only a `COSE_Sign1`-sealed request, and seals its answer with
+    /// `--envelope-signing-key-file`. Both files are required; the process
+    /// does not start without them.
+    #[command(flatten)]
+    pub(crate) envelope_keys: crate::commands::server_keys::EnvelopeKeyArgs,
+
     /// The OP's own identity — every token this OP mints carries this
-    /// as `iss`, and `GatewayAuth` validates incoming tokens against
-    /// exactly this value. Never `listen` (a bind address, not an
-    /// identity) — must be the externally reachable `https://` origin
-    /// this OP is actually served at.
+    /// as `iss`. Since VS-3 the API validates no token (it opens sealed
+    /// requests), so this only names the OP, whose routes stay mounted and
+    /// unsealed until VS-4 deletes them. Never `listen` (a bind address,
+    /// not an identity) — must be the externally reachable `https://`
+    /// origin this OP is actually served at.
     #[arg(long, env = "SMS_OIDC_ISSUER")]
     pub(crate) issuer: String,
 
@@ -263,19 +271,6 @@ pub(crate) struct ServeArgs {
         default_value_t = token_rate_limit::default_token_rate_limit_config().refill_per_second
     )]
     pub(crate) token_rate_limit_refill_per_second: f64,
-
-    /// #194: the `OauthClient.clientId` the human `authorization_code`
-    /// login flow registers under — `GatewayAuth`'s only fixed
-    /// audience to validate a human token's `aud` against (see
-    /// `sms_api::auth::GatewayAuth`'s own doc for why that check can't
-    /// live in the shared `Validation` both realms decode through).
-    /// Must match whatever `seed-console-client` (below) provisioned.
-    #[arg(
-        long,
-        env = "SMS_CONSOLE_OIDC_CLIENT_ID",
-        default_value = sms_api::DEFAULT_CONSOLE_CLIENT_ID
-    )]
-    pub(crate) console_client_id: String,
 
     /// The staff identity provider's issuer URL (a Keycloak realm, e.g.
     /// `https://auth.example.org/realms/staff`), compared byte for byte with
@@ -863,6 +858,13 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     let pepper = sms_api::HashPepper::new(args.hash_pepper.clone())
         .context("SMS_HASH_PEPPER is invalid — see sms_api::pepper's module doc")?;
 
+    // VS-3: the same fail-fast stance for the signed transport's keys. A
+    // gateway that cannot seal its answers must not start, and there is no
+    // unsigned mode to fall back to; `clap` already refuses a missing flag,
+    // this refuses an unreadable, malformed or duplicated key.
+    let server_keys = args.envelope_keys.load()?;
+    server_keys::log_public_keys(&server_keys);
+
     let pool = PgPoolOptions::new()
         .max_connections(args.max_connections)
         .connect(&args.database_url)
@@ -900,8 +902,6 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     let ServeArgs {
         listen,
         metrics_listen,
-        issuer,
-        console_client_id,
         idempotency_ttl_secs,
         rate_limit_burst,
         rate_limit_refill_per_second,
@@ -912,12 +912,6 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
         ..
     } = args;
 
-    let auth = GatewayAuth::new(
-        db.clone(),
-        format!("{issuer}/jwks.json"),
-        issuer,
-        console_client_id.clone(),
-    );
     // #168: the /token route's own client_id-keyed defence-in-depth
     // limiter — distinct from sms_api::router's two, which never wrap
     // /token at all (see that function's own doc). See
@@ -936,7 +930,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
 
     let app = sms_api::router(
         db,
-        auth,
+        server_keys.into_signer(),
         pepper,
         std::time::Duration::from_secs(idempotency_ttl_secs),
         cratestack::ratelimit::RateLimitConfig::new(rate_limit_burst, rate_limit_refill_per_second),
@@ -945,6 +939,11 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
             source_rate_limit_refill_per_second,
         ),
     )
+    .context("assembling the signed-transport router")?
+    // Everything merged from here on sits OUTSIDE the envelope layer, which
+    // `sms_api::router` applied to its own routes only: the OP's routes
+    // (until VS-4), the provider callbacks (a provider cannot sign) and the
+    // probes. See `sms_api::router::router`'s doc.
     .merge(op::router(op_state, token_rate_limit))
     .merge(dlr_router)
     .merge(health_router)

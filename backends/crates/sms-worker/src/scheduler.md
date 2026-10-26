@@ -5,7 +5,7 @@ better" — the advisory lock is that clean avoidance, `dedupeKey` is
 belt-and-braces underneath it, not the primary mechanism.
 
 `expire_stale`, `reap_outbox` (#42), `purge_retention` (#67), `anchor_audit`
-(#68), and, as of #64, `grey_route_watch` are registered — see
+(#68), `grey_route_watch` (#64) and, as of VS-3, `sweep_envelope_nonces` are registered — see
 [`crate::jobs`]'s own module doc for why the remaining five §7.5 kinds
 are scoped out rather than silently dropped, and
 `crate::jobs::grey_route_watch`'s own doc for why that last one isn't
@@ -41,3 +41,5 @@ error log on the rare startup-race collision, not a duplicate `Job`
 only Rust's ability to tell *why* it failed is what's missing). Written
 against the documented API, matching `sms-auth`'s own stated reasoning,
 so this goes fully quiet the moment the upstream pin moves.
+
+<!-- markdownlint-disable-file MD041 -->

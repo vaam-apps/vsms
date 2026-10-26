@@ -101,7 +101,7 @@ fn ctx_for_role(role: &str) -> CratestackContext {
 }
 
 /// The context every internal, procedure-driven write in this codebase
-/// runs under — never a real caller's token (see `GatewayAuth`'s own
+/// runs under — never a real caller's credential (see `SignedAuth`'s own
 /// doc), but a real, distinct grant this file has to check on its own
 /// terms rather than assume from the human-role results.
 fn system_ctx() -> CratestackContext {
@@ -114,8 +114,8 @@ fn system_ctx() -> CratestackContext {
     .into_context()
 }
 
-/// A bare machine (`client_credentials`) caller — `role == "app"`, the one
-/// role `GatewayAuth` ever hands a real token (see its own doc). Included
+/// A bare machine (`client_credentials`) caller — `role == "app"`, the role
+/// `SignedAuth` hands every app key (see its own doc). Included
 /// because "no policy names this role" and "this role is denied" are the
 /// same outcome and worth confirming stay the same outcome.
 fn app_ctx() -> CratestackContext {
@@ -279,7 +279,7 @@ async fn provider_update_policy_matches_the_schema_exactly() {
     // human/app-role tokens never carrying `system`, which is still true
     // and still why this is safe to grant: `system` is synthetic, minted
     // only by this codebase's own internal `sys()` contexts, never by any
-    // real `GatewayAuth::authenticate` token). The gap was found live by
+    // real `SignedAuth::authenticate` signer). The gap was found live by
     // `backends/crates/sms-worker/tests/dispatch_live_postgres.rs`'s own
     // `an_open_circuit_routes_new_messages_to_the_alternative_instead_of_rejecting`:
     // `dispatch.rs`'s new circuit-breaker writes

@@ -354,9 +354,8 @@ admin:
   # ADMIN_BASE_URL comment on the container's env block for why an
   # in-cluster address does not work here.
   baseUrl: ""
-  # Must equal what `sms-gateway seed-console-client --client-id` and
-  # `sms-gateway serve --console-client-id` were given; GatewayAuth's
-  # audience check refuses any other value.
+  # Must equal what `sms-gateway seed-console-client --client-id` was given.
+  # (`serve` no longer reads it: VS-3 removed the bearer-token audience check.)
   oidcClientId: sms-console
   # No provisioning CLI path exists yet from inside this chart (same gap
   # docs/runbooks/deployment.adoc's compose path documents by hand) — set
