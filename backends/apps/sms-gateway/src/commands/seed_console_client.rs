@@ -16,11 +16,10 @@ pub(crate) struct SeedConsoleClientArgs {
     #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     pub(crate) database_url: String,
 
-    /// Must match `sms-gateway serve --console-client-id` and
-    /// `admin`'s own `SMS_CONSOLE_OIDC_CLIENT_ID` exactly —
-    /// `GatewayAuth`'s human-token audience check
-    /// (`sms_api::auth::GatewayAuth`'s own doc) refuses any other
-    /// value outright.
+    /// Must match `admin`'s own `SMS_CONSOLE_OIDC_CLIENT_ID` exactly - the
+    /// OP refuses an authorization request for any other client id. (Before
+    /// VS-3 `serve` also took this value to check a human token's audience;
+    /// nothing validates a token any more, so it no longer does.)
     #[arg(long, env = "SMS_CONSOLE_OIDC_CLIENT_ID", default_value = sms_api::DEFAULT_CONSOLE_CLIENT_ID)]
     pub(crate) client_id: String,
 

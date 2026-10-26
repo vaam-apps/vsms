@@ -57,7 +57,7 @@ fn sys() -> CratestackContext {
     principal("system", PrincipalKind::App, "console-keys-test-system")
 }
 
-/// An app principal as `GatewayAuth` builds one, with the token's `scope`
+/// An app principal as `SignedAuth` builds one, with the client's `scope`
 /// claim in the `scope` extension (`None`: no such claim at all).
 fn app(scope: Option<&str>) -> CratestackContext {
     let mut ctx = principal("app", PrincipalKind::App, "appc_vaam");

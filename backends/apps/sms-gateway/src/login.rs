@@ -140,10 +140,10 @@ async fn login_handler(
     // Identity carries only what authkestra_op's own AuthorizationCode
     // needs to survive to token issuance (§4.3's id_token/access_token,
     // via issue_id_token/issue_user_token) — role/perms are deliberately
-    // NOT stashed in `attributes`. sms_api::auth::GatewayAuth's own human
-    // path re-resolves role/perms from User/Role per request instead (see
-    // that module's own doc for why the real authkestra-op library shape
-    // ruled out baking them into the token at issuance).
+    // NOT stashed in `attributes`. sms_api::signers' own lookup
+    // re-resolves role/perms from User/Role per request instead (see
+    // sms_api::auth's doc; since VS-3 that is keyed by a paired console key,
+    // not by this token).
     let identity = Identity {
         provider_id: "sms-console".to_owned(),
         external_id: authenticated.subject,

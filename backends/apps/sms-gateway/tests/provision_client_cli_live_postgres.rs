@@ -21,8 +21,15 @@
 //! the actual claim: a client provisioned by running the real
 //! `sms-gateway provision-client` binary, over real Postgres, hands back a
 //! key file that a genuinely separate `sms-gateway serve` process accepts
-//! for a real `/token` exchange, and the resulting access token makes a
-//! real authenticated `sendMessage` call succeed.
+//! for a real `/token` exchange.
+//!
+//! **VS-3 changed the last step.** The access token that exchange returns is
+//! the OP's, and the generated routes no longer read one: the same
+//! `sendMessage` call with it is refused, unsigned. What authenticates the
+//! call now is a request signed by an Ed25519 key registered for that client
+//! (`ClientKey`), which keeps the scopes the CLI provisioned the client with.
+//! The exchange stays as written - it tests only the OP's issuance, and
+//! VS-4 deletes it with the OP.
 //!
 //! ```bash
 //! cargo test -p sms-gateway --test provision_client_cli_live_postgres -- --ignored --nocapture
@@ -38,8 +45,13 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
-    self, Cratestack, SenderIdKind, SenderIdRegistrationStatus, provider as provider_filter,
+    self, Cratestack, SenderIdKind, SenderIdRegistrationStatus, app_client,
+    provider as provider_filter,
 };
+use sms_test_support::sealed::TestKey;
+
+#[path = "../../../crates/sms-api/tests/support/sealed_fixtures.rs"]
+mod sealed_fixtures;
 
 /// The `Provider.key` `sms-provider-orange-cm::OrangeCmProvider` reports —
 /// see `m1_acceptance_gate_live_postgres.rs`'s own identical constant for
@@ -385,6 +397,9 @@ struct GatewayProcess {
 impl GatewayProcess {
     async fn spawn(db_url: &str, port: u16) -> Self {
         let issuer = format!("http://127.0.0.1:{port}");
+        let (current_key, next_key) = sealed_fixtures::write_server_key_files(
+            &std::env::temp_dir().join(format!("sms-provision-cli-keys-{port}")),
+        );
         let mut command = Command::new(env!("CARGO_BIN_EXE_sms-gateway"));
         command
             .arg("serve")
@@ -402,6 +417,10 @@ impl GatewayProcess {
             .arg("+237600000000")
             .arg("--hash-pepper")
             .arg(TEST_HASH_PEPPER)
+            .arg("--envelope-signing-key-file")
+            .arg(&current_key)
+            .arg("--envelope-next-signing-key-file")
+            .arg(&next_key)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
@@ -574,8 +593,14 @@ async fn a_client_provisioned_via_the_cli_completes_a_real_token_exchange_and_au
     // thing `send_test_message.rs` gets wrong (no `jwks`, so this step
     // would fail there) and the exact thing #137 asks to be verified live
     // rather than asserted.
-    assert_cli_provisioned_client_can_send(&db_url, &client_id, &private_key_pem, &sender_id_value)
-        .await;
+    assert_cli_provisioned_client_can_send(
+        &db,
+        &db_url,
+        &client_id,
+        &private_key_pem,
+        &sender_id_value,
+    )
+    .await;
 
     let _ = std::fs::remove_file(&key_out);
 }
@@ -667,6 +692,7 @@ fn provision_via_cli_and_read_key(db_url: &str, app_id: &str, key_out: &Path) ->
 /// token over real HTTP, and use it for a real authenticated
 /// `sendMessage` call.
 async fn assert_cli_provisioned_client_can_send(
+    db: &Cratestack,
     db_url: &str,
     client_id: &str,
     private_key_pem: &str,
@@ -687,31 +713,59 @@ async fn assert_cli_provisioned_client_can_send(
         .as_str()
         .expect("token response carries access_token");
 
-    let send_response = reqwest::Client::new()
+    // The token is the OP's, not the gateway's: presented to a generated
+    // route it is refused, unsigned.
+    let body = serde_json::json!({"args": {
+        "to": unique_mtn_msisdn(),
+        "body": "provision-client CLI acceptance test (#137): a client provisioned by \
+                 running the real binary, then signing for itself",
+        "senderId": sender_id_value,
+    }});
+    let bearer_response = reqwest::Client::new()
         .post(format!("{}/$procs/sendMessage", process.issuer))
         .bearer_auth(access_token)
         .header(reqwest::header::ACCEPT, "application/json")
-        .json(&serde_json::json!({"args": {
-            "to": unique_mtn_msisdn(),
-            "body": "provision-client CLI acceptance test (#137): a client provisioned by \
-                     running the real binary, exchanged and used over real HTTP",
-            "senderId": sender_id_value,
-        }}))
+        .json(&body)
         .send()
         .await
         .expect("calling sendMessage with the CLI-provisioned client's own token");
-    let send_status = send_response.status();
-    let send_body: serde_json::Value = send_response
-        .json()
+    assert_eq!(
+        bearer_response.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "the access token the OP issues must not authenticate a generated route"
+    );
+
+    // What does: a request signed by a key registered for this very client,
+    // which keeps the scopes the CLI provisioned it with.
+    let provisioned = db
+        .app_client()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            app_client::clientId().eq(client_id.to_owned()),
+        ))
+        .limit(1)
+        .run(&sys())
         .await
-        .expect("parsing the sendMessage response");
+        .expect("looking up the provisioned AppClient")
+        .into_iter()
+        .next()
+        .expect("provision-client created the AppClient");
+    let key = TestKey::app();
+    sealed_fixtures::register_app_key(db, &provisioned.id, &key).await;
+    let reply = sealed_fixtures::client(&process.issuer, &key)
+        .request("POST", "/$procs/sendMessage")
+        .json(&body)
+        .send()
+        .await;
     assert!(
-        send_status.is_success(),
-        "a CLI-provisioned, freshly-token-exchanged client must be able to send \
-         ({send_status}): {send_body}"
+        reply.sealed && (200..300).contains(&reply.status),
+        "a CLI-provisioned client with a registered signing key must be able to send ({}): {}",
+        reply.status,
+        reply.text()
     );
     assert!(
-        send_body["messageId"].as_str().is_some(),
-        "a successful send returns the persisted message's id: {send_body}"
+        reply.json()["messageId"].as_str().is_some(),
+        "a successful send returns the persisted message's id: {}",
+        reply.text()
     );
 }

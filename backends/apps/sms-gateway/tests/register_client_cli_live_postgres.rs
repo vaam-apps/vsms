@@ -268,6 +268,96 @@ async fn a_second_key_for_the_app_joins_the_same_client() {
     );
 }
 
+/// A named client is a second principal of the same App: its own row, its own
+/// scopes, found again by name (idempotent) and never confused with the App's
+/// default client.
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres - see module docs"]
+async fn a_named_client_is_a_second_principal_of_the_same_app() {
+    let _guard = TEST_MUTEX.lock().await;
+    let (db, url) = db().await;
+    let slug = seed_app(&db).await;
+    let key = fresh_public_key();
+
+    let default = run(
+        &url,
+        &[
+            "--app",
+            &slug,
+            "--public-key",
+            &fresh_public_key(),
+            "--scope",
+            "sms:send",
+        ],
+    );
+    assert!(default.status.success(), "{}", stderr(&default));
+    let named = run(
+        &url,
+        &[
+            "--app",
+            &slug,
+            "--client-name",
+            "console",
+            "--public-key",
+            &key,
+            "--scope",
+            "sms:read",
+        ],
+    );
+    assert!(named.status.success(), "{}", stderr(&named));
+    // Again, with no scope: the named client exists now.
+    let again = run(
+        &url,
+        &[
+            "--app",
+            &slug,
+            "--client-name",
+            "console",
+            "--public-key",
+            &key,
+        ],
+    );
+    assert!(again.status.success(), "{}", stderr(&again));
+
+    let default_rows = client_rows(&db, &format!("appc_{slug}")).await;
+    let named_rows = client_rows(&db, &format!("appc_{slug}_console")).await;
+    assert_eq!(default_rows.len(), 1);
+    assert_eq!(named_rows.len(), 1);
+    assert_ne!(default_rows[0].id, named_rows[0].id, "two principals");
+    assert_eq!(default_rows[0].appId, named_rows[0].appId, "one App");
+    assert!(named_rows[0].scopes.contains("sms:read"));
+    assert!(!named_rows[0].scopes.contains("sms:send"));
+    assert_eq!(
+        key_rows(&db, &named_rows[0].id).await.len(),
+        1,
+        "the key joined once"
+    );
+    assert_eq!(key_rows(&db, &default_rows[0].id).await.len(), 1);
+}
+
+#[test]
+fn a_malformed_client_name_is_refused_before_the_database_is_touched() {
+    let output = run(
+        "postgres://unused:unused@127.0.0.1:1/none",
+        &[
+            "--app",
+            "an-app",
+            "--client-name",
+            "Not Valid",
+            "--public-key",
+            &fresh_public_key(),
+            "--scope",
+            "sms:send",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("--client-name"),
+        "{}",
+        stderr(&output)
+    );
+}
+
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres - see module docs"]
 async fn an_unknown_app_or_a_first_run_without_scopes_writes_nothing() {

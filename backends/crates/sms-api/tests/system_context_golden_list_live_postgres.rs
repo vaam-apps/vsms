@@ -122,7 +122,7 @@
 //! `UserCredential`, #194
 //!
 //! #194's human login flow (`sms_auth::login::authenticate_user`) and
-//! `sms_api::auth::GatewayAuth`'s own per-request human-token lookup both
+//! `sms_api::signers::SignerDirectory`'s own per-request console-key lookup both
 //! have to read `User` (by subject/email) and `Role` (by key) *before* any
 //! human principal exists to authorize the read with — necessarily a
 //! system context. Closed here in the same PR that adds both readers,
@@ -211,7 +211,7 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// `backends/crates/sms-worker`, and `backends/crates/sms-auth`:
 ///
 /// - `App`, `AppClient` — `Procedures::resolve_app` (`backends/crates/sms-api/src/procedures.rs`)
-///   and `GatewayAuth`'s own `client_id` lookup (`backends/crates/sms-api/src/auth.rs`).
+///   and `SignerDirectory`'s own `AppClient` lookup (`backends/crates/sms-api/src/auth.rs`).
 /// - `OauthClient` — `SmsClientStore` (`backends/crates/sms-auth/src/lib.rs`).
 /// - `OauthSigningKey` — `sms_auth::op` load/rotate (`backends/crates/sms-auth/src/op.rs`).
 /// - `ClientAssertion` — `SmsClientAssertionStore` (`backends/crates/sms-auth/src/lib.rs`).
@@ -246,7 +246,7 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 ///   row's own endpoint but never the attempt a second time.
 /// - `User`, `Role` — #194's `sms_auth::login::authenticate_user` (the
 ///   login flow's User-by-subject and Role-by-key lookups) and
-///   `sms_api::auth::GatewayAuth`'s own human-token projection
+///   `sms_api::signers::SignerDirectory`'s own console-key projection
 ///   (`backends/crates/sms-api/src/auth.rs`), both necessarily running before any
 ///   human principal exists to authorize the read with.
 /// - `UserCredential` — #194, new in this PR. `sms_auth::login`'s own
@@ -300,7 +300,7 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     "WebhookAttempt",
     // #194: the tenth instance, closed in advance rather than found live —
     // sms_auth::login::authenticate_user's User-by-subject lookup and
-    // sms_api::auth::GatewayAuth's own human-token User/Role lookup both
+    // sms_api::signers::SignerDirectory's own console-key User/Role lookup both
     // necessarily run under a system context, since neither has a human
     // principal to authorize the read with yet (that's the read's whole
     // job). See schema.cstack's own User/Role @@allow comments.
@@ -1089,7 +1089,7 @@ async fn seed_and_verify_webhook_attempt(
 }
 
 /// #194: `sms_auth::login::authenticate_user`'s `Role`-by-key lookup, and
-/// `sms_api::auth::GatewayAuth`'s own human-token `Role`-by-key lookup,
+/// `sms_api::signers::SignerDirectory`'s own `Role`-by-key lookup,
 /// both run under `sys` — the first internal system-context readers this
 /// model has ever had, and the reason its `read` `@@allow` clause gained
 /// `hasRole('system')` in the same change that added both.
@@ -1117,7 +1117,7 @@ async fn seed_and_verify_role(db: &Cratestack, suffix: &str) -> schema::Role {
 }
 
 /// #194: `sms_auth::login::authenticate_user`'s `User`-by-email lookup, and
-/// `sms_api::auth::GatewayAuth`'s own human-token `User`-by-id lookup, both
+/// `sms_api::signers::SignerDirectory`'s own `User`-by-id lookup, both
 /// run under `sys` — the first internal system-context readers this model
 /// has ever had, and the reason its `read`/`update` `@@allow` clauses
 /// gained `hasRole('system')` in the same change that added both. Neither

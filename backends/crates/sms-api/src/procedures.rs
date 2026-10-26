@@ -1013,11 +1013,9 @@ impl Procedures {
     /// (the caller's own context, for the permission check only) rather
     /// than the `_ctx` this function used to ignore; every read/write
     /// below still goes through `sys`, unaffected by this change. Same
-    /// latency as #187: `GatewayAuth` never mints a human-role token today
-    /// (#97/#98's scope cut), so Layer 1 alone already closes this
-    /// procedure to every token this deployment can currently issue, and
-    /// this check has no live *allow* path to prove yet — only *deny*,
-    /// covered by `rotate_webhook_secret_live_postgres.rs`'s
+    /// latency as #187: before VS-3 no credential carried a human role
+    /// (#97/#98's scope cut), so this check had no live *allow* path to
+    /// prove — only *deny*, covered by `rotate_webhook_secret_live_postgres.rs`'s
     /// `rotate_denies_a_caller_with_no_webhook_manage_permission`.
     async fn rotate_secret(
         &self,
@@ -1405,8 +1403,8 @@ impl Procedures {
     /// `DeliveryReceipt`'s own `list`/`detail` policy is
     /// `auth().kind == "user" || hasRole('system')` — it has never admitted
     /// `kind == "app"`, the only real caller kind this deployment mints
-    /// (`GatewayAuth::authenticate` hardcodes `role: "app"` for every
-    /// machine token; see `auth.rs`'s own doc). So the console's own
+    /// (`SignedAuth::context_for` hardcodes `role: "app"` for every
+    /// app key; see `auth.rs`'s own doc). So the console's own
     /// credential cannot read `GET /delivery_receipts` directly, the same
     /// structural wall #59's own finding already named for `Provider`/
     /// `WebhookEndpoint`. `@authorize(Message, detail, args.messageId)` on

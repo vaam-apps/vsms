@@ -31,6 +31,14 @@
 //! issue**, full stop, until a human-login `AuthProvider` exists (tracked
 //! separately, same scope cut `#24`/`#25` already recorded).
 //!
+//! **VS-3 note.** That paragraph describes the world it was written in, and is
+//! kept for the reasoning. Since VS-3 `GatewayAuth` is gone and a console key
+//! paired to a person makes a real `user` principal that does reach these
+//! routes over HTTP (`rbac_layer2_live_postgres.rs` sends a PATCH for a provider as an
+//! `operator`, with the `If-Match` taken from the sealed `GET`'s `ETag`). This
+//! test still goes straight to the delegate because what it proves, the CAS
+//! semantics, needs no HTTP.
+//!
 //! What *is* real and reachable: the delegate call the generated `PATCH`
 //! handler makes internally. `cratestack-macros-0.7.10/src/axum/model/prep/
 //! etag.rs` (read directly, not assumed) shows the generated handler does

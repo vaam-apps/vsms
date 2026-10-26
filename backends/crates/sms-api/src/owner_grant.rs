@@ -10,7 +10,7 @@ use cratestack::{
     decode_transport_request_for,
 };
 
-use crate::auth::GatewayAuth;
+use crate::auth::SignedAuth;
 use crate::rbac::{authenticate_request, error_response, path_matches};
 use crate::router::ROUTER_CODEC;
 use crate::schema;
@@ -56,7 +56,7 @@ const GUARDED_ROUTES: &[GuardedRoute] = &[
 /// State for [`enforce_owner_grant_guard`].
 #[derive(Clone)]
 pub struct OwnerGrantState {
-    pub auth: GatewayAuth,
+    pub auth: SignedAuth,
 }
 
 fn is_owner(ctx: &CratestackContext) -> bool {

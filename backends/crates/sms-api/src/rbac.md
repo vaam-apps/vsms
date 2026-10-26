@@ -32,13 +32,14 @@ it never widens."* Nothing here ever grants an operation Layer 1's own
 `@@allow` would deny — `enforce_route_permission` only ever adds a
 401/403 *before* the generated router's own policy check, never a
 bypass of it. See `PROVIDER_WRITE_ROUTES`'s own doc in `router.rs` for the
-concrete consequence: this deployment's `GatewayAuth` never issues a
-caller any role but `"app"` or `"system"` (see its own doc), and
-`Provider.update`'s `@@allow` admits neither — so Layer 1 alone already
-fully closes that route to every token this deployment can mint today.
-Layer 2's gate on it is real, tested, and load-bearing the moment a
-role-bearing (human) token exists; until then it is defense in depth,
-not the thing actually stopping a live request.
+concrete consequence, which VS-3 changed: a paired console key now makes a
+role-bearing (`user`) principal a real caller of these routes. A key can be an
+app's (`role "app"`, scopes only) or a person's (that person's role, with the
+role's permissions as `perms`), so `Provider.update`'s `@@allow` admits an
+`owner`, `admin` or `operator` at Layer 1 and `provider:update` is what Layer 2
+then asks of them. The gate is no longer defense in depth for the `PATCH
+/providers/{id}` route: an `admin` who holds a role without the permission is
+refused here, which Layer 1 alone would let through.
 
 # A second kind of Layer-2 middleware: guarding the *value* written
 

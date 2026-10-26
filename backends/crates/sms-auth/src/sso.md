@@ -3,9 +3,10 @@ OIDC single sign-on for the admin console, brokered by the gateway.
 # The shape: the gateway stays the console's OP
 
 The console and the API never see an upstream token. Every token they handle
-is still issued by vsms's own `authkestra` OP, so `GatewayAuth::
-authenticate_human`, the `User`/`Role` lookup, and every `@@allow` policy are
-exactly what they were. Only the one step the OP could not do for itself -
+is still issued by vsms's own `authkestra` OP, so the `User`/`Role` lookup and
+every `@@allow` policy are exactly what they were. (Since VS-3 the API does
+not authenticate that token; it authenticates a console key paired to the same
+`User`. The SSO broker is unchanged until VS-4 deletes it.) Only the one step the OP could not do for itself -
 *who is this human?* - is federated: where `POST /login` answers it with an
 Argon2id password check, `GET /login/sso/start` + `GET /login/sso/callback`
 answer it by sending the browser to the staff Keycloak realm, verifying what

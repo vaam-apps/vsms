@@ -1,5 +1,7 @@
 #![doc = include_str!("lib.md")]
 
+pub mod sealed;
+
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

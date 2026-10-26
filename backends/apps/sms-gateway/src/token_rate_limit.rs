@@ -276,7 +276,7 @@ mod tests {
     #[tokio::test]
     async fn requests_with_no_client_id_still_share_a_throttled_bucket() {
         // Not skipped — a caller can't dodge this layer by omitting
-        // client_id, since GatewayAuth/authkestra will reject the request
+        // client_id, since the OP will reject the request
         // anyway; bucketing it (rather than letting it through free) keeps
         // that rejection path itself from becoming an amplifier.
         let router = test_router(RateLimitConfig::new(1, 0.01));

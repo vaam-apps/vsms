@@ -18,6 +18,14 @@ tokio = { workspace = true, features = ["process", "sync", "time", "rt-multi-thr
 # `install_default_crypto_provider`'s own dependency — see lib.rs's "rustls
 # crypto provider" section for why a test harness needs this at all.
 rustls.workspace = true
+# sealed.rs: the sealed (COSE_Sign1) HTTP client the live suites sign with
+# since VS-3 - see its own module doc. `reqwest` sends, `base64` spells a
+# public key the way the register procedures take it, `bytes` is the body type
+# cratestack's `PendingResponse::open` takes.
+reqwest.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+bytes = "1"
 
 [lints]
 workspace = true

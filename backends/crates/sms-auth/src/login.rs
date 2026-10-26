@@ -42,7 +42,7 @@ pub struct AuthenticatedUser {
     /// `User.displayName`.
     pub display_name: String,
     /// `Role.key` — becomes `Principal.role` once this identity reaches
-    /// `GatewayAuth` on a later request (see `sms-api::auth`'s human path).
+    /// the signer directory behind a paired console key (see `sms-api::signers`).
     pub role_key: String,
     /// Unpacked from `Role.permissions` (§2.2's sentinel-delimited
     /// convention) — the `perms` a future token/claims projection carries.
@@ -78,7 +78,7 @@ pub enum LoginError {
 /// password against `UserCredential`, and resolve the account's `Role`.
 ///
 /// `sys` must carry `role: "system"` — the same context
-/// `sms_api::auth::GatewayAuth`'s own internal `AppClient` lookup uses, and
+/// `sms_api::signers::SignerDirectory`'s own internal lookups use, and
 /// for the identical reason: this runs *before* any human principal exists
 /// to authorize the read itself.
 ///

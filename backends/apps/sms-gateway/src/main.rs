@@ -46,10 +46,9 @@ enum Command {
     /// generated-CRUD route, for the identical reason `RotateSigningKey`
     /// above is one: `provisionAppClient`'s own `@allow` in
     /// `schema.cstack` is `hasRole('owner') || hasRole('admin')`, and
-    /// `GatewayAuth::authenticate` never mints either role for a real
-    /// token (no human-login flow exists yet — see `AGENTS.md`'s M1
-    /// section). So nothing this deployment can issue over HTTP can call
-    /// it; this subcommand calls `Procedures::provision_app_client`
+    /// the only way to be an `owner` or `admin` over HTTP is a console
+    /// key paired to a person (VS-3), which a fresh deployment has none of.
+    /// So nothing an operator has at bootstrap can call it over HTTP; this subcommand calls `Procedures::provision_app_client`
     /// directly, under a hand-built `owner`/`admin` context, the same way
     /// `backends/apps/sms-gateway/tests/m1_acceptance_gate_live_postgres.rs` already
     /// does for its own acceptance gate. See #137.
@@ -106,9 +105,8 @@ enum Command {
     /// for the same reason `RotateSigningKey`/`ProvisionClient` above are
     /// one: `Provider`'s own `@allow` in `schema.cstack` admits only
     /// `hasRole('owner') || hasRole('admin')` on create (`Route`'s is
-    /// identical), and `GatewayAuth::authenticate` never mints either for
-    /// a real token (no human-login flow exists yet — see `AGENTS.md`'s
-    /// M1 section).
+    /// identical), and the only way to be either over HTTP is a console key
+    /// paired to a person (VS-3), which a fresh deployment has none of.
     ///
     /// See #148: nothing in this repo seeded the `Provider` row before
     /// this command existed, and `resolve_provider_row_id` fails at
@@ -181,8 +179,7 @@ enum Command {
     /// in this file uses.
     CreateApp(commands::create_app::CreateAppArgs),
     /// own `@allow` in `schema.cstack` is `hasRole('system')` only, and
-    /// `GatewayAuth::authenticate` never mints that role for any real
-    /// token. Public client (`token_endpoint_auth_method = none`): the
+    /// no signer is ever given that role (`SignedAuth` never produces it). Public client (`token_endpoint_auth_method = none`): the
     /// console is a first-party BFF whose `redirect_uri` and mandatory
     /// PKCE are the protection, and no column in this schema could hold a
     /// shared secret it would need one for (§2.2, the same reasoning
@@ -319,6 +316,13 @@ enum Command {
     /// Kubernetes `httpGet` probe, which needs no in-container shell at
     /// all — this subcommand exists for the two places that do).
     Healthcheck(commands::healthcheck::HealthcheckArgs),
+
+    /// Print the two public keys an integrator pins to verify answers
+    /// (`current` and `next`), as unpadded base64url, one per line. The
+    /// private halves are `serve`'s `--envelope-signing-key-file` and
+    /// `--envelope-next-signing-key-file`; nothing secret is printed. Needs
+    /// no database.
+    ServerKeys(commands::server_keys::ServerKeysArgs),
 }
 
 /// Installs `ring` as the process-wide default `rustls` `CryptoProvider`.
@@ -420,6 +424,8 @@ async fn main() -> Result<()> {
         Command::Healthcheck(args) => {
             commands::healthcheck::healthcheck_command(&args.addr, &args.path)
         }
+
+        Command::ServerKeys(args) => commands::server_keys::server_keys_command(&args),
     }
 }
 

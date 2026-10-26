@@ -14,11 +14,11 @@
 //! Four things this file proves, end to end over real HTTP:
 //!
 //! 1. A correct email/password, correct PKCE `code_verifier`, and matching
-//!    `state` complete the full `/login` -> `/token` -> a real protected
-//!    route round trip, and the resulting access token authenticates
-//!    through `sms_api::auth::GatewayAuth`'s human path (#194's own
-//!    `authenticate_human`) — not just that a token comes back, but that
-//!    it actually *works* against the generated router.
+//!    `state` complete the full `/login` -> `/token` round trip and a token
+//!    comes back. **Since VS-3 that token is not a credential for the
+//!    generated router**, and this test proves both halves of that: the
+//!    token is refused there (an unsigned 401), and the same person, with a
+//!    console key paired to their account, is let in by their signature.
 //! 2. **The required PKCE guard-failure proof**: the identical flow with
 //!    a *wrong* `code_verifier` at the `/token` step is refused with
 //!    `invalid_grant` — see
@@ -37,7 +37,7 @@
 //! `backends/crates/sms-auth/tests/login_live_postgres.rs` for its own live proof)
 //! is somehow bypassed. That test deliberately drops the constraint to
 //! construct the row the second, independent guard
-//! (`sms_api::auth::load_human_principal`'s reserved-key check) needs to
+//! (`sms_api::signers`' reserved-key check) needs to
 //! prove itself against — see that test's own doc for why, and why this
 //! is a legitimate, scoped use of raw SQL rather than an R1 violation
 //! (schema DDL, not a data-access bypass; every actual data write in the
@@ -54,7 +54,11 @@
 //! tests sign a real `admin` / `owner` in and drive `PATCH /users/{id}`,
 //! `POST /users` and `POST /$procs/provisionUser` with the same JSON the
 //! console's `updateUser` / `provisionUser` send
-//! (`frontends/packages/gateway/src/users.ts`).
+//! (`frontends/packages/gateway/src/users.ts`). **Since VS-3 they are sealed**:
+//! each person signs with a console key paired to their account, the way the
+//! console will (VS-5b), and the encodings an attacker might smuggle `owner`
+//! in are the ones a seal still permits - value spellings, an undecodable
+//! body - plus the payload types the layer refuses before the guard runs.
 //!
 //! Ignored by default, same convention as this workspace's other live
 //! suites. Run explicitly:
@@ -74,6 +78,10 @@ use cratestack::{CratestackContext, FilterExpr};
 use sha2::{Digest, Sha256};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{self, ClientAuthMethod, Cratestack, provider as provider_filter};
+use sms_test_support::sealed::{Reply, SealedClient, TestKey};
+
+#[path = "../../../crates/sms-api/tests/support/sealed_fixtures.rs"]
+mod sealed_fixtures;
 
 /// Same reasoning as every other live suite's own copy of this mutex —
 /// #102. Load-bearing here specifically because
@@ -144,6 +152,19 @@ fn free_port() -> u16 {
         .local_addr()
         .expect("reading the bound address")
         .port()
+}
+
+async fn user_by_email(db: &Cratestack, email: &str) -> schema::User {
+    db.user()
+        .find_many()
+        .where_expr(FilterExpr::from(schema::user::email().eq(email.to_owned())))
+        .limit(1)
+        .run(&owner())
+        .await
+        .expect("looking the user up by email")
+        .into_iter()
+        .next()
+        .expect("the seeded user exists")
 }
 
 /// Idempotent — same reasoning and shape as
@@ -311,6 +332,9 @@ struct GatewayProcess {
 impl GatewayProcess {
     async fn spawn(db_url: &str, port: u16) -> Self {
         let issuer = format!("http://127.0.0.1:{port}");
+        let (current_key, next_key) = sealed_fixtures::write_server_key_files(
+            &std::env::temp_dir().join(format!("sms-login-flow-keys-{port}")),
+        );
         let mut command = Command::new(env!("CARGO_BIN_EXE_sms-gateway"));
         command
             .arg("serve")
@@ -328,8 +352,10 @@ impl GatewayProcess {
             .arg("+237600000000")
             .arg("--hash-pepper")
             .arg(TEST_HASH_PEPPER)
-            .arg("--console-client-id")
-            .arg(CONSOLE_CLIENT_ID)
+            .arg("--envelope-signing-key-file")
+            .arg(&current_key)
+            .arg("--envelope-next-signing-key-file")
+            .arg(&next_key)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
@@ -544,23 +570,37 @@ async fn a_correct_login_completes_the_full_authorization_code_pkce_round_trip()
         "the nonce this test sent to /login must come back on the id_token unchanged"
     );
 
-    // --- The resulting access token authenticates for real, through
-    // GatewayAuth's human path, against a real generated route. `GET
-    // /roles` is `auth().kind == "user"`-admitted (schema.cstack) — any
-    // authenticated human token reaches it, which is exactly the
-    // end-to-end claim this test makes: not just that a token comes back,
-    // but that sms_api::auth::authenticate_human's User/Role lookup
-    // actually resolves it to a working principal. ---
-    let roles_response = client
+    // --- Since VS-3 the access token is the OP's, not the gateway's: the
+    // same bearer that used to authenticate `GET /roles` is now refused
+    // there, unsigned, because nothing re-reads an `Authorization` header. ---
+    let roles_with_token = client
         .get(format!("{}/roles", process.issuer))
         .bearer_auth(access_token)
         .send()
         .await
         .expect("calling GET /roles with the freshly issued human access token");
     assert_eq!(
-        roles_response.status(),
-        reqwest::StatusCode::OK,
-        "a freshly issued human access token must authenticate against a real generated route"
+        roles_with_token.status(),
+        reqwest::StatusCode::UNAUTHORIZED,
+        "the token the OP issues is not a credential for the generated router"
+    );
+
+    // --- What replaced it: the same person, with a console key paired to
+    // their account, signs. `GET /roles` is `auth().kind == "user"`-admitted
+    // (schema.cstack), so a sealed 200 is the end-to-end claim that the
+    // signer resolved to a working user principal. ---
+    let key = TestKey::console();
+    let user = user_by_email(&db, &email).await;
+    sealed_fixtures::pair_console_key(&db, &user.id, &key, chrono::Duration::days(30)).await;
+    let roles = sealed_fixtures::client(&process.issuer, &key)
+        .request("GET", "/roles")
+        .send()
+        .await;
+    assert!(
+        roles.sealed && roles.status == 200,
+        "a paired console key must authenticate against a real generated route: {} {}",
+        roles.status,
+        roles.text()
     );
 
     process.kill_and_wait().await;
@@ -894,15 +934,15 @@ async fn seed_reserved_role_login_account(
 /// `hasRole('system')` — proven here past the point where the database
 /// constraint alone would normally stop it (see
 /// [`seed_reserved_role_login_account`]'s own doc), so this test actually
-/// exercises `sms_api::auth::load_human_principal`'s independent,
-/// point-of-use reserved-key check, not just the database's.
+/// exercises `sms_api::signers`' independent, point-of-use reserved-key
+/// check, not just the database's.
 ///
 /// Both password authentication and the OAuth token exchange succeed —
 /// neither `sms_auth::login::authenticate_user` nor `authkestra-op`'s own
 /// `/token` handler has any concept of "role" to refuse. The refusal has
-/// to happen where this PR's second guard lives: the moment the resulting
-/// access token is presented to any real route and `GatewayAuth` resolves
-/// its role.
+/// to happen where the second guard lives: the moment a request signed by a
+/// key paired to this account reaches any real route and the signer
+/// directory resolves the person's role.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_role_keyed_system_never_authenticates_even_past_the_database_check() {
@@ -970,27 +1010,32 @@ async fn a_role_keyed_system_never_authenticates_even_past_the_database_check() 
         "the OP itself has no concept of role — a real token must still be issued here \
          ({token_status}): {token_body}"
     );
-    let access_token = token_body["access_token"]
-        .as_str()
-        .expect("a successful exchange returns access_token");
-
-    // --- The point of use: GatewayAuth's own human path must refuse this
-    // token on every real route, because sms_api::auth::load_human_principal
-    // rejects a role_key of "system" — the guard this test exists to prove. ---
-    let roles_response = client
-        .get(format!("{}/roles", process.issuer))
-        .bearer_auth(access_token)
-        .send()
-        .await
-        .expect(
-            "calling GET /roles with a token whose role resolves to the reserved \"system\" key",
-        );
-    assert_eq!(
-        roles_response.status(),
-        reqwest::StatusCode::UNAUTHORIZED,
-        "a human token whose role is the reserved key \"system\" must never authenticate \
-         against any real route, even though both password auth and token issuance succeeded"
+    assert!(
+        token_body["access_token"].as_str().is_some(),
+        "a successful exchange returns access_token"
     );
+
+    // --- The point of use: a console key paired to this account must be
+    // refused on every real route, because `sms_api::signers` rejects a
+    // role_key of "system" - the guard this test exists to prove. The
+    // signature is good (the key resolves), so the refusal is the principal
+    // mapper's: the coarse unsigned 401. ---
+    let key = TestKey::console();
+    sealed_fixtures::pair_console_key(&db, &fixture.user_id, &key, chrono::Duration::days(30))
+        .await;
+    let roles = sealed_fixtures::client(&process.issuer, &key)
+        .request("GET", "/roles")
+        .send()
+        .await;
+    assert_eq!(
+        roles.status,
+        401,
+        "a console key whose person's role is the reserved key \"system\" must never \
+         authenticate against any real route, even though password auth and token issuance \
+         both succeeded: {}",
+        roles.text()
+    );
+    assert!(!roles.sealed, "the refusal is the coarse unsigned 401");
 
     process.kill_and_wait().await;
     // Deletes the fixture's rows and restores roles_key_not_reserved_check
@@ -1008,16 +1053,17 @@ async fn a_role_keyed_system_never_authenticates_even_past_the_database_check() 
 // Who may hand out `owner` — over real HTTP.
 // ---------------------------------------------------------------------------
 
-/// A seeded staff `User` with a login credential, on one of §5.2's built-in
-/// roles (seeded by `0002_bootstrap`, not by this suite).
+/// A seeded staff `User` on one of §5.2's built-in roles, with a console key
+/// paired to their account: what the console holds after pairing (VS-5b).
 struct StaffUser {
     id: String,
-    email: String,
+    key: TestKey,
 }
 
 /// An `owner`-context create (always allowed) of a `User` on `role_key`, plus
-/// a `UserCredential` so the account can sign in. `label` keeps the rows of
-/// one test apart and readable in a failure.
+/// a `UserCredential` (so the account could also sign in at the OP, which this
+/// suite no longer needs but a real staff row has) and a paired console key.
+/// `label` keeps the rows of one test apart and readable in a failure.
 async fn seed_staff_user(db: &Cratestack, suffix: &str, label: &str, role_key: &str) -> StaffUser {
     let email = format!("owner-grant-{label}-{suffix}@example.test");
     let user = db
@@ -1042,50 +1088,9 @@ async fn seed_staff_user(db: &Cratestack, suffix: &str, label: &str, role_key: &
         .run(&sys())
         .await
         .expect("seeding a UserCredential");
-    StaffUser { id: user.id, email }
-}
-
-/// The full `/login` -> `/token` round trip for `email`, returning the
-/// resulting access token — what the console's BFF holds after sign-in.
-async fn sign_in(process: &GatewayProcess, email: &str, suffix: &str) -> String {
-    let client = reqwest::Client::new();
-    let (verifier, challenge) = pkce_pair();
-    let state = format!("state-{suffix}");
-    let nonce = format!("nonce-{suffix}");
-
-    let login_response = client
-        .post(format!("{}/login", process.issuer))
-        .json(&login_body(
-            email,
-            TEST_PASSWORD.as_str(),
-            &state,
-            &challenge,
-            &nonce,
-        ))
-        .send()
-        .await
-        .expect("POSTing to /login");
-    assert_eq!(login_response.status(), reqwest::StatusCode::OK);
-    let body: serde_json::Value = login_response.json().await.expect("parsing /login's body");
-    let (code, _) = parse_code_and_state(body["redirect"].as_str().expect("a redirect string"));
-
-    let token_response = client
-        .post(format!("{}/token", process.issuer))
-        .form(&[
-            ("grant_type", "authorization_code"),
-            ("code", code.as_str()),
-            ("redirect_uri", REDIRECT_URI),
-            ("client_id", CONSOLE_CLIENT_ID),
-            ("code_verifier", verifier.as_str()),
-        ])
-        .send()
-        .await
-        .expect("POSTing to /token");
-    let token_body: serde_json::Value = token_response.json().await.expect("parsing /token's body");
-    token_body["access_token"]
-        .as_str()
-        .unwrap_or_else(|| panic!("no access_token in {token_body}"))
-        .to_owned()
+    let key = TestKey::console();
+    sealed_fixtures::pair_console_key(db, &user.id, &key, chrono::Duration::days(30)).await;
+    StaffUser { id: user.id, key }
 }
 
 /// A signed-in `admin`, a signed-in `owner`, and a third, lower-privileged
@@ -1093,11 +1098,10 @@ async fn sign_in(process: &GatewayProcess, email: &str, suffix: &str) -> String 
 struct OwnerGrantRig {
     db: Cratestack,
     process: GatewayProcess,
-    client: reqwest::Client,
     suffix: String,
     admin: StaffUser,
-    admin_token: String,
-    owner_token: String,
+    admin_api: SealedClient,
+    owner_api: SealedClient,
 }
 
 async fn owner_grant_rig() -> OwnerGrantRig {
@@ -1115,16 +1119,15 @@ async fn owner_grant_rig() -> OwnerGrantRig {
 
     let port = free_port();
     let process = GatewayProcess::spawn(&db_url, port).await;
-    let admin_token = sign_in(&process, &admin.email, &suffix).await;
-    let owner_token = sign_in(&process, &owner_user.email, &suffix).await;
+    let admin_api = sealed_fixtures::client(&process.issuer, &admin.key);
+    let owner_api = sealed_fixtures::client(&process.issuer, &owner_user.key);
     OwnerGrantRig {
         db,
         process,
-        client: reqwest::Client::new(),
         suffix,
         admin,
-        admin_token,
-        owner_token,
+        admin_api,
+        owner_api,
     }
 }
 
@@ -1155,18 +1158,16 @@ impl OwnerGrantRig {
     /// JSON body, `If-Match` the row's current version.
     async fn patch_user(
         &self,
-        token: &str,
+        api: &SealedClient,
         target: &schema::User,
         body: serde_json::Value,
-    ) -> reqwest::Response {
-        self.client
-            .patch(format!("{}/users/{}", self.process.issuer, target.id))
-            .bearer_auth(token)
-            .header("if-match", format!("\"{}\"", target.version))
+    ) -> Reply {
+        api.request("PATCH", "/users/{id}")
+            .params(&[&target.id])
+            .if_match(&format!("\"{}\"", target.version))
             .json(&body)
             .send()
             .await
-            .expect("PATCHing /users/{id}")
     }
 
     async fn finish(self) {
@@ -1174,13 +1175,17 @@ impl OwnerGrantRig {
     }
 }
 
-async fn assert_forbidden(response: reqwest::Response, what: &str) {
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+fn assert_forbidden(reply: &Reply, what: &str) {
     assert_eq!(
-        status,
-        reqwest::StatusCode::FORBIDDEN,
-        "{what} must be refused with 403, got {status}: {body}"
+        reply.status,
+        403,
+        "{what} must be refused with 403, got {}: {}",
+        reply.status,
+        reply.text()
+    );
+    assert!(
+        reply.sealed,
+        "{what}: a refusal made past the seal is sealed"
     );
 }
 
@@ -1194,14 +1199,14 @@ async fn an_admin_cannot_promote_itself_to_owner() {
     let rig = owner_grant_rig().await;
     let before = rig.user(&rig.admin.id).await;
 
-    let response = rig
+    let reply = rig
         .patch_user(
-            &rig.admin_token,
+            &rig.admin_api,
             &before,
             serde_json::json!({ "roleKey": "owner" }),
         )
         .await;
-    assert_forbidden(response, "an admin promoting itself to owner").await;
+    assert_forbidden(&reply, "an admin promoting itself to owner");
 
     let after = rig.user(&rig.admin.id).await;
     assert_eq!(after.roleKey, "admin");
@@ -1220,14 +1225,14 @@ async fn an_admin_cannot_promote_another_user_to_owner() {
     let target = seed_staff_user(&rig.db, &rig.suffix, "target", "support").await;
     let before = rig.user(&target.id).await;
 
-    let response = rig
+    let reply = rig
         .patch_user(
-            &rig.admin_token,
+            &rig.admin_api,
             &before,
             serde_json::json!({ "roleKey": "owner", "displayName": "Promoted" }),
         )
         .await;
-    assert_forbidden(response, "an admin promoting another user to owner").await;
+    assert_forbidden(&reply, "an admin promoting another user to owner");
 
     let after = rig.user(&target.id).await;
     assert_eq!(after.roleKey, "support");
@@ -1236,9 +1241,12 @@ async fn an_admin_cannot_promote_another_user_to_owner() {
 }
 
 /// The same refusal with a body the console would never send but an attacker
-/// might: a `Content-Type` with parameters, and a CBOR body (the generated
-/// route lists CBOR as an accepted request type; this router is wired with
-/// `JsonCodec` only, so CBOR is a 415 — never forwarded, never applied).
+/// might. A seal narrows what can be smuggled (the payload type is a bare
+/// `type/subtype`, so there is no `charset` parameter to hide behind) and
+/// moves part of the defence earlier: a CBOR payload is refused by the
+/// envelope itself, unsigned, before any guard runs. What reaches the guard
+/// is JSON, and the guard still decides on its value however it is spelled,
+/// and fails closed on a body it cannot read.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_admin_cannot_smuggle_owner_past_the_guard_in_another_encoding() {
@@ -1246,57 +1254,56 @@ async fn an_admin_cannot_smuggle_owner_past_the_guard_in_another_encoding() {
     let rig = owner_grant_rig().await;
     let target = seed_staff_user(&rig.db, &rig.suffix, "smuggle", "support").await;
     let before = rig.user(&target.id).await;
-    let url = format!("{}/users/{}", rig.process.issuer, target.id);
     let if_match = format!("\"{}\"", before.version);
 
-    // JSON with a charset parameter and odd casing of the value.
+    // Odd spellings of the value, in JSON.
     for value in ["owner", "Owner", " owner "] {
-        let response = rig
-            .client
-            .patch(&url)
-            .bearer_auth(&rig.admin_token)
-            .header("if-match", &if_match)
-            .header("content-type", "application/json; charset=utf-8")
-            .body(format!("{{\"roleKey\":\"{value}\"}}"))
+        let reply = rig
+            .admin_api
+            .request("PATCH", "/users/{id}")
+            .params(&[&target.id])
+            .if_match(&if_match)
+            .payload(
+                format!("{{\"roleKey\":\"{value}\"}}").as_bytes(),
+                "application/json",
+            )
             .send()
-            .await
-            .expect("PATCHing /users/{id}");
-        assert_forbidden(response, &format!("roleKey {value:?} in charset-JSON")).await;
+            .await;
+        assert_forbidden(&reply, &format!("roleKey {value:?} in sealed JSON"));
     }
 
-    // CBOR {"roleKey": "owner"}.
+    // CBOR {"roleKey": "owner"}: a payload type the router's codec cannot
+    // read is refused by the envelope, unsigned, never forwarded.
     let mut cbor = vec![0xA1, 0x67];
     cbor.extend_from_slice(b"roleKey");
     cbor.push(0x65);
     cbor.extend_from_slice(b"owner");
-    let response = rig
-        .client
-        .patch(&url)
-        .bearer_auth(&rig.admin_token)
-        .header("if-match", &if_match)
-        .header("content-type", "application/cbor")
-        .body(cbor)
+    let reply = rig
+        .admin_api
+        .request("PATCH", "/users/{id}")
+        .params(&[&target.id])
+        .if_match(&if_match)
+        .payload(&cbor, "application/cbor")
         .send()
-        .await
-        .expect("PATCHing /users/{id} with CBOR");
+        .await;
     assert_eq!(
-        response.status(),
-        reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE,
-        "a CBOR body the router cannot decode is refused, not forwarded"
+        reply.status,
+        415,
+        "a CBOR payload the router cannot decode is refused, not forwarded: {}",
+        reply.text()
     );
+    assert!(!reply.sealed, "the layer's own refusal is unsigned");
 
     // An undecodable body from a non-owner fails closed.
-    let response = rig
-        .client
-        .patch(&url)
-        .bearer_auth(&rig.admin_token)
-        .header("if-match", &if_match)
-        .header("content-type", "application/json")
-        .body("{not json")
+    let reply = rig
+        .admin_api
+        .request("PATCH", "/users/{id}")
+        .params(&[&target.id])
+        .if_match(&if_match)
+        .payload(b"{not json", "application/json")
         .send()
-        .await
-        .expect("PATCHing /users/{id} with garbage");
-    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        .await;
+    assert_eq!(reply.status, 400, "{}", reply.text());
 
     assert_eq!(rig.user(&target.id).await.roleKey, "support");
     rig.finish().await;
@@ -1312,10 +1319,9 @@ async fn an_admin_cannot_create_an_owner() {
     let rig = owner_grant_rig().await;
 
     let post_email = format!("owner-grant-post-{}@example.test", rig.suffix);
-    let response = rig
-        .client
-        .post(format!("{}/users", rig.process.issuer))
-        .bearer_auth(&rig.admin_token)
+    let reply = rig
+        .admin_api
+        .request("POST", "/users")
         .json(&serde_json::json!({
             "subject": format!("owner-grant-post-{}", rig.suffix),
             "email": post_email,
@@ -1323,29 +1329,26 @@ async fn an_admin_cannot_create_an_owner() {
             "roleKey": "owner",
         }))
         .send()
-        .await
-        .expect("POSTing /users");
-    assert_forbidden(response, "an admin creating an owner via POST /users").await;
+        .await;
+    assert_forbidden(&reply, "an admin creating an owner via POST /users");
     assert!(rig.user_by_email(&post_email).await.is_none());
 
     let prov_email = format!("owner-grant-prov-{}@example.test", rig.suffix);
-    let response = rig
-        .client
-        .post(format!("{}/$procs/provisionUser", rig.process.issuer))
-        .bearer_auth(&rig.admin_token)
+    let reply = rig
+        .admin_api
+        .request("POST", "/$procs/provisionUser")
         .json(&serde_json::json!({ "args": {
             "email": prov_email,
             "displayName": "Provisioned Owner",
             "roleKey": "owner",
         }}))
         .send()
-        .await
-        .expect("POSTing provisionUser");
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+        .await;
     assert!(
-        status.is_client_error(),
-        "an admin provisioning an owner must be refused, got {status}: {body}"
+        (400..500).contains(&reply.status),
+        "an admin provisioning an owner must be refused, got {}: {}",
+        reply.status,
+        reply.text()
     );
     assert!(rig.user_by_email(&prov_email).await.is_none());
 
@@ -1362,57 +1365,55 @@ async fn an_admin_still_manages_non_owners_and_an_owner_may_grant_owner() {
     // admin -> operator on another user: allowed.
     let target = seed_staff_user(&rig.db, &rig.suffix, "control", "support").await;
     let before = rig.user(&target.id).await;
-    let response = rig
+    let reply = rig
         .patch_user(
-            &rig.admin_token,
+            &rig.admin_api,
             &before,
             serde_json::json!({ "roleKey": "operator" }),
         )
         .await;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
     assert!(
-        status.is_success(),
-        "admin -> operator was refused ({status}): {body}"
+        (200..300).contains(&reply.status),
+        "admin -> operator was refused ({}): {}",
+        reply.status,
+        reply.text()
     );
     assert_eq!(rig.user(&target.id).await.roleKey, "operator");
 
     // admin creating a non-owner via the provisioning procedure: allowed.
     let prov_email = format!("owner-grant-ok-{}@example.test", rig.suffix);
-    let response = rig
-        .client
-        .post(format!("{}/$procs/provisionUser", rig.process.issuer))
-        .bearer_auth(&rig.admin_token)
+    let reply = rig
+        .admin_api
+        .request("POST", "/$procs/provisionUser")
         .json(&serde_json::json!({ "args": {
             "email": prov_email,
             "displayName": "Provisioned Operator",
             "roleKey": "operator",
         }}))
         .send()
-        .await
-        .expect("POSTing provisionUser");
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+        .await;
     assert!(
-        status.is_success(),
-        "admin provisioning an operator was refused ({status}): {body}"
+        (200..300).contains(&reply.status),
+        "admin provisioning an operator was refused ({}): {}",
+        reply.status,
+        reply.text()
     );
 
     // owner -> owner: allowed (the middleware does not inspect an owner).
     let promote = seed_staff_user(&rig.db, &rig.suffix, "promote", "admin").await;
     let before = rig.user(&promote.id).await;
-    let response = rig
+    let reply = rig
         .patch_user(
-            &rig.owner_token,
+            &rig.owner_api,
             &before,
             serde_json::json!({ "roleKey": "owner" }),
         )
         .await;
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
     assert!(
-        status.is_success(),
-        "owner -> owner was refused ({status}): {body}"
+        (200..300).contains(&reply.status),
+        "owner -> owner was refused ({}): {}",
+        reply.status,
+        reply.text()
     );
     assert_eq!(rig.user(&promote.id).await.roleKey, "owner");
 

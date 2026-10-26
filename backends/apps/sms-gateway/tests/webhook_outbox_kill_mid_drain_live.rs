@@ -114,6 +114,9 @@
 //! §8.1); idempotent, complete *recovery* from a partial attempt is this
 //! subscriber's own responsibility, and this is what proves it's real.
 
+#[path = "../../../crates/sms-api/tests/support/sealed_fixtures.rs"]
+mod sealed_fixtures;
+
 use std::net::TcpListener as StdTcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -477,6 +480,11 @@ struct GatewayProcess {
 impl GatewayProcess {
     async fn spawn(db_url: &str, port: u16) -> Self {
         let issuer = format!("http://127.0.0.1:{port}");
+        // Required since VS-3: the gateway does not start without its
+        // signed-transport keys. This suite never calls a sealed route.
+        let (current_key, next_key) = sealed_fixtures::write_server_key_files(
+            &std::env::temp_dir().join(format!("sms-kill-mid-drain-keys-{port}")),
+        );
         let mut command = Command::new(env!("CARGO_BIN_EXE_sms-gateway"));
         command
             .arg("serve")
@@ -494,6 +502,10 @@ impl GatewayProcess {
             .arg("+237600000000")
             .arg("--hash-pepper")
             .arg(TEST_HASH_PEPPER)
+            .arg("--envelope-signing-key-file")
+            .arg(&current_key)
+            .arg("--envelope-next-signing-key-file")
+            .arg(&next_key)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
 
