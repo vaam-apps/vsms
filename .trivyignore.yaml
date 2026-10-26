@@ -27,16 +27,28 @@ misconfigurations:
 secrets:
   - id: private-key
     paths:
-      - "sdks/rust/vsms-sdk-rust/src/token.rs"
+      - "backends/crates/sms-api/src/envelope.rs"
     statement: >-
-      TEST_PRIVATE_KEY_PEM is a throwaway 2048-bit RSA keypair generated
-      locally with `openssl genrsa` for this module's own `#[cfg(test)]`
-      block, and its own comment says so. It is never registered against any
-      real AppClient and never presented to any real server; the only
-      load-bearing property is that the matching public key lets a test verify
-      a signed assertion's claims without hand-decoding a JWT. Scoped to this
-      one path rather than muting `private-key` repo-wide, because a real
-      committed key anywhere else must still fail this gate.
+      Two throwaway Ed25519 PKCS#8 keys generated locally for this module's
+      own doctest and `#[cfg(test)]` block, which prove `ServerKeys` parses a
+      current/next pair and refuses the same key twice, plus two deliberately
+      malformed PEMs (an RSA header, a truncated body) that prove a wrong key
+      type is refused. None is ever a gateway's envelope key: `serve` reads
+      its keys from `--envelope-signing-key-file` and
+      `--envelope-next-signing-key-file` only. Scoped to this one path rather
+      than muting `private-key` repo-wide, because a real committed key
+      anywhere else must still fail this gate.
+  - id: private-key
+    paths:
+      - "sdks/rust/vsms-sdk-rust/src/signer.rs"
+    statement: >-
+      One throwaway Ed25519 PKCS#8 key generated locally for this module's
+      `#[cfg(test)]` block, which proves the SDK's PEM signer loads a seed
+      and derives its kid, plus one deliberately malformed RSA-headed PEM that
+      proves a wrong key type is refused. Neither is registered against any
+      real AppClient. Scoped to this one path rather than muting
+      `private-key` repo-wide, because a real committed key anywhere else
+      must still fail this gate.
   - id: private-key
     paths:
       - "backends/crates/sms-fake-oidc/src/keys.rs"
