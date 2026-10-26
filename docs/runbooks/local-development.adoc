@@ -55,6 +55,12 @@ VSMS_DEMO_GATEWAY_PORT=18080 just demo
 
 `just demo` resets to a genuinely fresh state on every `up` -- ``compose.dev.yaml``'s own named volumes are wiped first (`down -v`), not a targeted `DROP DATABASE`/`CREATE DATABASE` the way the pre-containerisation version of this script used to do it. It is meant to be re-run, not kept alive for days.
 
+== Signed requests, and what the demo cannot reach yet (VS-3)
+
+The gateway answers only COSE_Sign1-signed requests and signs its answers, so it needs two Ed25519 server keys to boot. `just demo` and `just demo-up` run `just dev-keys` first, which writes a current and a next key to the git-ignored `dev-keys/` (kept if already present, so a restarted stack keeps the identity a client pinned) and `compose.dev.yaml` mounts them read-only. They are dev keys. `docker compose -f compose.dev.yaml run --rm -T sms-gateway server-keys` prints the two public keys to pin.
+
+`just e2e-integration` signs. The `admin` console and `demo-app` still speak the removed token protocol, so they start but cannot reach the sealed API until they sign (VS-5b and VS-7); nothing in CI runs them against a live gateway.
+
 == The demo app
 
 `just demo` ends by waiting for `demo-app` (link:../../examples/node/demo-app[`examples/node/demo-app`] -- own README there) to run to completion and printing its log. It runs under its own `demo` Compose profile, not `console` -- `just demo`/`just demo-app` pass `--profile console --profile demo` together, and `--profile demo` alone (no console at all) is itself a legitimate way to run this proof, since `demo-app` talks to `sms-gateway` directly and never through the admin console. It is not another fixture-seeding step: it authenticates over `private_key_jwt` with `@vaam-apps/vsms-node` (the same published SDK an integrator would use), sends one real `otp`-class message, polls it to a terminal state, and verifies the `hooks` worker role's own signed webhook for it against a receiver it runs itself -- the one thing nothing else in this stack proves end to end. Real output from an actual run (only the client id and message id shortened):

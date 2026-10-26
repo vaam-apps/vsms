@@ -1146,6 +1146,80 @@ run by one script that applies an edit, runs the named gate, and `git checkout`s
 - The CLI's thumbprint lookup made to find nothing — failed
   `running_it_twice_leaves_one_key_and_exits_zero_both_times` and `a_revoked_key_or_another_users_key_is_refused_with_a_non_zero_exit`.
 
+## The signed transport is mounted: every route is sealed, bearer tokens are gone (VS-3, VS-6)
+
+VS-1 added the cratestack `envelope` feature, VS-2 and VS-5a the `ClientKey` and `ConsoleKey` rows. VS-3 makes them the
+only way in: `schema::axum::envelope_layer(.., EnvelopeMode::Required, "vsms")` is the generated router's last layer
+(`sms_api::envelope::layer`), behind only the coarse per-source rate limiter. `docs/architecture.md` §4.0 has the diagram
+and the layer order; this section is what to know before touching it.
+
+- **`SignerDirectory` (`signers.rs`) is the one lookup from a verified key to a standing.** A non-revoked `ClientKey` of an
+  active, unretired `AppClient` is an app principal; a non-revoked, unexpired `ConsoleKey` of an active `User` whose role
+  is not reserved is a user principal. Key rows are read on every request; only the owner's standing is cached (60 s).
+  `DirectoryKeys` is the verifier-side resolver and stops resolving a revoked or expired key, so a dead key fails
+  verification and gets the coarse unsigned 401, never a sealed refusal. `SignerPrincipal` (the `PrincipalMapper`) also
+  refuses an inactive owner. **A refused signature is always one unsigned 401** and says nothing about which check failed.
+- **`SignedAuth` replaces `GatewayAuth`** (`auth.rs`). It reads the `VerifiedSigner` the layer put in the request
+  extensions; there is no token, no JWKS and no `Authorization` header it trusts. A request that carries one is refused
+  with a 400 even beside a good signature. `role: "system"` is still minted only by `system_context`.
+- **Replay protection is `EnvelopeNonce` (migration `0008`, `ADDED_BY_LATER`, system-context golden list).** `PgNonceStore`
+  inserts and treats SQLSTATE 23505 as "seen"; an expired conflicting row is deleted and the insert retried once; the
+  worker's `sweep_envelope_nonces` clears expired rows in batches. The unique index is the atomicity, so it must stay.
+- **Only JSON is sealed** (`PAYLOAD_TYPE`), because `ROUTER_CODEC` is JSON: a CBOR payload is an unsigned 415.
+- **Unsealed on purpose until VS-4:** `/dlr/*`, `/healthz`, `/readyz` and the OP routes (`/token`, `/jwks.json`,
+  discovery, `/login*`, `/login/sso/*`). Do not seal them here and do not add a token to anything sealed.
+- **Server keys.** `serve` requires `--envelope-signing-key-file` and `--envelope-next-signing-key-file` (env
+  `SMS_ENVELOPE_SIGNING_KEY_FILE`, `SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE`; PKCS#8 Ed25519 PEM, the same key twice refused).
+  `sms-gateway server-keys` prints both public keys (needs no database). `just dev-keys` mints dev keys for the compose
+  stacks; production keys come from the operator (`docs/runbooks/deployment.adoc`). `serve --console-client-id` is gone.
+- **`register-client --client-name`** gives one App several distinct principals (`appc_<slug>_<name>`).
+- **Tests.** Every live suite that used a bearer now signs: human suites through a paired `ConsoleKey`, app suites
+  through a `ClientKey`, with `sms-test-support`'s `sealed` client (`TestKey`, `SealedClient`, `Reply::sealed`). Gateway
+  binary suites spawn the real binary with key files whose seeds the test pins. `envelope_live_postgres` is the new
+  suite; the OP-issuance-only assertions in `oidc_flow_live` and the login suites are unchanged. `authkestra-resource` is
+  removed from the workspace; `authkestra-engine` is kept with its `token` feature named explicitly.
+- **The SDK (VS-6).** `VsmsClient::signed(url, SigningKey, ServerKeys)`. `send_message` seals its own call
+  (`ClientEnvelope::seal_call`) and sends it with its own `reqwest` client so `Idempotency-Replayed` stays readable; every
+  other call is the generated client with the envelope attached. No retry, no redirects, an unsealed answer is an error
+  whatever its status. `token.rs`, the authorizer and `jsonwebtoken` are deleted; the release is a breaking `feat(sdk)!`.
+- **What is deliberately not done here:** the Next.js console and the Node SDK still speak the removed token protocol and
+  cannot reach a live gateway until VS-5b and VS-7 (no GitHub job runs them against one: `ci.yml` only typechecks and
+  unit-tests them). The Helm chart does not mount the two key files yet (VS-9). Nothing in OP issuance moved (VS-4).
+
+**Guard-failure proofs** (each guard was loosened, seen to fail, and restored; `git checkout` of the file after each):
+
+- `EnvelopeMode::Required` -> `Optional` - failed `an_unsigned_request_is_a_401_and_runs_nothing` (the bearer got a
+  different status than 401).
+- `names_owner` made to return false in the owner-grant guard - failed
+  `a_sealed_admin_call_works_and_the_owner_grant_guard_still_refuses_an_admin_granting_owner` (the admin created an
+  `owner` user).
+- The `Authorization` refusal in `SignedAuth` disabled - failed `a_bearer_on_a_sealed_route_is_refused` (the message was
+  accepted).
+- The replay check returning "unseen" for a live entry - failed `a_replayed_request_is_refused_and_runs_once`,
+  `one_nonce_recorded_concurrently_is_unseen_exactly_once` and `the_nonce_store_records_once_and_takes_over_an_expired_entry`.
+- `revokedAt IS NULL` dropped from both the resolver and the directory for client keys - failed
+  `a_revoked_client_key_is_a_401`. **Dropped from either one alone, the test still passes**: the two are independent
+  guards on the same fact, so neither is proven by this test on its own.
+- The same for console keys' `revokedAt` - failed `a_revoked_console_key_is_a_401`; the `expiresAt` window dropped from
+  both - failed `an_expired_console_key_is_a_401`.
+- `AppClient.active` dropped from the directory - failed `an_inactive_client_or_person_is_a_401`; `User.active` dropped
+  likewise (the person case of the same test).
+- The reserved-role refusal replaced by `if false` - failed `a_reserved_role_key_is_never_a_signer` (a unit test: the
+  database `CHECK` makes the case unreachable in a live suite, so it could not be shown otherwise).
+- An app principal given the `admin` role - failed `an_app_key_cannot_reach_the_human_only_routes` (the sender id was
+  created). With only its `kind` changed to `user` that test still passes, because `hasRole` is what Layer 1 reads.
+- `payload_media_types` removed from the layer - failed `a_cbor_payload_is_an_unsigned_415_and_runs_nothing`.
+- The "same key twice" check removed from `ServerKeys::from_pems` - failed
+  `the_same_key_twice_is_refused_even_spelled_differently` (and the doctest).
+- `default_value` given to `--envelope-signing-key-file` - failed `serve_does_not_parse_without_the_key_flags`.
+- The sweep's `expiresAt < now` flipped to `>` - failed all three `sweep_envelope_nonces_live_postgres` tests.
+- `EnvelopeNonce` removed from the system-context golden list - failed `every_model_in_the_schema_is_classified`
+  (**not `#[ignore]`**: `-- --ignored` skips it).
+- The `0008` `ADDED_BY_LATER` entry removed, and separately a column type edited in `0008/up.sql` - both failed
+  `cargo xtask migrations-current`.
+- SDK: an `Authorization` header added to the sealed request - failed `send_message_is_sealed_and_carries_no_bearer`;
+  an unsealed 2xx accepted as a fallback - failed `a_plain_200_is_not_believed`.
+
 ## cratestack bumped to `=0.15.0` (from `=0.11.0`)
 
 Four minor lines (0.12, 0.13, 0.14, 0.15). `cratestack-pg`, `cratestack-codec-json` and both
