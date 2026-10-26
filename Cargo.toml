@@ -156,8 +156,13 @@ sms-fake-aws = { path = "./backends/crates/sms-fake-aws" }
 # exactly — CrateStack is pre-1.0 and shipped 23 releases in 11 weeks; the
 # whole family must move in lockstep or the generated code stops matching the
 # runtime it calls into.
-cratestack = { package = "cratestack-pg", version = "=0.15.0" }
-cratestack-codec-json = "=0.15.0"
+#
+# `envelope` and `cose` compile the signed-transport layer
+# (`cratestack::envelope_layer`, COSE_Sign1 requests) into the server; `cose`
+# implies `envelope`, both are named so the intent reads. Nothing mounts the
+# layer yet, so they change no behaviour — see AGENTS.md's 0.16.0 section.
+cratestack = { package = "cratestack-pg", version = "=0.16.0", features = ["envelope", "cose"] }
+cratestack-codec-json = "=0.16.0"
 
 # OIDC provider. Pinned exactly, same reasoning as cratestack above — see
 # AGENTS.md. 0.3.2 fixed the `GrantType` serde bug that shaped early M1

@@ -152,6 +152,24 @@ fn strip_added_tables(root: &Path, f: &str, fresh: &str) -> Result<String, Strin
     Ok(without_added)
 }
 
+/// The statements of a migration file, without its `--` comment lines and
+/// blank lines.
+///
+/// `0001_init` is frozen (see [`REWRITTEN_BY_LATER`]), so the generator
+/// changing only what it *says* about a migration must not force an edit to
+/// an applied one. cratestack 0.16.0 did exactly that (#1129): it stopped
+/// calling a `CHECK` on a table the migration itself creates "blocking", so
+/// the WARNING header of `up.sql` and the comment-only `up.pre.sql` scaffold
+/// are no longer emitted, while every statement is the same. A statement
+/// that changes still fails the comparison; only comment text is ignored.
+fn executable_sql(text: &str) -> String {
+    text.lines()
+        .map(str::trim_end)
+        .filter(|line| !line.trim_start().is_empty() && !line.trim_start().starts_with("--"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub fn run(root: &Path) -> Result<(), String> {
     let pinned = crate::cratestack_pin::read_pin(root)?;
     let installed = installed_cratestack_version();
@@ -240,7 +258,7 @@ pub fn run(root: &Path) -> Result<(), String> {
                 fresh = fresh.replace(current, applied);
             }
         }
-        if committed != fresh {
+        if executable_sql(&committed) != executable_sql(&fresh) {
             mismatches.push((f, crate::diff::line_diff(&committed, &fresh)));
         }
     }
@@ -249,7 +267,7 @@ pub fn run(root: &Path) -> Result<(), String> {
         let regenerated_path = regenerated.join("up.pre.sql");
         let committed = fs::read_to_string(&committed_path).unwrap_or_default();
         let fresh = fs::read_to_string(&regenerated_path).unwrap_or_default();
-        if committed != fresh {
+        if executable_sql(&committed) != executable_sql(&fresh) {
             mismatches.push(("up.pre", crate::diff::line_diff(&committed, &fresh)));
         }
     }
@@ -292,4 +310,30 @@ fn installed_cratestack_version() -> Option<String> {
     let output = Command::new("cratestack").arg("--version").output().ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     stdout.split_whitespace().nth(1).map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn comment_and_blank_lines_are_not_compared() {
+        let applied =
+            "-- WARNING: blocking\n--   - t.c\n\n-- NOTE: x\nCREATE TABLE t (\n    c TEXT\n);\n";
+        let fresh = "-- NOTE: y\nCREATE TABLE t (\n    c TEXT\n);\n";
+        assert_eq!(executable_sql(applied), executable_sql(fresh));
+        assert_eq!(executable_sql("-- only a comment\n"), executable_sql(""));
+    }
+
+    #[test]
+    fn a_changed_statement_still_differs() {
+        let a = "-- same\nCREATE TABLE t (\n    c TEXT\n);\n";
+        let b = "-- same\nCREATE TABLE t (\n    c TEXT NOT NULL\n);\n";
+        assert_ne!(executable_sql(a), executable_sql(b));
+        // A statement commented out is a removed statement, not a comment change.
+        assert_ne!(
+            executable_sql(a),
+            executable_sql("-- same\n-- CREATE TABLE t (\n")
+        );
+    }
 }

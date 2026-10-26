@@ -122,7 +122,23 @@ allow = [
 # narrows advisory scope for the *whole* graph, which is a wider decision
 # than this one crate warrants and belongs to the maintainer, not to a
 # dependency addition.
+# RUSTSEC-2026-0387 — crypto-bigint 0.5.5: timing variability in operations
+# meant to be constant-time. Only 0.7.6+ is fixed, and 0.5.5 enters through
+# elliptic-curve 0.13 <- p256/p384 0.13 <- jsonwebtoken 11 <- authkestra 0.8
+# (sms-auth's OP and the SSO id_token verifier, sms-gateway); jsonwebtoken
+# 11.1.0, its newest release, still needs p256 ^0.13, so no release clears it.
+# (The 0.7 line, via cratestack-cose's p256 0.14, is at 0.7.10 and clean.)
+# What the P-256/P-384 code does here: in production it only VERIFIES
+# ES256/ES384 signatures against PUBLIC keys, the upstream IdP's id_tokens in
+# `sms-auth/src/sso/id_token.rs`; vsms's own OP and every AppClient sign RS256
+# with RSA. The only EC signing is in `sms-fake-oidc`, a dev/test fake that
+# sms-gateway never loads. A timing leak in a public-key verification exposes
+# no secret. Same reasoning and decision as vpay's entry (vaam-apps/vpay
+# 55e848f). Goes when authkestra and jsonwebtoken leave the graph: the
+# keypair flag day deletes vsms's token server and the SSO broker (ticket
+# VS-4), and cargo-deny will then report this entry as no longer matching.
 ignore = [
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via jsonwebtoken 11 <- authkestra 0.8; no release clears it. P-256/P-384 only verify ES256/ES384 id_tokens against public keys in production (EC signing only in the sms-fake-oidc test fake). Removed with authkestra at the keypair flag day (VS-4). See the comment above." },
   { id = "RUSTSEC-2023-0071", reason = "Marvin Attack (timing sidechannel) only affects RSA PKCS#1v1.5 *decryption*. This graph's only `rsa` usage (via jsonwebtoken's RS256 backend and authkestra-engine's JWK derivation) is signing/verification and PEM parsing — no decrypt call exists anywhere in the reachable code. Re-verified against authkestra 0.8.0. See the comment above for the full analysis and revisit date." },
   { id = "RUSTSEC-2023-0089", reason = "`atomic-polyfill` is unmaintained with no patched release. It enters only via phonenumber -> postcard -> heapless 0.7, and heapless gates it to AVR/RISC-V/thumbv6m/Xtensa targets — none of which this workspace builds (x86_64 and aarch64 Linux only). `cargo tree -i atomic-polyfill` finds nothing for the host target; only `--target all` reaches it. See the comment above for the full analysis and revisit date." },
 ]
