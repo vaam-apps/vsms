@@ -172,9 +172,7 @@ mod tests {
         let missing = |extra: &[&str]| -> Vec<String> {
             use clap::error::{ContextKind, ContextValue};
 
-            let error = parse_serve(extra)
-                .err()
-                .expect("serve needs both key files");
+            let error = parse_serve(extra).expect_err("serve needs both key files");
             assert_eq!(
                 error.kind(),
                 clap::error::ErrorKind::MissingRequiredArgument
