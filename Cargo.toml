@@ -338,6 +338,14 @@ hmac = "0.12"
 # hand-rolling a third hex codec alongside pepper.rs's manual `{byte:02x}`
 # loop and whatever else already exists transitively.
 hex = "0.4"
+# VS-5a: `console_keys.rs` checks a console key's proof of possession - a raw
+# ECDSA-P-256-SHA-256 signature, the shape WebCrypto's `sign` returns - over a
+# short message. cratestack-cose keeps its own verifier crate-private (it
+# verifies COSE structures, not a bare signature), so the one check is made
+# with the RustCrypto crate it is built on. 0.14 with `ecdsa` is exactly
+# cratestack-cose 0.16.0's own requirement, so Cargo.lock gains no new crate
+# (authkestra's older 0.13.2 stays separate).
+p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util = "0.7"

@@ -31,6 +31,7 @@ pub mod auth;
 mod cache;
 pub mod client_keys;
 pub mod consent;
+pub mod console_keys;
 pub mod dlr;
 pub mod errors;
 pub mod metrics;

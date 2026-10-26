@@ -60,7 +60,7 @@ const REWRITTEN_BY_LATER: [(&str, &str); 2] = [
 /// tables; a new such migration appends an entry. Delete an entry, and its
 /// statements, when the migrations are squashed into a regenerated
 /// `0001_init`.
-const ADDED_BY_LATER: [(&str, &[&str]); 2] = [
+const ADDED_BY_LATER: [(&str, &[&str]); 3] = [
     (
         "backends/migrations/postgres/0005_sso_federation",
         &["federated_links", "sso_transactions"],
@@ -68,6 +68,10 @@ const ADDED_BY_LATER: [(&str, &[&str]); 2] = [
     (
         "backends/migrations/postgres/0006_client_keys",
         &["client_keys"],
+    ),
+    (
+        "backends/migrations/postgres/0007_console_keys",
+        &["console_keys"],
     ),
 ];
 

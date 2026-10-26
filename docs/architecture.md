@@ -1038,6 +1038,18 @@ mutation procedure replayWebhookAttempt(args: ReplayWebhookAttemptInput): Webhoo
 
 `backends/crates/sms-api/src/client_keys.md` has the sequence and state diagrams.
 
+**`ConsoleKey` (signed transport, VS-5a)** — a *human's* request-signing public key, the keypair that replaces the console's access/ID/refresh-token session. Like `ClientKey` it is recorded intent until VS-3: **nothing verifies against a `ConsoleKey`** until the envelope `AuthProvider` gets its second signer kind (`ConsoleKey` → user principal). The password login, the Keycloak SSO and the OP are untouched until VS-4.
+
+- `ConsoleKey(userId, alg, publicKey, thumbprint, label, pairedAt, expiresAt, revokedAt)`, forward migration `0007_console_keys` (`ADDED_BY_LATER` in `cargo xtask migrations-current`, and `ConsoleKey` in the system-context golden list). `alg` is `esp256` only: a WebCrypto non-extractable P-256 key. `publicKey` is the **SEC1 uncompressed point, 65 bytes** (`0x04 ‖ X ‖ Y`, base64url on the wire) — what `crypto.subtle.exportKey("raw", …)` returns and `CoseVerifyKey::p256_sec1` takes; a compressed point is refused, not normalised. `thumbprint` is the RFC 9679 EC2/P-256 thumbprint from `cratestack::cose`, lowercase hex, `@unique`.
+- **A key lasts 30 days** (owner ruling R3): `expiresAt = pairedAt + 30 days`, set once, never extended; an expired or revoked key is never registered again. Expiry is data, not a job — VS-3's resolver treats `expiresAt <= now` and `revokedAt` as no key.
+- **Policy.** `create`/`update` are `hasRole('system')`; `read` admits owner, admin, system and the key's own user (`auth().kind == "user" && userId == auth().sub`). No `delete`.
+- **`registerConsoleKey(vaamUserId, displayName?, publicKey, possessionProof, issuedAt)`** is `@allow(auth().kind == "app")` plus a Layer 2 check of the scope **`console:pair`** (`sms_api::console_keys::require_pair_scope`, which reads the token's `scope` and never a human's `perms`). Its one caller is vaam's service client, after a vaam admin approved the pairing on a bound phone (owner ruling: consoles pair with a vaam admin phone only). `possessionProof` is the console key's raw ECDSA-P-256-SHA-256 signature (`r‖s`, base64url) over `"vsms.console-pair.v1\n" + publicKey + "\n" + issuedAt` (unix seconds); an `issuedAt` more than 300 s from the server's clock is refused before the signature is read. It then finds or JIT-provisions the `User` through `FederatedLink(issuer = "vaam", subject = vaamUserId)` with role **`admin`, never `owner`** (owner ruling R2, and the #434 guard: the `User` is written under an `admin` context so `User.create`'s own `roleKey != 'owner'` clause is a second, independent refusal), email `<vaamUserId>@vaam.invalid`. A linked person's role is never touched; a deactivated account is refused. Idempotent on the thumbprint; a key that is another user's, revoked or expired is a 409.
+- **`revokeConsoleKey(keyId)`** is `@allow(auth().kind == "user")` + `@authorize(ConsoleKey, detail, args.keyId)`: owner and admin revoke any key, anyone else their own.
+- **Break-glass (owner ruling Q2).** `sms-gateway pair-console-key --user <email|id> --public-key <…> [--label]`, run inside the cluster, attaches a key to an **existing active** user with no proof of possession (the operator holding the database is the authority, as for `provision-user`). It creates no user and changes no role.
+- The composer keeps its own Ed25519 service key, registered as a `ClientKey` by `register-client` (owner ruling Q5): nothing new is needed for it here.
+
+`backends/crates/sms-api/src/console_keys.md` has the sequence and state diagrams.
+
 Implement these on the generated `ProcedureRegistry`:
 
 ```rust

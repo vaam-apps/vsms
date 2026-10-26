@@ -23,10 +23,10 @@
 use chrono::{TimeZone, Utc};
 use cratestack::Decimal;
 use sms_api::schema::{
-    ClientAuthMethod, ClientKeyAlg, CreateAppClientInput, CreateAuditAnchorInput,
-    CreateClientAssertionInput, CreateClientKeyInput, CreateJobInput, CreateMessageInput,
-    CreateOauthClientInput, CreateOauthSigningKeyInput, CreateOperatorPrefixRuleInput, Encoding,
-    MessageClass, OperatorCode,
+    ClientAuthMethod, ClientKeyAlg, ConsoleKeyAlg, CreateAppClientInput, CreateAuditAnchorInput,
+    CreateClientAssertionInput, CreateClientKeyInput, CreateConsoleKeyInput, CreateJobInput,
+    CreateMessageInput, CreateOauthClientInput, CreateOauthSigningKeyInput,
+    CreateOperatorPrefixRuleInput, Encoding, MessageClass, OperatorCode,
 };
 
 /// Every field `sendMessage` must control on the row it creates.
@@ -239,6 +239,28 @@ fn register_client_key_can_set_every_field_it_owns() {
     };
 
     assert_eq!(input.publicKey.len(), 32);
+}
+
+/// Every field `registerConsoleKey` must control on the `ConsoleKey` it
+/// writes (VS-5a). A `@default` on `pairedAt` or `expiresAt` would drop it from
+/// the input and leave the procedure unable to set the 30-day lifetime (R3);
+/// one on `alg`, `publicKey` or `thumbprint` would leave it unable to say which
+/// key it registered.
+#[test]
+fn register_console_key_can_set_every_field_it_owns() {
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+    let input = CreateConsoleKeyInput {
+        userId: "user00000000000000001".to_owned(),
+        alg: ConsoleKeyAlg::esp256,
+        publicKey: vec![4; 65],
+        thumbprint: "0".repeat(64),
+        label: Some("break-glass".to_owned()),
+        pairedAt: now,
+        expiresAt: now + chrono::Duration::days(30),
+        revokedAt: None,
+    };
+
+    assert_eq!(input.publicKey.len(), 65);
 }
 
 /// The OP's signing key, as `sms-auth` writes it on first boot.

@@ -193,10 +193,11 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, ClientAuthMethod, ConsentChannel, Cratestack, DeliveryOutcome, Encoding, MessageClass,
     OperatorCode, OptOutSource, ProviderKind, SenderIdKind, SenderIdRegistrationStatus, app,
-    app_client, audit_anchor, client_assertion, client_key, consent_record, delivery_receipt,
-    federated_link, job, message, oauth_client, oauth_signing_key, operator_prefix_rule, opt_out,
-    provider, role, route, route_validation, sender_id, sender_id_registration, sso_transaction,
-    user, user_credential, webhook_attempt, webhook_endpoint,
+    app_client, audit_anchor, client_assertion, client_key, consent_record, console_key,
+    delivery_receipt, federated_link, job, message, oauth_client, oauth_signing_key,
+    operator_prefix_rule, opt_out, provider, role, route, route_validation, sender_id,
+    sender_id_registration, sso_transaction, user, user_credential, webhook_attempt,
+    webhook_endpoint,
 };
 
 /// Same reasoning as every other live suite's own copy of this mutex — see
@@ -262,6 +263,12 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 ///   models are `hasRole('system')` on every action from the moment they were
 ///   written (see their `schema.cstack` comments) - listed so the live half of
 ///   this guard proves it on day one, not found live.
+/// - `ConsoleKey` - signed transport (VS-5a). `registerConsoleKey` reads it
+///   under `sys` (the thumbprint lookup that makes registration idempotent)
+///   and so does `revokeConsoleKey`; VS-3's resolver will read every row the
+///   same way. Its `read` clause admits owner/admin, the key's own user, and
+///   `system`; `create`/`update` are system-only. Listed so the live half
+///   proves it on day one.
 /// - `ClientKey` - signed transport (VS-2). `registerAppClientKey` reads it
 ///   under `sys` (the thumbprint lookup that makes registration idempotent)
 ///   and so does `revokeAppClientKey`; VS-3's database-backed key resolver
@@ -323,6 +330,9 @@ const SYSTEM_READABLE_MODELS: &[&str] = &[
     // VS-2: registerAppClientKey / revokeAppClientKey read it under sys(),
     // and VS-3's resolver will. Not a "found live" instance.
     "ClientKey",
+    // VS-5a: registerConsoleKey / revokeConsoleKey read it under sys(), and
+    // VS-3's resolver will. Not a "found live" instance.
+    "ConsoleKey",
 ];
 
 /// Models with no internal `system`-role reader anywhere in this codebase
@@ -1177,6 +1187,44 @@ async fn seed_and_verify_client_key(
     seeded
 }
 
+/// Signed transport's `ConsoleKey`: written and read under `sys` by
+/// `registerConsoleKey`/`revokeConsoleKey`. Seeded through the generated
+/// delegate under `sys`, the one writer the policy admits, with a public key
+/// that is not a real point (the delegate does no key validation; the
+/// procedure does) because this test only asks about the read.
+async fn seed_and_verify_console_key(
+    db: &Cratestack,
+    suffix: &str,
+    user_id: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> schema::ConsoleKey {
+    let seeded = db
+        .console_key()
+        .create(schema::CreateConsoleKeyInput {
+            userId: user_id.to_owned(),
+            alg: schema::ConsoleKeyAlg::esp256,
+            publicKey: [vec![4_u8], vec![7_u8; 64]].concat(),
+            thumbprint: format!("{suffix:0>64}"),
+            label: None,
+            pairedAt: now,
+            expiresAt: now + chrono::Duration::days(30),
+            revokedAt: None,
+        })
+        .run(&sys())
+        .await
+        .expect("seeding a ConsoleKey");
+    assert_system_can_read_back!(
+        db,
+        console_key,
+        console_key,
+        seeded.id,
+        "ConsoleKey",
+        "@@allow(\"read\", hasRole('owner') || hasRole('admin') || hasRole('system') \
+         || (auth().kind == \"user\" && userId == auth().sub))"
+    );
+    seeded
+}
+
 /// The SSO broker's `FederatedLink`: read by `(issuer, subject)` under `sys`
 /// on every federated sign-in. `hasRole('system')` is its entire policy.
 async fn seed_and_verify_federated_link(
@@ -1390,6 +1438,7 @@ async fn every_system_readable_model_actually_admits_a_system_read() {
     seed_and_verify_user_credential(&db, &user.id).await;
     seed_and_verify_federated_link(&db, &suffix, &user.id).await;
     seed_and_verify_client_key(&db, &suffix, &app_client.id).await;
+    seed_and_verify_console_key(&db, &suffix, &user.id, now).await;
     seed_and_verify_sso_transaction(&db, &suffix, now).await;
     seed_and_verify_audit_anchor(&db, &suffix, now).await;
     seed_and_verify_consent_record(&db, &suffix, &app.id).await;

@@ -195,6 +195,16 @@ enum ClientKeyAlg {
   ed25519
 }
 
+// The signature algorithm a registered `ConsoleKey` verifies (signed
+// transport, VS-5a). One variant on purpose, for the reason `ClientKeyAlg`
+// has one: a console key is a WebCrypto non-extractable P-256 key (ESP256,
+// COSE -9), and an Ed25519 console key would be a different, unproven
+// browser capability. A second variant is a CHECK change in a forward
+// migration, made when something can actually pair it.
+enum ConsoleKeyAlg {
+  esp256
+}
+
 mixin Timestamps {
   createdAt DateTime @default(dbgenerated())
   updatedAt DateTime @default(dbgenerated())
@@ -333,6 +343,68 @@ model ClientKey {
   @@audit
   @@paged
   @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('system'))
+  @@allow("create", hasRole('system'))
+  @@allow("update", hasRole('system'))
+}
+
+// A public key a *human's* browser signs its console requests with (signed
+// transport, VS-5a): the keypair replacement for the access/ID/refresh-token
+// session. Two ways in, neither a password or a token:
+//
+//   1. `registerConsoleKey`, called by vaam's service client (an app principal
+//      holding scope `console:pair`) after a vaam admin approved the pairing on
+//      their bound phone. The console key proves possession in the call.
+//   2. `sms-gateway pair-console-key`, the break-glass: an operator with
+//      database access enrols a key for an existing active user. No proof of
+//      possession, because the operator holding the database is the authority
+//      (`provision-user` is the precedent).
+//
+// The generated routes cannot write this model.
+//
+// **Nothing verifies against this table yet.** VS-3 gives the envelope
+// `AuthProvider` two signer kinds, `ClientKey` -> app principal and
+// `ConsoleKey` -> user principal; until then a row here is registered intent,
+// not a credential anything accepts.
+//
+// `publicKey` is the **SEC1 uncompressed P-256 point**, 65 bytes
+// (`0x04 || X || Y`): the exact bytes a browser's
+// `crypto.subtle.exportKey("raw", publicKey)` returns for a non-extractable
+// ECDSA P-256 pair (the public half is always exportable), and the bytes
+// `CoseVerifyKey::p256_sec1` takes and `p256_sec1_uncompressed` returns. One
+// canonical form: a compressed point is refused at registration rather than
+// stored, so a key is never two spellings. `thumbprint` is the RFC 9679 COSE
+// key thumbprint (EC2/P-256 form), lowercase hex, computed by
+// `cratestack::cose` and never taken from a caller; `@unique`, so a key is
+// one row and cannot belong to two users.
+//
+// **A key lasts 30 days** (owner, 2026-10-26, R3): `expiresAt` is
+// `pairedAt + 30 days`, set once and never extended. An expired key is not
+// re-registered - the console generates a new one - and VS-3's resolver must
+// treat `expiresAt <= now` and `revokedAt IS NOT NULL` as no key. **Revoke,
+// never delete**, as for `ClientKey`: the row stays, so a revoked or expired
+// thumbprint is not re-registered as a fresh key.
+//
+// Writes are `hasRole('system')` only; `registerConsoleKey` /
+// `revokeConsoleKey` and the CLI run them under the internal system context.
+// Reads admit owner, admin, system (VS-3's resolver) and the key's own user,
+// so the console can list "my paired browsers".
+model ConsoleKey {
+  @use(Timestamps)
+
+  id Cuid @id @default(dbgenerated())
+  userId Cuid
+  user User @relation(fields: [userId], references: [id])
+  alg ConsoleKeyAlg
+  publicKey Bytes @length(min: 65, max: 65)
+  thumbprint String @unique @length(min: 64, max: 64)
+  label String? @length(min: 1, max: 64)
+  pairedAt DateTime
+  expiresAt DateTime
+  revokedAt DateTime?
+
+  @@audit
+  @@paged
+  @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('system') || (auth().kind == "user" && userId == auth().sub))
   @@allow("create", hasRole('system'))
   @@allow("update", hasRole('system'))
 }
@@ -1467,6 +1539,25 @@ type RevokeClientKeyInput {
   keyId Cuid
 }
 
+// Signed transport (VS-5a). `publicKey` is the SEC1 uncompressed P-256 point
+// (65 bytes, `0x04 || X || Y`), base64url without padding. `possessionProof`
+// is the console key's raw ECDSA-P-256-SHA-256 signature (`r || s`, 64 bytes,
+// base64url without padding - what WebCrypto `sign` returns) over the UTF-8
+// bytes `"vsms.console-pair.v1\n" + publicKey + "\n" + <issuedAt as unix
+// seconds>`. `vaamUserId` is the person's id at vaam, the `subject` of their
+// `FederatedLink` under issuer `vaam`.
+type RegisterConsoleKeyInput {
+  vaamUserId String @length(min: 1, max: 64) @regex("^[A-Za-z0-9_-]+$")
+  displayName String? @length(min: 1, max: 128)
+  publicKey String
+  possessionProof String
+  issuedAt DateTime
+}
+
+type RevokeConsoleKeyInput {
+  keyId Cuid
+}
+
 type CancelInput {
   messageId Cuid
   reason String?
@@ -1521,6 +1612,23 @@ mutation procedure registerAppClientKey(args: RegisterClientKeyInput): ClientKey
 
 mutation procedure revokeAppClientKey(args: RevokeClientKeyInput): ClientKey
   @allow(hasRole('owner') || hasRole('admin'))
+  @isolation("serializable")
+
+// VS-5a: pair / revoke a human's console key. `registerConsoleKey` is for one
+// caller only: an app principal (vaam's service client) holding the scope
+// `console:pair`. Layer 1 admits `kind == "app"`; the scope is Layer 2 and is
+// checked in the body (`sms_api::console_keys::require_pair_scope`), because a
+// scope is not a field of `auth Principal`. `revokeConsoleKey` is any human
+// whose `ConsoleKey` read the policy admits: owner and admin see every key,
+// anyone else only their own (`@authorize` applies `ConsoleKey`'s `detail`
+// policy to `args.keyId`).
+mutation procedure registerConsoleKey(args: RegisterConsoleKeyInput): ConsoleKey
+  @allow(auth().kind == "app")
+  @isolation("serializable")
+
+mutation procedure revokeConsoleKey(args: RevokeConsoleKeyInput): ConsoleKey
+  @allow(auth().kind == "user")
+  @authorize(ConsoleKey, detail, args.keyId)
   @isolation("serializable")
 
 mutation procedure rotateWebhookSecret(args: EndpointInput): WebhookEndpoint
