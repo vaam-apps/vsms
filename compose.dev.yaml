@@ -527,6 +527,16 @@ services:
       AWS_SMS_FAKE_SNS_CERT_BASE: http://sms-fake-aws:8095/
       SMS_HASH_PEPPER: vsms-dev-hash-pepper-DO-NOT-USE-IN-PRODUCTION-1234567890
       SMS_CONSOLE_OIDC_CLIENT_ID: sms-console
+      # VS-3: every request is a COSE_Sign1 envelope and every response is
+      # signed back, so the gateway will not boot without its two Ed25519
+      # signing keys. They are DEV keys, minted by `just dev-keys` (which
+      # `just demo-up` runs first) into the git-ignored `dev-keys/`; never
+      # reuse them anywhere real.
+      SMS_ENVELOPE_SIGNING_KEY_FILE: /run/envelope/current.pem
+      SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE: /run/envelope/next.pem
+    volumes:
+      - ./dev-keys/envelope-current.pem:/run/envelope/current.pem:ro
+      - ./dev-keys/envelope-next.pem:/run/envelope/next.pem:ro
     depends_on:
       postgres:
         condition: service_healthy

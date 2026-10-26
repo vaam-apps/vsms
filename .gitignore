@@ -61,6 +61,8 @@ node_modules/
 # in-network) and this recipe's own `docker compose cp` have somewhere to
 # put them. Never committed; regenerated fresh on every run.
 /.e2e/
+# VS-3: dev-only envelope signing keys minted by `just dev-keys`.
+/dev-keys/
 # `just demo`'s own scratch state — pepper, provisioned key, pidfiles,
 # process logs. Never committed; regenerated fresh on every `just demo`.
 /.demo/

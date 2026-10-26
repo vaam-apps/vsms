@@ -284,6 +284,17 @@ client-check: client-gen
 	{{_cargo}} build -p sms-gateway
 	node ci/assert-client-routes-match-server.mjs
 
+# VS-3: mint the gateway's two DEV envelope-signing keys into the git-ignored
+# `dev-keys/` (the compose dev/demo stacks mount them). Idempotent: an
+# existing key is kept, so a restarted stack keeps the identity an integrator
+# already pinned. Dev keys only - production keys come from the operator
+# (docs/runbooks/deployment.adoc); never copy these anywhere real.
+dev-keys:
+	mkdir -p dev-keys
+	test -f dev-keys/envelope-current.pem || openssl genpkey -algorithm ed25519 -out dev-keys/envelope-current.pem
+	test -f dev-keys/envelope-next.pem || openssl genpkey -algorithm ed25519 -out dev-keys/envelope-next.pem
+	chmod 0644 dev-keys/envelope-current.pem dev-keys/envelope-next.pem
+
 # Bring up the full demo chain — scratch Postgres, both migrations, an OP
 # signing key, an `App`+`Provider`+`Route`+`SenderId`, a machine client,
 # the `sms-console` OIDC client, a human operator account, sms-fake-orange,
@@ -422,7 +433,7 @@ client-check: client-gen
 # code" behaviour — `e2e-integration` doesn't touch `demo-app` at all,
 # and a `demo-app` failure (a real one, or a flaky run) has nothing to
 # do with what `e2e-integration` is trying to prove.
-demo-up:
+demo-up: dev-keys
 	docker compose -f compose.dev.yaml --profile console --profile demo down -v --remove-orphans
 	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-fake-aws sms-worker admin demo-app; do \
 		COMPOSE_BAKE=false docker compose -f compose.dev.yaml --profile console --profile demo build "$svc"; \
@@ -531,7 +542,7 @@ demo-app:
 # #160: the joined integration story — brings up the stack (`demo-up`,
 # not `demo`: this recipe never touches `demo-app` and doesn't want a
 # `demo-app` outcome, real or flaky, deciding its own exit code),
-# provisions a SECOND client against the same App ("external integrator"),
+# registers a SECOND signing client against the same App ("external integrator"),
 # then runs `ci/e2e-integration` (a small Rust tool, not a bash script —
 # see its own module doc for why it has to run *inside* the Compose
 # network rather than as a host process) to send as that integrator over
@@ -542,27 +553,32 @@ demo-app:
 # for what this proves, what it fakes (Orange, via sms-fake-orange — #36's
 # handset gate is unaffected), and why both clients share one App.
 #
-# `.e2e/` (gitignored) is where the integrator's own key/id land on the
-# host — `docker compose run --rm` removes its container immediately, so
-# there is no `docker compose cp` source for it the way `provision-client`'s
-# own long-lived container (from `up`, still present) is for the console's
-# credential two lines below.
+# VS-3: both principals SIGN. The tool mints two Ed25519 keys (`keygen`,
+# into the gitignored `.e2e/`), `register-client --client-name` registers
+# each as its own AppClient of `vsms-demo`, `server-keys` prints the two
+# public keys the gateway signs its answers with, and the tool pins those.
+# No token is acquired anywhere. `--user` keeps the key files readable by
+# the host user and by the container that reads them.
 e2e-integration: demo-up
 	mkdir -p .e2e
-	rm -f .e2e/integrator-key.pem .e2e/integrator-client-id
-	docker compose -f compose.dev.yaml run --rm -v "{{justfile_directory()}}/.e2e:/out" sms-gateway \
-		provision-client --app-slug vsms-demo --label "external integrator (e2e-integration)" \
-		--scope sms:send --scope sms:read \
-		--key-out /out/integrator-key.pem --client-id-out /out/integrator-client-id
-	docker compose -f compose.dev.yaml cp provision-client:/secrets/console-client-key.pem .e2e/console-client-key.pem
-	docker compose -f compose.dev.yaml cp provision-client:/secrets/console-client-id .e2e/console-client-id
+	rm -f .e2e/integrator-key.pem .e2e/console-key.pem .e2e/server-keys.txt
 	docker build -f ci/e2e-integration/Dockerfile -t vsms-e2e-integration:local .
-	docker run --rm --network vsms-dev_default -v "{{justfile_directory()}}/.e2e:/secrets:ro" vsms-e2e-integration:local \
-		--gateway-url http://sms-gateway:8080 \
-		--integrator-client-id "$(cat .e2e/integrator-client-id)" \
+	docker run --rm --user "$(id -u):$(id -g)" -v "{{justfile_directory()}}/.e2e:/out" vsms-e2e-integration:local \
+		keygen --out /out/integrator-key.pem > .e2e/integrator-public-key
+	docker run --rm --user "$(id -u):$(id -g)" -v "{{justfile_directory()}}/.e2e:/out" vsms-e2e-integration:local \
+		keygen --out /out/console-key.pem > .e2e/console-public-key
+	docker compose -f compose.dev.yaml run --rm -T sms-gateway server-keys > .e2e/server-keys.txt
+	docker compose -f compose.dev.yaml run --rm sms-gateway register-client \
+		--app vsms-demo --client-name integrator --public-key "$(cat .e2e/integrator-public-key)" \
+		--scope sms:send --scope sms:read
+	docker compose -f compose.dev.yaml run --rm sms-gateway register-client \
+		--app vsms-demo --client-name console --public-key "$(cat .e2e/console-public-key)" \
+		--scope sms:send --scope sms:read
+	docker run --rm --user "$(id -u):$(id -g)" --network vsms-dev_default -v "{{justfile_directory()}}/.e2e:/secrets:ro" vsms-e2e-integration:local \
+		run --gateway-url http://sms-gateway:8080 \
 		--integrator-key-path /secrets/integrator-key.pem \
-		--console-client-id "$(cat .e2e/console-client-id)" \
-		--console-key-path /secrets/console-client-key.pem
+		--console-key-path /secrets/console-key.pem \
+		--server-keys-path /secrets/server-keys.txt
 
 # ---------------------------------------------------------------------------
 # `just ci` — the entire CI gate, in one command, with nothing installed on
