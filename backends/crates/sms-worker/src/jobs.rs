@@ -6,6 +6,7 @@ pub mod expire_stale;
 pub mod grey_route_watch;
 pub mod purge_retention;
 pub mod reap_outbox;
+pub mod sweep_envelope_nonces;
 
 pub use error::JobError;
 
@@ -123,7 +124,7 @@ impl Default for Registry {
 
 /// This milestone's registry — see the module doc for why only
 /// `expire_stale`/`reap_outbox`/`purge_retention`/`anchor_audit` are wired
-/// up.
+/// up, plus `grey_route_watch` (#64) and `sweep_envelope_nonces` (VS-3).
 #[must_use]
 pub fn default_registry() -> Registry {
     Registry::new()
@@ -132,6 +133,7 @@ pub fn default_registry() -> Registry {
         .register(purge_retention::PurgeRetention)
         .register(anchor_audit::AnchorAudit)
         .register(grey_route_watch::GreyRouteWatch)
+        .register(sweep_envelope_nonces::SweepEnvelopeNonces)
 }
 
 fn sys(worker: &str) -> CratestackContext {
@@ -330,7 +332,7 @@ fn swallow_stale_write(job: &Job, error: CratestackError) -> Result<(), Cratesta
 mod tests {
     use super::{
         BACKOFF_SCHEDULE, anchor_audit, backoff_for, expire_stale, grey_route_watch,
-        purge_retention, reap_outbox,
+        purge_retention, reap_outbox, sweep_envelope_nonces,
     };
     use chrono::Duration;
 
@@ -421,6 +423,10 @@ mod tests {
             (
                 grey_route_watch::CTX_OVERDUE,
                 "checking overdue route validations",
+            ),
+            (
+                sweep_envelope_nonces::CTX_SWEEP,
+                "sweeping expired envelope nonces",
             ),
         ];
         for (actual, expected) in table {

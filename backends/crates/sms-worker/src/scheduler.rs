@@ -85,6 +85,18 @@ pub fn schedule() -> Vec<RecurringJobSpec> {
             priority: 100,
             max_attempts: 3,
         },
+        RecurringJobSpec {
+            // VS-3: not one of §7.5's named kinds either - see
+            // crate::jobs::sweep_envelope_nonces's own module doc. The
+            // replay cache's rows live ten minutes; every quarter hour keeps
+            // the table within about twice its working set. Higher priority
+            // than the daily jobs: the table grows with every request, so a
+            // starved sweep is a growing table.
+            kind: "sweep_envelope_nonces",
+            cadence: Duration::minutes(15),
+            priority: 300,
+            max_attempts: 3,
+        },
     ]
 }
 

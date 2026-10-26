@@ -7,14 +7,15 @@ states — see [`crate::claim::Claimable for Job`]'s own doc for why a
 `pending` result means "just reclaimed, not actually claimed yet" and
 must not be executed this tick.
 
-Five [`JobHandler`]s are registered as of #64 — [`expire_stale`] (M2),
+Six [`JobHandler`]s are registered as of VS-3 — [`expire_stale`] (M2),
 [`reap_outbox`] (#42), [`purge_retention`] (#67), [`anchor_audit`] (#68),
-and [`grey_route_watch`] (#64) — proving the pipeline end to end without
+[`grey_route_watch`] (#64) and [`sweep_envelope_nonces`] (VS-3, the signed
+transport's replay cache) — proving the pipeline end to end without
 depending on infrastructure this milestone doesn't build (Orange
 balance/health endpoints, backup verification). The retention-law
 question that used to block `purge_retention` (§7.5's own table, issue
 #5) was resolved 2026-08-11: 90-day minimisation, no split ledger — see
-`purge_retention`'s own module doc. [`grey_route_watch`] is not one of
+`purge_retention`'s own module doc. [`grey_route_watch`] and [`sweep_envelope_nonces`] are not among
 §7.5's own nine named kinds at all — see its own module doc for why it
 exists regardless. The remaining five `kind`s §7.5's own table names are
 real, tracked gaps, not a silently dropped scope — see the module's own
