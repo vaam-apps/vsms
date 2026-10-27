@@ -4562,6 +4562,11 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   not a parser and accepts `[:]`, `1.2.3.999` and `x.0`, which `Url::parse` refuses. What holds is that the pattern **together
   with `@uri`** never accepts what `delivery_route` refuses; the wording in `lib.rs`, `lib.md`, the schema and `architecture.md` is
   fixed, and the generated corpus holds those hosts and asserts exactly that.
+  (E, F6) An `hmac` row could hold an audience (the unique index spans both modes), so an operator could squat a name a real sealed
+  endpoint needs. `webhook_endpoints_audience_only_for_sealed_check` (`delivery_mode <> 'hmac' OR audience IS NULL`) is edited into
+  `0010` in place (it is not on `main`), with `down.sql`, `HAND_WRITTEN_COLUMN_CONSTRAINTS` and the migration live test;
+  `map_database_error` answers it with a 422 for a procedure, and a raw generated `PATCH` gets a 500 like the other CHECKs.
+  Dropping it in `down.sql` is for symmetry only: `DROP COLUMN audience` removes it anyway, so removing that line fails no test.
 - **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,
   and a signature cannot survive that. Its nonce memory is per process and cannot be replaced (the check runs in WebAssembly),
   unlike the Rust SDK's `with_nonce_store`; the README says so.

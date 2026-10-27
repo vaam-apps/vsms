@@ -109,7 +109,7 @@ enum AttemptState {
 // cratestack `EnvelopeLayer` keeps working: both modes are always available
 // (a deployment will later be able to switch `hmac` off, VSA-1). A row's mode
 // and its columns agree by CHECKs in 0010: `sealed` has an audience and no
-// secret, `hmac` has a secret.
+// secret, `hmac` has a secret and no audience.
 enum WebhookDeliveryMode {
   sealed
   hmac
@@ -1078,7 +1078,8 @@ model WebhookEndpoint {
   // VS-8: the receiver's identity, the name a `sealed` delivery's seal binds as
   // its audience (cratestack ADR 0006 section 4). Required exactly when the mode
   // is `sealed` (a CHECK in 0010; a default would silently mean "any receiver")
-  // and optional for `hmac`, which has no seal to address. A sealed delivery is
+  // and null for `hmac`, which has no seal to address (a second CHECK in 0010, so
+  // an `hmac` row cannot squat a name a real sealed endpoint may need). A sealed delivery is
   // signed under vsms's envelope signing key, which lives in a file, never a
   // column (sms-webhook's lib.md).
   // `@unique`: every app's sealed deliveries are signed by the one gateway key,

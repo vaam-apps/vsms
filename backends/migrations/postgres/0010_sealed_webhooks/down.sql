@@ -37,6 +37,8 @@ ALTER TABLE webhook_endpoints DROP CONSTRAINT webhook_endpoints_delivery_mode_hm
 
 ALTER TABLE webhook_endpoints DROP CONSTRAINT webhook_endpoints_audience_required_for_sealed_check;
 
+ALTER TABLE webhook_endpoints DROP CONSTRAINT webhook_endpoints_audience_only_for_sealed_check;
+
 ALTER TABLE webhook_endpoints DROP CONSTRAINT webhook_endpoints_audience_not_vsms_check;
 
 ALTER TABLE webhook_endpoints DROP CONSTRAINT webhook_endpoints_audience_length_check;

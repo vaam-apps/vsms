@@ -24,6 +24,10 @@ const WEBHOOK_ENDPOINT_RULES: &[(&str, &str)] = &[
         "the audience cannot be vsms: that is the name the gateway's own routes answer to",
     ),
     (
+        "webhook_endpoints_audience_only_for_sealed_check",
+        "an hmac endpoint names no audience: leave it out (or clear it, when switching from sealed)",
+    ),
+    (
         "webhook_endpoints_audience_required_for_sealed_check",
         "a sealed endpoint needs an audience",
     ),
@@ -247,6 +251,10 @@ mod tests {
     #[test]
     fn a_webhook_endpoint_check_is_a_422_that_names_the_rule() {
         for (name, words) in [
+            (
+                "webhook_endpoints_audience_only_for_sealed_check",
+                "names no audience",
+            ),
             (
                 "webhook_endpoints_audience_required_for_sealed_check",
                 "needs an audience",

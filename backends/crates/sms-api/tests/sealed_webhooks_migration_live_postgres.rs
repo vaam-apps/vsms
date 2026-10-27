@@ -3,9 +3,9 @@
 //! becomes an `hmac` endpoint with its secrets exactly as they were and no
 //! audience, because its receiver verifies an HMAC today. Nothing is dropped.
 //! The database itself then holds the two modes apart: a `sealed` endpoint needs
-//! an audience and holds no secret, an `hmac` endpoint needs a secret. The
-//! audience, when there is one, is unique and never `vsms`, and any number of
-//! endpoints may have none. `down.sql` reverses the migration, and refuses only
+//! an audience and holds no secret, an `hmac` endpoint needs a secret and names
+//! no audience. The audience, when there is one, is unique and never `vsms`, and
+//! any number of endpoints may have none. `down.sql` reverses the migration, and refuses only
 //! when a `sealed` endpoint exists, which holds no HMAC secret to go back to.
 //!
 //! Plain `psql`, like the harness's own migration step: no generated client is
@@ -156,6 +156,12 @@ fn assert_the_modes_are_held_apart(url: &str) {
     refused_by(
         insert_endpoint(url, "m4", "hmac", None, None, None),
         "webhook_endpoints_delivery_mode_hmac_needs_secret_check",
+    );
+    // ... and an `hmac` endpoint names no audience, so it cannot squat the name
+    // a real `sealed` endpoint may need (the audience is unique across both modes).
+    refused_by(
+        insert_endpoint(url, "m9", "hmac", Some("recv-m9"), Some("whsec_m9"), None),
+        "webhook_endpoints_audience_only_for_sealed_check",
     );
     // Only the two modes exist.
     refused_by(

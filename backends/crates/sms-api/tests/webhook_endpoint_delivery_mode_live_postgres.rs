@@ -1,7 +1,8 @@
 //! An endpoint's `deliveryMode` and the columns it decides (VS-8R), through the
 //! generated delegate against a real, fully migrated Postgres.
 //!
-//! - **`sealed` needs an audience and holds no secret; `hmac` needs a secret.**
+//! - **`sealed` needs an audience and holds no secret; `hmac` needs a secret and
+//!   names no audience.**
 //!   The database says so with CHECKs (`0010_sealed_webhooks`), and a write that
 //!   breaks one is refused with SQLSTATE `23514` naming the constraint. (Through
 //!   the generated REST routes that surfaces as a database error (500); a
@@ -10,7 +11,8 @@
 //!   before it asks, `frontends/packages/gateway/src/webhook-rules.ts`.)
 //! - **A mode switch is one update.** `hmac -> sealed` names an audience and
 //!   clears all three secret columns with explicit `null`s; `sealed -> hmac`
-//!   supplies a secret. Either half left out is refused and changes nothing.
+//!   supplies a secret and releases the audience with an explicit `null`. Either
+//!   half left out is refused and changes nothing.
 //! - **A secret never reaches the audit history again.** `@sensitive` redacts
 //!   `secret` and `prevSecret` in the `@@audit` snapshots of every create and
 //!   update; before 0010's schema every HMAC secret this table held was written
@@ -207,6 +209,20 @@ async fn an_hmac_endpoint_needs_a_secret_and_no_audience() {
     assert_eq!(created.secret.as_deref(), Some(secret.as_str()));
     assert_eq!(created.audience, None);
 
+    // An hmac endpoint names no audience: it would squat a name a real sealed
+    // endpoint may need (the audience is unique across both modes).
+    refused_by(
+        create(
+            &db,
+            CreateWebhookEndpointInput {
+                audience: Some(format!("squat-{}", unique_suffix())),
+                ..hmac(&app, Some(sms_webhook::generate_secret()))
+            },
+        )
+        .await,
+        "webhook_endpoints_audience_only_for_sealed_check",
+    );
+
     // Any number of hmac endpoints have no audience: NULLs do not collide.
     create(&db, hmac(&app, Some(sms_webhook::generate_secret())))
         .await
@@ -310,7 +326,7 @@ async fn switching_hmac_to_sealed_names_an_audience_and_clears_every_secret() {
 
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
-async fn switching_sealed_to_hmac_supplies_a_secret() {
+async fn switching_sealed_to_hmac_supplies_a_secret_and_releases_the_audience() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app = seed_app(&db).await;
@@ -319,11 +335,14 @@ async fn switching_sealed_to_hmac_supplies_a_secret() {
         .await
         .expect("a sealed endpoint");
 
+    // (The audience is released here, so that the secret is the only rule broken:
+    // Postgres reports the first CHECK it finds, in name order.)
     let without_secret = update(
         &db,
         &endpoint,
         UpdateWebhookEndpointInput {
             deliveryMode: Some(WebhookDeliveryMode::hmac),
+            audience: Some(None),
             ..Default::default()
         },
     )
@@ -338,7 +357,8 @@ async fn switching_sealed_to_hmac_supplies_a_secret() {
     );
 
     let secret = sms_webhook::generate_secret();
-    let switched = update(
+    // The audience has to go in the same update: an hmac endpoint holds none.
+    let keeps_audience = update(
         &db,
         &endpoint,
         UpdateWebhookEndpointInput {
@@ -347,13 +367,31 @@ async fn switching_sealed_to_hmac_supplies_a_secret() {
             ..Default::default()
         },
     )
+    .await;
+    refused_by(
+        keeps_audience,
+        "webhook_endpoints_audience_only_for_sealed_check",
+    );
+    assert_eq!(
+        reread(&db, &endpoint.id).await.deliveryMode,
+        WebhookDeliveryMode::sealed
+    );
+
+    let switched = update(
+        &db,
+        &endpoint,
+        UpdateWebhookEndpointInput {
+            deliveryMode: Some(WebhookDeliveryMode::hmac),
+            secret: Some(Some(secret.clone())),
+            audience: Some(None),
+            ..Default::default()
+        },
+    )
     .await
-    .expect("one update that supplies the secret");
+    .expect("one update that supplies the secret and releases the audience");
     assert_eq!(switched.deliveryMode, WebhookDeliveryMode::hmac);
     assert_eq!(switched.secret.as_deref(), Some(secret.as_str()));
-    // The audience was not asked to go, and keeps its name (a switch back
-    // would want it); an hmac endpoint simply does not use it.
-    assert_eq!(switched.audience.as_deref(), Some(audience.as_str()));
+    assert_eq!(switched.audience, None);
 }
 
 /// `psql` against the harness database, for the one table the typed client does

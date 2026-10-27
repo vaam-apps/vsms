@@ -26,9 +26,9 @@
 --             (a sealed endpoint holds no shared secret: there is nothing to leak,
 --             to rotate or to forget to delete)
 --   hmac   -> secret IS NOT NULL (an HMAC endpoint with no key would sign a
---             delivery with nothing); audience is unused and stays NULL unless an
---             operator set one, so no `hmac` row squats a name a real sealed
---             endpoint may need
+--             delivery with nothing), and audience IS NULL (an `hmac` row would
+--             otherwise squat a name a real sealed endpoint may need, since the
+--             unique index below holds the audience across both modes)
 --
 -- Why `audience` is UNIQUE, and never `vsms`. One gateway key signs every app's
 -- sealed deliveries, so the audience is what tells one receiver's seals from
@@ -58,6 +58,7 @@
 -- proved by `sealed_webhooks_migration_live_postgres.rs`:
 --
 --   webhook_endpoints_audience_not_vsms_check                    (@db_enforce does nothing for a @regex)
+--   webhook_endpoints_audience_only_for_sealed_check             (a cross-column rule)
 --   webhook_endpoints_audience_required_for_sealed_check         (a cross-column rule)
 --   webhook_endpoints_delivery_mode_hmac_needs_secret_check      (a cross-column rule)
 --   webhook_endpoints_delivery_mode_sealed_holds_no_secret_check (a cross-column rule)
@@ -113,6 +114,8 @@ ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_delivery_mode_enu
 ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_audience_length_check CHECK (length(audience) BETWEEN 1 AND 255);
 
 ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_audience_not_vsms_check CHECK (audience <> 'vsms');
+
+ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_audience_only_for_sealed_check CHECK (delivery_mode <> 'hmac' OR audience IS NULL);
 
 ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_audience_required_for_sealed_check CHECK (delivery_mode <> 'sealed' OR audience IS NOT NULL);
 
