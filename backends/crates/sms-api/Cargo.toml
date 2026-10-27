@@ -97,6 +97,10 @@ anyhow.workspace = true
 # The four *_live_postgres.rs suites in tests/ get their DATABASE_URL from
 # this instead of the environment — see its own module doc.
 sms-test-support.workspace = true
+# tests/webhook_endpoint_validation.rs holds the schema's `url` pattern to the
+# route rule the worker seals with: whatever the API stores, `delivery_route`
+# accepts. `sms-webhook` does not depend on this crate, so there is no cycle.
+sms-webhook.workspace = true
 # worker_locks_live_postgres.rs (#57) needs a real RoleLease held over a
 # real connection to prove `Procedures::worker_locks` reports it correctly
 # — not a hand-built pg_locks row. Dev-only, and safe despite `sms-worker`'s

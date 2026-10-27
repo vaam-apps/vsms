@@ -601,8 +601,31 @@ async fn a_redirect_is_not_followed() {
     assert_eq!(reread.lastStatusCode, Some(307));
 }
 
+/// Writes `url` onto an endpoint behind the API's back, with `psql`. The API
+/// refuses a URL the seal cannot bind (`WebhookEndpoint.url`'s `@regex`), so a row
+/// like this exists only from before that rule, or from a hand edit; the worker
+/// still refuses to send for it, and this is how the test gets one.
+async fn force_url(endpoint_id: &str, url: &str) {
+    let database_url = sms_test_support::database_url().await;
+    let output = std::process::Command::new("psql")
+        .arg(database_url)
+        .args(["-v", "ON_ERROR_STOP=1", "-q", "-c"])
+        .arg(format!(
+            "UPDATE webhook_endpoints SET url = '{url}' WHERE id = '{endpoint_id}'"
+        ))
+        .output()
+        .expect("spawning `psql`");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 /// A URL the seal cannot bind (here a query string) never reaches the network;
-/// it is an ordinary endpoint failure with its reason recorded.
+/// it is an ordinary endpoint failure with its reason recorded. The API no longer
+/// lets one be stored, so the row is written around it (`force_url`): the worker's
+/// refusal is the second line of defence for a row older than the rule.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn an_endpoint_url_that_cannot_be_sealed_is_never_sent_and_says_why() {
@@ -617,14 +640,8 @@ async fn an_endpoint_url_that_cannot_be_sealed_is_never_sent_and_says_why() {
         .expect(0)
         .mount(&server)
         .await;
-    let endpoint = seed_endpoint(
-        &db,
-        &suffix,
-        &app_id,
-        &format!("{}/hook?tenant=1", server.uri()),
-        8,
-    )
-    .await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
+    force_url(&endpoint.id, &format!("{}/hook?tenant=1", server.uri())).await;
     let attempt = seed_attempt(&db, &endpoint.id, "cmsgU", "message.delivered", "{}").await;
 
     hooks::tick(

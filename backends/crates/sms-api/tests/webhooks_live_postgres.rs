@@ -118,7 +118,7 @@ async fn seed_endpoint(
             appId: app_id.to_owned(),
             url: format!("https://example.test/webhooks/{}", unique_suffix()),
             eventTypes: event_types.to_owned(),
-            audience: "test-receiver".to_owned(),
+            audience: format!("test-receiver-{}", unique_suffix()),
             maskRecipient: mask_recipient,
             maxAttempts: 8,
             circuitOpenUntil: None,

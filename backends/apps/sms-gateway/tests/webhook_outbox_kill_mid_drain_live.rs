@@ -306,7 +306,7 @@ async fn seed_many_endpoints(db: &Cratestack, app_id: &str, count: usize) {
                     unique_suffix()
                 ),
                 eventTypes: " message.delivered ".to_owned(),
-                audience: "test-receiver".to_owned(),
+                audience: format!("test-receiver-{}-{i}", unique_suffix()),
                 maskRecipient: false,
                 maxAttempts: 8,
                 circuitOpenUntil: None,

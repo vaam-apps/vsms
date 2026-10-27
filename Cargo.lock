@@ -3232,6 +3232,7 @@ dependencies = [
  "sms-provider",
  "sms-routing",
  "sms-test-support",
+ "sms-webhook",
  "sms-worker",
  "thiserror",
  "tokio",

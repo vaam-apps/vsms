@@ -922,7 +922,7 @@ async fn seed_and_verify_webhook_endpoint(
             appId: app_id.to_owned(),
             url: format!("https://example.test/webhooks/{suffix}"),
             eventTypes: " message.delivered ".to_owned(),
-            audience: "test-receiver".to_owned(),
+            audience: format!("test-receiver-{suffix}"),
             maskRecipient: true,
             maxAttempts: 8,
             circuitOpenUntil: None,

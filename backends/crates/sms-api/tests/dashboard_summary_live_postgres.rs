@@ -224,7 +224,7 @@ async fn seed_endpoint(db: &Cratestack, app_id: &str) -> schema::WebhookEndpoint
             appId: app_id.to_owned(),
             url: format!("https://example.test/webhooks/{}", unique_suffix()),
             eventTypes: " message.delivered ".to_owned(),
-            audience: "test-receiver".to_owned(),
+            audience: format!("test-receiver-{}", unique_suffix()),
             maskRecipient: true,
             maxAttempts: 8,
             circuitOpenUntil: None,

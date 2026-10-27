@@ -1037,13 +1037,26 @@ model WebhookEndpoint {
   id Cuid @id @default(dbgenerated())
   appId Cuid
   app App @relation(fields: [appId], references: [id])
-  url String @uri
+  // VS-8: a delivery binds the path of this URL as its route, so a URL that
+  // cannot be one route (credentials, a query, a fragment, a `{`, `}` or `%` in
+  // the path, a scheme other than http(s), a non-ASCII host) could only be
+  // refused at delivery, burning attempts and tripping the breaker. The pattern
+  // refuses it on write instead. It is deliberately narrower than what
+  // `sms_webhook::delivery_route` accepts (an IDN host is written in its
+  // punycode form), never wider: sms-webhook's tests hold that.
+  url String @uri @regex("^(?i:https?)://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\x5B[0-9A-Fa-f:.]+\x5D)(?::(?:6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(?:/[A-Za-z0-9._~!$&'()*+,;=:@/-]*)?$")
   // VS-8: the receiver's identity, the name a delivery's seal binds as its
   // audience (cratestack ADR 0006 section 4). Required and without a default: a
   // default would silently mean "any receiver". There is no signing secret on
   // this model any more - a delivery is sealed under vsms's envelope signing
   // key, which lives in a file, never a column (sms-webhook's lib.md).
-  audience String @length(min: 1, max: 255)
+  // `@unique`: every app's deliveries are signed by the one gateway key, so the
+  // audience is what tells one receiver's seals from another's. Two endpoints
+  // sharing a name would let whoever holds `webhook:manage` collect a victim's
+  // audience-bound seals at a URL of their own and replay them. It is never
+  // `vsms`, the name the gateway's own routes answer to (the pattern below and a
+  // CHECK in 0010: `@db_enforce` does nothing for a `@regex`).
+  audience String @unique @length(min: 1, max: 255) @db_enforce @regex("^(?:vsms.+|(?:[^v]|v[^s]|vs[^m]|vsm[^s]).*|v|vs|vsm)$")
   eventTypes String
   maskRecipient Boolean
   active Boolean @default(true)
