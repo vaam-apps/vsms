@@ -239,7 +239,7 @@ fn strip_added_tables(root: &Path, f: &str, fresh: &str) -> Result<String, Strin
             fs::read_to_string(&carrier).map_err(|e| format!("{}: {e}", carrier.display()))?;
         let (without_added, moved) = split_added(&remaining, tables);
         for block in &moved {
-            if !carrier_text.contains(block.as_str()) {
+            if !carries(&carrier_text, block) {
                 return Err(format!(
                     "migrations-current: {} does not contain this statement the generator emits \
                      for a table it carries:\n{block}",
@@ -481,7 +481,7 @@ fn strip_column_statements(root: &Path, f: &str, fresh: &str) -> Result<String, 
         return Ok(kept);
     }
     for block in &moved {
-        if !text.contains(block.as_str()) {
+        if !carries(&text, block) {
             return Err(format!(
                 "migrations-current: {} does not contain this statement the generator emits \
                  for a column it adds:\n{block}",
@@ -553,6 +553,15 @@ fn declares(sql: &str, name: &str) -> bool {
     executable_sql(sql).contains(name)
 }
 
+/// Whether `block`, a statement the generator emits, is one of the statements
+/// of `sql` (a migration file): compared as [`executable_sql`] on both sides,
+/// so a statement that is only *commented out* in the migration is not carried
+/// (found by commenting one out: a raw `contains` on the file text still found
+/// it in the comment and stayed green).
+fn carries(sql: &str, block: &str) -> bool {
+    executable_sql(sql).contains(executable_sql(block).trim())
+}
+
 /// Compares `up.sql` and `down.sql`, committed against regenerated, after
 /// taking out everything a later migration owns (added tables, the columns
 /// `COLUMNS_CHANGED_BY_LATER` names, statements rewritten afterwards).
@@ -577,7 +586,7 @@ fn compare_up_and_down(
             let later =
                 fs::read_to_string(root.join(LATER_UP)).map_err(|e| format!("{LATER_UP}: {e}"))?;
             for (current, applied) in REWRITTEN_BY_LATER {
-                if !later.contains(current) {
+                if !carries(&later, current) {
                     return Err(format!(
                         "migrations-current: {LATER_UP} no longer contains the statement the \
                          generator emits now:\n  {current}"
@@ -888,6 +897,26 @@ mod tests {
             "-- {name} refuses vsms\nALTER TABLE t ADD CONSTRAINT {name} CHECK (a <> 'vsms');\n"
         );
         assert!(declares(&declared, name));
+    }
+
+    #[test]
+    fn a_generated_statement_commented_out_of_the_migration_is_not_carried() {
+        let block = "ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_audience_length_check CHECK (length(audience) BETWEEN 1 AND 255);";
+        let live = format!("-- header\n\n{block}\n");
+        let commented = format!("-- header\n\n-- {block}\n");
+        assert!(carries(&live, block));
+        assert!(
+            !carries(&commented, block),
+            "a statement that is only a comment must not satisfy the check"
+        );
+        // A multi-line statement counts whatever blank lines surround it, and a
+        // fully commented-out one does not.
+        let table = "CREATE TABLE t (\n    a TEXT\n);\n";
+        assert!(carries("-- x\nCREATE TABLE t (\n    a TEXT\n);\n\n", table));
+        assert!(!carries(
+            "-- CREATE TABLE t (\n--     a TEXT\n-- );\n",
+            table
+        ));
     }
 
     #[test]
