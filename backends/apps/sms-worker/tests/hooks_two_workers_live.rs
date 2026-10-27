@@ -185,6 +185,14 @@ async fn seed_app(db: &Cratestack) -> String {
         .id
 }
 
+/// The two races share one database and the spawned workers claim every
+/// endpoint's rows (the claim loop is global by design), so they take turns: run
+/// concurrently, each pair of workers would deliver the other's rows. Also the
+/// per-binary mutex every live suite takes (#102): two tests preparing a
+/// not-yet-cached query shape at the same instant race on `pg_type`.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 /// The two delivery modes the race runs under (VS-8R): the claim discipline is
 /// mode-blind, and this proves it by running the same race for each.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -401,6 +409,7 @@ async fn two_real_hooks_workers_never_double_deliver_the_same_hmac_attempt() {
 }
 
 async fn race(mode: Mode) {
+    let _guard = TEST_MUTEX.lock().await;
     let database_url = sms_test_support::database_url().await;
     let db = db().await;
 
