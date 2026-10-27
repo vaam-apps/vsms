@@ -5,6 +5,10 @@ document or its PR.** A console redesign (`docs/design/console-redesign.md`) is
 in flight across several agents and already owns `frontends/apps/admin/` and `frontends/packages/ui/`;
 this audit defers to it wherever the two overlap and says so explicitly.
 
+> **Dated note (2026-10-27, VS-4).** The `private_key_jwt` minting it audits (`token.ts`,
+> `dispatcher.ts` in `frontends/packages/gateway`) was deleted with the console's token machinery
+> (VS-5b) and the OpenID Provider it spoke to (VS-4). Those rows are history.
+
 **Question asked (maintainer, 2026-08-14):** *"Your `frontends/packages/*` for frontend
 apps do have a lot of manual work. Investigate if that cannot be reduced by
 using well maintained pre-existing libraries."*

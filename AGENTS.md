@@ -694,7 +694,7 @@ Explicit scope cuts, named rather than left implicit: no `recordConsent` procedu
 
 **Guard-failure proofs (each run for real, then reverted):** nonce check removed → `a_wrong_or_missing_nonce_is_refused`; `HS256` added to the allow-list → `unsigned_and_symmetric_tokens_and_a_missing_kid_are_refused` and `only_asymmetric_rsa_and_ecdsa_algorithms_are_allowed`; group gate and MFA rule forced true → five `policy` tests; retry on any failure (not just MFA) → `any_failure_other_than_the_mfa_claim_is_refused_at_once_with_no_retry`; the consuming `delete` removed → `a_transaction_is_single_use_and_stored_hashed`, `two_concurrent_consumers_of_one_state_cannot_both_win` and `a_replayed_callback_and_an_unknown_state_are_refused`; the `handle_authorize` dry run removed → `a_console_request_the_op_would_refuse_is_refused_at_start_before_anything_is_stored`; the link lookup ignoring `issuer` → `the_same_subject_under_another_issuer_is_a_different_identity`; `hide_env_values` removed from `--sso-client-secret` → both `cargo xtask secret-env-args` and `help_never_prints_secret_env_values` (the guard list gained `SMS_SSO_CLIENT_SECRET`).
 
-**Verified against a real stack, 2026-10-19** (details and the table in `docs/runbooks/sso.adoc`): real `quay.io/keycloak/keycloak:26.6.1` with a realm imported from JSON, the real `sms-gateway` and `sms-migrate` binaries (`bootstrap` for the first owner), Postgres 16, and the real Next.js console in `next dev`, driven by a scripted browser that submits Keycloak's forms and computes TOTP codes. JIT, link reuse across fresh browsers and SSO-cookie sign-ins, not-in-group, no-second-factor, and OTP-enrolment-then-retry all behaved as designed; the console set a session cookie and `GET /` returned `200`; the refused paths landed on `/login?error=sso_failed` with the generic text. The gateway's log held no client secret and no JWT.
+**Verified against a real stack, 2026-10-19** (details and the table in the SSO runbook, deleted in VS-4): real `quay.io/keycloak/keycloak:26.6.1` with a realm imported from JSON, the real `sms-gateway` and `sms-migrate` binaries (`bootstrap` for the first owner), Postgres 16, and the real Next.js console in `next dev`, driven by a scripted browser that submits Keycloak's forms and computes TOTP codes. JIT, link reuse across fresh browsers and SSO-cookie sign-ins, not-in-group, no-second-factor, and OTP-enrolment-then-retry all behaved as designed; the console set a session cookie and `GET /` returned `200`; the refused paths landed on `/login?error=sso_failed` with the generic text. The gateway's log held no client secret and no JWT.
 
 **Not done, deliberately:** back-channel logout / revoking a vsms session from Keycloak; any `max_age`/`auth_time` freshness check beyond the one forced `prompt=login`; unlinking or re-linking an identity (no operator action — `FederatedLink` has no update/delete policy); more than one issuer; Keycloak in `compose.dev.yaml`/`compose.demo.yaml` (the demo has no IdP; `deploy/docker-compose.yml` passes the settings through); validating `deploy/Caddyfile`'s new `sso_per_ip` zone (the `rate_limit` module is not in the stock Caddy image and `deploy/caddy.Dockerfile` is still not wired into compose, so it was written to mirror its sibling zones and not exercised); a console-side route test (the route handlers need `next/headers`/`@vsms/env`; the pure logic is tested in `lib/sso.test.ts` and the routes were exercised end to end through the real console).
 
@@ -1166,8 +1166,9 @@ and the layer order; this section is what to know before touching it.
   inserts and treats SQLSTATE 23505 as "seen"; an expired conflicting row is deleted and the insert retried once; the
   worker's `sweep_envelope_nonces` clears expired rows in batches. The unique index is the atomicity, so it must stay.
 - **Only JSON is sealed** (`PAYLOAD_TYPE`), because `ROUTER_CODEC` is JSON: a CBOR payload is an unsigned 415.
-- **Unsealed on purpose until VS-4:** `/dlr/*`, `/healthz`, `/readyz` and the OP routes (`/token`, `/jwks.json`,
-  discovery, `/login*`, `/login/sso/*`). Do not seal them here and do not add a token to anything sealed.
+- **Unsealed on purpose:** `/dlr/*`, `/healthz` and `/readyz`. (Until VS-4 so were the OP routes, `/token`,
+  `/jwks.json`, discovery, `/login*` and `/login/sso/*`; they are deleted, see "The OpenID Provider is deleted" below.)
+  Do not seal the three and do not add a token to anything sealed.
 - **Server keys.** `serve` requires `--envelope-signing-key-file` and `--envelope-next-signing-key-file` (env
   `SMS_ENVELOPE_SIGNING_KEY_FILE`, `SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE`; PKCS#8 Ed25519 PEM, the same key twice refused).
   `sms-gateway server-keys` prints both public keys (needs no database). `just dev-keys` mints dev keys for the compose
@@ -4395,6 +4396,48 @@ The last green `ci` run on `main` was 2026-09-29; nothing merged since, and by 2
 - **Trivy**: `proxy-addr` 2.0.7 (CVE-2026-90711) came in through `express` in three pnpm lockfiles (`examples/node/demo-app`, `examples/node/webhook-receiver`, `examples`); `express` 5.3.0 requires `proxy-addr` `^2.0.8`, so the parent is bumped. The Trivy database moved while this was being fixed and added `next` 16.3.5 (CRITICAL RCE in `next/og`, HIGH SSRF), `sharp` 0.35.4 and `source-map-js` 1.2.1: `next` is `16.3.8`, `sharp` `0.35.5`, `source-map-js` `1.2.2`, and the now-unneeded `next@16.3.5` `minimumReleaseAgeExclude` entries are gone.
 - **hadolint DL3018** (`apk add` without versions) on the five Rust Dockerfiles: `# hadolint ignore=DL3018` with the reason on the line above, the same convention `ci/runner/Dockerfile` already uses for DL3008/DL3016. An exact pin would make the build fail the day Alpine rotates that revision out of the 3.22 index; the base image tag already pins the Alpine release.
 - **zizmor `impostor-commit`**: the `dtolnay/rust-toolchain` pin (`6bed0761…`, a `stable` branch head) belonged to no branch of that repository any more, because the action force-pushes `stable`. Pinned to the current head, and `zizmor` (online, with a token) now reports it as a real commit. Also in the same sweep: `release.yml` and `pr-title.yml` referenced actions by floating major tag (`@v7`); all are SHA-pinned with a version comment, checkouts carry `persist-credentials: false`, `release.yml`'s workflow-level `packages: write`/`id-token: write` moved to the three jobs that use them, a template expansion into `helm package` went through `env:`, and the one `setup-node` that publishes sets `package-manager-cache: false`.
+
+## The OpenID Provider is deleted (VS-4) — landed 2026-10-27
+
+The owner's rulings (keypairs only, phone pairing only, break-glass is command-line key enrolment) made the embedded
+OpenID Provider and the human OAuth plane dead weight once the signed transport and console pairing shipped. Hard
+cutover, nothing kept beside it. `docs/architecture.md` §4.2 and §4.3 are the current account.
+
+- **Deleted:** the `sms-auth` and `sms-fake-oidc` crates, the `authkestra` family, `/token`, `/jwks.json`, OIDC
+  discovery, `/login`, `/login/sso/*`, `token_rate_limit`, `sms_core::password` (Argon2id), the commands
+  `rotate-signing-key`, `provision-client` and `seed-console-client`, `serve --issuer` and its start-up requirement for an
+  active signing key. `cargo tree` no longer shows `authkestra`, `jsonwebtoken`, `argon2`, `aws-lc-rs` or `rsa` (but for
+  `sms-fake-aws`'s dev-only use; `deny.toml` says so). `serve` binds with only the two envelope keys.
+- **Tables:** `0009_drop_openid_provider` drops `oauth_clients`, `oauth_signing_keys`, `client_assertions`,
+  `user_credentials` and `sso_transactions`. Its `down.sql` raises: password hashes and private signing keys must not
+  come back from a rollback. `FederatedLink` stays (console pairing writes it). `0001_init` and `0002_bootstrap` are
+  untouched, so a fresh database still creates and then drops the five; `.xtask/src/migrations_current.rs` gained
+  `DROPPED_BY_LATER` (the mirror of `ADDED_BY_LATER`) to compare `0001_init` against the generator without them, and fails
+  when the dropping migration does not drop every listed table. §2.10's SQL blocks stay byte-identical for
+  `bootstrap-sql-check`; a note above them says why.
+- **Reshaped, not deleted:** `provisionAppClient(appId, label, scopes, publicKey)` now takes the caller's Ed25519 public key
+  and registers it with the new `AppClient` in one transaction (it used to generate an RSA pair server-side and return the
+  private half once); it refuses `console:pair`. `provisionUser` / `sms-gateway provision-user` create the `User` row only
+  and print no credential. `bootstrap` is two steps (Provider + Route, optional owner row). The console's "Provision a
+  service-account client" panel asks for a public key.
+- **Tests that guarded more than the OP were ported, not dropped.** Deleting `login_flow_live_postgres.rs` would have
+  deleted the owner-grant end-to-end tests and the reserved-role-through-the-signer test with it; they live in
+  `sms-api/tests/owner_grant_live_postgres.rs` and `reserved_role_live_postgres.rs` now, signed. The `sms-auth` live
+  suites' database checks (`rbac_layer2`, the `provision_app_client` suite) moved under `sms-api/tests/`. The R1 allow-list
+  path moved with them. What was deleted outright was only what tested deleted behaviour.
+- **404 proof.** `the_deleted_openid_provider_routes_are_not_served` (in `m1_acceptance_gate_live_postgres.rs`) starts a
+  real `sms-gateway serve` with no OP key and requests `/token`, `/jwks.json`, discovery, `/login` and `/login/sso/*`.
+- **Dev and demo stacks.** `compose.dev.yaml` / `compose.demo.yaml` lost `seed-signing-key`, `provision-client` and
+  `secrets-fix-perms`; the demo app has its own key (`dev-keys/demo-app.pem`, registered by `register-demo-app`) and pins the
+  gateway's keys from `dev-keys/server-keys.txt`; `just dev-keys` writes both, `just demo-login` is gone.
+  `examples/node/demo-app` now signs through the Node SDK it builds from this checkout (`file:` dependency; its image has a
+  build stage for the wasm SDK, like the admin image's), so `ci.yml` runs its step after the SDK's build.
+- **Left, on purpose:** `User.lastLoginAt` is written by nothing now. Dropping it is a lossy migration and a console
+  column; a follow-up either stamps it at pairing or drops it. `User.update`'s `hasRole('system')` clause went with the login
+  that needed it (policy-only, no DDL).
+- **Not verifiable here:** the demo-app image build (it compiles the wasm SDK; the dev container had no room for it), the
+  Helm chart against a cluster, a real Keycloak-free production roll-out. `docs/runbooks/deployment.adoc` is edited, not
+  re-run.
 
 ## Open questions blocking later milestones
 

@@ -27,7 +27,7 @@ features:
     link: /integrating
     linkText: Integrating with vsms
   - title: No shared secrets
-    details: Machine callers use OAuth client_credentials with private_key_jwt. Staff sign in with authorization_code and PKCE, or through a Keycloak realm. The Rust and Node SDKs own the token lifecycle for you.
+    details: Every request is a COSE_Sign1 message signed with a key the caller generated, and every answer is signed back. Staff use the console with a key their own browser made, paired by a vaam admin phone. There are no tokens to acquire or refresh, and the Rust and Node SDKs do the signing for you.
     link: /sdks
     linkText: SDKs
   - title: PostgreSQL is the only coordinator

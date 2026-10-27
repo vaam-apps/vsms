@@ -682,6 +682,13 @@ At minimum, instrument admitted human login, token issuance/refusal, assertion r
 provisioning/retirement, signing/client-key rotation, privacy exports, incident exports, and selected
 sensitive authorization denials.
 
+> **Dated note (2026-10-27, VS-4).** Human login, token issuance and assertion replay no longer
+> exist: the OpenID Provider is deleted. The events this section sizes against them become console-key
+> pairing and revocation, app-client key registration and revocation (`registerConsoleKey`,
+> `registerAppClientKey`, `revokeAppClientKey`) and the envelope layer's refusals. `/login` and
+> `/token` rate limiting is moot with the routes; the paths in the table below that name
+> `sms-auth` and `login.rs` are deleted.
+
 `/login` gains source and account-bucket rate limiting before a refusal can write an event; `/token`
 uses its existing limiters. Malformed requests rejected before an identifiable authentication attempt
 do not create one row each. The event writer has a documented bounded failure policy and metric so a

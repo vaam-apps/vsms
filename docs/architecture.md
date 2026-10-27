@@ -12,35 +12,31 @@ and configuration rather than a code change. `docs/design/multi-country.md` reco
 changed, what it deliberately did not, and which markets remain blocked on work nobody has done —
 sender-ID regimes, aggregator coverage and data-residency conflicts especially.
 
-**Stack (as chosen):** Rust + TypeScript · CrateStack (`.cstack` schema-first) · Authkestra OP (OIDC Provider) · full RBAC through JWT claims · single OIDC client for humans, one OAuth service account per calling app.
+**Stack (as chosen):** Rust + TypeScript · CrateStack (`.cstack` schema-first) · the signed transport (§4.0: every request a COSE_Sign1 envelope, verified against a registered public key) · full RBAC through the verified signer's role and scopes · one Ed25519 key per calling app, one paired browser key per console user. There is no token, no password and no OpenID Provider (deleted in VS-4, 2026-10-27).
 
 ## Decisions locked in this revision
 
-| Question            | Answer                                                                                      |
-| ------------------- | ------------------------------------------------------------------------------------------- |
-| Tenancy             | Single org, multiple apps. No `tenantId` in the core model.                                 |
-| Operator path       | Provider abstraction over both HTTP and SMPP; ship HTTP first.                              |
-| Admin UI            | Hand-built Next.js + shadcn/ui over the generated TypeScript client.                        |
-| Transport           | `transport rest` (CrateStack default). gRPC is a later, optional addition.                  |
-| Machine auth        | OAuth2 `client_credentials` service accounts. No API keys, no HMAC request signing.         |
-| Identifiers         | `Cuid` for every model id and FK.                                                           |
-| Eventing            | CrateStack `@@emit` + `events::Subscriptions`. No hand-rolled outbox table.                 |
-| **Background work** | **One `sms-worker` node, role-selectable, singletons elected by Postgres advisory lock.**   |
-| **State machines**  | **Enforced in Postgres by transition tables + `BEFORE UPDATE` triggers, not only in Rust.** |
+| Question            | Answer                                                                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Tenancy             | Single org, multiple apps. No `tenantId` in the core model.                                                                            |
+| Operator path       | Provider abstraction over both HTTP and SMPP; ship HTTP first.                                                                         |
+| Admin UI            | Hand-built Next.js + shadcn/ui over the generated TypeScript client.                                                                   |
+| Transport           | `transport rest` (CrateStack default). gRPC is a later, optional addition.                                                             |
+| Machine auth        | A registered Ed25519 public key per app client; every request a COSE_Sign1 envelope (§4.0). No API keys, no tokens, no shared secrets. |
+| Identifiers         | `Cuid` for every model id and FK.                                                                                                      |
+| Eventing            | CrateStack `@@emit` + `events::Subscriptions`. No hand-rolled outbox table.                                                            |
+| **Background work** | **One `sms-worker` node, role-selectable, singletons elected by Postgres advisory lock.**                                              |
+| **State machines**  | **Enforced in Postgres by transition tables + `BEFORE UPDATE` triggers, not only in Rust.**                                            |
 
-The schema in §2 was assembled into a single file and run through the real `cratestack-parser` 0.4.16 and the real Postgres migration emitter; the policy and `@authorize` rules — which live in `cratestack-macros`, not the parser — were proven by compiling a real `include_server_schema!` expansion. Rust and Authkestra APIs were checked against published crate sources. Every Mermaid diagram here was rendered with `mmdc` to confirm it parses. The validated schema ships alongside this document as `schema.cstack`.
+The schema in §2 was assembled into a single file and run through the real `cratestack-parser` 0.4.16 and the real Postgres migration emitter; the policy and `@authorize` rules — which live in `cratestack-macros`, not the parser — were proven by compiling a real `include_server_schema!` expansion. Rust APIs were checked against published crate sources. Every Mermaid diagram here was rendered with `mmdc` to confirm it parses. The validated schema ships alongside this document as `schema.cstack`.
 
 ---
 
-## 0. Four corrections to the brief
+## 0. Corrections to the brief
 
 **1. CrateStack does not consume `.proto`.** The schema language is `.cstack` — Prisma-shaped. Protobuf runs the other direction: `cratestack generate-proto` *emits* a `.proto` plus a committed `.pb.lock` field-number lockfile, and `transport grpc` swaps the REST binding for a tonic service. That path is real but currently **model CRUD only** — procedures aren't wired into the generated gRPC service, and `where`/`or` predicates aren't wired into either generator. Since the send path is a *procedure*, REST is the only viable binding today.
 
-**2. "Authkestra with OP" means `authkestra-op`**, not `authkestra-oidc` (the relying-party side). The OP crate serves `/authorize`, `/token`, `/userinfo`, `/jwks.json`, `/.well-known/openid-configuration`, device flow and token exchange. Its shipped examples use `TokenManager::new(secret, issuer)` → **HS256**, which makes `public_jwk()` return `None` and your JWKS serve `{"keys":[]}`. Use `new_asymmetric(pem, Some(issuer), Some(kid))` and keep the `TokenManager` issuer string identical to `OpConfig.issuer`.
-
-**3. Authkestra has no RBAC.** `Identity` is `{provider_id, external_id, email, username, attributes}`; `Claims` gives `scope: Option<String>` and `extra: HashMap<String, Value>`. RBAC is yours to build — which your "one app, permissions ↔ claims" constraint makes tractable. See §5.
-
-**4. ⚠️ `authkestra-op` 0.2.3 cannot serve `client_credentials` from a persisted client store.** A blocking bug that lands squarely on your design, so it leads §4. `GrantType` is `#[serde(untagged)]` over unit variants, so every unit variant serialises to JSON `null`, and `null` always deserialises back to the first variant, `AuthorizationCode`. A client registered with `grant_types: [ClientCredentials]` and written to Postgres or Redis comes back as `[AuthorizationCode]`; `allows_grant_type(ClientCredentials)` returns `false` and `/token` answers `400 unauthorized_client`. There is **no JSON value that deserialises to `ClientCredentials`**. Only the non-serialising `MemoryStore` escapes — which is why the crate's own tests pass. The fix is thirty lines, in §4.2.
+**2-4. Superseded (VS-4, 2026-10-27).** The three corrections that stood here concerned `authkestra-op`, the OpenID Provider the gateway used to embed: that `authkestra-op` is the provider crate (not `authkestra-oidc`), that Authkestra has no RBAC, and that `authkestra-op` 0.2.3 could not serve `client_credentials` from a persisted client store. The provider, `authkestra` and the token plane are deleted (§4.0, §4.2, §4.3), so the corrections no longer correct anything in this tree; they remain in git history. RBAC is still ours to build (§5).
 
 ---
 
@@ -102,11 +98,10 @@ Legal edges live in `message_state_transitions` / `job_state_transitions`; `BEFO
 flowchart TB
     APP["Your apps<br/>OTP · notifications"]
     HUMAN["Operators<br/>browser"]
-    EDGE["Edge — Caddy + rustls<br/>TLS 1.3 · HSTS<br/>IP allowlist on /adm · rate limit on /token"]
+    EDGE["Edge — Caddy + rustls<br/>TLS 1.3 · HSTS<br/>IP allowlist on /adm · rate limit on /dlr"]
 
     subgraph online["Online tier — stateless, scale to N"]
         direction LR
-        AUTH["sms-auth<br/>authkestra-op<br/>+ custom ClientStore<br/>RS256 + JWKS"]
         API["sms-api<br/>Axum + CrateStack<br/>procedures<br/>+ event subscribers"]
         ADMIN["admin<br/>Next.js BFF<br/>shadcn/ui"]
     end
@@ -115,13 +110,11 @@ flowchart TB
     PG[("PostgreSQL<br/>system of record<br/>queues · state machines")]
     OPS["Orange CM · MTN<br/>aggregators"]
 
-    APP -- "client_credentials, then Bearer" --> EDGE
-    HUMAN -- "auth code + PKCE" --> EDGE
-    EDGE --> AUTH
+    APP -- "sealed request (COSE_Sign1)" --> EDGE
+    HUMAN -- "sealed request, paired browser key" --> EDGE
     EDGE --> ADMIN
     EDGE --> API
-    ADMIN -- "server-side, httpOnly cookie" --> API
-    AUTH -. "JWKS" .-> API
+    ADMIN -- "carries sealed bytes" --> API
     API -- "row + @@emit outbox row, one tx" --> PG
     PG <-- "SKIP LOCKED · advisory locks" --> WORKER
     WORKER -- "submit" --> OPS
@@ -133,12 +126,11 @@ Three tiers and one database. The online tier is stateless and scales freely; ev
 
 ### Why these process boundaries
 
-| Node         | Crate                                                    | Why it's separate                                                                                                                                                                                                                                                    |
-| ------------ | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sms-api`    | `cratestack-pg` + Axum                                   | Stateless, scale to N. Holds the CrateStack router, the procedures, and the event subscribers.                                                                                                                                                                       |
-| `sms-auth`   | `authkestra-op` + `authkestra-axum` + your `ClientStore` | Different blast radius and release cadence. Isolating it behind JWKS is what makes swapping in Keycloak/ZITADEL a config change. Since the SSO work it is also an OIDC *relying party* of the staff Keycloak realm for the one step "who is this human?" — see §4.3. |
-| `sms-worker` | plain tokio                                              | **All background processing, one binary.** Roles are selected at startup; singleton roles self-elect. §7.                                                                                                                                                            |
-| `admin`      | Next.js 15+ App Router                                   | —                                                                                                                                                                                                                                                                    |
+| Node         | Crate                  | Why it's separate                                                                                         |
+| ------------ | ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| `sms-api`    | `cratestack-pg` + Axum | Stateless, scale to N. Holds the CrateStack router, the procedures, and the event subscribers.            |
+| `sms-worker` | plain tokio            | **All background processing, one binary.** Roles are selected at startup; singleton roles self-elect. §7. |
+| `admin`      | Next.js 15+ App Router | —                                                                                                         |
 
 One worker binary rather than three services is a deliberate simplification over the previous revision. The roles have genuinely different concurrency requirements — `dispatch` must be a singleton because of Orange's per-contract TPS cap, `hooks` wants to scale — but they share configuration, database pool, tracing setup, provider registry and deployment lifecycle. Splitting them into separate images buys isolation you don't need yet and costs you three deploy pipelines. Roles are already the unit of scaling, so when you *do* need `hooks` on its own node, you run the same image with `--roles hooks` and change nothing else.
 
@@ -322,7 +314,7 @@ auth Principal {
 
 ### 2.2 Applications and service accounts
 
-There is no `ApiKey` model. Every machine caller is an OAuth service account registered with the OP; the gateway learns *which app is calling* by mapping the token's `sub` (the `client_id`) back to an `App`. That mapping lives here rather than in the token because **`authkestra-op` cannot inject per-client claims into a standard `client_credentials` token** — `issue_client_token_with_extra` is never called on that path, and the handler isn't even passed the store. §4.2 has the evidence.
+There is no `ApiKey` model. Every machine caller is an `AppClient` holding at least one registered Ed25519 public key (`ClientKey`, §2.9); the gateway learns *which app is calling* by mapping the verified signer's `AppClient.clientId` back to an `App`. That mapping lives here rather than in the request because a signed request names a key, not an app (§4.0).
 
 ```cstack
 model App {
@@ -373,70 +365,16 @@ model AppClient {
   @@allow("delete", hasRole('owner') || hasRole('admin'))
   @@emit(created, updated, deleted)
 }
-
-model OauthClient {
-  @use(Timestamps)
-
-  id Cuid @id @default(dbgenerated())
-  clientId String @unique @length(min: 8, max: 64)
-  appClientId Cuid?
-  appClient AppClient? @relation(fields: [appClientId], references: [id])
-  tokenEndpointAuthMethod ClientAuthMethod
-  jwks String?
-  grantTypes String
-  scopes String
-  redirectUris String
-  requirePkce Boolean
-  active Boolean @default(true)
-
-  @@audit
-  @@allow("read", hasRole('system'))
-  @@allow("create", hasRole('system'))
-  @@allow("update", hasRole('system'))
-}
-
-model OauthSigningKey {
-  @use(Timestamps)
-
-  id Cuid @id @default(dbgenerated())
-  privateKeyPem String @sensitive
-  active Boolean @default(true)
-  expiresAt DateTime?
-
-  @@audit
-  @@allow("read", hasRole('system'))
-  @@allow("create", hasRole('system'))
-  @@allow("update", hasRole('system'))
-}
-
-model ClientAssertion {
-  @use(Timestamps)
-
-  id Cuid @id @default(dbgenerated())
-  jti String @unique @length(min: 1, max: 255)
-  expiresAt DateTime
-
-  @@allow("read", hasRole('system'))
-  @@allow("create", hasRole('system'))
-  @@allow("delete", hasRole('system'))
-}
 ```
 
-`OauthClient` is the OP's client registry, living in the gateway schema so `sms-auth` reads it through delegates rather than raw SQL (R1). Its policy is `hasRole('system')` on every action — **no HTTP principal can read this model at all**. `grantTypes` is a plain delimited `String`, which is also the wire format OAuth uses.
-
-**There is no `secretHash`, and no column that could hold one.** Machine callers authenticate with `private_key_jwt`; the admin console is a public client protected by PKCE (§4.2). The database stores only public keys, so there is no shared secret in this system to leak, hash, rotate, or accidentally log. `tokenEndpointAuthMethod` is `NOT NULL` with **no `@default`** on purpose: a `@default` would drop it from `CreateOauthClientInput` (§2.0), leaving it unsettable, and a *missing* method is how authkestra spells "registration predates the field" — a state that accepts a secret from either transport and refuses assertions outright. Every row naming its method makes that branch unreachable. Two hand-written `CHECK`s in §2.10 finish the job: `private_key_jwt` must carry a `jwks` holding **at least one key** — `{"keys":[]}` is not null and is still keyless — and `none` must require PKCE.
-
-`OauthSigningKey` holds the OP's RS256 keys, with `id` doubling as the JWKS `kid`. Note what `@sensitive` does **not** do: it redacts audit snapshots only and adds no serde attribute (§2.0), so the model's `hasRole('system')` read policy is the whole confidentiality control over `privateKeyPem`. `system` is a synthetic internal role that no issued token may ever carry — an `AuthProvider` that mints `system` for HTTP callers hands them the key that signs every token in the system, through generated CRUD, with no other mistake required.
-
-`ClientAssertion` records spent `private_key_jwt` assertion `jti`s so a captured assertion is single-use rather than a bearer credential good for its whole lifetime. It is insert-only, and the write is `create` + catching SQLSTATE `23505` on the `@unique` index — authkestra requires `record_jti` to be atomic, and a read-then-write across two statements is precisely the TOCTOU race the table exists to prevent, where two concurrent replays both observe "not yet seen". No `@@audit`: one row per token request, and the audit row would carry nothing the row itself doesn't.
 
 **On delimited strings.** No model here declares a list field, because `String[]` and `Int[]` panic the server macro outright — the parser accepts them and the migration emitter writes `TEXT[]`, but `include_server_schema!` dies with `unsupported SQLx value type for this slice`. So every multi-value column is a space-delimited `String`, stored **with leading and trailing separators**: `" sms:send sms:read "`, not `"sms:send sms:read"`.
 
-The sentinel spaces are what make membership queries safe. `.contains("sms:send")` would also match a hypothetical `sms:sendall`; `.contains(" sms:send ")` cannot. `sms-core` owns `pack(&[&str]) -> String` and `unpack(&str) -> Vec<&str>` so no call site invents its own convention. For `scopes` and `grantTypes` this is barely a workaround — OAuth transmits both as space-delimited strings anyway, so the column and the wire format finally agree.
+The sentinel spaces are what make membership queries safe. `.contains("sms:send")` would also match a hypothetical `sms:sendall`; `.contains(" sms:send ")` cannot. `sms-core` owns `pack(&[&str]) -> String` and `unpack(&str) -> Vec<&str>` so no call site invents its own convention. For `scopes` this is barely a workaround — OAuth scope strings are space-delimited anyway, so the column and the convention agree.
 
-`AppClient` exists so a caller's *identity* is separable from its credential. Under `private_key_jwt` the inline `jwks` is a JWK **Set**, so key rotation no longer needs a second identity — publish both keys, cut the caller over, drop the old one. Rotating by identity (provision `otp-svc-v2` alongside `otp-svc-v1`, both mapped to the same `App`) stays available for the cases that want a clean audit boundary rather than a key swap.
+`AppClient` exists so a caller's *identity* is separable from its credential. A client holds one or more `ClientKey` rows (§2.9), so key rotation needs no second identity: register the new key, cut the caller over, revoke the old one (both verify in between). Rotating by identity (provision a second client alongside the first, both mapped to the same `App`) stays available for the cases that want a clean audit boundary rather than a key swap.
 
-Note what is deliberately **absent**: no secret and no hash — anywhere, for anyone. The only credential material in the database is the *public* half of a caller's keypair, in `OauthClient.jwks`, plus the OP's own signing key in `OauthSigningKey`. Nothing here is a bearer credential that leaks by being read.
+Note what is deliberately **absent**: no secret and no hash — anywhere, for anyone. The only credential material in the database is the *public* half of a caller's keypair, in `ClientKey.publicKey` (and a person's in `ConsoleKey.publicKey`). Nothing here is a bearer credential that leaks by being read. (The OpenID Provider's tables — `OauthClient`, `OauthSigningKey`, `ClientAssertion`, `UserCredential`, `SsoTransaction` — were dropped by forward migration `0009_drop_openid_provider` in VS-4.)
 
 ### 2.3 Sender IDs
 
@@ -909,12 +847,11 @@ model Role {
 }
 ```
 
-`User.role` references `Role.key`, not `Role.id` — both `String`, so the type rule holds, and it keeps the JWT-facing identifier readable in the database. `Role.permissions` is a delimited `String` rather than a join table: the set is small, it's read on every token issuance, and `unpack()` produces exactly the array that goes into the `perms` claim. A join table would cost a query on the login hot path and buy nothing.
+`User.role` references `Role.key`, not `Role.id` — both `String`, so the type rule holds, and it keeps the principal-facing identifier readable in the database. `Role.permissions` is a delimited `String` rather than a join table: the set is small, it's read on every principal lookup (cached for 60 seconds), and `unpack()` produces exactly the array that goes into the principal's `perms`. A join table would cost a query on the request hot path and buy nothing.
 
-**`FederatedLink` and `SsoTransaction` (single sign-on, §4.3)** — two models, both `hasRole('system')` on every action they have, shipped as forward migration `0005_sso_federation` (not a regenerated `0001_init`: that file has been applied to deployed databases and `sms-migrate` records migrations by name; `cargo xtask migrations-current` knows the two tables are carried by `0005`, and fails if `0005`'s copy of the generator's statements drifts from `schemas/vsms.cstack`).
+**`FederatedLink` (console pairing, §4.3)** — `hasRole('system')` on every action it has, shipped as forward migration `0005_sso_federation` (not a regenerated `0001_init`: that file has been applied to deployed databases and `sms-migrate` records migrations by name; `cargo xtask migrations-current` knows the table is carried by `0005`, and fails if `0005`'s copy of the generator's statements drifts from `schemas/vsms.cstack`). The Keycloak single sign-on callback wrote it until VS-4 deleted that; console pairing (`registerConsoleKey`) writes it now. `SsoTransaction`, the in-flight sign-in table `0005` shipped beside it, was dropped by `0009_drop_openid_provider`.
 
-- `FederatedLink(issuer, subject, userId)` with a hand-written `UNIQUE (issuer, subject)` — the identity key. It is **not** `User.subject`: that column is vsms's own OP subject (the row's `id`, written by `provision_user.rs` and the JIT path), while an upstream `sub` is unique only within its issuer and chosen by someone else; putting it in `User.subject` would give one column two meanings and let an upstream-chosen string collide with a local id-shaped subject. Never `email`. `@@audit`; no `update` or `delete` action (unlinking is deliberately not an operation yet).
-- `SsoTransaction(stateHash, nonce, codeVerifier, consoleRequest, isRetry, expiresAt)` — one in-flight upstream sign-in. `stateHash` is the SHA-256 of the upstream `state` (`@unique`), so a copy of the table is not a set of valid callback URLs; the row is consumed by `delete` (a second concurrent delete of the same row affects nothing, which is the single-use guarantee); a five-minute TTL; reaped by a task in `sms-gateway serve`. Postgres is the only coordination mechanism, so this is a table and not a cookie or process memory.
+- `FederatedLink(issuer, subject, userId)` with a hand-written `UNIQUE (issuer, subject)` — the identity key; console pairing finds or provisions a `User` through `(issuer = "vaam", subject = <the person's id at vaam>)`. It is **not** `User.subject`: that column is vsms's own subject (the row's `id`, written by `provision_user.rs` and the JIT path), while an upstream `sub` is unique only within its issuer and chosen by someone else; putting it in `User.subject` would give one column two meanings and let an upstream-chosen string collide with a local id-shaped subject. Never `email`. `@@audit`; no `update` or `delete` action (unlinking is deliberately not an operation yet).
 
 ### 2.9 Procedures
 
@@ -1026,24 +963,24 @@ mutation procedure replayWebhookAttempt(args: ReplayWebhookAttemptInput): Webhoo
 
 `@isolation("serializable")` on `cancelMessage` matters: cancel races the worker's claim of the same row. `serializable` plus `@version` plus the transition trigger turns that race into a clean retry rather than a message that gets cancelled *and* submitted. `cratestack-sqlx` wraps it in `run_in_isolated_tx_with_retries`.
 
-`provisionAppClient` is the only path that writes a credential. It generates a secret from a **restricted alphabet** (§4.2), Argon2id-hashes it into the OP's client table, writes the `AppClient` row, and returns the plaintext once. Because it spans two stores it is `serializable` and must tolerate partial failure — write the OP row first, `AppClient` second, and reconcile orphans in a job.
+`provisionAppClient(appId, label, scopes, publicKey)` is the HTTP path that creates an `AppClient`: it makes the client (`appc_<uuid>`) and registers the caller's Ed25519 public key for it in one `serializable` transaction, returning `{clientId, keyId, thumbprint}`. Nothing secret exists to return: the caller generated the keypair and vsms never sees the private half (it used to generate an RSA keypair server-side and return the private key once, for the token server VS-4 deleted). A thumbprint already registered to any client is a 409, and `console:pair` is refused for every HTTP caller (§4.2).
 
-**`ClientKey` (signed transport, VS-2)** — an app client's request-signing **public** key, and the first piece of the move from OAuth `client_credentials` to COSE_Sign1-signed requests. It adds, and removes, nothing else itself: `provisionAppClient`, the RSA path and the token server in §4.2 are unchanged until VS-4. Since VS-3 the envelope layer verifies against a non-revoked `ClientKey` (§4.0, "The signed transport") and the row is the only credential the API accepts from an app.
+**`ClientKey` (signed transport, VS-2)** — an app client's request-signing **public** key, and the credential of the move from OAuth `client_credentials` to COSE_Sign1-signed requests, which VS-4 completed. Since VS-3 the envelope layer verifies against a non-revoked `ClientKey` (§4.0, "The signed transport") and the row is the only credential the API accepts from an app.
 
-- `ClientKey(appClientId, alg, publicKey, thumbprint, label, revokedAt)`, shipped as forward migration `0006_client_keys` by the same mechanism as `0005` (`cargo xtask migrations-current` carries a `(directory, tables)` entry per forward migration). `alg` is `ed25519` only — cratestack-cose signs with Ed25519 and ESP256, never RSA, so no existing `OauthClient.jwks` key can be reused and every caller registers a new Ed25519 key. `publicKey` is the raw 32-byte point (CHECK in `0006`); the private half is generated by the caller and never reaches vsms, so unlike `provisionAppClient` there is nothing to return once.
+- `ClientKey(appClientId, alg, publicKey, thumbprint, label, revokedAt)`, shipped as forward migration `0006_client_keys` by the same mechanism as `0005` (`cargo xtask migrations-current` carries a `(directory, tables)` entry per forward migration). `alg` is `ed25519` only — cratestack-cose signs with Ed25519 and ESP256, never RSA, so every caller registers an Ed25519 key. `publicKey` is the raw 32-byte point (CHECK in `0006`); the private half is generated by the caller and never reaches vsms, so there is nothing to return once.
 - `thumbprint` is the RFC 9679 COSE key thumbprint, lowercase hex, computed by `cratestack::cose` and never taken from the caller. `@unique`: the key's identity, so one public key cannot be two rows or belong to two clients, and the request's 8-byte `kid` is its first 16 hex characters.
 - **Revoke, never delete.** `revokedAt` set means refused; the row stays so a revoked key is never re-registered as new. There is no `delete` action.
 - **Policy.** `create` and `update` are `hasRole('system')` only; `read` admits `owner`, `admin` and `system`. The generated `POST /client_keys` therefore cannot plant a key (it would skip the thumbprint and key validation). `registerAppClientKey(appClientId, publicKey, label?)` and `revokeAppClientKey(keyId)`, each `@allow(owner || admin)`, are the writers and run their writes under the internal system context, the split `provisionAppClient` makes for `AppClient`. Registration is idempotent on the thumbprint (the same key for the same client returns the same row), refuses a revoked key and a key of another client with a 409, and refuses a retired `AppClient`.
-- **Operator path.** `sms-gateway register-client --app <slug> --public-key <base64url> [--label] [--scope …]` finds or creates the app's signing client (`appc_<slug>`; `--scope` is needed only the first time) and registers the key through the same entry point as the HTTP route. Run twice, it leaves one key and exits 0. It needs the `App` to exist (`create-app`), like `provision-client --app-slug`.
+- **Operator path.** `sms-gateway register-client --app <slug> --public-key <base64url> [--label] [--scope …]` finds or creates the app's signing client (`appc_<slug>`; `--scope` is needed only the first time) and registers the key through the same entry point as the HTTP route. Run twice, it leaves one key and exits 0. It needs the `App` to exist (`create-app`), like every operator path.
 
 `backends/crates/sms-api/src/client_keys.md` has the sequence and state diagrams.
 
-**`ConsoleKey` (signed transport, VS-5a)** — a *human's* request-signing public key, the keypair that replaces the console's access/ID/refresh-token session. Since VS-3 the envelope `AuthProvider` verifies against it as its second signer kind (`ConsoleKey` → user principal, §4.0). The password login, the Keycloak SSO and the OP are untouched until VS-4.
+**`ConsoleKey` (signed transport, VS-5a)** — a *human's* request-signing public key, the keypair that replaces the console's access/ID/refresh-token session. Since VS-3 the envelope `AuthProvider` verifies against it as its second signer kind (`ConsoleKey` → user principal, §4.0). There is no other way in since VS-4: no password, no TOTP, no single sign-on.
 
 - `ConsoleKey(userId, alg, publicKey, thumbprint, label, pairedAt, expiresAt, revokedAt)`, forward migration `0007_console_keys` (`ADDED_BY_LATER` in `cargo xtask migrations-current`, and `ConsoleKey` in the system-context golden list). `alg` is `esp256` only: a WebCrypto non-extractable P-256 key. `publicKey` is the **SEC1 uncompressed point, 65 bytes** (`0x04 ‖ X ‖ Y`, base64url on the wire) — what `crypto.subtle.exportKey("raw", …)` returns and `CoseVerifyKey::p256_sec1` takes; a compressed point is refused, not normalised. `thumbprint` is the RFC 9679 EC2/P-256 thumbprint from `cratestack::cose`, lowercase hex, `@unique`.
 - **A key lasts 30 days** (owner ruling R3): `expiresAt = pairedAt + 30 days`, set once, never extended; an expired or revoked key is never registered again. Expiry is data, not a job — VS-3's resolver treats `expiresAt <= now` and `revokedAt` as no key.
 - **Policy.** `create`/`update` are `hasRole('system')`; `read` admits owner, admin, system and the key's own user (`auth().kind == "user" && userId == auth().sub`). No `delete`.
-- **`registerConsoleKey(vaamUserId, displayName?, publicKey, possessionProof, issuedAt)`** is `@allow(auth().kind == "app")` plus a Layer 2 check of the scope **`console:pair`** (`sms_api::console_keys::require_pair_scope`, which reads the token's `scope` and never a human's `perms`). Its one caller is vaam's service client, after a vaam admin approved the pairing on a bound phone (owner ruling: consoles pair with a vaam admin phone only). `possessionProof` is the console key's raw ECDSA-P-256-SHA-256 signature (`r‖s`, base64url) over `"vsms.console-pair.v1\n" + publicKey + "\n" + issuedAt` (unix seconds); an `issuedAt` more than 300 s from the server's clock is refused before the signature is read. It then finds or JIT-provisions the `User` through `FederatedLink(issuer = "vaam", subject = vaamUserId)` with role **`admin`, never `owner`** (owner ruling R2, and the #434 guard: the `User` is written under an `admin` context so `User.create`'s own `roleKey != 'owner'` clause is a second, independent refusal), email `<vaamUserId>@vaam.invalid`. A linked person's role is never touched; a deactivated account is refused. Idempotent on the thumbprint; a key that is another user's, revoked or expired is a 409.
+- **`registerConsoleKey(vaamUserId, displayName?, publicKey, possessionProof, issuedAt)`** is `@allow(auth().kind == "app")` plus a Layer 2 check of the scope **`console:pair`** (`sms_api::console_keys::require_pair_scope`, which reads the principal's `scope` and never a human's `perms`). Its one caller is vaam's service client, after a vaam admin approved the pairing on a bound phone (owner ruling: consoles pair with a vaam admin phone only). `possessionProof` is the console key's raw ECDSA-P-256-SHA-256 signature (`r‖s`, base64url) over `"vsms.console-pair.v1\n" + publicKey + "\n" + issuedAt` (unix seconds); an `issuedAt` more than 300 s from the server's clock is refused before the signature is read. It then finds or JIT-provisions the `User` through `FederatedLink(issuer = "vaam", subject = vaamUserId)` with role **`admin`, never `owner`** (owner ruling R2, and the #434 guard: the `User` is written under an `admin` context so `User.create`'s own `roleKey != 'owner'` clause is a second, independent refusal), email `<vaamUserId>@vaam.invalid`. A linked person's role is never touched; a deactivated account is refused. Idempotent on the thumbprint; a key that is another user's, revoked or expired is a 409.
 - **`revokeConsoleKey(keyId)`** is `@allow(auth().kind == "user")` + `@authorize(ConsoleKey, detail, args.keyId)`: owner and admin revoke any key, anyone else their own.
 - **Break-glass (owner ruling Q2).** `sms-gateway pair-console-key --user <email|id> --public-key <…> [--label]`, run inside the cluster, attaches a key to an **existing active** user with no proof of possession (the operator holding the database is the authority, as for `provision-user`). It creates no user and changes no role.
 - The composer keeps its own Ed25519 service key, registered as a `ClientKey` by `register-client` (owner ruling Q5). The key is spent for a person only after **`authorizeComposition(operation, inputSha256)`**, a procedure with `@allow(auth().kind == "user" && (hasRole('owner') || hasRole('admin') || hasRole('operator')))` and a Layer 2 check of `sms:send` (`sms_api::composition`), whose sealed answer names the person, the operation and the hash of the exact input the browser then posts: a `200` to a sealed read proves nothing about who signed, because the envelope answers every signer it accepts, an app client's key included. A refusal is a sealed `403`. `docs/design/console-pairing.md`, "The composer".
@@ -1063,6 +1000,8 @@ fn send_message(
 ```
 
 ### 2.10 Hand-written SQL: defaults, indexes, and the state machines
+
+> **VS-4 (2026-10-27).** `0002_bootstrap` is generated from the SQL blocks below and has been applied to deployed databases, so the blocks stay as they were: the statements about `oauth_clients`, `oauth_signing_keys`, `client_assertions` and `user_credentials` (defaults, triggers, the signing-key and expiry indexes, the client-registration `CHECK`s) still run, on every fresh database, right before `0009_drop_openid_provider` drops those tables with all of it. They are history that cannot be edited, not design. `cargo xtask migrations-current` removes the dropped tables' statements from `0001_init` before comparing it with the generator, and fails if `0009` does not drop every one.
 
 The emitter produces no non-unique indexes, no foreign keys, no triggers, and — because of `dbgenerated()` — no column defaults. It also, as of `cratestack-migrate` 0.5.0, produces **no native Postgres `ENUM` types**: every enum-typed field emits as `TEXT NOT NULL` plus a `CHECK (col IN (...))` constraint instead of `CREATE TYPE ... AS ENUM` plus a typed column. Earlier versions did emit real enum types, which is why the transition tables below are `TEXT`, matched with their own `CHECK` constraints, rather than `message_state`/`job_state` columns — those types no longer exist to reference. Generate the base migration:
 
@@ -1465,7 +1404,7 @@ CREATE INDEX cratestack_event_outbox_undelivered_idx
 
 Three are not: `message_parts`, `delivery_receipts`, and `webhook_attempts` need `ON DELETE CASCADE` so a purged parent takes its children with it, and the framework's emitted default doesn't provide that. Two `FOREIGN KEY` constraints on the same column enforce independently — leaving the emitted `NO ACTION` constraint in place alongside a hand-written `CASCADE` one does not "win" toward the more permissive behaviour, it silently reintroduces the block: Postgres checks both, and the `NO ACTION` one raises `violates foreign key constraint` before the `CASCADE` one ever runs. Confirmed live: deleting a `messages` row with a `message_parts` child against that combination fails instead of cascading. So for those three, the migration drops the emitted constraint by name and replaces it with the cascading one, rather than adding a second constraint beside it.
 
-The other five relations (`messages`, `app_clients`, `oauth_clients`, `routes`, `users`) get exactly the emitted default already, so nothing further is written here for them — a hand-written duplicate would be redundant, not additive, and this section only earns its keep by doing what the framework can't.
+The other five relations (`messages`, `app_clients`, `routes`, `users`, and `oauth_clients` until `0009` dropped it) get exactly the emitted default already, so nothing further is written here for them — a hand-written duplicate would be redundant, not additive, and this section only earns its keep by doing what the framework can't.
 
 ```sql
 ALTER TABLE message_parts DROP CONSTRAINT message_parts_message_id_fkey;
@@ -1486,7 +1425,7 @@ ALTER TABLE operator_prefix_rules ADD CONSTRAINT operator_prefix_rules_prefix_fo
     CHECK (prefix ~ '^[0-9]{1,4}$');
 ```
 
-**Reserved `Role.key` values (#194).** `Role.key`'s own `@regex` (`^[a-z][a-z0-9_]{2,31}$`) has no way to exclude specific literals, and `@db_enforce` is a silent no-op on `@regex` fields regardless (the same gap the `operator_prefix_rules` format check above exists to close) — so nothing in the schema stops an `owner` from creating a `Role` keyed exactly `"system"` through ordinary generated CRUD (`Role.create`'s own `@@allow` is `hasRole('owner')`) and assigning a human `User` to it. `hasRole('system')` matches on `Role.key` verbatim, with no other check in Layer 1 — `system` is supposed to be synthetic, constructible only inside a process (§5.2), never a real database row a human account can reach. A `Role` named `"system"` would let a human read `OauthSigningKey.privateKeyPem` (the key that signs every token this system issues) and every `UserCredential.passwordHash` through generated CRUD, both `hasRole('system')`-gated. `"app"` is reserved alongside it, defensively — `GatewayAuth`'s own machine-caller sentinel `role: "app"` matches no `hasRole(...)` clause today (see `OauthSigningKey`'s own schema comment), so a human `Role` keyed `"app"` is confusing rather than exploitable, but reserving it costs nothing and keeps that true rather than assumed. This is one of two independent guards — `backends/crates/sms-api/src/auth.rs`'s `load_human_principal` refuses a `"system"`/`"app"` role_key at the point of use regardless of what the database allows; see that function's own doc for why both exist rather than just one:
+**Reserved `Role.key` values (#194).** `Role.key`'s own `@regex` (`^[a-z][a-z0-9_]{2,31}$`) has no way to exclude specific literals, and `@db_enforce` is a silent no-op on `@regex` fields regardless (the same gap the `operator_prefix_rules` format check above exists to close) — so nothing in the schema stops an `owner` from creating a `Role` keyed exactly `"system"` through ordinary generated CRUD (`Role.create`'s own `@@allow` is `hasRole('owner')`) and assigning a human `User` to it. `hasRole('system')` matches on `Role.key` verbatim, with no other check in Layer 1 — `system` is supposed to be synthetic, constructible only inside a process (§5.2), never a real database row a human account can reach. A `Role` named `"system"` would let a human pass every `hasRole('system')` policy in the schema (the signer directory's key and nonce tables, among others) through generated CRUD. `"app"` is reserved alongside it, defensively — `GatewayAuth`'s own machine-caller sentinel `role: "app"` matches no `hasRole(...)` clause today (see `system_context`'s doc in `sms-api`'s `auth.rs`), so a human `Role` keyed `"app"` is confusing rather than exploitable, but reserving it costs nothing and keeps that true rather than assumed. This is one of two independent guards — `backends/crates/sms-api/src/auth.rs`'s `load_human_principal` refuses a `"system"`/`"app"` role_key at the point of use regardless of what the database allows; see that function's own doc for why both exist rather than just one:
 
 ```sql
 ALTER TABLE roles ADD CONSTRAINT roles_key_not_reserved_check
@@ -1495,7 +1434,7 @@ ALTER TABLE roles ADD CONSTRAINT roles_key_not_reserved_check
 
 **Who may hand out `owner`** is the same kind of invariant, guarded the same two-independent-ways way, but in Rust and in the schema rather than in a `CHECK` — see §5.2 ("Only an owner may hand out `owner`"). It needs no DDL: the schema half is a policy-only change to `User`'s `@@allow`, which the migration emitter never sees.
 
-**Client-registration invariants.** The schema can say a client names one auth method; it cannot say that the method and the rest of the row agree. Both of these are the difference between a misconfigured client failing at `INSERT` and failing at `/token`, where the symptom is an authentication error nobody can explain:
+**Client-registration invariants (history: the table they constrain, `oauth_clients`, was dropped by `0009` in VS-4).** The schema can say a client names one auth method; it cannot say that the method and the rest of the row agree. Both of these are the difference between a misconfigured client failing at `INSERT` and failing at `/token`, where the symptom is an authentication error nobody can explain:
 
 ```sql
 -- private_key_jwt without a key is a client that can never authenticate;
@@ -1650,18 +1589,14 @@ Errors are `{"code": "VALIDATION_ERROR", "message": "...", "details": {...}}` wi
 sequenceDiagram
     autonumber
     participant C as Calling app
-    participant OP as sms-auth
     participant API as sms-api
     participant PG as Postgres
     participant W as sms-worker<br/>dispatch role
     participant P as Provider
 
-    C->>OP: POST /token (client_credentials)
-    OP-->>C: access_token (sub = client_id, scope)
-
-    C->>API: POST /v1/$procs/sendMessage<br/>Bearer + Idempotency-Key
-    API->>API: validate JWT via JWKS
-    API->>PG: client_id → AppClient → App (cached 60s)
+    C->>API: POST /v1/$procs/sendMessage<br/>sealed (COSE_Sign1) + Idempotency-Key
+    API->>API: verify the envelope (ClientKey, nonce)
+    API->>PG: signer → AppClient → App (cached 60s)
     API->>API: normalise MSISDN, classify encoding, segment
     API->>PG: opt-out check on msisdnHash
     API->>PG: quota + per-MSISDN OTP limit
@@ -1685,7 +1620,7 @@ sequenceDiagram
 
 Steps 1 to 9 are all pre-persistence. A message that reaches the database is one you have already decided you can send — the worker's job is delivery, not validation. This diagram predates #72 and is not redrawn for it (mermaid parsing is CI-gated per this file's own note on that job; a diagram edit means re-verifying it, and this one is otherwise still accurate) — read `backends/crates/sms-api/src/consent.rs`'s own module doc for the real, current step order: two more accept-time checks now sit between "opt-out check" and "quota", both class-gated (`marketing`/`notification` only; `otp`/`transactional` are exempt) — self-imposed marketing quiet hours (08:00–20:00 WAT), then a `ConsentRecord` lookup.
 
-The `client_id → App` lookup is where the absence of API keys shows up. The token carries no `appId`, because the OP can't inject one on the standard `client_credentials` path (§4.2), so the gateway derives it. That's on the hot path, so cache it — 60 seconds is short enough that retiring a client takes effect promptly and long enough that the lookup never matters.
+The `client_id → App` lookup is where the absence of API keys shows up. A signed request names a key, not an app, so the gateway derives the `App` from the verified signer's `AppClient` (§4.0). That's on the hot path, so cache it — 60 seconds is short enough that retiring a client takes effect promptly and long enough that the lookup never matters.
 
 Return `202 Accepted`, never `200`. You have not sent anything yet, and an API that implies otherwise produces callers that don't handle DLRs. **This rule is about *this* endpoint — `sendMessage` — and nothing else.** It was once mis-cited to justify answering `202` on the inbound `POST /dlr/{providerKey}` provider callback, where the logic inverts: Orange's published contract requires a `200 OK` to acknowledge a receipt, and there is no "not sent yet" to communicate on a callback reporting something that already happened. See §4.1 and §6.2.
 
@@ -1775,11 +1710,10 @@ sequenceDiagram
 - **Two signer kinds.** An Ed25519 `ClientKey` of an active, unretired `AppClient` is an *app* principal (`sub = clientId`, scopes from `AppClient.scopes`). An ESP256 `ConsoleKey`, not revoked and not expired, of an active `User` whose role is not reserved, is a *user* principal. Key rows are read on every request, so a revocation or expiry takes effect on the next call on every replica; only the owning client's or person's standing is cached, for 60 seconds.
 - **Every refusal of a signature is one unsigned 401** (unknown, revoked, expired, forged, replayed, inactive owner). A holder of a dead key learns nothing from the answer. A payload that is not `application/json` is an unsigned 415 before any key is looked up.
 - **Replay protection is a table, not a cache.** `EnvelopeNonce` (forward migration `0008`) holds one row per accepted `cti`, behind a unique index, so two replicas receiving one request record it once between them. An expired row that has not been swept yet is deleted and the insert retried once; the worker's `sweep_envelope_nonces` job deletes expired rows in bounded batches.
-- **The server holds two Ed25519 keys**, `--envelope-signing-key-file` (signs every answer) and `--envelope-next-signing-key-file` (promoted by the next rotation), both PKCS#8 PEM and both required; the same key twice is refused and `serve` does not boot without them. `sms-gateway server-keys` prints the two public keys a client pins, so a rotation is: ship clients that pin the new `next`, promote it, retire the old key. There is no unsigned or "optional" mode.
-- **Unsealed until VS-4:** `/dlr/*` (provider callbacks), `/healthz`, `/readyz`, and the OP routes (`/token`, `/jwks.json`, discovery, `/login*`, `/login/sso/*`). The OP still issues tokens, and nothing on the sealed surface accepts one.
+- **The server holds two Ed25519 keys**, `--envelope-signing-key-file` (signs every answer) and `--envelope-next-signing-key-file` (promoted by the next rotation), both PKCS#8 PEM and both required; the same key twice is refused and `serve` does not boot without them. They are the only keys it needs: it takes no issuer and no signing key of an identity provider (VS-4). `sms-gateway server-keys` prints the two public keys a client pins, so a rotation is: ship clients that pin the new `next`, promote it, retire the old key. There is no unsigned or "optional" mode.
+- **Outside the layer:** `/dlr/*` (provider callbacks, which authenticate themselves), `/healthz` and `/readyz`, and nothing else. The OpenID Provider's routes (`/token`, `/jwks.json`, discovery, `/login`, `/login/sso/*`) are deleted (VS-4): a request for one is the router's 404, and `the_deleted_openid_provider_routes_are_not_served` requests each from a real `sms-gateway serve`.
 - **Layer order, outside in:** per-source rate limit, envelope, per-principal rate limit (charged to `client:<id>` or `user:<id>`), idempotency (fingerprinted on the verified principal), the owner-grant guard, the four RBAC layers, the generated router.
 
-§4.2 and §4.3 describe the token machinery the OP still has and VS-4 removes; nothing on the sealed surface accepts what it issues.
 
 ### 4.1 Transport
 
@@ -1789,210 +1723,39 @@ One hard external constraint: **Orange will only call a DLR webhook on HTTPS por
 
 Internal traffic (worker ↔ smpp role, if ever split) uses mTLS with a private CA, or a Unix socket if co-located.
 
-### 4.2 Machine callers: OAuth2 service accounts
+### 4.2 Machine callers: a registered Ed25519 key
 
-Every calling app uses the `client_credentials` grant and presents a Bearer token. It **authenticates with `private_key_jwt`** — a short-lived JWT assertion signed by the caller's own private key (RFC 7523 §2.2, OIDC Core §9). One realm, one validation path, no API keys, no HMAC request signing, and no shared client secret anywhere in the system.
+Every calling app holds an Ed25519 keypair it generated itself; vsms stores only the public half (`ClientKey`, §2.9). A request is a COSE_Sign1 envelope signed with that key (§4.0): no grant, no token endpoint, no client assertion, no shared secret, no API key and no HMAC over the body. The replay protection a long-lived API key would have needed is the envelope's own `iat` freshness window plus the `EnvelopeNonce` table, so a captured request is refused the second time it arrives.
 
-Those are two different things and it is worth keeping them apart: `client_credentials` is the *grant*, `private_key_jwt` is the *client-authentication method* at `/token`. Swapping the method does not change the grant.
+Three ways a key gets registered, all under one set of rules (idempotent on the RFC 9679 thumbprint; a revoked key or another client's key is a 409; a retired or inactive client is refused):
 
-**On dropping request signing.** An earlier revision had HMAC-over-body, which exists because a long-lived API key needs replay protection. A 15-minute access token doesn't have the same exposure: the window is bounded, the credential never travels on the request, and `Idempotency-Key` handles duplicate submission. `private_key_jwt` removes the shared secret from the picture entirely — the OP stores only the public half, so there is no credential in the database that is worth stealing. What it does *not* give you is proof-of-possession for the access token itself: a leaked bearer token remains usable by whoever holds it until it expires. That still wants mTLS-bound or DPoP-style tokens, which remains an open item. Compensate meanwhile with `App.ipAllowlist` at the edge.
+- **`sms-gateway register-client --app <slug> --public-key <base64url> [--client-name N] [--scope S …]`** — the operator path. It finds or creates the app's signing client (`appc_<slug>`, or `appc_<slug>_<name>` for a second integration of the same app) and attaches the key. It is also the *only* path that may give a client `console:pair`, the scope that lets a client attach a console key to a person (§4.3).
+- **`provisionAppClient(appId, label, scopes, publicKey)`** — HTTP, `owner`/`admin`: makes a fresh `appc_<uuid>` client and registers the key in one transaction; refuses `console:pair` for every caller. The admin console's "Provision a service-account client" panel calls it with a public key the operator pastes in.
+- **`registerAppClientKey`** adds a further key to an existing client, and **`revokeAppClientKey`** ends one. Rotation is therefore register-then-revoke with both keys valid in between; a revocation takes effect on the next request on every replica, because key rows are read on every request.
 
-**The `GrantType` serde bug is fixed as of `authkestra-op` 0.3.2.** Recording it because the workaround shaped this design and the schema still carries its fingerprints. In 0.2.3, `GrantType` was `#[serde(untagged)]` over unit variants, so every unit variant serialised to JSON `null` and `null` deserialised back to the first variant — a persisted `client_credentials` client silently became `authorization_code`, losing its own grant and gaining one it never registered for. 0.3.2 replaced that with hand-written `Serialize`/`Deserialize` impls over the real OAuth strings. Re-verified by round-tripping every variant against the published crate:
+Scopes live on `AppClient.scopes`, are read through the signer directory's 60-second standing cache, and reach the context as `scope`. Layer 2 (`require_permission`, §5.1) checks them, and **a missing scope is a denial** — a client with no scope can sign but do nothing.
 
-```text
-ClientCredentials -> "client_credentials" -> ClientCredentials     OK
-AuthorizationCode -> "authorization_code" -> AuthorizationCode     OK
-DeviceCode        -> "urn:ietf:params:oauth:grant-type:device_code" -> DeviceCode  OK
-Custom("urn:example:custom") -> "urn:example:custom" -> Custom(..)  OK
-```
-
-We still implement `ClientStore` ourselves, but now for the ordinary reason — clients live in `oauth_clients` and R1 says that read goes through a delegate, not raw SQL. `grantTypes` stays a delimited `String` column mapped in Rust, which is both what OAuth puts on the wire and one less thing depending on a serde impl staying correct:
-
-```rust
-use cratestack::{CratestackContext, FilterExpr};
-use cratestack_schema::oauth_client;
-
-pub struct SmsClientStore { db: Arc<Cratestack>, sys: CratestackContext }
-
-#[async_trait]
-impl ClientStore for SmsClientStore {
-    async fn find_client(&self, client_id: &str) -> Result<Option<ClientRegistration>, OpError> {
-        let found = self.db.oauth_client()
-            .find_many()
-            .where_expr(
-                FilterExpr::from(oauth_client::clientId().eq(client_id))
-                    .and(oauth_client::active().is_true()),
-            )
-            .limit(1)
-            .run(&self.sys)
-            .await
-            .map_err(to_op_error)?;
-
-        Ok(found.into_iter().next().map(|c| ClientRegistration {
-            client_id: c.clientId,
-            // No column can hold one. See sharp edge 1 below for what a
-            // `None` hash means when the auth method is also absent — the
-            // reason `token_endpoint_auth_method` is NOT NULL in §2.2.
-            client_secret_hash: None,
-            // Naming the method is what makes the assertion path reachable
-            // at all: authkestra refuses assertions for any registration
-            // that leaves this `None`.
-            token_endpoint_auth_method: Some(match c.tokenEndpointAuthMethod {
-                ClientAuthMethod::private_key_jwt => TokenEndpointAuthMethod::PrivateKeyJwt,
-                ClientAuthMethod::none            => TokenEndpointAuthMethod::NoAuth,
-            }),
-            // Inline JWK Set — the public half of the caller's keypair.
-            // authkestra deliberately has no `jwks_uri`, so the OP never
-            // becomes an HTTP client and there is no URL to point at.
-            jwks: c.jwks.as_deref().map(serde_json::from_str).transpose()?,
-            redirect_uris: unpack(&c.redirectUris),
-            // Built in Rust from a delimited column. serde never touches
-            // GrantType, so the untagged bug cannot bite.
-            grant_types: unpack(&c.grantTypes).iter().map(|g| match *g {
-                "client_credentials" => GrantType::ClientCredentials,
-                "authorization_code" => GrantType::AuthorizationCode,
-                "refresh_token"      => GrantType::RefreshToken,
-                other                => GrantType::Custom(other.to_owned()),
-            }).collect(),
-            scopes: unpack(&c.scopes),
-            require_pkce: c.requirePkce,
-            allowed_audiences: vec![],
-        }))
-    }
-}
-```
-
-The `sys` context is a `system`-role principal, which is the only thing `OauthClient`'s policy admits.
-
-`sms-auth` therefore also links `cratestack-pg` and expands the same schema; it mounts no router and uses delegates only.
-
-**`private_key_jwt` is opt-in in three separate places, and missing any one of them refuses every assertion — silently, with a generic authentication error:**
-
-1. `token_endpoint_auth_method: Some(PrivateKeyJwt)` and a `jwks` on the registration, as above. A registration that leaves the method `None` is treated as predating the field and refuses assertions outright.
-2. `CompositeOpStore::with_client_assertion_store(…)`. The fifth store slot defaults to `NoClientAssertionStore`, which refuses `private_key_jwt` rather than accepting an assertion it cannot replay-protect. The bundled `MemoryClientAssertionStore` is single-node only — an unshared map means one accepted replay per node — so ours is `ClientAssertion` (§2.2) behind a delegate, `create` catching `23505`.
-3. `OidcDiscovery::with_private_key_jwt()`. Discovery is deliberately quiet about the method otherwise, so clients relying on metadata would never attempt it.
-
-**Sharp edges, re-verified against 0.3.2 rather than carried over:**
-
-1. **`client_secret_hash: None` *with* `token_endpoint_auth_method: None` disables authentication entirely** — that pair reaches `(None, Cred::NoCredential) => Ok(())`, so the client gets a token from anyone who knows the `client_id`. This is why §2.2 makes `tokenEndpointAuthMethod` `NOT NULL` with no `@default`: with a method always named, that arm is unreachable and a mismatched credential falls to `(Some(_), _) => Err(AuthMethodNotPermitted)`.
-2. **Basic credentials are still not URL-decoded** (a raw `split_once(':')`, no form-decoding per RFC 6749 §2.3.1), and Basic silently overrides POST parameters on conflict. Moot for us — we present no secret over either transport — but it would bite immediately if anyone reintroduced one.
-3. **Scopes are rejected, not filtered** — one unregistered scope fails the whole request with `invalid_scope`. If `scope` is omitted the token is issued with **`scope: None`**; registered scopes are *not* applied as a default. Callers must always send an explicit `scope`, and the `sms:send` check must treat a missing scope as denial.
-4. **`aud == sub == client_id`.** `handle_client_credentials` calls `issue_client_token(&client_id, …, Some(client_id.clone()))` — the audience is hardcoded to the client's own id. `TokenRequest.audience` and `ClientRegistration.allowed_audiences` apply only to token exchange. **Validate `iss`, signature, expiry and `sub`-exists; disable audience validation.** (Assertion `aud` is separate and correct: 0.3.2 accepts either the token endpoint URL or the issuer identifier.)
-5. **Token TTL is global** — `OpConfig.access_token_ttl_secs`, no per-client override.
-
-**Rate limiting `/token` was originally scoped as an infrastructure concern, not a `sms-auth` one — #22, and that reasoning still holds for what it decided.** `authkestra-op` has no rate limiting, lockout, failed-attempt counter or `429`, and it is not going to grow one for us. The original urgency was Argon2id at 19 MiB turning every failed attempt into memory-hard work an unauthenticated caller could trigger; with `private_key_jwt` there is no password hashing at the token endpoint at all, and assertion verification is an RSA/ECDSA signature check. What remains is ordinary endpoint abuse, which belongs at the reverse proxy alongside every other rate limit, keyed on **client_id *and* source IP** — client_id alone lets an attacker lock out a legitimate service account. #156 built that reverse-proxy layer (`deploy/Caddyfile`'s `rate_limit` block).
-
-**#168 narrowed that scope, for a reason #22 couldn't have anticipated: the edge #156 built cannot express the composite key this section already required.** `client_id` arrives only in `/token`'s form-urlencoded POST body — never a header, never the URL — and every way `deploy/Caddyfile` could read one field out of that body was checked and rejected (an inefficient core-Caddy placeholder that risks not leaving `reverse_proxy` an intact body to forward; a third-party module that doesn't parse form bodies; the one that does, an unstarred single-contributor repository — see that file's own `#168` comment for the receipts). So the edge keys `/token` on source IP alone (`token_per_ip`/`token_global`), which is real flood protection but not the composite this section asks for. `backends/apps/sms-gateway/src/token_rate_limit.rs` supplies the missing `client_id` dimension as a second, defense-in-depth limiter mounted on `/token` itself (wired in `backends/apps/sms-gateway/src/op.rs`, which already owns route assembly for that path) — not inside `authkestra-op` or `sms-auth`, and not a first-party Caddy module (weighed and set aside as materially more work for the same outcome). This is not a silent reversal of #22's own "infrastructure concern" framing: the edge still does what #22 asked of it (flood protection ahead of any signature verification); this layer adds the one dimension the edge structurally cannot reach.
+What a stolen private key allows is whatever its client's scopes allow, until someone revokes the key. That is the whole exposure and it is bounded three ways: revocation is immediate; `App.ipAllowlist` narrows where a client may call from at the edge; and the per-principal rate limit (§4.6) caps what a forged flood costs. There is no bearer token whose theft outlives its owner noticing, and nothing in the database worth stealing: the only credential material is public keys.
 
 ### 4.3 Human callers
 
-**The console no longer signs in here (VS-5b).** It has no OIDC client, no session and no cookie: a person is a paired `ConsoleKey` (§2.9 above, `docs/design/console-pairing.md`), and every request is a sealed envelope (§4.0). What follows is the gateway's own sign-in surface, which stays until VS-4 removes the OpenID Provider with it; nothing in the console uses it.
+A person is a paired `ConsoleKey` (§2.9): a non-extractable P-256 key their browser made, which a vaam admin phone (`registerConsoleKey`) or, as the break-glass, an operator on the command line (`sms-gateway pair-console-key --user <email|id> --public-key <k>`) vouched for. Every request the console makes is sealed in the browser (§4.0, `docs/design/console-pairing.md`). There is no password, no TOTP, no OpenID session, no cookie, no refresh token and no single sign-on: owner rulings Q1 and Q2 (2026-10-26) — *phone pairing only*, break-glass is command-line key enrolment — and the standing ban on access and refresh tokens. Admin rights are a device's, never a code's: a paired console user is `admin`, never `owner` (R2), and a key lasts 30 days (R3).
 
-Authorization code + PKCE against `sms-auth`, single OIDC client (`sms-console`). Who the human *is* is established either by a local password (`POST /login`, the break-glass path) or by the staff Keycloak realm (`GET /login/sso/start`, brokered — see "Federated sign-in" below); both end in the same `Identity` and the same `handle_authorize`. Tokens in httpOnly cookies via Next.js route handlers acting as a BFF — never `localStorage`, never an access token in a client component.
+The principal is built per request by the signer directory from the verified key: the person's `User.id` as `sub`, `kind` `user`, the `role` of their `Role`, and its `permissions` as `perms` (§5.3). A deactivated user or a `Role` keyed `system`/`app` is refused (§2.10). Standing is cached for 60 seconds, so deactivating a person takes effect within one TTL, and a revoked or expired key row on the next request.
 
-Both realms land in the same `CratestackContext`. `AuthProvider` is an RPITIT trait (not `#[async_trait]`) requiring `Clone + Send + Sync + 'static`:
+How an account comes to exist, with nothing to sign in with:
 
-```rust
-#[derive(Clone)]
-struct GatewayAuth { jwks: JwksCache, apps: AppCache, denylist: SubjectDenylist }
+- **`provisionUser`** (console) and **`sms-gateway provision-user`** make a `User` row and print no credential. **`sms-gateway bootstrap --owner-email … --owner-display-name …`** does the same for the first owner. A key is then attached by pairing, or by `pair-console-key`.
+- **`registerConsoleKey`** finds or JIT-provisions the person through `FederatedLink(issuer = "vaam", subject = <vaam user id>)`, as `admin`.
 
-impl AuthProvider for GatewayAuth {
-    type Error = CratestackError;
+#### What VS-4 deleted (2026-10-27)
 
-    async fn authenticate(&self, req: &RequestContext<'_>) -> Result<CratestackContext, CratestackError> {
-        let bearer = req.headers.get("authorization")
-            .ok_or_else(|| CratestackError::Unauthorized("no credentials".into()))?;
-        let claims = self.jwks.validate(bearer).await?;      // iss, exp, sig, kid
-        if self.denylist.contains(&claims.sub) {
-            return Err(CratestackError::Unauthorized("revoked".into()));
-        }
-        match claims.extra.get("kind").and_then(|v| v.as_str()) {
-            Some("user") => Ok(user_context(claims)),
-            _ => {
-                let app = self.apps.by_client_id(&claims.sub).await?
-                    .ok_or_else(|| CratestackError::Unauthorized("unknown client".into()))?;
-                Ok(app_context(&claims, &app))               // kind "app", appId, role "app"
-            }
-        }
-    }
-}
-```
+For the record, since earlier revisions of this section described all of it:
 
-The discriminator is worth noting: a client_credentials token has `identity: None` and no `kind` claim at all, because the OP can't add one. A human token gets `kind: "user"` from `issue_user_token_with_extra`, reachable on the authorization-code path. So "no `kind` claim" reliably means "service account".
-
-**#194 built this, and two things above turned out not to match the real, vendored `authkestra-op` 0.3.3 library** — recorded here rather than silently editing the prose above into agreement, per this file's own standing practice of naming a divergence rather than erasing it:
-
-- **`handle_authorization_code` stamps no role-bearing `extra` claims.** At the vendored 0.3.3 it called plain `issue_user_token`; at 0.8.0 it calls `issue_user_token_with_extra`, but the only `extra` it ever populates is the DPoP `cnf` binding (`merge_dpop_cnf`) — never `kind`, `role`, or `perms`. So a human access token carries only the standard OIDC set plus `identity` (and, for a DPoP-bound client, `cnf`). The discriminator above still holds (`claims.identity.is_some()` reliably means "human"), but role/perms cannot be read off the token. `sms_api::auth::GatewayAuth`'s real human path resolves them with a per-request, TTL-cached `User`/`Role` lookup instead (`backends/crates/sms-api/src/auth.rs`'s `authenticate_human`) — a deliberate, documented departure from "baked in at issuance," not an oversight, and arguably better: a role change or deactivation now takes effect within one cache TTL (60s) rather than the access token's full 15-minute lifetime.
-- **A human token's `aud` is real** (`Some(client_id)`, i.e. `sms-console`) **and must be validated** — unlike a service-account token's self-referential `aud == sub == client_id`, which is why §4.2's own "disable audience validation" guidance exists. `GatewayAuth`'s single shared `jsonwebtoken::Validation` still carries `validate_aud = false` (it decodes both realms), so the human-only audience check is a manual, post-decode comparison in `authenticate_human` against a fixed `human_client_id` — not the library's own validation path.
-
-`sms_auth::login` (`backends/crates/sms-auth/src/login.rs`) is the piece this section never specified: what actually authenticates a human before `handle_authorize` can run. §4.3's own prose was silent on the mechanism; #194 settled it as local Argon2id password authentication against a new `UserCredential` model (deliberately *not* a field on `User` — see that model's own `schema.cstack` comment for why: §2.0's "no field-level read masking" means a password hash living on `User` would come back verbatim from `GET /users/{id}`), not a federated external IdP — *at the time*; federated sign-in was added afterwards as a second path, see "Federated sign-in" below. See `sms_auth::login`'s own module doc for the full weighing of that decision, and the PR that landed #194 for the Risk Assessment this new password-storage surface deserves.
-
-#### Federated sign-in (Keycloak) — what is built, and why it is a broker
-
-**Chosen 2026-10-19: `sms-gateway` stays the console's OpenID Provider and becomes a relying party of the staff Keycloak realm for the one step the OP could not do itself.** The paragraph above records why #194 chose local passwords over federation ("a second, equally security-sensitive OIDC *client* implementation… and an actual external IdP this deployment can point at (none decided)… nothing in this sandbox to prove it against"). All three conditions have since changed: an IdP exists (`auth.verif.fyi`'s `vaam-staff` realm), `sms-fake-oidc` is the fake that convention asks for, and the real-Keycloak check below is the proof. Password sign-in is **not** removed — it is the break-glass path and its code and tests are untouched.
-
-The alternative — point the console (and `GatewayAuth`) straight at Keycloak — was rejected because it would replace the OP that every API token comes from: `authenticate_human`, the `User`/`Role` per-request lookup, the `aud` check and every `@@allow` policy are written against vsms's own tokens, and Keycloak's access token carries no vsms role and cannot be made to. Brokering changes nothing downstream of the `Identity`.
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant B as Browser
-    participant C as Console (admin)
-    participant G as sms-gateway (OP + RP)
-    participant K as Keycloak
-    B->>C: GET /api/auth/sso
-    C-->>B: 302 gateway /login/sso/start?client_id,redirect_uri,state,nonce,code_challenge (+ vsms_oidc_txn cookie)
-    B->>G: GET /login/sso/start
-    Note over G: dry-run handle_authorize (client, exact redirect_uri, PKCE), then persist SsoTransaction
-    G-->>B: 302 Keycloak /authorize (code, S256, state, nonce)
-    B->>K: sign in (password, OTP)
-    K-->>B: 302 gateway /login/sso/callback?code&state
-    B->>G: GET /login/sso/callback
-    Note over G: consume transaction, exchange code, verify id_token, group + MFA rules, link or JIT user
-    alt accepted
-        G-->>B: 302 console /api/auth/callback?code&state
-        B->>C: GET /api/auth/callback (unchanged)
-        C->>G: POST /token (code_verifier)
-        G-->>C: access_token, refresh_token, id_token
-    else refused
-        G-->>B: 302 console /api/auth/callback?error=access_denied&state
-        C-->>B: 302 /login?error=sso_failed
-    end
-```
-
-```mermaid
-stateDiagram-v2
-    [*] --> Started: GET /login/sso/start (request validated, row written)
-    Started --> Refused: console request invalid (400, nothing stored)
-    Started --> AtIdP: 302 to Keycloak
-    AtIdP --> Consumed: callback with a live state (row deleted)
-    AtIdP --> [*]: callback with unknown/replayed/expired state (400)
-    AtIdP --> [*]: no callback within 5 min (reaped)
-    Consumed --> Verified: code exchanged, id_token valid
-    Consumed --> Refused: upstream error, bad token, not in group (access_denied)
-    Verified --> Retrying: only the MFA claim is missing, first attempt
-    Retrying --> AtIdP: new transaction, prompt=login, isRetry
-    Verified --> Refused: MFA claim missing on the retry (never a second retry)
-    Verified --> SignedIn: group + MFA ok, link found or JIT created
-    Verified --> Refused: linked user inactive/deleted, email already local
-    SignedIn --> [*]: handle_authorize → console code
-    Refused --> [*]: generic access_denied redirect
-```
-
-Citations (re-verifiable): the routes are `backends/apps/sms-gateway/src/sso.rs` (`start_handler`, `callback_handler`, `issue_console_code`); the broker is `backends/crates/sms-auth/src/sso/` (`provider.rs` discovery/JWKS/exchange, `id_token.rs` verification, `policy.rs` the two rules and the retry verdict, `store.rs` transactions and JIT, `flow.rs` the order of checks); the fake is `backends/crates/sms-fake-oidc`.
-
-**The decisions** (owner, 2026-10-19):
-
-- **Provisioning is just-in-time, gated by group.** The first successful sign-in of a user in `--sso-required-group` creates the `User` if no `FederatedLink` for `(issuer, sub)` exists; `User` and link are written in **one serializable transaction**, and `lastLoginAt` is stamped. **Linking is by `(iss, sub)` only — never by email.** Email and name are display data: used once to create the account and never re-read. A Keycloak identity whose email a local account already holds is *refused* (`email_in_use`), not merged — that merge is exactly the account-takeover shape federation invites. Two concurrent first sign-ins of one identity produce one user (a live test found the race: the loser hits `users_email_key` before the link's unique index, and re-reads the link).
-- **Roles stay local.** No claim sets or changes a role. A JIT user gets `--sso-jit-role`, default **`support`**: of the six built-in roles (§5.2, as seeded in `0002_bootstrap`) it has the fewest permissions (3: `sms:read`, `optout:manage`, `delivery:read`, against `developer` 4, `auditor` 9, `operator` 12, `admin` 19, `owner` 24) and the fewest `hasRole(...)` clauses in the schema (3, against `developer` 7, `auditor` 11, `operator` 24). `auditor` is the only purely read-only role but reads far more (every `*:read` plus `audit:read`); `support`'s one write is `optout:manage`, a deliberate first-line action. The value is configuration, and `system`/`app` are refused. **What "least privilege" does not buy:** `Message`/`DeliveryReceipt` `@@allow` admits `auth().kind == "user"` unscoped by app (#211), so *any* signed-in human — `support` included — sees every app's messages in the console. That is existing behaviour, not something SSO adds, but it means group membership in the realm is effectively "may see all message metadata".
-- **MFA by claim, fail closed.** Accepted only if `acr ∈ accepted_acr` **or** `amr ∩ accepted_amr ≠ ∅`; an empty list matches nothing; both empty is a startup failure. **Measured, because the obvious reading is wrong** (`quay.io/keycloak/keycloak:26.6.1`, 2026-10-19): a password + OTP sign-in is `acr "1"` and `amr []` (empty — even with the `oidc-amr-mapper`); `amr` is populated only after the browser flow's executions get an authenticator config with `default.reference.value` (`pwd`, `otp`); a repeat sign-in from Keycloak's SSO cookie is `acr "0"` with `amr` still `["pwd","otp"]`. So `acr "1"`/`"0"` prove nothing about a second factor, and the production setting is `accepted_amr = ["otp"]`, `accepted_acr = []` — which is why the validation allows one list to be empty and a test pins `acr "1"` + `amr ["pwd"]` as refused.
-- **One retry for the first-login case.** A new user's OTP is enrolled by Keycloak's `CONFIGURE_TOTP` *required action*, so that first token has `amr ["pwd"]`, and every later sign-in completed from the same SSO session is `["pwd"]` too (measured). When **the only reason for refusal is the MFA claim** (everything else valid, group included) **and the transaction is not itself a retry**, the callback starts a fresh transaction carrying the *same* console request with new `state`/`nonce`/PKCE and `prompt=login`; Keycloak re-runs the forms and the token then has `otp`. A retry that still fails is refused (at most one retry, no loop); any other failure is refused immediately. Measured end to end: a user whose first login enrols OTP is signed in after exactly one retry (two authorization requests, the second with `prompt=login`); a user with no second factor at all is refused after exactly two.
-- **Validation of the upstream token, in order:** header `alg` on the allow-list (RSA and ECDSA only — `none`, `HS*` and `EdDSA` refused; `none` cannot even be parsed), a `kid` present, the JWKS key with that `kid` (an unknown `kid` earns one refetch, no more often than `--sso-jwks-min-refresh-secs`) that is the right family and states no conflicting `use`/`alg`, the signature, `exp`/`nbf` with 60 s leeway, `iss` equal byte for byte to the configured issuer (discovery's `issuer` is held to the same standard before anything is fetched from it), `aud` containing the client id, `azp` equal when present and required when `aud` has several members, `iat` present and not in the future, `sub` 1–255 characters, and `nonce` equal in constant time.
-- **Refusals are generic to the browser, precise in the log.** Every refusal is one redirect to the console's own `redirect_uri` with `error=access_denied` (operational failures: `temporarily_unavailable`); the reason is a fixed label in a `WARN` line and never a token, code, secret or claim value. An unknown/replayed/expired `state` has nowhere trustworthy to redirect and gets a plain `400`.
-- **How the console knows SSO exists:** the OP's discovery document gains a `vsms_sso_login_endpoint` member (an OIDC-permitted extension) exactly when SSO is configured. The gateway is the one authority; there is no console env var to drift out of step with it, and the URL is the gateway's *public* one (the console may reach the issuer over an internal address, but the browser needs a public one). Chosen over a separate endpoint (a second request for no extra information) and over a console env var (a second source of truth).
-- **Not a feature flag:** SSO is active exactly when its settings are present; invalid or partial settings refuse to start.
-
-Operator setup, the Keycloak client and the `amr` configuration, and the log-reason table: `docs/runbooks/sso.adoc`.
+- The OpenID Provider: `/token`, `/jwks.json`, `/.well-known/openid-configuration`, the human `/login` and the Keycloak `/login/sso/start` and `/callback`, the `authkestra` dependency family, the `sms-auth` crate, `sms-fake-oidc`, `token_rate_limit`, and `serve`'s `--issuer` flag and its start-up requirement for an active signing key.
+- The tables `oauth_clients`, `oauth_signing_keys`, `client_assertions`, `user_credentials` and `sso_transactions` (`0009_drop_openid_provider`, forward-only: the password hashes and private signing keys must not come back from a `down`).
+- The commands `rotate-signing-key`, `provision-client` (which generated an RSA key server-side for `private_key_jwt`) and `seed-console-client`, and the password half of `provision-user` and `bootstrap`.
+- The Argon2id password code (`sms_core::password`).
 
 ### 4.4 Outbound webhook signing
 
@@ -2014,6 +1777,8 @@ Two `v1=` values during rotation, oldest last; receivers accept if any verifies,
 Send `X-Sms-Event-Id` and mean it — delivery is at-least-once and receivers need a dedupe key.
 
 ### 4.5 Idempotency
+
+> **Superseded in part (VS-3, VS-4).** The sealed surface authenticates with the envelope (§4.0), so the bearer-token fingerprinting this section's later paragraphs describe (`verify_idempotency_principal`, `client_id_fingerprint` reading a token's `sub`, JWKS verification) is the design the envelope replaced; the layer order that holds today is §4.0's. The `/token` flood protection they mention (#156, #168) is deleted with the route.
 
 **Mounted as of #153** — `backends/crates/sms-api/src/router.rs`'s `router()` builds both layers below; nothing here is aspirational any more. `SqlxIdempotencyStore` is the **only shipped implementation** — no Redis or in-memory variant — which makes it correct for multi-replica by default. The real import paths, verified against the pinned `cratestack =0.7.8`, are one level shallower than an earlier revision of this section claimed: `sms-api` depends only on the `cratestack` (née `cratestack-pg`) facade crate, not on `cratestack-axum` directly, and the facade's own `pub use cratestack_axum::*;` re-exports `idempotency`/`ratelimit` as submodules of `cratestack` itself:
 
@@ -2072,23 +1837,20 @@ The `messages_app_idem_key` unique index (driven by `sendMessage`'s `clientRef`,
 
 ### 4.6 Rate limiting
 
-Five limiters, easy to conflate — an earlier revision of this table collapsed `/token` into one row naming `tower_governor` at `sms-auth`; that mechanism was never actually built (`sms-auth` links no such crate), and the row was never corrected once #156 landed the real one:
+Three limiters, easy to conflate. There used to be two more, on the `/token` route (a Caddy zone per source IP plus an aggregate, and `token_rate_limit` per `client_id` inside the gateway); the route is deleted (VS-4) and so are they:
 
-| Limiter                      | Where                                                | Purpose                                                                                                                                                         |
-| ---------------------------- | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/token`, per-IP + aggregate | Caddy `rate_limit` module (`deploy/Caddyfile`, #156) | Flood protection ahead of any signature verification. **Mandatory** (§4.2).                                                                                     |
-| `/token`, per-`client_id`    | `token_rate_limit` in `sms-gateway` (#168)           | The `client_id` dimension §4.2 requires and the Caddy edge cannot reach (body-only field) — defense in depth alongside the row above, not a replacement for it. |
-| Per-principal ingress        | `RateLimitLayer` (×2) on `sms-api`                   | Stop a buggy — or forging — caller flooding you. `429` + `Retry-After`. Mounted as of #153; the second, coarser layer as of #163 — see §4.5.                    |
-| Per-MSISDN OTP               | in `sendMessage`                                     | Stop SMS-pumping fraud. E.g. 3 OTP / 10 min / number, 10 / day.                                                                                                 |
-| Per-provider egress TPS      | in the worker's `dispatch` role                      | Respect **Orange's hard 5 TPS cap**.                                                                                                                            |
+| Limiter                 | Where                              | Purpose                                                                                                                                      |
+| ----------------------- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Per-principal ingress   | `RateLimitLayer` (×2) on `sms-api` | Stop a buggy — or forging — caller flooding you. `429` + `Retry-After`. Mounted as of #153; the second, coarser layer as of #163 — see §4.5. |
+| Per-MSISDN OTP          | in `sendMessage`                   | Stop SMS-pumping fraud. E.g. 3 OTP / 10 min / number, 10 / day.                                                                              |
+| Per-provider egress TPS | in the worker's `dispatch` role    | Respect **Orange's hard 5 TPS cap**.                                                                                                         |
 
-`RateLimitConfig::new(burst, refill_per_second)`. **`InMemoryRateLimitStore` is the only shipped store**, with an unbounded key map and no persistence — single-replica dev only. For production implement the `RateLimitStore` trait (which *is* `#[async_trait]`) against Redis or Postgres. The bucket is wall-clock-driven, so a process pause longer than one fill window grants a fresh burst on resume. `token_rate_limit`'s own limiter (#168) uses the identical `cratestack::ratelimit` types and inherits the same characteristics, with its own, independent `InMemoryRateLimitStore` instance — never shared with `sms-api::router`'s two, since `/token` sits entirely outside that router (§4.5's own doc on why).
+`RateLimitConfig::new(burst, refill_per_second)`. **`InMemoryRateLimitStore` is the only shipped store**, with an unbounded key map and no persistence — single-replica dev only. For production implement the `RateLimitStore` trait (which *is* `#[async_trait]`) against Redis or Postgres. The bucket is wall-clock-driven, so a process pause longer than one fill window grants a fresh burst on resume.
 
 `sms-gateway`'s current deployment (`deploy/docker-compose.yml`) runs exactly one gateway replica, so `InMemoryRateLimitStore`'s per-process nature is correct today, not a gap papered over — a second replica would need the Redis/Postgres-backed store this paragraph already says doesn't exist yet, before horizontal scaling is safe.
 
 **Per-principal ingress was keyed on an *unverified* token claim alone, on purpose — see §4.5's own explanation of why that's a deliberately different (and weaker) tradeoff than `IdempotencyLayer` makes — and #163 closed the consequence, without changing that tradeoff.** Concretely: a caller willing to forge a fresh `sub` claim per request gets a fresh, full bucket every time from `client_id_fingerprint` alone. That's still bounded to self-throttling evasion, not a path to harming *another* caller — the property that made paying real-signature-verification cost on every request unnecessary — but it left the *aggregate* unbounded, which is what #163's second, `ConnectInfo`-peer-keyed `RateLimitLayer` bounds. See §4.5's own fuller writeup for the mechanism and the topology reason it doesn't trust `X-Forwarded-For`.
 
-**`/token`'s own composite-key gap (§4.2's "client_id *and* source IP") is closed the same way, for the half the reverse-proxy edge cannot reach.** #156 built real per-IP and aggregate flood protection at the Caddy edge; #168 found — after that edge existed to reveal it — that Caddy structurally cannot read `client_id` out of `/token`'s form-urlencoded body (every way it could was checked and rejected — `deploy/Caddyfile`'s own comment has the receipts) and added `backends/apps/sms-gateway/src/token_rate_limit.rs` as a second, defense-in-depth limiter inside the `/token` handler itself, which already has the parsed body. The two layers are complementary: the edge bounds abuse by source IP before it ever reaches the application; this one bounds abuse by claimed `client_id`, regardless of source.
 
 The per-MSISDN OTP limiter is the one that protects your money. SMS pumping — cycling OTP requests against premium-rate ranges — is the most common way a new gateway loses its balance overnight.
 
@@ -2103,9 +1865,9 @@ What CrateStack does **not** give you: signed audit chains, immutable storage, H
 ### 4.8 Secrets
 
 - Provider credentials: age/sops-encrypted files, or Vault. `Provider.credentialRef` holds only the pointer.
-- Service account secrets: Argon2id in the OP's table, plaintext shown once, restricted alphabet (§4.2).
+- App clients and console users hold no secret at the gateway: only their *public* keys are stored (`ClientKey`, `ConsoleKey`). The private halves stay with the caller or in the browser's non-extractable key store.
 - MSISDN hash pepper, webhook secrets: encrypted store, loaded at boot, never plaintext in the database.
-- OP signing key: **RSA** PEM (the JWKS type carries only `kty/alg/kid/n/e` — no EC, no Ed25519), `kid` set, published via `/jwks.json`. Rotate with an overlap window.
+- Envelope signing keys: two Ed25519 PKCS#8 PEM files (`--envelope-signing-key-file`, `--envelope-next-signing-key-file`), mounted `0400`, never in the database. Rotate by promoting `next` (§4.0).
 - No secret ever appears in an API response. `@server_only` enforces that mechanically.
 
 ---
@@ -2114,13 +1876,13 @@ What CrateStack does **not** give you: signed audit chains, immutable storage, H
 
 ### 5.1 The two-layer rule
 
-Your instinct — one app, so permissions map cleanly onto JWT claims — is right, with one adjustment for the policy engine.
+Your instinct — one app, so permissions map cleanly onto the verified principal — is right, with one adjustment for the policy engine.
 
 `hasRole('literal')` and `inTenant('literal')` are the only two policy functions, each taking a single string literal. No array-contains, no arbitrary functions. So:
 
 **Layer 1 — coarse, in the schema, role-based.** `@@allow("update", hasRole('owner') || hasRole('admin'))`. Enforced as SQL predicates on `find_many`/`find_unique`/`update`/`delete`, and unsupported policy shapes fail *generation* rather than degrading silently. This is your real perimeter.
 
-**Layer 2 — fine, in procedures and a Tower layer, permission-based.** `perms` is a string array in human tokens; `scope` is a space-delimited string in service-account tokens. Check both in Rust before the procedure body runs.
+**Layer 2 — fine, in procedures and a Tower layer, permission-based.** `perms` is a string array on a user principal and `scope` a space-delimited string on an app principal, both set on the context by the signer directory (§5.3), never read from a request. Check both in Rust before the procedure body runs.
 
 **Layer 3 — cosmetic, in the admin UI.** `perms` drives which buttons render. Never a security boundary.
 
@@ -2130,7 +1892,7 @@ A trap worth a test: a misspelled action in `@@allow` is silently dropped rather
 
 ### 5.2 Roles and scopes
 
-Humans get roles. Service accounts get OAuth scopes. Different vocabularies on purpose — an app has no business holding `user:manage`.
+Humans get roles. Service accounts get scopes. Different vocabularies on purpose — an app has no business holding `user:manage`.
 
 | Role        | Purpose                   | Permissions                                                                                                                                                    |
 | ----------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2174,7 +1936,7 @@ stateDiagram-v2
 
 - **`User` `@@allow("create")` / `@@allow("update")`** are `hasRole('owner') || (hasRole('admin') && roleKey != 'owner')`. A `create` policy is evaluated against the **input**, so an admin cannot create an owner (also through `provisionUser`, whose `User` create runs under the caller's own context). An `update` policy compiles to `UPDATE … WHERE <policy>` against the **stored** row, so an admin cannot demote, deactivate or otherwise edit an existing owner. It cannot see the **new** value (`cratestack-sqlx` `update_exec.rs` appends the policy to the `WHERE` and checks nothing after the write), so on its own it lets `admin → owner` through.
 - **`sms_api::owner_grant::enforce_owner_grant_guard`** (`backends/crates/sms-api/src/owner_grant.rs`, mounted in `router::router`) is the other half: for `POST /users` and `PATCH /users/{id}`, when the authenticated role is not `owner`, it buffers the body, decodes it with the router's own codec into the same generated input type the handler decodes, and answers 403 if `roleKey` is `owner`. An undecodable body from a non-owner is refused (400, or 415 for a content type the router cannot decode), never forwarded. An owner's request is not inspected. Adding a user-write route fails `every_generated_user_write_route_is_guarded` until it is guarded or classified.
-- **Proof**: `backends/crates/sms-api/tests/role_escalation_live_postgres.rs` (the data-layer half) and `backends/apps/sms-gateway/tests/login_flow_live_postgres.rs` (`an_admin_cannot_*`, real sign-in, real HTTP, the incident replayed). Each guard was broken for real and the matching test failed; see `AGENTS.md`.
+- **Proof**: `backends/crates/sms-api/tests/role_escalation_live_postgres.rs` (the data-layer half) and `backends/crates/sms-api/tests/owner_grant_live_postgres.rs` (`an_admin_cannot_*`, signed, real HTTP, the incident replayed). Each guard was broken for real and the matching test failed; see `AGENTS.md`.
 
 Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`, and (#56/#57) `job:read`, `job:enqueue`, `worker:read`, and (#49) `dashboard:read` — the same literals `operator`'s own `perms` carry, reused verbatim rather than invented separately, since `require_permission` (§5.1) checks either claim for the identical string. Registered per `AppClient` and enforced verbatim — scopes are rejected rather than filtered, and an omitted `scope` yields `scope: None`, which your check must treat as denial.
 
@@ -2182,51 +1944,28 @@ Service account scopes: `sms:send`, `sms:read`, `webhook:manage`, `optout:read`,
 
 **Implementation, #49.** `dashboardSummary` is a `type`-only procedure (no model, no DDL) whose own `@allow` admits any `auth().kind == "app"` caller unconditionally, the identical shape `workerLocks`/`simulateRoute` already have — so `require_permission(ctx, "dashboard:read")` inside `Procedures::dashboard_snapshot` is the real perimeter, not defense in depth. The console is provisioned with this scope alongside the others above.
 
-`system` deserves emphasis. It's the context the send procedure and the worker bind internally — `bind_auth(json!({"sub":"system","kind":"system","role":"system","appId":""}))` — to write past the `hasRole('system')` gates. `role` must be `"system"`; `hasRole` never looks at `kind`. It must be constructible only inside a process: `system` is not a row in `roles`, and the token issuer denylists it.
+`system` deserves emphasis. It's the context the send procedure and the worker bind internally — `bind_auth(json!({"sub":"system","kind":"system","role":"system","appId":""}))` — to write past the `hasRole('system')` gates. `role` must be `"system"`; `hasRole` never looks at `kind`. It must be constructible only inside a process: `system` is not a row in `roles`, and the signer directory refuses a `Role` keyed `system` or `app` (§2.10).
 
-### 5.3 Token shapes
+### 5.3 The principal
 
-Human, via authorization code — **the wire shape this section originally described, kept as the design intent**, but see the callout immediately below it for what the token vendored `authkestra-op` 0.3.3 actually issues, which is not this:
+There is no token to decode. For each request the signer directory (`backends/crates/sms-api/src/auth.rs`) turns the verified key into a `CratestackContext` that the policies and Layer 2 read:
 
-```json
-{
-  "iss": "https://auth.sms.example.cm", "sub": "c8f2a1b3d4e5f60718293a4b5",
-  "aud": "sms-console", "exp": 1753702800, "iat": 1753699200,
-  "kind": "user", "role": "operator",
-  "perms": ["message:read","message:send","message:cancel",
-            "provider:read","sender:manage","optout:manage"],
-  "email": "ops@example.cm", "name": "Ops User"
-}
-```
+| Field   | User principal (a `ConsoleKey`) | App principal (a `ClientKey`)                        |
+| ------- | ------------------------------- | ---------------------------------------------------- |
+| `sub`   | `User.id`                       | `AppClient.clientId`                                 |
+| `kind`  | `user`                          | `app`                                                |
+| `role`  | the person's `Role.key`         | `app` (matches no `hasRole(...)` clause, on purpose) |
+| `appId` | empty                           | `AppClient.appId`                                    |
+| `perms` | `Role.permissions`, unpacked    | empty                                                |
+| `scope` | none                            | `AppClient.scopes`, as the packed string             |
 
-**#194, found live, not by reading this section's own prose:** `authkestra_op::handlers::token::handle_authorization_code` calls plain `TokenManager::issue_user_token`, never `issue_user_token_with_extra` — so the *real* human access token carries none of `kind`/`role`/`perms`/`email`/`name`. Only `identity` (the OIDC `Identity` struct, not flattened into top-level claims) and the standard `iss`/`sub`/`aud`/`exp`/`iat`/`scope` fields exist. `sms_api::auth::GatewayAuth`'s human path (`authenticate_human`, #194) reads `claims.identity.is_some()` as the realm discriminator (still valid — nothing on the human path unsets it) and resolves `role`/`perms` with its own `User`/`Role` database lookup instead of trusting any token claim for them. Forking the library's own token-issuance handler to add `_with_extra` was considered and rejected — it would mean re-implementing PKCE/redirect-uri/client-binding validation alongside it, the exact security-critical duplication this codebase avoids elsewhere. The `id_token` (`issue_id_token`, also plain, not `_with_extra`) is unaffected by this — it still carries `sub`/`aud`/`exp`/`nonce` correctly, which is all `admin`'s own callback route needs from it.
+`kind` is what the schema's policies compare and `role` is what `hasRole(...)` compares; they are set together or a policy silently denies. `system` is never produced here: `system_context` (§5.2) is the only constructor.
 
-Service account, via client_credentials — note what is *absent*:
+Roles and scopes resolve per request, through the 60-second standing cache, so a changed role or a retired client takes effect within one TTL. A human session has no refresh token to outlive anything: a console key lasts 30 days and is revoked by row.
 
-```json
-{
-  "iss": "https://auth.sms.example.cm",
-  "sub": "otp-svc-v1",
-  "aud": "otp-svc-v1",
-  "exp": 1753702800, "iat": 1753699200, "nbf": 1753699200,
-  "jti": "9f3c...",
-  "scope": "sms:send sms:read"
-}
-```
+### 5.4 Server keys
 
-No `kind`, no `appId`, no `role`, no `client_id` claim, no `azp`. `aud` echoes `sub`. That's the complete emitted claim set — `issue_client_token_with_extra` is never called there, and no hook exists to add anything.
-
-Access token 15 minutes; `admin`'s own session cookie caps a human session at 8 hours (`SESSION_COOKIE_MAX_AGE_SECONDS`) by simply not persisting the refresh token past that — `authkestra-op`'s own `handle_refresh_token` hardcodes a 30-day refresh-token lifetime server-side, with no config field to override it, so the 8-hour figure is enforced client-side, not by the OP. No refresh token for service accounts, which the OP correctly never issues on this path. **Roles resolve per request, not at issuance** (#194, see §4.3/§5.3's own callout above on why) — a role change or deactivation takes effect within `GatewayAuth`'s 60-second cache TTL, not up to 15 minutes. For break-glass revocation of a *token itself* (as opposed to the account behind it) you still need a denylist keyed on `sub`, checked in `authenticate` — because **`authkestra-op` has no `/revoke` and no `/introspect`**; deactivating the `User` row (which #194's per-request lookup already checks) is the practical equivalent for the human side, and a still-valid but now-role-mismatched access token simply fails the lookup on its next use. The same denylist gap for service accounts retires a compromised one instantly, which matters because the alternative — rotating a secret — requires provisioning a whole new client.
-
-### 5.4 JWKS validation
-
-`authkestra-resource`'s `JwtStrategy` with `ValidationConfig { jwks_url, refresh_interval, issuer, audience, algorithms, require_kid }`. Three changes from the defaults:
-
-- **`require_kid` defaults to `false`**, and the fallback silently uses `jwks.keys[0]`. The moment you publish two keys during rotation, that fallback picks wrong about half the time. Set it `true`.
-- **Disable audience validation** for service-account tokens, since `aud == sub == client_id`.
-- `Jwk` carries only `kty/alg/kid/n/e` — **RSA only**.
-
-Pin `authkestra` to the exact version in the root `Cargo.toml` (currently `=0.8.0` — see AGENTS.md's own authkestra-bump sections for the version history; this line used to hardcode `=0.2.3` as a live instruction, which drifted the moment the pin first moved).
+Answers are signed with the gateway's current Ed25519 key and verified by clients against the two public keys they pin, `current` and `next` (§4.0, `sms-gateway server-keys`). There is no JWKS endpoint, no `kid` selection to get wrong and no algorithm negotiation: the algorithm is fixed per signer kind (Ed25519 for apps and for the server, ESP256 for consoles).
 
 ---
 
@@ -2922,7 +2661,6 @@ flowchart LR
             HOOKS["sms-worker<br/>--roles hooks,jobs"]
         end
         subgraph single["singletons"]
-            AUTHN["sms-auth"]
             W1["sms-worker<br/>--roles dispatch,drain,<br/>scheduler,hooks,jobs"]
         end
         ADMINN["admin (Next.js)"]
@@ -2932,10 +2670,8 @@ flowchart LR
     S3[("object storage<br/>WAL archive + dumps")]
 
     CADDY --> API1
-    CADDY --> AUTHN
     CADDY --> ADMINN
     API1 --> PGN
-    AUTHN --> PGN
     W1 --> PGN
     HOOKS --> PGN
     PGN -.->|"WAL + nightly dump"| S3
@@ -3038,7 +2774,6 @@ vsms/
 │   │   ├── src/procedures.rs       # ProcedureRegistry
 │   │   ├── src/router.rs           # generated router assembly
 │   │   └── src/cache.rs            # R1 exception: LISTEN for opt-out invalidation
-│   ├── sms-auth/         # authkestra-op, pinned to the root Cargo.toml's exact version (currently =0.8.0) + delegate-backed ClientStore
 │   └── sms-worker/       # the worker as a library; the binary is backends/apps/sms-worker
 │       ├── src/lease.rs            # R1 exception: pg_try_advisory_lock
 │       ├── src/notify.rs           # R1 exception: NOTIFY
@@ -3075,18 +2810,18 @@ Two things to check before writing screens. Run `cratestack studio init` / `stud
 
 ## 12. Milestones
 
-| #   | Deliverable                                                                                                                | Gate                                                                                                                                                                                                                                                        |
-| --- | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0   | Schema + migrations + **state machine triggers** + generated router + `sms-encoding` + `sms-msisdn`                        | The schema **expands** (not just parses — see below); every create input carries the fields its procedure sets; migration applies clean on an empty DB; an illegal transition raises `SM001`; `previewMessage` correct on a French corpus incl. `ç` and `’` |
-| 1   | `sms-auth`: OP with RS256, **custom `ClientStore`**, `/token` rate limiting, service-account provisioning, RBAC layers 1–2 | A *persisted* client_credentials client actually gets a token; a `developer` token cannot reach a `provider:write` route                                                                                                                                    |
-| 2   | `sms-worker` skeleton: lease, claim loop, `dispatch` + `jobs` roles, Orange CM adapter                                     | Real SMS to a real Orange handset, `delivered` in under 15s; `kill -9` the worker mid-submit and the lease reclaims the message                                                                                                                             |
-| 3   | Subscriptions → `WebhookAttempt` → `hooks` role, signing, retries, replay, `drain` role                                    | Signature verifies in a sample Node receiver; killing `sms-api` mid-drain loses no event; two workers produce exactly one attempt per event                                                                                                                 |
-| 4   | Next.js admin, all screens, ETag/If-Match threaded through every edit                                                      | An operator can diagnose a failed message without touching SQL                                                                                                                                                                                              |
-| 5   | MTN via aggregator, routing rules, failover, circuit breakers                                                              | Kill Orange in staging; MTN unaffected, Orange fails over cleanly                                                                                                                                                                                           |
-| 6   | Retention, audit anchoring, backup verification, alerting                                                                  | Restore drill passes; purge verified against a seeded old dataset                                                                                                                                                                                           |
-| 7   | *(conditional)* SMPP + direct interconnect                                                                                 | Only after the ART licensing question is settled                                                                                                                                                                                                            |
+| #   | Deliverable                                                                                                                                                           | Gate                                                                                                                                                                                                                                                                                                                   |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | Schema + migrations + **state machine triggers** + generated router + `sms-encoding` + `sms-msisdn`                                                                   | The schema **expands** (not just parses — see below); every create input carries the fields its procedure sets; migration applies clean on an empty DB; an illegal transition raises `SM001`; `previewMessage` correct on a French corpus incl. `ç` and `’`                                                            |
+| 1   | *(historical: the OP was deleted in VS-4)* `sms-auth`: OP with RS256, **custom `ClientStore`**, `/token` rate limiting, service-account provisioning, RBAC layers 1–2 | A *persisted* client_credentials client actually gets a token; a `developer` token cannot reach a `provider:write` route. Superseded by the signed transport (§4.0): a persisted `ClientKey` signs a call against a restarted process and a `developer` console key is refused (`m1_acceptance_gate_live_postgres.rs`) |
+| 2   | `sms-worker` skeleton: lease, claim loop, `dispatch` + `jobs` roles, Orange CM adapter                                                                                | Real SMS to a real Orange handset, `delivered` in under 15s; `kill -9` the worker mid-submit and the lease reclaims the message                                                                                                                                                                                        |
+| 3   | Subscriptions → `WebhookAttempt` → `hooks` role, signing, retries, replay, `drain` role                                                                               | Signature verifies in a sample Node receiver; killing `sms-api` mid-drain loses no event; two workers produce exactly one attempt per event                                                                                                                                                                            |
+| 4   | Next.js admin, all screens, ETag/If-Match threaded through every edit                                                                                                 | An operator can diagnose a failed message without touching SQL                                                                                                                                                                                                                                                         |
+| 5   | MTN via aggregator, routing rules, failover, circuit breakers                                                                                                         | Kill Orange in staging; MTN unaffected, Orange fails over cleanly                                                                                                                                                                                                                                                      |
+| 6   | Retention, audit anchoring, backup verification, alerting                                                                                                             | Restore drill passes; purge verified against a seeded old dataset                                                                                                                                                                                                                                                      |
+| 7   | *(conditional)* SMPP + direct interconnect                                                                                                                            | Only after the ART licensing question is settled                                                                                                                                                                                                                                                                       |
 
-Milestone 1's gate is deliberately blunt. The `GrantType` bug means a stock integration looks correct in every in-memory test and fails the moment you persist a client — so "a *persisted* client gets a token" is the only gate that proves anything.
+*(Historical, VS-4: the OP and its gate are gone; the signed-transport equivalent is in the row above.)* Milestone 1's gate is deliberately blunt. The `GrantType` bug means a stock integration looks correct in every in-memory test and fails the moment you persist a client — so "a *persisted* client gets a token" is the only gate that proves anything.
 
 Milestone 2's `kill -9` gate is the same idea applied to the worker: lease reclamation is the kind of code that's easy to write and easy to never actually exercise.
 
@@ -3103,13 +2838,12 @@ Milestone 0 still comes first. The encoding crate has the highest ratio of busin
 1. **Where does this host?** Law 2024/017's cross-border authorisation requirement makes this a legal question with an architectural answer. Cameroon-hosted is the safe default.
 2. **Do you need your own ART title?** Determines whether direct SMPP is on the table, and therefore whether milestone 7 exists.
 3. ~~**10-year traffic retention vs 90-day minimisation.**~~ **Resolved 2026-08-11 (issue #5).** 90-day minimisation, no split ledger — see §10. Kept here, struck through, so this list stays the record of what was asked rather than silently shrinking.
-4. **Does `authkestra-op` stay?** Sharper now that dropping API keys puts your entire machine-auth path through it. You'll write a custom `ClientStore` to work around a grant-type authorisation bug, add `/token` rate limiting the crate lacks, live with a useless `aud`, one secret per client, no revocation endpoint, and no proof-of-possession option. All surmountable, and the design isolates the OP behind JWKS so swapping it stays a config change — but compare against Keycloak or ZITADEL before milestone 1, not after.
+4. ~~**Does `authkestra-op` stay?**~~ **Resolved 2026-10-27 (VS-4): no.** The signed transport (§4.0) replaced the token plane, and the OpenID Provider, `authkestra` and `sms-auth` were deleted. Kept here, struck through, so this list stays the record of what was asked.
 
 **Technical risks:**
 
 | Risk                                                                                                                                                      | Mitigation                                                                                                                                                                                                                                                |
 | --------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Persisted `client_credentials` clients denied by the `GrantType` serde bug**                                                                            | Custom `ClientStore` (§4.2); milestone 1 gate tests the persisted path                                                                                                                                                                                    |
 | **Raw SQL creeping in** — bypasses policy, audit, events and version bumping at once                                                                      | R1 + `assert-no-raw-sqlx.sh` in CI; the exception allowlist lives in one script                                                                                                                                                                           |
 | **A scalar list field panics `include_server_schema!`** — and the parser and migration emitter both accept it, so nothing catches it until the macro runs | No model declares a list; multi-values are sentinel-delimited `String` (§2.2). Milestone 0 gate is "the schema expands", not "the schema parses"                                                                                                          |
 | **A `@default` on a caller-settable field makes it unwritable** (excluded from create input)                                                              | Verified by compile in CI via the create-input round-trip test; §2.0                                                                                                                                                                                      |
@@ -3119,11 +2853,7 @@ Milestone 0 still comes first. The encoding crate has the highest ratio of busin
 | Claim-loop `Forbidden` swallowed as "lost the race", hiding a policy bug as throughput loss                                                               | Match `PreconditionFailed` for the race; log `Forbidden` loudly (§7.3)                                                                                                                                                                                    |
 | **State machine and code drift** → production `SM001` on a legal-looking transition                                                                       | `state_machine_parity` test in CI; alert on any non-zero `SM001` rate                                                                                                                                                                                     |
 | Illegal transition surfaces as `500 DATABASE_ERROR`                                                                                                       | Map `sqlstate = 'SM001'` → `CratestackError::Conflict` → 409                                                                                                                                                                                              |
-| `/token` unprotected → Argon2 19 MiB DoS amplification                                                                                                    | `tower_governor` keyed on client_id **and** IP                                                                                                                                                                                                            |
-| A client provisioned with `client_secret_hash = None` authenticates anyone                                                                                | `NOT NULL` column; `find_client` refuses to build a registration without it                                                                                                                                                                               |
-| Secret containing `+ / = %` fails Basic auth non-obviously                                                                                                | Generate from `[A-Za-z0-9._~-]` only                                                                                                                                                                                                                      |
-| Caller omits `scope` → token has `scope: None` → silent authz confusion                                                                                   | Treat missing scope as denial; document that callers must request explicitly                                                                                                                                                                              |
-| Bearer token leak usable until expiry (no PoP available)                                                                                                  | 15-minute TTL, `sub` denylist, `App.ipAllowlist` at the edge                                                                                                                                                                                              |
+| A leaked client private key signs as that client until revoked                                                                                            | `revokeAppClientKey` (effective on the next request on every replica), per-client scopes, `App.ipAllowlist` at the edge, per-principal rate limits                                                                                                        |
 | **A webhook subscriber blocking or panicking breaks the send API**                                                                                        | Subscribers only insert rows; bodies wrapped so panics become `Err`; HTTP lives in the `hooks` role                                                                                                                                                       |
 | **Concurrent drains double-deliver** (no `SKIP LOCKED` in the framework)                                                                                  | Unique index on `(endpoint_id, aggregate_id, event_type)` + `ON CONFLICT DO NOTHING`; `drain` is a singleton                                                                                                                                              |
 | **Poison outbox row retries forever, table grows unbounded**                                                                                              | `reap_outbox` job + alert on `attempts > 5`; nothing in the framework caps this                                                                                                                                                                           |
@@ -3143,7 +2873,7 @@ Milestone 0 still comes first. The encoding crate has the highest ratio of busin
 
 ## Sources
 
-**Frameworks** — schema, attribute, policy, CLI, event and Rust-API claims were verified against published crate sources for `cratestack-{parser,core,macros,cli,pg,migrate,axum,policy,sqlx}` 0.4.16 and `authkestra-{op,engine,axum}` 0.2.3, including compiling a real `include_server_schema!` expansion and running the `GrantType` round-trip.
+**Frameworks** — schema, attribute, policy, CLI, event and Rust-API claims were verified against published crate sources for `cratestack-{parser,core,macros,cli,pg,migrate,axum,policy,sqlx}` 0.4.16, including compiling a real `include_server_schema!` expansion.
 
 [CrateStack](https://cratestack.dev/) · [scalars](https://cratestack.dev/reference/scalars) · [field attributes](https://cratestack.dev/reference/field-attributes) · [mixins](https://cratestack.dev/reference/mixins) · [auth provider guide](https://cratestack.dev/guides/auth-provider) · [auth support matrix](https://cratestack.dev/reference/auth-support-matrix) · [idempotency](https://cratestack.dev/guides/idempotency) · [optimistic locking](https://cratestack.dev/guides/optimistic-locking) · [audit log](https://cratestack.dev/guides/audit-log) · [soft delete](https://cratestack.dev/guides/soft-delete) · [rate limiting](https://cratestack.dev/guides/rate-limiting) · [transaction isolation](https://cratestack.dev/guides/transaction-isolation) · [pagination](https://cratestack.dev/guides/pagination) · [migrations](https://cratestack.dev/guides/migrations) · [TypeScript client generation](https://cratestack.dev/guides/typescript-client-generation) · [banking readiness](https://cratestack.dev/overview/banking-readiness) · [current state](https://cratestack.dev/overview/current-state) · [Authkestra](https://github.com/marcjazz/authkestra)
 

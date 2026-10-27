@@ -4,6 +4,13 @@
 this document or its PR.** A console redesign is in flight across several agents and
 already owns `frontends/apps/admin/`; this document changes nothing there.
 
+> **Superseded (2026-10-27, VS-4).** The question no longer exists: the console has no login and no
+> session layer (VS-5b), and the Rust side this document scopes as fixed (`UserCredential`, the
+> Argon2id login, `authkestra-op`, `sms-auth`) was deleted by VS-4. Kept as the record of why a
+> better-auth migration was weighed and not taken; every file path below that names the OP or the
+> console's relying-party code names code that no longer exists. `docs/design/console-pairing.md`
+> is the design that replaced it.
+
 **Question asked:** should [`better-auth`](https://www.better-auth.com/) replace the
 admin console's hand-rolled session layer — the OIDC relying-party mechanics in
 `frontends/apps/admin/middleware.ts`, `frontends/apps/admin/lib/oidc.ts`, `frontends/apps/admin/lib/session.ts`, and

@@ -2,7 +2,7 @@
 
 An A2P SMS gateway for Cameroon — OTP and notification delivery over MTN and Orange, with a provider abstraction that covers both HTTP APIs and SMPP.
 
-**Status *(snapshot, 2026-08-13 — [`docs/roadmap.md`](docs/roadmap.md) is the maintained version, and GitHub Issues is the real tracker)*:** foundations and delivery are done. Schema, migrations, encoding, and MSISDN parsing; `private_key_jwt` machine auth and an `authorization_code` + PKCE human login; a real worker — leader election, optimistic-CAS claim loops, the message and job state machines, DLR ingestion, a job queue; and signed, at-least-once webhooks with retries and circuit breaking. Retention, audit anchoring, backup with a real restore drill, and alerting are done. The admin console is partly built (messages, dashboard, jobs, workers, providers, routes); MTN, the routing rules engine, and failover have landed.
+**Status *(snapshot, 2026-08-13 — [`docs/roadmap.md`](docs/roadmap.md) is the maintained version, and GitHub Issues is the real tracker)*:** foundations and delivery are done. Schema, migrations, encoding, and MSISDN parsing; a signed transport (every request a COSE_Sign1 message under a registered key, no tokens) and console pairing in place of a login; a real worker — leader election, optimistic-CAS claim loops, the message and job state machines, DLR ingestion, a job queue; and signed, at-least-once webhooks with retries and circuit breaking. Retention, audit anchoring, backup with a real restore drill, and alerting are done. The admin console is partly built (messages, dashboard, jobs, workers, providers, routes); MTN, the routing rules engine, and failover have landed.
 
 **One thing gates real traffic, and it is not code: [#36](https://github.com/vymalo/vsms/issues/36) — no message from this system has ever reached a real handset.** That needs a human with a real Orange account and a real phone. Everything automated around it proves how *this* system behaves under faults; none of it proves Orange behaves the way this code assumes.
 
@@ -14,7 +14,7 @@ Which door you want depends on what you're doing:
 
 | You want to… | Start here |
 |---|---|
-| **Send SMS through vsms** from your own application | [`docs/integrating.md`](docs/integrating.md) — credentials, the token exchange, sending, message states, webhooks |
+| **Send SMS through vsms** from your own application | [`docs/integrating.md`](docs/integrating.md) — credentials and signing, sending, message states, webhooks |
 | **Run the whole thing locally**, no carrier account | [`docs/runbooks/local-development.adoc`](docs/runbooks/local-development.adoc) — `just demo` and what it gives you |
 | **Work on vsms itself** | [`docs/runbooks/getting-started.adoc`](docs/runbooks/getting-started.adoc), then [`CONTRIBUTING.md`](CONTRIBUTING.md) |
 | **Run the entire CI gate before opening a PR** | [`docs/runbooks/testing.adoc`](docs/runbooks/testing.adoc) — `just ci`, one command, only `docker`/`docker compose`/`just` needed on the host |
@@ -34,7 +34,7 @@ That brings up a scratch Postgres, the gateway, the worker, a fake Orange, and t
 
 | Path | What it is |
 |---|---|
-| `docs/integrating.md` | **For a developer sending SMS through vsms.** Credentials, the token exchange, request and response shapes, message states, status codes, webhooks. |
+| `docs/integrating.md` | **For a developer sending SMS through vsms.** Credentials and request signing, request and response shapes, message states, status codes, webhooks. |
 | `docs/architecture.md` | The full design. Data model, provider abstraction, worker topology, security, compliance, and every framework constraint that shaped a decision. |
 | `docs/roadmap.md` | Sequencing: what order the work happens in, what genuinely blocks what, and what has to be true before real traffic. |
 | `OPEN_QUESTIONS.md` | What this system does not know the answer to — human decisions, unverified claims, accepted limitations. |
@@ -47,7 +47,6 @@ That brings up a scratch Postgres, the gateway, the worker, a fake Orange, and t
 | `backends/crates/sms-encoding/` | GSM 03.38 vs UCS-2 analysis, segment counting, normalisation, transliteration. |
 | `backends/crates/sms-msisdn/` | E.164 `+237` parsing, line-type classification, operator-prefix lookup. |
 | `backends/crates/sms-api/` | Where `include_server_schema!` expands: generated models, policies, the REST router, the procedure registry, DLR ingestion, and the webhook subscribers. |
-| `backends/crates/sms-auth/` | `authkestra-op` glue: the machine `private_key_jwt` path, the human `authorization_code` + PKCE login, and RS256 signing-key rotation. |
 | `backends/crates/sms-worker/` | The worker as a library: role selection, advisory-lock leader election, the CAS claim loop, and each role's real body (`dispatch`, `scheduler`, `jobs`, `drain`, `hooks`). |
 | `backends/crates/sms-webhook/` | The outbound webhook signature scheme — HMAC-SHA256, rotation overlap, cross-checked against an independent Node implementation in CI. |
 | `backends/crates/sms-provider/` | The `SmsProvider` trait every adapter implements — capabilities, submit, DLR parsing, health — framework-free. |
@@ -65,7 +64,7 @@ That brings up a scratch Postgres, the gateway, the worker, a fake Orange, and t
 ## Stack
 
 - **Rust** for the gateway and worker, on [CrateStack](https://cratestack.dev/) `=0.11.0` — schema-first, `.cstack` generates the model layer, policies, audit, events and REST surface. Pinned exactly, and the installed CLI must match the pin; see `AGENTS.md`.
-- **[Authkestra](https://github.com/marcjazz/authkestra)** `=0.8.0` as the OIDC provider. Machine callers use OAuth `client_credentials` with `private_key_jwt` — no shared secrets anywhere in the system. Humans sign in with `authorization_code` + PKCE against a local Argon2id-backed user store.
+- **A signed transport** on CrateStack's envelope layer. Every request is a COSE_Sign1 message under a key the caller generated and every answer is signed back — no tokens, no shared secrets anywhere in the system. Humans use the console with a browser key a vaam admin phone paired; there is no login and no OpenID provider (`docs/architecture.md` §4).
 - **PostgreSQL 16** as the only coordination mechanism — system of record, claim loops via optimistic CAS on `@version` (`SKIP LOCKED` isn't expressible through the framework), leader election via advisory locks, and the state machines enforced by triggers. No broker, no Redis, no consensus library.
 - **TypeScript / Next.js 15** for the admin console — messages and state timelines, an operator dashboard, jobs, workers, providers, routes, and a route simulator. Partly built; see [the roadmap](docs/roadmap.md).
 
