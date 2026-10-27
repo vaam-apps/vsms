@@ -151,6 +151,8 @@ fn seed_legacy_endpoints(url: &str) {
               'sms_webhook_current', 'sms_webhook_previous', now(), true, 8, 1), \
              ('ep2', 'app1', 'http://plain.example.test/hook', ' message.delivered ', \
               'sms_webhook_other', NULL, NULL, false, 8, 1), \
+             ('ep3', 'app1', 'https://u:p@ss@raw-at.example.test/x', ' message.delivered ', \
+              'sms_webhook_rawat', NULL, NULL, false, 8, 1), \
              ('ep5', 'app1', 'HTTPS://Upper.Example.TEST/hook', ' message.delivered ', \
               'sms_webhook_upper', NULL, NULL, false, 8, 1), \
              ('ep8', 'app1', 'ftp://u:pw@files.example.test/x', ' message.delivered ', \
@@ -243,7 +245,8 @@ async fn the_migration_keeps_an_endpoint_gives_it_an_audience_and_drops_the_secr
     // the receiver's real audience: the scheme and host in lower case whatever
     // the URL spelled, no credential, the older of two rows at one origin
     // keeping it and the newer one told apart by its id, a URL with no origin
-    // never copied.
+    // never copied. A credential may hold a raw `@` (`u:p@ss@host`): the
+    // userinfo runs to the last `@` of the authority, as a URL parser reads it.
     let rows = must(
         &scratch,
         &[
@@ -255,6 +258,7 @@ async fn the_migration_keeps_an_endpoint_gives_it_an_audience_and_drops_the_secr
         rows,
         "ep1|https://hooks.example.test:8443\n\
          ep2|http://plain.example.test\n\
+         ep3|https://raw-at.example.test\n\
          ep5|https://upper.example.test\n\
          ep6|https://creds.example.test#ep6\n\
          ep7|https://creds.example.test\n\
@@ -266,7 +270,8 @@ async fn the_migration_keeps_an_endpoint_gives_it_an_audience_and_drops_the_secr
         &[
             "-c",
             "SELECT count(*) FROM webhook_endpoints \
-             WHERE audience LIKE '%s3cret%' OR audience LIKE '%deploy%' OR audience LIKE '%pw%'",
+             WHERE audience LIKE '%s3cret%' OR audience LIKE '%deploy%' OR audience LIKE '%pw%' \
+             OR audience LIKE '%@%'",
         ],
     );
     assert_eq!(leaked, "0", "a credential was copied into an audience");

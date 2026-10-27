@@ -83,7 +83,7 @@ WITH origin AS (
         END AS base
     FROM webhook_endpoints
     LEFT JOIN LATERAL (
-        SELECT regexp_match(url, '^([A-Za-z][A-Za-z0-9+.-]*)://(?:[^@/?#]*@)?([^/?#]+)') AS parts
+        SELECT regexp_match(url, '^([A-Za-z][A-Za-z0-9+.-]*)://(?:[^/?#]*@)?([^/?#]+)') AS parts
     ) AS m ON true
 ),
 ranked AS (
