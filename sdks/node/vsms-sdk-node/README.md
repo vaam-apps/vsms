@@ -113,13 +113,20 @@ import { parseServerKeysReport, WebhookOpener } from "@vaam-apps/vsms-node";
 
 const opener = new WebhookOpener({
   serverKeys: parseServerKeysReport(readFileSync("server-keys.txt", "utf8")),
-  audience: "my-receiver", // the name on your WebhookEndpoint
-  route: "/webhooks/vsms", // the path of its URL
+  audience: "https://hooks.example.com", // the name on your WebhookEndpoint: choose one only you can have
+  route: "/webhooks/vsms", // the whole path of its URL
+  appId: "capp00000000000000000", // your App's id (required)
+  // endpointId: "cendpoint0000000000000", // optional: also pin the endpoint
 });
-const event = await opener.open(rawBody); // { id, eventId, type, occurredAt, data }
+// `rawBody` is the request's bytes (a Buffer), never text a framework decoded.
+const event = await opener.open(rawBody); // { id, eventId, type, occurredAt, appId, endpointId, data }
 ```
 
-`open` rejects with an `SdkError` of kind `unverified` for a forgery, another receiver's delivery, another route, a stale timestamp (300 s) and a replayed body, and one answer is all it gives: reply `401`. `decode` means it verified and is not the documented envelope; `backend` that the check itself failed (reply `5xx`; vsms retries). Dedupe on `event.id`: delivery is at-least-once and a retry is a new sealed request carrying the same id. The nonce memory is per process, so behind several replicas the id is your defence. `examples/node/webhook-receiver` is a complete receiver.
+One gateway key signs every app's deliveries, so a signature and an audience say only that vsms sent this to your name. `appId` is inside the signed envelope, and `open` compares it (and `endpointId`, if you gave one) with yours: a delivery made for someone else's endpoint that happens to name your audience is refused like a forgery. There is no way to build an opener without an `appId`.
+
+`open` takes bytes only (`Uint8Array`/`Buffer`) and throws an `SdkError` of kind `config` for a string: re-encoding text a framework already decoded can change the bytes, and a signature cannot survive that. Read the body raw (`express.raw({ type: "*/*" })`, `await request.arrayBuffer()`).
+
+`open` rejects with an `SdkError` of kind `unverified` for a forgery, a body sealed by a key you did not pin, a delivery made for another app or endpoint, another audience or route, a stale timestamp (300 s) and a replayed body, and one answer is all it gives: reply `401`. `decode` means it verified and is not the documented envelope; `backend` that the check itself failed (reply `5xx`; vsms retries). Dedupe on `event.id`: delivery is at-least-once and a retry is a new sealed request carrying the same id. **The nonce memory is per process and cannot be replaced** (the Rust SDK's `WebhookOpener::builder(..).with_nonce_store(..)` can; here the check runs in WebAssembly, which cannot await a JavaScript store): a body replayed within the 300 s window to another replica, or to this one after a restart, opens a second time, so behind several replicas the id is your defence. `examples/node/webhook-receiver` is a complete receiver.
 
 ## Errors
 

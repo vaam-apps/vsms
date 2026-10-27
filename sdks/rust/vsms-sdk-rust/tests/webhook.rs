@@ -27,7 +27,12 @@ const GATEWAY_SEED: [u8; 32] = [
 const OTHER_SEED: [u8; 32] = [0x13; 32];
 const AUDIENCE: &str = "vaam";
 const ROUTE: &str = "/webhooks/vsms";
-const BODY: &str = r#"{"id":"cattempt00000000000000","eventId":"11111111-1111-4111-8111-111111111111","type":"message.delivered","occurredAt":"2026-10-27T10:00:00Z","data":{"messageId":"cmsg000000000000000000","state":"delivered"}}"#;
+const APP_ID: &str = "capp00000000000000000";
+const ENDPOINT_ID: &str = "cendpoint0000000000000";
+const BODY: &str = r#"{"id":"cattempt00000000000000","eventId":"11111111-1111-4111-8111-111111111111","type":"message.delivered","occurredAt":"2026-10-27T10:00:00Z","appId":"capp00000000000000000","endpointId":"cendpoint0000000000000","data":{"messageId":"cmsg000000000000000000","state":"delivered"}}"#;
+/// The same delivery made for another app's endpoint, which happens to name the
+/// same audience.
+const OTHER_APP_BODY: &str = r#"{"id":"cattempt00000000000000","eventId":"11111111-1111-4111-8111-111111111111","type":"message.delivered","occurredAt":"2026-10-27T10:00:00Z","appId":"cappother000000000000","endpointId":"cendpoint0000000000000","data":{"messageId":"cmsg000000000000000000","state":"delivered"}}"#;
 
 fn keys() -> ServerKeys {
     ServerKeys::from_base64url(
@@ -91,7 +96,7 @@ fn genuine<'a>() -> Delivery<'a> {
 }
 
 fn opener() -> WebhookOpener {
-    WebhookOpener::new(&keys(), AUDIENCE, ROUTE).unwrap()
+    WebhookOpener::new(&keys(), AUDIENCE, ROUTE, APP_ID).unwrap()
 }
 
 #[test]
@@ -102,10 +107,10 @@ fn the_contract_constants_are_the_documented_ones() {
         .collect();
     assert_eq!(hex, WEBHOOK_CONTRACT_SHA_HEX);
     // Independently computed with Python's hashlib:
-    //   sha256(b"vsms/webhook-delivery/v1\0" + document)
+    //   sha256(b"vsms/webhook-delivery/v2\0" + document)
     assert_eq!(
         WEBHOOK_CONTRACT_SHA_HEX,
-        "7c5a6ab84270ec64eeb668cf50a031ac436433a08467cefe142e338c93132b62"
+        "c61394a50e9f02ece411674fb3f398ae323e685b7a14f9c7b85538aa33a30423"
     );
     assert!(WEBHOOK_CONTRACT_DOCUMENT.contains("\"vsms.webhook.delivery\""));
 }
@@ -117,6 +122,8 @@ async fn a_genuine_delivery_opens_into_the_typed_event() {
     assert_eq!(event.event_id, "11111111-1111-4111-8111-111111111111");
     assert_eq!(event.event_type, "message.delivered");
     assert_eq!(event.occurred_at, "2026-10-27T10:00:00Z");
+    assert_eq!(event.app_id, APP_ID);
+    assert_eq!(event.endpoint_id, ENDPOINT_ID);
     assert_eq!(event.data["messageId"], "cmsg000000000000000000");
 }
 
@@ -129,6 +136,64 @@ async fn a_delivery_for_another_audience_is_refused() {
     .seal()
     .await;
     assert_eq!(opener().open(&sealed).await, Err(WebhookError::Unverified));
+}
+
+/// The attack the app id exists for. One gateway key signs every app's
+/// deliveries, so a delivery sealed for *someone else's* endpoint that names
+/// this receiver's audience verifies in every other respect: the signature,
+/// the audience, the route, the contract, the clock, a nonce this opener has
+/// never seen. Only the app id inside the signed envelope says it was not
+/// made for this receiver.
+#[tokio::test]
+async fn a_delivery_made_for_another_app_is_refused_though_everything_else_verifies() {
+    let sealed = Delivery {
+        body: OTHER_APP_BODY,
+        ..genuine()
+    }
+    .seal()
+    .await;
+    assert_eq!(opener().open(&sealed).await, Err(WebhookError::Unverified));
+}
+
+#[tokio::test]
+async fn a_delivery_made_through_another_endpoint_is_refused_when_the_opener_pins_one() {
+    let sealed = genuine().seal().await;
+    let pinned = WebhookOpener::builder(&keys(), AUDIENCE, ROUTE, APP_ID)
+        .endpoint_id("cendpointother0000000")
+        .build()
+        .unwrap();
+    assert_eq!(pinned.open(&sealed).await, Err(WebhookError::Unverified));
+    // Without a pinned endpoint the same body opens: the endpoint is optional,
+    // the app is not.
+    assert!(opener().open(&genuine().seal().await).await.is_ok());
+    let matching = WebhookOpener::builder(&keys(), AUDIENCE, ROUTE, APP_ID)
+        .endpoint_id(ENDPOINT_ID)
+        .build()
+        .unwrap();
+    assert!(matching.open(&genuine().seal().await).await.is_ok());
+}
+
+/// Rewriting the app id inside a genuine delivery to this receiver's own fails
+/// the signature: the id is part of what the gateway signed, not a header.
+#[tokio::test]
+async fn an_app_id_rewritten_in_flight_fails_the_signature() {
+    let sealed = Delivery {
+        body: OTHER_APP_BODY,
+        ..genuine()
+    }
+    .seal()
+    .await;
+    let from = b"cappother000000000000";
+    let to = b"capp00000000000000000";
+    assert_eq!(from.len(), to.len());
+    let at = sealed
+        .windows(from.len())
+        .position(|window| window == from)
+        .expect("the app id is in the signed bytes");
+    let mut forged = sealed.clone();
+    forged[at..at + to.len()].copy_from_slice(to);
+    assert_ne!(forged, sealed);
+    assert_eq!(opener().open(&forged).await, Err(WebhookError::Unverified));
 }
 
 #[tokio::test]
@@ -252,7 +317,7 @@ async fn a_failing_nonce_store_is_a_backend_error_not_a_refusal() {
             Err(CratestackError::Internal("redis is down".to_owned()))
         }
     }
-    let opener = WebhookOpener::builder(&keys(), AUDIENCE, ROUTE)
+    let opener = WebhookOpener::builder(&keys(), AUDIENCE, ROUTE, APP_ID)
         .with_nonce_store(Arc::new(Down))
         .build()
         .unwrap();
@@ -271,7 +336,7 @@ async fn the_skew_and_the_clock_can_be_set() {
     }
     .seal()
     .await;
-    let opener = WebhookOpener::builder(&keys(), AUDIENCE, ROUTE)
+    let opener = WebhookOpener::builder(&keys(), AUDIENCE, ROUTE, APP_ID)
         .skew(Duration::from_secs(7_200))
         .build()
         .unwrap();
@@ -283,7 +348,7 @@ async fn the_skew_and_the_clock_can_be_set() {
     }
     .seal()
     .await;
-    let opener = WebhookOpener::builder(&keys(), AUDIENCE, ROUTE)
+    let opener = WebhookOpener::builder(&keys(), AUDIENCE, ROUTE, APP_ID)
         .clock(|| 1_000)
         .build()
         .unwrap();
@@ -292,8 +357,14 @@ async fn the_skew_and_the_clock_can_be_set() {
 
 #[test]
 fn a_misconfigured_opener_says_so_before_anything_is_opened() {
-    assert!(WebhookOpener::new(&keys(), "", ROUTE).is_err());
-    assert!(WebhookOpener::new(&keys(), AUDIENCE, "webhooks/vsms").is_err());
+    assert!(WebhookOpener::new(&keys(), "", ROUTE, APP_ID).is_err());
+    assert!(WebhookOpener::new(&keys(), AUDIENCE, "webhooks/vsms", APP_ID).is_err());
+    // No default accepts any app: an opener without an app id cannot be built.
+    assert!(WebhookOpener::new(&keys(), AUDIENCE, ROUTE, "").is_err());
+    assert!(WebhookOpener::builder(&keys(), AUDIENCE, ROUTE, APP_ID)
+        .endpoint_id("")
+        .build()
+        .is_err());
 }
 
 /// The bytes the gateway's own `sms-webhook` crate produced for these inputs
@@ -319,7 +390,9 @@ async fn the_gateways_own_vector_opens() {
         &keys(),
         vector["audience"].as_str().unwrap(),
         vector["route"].as_str().unwrap(),
+        vector["appId"].as_str().unwrap(),
     )
+    .endpoint_id(vector["endpointId"].as_str().unwrap())
     .clock(move || iat)
     .build()
     .unwrap();
@@ -328,5 +401,7 @@ async fn the_gateways_own_vector_opens() {
         serde_json::from_str(vector["plaintext"].as_str().unwrap()).unwrap();
     assert_eq!(event.id, plaintext["id"].as_str().unwrap());
     assert_eq!(event.event_id, plaintext["eventId"].as_str().unwrap());
+    assert_eq!(event.app_id, vector["appId"].as_str().unwrap());
+    assert_eq!(event.endpoint_id, vector["endpointId"].as_str().unwrap());
     assert_eq!(event.data, plaintext["data"]);
 }

@@ -79,15 +79,23 @@ two public keys and open the body:
 use vsms_sdk::{ServerKeys, WebhookOpener};
 
 let keys = ServerKeys::parse_report(&std::fs::read_to_string("server-keys.txt")?)?;
-// `audience` is the name on your WebhookEndpoint; `route` is the path of its URL.
-let opener = WebhookOpener::new(&keys, "my-receiver", "/webhooks/vsms")?;
+// `audience` is the name on your WebhookEndpoint (choose one only you can have);
+// `route` is the whole path of its URL; `app_id` is your App's id, required.
+let opener = WebhookOpener::new(&keys, "https://hooks.example.com", "/webhooks/vsms", "capp00000000000000000")?;
 let event = opener.open(&raw_request_body).await?;
 println!("{} {}", event.event_type, event.id);
 ```
 
-`open` returns `WebhookError::Unverified` for a forgery, another receiver's
-delivery, another route, a stale timestamp (300 s) and a replayed body, and one
-answer is all it gives: reply `401`. Dedupe on `event.id`: delivery is
+One gateway key signs every app's deliveries, so a signature and an audience say
+only that vsms sent this to your name. `app_id` is compared with the `appId`
+inside the signed envelope, and `WebhookOpener::builder(..).endpoint_id(..)` also
+pins the endpoint: a delivery made for someone else's endpoint that happens to
+name your audience is refused. There is no opener without an app id.
+
+`open` returns `WebhookError::Unverified` for a forgery, a body sealed by a key
+you did not pin, a delivery made for another app or endpoint, another audience or
+route, a stale timestamp (300 s) and a replayed body, and one answer is all it
+gives: reply `401`. Dedupe on `event.id`: delivery is
 at-least-once and a retry is a new sealed request carrying the same id. The nonce
 store is per process by default; give a multi-replica receiver one it shares with
 `WebhookOpener::builder(..).with_nonce_store(..)`.

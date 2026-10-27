@@ -16,8 +16,10 @@
 //! )
 //! .unwrap();
 //! // `audience` is the name this receiver chose when its endpoint was created;
-//! // `route` is the path of the endpoint's URL.
-//! let opener = WebhookOpener::new(&keys, "vaam", "/webhooks/vsms").unwrap();
+//! // `route` is the whole path of the endpoint's URL; `app_id` is the id of the
+//! // vsms app the endpoint belongs to, which no one else's delivery carries.
+//! let opener =
+//!     WebhookOpener::new(&keys, "vaam", "/webhooks/vsms", "capp00000000000000000").unwrap();
 //! let event = opener.open(body).await?;
 //! println!("{} {}", event.event_type, event.event_id);
 //! # Ok(())
@@ -28,7 +30,16 @@
 //! never says which: the signature under a pinned key, the audience, the route,
 //! the method, the delivery contract ([`WEBHOOK_CONTRACT_SHA`]), the payload
 //! type, the timestamp (within the skew, 300 s by default) and the nonce, which
-//! is recorded so a replayed body is refused.
+//! is recorded so a replayed body is refused. Then, inside the verified
+//! envelope, **the app id** (and the endpoint id, when you gave one).
+//!
+//! The last check is not decoration. One gateway key signs every app's
+//! deliveries, so the signature and the audience only say "vsms sent this to
+//! the name `vaam`"; whoever may create an endpoint can name any audience and
+//! point it at a URL of their own, and collect seals that open anywhere that
+//! name is answered to. The audience is unique per endpoint in the gateway, but
+//! the app id (and, if you can, the endpoint id) is what ties a delivery to the
+//! receiver it was made for. There is deliberately no opener without one.
 //!
 //! **The nonce store is per process by default.** A receiver with several
 //! replicas must pass one they share ([`WebhookOpener::with_nonce_store`]),
@@ -60,12 +71,12 @@ const PAYLOAD_TYPE: &str = "application/json";
 /// Domain-separation tag of [`webhook_contract_sha`]. The same bytes as
 /// `sms_webhook::CONTRACT_DOMAIN` in the gateway; `cargo xtask sdk-parity-check`
 /// holds them equal.
-pub const WEBHOOK_CONTRACT_DOMAIN: &[u8] = b"vsms/webhook-delivery/v1\0";
+pub const WEBHOOK_CONTRACT_DOMAIN: &[u8] = b"vsms/webhook-delivery/v2\0";
 
 /// The declared shape of a delivery, hashed into [`WEBHOOK_CONTRACT_SHA`]. The
 /// same bytes as `sms_webhook::CONTRACT_DOCUMENT`; `cargo xtask
 /// sdk-parity-check` holds them equal.
-pub const WEBHOOK_CONTRACT_DOCUMENT: &str = r#"{"contract":"vsms.webhook.delivery","version":1,"method":"POST","request":{"payload_type":"application/json","body":{"id":"string","eventId":"uuid","type":"string","occurredAt":"rfc3339-utc-seconds","data":"object"}},"response":{"payload_type":"application/json","body":"not read"}}"#;
+pub const WEBHOOK_CONTRACT_DOCUMENT: &str = r#"{"contract":"vsms.webhook.delivery","version":2,"method":"POST","request":{"payload_type":"application/json","body":{"id":"string","eventId":"uuid","type":"string","occurredAt":"rfc3339-utc-seconds","appId":"string","endpointId":"string","data":"object"}},"response":{"payload_type":"application/json","body":"not read"}}"#;
 
 /// The digest a delivery binds, as lowercase hex:
 /// `SHA-256(WEBHOOK_CONTRACT_DOMAIN || WEBHOOK_CONTRACT_DOCUMENT)`. A receiver
@@ -73,7 +84,7 @@ pub const WEBHOOK_CONTRACT_DOCUMENT: &str = r#"{"contract":"vsms.webhook.deliver
 /// route; this crate computes it ([`webhook_contract_sha`]) and its tests pin
 /// this literal.
 pub const WEBHOOK_CONTRACT_SHA_HEX: &str =
-    "7c5a6ab84270ec64eeb668cf50a031ac436433a08467cefe142e338c93132b62";
+    "c61394a50e9f02ece411674fb3f398ae323e685b7a14f9c7b85538aa33a30423";
 
 /// [`WEBHOOK_CONTRACT_SHA_HEX`] as bytes, computed from the document.
 ///
@@ -95,10 +106,11 @@ pub fn webhook_contract_sha() -> [u8; 32] {
 #[non_exhaustive]
 pub enum WebhookError {
     /// The body is not a message that verifies under a pinned server key for
-    /// this audience, route and contract: a forgery, another receiver's
-    /// delivery, a body sealed by a key you did not pin, a stale timestamp
-    /// (check this machine's clock), a replay, or a flipped bit. It is one
-    /// answer for all of them on purpose; answer the request with a `401`.
+    /// this audience, route and contract, or it verifies and was made for
+    /// another app or endpoint: a forgery, a delivery sealed for someone else
+    /// that reached you, a body sealed by a key you did not pin, a stale
+    /// timestamp (check this machine's clock), a replay, or a flipped bit. It is
+    /// one answer for all of them on purpose; answer the request with a `401`.
     #[error("the delivery does not verify under a pinned server key for this receiver")]
     Unverified,
     /// The body verified and is not the envelope vsms documents. This is a bug
@@ -121,6 +133,14 @@ pub struct WebhookEvent {
     /// `X-Sms-Event-Id` header carried before webhooks were sealed.
     #[serde(rename = "eventId")]
     pub event_id: String,
+    /// The app the endpoint belongs to. [`WebhookOpener`] has already compared
+    /// it with the id it was built with.
+    #[serde(rename = "appId")]
+    pub app_id: String,
+    /// The endpoint the delivery was made through. Compared too when the opener
+    /// was given one.
+    #[serde(rename = "endpointId")]
+    pub endpoint_id: String,
     /// `message.delivered` and the rest of the catalogue in
     /// `docs/architecture.md` section 8.4.
     #[serde(rename = "type")]
@@ -138,6 +158,8 @@ pub struct WebhookOpener {
     cose: CoseEnvelope,
     audience: String,
     route: String,
+    app_id: String,
+    endpoint_id: Option<String>,
 }
 
 impl std::fmt::Debug for WebhookOpener {
@@ -145,6 +167,8 @@ impl std::fmt::Debug for WebhookOpener {
         f.debug_struct("WebhookOpener")
             .field("audience", &self.audience)
             .field("route", &self.route)
+            .field("app_id", &self.app_id)
+            .field("endpoint_id", &self.endpoint_id)
             .finish_non_exhaustive()
     }
 }
@@ -155,26 +179,35 @@ pub struct WebhookOpenerBuilder<'a> {
     keys: &'a ServerKeys,
     audience: String,
     route: String,
+    app_id: String,
+    endpoint_id: Option<String>,
     nonces: Option<Arc<dyn NonceStore>>,
     skew: Option<Duration>,
     clock: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
 }
 
 impl WebhookOpener {
-    /// An opener for deliveries to the route `route` (the path of the
-    /// endpoint's URL, such as `/webhooks/vsms`) that name `audience`, with an
-    /// in-memory nonce store and the default 300 s skew.
+    /// An opener for deliveries to the route `route` (the whole path of the
+    /// endpoint's URL, such as `/webhooks/vsms`) that name `audience` and were
+    /// made for the app `app_id`, with an in-memory nonce store and the default
+    /// 300 s skew.
+    ///
+    /// `app_id` is required: without it the opener would accept any delivery
+    /// that merely reached its audience (see the module docs). To also pin the
+    /// endpoint, use [`WebhookOpener::builder`] and
+    /// [`WebhookOpenerBuilder::endpoint_id`].
     ///
     /// # Errors
     ///
-    /// [`SdkError::Config`] for an empty audience, a route that does not start
-    /// with `/`, or a pinned key the envelope refuses.
+    /// [`SdkError::Config`] for an empty audience or app id, a route that does
+    /// not start with `/`, or a pinned key the envelope refuses.
     pub fn new(
         keys: &ServerKeys,
         audience: impl Into<String>,
         route: impl Into<String>,
+        app_id: impl Into<String>,
     ) -> Result<Self, SdkError> {
-        Self::builder(keys, audience, route).build()
+        Self::builder(keys, audience, route, app_id).build()
     }
 
     /// Starts a [`WebhookOpenerBuilder`].
@@ -182,11 +215,14 @@ impl WebhookOpener {
         keys: &ServerKeys,
         audience: impl Into<String>,
         route: impl Into<String>,
+        app_id: impl Into<String>,
     ) -> WebhookOpenerBuilder<'_> {
         WebhookOpenerBuilder {
             keys,
             audience: audience.into(),
             route: route.into(),
+            app_id: app_id.into(),
+            endpoint_id: None,
             nonces: None,
             skew: None,
             clock: None,
@@ -198,9 +234,11 @@ impl WebhookOpener {
     ///
     /// # Errors
     ///
-    /// [`WebhookError::Unverified`] for anything that does not verify,
-    /// [`WebhookError::Malformed`] for a verified body that is not the
-    /// envelope, [`WebhookError::Backend`] when the nonce store fails.
+    /// [`WebhookError::Unverified`] for anything that does not verify, and for
+    /// a verified delivery made for another app (or another endpoint, when the
+    /// opener was given one), [`WebhookError::Malformed`] for a verified body
+    /// that is not the envelope, [`WebhookError::Backend`] when the nonce store
+    /// fails.
     pub async fn open(&self, body: &[u8]) -> Result<WebhookEvent, WebhookError> {
         let binding = Binding {
             audience: Cow::Borrowed(&self.audience),
@@ -221,12 +259,32 @@ impl WebhookOpener {
                 CratestackError::Unauthorized(_) => WebhookError::Unverified,
                 other => WebhookError::Backend(other.to_string()),
             })?;
-        serde_json::from_slice(&opened.payload)
-            .map_err(|error| WebhookError::Malformed(error.to_string()))
+        let event: WebhookEvent = serde_json::from_slice(&opened.payload)
+            .map_err(|error| WebhookError::Malformed(error.to_string()))?;
+        if event.app_id != self.app_id {
+            return Err(WebhookError::Unverified);
+        }
+        if self
+            .endpoint_id
+            .as_deref()
+            .is_some_and(|endpoint| event.endpoint_id != endpoint)
+        {
+            return Err(WebhookError::Unverified);
+        }
+        Ok(event)
     }
 }
 
 impl WebhookOpenerBuilder<'_> {
+    /// Also require the delivery to have been made through this endpoint
+    /// (`WebhookEndpoint.id`). Worth setting when the receiver knows it: it is
+    /// what separates two endpoints of one app.
+    #[must_use]
+    pub fn endpoint_id(mut self, endpoint_id: impl Into<String>) -> Self {
+        self.endpoint_id = Some(endpoint_id.into());
+        self
+    }
+
     /// A nonce store shared by every replica of the receiver. The default is
     /// per process.
     #[must_use]
@@ -256,8 +314,8 @@ impl WebhookOpenerBuilder<'_> {
     ///
     /// # Errors
     ///
-    /// [`SdkError::Config`] for an empty audience, a route that does not start
-    /// with `/`, or a pinned key the envelope refuses.
+    /// [`SdkError::Config`] for an empty audience, app id or endpoint id, a
+    /// route that does not start with `/`, or a pinned key the envelope refuses.
     pub fn build(self) -> Result<WebhookOpener, SdkError> {
         if self.audience.is_empty() {
             return Err(SdkError::Config(
@@ -268,6 +326,18 @@ impl WebhookOpenerBuilder<'_> {
             return Err(SdkError::Config(
                 "a webhook route is the path of the endpoint's URL, such as /webhooks/vsms"
                     .to_owned(),
+            ));
+        }
+        if self.app_id.is_empty() {
+            return Err(SdkError::Config(
+                "a webhook opener needs the id of the app the endpoint belongs to: the audience \
+                 alone does not say whose delivery it is"
+                    .to_owned(),
+            ));
+        }
+        if self.endpoint_id.as_deref() == Some("") {
+            return Err(SdkError::Config(
+                "an endpoint id given to a webhook opener must not be empty".to_owned(),
             ));
         }
         crate::client::ensure_crypto_provider();
@@ -300,6 +370,8 @@ impl WebhookOpenerBuilder<'_> {
             cose,
             audience: self.audience,
             route: self.route,
+            app_id: self.app_id,
+            endpoint_id: self.endpoint_id,
         })
     }
 }

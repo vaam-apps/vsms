@@ -51,6 +51,7 @@ fn webhook_error(error_: &WebhookError) -> JsValue {
     match error_ {
         WebhookError::Unverified => error("unverified", &error_.to_string(), None),
         WebhookError::Unreadable => error("unreadable", &error_.to_string(), None),
+        WebhookError::Malformed(_) => error("malformed", &error_.to_string(), None),
         WebhookError::Backend(message) => error("backend", message, None),
         WebhookError::Invalid(message) => error("invalid", message, None),
     }
@@ -473,7 +474,8 @@ impl JsOpener {
 
 /// Opens the sealed webhooks vsms delivers to one receiver: the gateway's
 /// worker seals each delivery with its envelope signing key, and this verifies
-/// it under the two pinned server keys, for this audience and this route.
+/// it under the two pinned server keys, for this audience and this route, then
+/// checks the app (and optionally the endpoint) named inside it.
 #[wasm_bindgen(js_name = "WebhookOpener")]
 #[derive(Debug)]
 pub struct JsWebhookOpener {
@@ -484,15 +486,18 @@ pub struct JsWebhookOpener {
 impl JsWebhookOpener {
     /// An opener believing `server_current` and `server_next` (unpadded
     /// base64url, both required and distinct) for deliveries to `route` (the
-    /// path of the endpoint's URL) that name `audience`. `now_seconds`, when
-    /// given, is a fixed clock in Unix seconds, for tests and for replaying a
-    /// recorded delivery.
+    /// whole path of the endpoint's URL) that name `audience` and were made for
+    /// the app `app_id` (and through `endpoint_id`, when given). `now_seconds`,
+    /// when given, is a fixed clock in Unix seconds, for tests and for
+    /// replaying a recorded delivery.
     #[wasm_bindgen(js_name = "forServerKeys")]
     pub fn for_server_keys(
         server_current: &str,
         server_next: &str,
         audience: &str,
         route: &str,
+        app_id: &str,
+        endpoint_id: Option<String>,
         now_seconds: Option<f64>,
     ) -> Result<JsWebhookOpener, JsValue> {
         let keys = server_keys(server_current, server_next)?;
@@ -504,14 +509,21 @@ impl JsWebhookOpener {
             }
             Some(_) => return Err(invalid("nowSeconds must be a whole number of seconds")),
         };
-        let inner =
-            WebhookOpener::new(&keys, audience, route, clock).map_err(|e| webhook_error(&e))?;
+        let inner = WebhookOpener::new(
+            &keys,
+            audience,
+            route,
+            app_id,
+            endpoint_id.as_deref(),
+            clock,
+        )
+        .map_err(|e| webhook_error(&e))?;
         Ok(JsWebhookOpener { inner })
     }
 
     /// The verified envelope, as JSON text, of one delivery's body (the raw
-    /// request bytes). Rejects with `unverified` (one answer for every reason),
-    /// `unreadable` or `backend`.
+    /// request bytes). Rejects with `unverified` (one answer for every reason,
+    /// another app's delivery included), `unreadable`, `malformed` or `backend`.
     pub async fn open(&self, body: Uint8Array) -> Result<String, JsValue> {
         self.inner
             .open(&body.to_vec())

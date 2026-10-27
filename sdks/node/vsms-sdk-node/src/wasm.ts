@@ -47,7 +47,15 @@ export interface WasmSealer {
 
 /** What the wasm module rejects with: a plain object, never an `Error`. */
 export interface WasmFailure {
-  kind: "unbound" | "seal" | "unsigned" | "unverified" | "unreadable" | "backend" | "invalid";
+  kind:
+    | "unbound"
+    | "seal"
+    | "unsigned"
+    | "unverified"
+    | "unreadable"
+    | "malformed"
+    | "backend"
+    | "invalid";
   message: string;
   status?: number;
 }
@@ -86,6 +94,8 @@ export interface WasmModule {
       serverNext: string,
       audience: string,
       route: string,
+      appId: string,
+      endpointId: string | undefined,
       nowSeconds: number | undefined,
     ): WasmWebhookOpener;
   };
