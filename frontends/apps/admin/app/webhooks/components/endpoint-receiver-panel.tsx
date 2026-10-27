@@ -5,8 +5,11 @@ import { receiverRoute } from "../webhook-domain";
 // Dumb (R6): what the receiver of this endpoint has to be configured with to
 // open a delivery (VS-8). A delivery is a sealed request signed with the
 // gateway's own key, so nothing here is a secret: the audience and the route
-// are names the receiver's envelope layer is built with, and the pinned keys
-// are the ones `sms-gateway server-keys` prints.
+// are names the receiver's envelope layer is built with, the app and endpoint
+// ids are what its handler compares with the ids inside the signed envelope (the
+// gateway signs every app's deliveries with one key, so the audience alone does
+// not say a delivery was made for this receiver), and the pinned keys are the
+// ones `sms-gateway server-keys` prints.
 export function EndpointReceiverPanel({ endpoint }: { endpoint: EndpointListItem }) {
   const route = receiverRoute(endpoint.url);
   return (
@@ -14,6 +17,12 @@ export function EndpointReceiverPanel({ endpoint }: { endpoint: EndpointListItem
       <DetailList>
         <DetailRow label="Audience">
           <span className="font-mono text-caption">{endpoint.audience}</span>
+        </DetailRow>
+        <DetailRow label="App id">
+          <span className="font-mono text-caption">{endpoint.appId}</span>
+        </DetailRow>
+        <DetailRow label="Endpoint id">
+          <span className="font-mono text-caption">{endpoint.id}</span>
         </DetailRow>
         <DetailRow label="Route">
           {route !== null ? (
@@ -28,9 +37,11 @@ export function EndpointReceiverPanel({ endpoint }: { endpoint: EndpointListItem
       </DetailList>
       <p className="text-caption text-subtle-foreground">
         Deliveries are signed with the gateway's own key, not a secret shared with this endpoint.
-        Configure the receiver with this audience and route, and pin the gateway's public keys (
-        <span className="font-mono">sms-gateway server-keys</span>); the Rust and Node SDKs open a
-        delivery with a <span className="font-mono">WebhookOpener</span>.
+        Configure the receiver with this audience, route and app id, and pin the gateway's public
+        keys (<span className="font-mono">sms-gateway server-keys</span>); the Rust and Node SDKs
+        open a delivery with a <span className="font-mono">WebhookOpener</span>, which refuses one
+        made for another app. The audience is yours alone: the gateway gives each name to one
+        endpoint, so choose your own origin.
       </p>
     </div>
   );

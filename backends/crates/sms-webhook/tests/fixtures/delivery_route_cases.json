@@ -1,0 +1,132 @@
+{
+  "cases": [
+    {
+      "url": "https://api.vaam.store/webhooks/vsms",
+      "route": "/webhooks/vsms"
+    },
+    {
+      "url": "http://localhost:9000/webhooks",
+      "route": "/webhooks"
+    },
+    {
+      "url": "HTTPS://Example.COM/Hook",
+      "route": "/Hook"
+    },
+    {
+      "url": "https://example.com",
+      "route": "/"
+    },
+    {
+      "url": "https://example.com/",
+      "route": "/"
+    },
+    {
+      "url": "https://example.com:8443/a/b/",
+      "route": "/a/b/"
+    },
+    {
+      "url": "https://[::1]:8443/hook",
+      "route": "/hook"
+    },
+    {
+      "url": "https://example.com/a/../b",
+      "route": "/b"
+    },
+    {
+      "url": "https://example.com//double",
+      "route": "//double"
+    },
+    {
+      "url": "https://example.com/a,b;c=d@e:f",
+      "route": "/a,b;c=d@e:f"
+    },
+    {
+      "url": "https://example.com/hook?",
+      "route": null
+    },
+    {
+      "url": "https://example.com/hook?x=1",
+      "route": null
+    },
+    {
+      "url": "https://example.com/hook#",
+      "route": null
+    },
+    {
+      "url": "https://example.com/hook#frag",
+      "route": null
+    },
+    {
+      "url": "https://example.com/hook?x#frag",
+      "route": null
+    },
+    {
+      "url": "https://user@example.com/hook",
+      "route": null
+    },
+    {
+      "url": "https://user:pw@example.com/hook",
+      "route": null
+    },
+    {
+      "url": "https://:pw@example.com/hook",
+      "route": null
+    },
+    {
+      "url": "https://example.com/hooks/{tenant}",
+      "route": null
+    },
+    {
+      "url": "https://example.com/a}",
+      "route": null
+    },
+    {
+      "url": "https://example.com/a%2Fb",
+      "route": null
+    },
+    {
+      "url": "https://example.com/a b",
+      "route": null
+    },
+    {
+      "url": "https://example.com/é",
+      "route": null
+    },
+    {
+      "url": "ftp://example.com/hook",
+      "route": null
+    },
+    {
+      "url": "ws://example.com/hook",
+      "route": null
+    },
+    {
+      "url": "file:///etc/passwd",
+      "route": null
+    },
+    {
+      "url": "mailto:a@b.c",
+      "route": null
+    },
+    {
+      "url": "not a url",
+      "route": null
+    },
+    {
+      "url": "",
+      "route": null
+    },
+    {
+      "url": "https://",
+      "route": null
+    },
+    {
+      "url": "https:///hook",
+      "route": "/"
+    },
+    {
+      "url": "https://example.com:99999/hook",
+      "route": null
+    }
+  ]
+}

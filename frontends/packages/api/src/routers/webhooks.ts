@@ -5,6 +5,7 @@
 // as of #211). There is no secret to create or rotate (VS-8): a delivery is
 // sealed under the gateway's own key.
 
+import { GATEWAY_AUDIENCE, GATEWAY_AUDIENCE_MESSAGE, urlRefusal } from "@vsms/gateway";
 import { z } from "zod";
 import { rethrowGatewayError } from "../gateway-error";
 import { publicProcedure, router } from "../trpc";
@@ -20,12 +21,30 @@ const eventType = z.enum([
 ]);
 
 // What a delivery is addressed to: the name the receiver's envelope layer is
-// built with. Free text of 1-255 characters, as `WebhookEndpoint.audience`.
-const audience = z.string().trim().min(1).max(255);
+// built with. Free text of 1-255 characters, as `WebhookEndpoint.audience`, but
+// never `vsms` (the gateway's own name), and unique across endpoints, which the
+// gateway enforces and answers with a conflict.
+const audience = z
+  .string()
+  .trim()
+  .min(1)
+  .max(255)
+  .refine((v) => v !== GATEWAY_AUDIENCE, { message: GATEWAY_AUDIENCE_MESSAGE });
+
+// A URL the worker can seal a delivery for (`@vsms/gateway`'s `receiverRoute`,
+// the rule `sms_webhook::delivery_route` applies): one it cannot would only
+// fail at delivery, burn the endpoint's attempts and trip its breaker.
+const url = z
+  .string()
+  .url()
+  .superRefine((v, ctx) => {
+    const refusal = urlRefusal(v);
+    if (refusal !== null) ctx.addIssue({ code: "custom", message: refusal });
+  });
 
 const createInput = z.object({
   appId: z.string().min(1),
-  url: z.string().url(),
+  url,
   audience,
   eventTypes: z.array(eventType).min(1),
   maskRecipient: z.boolean(),
@@ -35,7 +54,7 @@ const createInput = z.object({
 const updateInput = z.object({
   id: z.string().min(1),
   etag: z.string().min(1),
-  url: z.string().url().optional(),
+  url: url.optional(),
   audience: audience.optional(),
   eventTypes: z.array(eventType).min(1).optional(),
   maskRecipient: z.boolean().optional(),

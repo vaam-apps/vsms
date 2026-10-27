@@ -7,7 +7,18 @@
 
 import type { inferRouterOutputs } from "@trpc/server";
 import type { AppRouter } from "@vsms/api";
+import {
+  GATEWAY_AUDIENCE,
+  GATEWAY_AUDIENCE_MESSAGE,
+  receiverRoute,
+  urlRefusal,
+} from "@vsms/gateway";
 import { z } from "zod";
+
+// Re-exported so the screen's one import line keeps naming the route rule it
+// shows ("Your receiver serves POST <path>"); the rule itself lives in
+// `@vsms/gateway`, where the tRPC router reads the same one.
+export { receiverRoute };
 
 type RouterOutputs = inferRouterOutputs<AppRouter>;
 export type EndpointListItem = RouterOutputs["webhookEndpoints"]["list"][number];
@@ -33,31 +44,29 @@ export function payloadFor(attempt: Pick<AttemptListItem, "payload">): string {
 }
 
 // What a delivery is addressed to (`WebhookEndpoint.audience`, 1-255
-// characters): the name the receiver's envelope layer is built with.
-const audienceField = z.string().trim().min(1, "Audience is required").max(255, "At most 255");
+// characters, never `vsms`, and unique: the gateway hands each name to one
+// endpoint): the name the receiver's envelope layer is built with.
+const audienceField = z
+  .string()
+  .trim()
+  .min(1, "Audience is required")
+  .max(255, "At most 255")
+  .refine((v) => v !== GATEWAY_AUDIENCE, { message: GATEWAY_AUDIENCE_MESSAGE });
 
-/**
- * The route a delivery to `url` binds: its path, or `null` when the URL cannot
- * carry a sealed delivery. The same rule as `sms_webhook::delivery_route`
- * (http(s), no credentials, no query, no fragment, a path with no `{`, `}` or
- * `%`), which is what the worker applies at delivery time.
- */
-export function receiverRoute(url: string): string | null {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return null;
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-  if (parsed.username !== "" || parsed.password !== "") return null;
-  if (parsed.search !== "" || parsed.hash !== "") return null;
-  if (/[{}%]/.test(parsed.pathname)) return null;
-  return parsed.pathname;
-}
+// The URL a delivery is POSTed to. One the worker could not seal for (see
+// `receiverRoute`) is refused here, as the gateway refuses it on write, instead
+// of failing at delivery.
+const urlField = z
+  .string()
+  .trim()
+  .min(1, "URL is required")
+  .superRefine((v, ctx) => {
+    const refusal = urlRefusal(v);
+    if (refusal !== null) ctx.addIssue({ code: "custom", message: refusal });
+  });
 
 export const endpointSchema = z.object({
-  url: z.string().trim().min(1, "URL is required"),
+  url: urlField,
   audience: audienceField,
   maxAttempts: z
     .string()
@@ -72,7 +81,7 @@ export type EndpointFormValues = z.infer<typeof endpointSchema>;
 
 export const createEndpointSchema = z.object({
   appId: z.string().trim().min(1, "App id is required"),
-  url: z.string().trim().min(1, "URL is required"),
+  url: urlField,
   audience: audienceField,
   maxAttempts: z
     .string()

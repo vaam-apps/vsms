@@ -50,7 +50,7 @@ export function CreateEndpointFields({
       >
         <Input
           id="new-endpoint-audience"
-          placeholder="the name the receiver's envelope layer is built with"
+          placeholder="a name only you hold, e.g. https://hooks.example.com"
           aria-invalid={formState.errors.audience != null}
           {...register("audience")}
         />

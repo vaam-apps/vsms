@@ -102,4 +102,55 @@ describe("the router in the page", () => {
     expect(composer).toHaveBeenCalledWith("preview", { body: "hello" });
     expect(gateway).not.toHaveBeenCalled();
   });
+
+  describe("a webhook endpoint the gateway would refuse never reaches it", () => {
+    const base = {
+      appId: "capp00000000000000000",
+      url: "https://receiver.example/webhooks/vsms",
+      audience: "https://receiver.example",
+      eventTypes: ["message.delivered"],
+      maskRecipient: true,
+      maxAttempts: 8,
+    };
+
+    it("creates an endpoint with a sealable URL and its own audience", async () => {
+      const fetcher = vi.fn<GatewayFetch>(async () =>
+        json(201, { id: "cendpoint", eventTypes: " message.delivered ", version: 1 }),
+      );
+      configureGatewayFetch(fetcher);
+      const { result } = await call("webhookEndpoints.create", base, "POST");
+      expect(result.result).toBeDefined();
+      expect(fetcher).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ["a query", "https://receiver.example/webhooks/vsms?x=1"],
+      ["a bare query marker", "https://receiver.example/webhooks/vsms?"],
+      ["a bare fragment marker", "https://receiver.example/webhooks/vsms#"],
+      ["credentials", "https://u:pw@receiver.example/webhooks/vsms"],
+      ["a path parameter", "https://receiver.example/webhooks/{tenant}"],
+    ])("refuses a URL with %s, on create and on update", async (_name, url) => {
+      const fetcher = vi.fn<GatewayFetch>();
+      configureGatewayFetch(fetcher);
+      const created = await call("webhookEndpoints.create", { ...base, url }, "POST");
+      expect(created.status).toBe(400);
+      const updated = await call("webhookEndpoints.update", { id: "e", etag: "1", url }, "POST");
+      expect(updated.status).toBe(400);
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it("refuses the audience vsms, on create and on update", async () => {
+      const fetcher = vi.fn<GatewayFetch>();
+      configureGatewayFetch(fetcher);
+      const created = await call("webhookEndpoints.create", { ...base, audience: "vsms" }, "POST");
+      expect(created.status).toBe(400);
+      const updated = await call(
+        "webhookEndpoints.update",
+        { id: "e", etag: "1", audience: " vsms " },
+        "POST",
+      );
+      expect(updated.status).toBe(400);
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+  });
 });
