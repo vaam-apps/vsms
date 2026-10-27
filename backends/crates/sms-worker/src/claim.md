@@ -30,3 +30,5 @@ why nothing is written for a row the worker cannot serve, which a "claim it, fin
 out, hand it back" design could not say. [`claim_webhook_attempts`] is that claim;
 [`count_sealed_attempts_waiting`] is the `COUNT(*)` a keyless worker reports
 with.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
