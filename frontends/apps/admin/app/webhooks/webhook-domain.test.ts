@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { createEndpointSchema, endpointSchema, payloadFor, receiverRoute } from "./webhook-domain";
+import {
+  createEndpointSchema,
+  DELIVERY_MODE_HINTS,
+  DELIVERY_MODE_LABELS,
+  DELIVERY_MODES,
+  endpointSchema,
+  payloadFor,
+  receiverRoute,
+} from "./webhook-domain";
 
 describe("payloadFor", () => {
   it("pretty-prints a JSON payload", () => {
@@ -37,8 +45,59 @@ describe("receiverRoute", () => {
   });
 });
 
-describe("the endpoint schemas", () => {
+describe("the delivery mode in the endpoint schemas", () => {
   const base = { url: "https://example.com/hooks", maxAttempts: "8", maskRecipient: true };
+
+  it("lets an hmac endpoint go without an audience, which is the field a sealed one cannot go without", () => {
+    expect(
+      createEndpointSchema.safeParse({ ...base, appId: "a", deliveryMode: "hmac", audience: "" })
+        .success,
+    ).toBe(true);
+    expect(
+      endpointSchema.safeParse({ ...base, active: true, deliveryMode: "hmac", audience: "" })
+        .success,
+    ).toBe(true);
+    expect(
+      createEndpointSchema.safeParse({ ...base, appId: "a", deliveryMode: "sealed", audience: "" })
+        .success,
+    ).toBe(false);
+    expect(
+      endpointSchema.safeParse({ ...base, active: true, deliveryMode: "sealed", audience: "  " })
+        .success,
+    ).toBe(false);
+  });
+
+  it("reports a missing sealed audience on the audience field", () => {
+    const result = createEndpointSchema.safeParse({
+      ...base,
+      appId: "a",
+      deliveryMode: "sealed",
+      audience: "",
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((i) => i.path.join("."))).toEqual(["audience"]);
+  });
+
+  it("knows only the two modes", () => {
+    expect(
+      createEndpointSchema.safeParse({ ...base, appId: "a", deliveryMode: "plain", audience: "x" })
+        .success,
+    ).toBe(false);
+    expect(DELIVERY_MODES).toEqual(["sealed", "hmac"]);
+    for (const mode of DELIVERY_MODES) {
+      expect(DELIVERY_MODE_LABELS[mode]).not.toBe("");
+      expect(DELIVERY_MODE_HINTS[mode]).not.toBe("");
+    }
+  });
+});
+
+describe("the endpoint schemas", () => {
+  const base = {
+    deliveryMode: "sealed" as const,
+    url: "https://example.com/hooks",
+    maxAttempts: "8",
+    maskRecipient: true,
+  };
 
   it("require an audience, and bound it as the column does", () => {
     expect(createEndpointSchema.safeParse({ ...base, appId: "a", audience: "vaam" }).success).toBe(
@@ -58,7 +117,12 @@ describe("the endpoint schemas", () => {
 });
 
 describe("what the endpoint schemas refuse on write", () => {
-  const base = { maxAttempts: "8", maskRecipient: true, audience: "vaam" };
+  const base = {
+    deliveryMode: "sealed" as const,
+    maxAttempts: "8",
+    maskRecipient: true,
+    audience: "vaam",
+  };
 
   it("refuse a URL a delivery cannot be sealed for, as the gateway does", () => {
     for (const url of [

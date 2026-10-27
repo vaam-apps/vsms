@@ -43,8 +43,9 @@ export function CreateEndpointDialog({
         <DialogHeader>
           <DialogTitle>New webhook endpoint</DialogTitle>
           <DialogDescription>
-            Deliveries are sealed with the gateway's own key. The audience names the receiver they
-            are addressed to; the receiver is configured with the same name.
+            Choose how deliveries are authenticated. Sealed deliveries are signed with the gateway's
+            own key and addressed to an audience; your receiver is configured with the same name.
+            HMAC deliveries are signed with a secret shared with your receiver.
           </DialogDescription>
         </DialogHeader>
         <CreateEndpointFields

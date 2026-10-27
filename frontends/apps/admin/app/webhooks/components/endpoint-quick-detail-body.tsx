@@ -1,5 +1,6 @@
 import { DetailList, DetailRow } from "@vaam-apps/ui";
-import { type EndpointListItem, EVENT_TYPES } from "../webhook-domain";
+import { DELIVERY_MODE_LABELS, type EndpointListItem, EVENT_TYPES } from "../webhook-domain";
+import { SecretField } from "./secret-field";
 
 // Dumb (R6): the `QuickDetailDrawer`'s summary `dl` for one endpoint.
 export function EndpointQuickDetailBody({ endpoint }: { endpoint: EndpointListItem }) {
@@ -22,9 +23,14 @@ export function EndpointQuickDetailBody({ endpoint }: { endpoint: EndpointListIt
           <span className="text-muted-foreground">closed</span>
         )}
       </DetailRow>
-      <DetailRow label="Audience">
-        <span className="font-mono text-caption">{endpoint.audience}</span>
-      </DetailRow>
+      <DetailRow label="Delivery">{DELIVERY_MODE_LABELS[endpoint.deliveryMode]}</DetailRow>
+      {endpoint.deliveryMode === "sealed" ? (
+        <DetailRow label="Audience">
+          <span className="font-mono text-caption">{endpoint.audience}</span>
+        </DetailRow>
+      ) : (
+        endpoint.secret != null && <SecretField label="Current secret" value={endpoint.secret} />
+      )}
     </DetailList>
   );
 }

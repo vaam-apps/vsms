@@ -1,7 +1,6 @@
 // Pure, React-free domain logic for the Webhooks screen (#55, R6): event
-// type vocabulary, form schemas, `payloadFor` and `receiverRoute`, the two
-// small formatters that don't need a component to exist. (There is no secret
-// to mask any more: VS-8 sealed webhooks under the gateway's own key.)
+// type vocabulary, the two delivery modes, form schemas, `payloadFor` and
+// `receiverRoute`, the small formatters that don't need a component to exist.
 // Extracted verbatim out of webhooks-screen.tsx per AGENTS.md's R6 — a
 // screen file should read as fetch + handlers + composition.
 
@@ -35,6 +34,23 @@ export const EVENT_TYPES = [
 ] as const;
 export type EventType = (typeof EVENT_TYPES)[number];
 
+// How an endpoint's deliveries are authenticated (`WebhookEndpoint.deliveryMode`,
+// VS-8R). `sealed` is the recommended one; `hmac` is the legacy scheme a
+// deployment will later be able to switch off (VSA-1).
+export const DELIVERY_MODES = ["sealed", "hmac"] as const;
+export type DeliveryMode = (typeof DELIVERY_MODES)[number];
+
+export const DELIVERY_MODE_LABELS: Record<DeliveryMode, string> = {
+  sealed: "Sealed (recommended)",
+  hmac: "HMAC signature",
+};
+
+export const DELIVERY_MODE_HINTS: Record<DeliveryMode, string> = {
+  sealed:
+    "Signed with the gateway's own key. Your receiver holds nothing secret: it pins the gateway's public keys and answers to an audience you name.",
+  hmac: "The original X-Sms-Signature, signed with a secret shared with your receiver. For a receiver that has not moved to sealed deliveries yet.",
+};
+
 export function payloadFor(attempt: Pick<AttemptListItem, "payload">): string {
   try {
     return JSON.stringify(JSON.parse(attempt.payload), null, 2);
@@ -65,30 +81,53 @@ const urlField = z
     if (refusal !== null) ctx.addIssue({ code: "custom", message: refusal });
   });
 
-export const endpointSchema = z.object({
-  url: urlField,
-  audience: audienceField,
-  maxAttempts: z
-    .string()
-    .trim()
-    .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 20, {
-      message: "1–20",
-    }),
-  maskRecipient: z.boolean(),
-  active: z.boolean(),
-});
+// A `sealed` endpoint needs an audience, valid as the column holds it. An `hmac`
+// endpoint has none: whatever the (hidden) field holds is ignored, and the
+// screen never sends it.
+function sealedNeedsAudience(
+  value: { deliveryMode: DeliveryMode; audience: string },
+  ctx: z.RefinementCtx,
+) {
+  if (value.deliveryMode !== "sealed") return;
+  const parsed = audienceField.safeParse(value.audience);
+  if (parsed.success) return;
+  for (const issue of parsed.error.issues) {
+    ctx.addIssue({ code: "custom", path: ["audience"], message: issue.message });
+  }
+}
+
+const deliveryModeField = z.enum(DELIVERY_MODES);
+
+export const endpointSchema = z
+  .object({
+    deliveryMode: deliveryModeField,
+    url: urlField,
+    audience: z.string(),
+    maxAttempts: z
+      .string()
+      .trim()
+      .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 20, {
+        message: "1–20",
+      }),
+    maskRecipient: z.boolean(),
+    active: z.boolean(),
+  })
+  .superRefine(sealedNeedsAudience);
 export type EndpointFormValues = z.infer<typeof endpointSchema>;
 
-export const createEndpointSchema = z.object({
-  appId: z.string().trim().min(1, "App id is required"),
-  url: urlField,
-  audience: audienceField,
-  maxAttempts: z
-    .string()
-    .trim()
-    .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 20, {
-      message: "1–20",
-    }),
-  maskRecipient: z.boolean(),
-});
+export const createEndpointSchema = z
+  .object({
+    appId: z.string().trim().min(1, "App id is required"),
+    deliveryMode: deliveryModeField,
+    url: urlField,
+    audience: z.string(),
+    maxAttempts: z
+      .string()
+      .trim()
+      .refine((v) => Number.isInteger(Number(v)) && Number(v) >= 1 && Number(v) <= 20, {
+        message: "1–20",
+      }),
+    maskRecipient: z.boolean(),
+  })
+  .superRefine(sealedNeedsAudience);
 export type CreateEndpointFormValues = z.infer<typeof createEndpointSchema>;

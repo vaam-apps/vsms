@@ -1,0 +1,79 @@
+import { Button, InlineBanner, TimestampDisplay } from "@vaam-apps/ui";
+import type { ReactNode } from "react";
+import type { EndpointListItem } from "../webhook-domain";
+import { SecretField } from "./secret-field";
+
+// Route-local (R6): the "grab it now" notice shown right after a secret is
+// created or rotated. `InlineBanner` (`@vaam-apps/ui`) only ships `neutral` /
+// `danger` / `plain` variants — this is a distinct fourth hue
+// (`state-uncertain`, "a secret you should act on soon, not an error and
+// not routine") that doesn't fit any of them, so it's factored here rather
+// than forced into the wrong variant or hand-rolled twice in the same file
+// (it was exactly that: two byte-identical `rounded-sm border
+// border-state-uncertain-border ...` blocks below, one for create and one
+// for rotate).
+function SecretRevealNotice({ children }: { children: ReactNode }) {
+  return <InlineBanner variant="uncertain">{children}</InlineBanner>;
+}
+
+// Dumb (R6): the current/previous secret display plus "Rotate secret" —
+// the panel that sits above an `hmac` endpoint's own edit form in
+// more-detail (a `sealed` endpoint has no secret and gets
+// `EndpointReceiverPanel` instead).
+export function EndpointSecretPanel({
+  endpoint,
+  justCreatedSecret,
+  justRotatedSecret,
+  onRotate,
+}: {
+  endpoint: EndpointListItem;
+  justCreatedSecret: string | null;
+  justRotatedSecret: string | null;
+  onRotate: () => void;
+}) {
+  return (
+    <>
+      {justCreatedSecret != null && (
+        <SecretRevealNotice>
+          This endpoint's secret is shown below — copy it into your receiver now. It stays visible
+          via "Reveal" any time afterward (see the screen's own note on why), but this is the
+          newest, safest moment to grab it.
+        </SecretRevealNotice>
+      )}
+      {justRotatedSecret != null && (
+        <SecretRevealNotice>
+          Rotated. The new secret is below — copy it into your receiver. Your{" "}
+          <span className="font-mono">previous secret</span> keeps verifying until the <em>next</em>{" "}
+          rotation, so there is no rush, but don't wait indefinitely.
+        </SecretRevealNotice>
+      )}
+
+      <div className="flex flex-col gap-3 rounded-sm border border-edge bg-surface-2 p-3">
+        {endpoint.secret != null && <SecretField label="Current secret" value={endpoint.secret} />}
+        {endpoint.prevSecret != null && (
+          <>
+            <SecretField label="Previous secret (still verifies)" value={endpoint.prevSecret} />
+            <p className="text-caption text-subtle-foreground">
+              Rotated{" "}
+              {endpoint.secretRotatedAt != null && (
+                <TimestampDisplay value={endpoint.secretRotatedAt} />
+              )}{" "}
+              — this value keeps accepting signatures until you rotate again. There is no fixed
+              expiry.
+            </p>
+          </>
+        )}
+        <p className="text-caption text-subtle-foreground">
+          Deliveries to this endpoint carry <span className="font-mono">X-Sms-Signature</span>,
+          HMAC-SHA256 over the exact body, keyed by this secret. A sealed endpoint holds no secret
+          at all and is the recommended mode.
+        </p>
+        <div>
+          <Button type="button" variant="secondary" size="sm" onClick={onRotate}>
+            Rotate secret
+          </Button>
+        </div>
+      </div>
+    </>
+  );
+}

@@ -105,6 +105,7 @@ describe("the router in the page", () => {
 
   describe("a webhook endpoint the gateway would refuse never reaches it", () => {
     const base = {
+      deliveryMode: "sealed",
       appId: "capp00000000000000000",
       url: "https://receiver.example/webhooks/vsms",
       audience: "https://receiver.example",
@@ -151,6 +152,98 @@ describe("the router in the page", () => {
       );
       expect(updated.status).toBe(400);
       expect(fetcher).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("a webhook endpoint is sealed or hmac, and the router holds the two apart", () => {
+    const common = {
+      appId: "capp00000000000000000",
+      url: "https://receiver.example/webhooks/vsms",
+      eventTypes: ["message.delivered"],
+      maskRecipient: true,
+      maxAttempts: 8,
+    };
+
+    it("creates an hmac endpoint with no audience, sending a generated secret", async () => {
+      const bodies: Record<string, unknown>[] = [];
+      configureGatewayFetch(async (_url, init) => {
+        bodies.push(JSON.parse(String(init?.body)));
+        return json(201, {
+          ...bodies[0],
+          id: "cendpoint",
+          eventTypes: " message.delivered ",
+          version: 1,
+        });
+      });
+      const { result } = await call(
+        "webhookEndpoints.create",
+        { ...common, deliveryMode: "hmac" },
+        "POST",
+      );
+      expect(result.result).toBeDefined();
+      expect(bodies[0]?.deliveryMode).toBe("hmac");
+      expect(bodies[0]?.secret).toMatch(/^whsec_[0-9a-f]{64}$/);
+      expect("audience" in (bodies[0] ?? {})).toBe(false);
+    });
+
+    it("refuses a sealed endpoint with no audience, and an hmac endpoint with one", async () => {
+      const fetcher = vi.fn<GatewayFetch>();
+      configureGatewayFetch(fetcher);
+      const sealed = await call(
+        "webhookEndpoints.create",
+        { ...common, deliveryMode: "sealed" },
+        "POST",
+      );
+      expect(sealed.status).toBe(400);
+      const hmac = await call(
+        "webhookEndpoints.create",
+        { ...common, deliveryMode: "hmac", audience: "vaam" },
+        "POST",
+      );
+      expect(hmac.status).toBe(400);
+      const unknown = await call(
+        "webhookEndpoints.create",
+        { ...common, deliveryMode: "plain", audience: "vaam" },
+        "POST",
+      );
+      expect(unknown.status).toBe(400);
+      expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it("rotates an endpoint's secret through the procedure and nothing else", async () => {
+      const requests: { url: string; body: unknown }[] = [];
+      configureGatewayFetch(async (url, init) => {
+        requests.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+        return json(200, {
+          id: "cendpoint",
+          deliveryMode: "hmac",
+          eventTypes: " message.delivered ",
+          secret: "whsec_new",
+          prevSecret: "whsec_old",
+          version: 2,
+        });
+      });
+      const { result } = await call(
+        "webhookEndpoints.rotateSecret",
+        { endpointId: "cendpoint" },
+        "POST",
+      );
+      expect(result.result).toBeDefined();
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.url).toContain("/$procs/rotateWebhookSecret");
+      expect(requests[0]?.body).toEqual({ args: { endpointId: "cendpoint" } });
+    });
+
+    it("passes the server's refusal to rotate a sealed endpoint on, as the error it is", async () => {
+      configureGatewayFetch(async () =>
+        json(422, { code: "VALIDATION_ERROR", message: "webhook endpoint cendpoint is sealed" }),
+      );
+      const { status } = await call(
+        "webhookEndpoints.rotateSecret",
+        { endpointId: "cendpoint" },
+        "POST",
+      );
+      expect(status).not.toBe(200);
     });
   });
 });

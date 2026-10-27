@@ -1,6 +1,12 @@
-import { FormField, InlineBanner, Input } from "@vaam-apps/ui";
+import { FormField, groupLabelId, InlineBanner, Input, RadioGroup } from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
-import type { CreateEndpointFormValues, EventType } from "../webhook-domain";
+import {
+  type CreateEndpointFormValues,
+  DELIVERY_MODE_HINTS,
+  DELIVERY_MODE_LABELS,
+  DELIVERY_MODES,
+  type EventType,
+} from "../webhook-domain";
 import { EventTypeToggles } from "./event-type-toggles";
 
 // Dumb (R6): the "New webhook endpoint" dialog's own form fields.
@@ -43,18 +49,46 @@ export function CreateEndpointFields({
           {...register("url")}
         />
       </FormField>
+      {/* A radio group, not a dropdown: two options, both shown. Sealed is
+          first and the default; hmac is the legacy scheme. The choice is made
+          here and is fixed for the endpoint's life. */}
       <FormField
-        label="Audience"
-        htmlFor="new-endpoint-audience"
-        error={formState.errors.audience?.message}
+        label="Delivery"
+        htmlFor="new-endpoint-delivery-mode"
+        control="group"
+        error={formState.errors.deliveryMode?.message}
       >
-        <Input
-          id="new-endpoint-audience"
-          placeholder="a name only you hold, e.g. https://hooks.example.com"
-          aria-invalid={formState.errors.audience != null}
-          {...register("audience")}
+        <Controller
+          control={control}
+          name="deliveryMode"
+          render={({ field }) => (
+            <RadioGroup
+              aria-labelledby={groupLabelId("new-endpoint-delivery-mode")}
+              value={field.value}
+              onValueChange={field.onChange}
+              options={DELIVERY_MODES.map((mode) => ({
+                value: mode,
+                label: DELIVERY_MODE_LABELS[mode],
+                description: DELIVERY_MODE_HINTS[mode],
+              }))}
+            />
+          )}
         />
       </FormField>
+      {form.watch("deliveryMode") === "sealed" && (
+        <FormField
+          label="Audience"
+          htmlFor="new-endpoint-audience"
+          error={formState.errors.audience?.message}
+        >
+          <Input
+            id="new-endpoint-audience"
+            placeholder="a name only you hold, e.g. https://hooks.example.com"
+            aria-invalid={formState.errors.audience != null}
+            {...register("audience")}
+          />
+        </FormField>
+      )}
       {/* Not a `FormField`: `EventTypeToggles` is a group of toggle buttons,
           not one labelable control, so there is no single `id` for a
           `htmlFor` to name. A `<fieldset>`/`<legend>` instead of an

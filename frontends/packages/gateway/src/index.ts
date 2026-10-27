@@ -242,11 +242,13 @@ export {
 } from "./webhook-rules";
 export type {
   AttemptState,
+  CreatedWebhookEndpoint,
   CreateWebhookEndpointFields,
   ListWebhookAttemptsInput,
   ListWebhookAttemptsResult,
   UpdateWebhookEndpointFields,
   WebhookAttemptRecord,
+  WebhookDeliveryMode,
   WebhookEndpointRecord,
   WebhookEventType,
 } from "./webhooks";
@@ -258,7 +260,9 @@ export {
   listWebhookAttempts,
   listWebhookEndpoints,
   replayWebhookAttempt,
+  rotateWebhookSecret,
   updateWebhookEndpoint,
+  WEBHOOK_DELIVERY_MODES,
   WEBHOOK_EVENT_TYPES,
 } from "./webhooks";
 export type { WorkerLockInfo, WorkerLocksResult, WorkerRole } from "./workers";

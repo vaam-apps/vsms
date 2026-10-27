@@ -3,10 +3,11 @@ import { Controller, type UseFormReturn } from "react-hook-form";
 import type { EndpointFormValues, EventType } from "../webhook-domain";
 import { EventTypeToggles } from "./event-type-toggles";
 
-// Dumb (R6): the endpoint edit form's own fields (URL, audience, event
-// types, max attempts, mask-recipient/active checkboxes). The receiver panel
-// above it (`EndpointReceiverPanel`) is a separate component — this one owns
-// only what `endpointSchema` validates.
+// Dumb (R6): the endpoint edit form's own fields (URL, audience for a sealed
+// endpoint, event types, max attempts, mask-recipient/active checkboxes). The
+// panel above it (`EndpointReceiverPanel` or `EndpointSecretPanel`) is a
+// separate component — this one owns only what `endpointSchema` validates. The
+// delivery mode is not editable here: it is fixed when the endpoint is created.
 export function EndpointEditFields({
   formId,
   form,
@@ -29,17 +30,19 @@ export function EndpointEditFields({
       <FormField label="URL" htmlFor="endpoint-url" error={formState.errors.url?.message}>
         <Input id="endpoint-url" aria-invalid={formState.errors.url != null} {...register("url")} />
       </FormField>
-      <FormField
-        label="Audience"
-        htmlFor="endpoint-audience"
-        error={formState.errors.audience?.message}
-      >
-        <Input
-          id="endpoint-audience"
-          aria-invalid={formState.errors.audience != null}
-          {...register("audience")}
-        />
-      </FormField>
+      {form.watch("deliveryMode") === "sealed" && (
+        <FormField
+          label="Audience"
+          htmlFor="endpoint-audience"
+          error={formState.errors.audience?.message}
+        >
+          <Input
+            id="endpoint-audience"
+            aria-invalid={formState.errors.audience != null}
+            {...register("audience")}
+          />
+        </FormField>
+      )}
 
       {/* Not a `FormField` — see `create-endpoint-fields.tsx`'s identical
           comment: `EventTypeToggles` is a group of toggle buttons with no

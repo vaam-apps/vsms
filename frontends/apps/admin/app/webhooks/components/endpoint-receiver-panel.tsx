@@ -2,8 +2,8 @@ import { DetailList, DetailRow } from "@vaam-apps/ui";
 import type { EndpointListItem } from "../webhook-domain";
 import { receiverRoute } from "../webhook-domain";
 
-// Dumb (R6): what the receiver of this endpoint has to be configured with to
-// open a delivery (VS-8). A delivery is a sealed request signed with the
+// Dumb (R6): what the receiver of a `sealed` endpoint has to be configured with
+// to open a delivery (VS-8; an `hmac` endpoint gets `EndpointSecretPanel`). A delivery is a sealed request signed with the
 // gateway's own key, so nothing here is a secret: the audience and the route
 // are names the receiver's envelope layer is built with, the endpoint and app
 // ids are what its handler compares with the ids inside the signed envelope (the
@@ -17,7 +17,7 @@ export function EndpointReceiverPanel({ endpoint }: { endpoint: EndpointListItem
     <div className="flex flex-col gap-3 rounded-sm border border-edge bg-surface-2 p-3">
       <DetailList>
         <DetailRow label="Audience">
-          <span className="font-mono text-caption">{endpoint.audience}</span>
+          <span className="font-mono text-caption">{endpoint.audience ?? "none"}</span>
         </DetailRow>
         <DetailRow label="App id">
           <span className="font-mono text-caption">{endpoint.appId}</span>

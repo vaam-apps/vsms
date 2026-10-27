@@ -1,9 +1,11 @@
-// `webhookEndpoints.list/get/create/update/remove` and
+// `webhookEndpoints.list/get/create/update/remove/rotateSecret` and
 // `webhookAttempts.list/replay` — #55's Webhooks screen. Thin wraps over
 // `@vsms/gateway`'s `webhooks.ts` (see that module's own doc for the
-// `eventTypes` packing, the audience, and why writes are real and reachable
-// as of #211). There is no secret to create or rotate (VS-8): a delivery is
-// sealed under the gateway's own key.
+// `eventTypes` packing, the two delivery modes, the `secret` display decision,
+// and why writes are real and reachable as of #211). An endpoint is `sealed`
+// (an audience, no secret) or `hmac` (a secret, no audience), which the create
+// input says with a discriminated union so a mismatch is refused here, before
+// the gateway's CHECKs would answer it with a database error.
 
 import { GATEWAY_AUDIENCE, GATEWAY_AUDIENCE_MESSAGE, urlRefusal } from "@vsms/gateway";
 import { z } from "zod";
@@ -42,14 +44,21 @@ const url = z
     if (refusal !== null) ctx.addIssue({ code: "custom", message: refusal });
   });
 
-const createInput = z.object({
+const createCommon = {
   appId: z.string().min(1),
   url,
-  audience,
   eventTypes: z.array(eventType).min(1),
   maskRecipient: z.boolean(),
   maxAttempts: z.number().int().min(1).max(20),
-});
+};
+
+// `sealed` names the audience its receiver answers to. `hmac` has none: the
+// object is strict, so an audience sent with it is an error, not a value the
+// database would quietly keep unused.
+const createInput = z.discriminatedUnion("deliveryMode", [
+  z.object({ deliveryMode: z.literal("sealed"), audience, ...createCommon }).strict(),
+  z.object({ deliveryMode: z.literal("hmac"), ...createCommon }).strict(),
+]);
 
 const updateInput = z.object({
   id: z.string().min(1),
@@ -102,6 +111,24 @@ export const webhookEndpointsRouter = router({
       try {
         await ctx.gateway.deleteWebhookEndpoint(input.id, input.etag);
         return { id: input.id };
+      } catch (error) {
+        rethrowGatewayError(error);
+      }
+    }),
+
+  // Deliberately its own top-level mutation, not folded into `update` —
+  // rotation is a materially different, more consequential action (it
+  // starts the `prevSecret` overlap clock) and goes through the dedicated
+  // `rotateWebhookSecret` procedure server-side, not a plain field PATCH.
+  // No `etag`/`If-Match` here: the procedure reads and writes the row
+  // itself under `@isolation("serializable")` (`procedures.rs`'s own doc),
+  // the same reason `jobs.requeue` needs no `etag` either. Only an `hmac`
+  // endpoint has a secret: the server refuses a sealed one with a 422.
+  rotateSecret: publicProcedure
+    .input(z.object({ endpointId: z.string().min(1) }))
+    .mutation(async ({ ctx, input }) => {
+      try {
+        return await ctx.gateway.rotateWebhookSecret(input.endpointId);
       } catch (error) {
         rethrowGatewayError(error);
       }
