@@ -17,6 +17,11 @@ FROM node:26-bookworm-slim AS builder
 
 # A linker and libc headers for the build scripts and proc macros that run on
 # the build machine itself; the wasm32 target needs neither.
+# DL3008: no apt version pin, deliberately — the packages come from the
+# floating Debian bookworm suite the base image tracks, and a patch pin would
+# fail the build the day the mirror drops that exact revision (the same call
+# as ci/runner/Dockerfile's).
+# hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
