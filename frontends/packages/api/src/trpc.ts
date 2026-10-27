@@ -1,5 +1,3 @@
-import "server-only";
-
 import { initTRPC } from "@trpc/server";
 import { GatewayError } from "@vsms/gateway";
 import superjson from "superjson";
@@ -25,6 +23,12 @@ import type { Context } from "./context";
 // composer's fallback (an inline banner with the server's message) covers
 // the gap until then.
 const t = initTRPC.context<Context>().create({
+  // The router runs in the page (see `index.ts`), and tRPC refuses to start
+  // outside a server unless told this is deliberate. It is: the router holds no
+  // secret of its own, and what it reaches is the sealing transport, whose key
+  // is the browser's. (A unit test cannot see this: Node counts as a server.
+  // The browser run in docs/design/console-pairing.md is what found it.)
+  allowOutsideOfServer: true,
   transformer: superjson,
   errorFormatter({ shape, error }) {
     const fieldErrors = error.cause instanceof GatewayError ? error.cause.fieldErrors : undefined;

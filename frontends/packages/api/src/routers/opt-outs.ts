@@ -1,5 +1,3 @@
-import "server-only";
-
 // `optOuts.list` / `optOuts.search` / `optOuts.record` / `optOuts.delete`
 // — #58's Opt-outs screen. Thin wraps over `@vsms/gateway`'s own
 // `opt-outs.ts`.

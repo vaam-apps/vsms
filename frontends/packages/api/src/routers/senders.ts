@@ -1,5 +1,3 @@
-import "server-only";
-
 // `senderIds.list/get/create/update` and
 // `senderIdRegistrations.list/create/update` — #53's Sender IDs screen. Thin
 // wraps over `@vsms/gateway`'s `senders.ts` (see that module's own doc for

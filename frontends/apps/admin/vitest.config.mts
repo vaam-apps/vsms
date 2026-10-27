@@ -1,3 +1,5 @@
+import { createRequire } from "node:module";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
@@ -16,6 +18,13 @@ import { defineConfig } from "vitest/config";
 // would miss `app/**`, which is where #50's tests live. Kept as its own
 // file rather than folded into a shared root config because this
 // workspace has no shared vitest config today.
+// `server-only` throws unless resolved under Next's `react-server` condition;
+// outside Next it is aliased to its own no-op `empty.js`, the same file a
+// server context legitimately gets (see `frontends/packages/gateway/
+// vitest.config.ts`). The composer's route code is tested here against the
+// sealing module, and it imports `@vsms/gateway/bff`, which carries the guard.
+const serverOnlyDir = path.dirname(createRequire(import.meta.url).resolve("server-only"));
+
 export default defineConfig({
   // Mirrors tsconfig.json's own `paths`. Vitest resolves imports itself
   // and never reads `tsconfig`, so an `@/…` import that typechecks would
@@ -23,6 +32,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": fileURLToPath(new URL(".", import.meta.url)),
+      "server-only": path.join(serverOnlyDir, "empty.js"),
     },
   },
   // Next requires `jsx: "preserve"` in tsconfig.json, and from Vite 8 the

@@ -1,5 +1,3 @@
-import "server-only";
-
 // `compose.preview` / `compose.send` — the exactly-two procedures the
 // composer (T13, not built here) needs. `preview` is a tRPC *query*
 // (`schemas/vsms.cstack` declares `procedure previewMessage`, not

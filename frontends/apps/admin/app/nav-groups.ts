@@ -7,7 +7,7 @@
 // leaves; OPERATIONS is the worker/job/opt-out machinery that keeps the
 // system healthy; ADMIN is account/access/compliance surface.
 //
-// `/login` is deliberately absent — it's a pre-auth gate with no shell
+// `/pair` is deliberately absent — it's the pre-pairing page with no shell
 // (§4), and `console-shell.tsx` renders it bare rather than looking it up
 // here. `/api/*` is not a page.
 
@@ -16,6 +16,7 @@ import {
   Cpu,
   Fingerprint,
   FlaskConical,
+  KeyRound,
   LayoutDashboard,
   LayoutGrid,
   ListChecks,
@@ -68,14 +69,15 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: "Apps", href: "/apps", icon: LayoutGrid },
       { label: "Users & roles", href: "/users", icon: Users },
       { label: "Audit log", href: "/audit-log", icon: ScrollText },
+      { label: "This console", href: "/console", icon: KeyRound },
       { label: "Settings", href: "/settings", icon: Settings },
     ],
   },
 ];
 
 /** De-emphasized footer utility row (§4: "dev-only, de-emphasized like
- * 'Invite members'") — the account row (§4's "Signed in as <email> · Sign
- * out") is not data, it depends on the signed-in session, so it is built
+ * 'Invite members'") — the account row (this console's key, and the way to its
+ * lifecycle screen) is not data, it depends on the key's status, so it is built
  * directly in `console-shell.tsx` instead of listed here. */
 export const NAV_FOOTER: NavItem[] = [];
 

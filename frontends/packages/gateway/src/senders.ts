@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /sender_ids`, `GET /sender_ids/{id}`, `POST /sender_ids`,
 // `PATCH /sender_ids/{id}`, and the same five verbs for
 // `sender_id_registrations` — #53's Sender IDs screen. Same temporary
@@ -103,13 +101,10 @@ import "server-only";
 // column over REST cannot use this trick safely and needs the actual
 // upstream fix (a `deserialize_with` on the generated update input).
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 export interface SenderIdRecord {
   id: string;
@@ -136,10 +131,8 @@ export interface SenderIdRegistrationRecord {
   updatedAt: string;
 }
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function gatewayUrl(path: string, query: Record<string, string | number | undefined> = {}): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -173,22 +166,11 @@ function normalizeRegistration<T extends Partial<SenderIdRegistrationRecord>>(ro
   };
 }
 
-async function authedGet(url: string): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "GET",
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
-  return response;
+async function authedGet(url: string): Promise<Response> {
+  return gatewayFetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+  });
 }
 
 /** `GET /sender_ids` — every `SenderId` row this deployment has. */
@@ -240,7 +222,7 @@ export async function createSenderId(fields: CreateSenderIdFields): Promise<Send
     "/sender_ids",
     fields,
     "createSenderId",
-    undiciFetch,
+    gatewayFetch,
   );
   return normalizeSenderId(created);
 }
@@ -285,7 +267,7 @@ export async function createSenderIdRegistration(
     "/sender_id_registrations",
     { ...fields, submittedAt: new Date().toISOString() },
     "createSenderIdRegistration",
-    undiciFetch,
+    gatewayFetch,
   );
   return normalizeRegistration(created);
 }

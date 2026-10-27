@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /opt_outs`, `DELETE /opt_outs/{id}`, and the two procedures #58
 // added specifically because a plain `POST /opt_outs` structurally cannot
 // work from this console: `OptOut.msisdnHash` is a peppered HMAC
@@ -20,12 +18,9 @@ import "server-only";
 // next to every "not found" result rather than only in a comment nobody
 // reading the UI will ever see.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** `schema.cstack`'s `OptOutSource`, verbatim. */
 export type OptOutSource = "inbound_stop" | "admin" | "imported" | "operator";
@@ -59,10 +54,8 @@ const LIST_FIELDS = [
 
 export type OptOutListItem = Pick<OptOutRecord, (typeof LIST_FIELDS)[number]>;
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function gatewayUrl(path: string, query: Record<string, string | number | undefined>): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -72,25 +65,15 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
 async function authedRequest(
   url: string,
   init: { method: "GET" | "POST" | "DELETE"; body?: string },
-): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: init.method,
-      headers: {
-        accept: "application/json",
-        ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
-        authorization: `Bearer ${token}`,
-      },
-      ...(init.body !== undefined ? { body: init.body } : {}),
-      dispatcher: gatewayAgent(),
-    });
-  };
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+): Promise<Response> {
+  const response = await gatewayFetch(url, {
+    method: init.method,
+    headers: {
+      accept: "application/json",
+      ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+    },
+    ...(init.body !== undefined ? { body: init.body } : {}),
+  });
   return response;
 }
 
@@ -152,7 +135,7 @@ export interface SearchOptOutResult {
  * cast below is exactly [`SearchOptOutResult`]'s own shape, not a
  * `| null` variant of it. */
 export async function searchOptOutByMsisdn(msisdn: string): Promise<SearchOptOutResult> {
-  const url = new URL("/$procs/searchOptOutByMsisdn", env.SMS_API_URL).toString();
+  const url = new URL("/$procs/searchOptOutByMsisdn", GATEWAY_ORIGIN).toString();
   const response = await authedRequest(url, {
     method: "POST",
     body: JSON.stringify({ args: { msisdn } }),
@@ -178,7 +161,7 @@ export interface RecordOptOutFields {
  * finding — `backends/crates/sms-api/src/procedures.rs::create_opt_out_entry`'s own
  * doc has the full reasoning). */
 export async function recordOptOut(fields: RecordOptOutFields): Promise<OptOutRecord> {
-  const url = new URL("/$procs/recordOptOut", env.SMS_API_URL).toString();
+  const url = new URL("/$procs/recordOptOut", GATEWAY_ORIGIN).toString();
   const response = await authedRequest(url, {
     method: "POST",
     body: JSON.stringify({ args: fields }),

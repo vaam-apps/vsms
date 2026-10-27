@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /apps`, `GET /apps/{id}`, `POST /apps`, `PATCH /apps/{id}`,
 // `DELETE /apps/{id}` — #52's Apps screen. Same temporary hand-written seam
 // as `providers.ts`/`routes.ts` (see `client.ts`'s module doc for why: T3/
@@ -28,13 +26,10 @@ import "server-only";
 // form — cheap to get right here rather than relying on every future
 // reader being equally tolerant.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** The full row shape `GET /apps`/`GET /apps/{id}` can return — transcribed
  * from `schema.cstack`'s `App` model. */
@@ -68,31 +63,19 @@ const LIST_FIELDS = [
 
 export type AppListItem = Pick<AppRecord, (typeof LIST_FIELDS)[number]>;
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function gatewayUrl(path: string, query: Record<string, string | number | undefined>): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
   return url.toString();
 }
 
-async function authedGet(url: string): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "GET",
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
-      dispatcher: gatewayAgent(),
-    });
-  };
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
-  return response;
+async function authedGet(url: string): Promise<Response> {
+  return gatewayFetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+  });
 }
 
 interface AppsPage {

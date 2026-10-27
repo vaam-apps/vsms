@@ -1043,7 +1043,7 @@ The design is in `backends/crates/sms-api/src/client_keys.md` (sequence and stat
 The backend half of console pairing, and like VS-2 only that: a `ConsoleKey` row can be registered
 and revoked, **nothing verifies against one yet** (VS-3 gives the envelope `AuthProvider` its second
 signer kind, `ConsoleKey` -> user principal, beside `ClientKey` -> app principal). The password login,
-the Keycloak SSO and the OP's tokens are untouched until VS-4; the console app is VS-5b. VS-3 cannot
+the Keycloak SSO and the OP's tokens are untouched until VS-4; the console app is VS-5b (done: "The console signs in the browser", below). VS-3 cannot
 make the envelope Required until the human-principal suites (login, SSO, the developer token, the
 owner-grant guard tests) can authenticate by signing, and a human has no signing key until a console
 key exists, which is why this comes first. The design is in `backends/crates/sms-api/src/console_keys.md`
@@ -1071,8 +1071,8 @@ key exists, which is why this comes first. The design is in `backends/crates/sms
   (`permission_vocabulary.rs`), and no role may ever hold this one. The internal system context is
   kind `app` and has no scope, so it fails the check. No new scope list exists to update: the scope is
   an ordinary `AppClient.scopes` token, granted with `register-client --scope console:pair`. (The
-  console's own scope picker, `frontends/apps/admin/app/apps/scopes.ts`, does not list it; that is
-  VS-5b's.)
+  console's own scope picker, `frontends/apps/admin/app/apps/scopes.ts`, deliberately does not list it, and a
+  test holds that: the gateway refuses the scope everywhere but the command line.)
 - **Order inside `register`: scope, then key shape, then clock, then signature, then the database.** A
   refused pairing writes nothing, which `a_bad_proof_is_refused_and_writes_nothing` and
   `only_an_app_with_the_pair_scope_may_register` assert (no `User`, no `FederatedLink`, no key).
@@ -1185,7 +1185,7 @@ and the layer order; this section is what to know before touching it.
 - **What is deliberately not done here:** the Next.js console and the Node SDK still speak the removed token protocol and
   cannot reach a live gateway until VS-5b and VS-7 (no GitHub job runs them against one: `ci.yml` only typechecks and
   unit-tests them). The Helm chart does not mount the two key files yet (VS-9). Nothing in OP issuance moved (VS-4).
-  (VS-7 has landed since: the Node SDK signs, see "The Node SDK seals through WebAssembly", below. The console is still VS-5b's.)
+  (VS-7 and VS-5b have landed since: the Node SDK and the console sign, see "The Node SDK seals through WebAssembly" and "The console signs in the browser", below.)
 
 **Guard-failure proofs** (each guard was loosened, seen to fail, and restored; `git checkout` of the file after each):
 
@@ -1308,7 +1308,7 @@ the user-facing account; this is what to know before touching it.
   returns is always the 65-byte uncompressed form `registerConsoleKey`/`pair-console-key` take, and a signature by any
   other key is refused before it is sent. The gateway reads `ClientKey` for Ed25519 and `ConsoleKey` for ESP256 only, so
   the algorithm is the caller's identity: the Node client offers Ed25519 alone and refuses an RSA or P-256 key naming no
-  key material. No `--target web` build exists yet; VS-5b adds the second `wasm-bindgen` invocation.
+  key material. The `--target web` build is `scripts/build-wasm.sh --web` (VS-5b, below).
 - **The transport is `node:http(s)`, not `fetch`**: a sealed `GET` carries the COSE message as its body, which `fetch`
   refuses. One attempt, no retry (a retry is a new nonce, the caller's decision), no redirect followed (the signed body
   would reach a host the signature was not addressed to; a 3xx is just an unsealed answer), an 8 MiB cap on the answer
@@ -1355,7 +1355,7 @@ the user-facing account; this is what to know before touching it.
 - **Found and left alone:** `types.ts`'s `Message` says `to` where the row's field is `msisdn` (the live test reads it
   through the index signature); the Node SDK's hand-written types are checked for four enums only
   (`node-sdk-types-check`). `examples/node/demo-app` depends on `@vaam-apps/vsms-node ^0.3.3` from the registry, a
-  token-era release, so nothing here compiles against a deleted symbol and it is untouched (VS-5b); it still cannot reach
+  token-era release, so nothing here compiles against a deleted symbol and it is untouched (VS-5b did not move it); it still cannot reach
   a sealed gateway. `sdks/node/vsms-sdk-node/pnpm-lock.yaml` was a stale orphan (jose 5, swc 0.6; the workspace uses the
   root lock) and is deleted rather than left naming a deleted dependency.
 - **The parity rule** is `cargo xtask sdk-parity-check` (`.xtask/src/sdk_parity.rs`, in `all-checks`, `just ci` step 9 and
@@ -1434,6 +1434,132 @@ the user-facing account; this is what to know before touching it.
   signature of `crypto.sign` (the options go in the key argument), the callback threw, and "a signature by another key is
   refused" saw a `seal` failure. Both now pass `{ key, dsaEncoding }` and the second asserts the message
   (`does not verify under the public key`).
+
+## The console signs in the browser (VS-5b)
+
+`frontends/apps/admin` has no login. A browser makes a WebCrypto non-extractable P-256 key, a vaam admin phone (or,
+as the break-glass, `sms-gateway pair-console-key`) vouches for it, and the key signs every request. `lib/{oidc,
+session,sso,sso-discovery}.ts`, `middleware.ts`, `app/api/auth/*`, `app/login/*` and `app/api/trpc` are deleted, with
+no compatibility mode, and so are `ADMIN_BASE_URL`, `SMS_AUTH_ISSUER`, `SMS_CONSOLE_CLIENT_ID`,
+`SMS_CONSOLE_PRIVATE_KEY_PATH`, `SMS_CONSOLE_SCOPE`, `SMS_CONSOLE_OIDC_CLIENT_ID` and `SMS_CONSOLE_SESSION_SECRET`
+from `@vsms/env`, `turbo.jsonc`, both `.env.example` files, the compose stacks and the Helm chart. The design,
+with the diagrams, is `docs/design/console-pairing.md`; this is what to know before touching it.
+
+- **The data layer runs in the browser now.** A server cannot sign with a key in someone's browser, so
+  `@vsms/gateway` (the screens' data layer) and `@vsms/api` (the tRPC router) moved to the page. Every module of the
+  gateway package writes an ordinary request (`GET /apps?limit=500`) against a placeholder origin and calls
+  `gatewayFetch`; `configureGatewayFetch` installs the transport (`createSealingFetch`, `sealing-fetch.ts`), which
+  seals it with the wasm sealer and hands back what the sealed answer said, as a `Response`. No module holds a
+  credential, a cookie or the gateway's address. `@vsms/hooks` serves the unchanged tRPC wire protocol from tRPC's own
+  fetch adapter on an in-process `fetch` (`createLocalFetch`), so batching, superjson and the error formatter that
+  carries `fieldErrors` are tRPC's own. Nothing in `@vsms/gateway`'s main entry, `@vsms/api` or `@vsms/hooks` may import
+  Node, `server-only` or `@vsms/env`; the server half is the separate entry `@vsms/gateway/bff`.
+- **tRPC refuses to start outside a server** unless `initTRPC.create({ allowOutsideOfServer: true })`. No unit test can
+  see that (Node counts as a server): the first browser run showed "This page couldn't load" and the console's error
+  was `You're trying to use @trpc/server in a non-server environment`. It is set in `packages/api/src/trpc.ts`.
+- **The server holds no credential for a person and no session.** `app/api/gateway/[...path]` is a pipe of sealed
+  bytes whose rules are pure functions with tests (`bff/pass-through.ts`): a `POST` of a COSE message, the real method
+  in `x-vsms-method` (a sealed `GET` carries its message as the body, which `fetch` refuses, so the browser posts it
+  and the pipe replays it under the real method with `node:http`), an allow-list of request headers with no credential
+  on it, no route the gateway leaves unsealed (`/dlr`, `/healthz`, `/readyz`, the OpenID routes, the login pages),
+  no dot segment, 1 MiB in and 8 MiB out, no redirect followed, no `Set-Cookie` or `Location` back. **A sealed `204`
+  still has a body, and a response cannot be a `204` and have one**, so the pipe answers `200` with `x-vsms-status: 204`;
+  the seal binds the status, so a header that lied would make the answer fail to open.
+- **An answer is believed only if it opens, for this request, under one of the two pinned keys** (the layout reads
+  `SMS_ENVELOPE_SERVER_KEY_CURRENT`/`_NEXT` per request and hands them to the browser; `connection()` opts the whole tree
+  out of static rendering, so a build never bakes one environment's keys into an image). Plain JSON, a body dressed as
+  sealed, another request's answer and an answer under an unpinned key are each refused by test. The gateway's unsigned
+  `401` is "not paired", reported once and **never retried** (a retry is a new nonce, and a key the gateway does not know
+  is not one a second attempt can fix). The `ETag` a write returns is rebuilt from the **signed** body's `version`, not
+  copied from a header the seal does not cover.
+- **Two additions to `vsms-sdk-wasm`.** `routeOf(method, path)` (the responder's path matching, promoted and tested:
+  the data layer holds a path, the sealer wants a template and parameters, and the sealing `fetch` drops the request
+  unless the target the sealer built equals the path asked for) and `sealCall(…, ifMatch)`. **Without the second every
+  `PATCH` and `DELETE` of the console would have failed verification**: the gateway rebuilds the binding from the
+  `If-Match` it receives, so the client must have bound that value. `Sealer.seal(.., &Bound)` is the Rust form;
+  `seal_call` stays the six-argument wrapper. `build-wasm.sh --web [DIR]` is the `--target web` build (default
+  `frontends/apps/admin/public/sealer/`, gitignored, served by the console's own origin and imported by URL, never
+  bundled); `--web --responder DIR` adds the gateway's server half for the console's tests (`.sealer-test/`). The
+  admin `build` script runs `build:sealer` first and `test` runs `build:sealer-test`, so `turbo.jsonc` declares
+  `admin#build` with the crate, the vendored schema and the lock as inputs and `public/sealer/**` as an output (a cache
+  hit would otherwise restore `.next/` and leave a console that cannot sign), and `frontends/apps/admin/Dockerfile`
+  gained a Rust stage (`rust:1.98-bookworm`, the wasm32 target, `wasm-bindgen-cli` at the lockfile's version) and copies
+  `public/` into the runtime image (the standalone trace does not include it).
+- **The QR** is vaam's admin-pairing format, `{"v":1,"k":…,"t":…,"l":…,"s":…}`, with `s` an ES256 `r‖s` over
+  `"vsms.console-pair.v1\n" + k + "\n" + t` (`registerConsoleKey`'s message, which has no slot for the label, so **`l` is
+  unsigned**). The QR does not say which service it is for; vaam's own is the same shape under another tag. VA-4 decides
+  how its scanner routes. Verified three ways: a unit test with Node's `crypto` from the public point alone, the same
+  in a real Chromium (the rendered SVG decoded with jsQR, then verified), and by construction against `console_keys.rs`.
+- **The composer** sends through its own Ed25519 key (`SMS_COMPOSER_KEY_FILE`, `@vaam-apps/vsms-node` from the
+  workspace), registered with `register-client --client-name console-composer`. A standing key must not be spent on
+  whoever reaches the route and there is no session, so the browser attaches a **proof**: one sealed
+  `GET /sender_ids?fields=id&limit=1` (admitted to any user) signed with its own key, which the route forwards and which
+  must be answered `200`. Refused by test: a stranger's key, a replayed proof (the nonce), a proof of some other read
+  (the route is bound into the signature), a malformed body. **Not bound to the message**, by choice: it proves a paired
+  operator's browser is calling, not what they typed. `console:pair` is deliberately not in the scope picker.
+- **Lifecycle** (`lib/key-lifecycle.ts`): *none*, *pending*, *paired*, *ended*, *unreachable*. The gateway cannot tell a
+  key it never knew from one it has finished with (both are its unsigned `401`); only the browser can, because it
+  remembers that the gateway once said yes. **An unreachable gateway must never read as "not paired"**: a person with a
+  good key would be sent to make a new one. A key past its 30 days is ended on the clock alone. `/console` shows the
+  thumbprint (RFC 9679's CBOR map hashed, **not** the raw point), expiry and the person; **Revoke** calls
+  `revokeConsoleKey` then forgets the key, **Unpair** only wipes IndexedDB (the gateway's row stays until it expires or is
+  revoked elsewhere, which the confirmation says). Re-pairing after expiry wipes the key and makes a fresh one. The
+  pairing page measures the laptop's clock against the console server's `Date` header and warns past two minutes,
+  because a wrong clock looks exactly like "not paired".
+- **Two defects the browser run found and no unit test could**: the status reader's own probe was refused with a 401,
+  which notified the gate, which re-read the status, which probed again, a loop of 200 sealed requests in 2.5 s on the
+  pairing page (now `shouldRereadOnRefusal`: only a *paired* console re-reads, and not while a read is in flight, 26
+  probes in a whole run); and `router.replace("/")` ran before the shared status had said "paired", so the gate bounced the
+  person back to `/pair` (`refresh()` is a promise the pairing page awaits).
+- **Nothing here may be a dropdown or a dialog** (vaam's rule, which binds this product's interfaces too). The rest of
+  this console predates it and still has `Select`s and `Dialog`s (`dialog-presentation.test.ts` documents them); the new
+  files are held by `app/pairing-ui-no-dropdowns.test.ts`, and the account block's theme `Select` became three buttons.
+- **Not done, deliberately:** no per-request Content-Security-Policy (the static hardening headers are set; the policy
+  with a nonce is the missing half, `docs/design/console-pairing.md`, "What a stolen browser profile gets"); no cap on
+  live keys per person; `compose.demo.yaml` is untouched (it pulls released token-era images, `v0.9.0`, whose admin still
+  speaks the old protocol: it moves with the next release); `demo-app` still depends on a token-era Node SDK; the
+  gateway's password login, OpenID routes and Keycloak broker are VS-4's and untouched (the console no longer uses
+  them); `helm` and `docker` are not installed here, so the chart and the compose files were edited and checked as YAML
+  and read, not rendered or run.
+
+**Guard-failure proofs** (each guard was broken, seen to fail, and restored; the TypeScript ones by one script that
+edits the file, runs the named test file and restores it):
+
+- Rust: the `.if_match(..)` removed from `Sealer::seal` - failed `an_if_match_is_bound_as_sent`; the dot-segment and
+  empty-segment refusal removed from `route_of` - failed `a_dot_segment_or_an_empty_one_is_not_a_parameter`.
+- The private key made extractable - failed `has a private half that cannot be exported in any format`. The QR signed
+  under another tag, and under a message without `issuedAt` - failed `is signed over the vsms.console-pair.v1 message`.
+  The thumbprint hashing the raw point - failed `is SHA-256 of {1: 2, -1: 1, -2: x, -3: y} in deterministic CBOR`.
+- `credentials: "omit"` made `include` - failed `through the real data layer, for a read, a write under If-Match, …`. The
+  signed-route check removed - failed `sends nothing when the key signed another route than the one asked for`. An
+  answer read without `openResponse` - failed the same real-data-layer test. The `ETag` copied from the header - failed
+  `binds the If-Match it sends, and a stale one comes back as a 412`. The carrier's `x-vsms-status` ignored - failed the
+  real-data-layer test (the `DELETE`).
+- Pass-through: `authorization`/`cookie` added to the request allow-list - failed `forwards the sealed bytes, the real
+  method and the path and query, and nothing else`; `token` removed from the unreachable roots - failed `is not an open
+  proxy`; the dot-segment check removed - failed `keeps the query verbatim and refuses what a URL parser could resolve
+  away`; `set-cookie` and `location` allowed back - failed `returns the answer's body and status with only the headers a
+  seal is opened with`; the streamed size check, and separately the declared-length check, removed - each failed its own
+  test (**the first version of the limit test passed under the second sabotage**: a `Request` built from bytes declares no
+  length, so only the streamed check ever ran; it now has a test for each). The transport's timeout removed, and its
+  origin check removed - each failed its own.
+- Composer: the gateway's `200` no longer required - failed `does not use the service key for a browser the gateway does
+  not know`; the proof's target changed - failed `previews and sends for a browser whose key the gateway accepts`; the SDK
+  error's message passed on - failed `does not leak why the service key's own call failed`.
+- Lifecycle: an ended key read as pending, an unreachable gateway read as not paired, a refusal re-reading the status
+  while not paired (the loop) - each failed its own test. Pairing: a 401 counted as "unreachable" - failed `says the
+  gateway is unreachable when it is, and 'not yet' …`; an ended key not wiped, and a QR never redrawn - each failed (**the
+  QR test first hung instead of failing**: with no expiry, a bounded `waitForApproval` loop never ended; its probe now
+  aborts after 20 attempts). A `Select` imported into the account block - failed `app/pairing-ui-no-dropdowns.test.ts`.
+  `console:pair` added to the scope picker - failed `scopes.test.ts`. A gateway 401 mapped to `FORBIDDEN` again - failed
+  `a gateway 401 is UNAUTHORIZED`.
+- **Run for real, once, by hand** (2026-10-27): the production build driven by Chromium against a built `sms-gateway serve`
+  and a scratch Postgres, 19 of 19 steps - the QR accepted by the real `registerConsoleKey`, the thumbprint equal to the
+  one the gateway stores, `If-Match` accepted by the real `EnvelopeLayer`, revoke, break-glass pairing, and a composer
+  `send` refused by the gateway's own sender-id rule with its `422` passed through. Recorded step by step in
+  `docs/design/console-pairing.md`. Not run: helm, docker, the compose stacks, a real phone, and the workspace-wide
+  `just lint`/`just test`. `compose.demo.yaml` is untouched. No Content-Security-Policy is set (a wasm module needs
+  `wasm-unsafe-eval`; adding one is its own change).
 
 ## cratestack bumped to `=0.15.0` (from `=0.11.0`)
 

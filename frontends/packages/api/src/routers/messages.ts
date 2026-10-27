@@ -1,5 +1,3 @@
-import "server-only";
-
 // `messages.list` / `messages.byId` / `messages.onStateChange` — T10/T12.
 //
 // `list`/`byId` are thin wraps over `@vsms/gateway`'s `listMessages`/
@@ -34,7 +32,6 @@ import "server-only";
 // Node-level subscriber handle happens to be long- or short-lived.
 
 import { TRPCError } from "@trpc/server";
-import { env } from "@vsms/env";
 import type { MessageStreamFrame } from "@vsms/gateway";
 import { z } from "zod";
 import { rethrowGatewayError } from "../gateway-error";
@@ -119,14 +116,14 @@ export const messagesRouter = router({
   }),
 
   onStateChange: publicProcedure.input(onStateChangeInput).query(async ({ ctx, input }) => {
-    const hub = ctx.gateway.getMessageStreamHub(env.MESSAGE_STREAM_POLL_MS);
+    const hub = ctx.gateway.getMessageStreamHub(ctx.messageStreamPollMs);
     const controller = new AbortController();
     const filter = input.states !== undefined ? { states: input.states } : {};
     const iterator = hub.subscribe(filter, controller.signal)[Symbol.asyncIterator]();
 
     const frames: MessageStreamFrame[] = [];
     try {
-      const deadline = Date.now() + env.MESSAGE_STREAM_POLL_MS;
+      const deadline = Date.now() + ctx.messageStreamPollMs;
       while (frames.length < MAX_FRAMES_PER_LONG_POLL) {
         const remainingMs = deadline - Date.now();
         if (remainingMs <= 0) break;

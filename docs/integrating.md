@@ -73,7 +73,7 @@ Runnable: [`examples/node/sms-send-example`](../examples/node/sms-send-example/s
 
 ### Other languages
 
-The operator console's own gateway package still speaks the removed token protocol until it signs (VS-5b), and `examples/node/demo-app` still depends on an older, token-era release of the Node SDK. There is no compatibility mode to fall back on.
+The operator console signs in the browser (VS-5b, `docs/design/console-pairing.md`). `examples/node/demo-app` still depends on an older, token-era release of the Node SDK. There is no compatibility mode to fall back on.
 
 To integrate from another language today, implement the signed transport directly: a COSE_Sign1 envelope (Ed25519, `application/json` payloads only) bound to the method, route, audience `vsms`, the called operation's contract digest, a fresh nonce and the issued-at time, and verification of the answer against the pinned server keys. The wire contract is cratestack's signed transport (its ADR 0006); [`backends/crates/sms-api/src/envelope.md`](../backends/crates/sms-api/src/envelope.md) says what vsms adds to it. `sms-gateway routes` prints the full route table and needs no database.
 

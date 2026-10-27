@@ -1,5 +1,3 @@
-import "server-only";
-
 // #59: "thread ETag / If-Match through every edit ... in the data layer
 // once." This is that layer — a generic `GET`-with-`ETag` /
 // `PATCH`-with-`If-Match` pair, so a future edit screen (#52–#58) gets 412
@@ -13,7 +11,7 @@ import "server-only";
 // which touches an `ETag` at all (a new row has nothing to send `If-Match`
 // against; `DELETE` needs none per the generated handler itself, see
 // `deleteResource`'s own doc). Kept in this file rather than a new one:
-// they're the same `undiciFetch`-with-a-Bearer-token-and-401-retry shape as
+// they're the same `gatewayFetch`-with-a-Bearer-token-and-401-retry shape as
 // `fetchWithEtag`/`updateWithIfMatch`, just without the header dance.
 //
 // # What "the smallest real one" proved, and what it didn't
@@ -66,15 +64,11 @@ import "server-only";
 // `owner`/`admin`/`operator` — proven live in #211's own PR description,
 // not merely reasoned about.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-type Fetcher = typeof undiciFetch;
+type Fetcher = typeof gatewayFetch;
 
 export interface WithEtag<T> {
   data: T;
@@ -136,7 +130,7 @@ function normaliseIfMatch(etag: string): string {
 }
 
 function restUrl(path: string): string {
-  return new URL(path, env.SMS_API_URL).toString();
+  return new URL(path, GATEWAY_ORIGIN).toString();
 }
 
 /**
@@ -153,27 +147,16 @@ function restUrl(path: string): string {
 export async function fetchWithEtag<T>(
   path: string,
   routeLabel: string,
-  fetcher: Fetcher = undiciFetch,
+  fetcher: Fetcher = gatewayFetch,
 ): Promise<WithEtag<T> | null> {
   const url = restUrl(path);
 
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return fetcher(url, {
-      method: "GET",
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+  const response = await fetcher(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+    },
+  });
 
   if (response.status === 404) return null;
 
@@ -202,31 +185,20 @@ export async function updateWithIfMatch<T>(
   body: unknown,
   etag: string,
   routeLabel: string,
-  fetcher: Fetcher = undiciFetch,
+  fetcher: Fetcher = gatewayFetch,
 ): Promise<WithEtag<T>> {
   const url = restUrl(path);
   const payload = JSON.stringify(body);
 
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return fetcher(url, {
-      method: "PATCH",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-        "if-match": normaliseIfMatch(etag),
-      },
-      body: payload,
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+  const response = await fetcher(url, {
+    method: "PATCH",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+      "if-match": normaliseIfMatch(etag),
+    },
+    body: payload,
+  });
 
   const parsed = await parseGatewayJson(response);
   if (!response.ok) {
@@ -247,30 +219,19 @@ export async function postJson<T>(
   path: string,
   body: unknown,
   routeLabel: string,
-  fetcher: Fetcher = undiciFetch,
+  fetcher: Fetcher = gatewayFetch,
 ): Promise<T> {
   const url = restUrl(path);
   const payload = JSON.stringify(body);
 
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return fetcher(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      body: payload,
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+  const response = await fetcher(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: payload,
+  });
 
   const parsed = await parseGatewayJson(response);
   if (!response.ok) {
@@ -348,7 +309,7 @@ export async function deleteResource(
   path: string,
   routeLabel: string,
   etag?: string,
-  fetcher: Fetcher = undiciFetch,
+  fetcher: Fetcher = gatewayFetch,
 ): Promise<void> {
   const url = restUrl(path);
 
@@ -362,27 +323,16 @@ export async function deleteResource(
     }
   }
 
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    const headers: Record<string, string> = {
-      accept: "application/json",
-      authorization: `Bearer ${token}`,
-    };
-    if (ifMatch !== undefined) {
-      headers["if-match"] = ifMatch;
-    }
-    return fetcher(url, {
-      method: "DELETE",
-      headers,
-      dispatcher: gatewayAgent(),
-    });
+  const headers: Record<string, string> = {
+    accept: "application/json",
   };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
+  if (ifMatch !== undefined) {
+    headers["if-match"] = ifMatch;
   }
+  const response = await fetcher(url, {
+    method: "DELETE",
+    headers,
+  });
 
   if (!response.ok) {
     const parsed = await parseGatewayJson(response);

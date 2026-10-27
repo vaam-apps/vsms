@@ -1,5 +1,3 @@
-import "server-only";
-
 // The T10 stream hub — **polling, permanently**, per DECISIONS §3 of the
 // architecture plan (2026-08-08): no SSE, no `LISTEN`/`NOTIFY`, no Postgres
 // trigger, no Rust changes. `MessageStreamHub` is a process-wide singleton:

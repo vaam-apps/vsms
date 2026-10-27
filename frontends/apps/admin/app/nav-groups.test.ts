@@ -22,7 +22,11 @@ describe("locate", () => {
     expect(locate("/routesx")).toBeUndefined();
   });
 
+  it("lists the console's own key screen under Admin", () => {
+    expect(locate("/console")).toEqual({ section: "Admin", page: "This console" });
+  });
+
   it("returns undefined for a path the navigation does not list", () => {
-    expect(locate("/login")).toBeUndefined();
+    expect(locate("/pair")).toBeUndefined();
   });
 });

@@ -18,7 +18,7 @@ Everything runs as a container, built from this checkout's own source -- `compos
 [,bash]
 ----
 just demo-status   # what's running
-just demo-login    # the generated demo@vsms.local password — printed once, to a container log
+just demo-login    # the generated demo@vsms.local password — printed once; the console no longer asks for it (see below)
 just demo-down     # stop everything, remove its own volumes only
 ----
 
@@ -59,7 +59,19 @@ VSMS_DEMO_GATEWAY_PORT=18080 just demo
 
 The gateway answers only COSE_Sign1-signed requests and signs its answers, so it needs two Ed25519 server keys to boot. `just demo` and `just demo-up` run `just dev-keys` first, which writes a current and a next key to the git-ignored `dev-keys/` (kept if already present, so a restarted stack keeps the identity a client pinned) and `compose.dev.yaml` mounts them read-only. They are dev keys. `docker compose -f compose.dev.yaml run --rm -T sms-gateway server-keys` prints the two public keys to pin.
 
-`just e2e-integration` signs. The `admin` console and `demo-app` still speak the removed token protocol, so they start but cannot reach the sealed API until they sign (VS-5b; the Node SDK itself signs since VS-7, but `demo-app` still depends on a token-era release of it); nothing in CI runs them against a live gateway.
+`just e2e-integration` signs. The `admin` console signs in the browser since VS-5b (next section); `demo-app` still speaks the removed token protocol (it depends on a token-era release of the Node SDK, which itself signs since VS-7), so it starts but cannot reach the sealed API until it moves; nothing in CI runs either against a live gateway.
+
+== Opening the console (VS-5b)
+
+The console has no login. `just demo` registers its composer's service key (`dev-keys/console-composer.pem`, the `register-composer` service) and the `admin` container derives the gateway's two public sealing keys from the dev envelope keys it mounts. Open `http://127.0.0.1:3100`: it makes a key in your browser and shows a QR. There is no vaam admin phone in a dev stack, so pair it on the command line, with the `k` field of the QR (the page says where it is):
+
+[,bash]
+----
+docker compose -f compose.dev.yaml --profile console run --rm --no-deps register-composer pair-console-key \
+  --user demo@vsms.local --public-key "<the k field of the QR>"
+----
+
+The page notices within a couple of seconds and opens. The account is `demo@vsms.local`, an `owner`; the key lasts 30 days. `docs/design/console-pairing.md` has the design.
 
 == The demo app
 
@@ -125,17 +137,17 @@ docker compose -f compose.dev.yaml --profile console ps                     # sa
 
 `+docker compose ... logs <service>+` is where to look when something is wrong -- a message that never leaves `accepted` is a worker problem (`logs sms-worker`), one stuck at `routed` is a fake-orange problem (`logs sms-fake-orange`).
 
-The console's own machine client (`provision-client`, a real, HTTP-usable `private_key_jwt` credential -- never gated behind `--profile console`, R4) and the human operator account both write their one-time secrets to their own container's log, never to a file on disk:
+The demo's machine client (`provision-client`, a real, HTTP-usable `private_key_jwt` credential -- never gated behind `--profile console`, R4; `demo-app` reuses it) and the human operator account both write their one-time secrets to their own container's log, never to a file on disk:
 
 [,bash]
 ----
-docker compose -f compose.dev.yaml logs provision-client   # the console's client id + where its key landed
+docker compose -f compose.dev.yaml logs provision-client   # the demo client's id + where its key landed
 docker compose -f compose.dev.yaml logs provision-user     # demo@vsms.local's generated password (just demo-login)
 ----
 
 == Giving each developer their own credential
 
-`just demo` provisions one client, for the console. Each service or developer should get their own against the same `App` (`vsms-demo`, the fixed slug ``compose.dev.yaml``'s own `seed-demo-app` step uses):
+`just demo` provisions one client, for the demo app. Each service or developer should get their own against the same `App` (`vsms-demo`, the fixed slug ``compose.dev.yaml``'s own `seed-demo-app` step uses):
 
 [,bash]
 ----
@@ -227,8 +239,8 @@ just ci           # the ENTIRE CI gate -- needs only docker/compose/just; see do
 | `429` from everything
 | A rate-limit bucket. `docker compose -f compose.dev.yaml restart sms-gateway` to reset, or slow down.
 
-| Console login fails
-| The `sms-console` OIDC client's `redirect_uri` must match the console's port *exactly*; a changed `VSMS_DEMO_CONSOLE_PORT` needs a fresh `just demo`.
+| The console shows a QR and never opens
+| The gateway has no `ConsoleKey` for this browser's key yet: pair it with `pair-console-key` (above). A browser clock more than five minutes off the stack's is refused the same way; the page says so past two minutes.
 
 | A hash-related failure after mixing runs
 | `SMS_HASH_PEPPER` differs between processes. Every service in `compose.dev.yaml` is pinned to the same hardcoded demo value in that file -- nothing detects a mismatch if you've overridden one service's environment by hand and not another's.

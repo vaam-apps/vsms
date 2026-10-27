@@ -3,8 +3,10 @@ import "@fontsource-variable/jetbrains-mono/index.css";
 import { themeInitScript } from "@vaam-apps/ui";
 import { env } from "@vsms/env";
 import type { Metadata } from "next";
-import { headers } from "next/headers";
+import { connection } from "next/server";
 import "./globals.css";
+import type { ConsoleConfig } from "@/lib/console-config";
+import { ConsoleGate } from "./console-gate";
 import { ConsoleShell } from "./console-shell";
 import { Providers } from "./providers";
 
@@ -27,10 +29,19 @@ export const metadata: Metadata = {
 // attribute React did not render). It is a fixed literal from the library.
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  // `middleware.ts` forwards the signed-in human's email as `x-vsms-actor`;
-  // this only displays a value middleware has already validated.
-  const headerList = await headers();
-  const accountEmail = headerList.get("x-vsms-actor");
+  // The gateway's two PUBLIC sealing keys are runtime configuration, read here
+  // per request and handed to the browser, which pins them. `connection()` opts
+  // the whole tree out of static rendering: a build has no keys, and a value
+  // baked in at build time would pin one environment's keys into an image that
+  // is promoted to another.
+  await connection();
+  const config: ConsoleConfig = {
+    serverKeys: {
+      current: env.SMS_ENVELOPE_SERVER_KEY_CURRENT,
+      next: env.SMS_ENVELOPE_SERVER_KEY_NEXT,
+    },
+    messageStreamPollMs: env.MESSAGE_STREAM_POLL_MS,
+  };
 
   return (
     <html lang="en" suppressHydrationWarning>
@@ -39,8 +50,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
       </head>
       <body>
-        <Providers queryStaleTimeMs={env.QUERY_STALE_TIME_MS}>
-          <ConsoleShell accountEmail={accountEmail}>{children}</ConsoleShell>
+        <Providers config={config} queryStaleTimeMs={env.QUERY_STALE_TIME_MS}>
+          <ConsoleGate>
+            <ConsoleShell>{children}</ConsoleShell>
+          </ConsoleGate>
         </Providers>
       </body>
     </html>

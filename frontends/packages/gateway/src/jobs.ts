@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /jobs` and `POST /$procs/requeueJob` — the data layer behind #56's
 // Jobs screen. Same temporary hand-written seam as `client.ts`/`messages.ts`
 // (see `client.ts`'s module doc for why: T3/`frontends/packages/sms-client` is
@@ -36,12 +34,9 @@ import "server-only";
 // `state` filtering happens here, in Node, exactly like `listMessages` —
 // never pretending the server did it.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** `job_state_transitions` (`backends/migrations/postgres/0002_bootstrap/
  * up.sql`), verbatim — mirrors `@vaam-apps/ui`'s own `JobState` (`status-
@@ -128,10 +123,8 @@ export interface ListJobsResult {
 
 const DEFAULT_LIST_LIMIT = 100;
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function gatewayUrl(path: string, query: Record<string, string | number | undefined>): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -147,26 +140,15 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
 async function authedRequest(
   url: string,
   init: { method: "GET" | "POST"; body?: string },
-): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: init.method,
-      headers: {
-        accept: "application/json",
-        ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
-        authorization: `Bearer ${token}`,
-      },
-      ...(init.body !== undefined ? { body: init.body } : {}),
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+): Promise<Response> {
+  const response = await gatewayFetch(url, {
+    method: init.method,
+    headers: {
+      accept: "application/json",
+      ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+    },
+    ...(init.body !== undefined ? { body: init.body } : {}),
+  });
   return response;
 }
 

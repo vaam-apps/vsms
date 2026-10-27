@@ -11,24 +11,13 @@
 // headers, actual `If-Match` attachment, actual status-based branching —
 // `rest.ts`'s own logic, not a reimplementation of it.
 //
-// `token.ts` is mocked (real key-loading/JWT-signing machinery has nothing
-// to do with what this file tests) — `dispatcher.ts` is not; `gatewayAgent()`
-// runs for real against the fake `http://sms-api.test` base URL
-// `vitest.config.ts` sets, taking the no-certs `http:` branch, exactly the
-// way it would in a real dev deployment.
+// There is no credential to mock any more: a request is sealed by the browser's
+// key (`sealing-fetch.test.ts`), and this layer only writes the request, so what
+// these tests hold is that nothing here adds one.
 
 import { describe, expect, it, vi } from "vitest";
 import { GatewayError, isStaleWriteError } from "./errors";
 import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch } from "./rest";
-
-// #211: `rest.ts` now resolves its token through `./request-credential`,
-// not `./token` directly — mock that seam instead. Real `AsyncLocalStorage`
-// scoping is exercised by `request-credential.test.ts`, not here; this file
-// only needs a fixed token value, the same as before.
-vi.mock("./request-credential", () => ({
-  resolveUpstreamAccessToken: vi.fn().mockResolvedValue("test-access-token"),
-  invalidateUpstreamAccessToken: vi.fn(),
-}));
 
 interface FakeProvider {
   id: string;
@@ -61,9 +50,8 @@ describe("fetchWithEtag", () => {
     // verbatim, not to parse `"3"` into `3`.
     expect(result?.etag).toBe('"3"');
     expect(fetcher).toHaveBeenCalledTimes(1);
-    const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://sms-api.test/providers/p1");
-    expect((init.headers as Record<string, string>).authorization).toBe("Bearer test-access-token");
+    const [url] = fetcher.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://gateway.invalid/providers/p1");
   });
 
   it("returns undefined etag, not a missing field, when the model carries no @version", async () => {
@@ -80,17 +68,17 @@ describe("fetchWithEtag", () => {
     expect(result).toBeNull();
   });
 
-  it("retries exactly once, with a fresh token, on an unexpected 401", async () => {
-    const provider: FakeProvider = { id: "p1", displayName: "Orange", version: 1 };
+  it("never retries a 401: it means the gateway does not know the key, and says so", async () => {
+    // A retry is a new request with a new nonce, and a key the gateway has
+    // never heard of (or has finished with) is not one a second attempt can fix.
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(401, { code: "UNAUTHORIZED", message: "expired" }))
-      .mockResolvedValueOnce(jsonResponse(200, provider, { etag: '"1"' }));
+      .mockResolvedValue(jsonResponse(401, { code: "unauthenticated", message: "not paired" }));
 
-    const result = await fetchWithEtag<FakeProvider>("/providers/p1", "getProvider", fetcher);
-
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(result?.data).toEqual(provider);
+    await expect(
+      fetchWithEtag<FakeProvider>("/providers/p1", "getProvider", fetcher),
+    ).rejects.toMatchObject({ httpStatus: 401, trpcCode: "UNAUTHORIZED" });
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -191,9 +179,8 @@ describe("postJson", () => {
 
     expect(result).toEqual(created);
     const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("http://sms-api.test/routes");
+    expect(url).toBe("https://gateway.invalid/routes");
     expect(init.method).toBe("POST");
-    expect((init.headers as Record<string, string>).authorization).toBe("Bearer test-access-token");
     expect(JSON.parse(init.body as string)).toEqual({
       name: "catch-all",
       priority: 0,
@@ -203,17 +190,15 @@ describe("postJson", () => {
     });
   });
 
-  it("retries exactly once, with a fresh token, on an unexpected 401", async () => {
-    const created: FakeRoute = { id: "r1", name: "catch-all", version: 0 };
+  it("never retries a 401: a second POST is a second write", async () => {
     const fetcher = vi
       .fn()
-      .mockResolvedValueOnce(jsonResponse(401, { code: "UNAUTHORIZED", message: "expired" }))
-      .mockResolvedValueOnce(jsonResponse(200, created));
+      .mockResolvedValue(jsonResponse(401, { code: "unauthenticated", message: "not paired" }));
 
-    const result = await postJson<FakeRoute>("/routes", {}, "createRoute", fetcher);
-
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(result).toEqual(created);
+    await expect(postJson<FakeRoute>("/routes", {}, "createRoute", fetcher)).rejects.toMatchObject({
+      httpStatus: 401,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("a validation failure surfaces as a GatewayError carrying field errors", async () => {
@@ -266,7 +251,7 @@ describe("deleteResource", () => {
       // — never the internal GET the fallback path needs.
       expect(fetcher).toHaveBeenCalledTimes(1);
       const [deleteUrl, deleteInit] = fetcher.mock.calls[0] as [string, RequestInit];
-      expect(deleteUrl).toBe("http://sms-api.test/routes/r1");
+      expect(deleteUrl).toBe("https://gateway.invalid/routes/r1");
       expect(deleteInit.method).toBe("DELETE");
       expect((deleteInit.headers as Record<string, string>)["if-match"]).toBe('"4"');
     });
@@ -305,19 +290,18 @@ describe("deleteResource", () => {
       expect((error as GatewayError).httpStatus).toBe(412);
     });
 
-    it("retries exactly once, with a fresh token, on an unexpected 401 — still no GET", async () => {
+    it("never retries a 401, and still makes no GET", async () => {
       const fetcher = vi
         .fn()
-        .mockResolvedValueOnce(jsonResponse(401, { code: "UNAUTHORIZED", message: "expired" }))
-        .mockResolvedValueOnce(new Response(null, { status: 204 }));
+        .mockResolvedValue(jsonResponse(401, { code: "unauthenticated", message: "not paired" }));
 
-      await deleteResource("/routes/r1", "deleteRoute", '"4"', fetcher);
+      await expect(
+        deleteResource("/routes/r1", "deleteRoute", '"4"', fetcher),
+      ).rejects.toMatchObject({ httpStatus: 401 });
 
-      expect(fetcher).toHaveBeenCalledTimes(2);
-      for (const call of fetcher.mock.calls) {
-        const [, init] = call as [string, RequestInit];
-        expect(init.method).toBe("DELETE");
-      }
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      const [, init] = fetcher.mock.calls[0] as [string, RequestInit];
+      expect(init.method).toBe("DELETE");
     });
   });
 
@@ -333,11 +317,11 @@ describe("deleteResource", () => {
 
       expect(fetcher).toHaveBeenCalledTimes(2);
       const [getUrl, getInit] = fetcher.mock.calls[0] as [string, RequestInit];
-      expect(getUrl).toBe("http://sms-api.test/routes/r1");
+      expect(getUrl).toBe("https://gateway.invalid/routes/r1");
       expect(getInit.method).toBe("GET");
 
       const [deleteUrl, deleteInit] = fetcher.mock.calls[1] as [string, RequestInit];
-      expect(deleteUrl).toBe("http://sms-api.test/routes/r1");
+      expect(deleteUrl).toBe("https://gateway.invalid/routes/r1");
       expect(deleteInit.method).toBe("DELETE");
       expect(deleteInit.body).toBeUndefined();
       // The raw header value, quotes included — the exact wire form
@@ -402,17 +386,18 @@ describe("deleteResource", () => {
       expect((error as GatewayError).httpStatus).toBe(412);
     });
 
-    it("retries exactly once, with a fresh token, on an unexpected 401 during the DELETE itself", async () => {
+    it("never retries a 401 on the DELETE itself", async () => {
       const route: FakeProvider = { id: "r1", displayName: "catch-all", version: 4 };
       const fetcher = vi
         .fn()
         .mockResolvedValueOnce(jsonResponse(200, route, { etag: '"4"' })) // GET
-        .mockResolvedValueOnce(jsonResponse(401, { code: "UNAUTHORIZED", message: "expired" })) // DELETE, 1st attempt
-        .mockResolvedValueOnce(new Response(null, { status: 204 })); // DELETE, retried
+        .mockResolvedValueOnce(jsonResponse(401, { code: "unauthenticated", message: "x" })); // DELETE
 
-      await deleteResource("/routes/r1", "deleteRoute", undefined, fetcher);
+      await expect(
+        deleteResource("/routes/r1", "deleteRoute", undefined, fetcher),
+      ).rejects.toMatchObject({ httpStatus: 401 });
 
-      expect(fetcher).toHaveBeenCalledTimes(3);
+      expect(fetcher).toHaveBeenCalledTimes(2);
     });
   });
 });

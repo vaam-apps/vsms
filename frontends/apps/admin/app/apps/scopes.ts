@@ -23,6 +23,20 @@
  *   explaining a past bug — the constant once checked that literal, which
  *   matched nothing, permanently denying a legitimate operator token.
  *
+ * A third was excluded on purpose, and it IS enforced:
+ *
+ * - `console:pair` is the scope of vaam's pairing client, the one app that may
+ *   call `registerConsoleKey`. It is **never offered here**, because the
+ *   gateway would refuse it: `enforce_pair_scope_guard` rejects it on
+ *   `POST`/`PATCH /app_clients` and in `provisionAppClient` for every caller,
+ *   an owner included, and `registerAppClientKey` refuses a client that holds
+ *   it unless the caller is the operator's command line
+ *   (`sms-gateway register-client --scope console:pair`;
+ *   `backends/crates/sms-api/src/pair_scope.md`). A tick box for it would be a
+ *   control that always fails, and a path to the privilege escalation those
+ *   guards exist to stop (an admin giving themselves the right to name any
+ *   linked person).
+ *
  * # This list can still drift
  *
  * Nothing mechanically ties it to the Rust literals; a new

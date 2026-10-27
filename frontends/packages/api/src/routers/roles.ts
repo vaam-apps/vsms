@@ -1,5 +1,3 @@
-import "server-only";
-
 // `roles.list` / `roles.get` / `roles.create` / `roles.update` /
 // `roles.delete` — #58's Roles screen. Thin wraps over `@vsms/gateway`'s
 // own `roles.ts`.

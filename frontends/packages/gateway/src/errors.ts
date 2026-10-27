@@ -1,5 +1,3 @@
-import "server-only";
-
 // Mapping sms-api's `CratestackErrorResponse` (`{ code, message, details }` —
 // see `cratestack-core`'s `error.rs`) onto the vocabulary tRPC's error
 // formatter understands, so a `TRPCError` built from a `GatewayError`'s
@@ -12,13 +10,13 @@ import "server-only";
 //                                  for react-hook-form's `setError`
 //   409 (CONFLICT / SM001)      -> CONFLICT
 //   412 (PreconditionFailed)    -> CONFLICT
-//   401 / 403                   -> FORBIDDEN, plus a server-side log —
-//                                  a caller with a valid session should
-//                                  never see the machine token get
-//                                  rejected; that is an operator problem,
-//                                  not a user one, so it is logged loudly
-//                                  here rather than only surfaced as a
-//                                  generic "forbidden" toast.
+//   401                         -> UNAUTHORIZED: the gateway does not know the
+//                                  key that signed (this browser is not paired,
+//                                  or its key expired or was revoked). The
+//                                  console treats it as "not paired", never as
+//                                  a failure to retry.
+//   403                         -> FORBIDDEN, plus a console log: the paired
+//                                  key's user may not do this.
 //   everything else             -> INTERNAL_SERVER_ERROR
 //
 // AGENTS.md records the same policy-gap shape being found live *seven*
@@ -40,7 +38,12 @@ import "server-only";
  * dependency); the string values are identical to tRPC's own codes by
  * construction, so `frontends/packages/api/src/routers/compose.ts` can pass
  * `error.trpcCode` straight into `new TRPCError({ code, ... })`. */
-export type GatewayTrpcCode = "BAD_REQUEST" | "CONFLICT" | "FORBIDDEN" | "INTERNAL_SERVER_ERROR";
+export type GatewayTrpcCode =
+  | "BAD_REQUEST"
+  | "CONFLICT"
+  | "FORBIDDEN"
+  | "UNAUTHORIZED"
+  | "INTERNAL_SERVER_ERROR";
 
 export interface GatewayFieldErrors {
   [field: string]: string[];
@@ -128,6 +131,7 @@ function trpcCodeForStatus(status: number): GatewayTrpcCode {
     case 412:
       return "CONFLICT";
     case 401:
+      return "UNAUTHORIZED";
     case 403:
       return "FORBIDDEN";
     default:
@@ -143,27 +147,10 @@ function trpcCodeForStatus(status: number): GatewayTrpcCode {
 export function mapGatewayError(status: number, body: unknown, procedure: string): GatewayError {
   const trpcCode = trpcCodeForStatus(status);
 
-  if (status === 401 || status === 403) {
-    // #211 correction: this used to assert unconditionally that a 401/403
-    // here always means the console's own machine credential was rejected
-    // (a scope mismatch, a retired client, a signing-key rotation) —
-    // written before `resolveUpstreamAccessToken` existed, when the
-    // machine credential really was the only thing ever presented
-    // upstream. That's no longer true: most calls now forward the
-    // signed-in human's own session token, and a 403 from those is
-    // frequently an entirely ordinary, expected outcome — a `support`
-    // account clicking an action their role's own permissions don't cover,
-    // for instance (#58's opt-out screens are exactly this shape). This
-    // module has no visibility into which credential a given call used
-    // (that decision lives in `request-credential.ts`, one layer down), so
-    // it can no longer claim to know which one failed — logged as
-    // information for whoever operates this deployment, not asserted as a
-    // fault.
+  if (status === 403) {
     console.error(
-      `[@vsms/gateway] ${procedure}: sms-api returned ${status}. Could be an ordinary ` +
-        `permission denial for the signed-in caller, or the console's own machine credential ` +
-        `(SMS_CONSOLE_CLIENT_ID) being rejected — check which credential this call used before ` +
-        `assuming either.`,
+      `[@vsms/gateway] ${procedure}: sms-api returned 403 (an ordinary permission denial for the ` +
+        `paired key's user, or a row that is not theirs to see)`,
       body,
     );
   }

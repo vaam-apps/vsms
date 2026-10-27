@@ -1,5 +1,3 @@
-import "server-only";
-
 // #221: the single place this package converts sms-api's wire format into
 // its own `field?: T | undefined` convention.
 //

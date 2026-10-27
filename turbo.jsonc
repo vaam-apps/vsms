@@ -5,19 +5,53 @@
       "dependsOn": ["^build"],
       "outputs": [".next/**", "dist/**"],
       "env": [
-        "DASHBOARD_AUTH",
-        "DASHBOARD_BASIC_REALM",
-        "DASHBOARD_BASIC_USERS",
         "SMS_API_URL",
         "SMS_API_CLIENT_CERT_PATH",
         "SMS_API_CLIENT_KEY_PATH",
         "SMS_API_CA_PATH",
-        "SMS_AUTH_ISSUER",
-        "SMS_CONSOLE_CLIENT_ID",
-        "SMS_CONSOLE_PRIVATE_KEY_PATH",
-        "SMS_CONSOLE_SCOPE",
+        "SMS_ENVELOPE_SERVER_KEY_CURRENT",
+        "SMS_ENVELOPE_SERVER_KEY_NEXT",
+        "SMS_COMPOSER_KEY_FILE",
         "MESSAGE_STREAM_POLL_MS",
         "NEXT_PUBLIC_APP_NAME"
+      ]
+    },
+    // The console's build also makes the browser's sealing module,
+    // `sdks/rust/vsms-sdk-wasm` compiled with `--target web` into
+    // `public/sealer/` (`scripts/build-wasm.sh --web`; the admin package's
+    // `build:sealer`). Same two things the Node SDK's task below has to say, for
+    // the same reasons: `public/sealer/` is gitignored, so it is not an output
+    // unless named (a cache hit would restore `.next/` and leave a console that
+    // cannot sign), and the crate, the schema it expands and the lockfile that
+    // pins its dependencies live outside the package, so a change to any of them
+    // is invisible to the package's own input hash. `$TURBO_DEFAULT$` keeps the
+    // package's own files in the set. `RUSTUP_TOOLCHAIN` picks the compiler.
+    //
+    // The runtime variables are listed so a change of either invalidates a build
+    // that prerendered with it; none is read at build time by design (the layout
+    // is dynamic), so this is belt and braces and not a dependency.
+    "admin#build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "public/sealer/**"],
+      "env": [
+        "SMS_API_URL",
+        "SMS_API_CLIENT_CERT_PATH",
+        "SMS_API_CLIENT_KEY_PATH",
+        "SMS_API_CA_PATH",
+        "SMS_ENVELOPE_SERVER_KEY_CURRENT",
+        "SMS_ENVELOPE_SERVER_KEY_NEXT",
+        "SMS_COMPOSER_KEY_FILE",
+        "MESSAGE_STREAM_POLL_MS",
+        "NEXT_PUBLIC_APP_NAME",
+        "RUSTUP_TOOLCHAIN"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/sdks/node/vsms-sdk-node/scripts/build-wasm.sh",
+        "$TURBO_ROOT$/sdks/rust/Cargo.toml",
+        "$TURBO_ROOT$/sdks/rust/Cargo.lock",
+        "$TURBO_ROOT$/sdks/rust/vsms-sdk-wasm/**",
+        "$TURBO_ROOT$/sdks/rust/vsms-sdk-rust/schema.cstack"
       ]
     },
     "lint": {

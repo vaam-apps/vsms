@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /roles`, `GET /roles/{id}`, `POST /roles`, `PATCH /roles/{id}`,
 // `DELETE /roles/{id}` — #58's Roles screen, `owner`-only for every write
 // (`Role.create`/`update`/`delete`'s own `@@allow`).
@@ -24,13 +22,10 @@ import "server-only";
 // rather than a raw `23514 check_violation` surfacing as an unhelpful
 // generic error toast — see `roles-screen.tsx`'s own doc for how it's used.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 export interface RoleRecord {
   id: string;
@@ -68,33 +63,19 @@ export function isValidRoleKeyShape(key: string): boolean {
   return ROLE_KEY_PATTERN.test(key);
 }
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function gatewayUrl(path: string, query: Record<string, string | number | undefined>): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
   return url.toString();
 }
 
-async function authedRequest(
-  url: string,
-  init: { method: "GET" | "DELETE" },
-): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: init.method,
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
-      dispatcher: gatewayAgent(),
-    });
-  };
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+async function authedRequest(url: string, init: { method: "GET" | "DELETE" }): Promise<Response> {
+  const response = await gatewayFetch(url, {
+    method: init.method,
+    headers: { accept: "application/json" },
+  });
   return response;
 }
 

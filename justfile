@@ -331,7 +331,16 @@ dev-keys:
 	mkdir -p dev-keys
 	test -f dev-keys/envelope-current.pem || openssl genpkey -algorithm ed25519 -out dev-keys/envelope-current.pem
 	test -f dev-keys/envelope-next.pem || openssl genpkey -algorithm ed25519 -out dev-keys/envelope-next.pem
-	chmod 0644 dev-keys/envelope-current.pem dev-keys/envelope-next.pem
+	test -f dev-keys/console-composer.pem || openssl genpkey -algorithm ed25519 -out dev-keys/console-composer.pem
+	chmod 0644 dev-keys/envelope-current.pem dev-keys/envelope-next.pem dev-keys/console-composer.pem
+
+# The public half of the dev composer key (`dev-keys/console-composer.pem`), as
+# `sms-gateway register-client --public-key` takes it: the raw 32 bytes, base64url
+# without padding. The compose stacks read it from `VSMS_COMPOSER_PUBLIC_KEY`, so
+# `just demo-up` exports this; the private half is the console's, mounted into the
+# `admin` container, and is never an argument to anything.
+dev-composer-public-key: dev-keys
+	@openssl pkey -in dev-keys/console-composer.pem -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n'
 
 # Bring up the full demo chain — scratch Postgres, both migrations, an OP
 # signing key, an `App`+`Provider`+`Route`+`SenderId`, a machine client,
@@ -476,7 +485,7 @@ demo-up: dev-keys
 	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-fake-aws sms-worker admin demo-app; do \
 		COMPOSE_BAKE=false docker compose -f compose.dev.yaml --profile console --profile demo build "$svc"; \
 	done
-	docker compose -f compose.dev.yaml --profile console --profile demo up -d
+	VSMS_COMPOSER_PUBLIC_KEY="$(just dev-composer-public-key)" docker compose -f compose.dev.yaml --profile console --profile demo up -d
 
 # `; demo_exit=$?; ... ; exit $demo_exit`, not `&&`/separate recipe
 # lines: `just` aborts a recipe the moment any line exits non-zero,

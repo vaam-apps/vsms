@@ -625,9 +625,10 @@ jobs:
     # see AGENTS.md on the 14 live-Postgres suites CI never ran.
     env:
       # `next build` sets NODE_ENV=production, which would otherwise trip the
-      # deploy-time env rules in @vsms/env (production requires DASHBOARD_AUTH
-      # and an https upstream). Those are deployment guarantees, not compile
-      # ones, and CI has neither real auth config nor a TLS upstream. Runtime
+      # deploy-time env rules in @vsms/env (production requires an https
+      # upstream, and the gateway's two public keys must differ). Those are
+      # deployment guarantees, not compile ones, and CI has neither a TLS
+      # upstream nor the gateway's real keys. Runtime
       # boot still enforces them; this only exempts the build.
       SKIP_ENV_VALIDATION: '1'
 

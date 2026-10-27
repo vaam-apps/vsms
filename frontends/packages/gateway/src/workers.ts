@@ -1,5 +1,3 @@
-import "server-only";
-
 // `POST /$procs/workerLocks` — the data layer behind #57's Workers screen.
 // Same temporary hand-written seam as `client.ts`/`jobs.ts` (see
 // `client.ts`'s module doc for why).
@@ -13,12 +11,9 @@ import "server-only";
 // defend against "two holders" as a data shape; the interesting failure
 // mode is a role showing `held: false` that operationally should be held.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** The six §7.1 role names, verbatim (`sms_worker::Role::as_str`). */
 export type WorkerRole = "dispatch" | "drain" | "scheduler" | "hooks" | "jobs" | "smpp";
@@ -59,10 +54,8 @@ export interface WorkerLocksResult {
   locks: WorkerLockInfo[];
 }
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function procedureUrl(procedure: string): string {
-  return new URL(`/$procs/${procedure}`, env.SMS_API_URL).toString();
+  return new URL(`/$procs/${procedure}`, GATEWAY_ORIGIN).toString();
 }
 
 /**
@@ -74,25 +67,14 @@ function procedureUrl(procedure: string): string {
 export async function workerLocks(): Promise<WorkerLocksResult> {
   const url = procedureUrl("workerLocks");
 
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ args: {} }),
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+  const response = await gatewayFetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({ args: {} }),
+  });
 
   const parsed = await parseGatewayJson(response);
   if (!response.ok) {

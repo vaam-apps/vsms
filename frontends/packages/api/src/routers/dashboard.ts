@@ -1,5 +1,3 @@
-import "server-only";
-
 // `dashboard.summary` — #49's Dashboard screen. A thin wrap over
 // `@vsms/gateway`'s `dashboardSummary`, no input at all: the underlying
 // procedure always reports one snapshot for the caller's own scope (see

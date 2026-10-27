@@ -1,5 +1,3 @@
-import "server-only";
-
 // `POST /$procs/dashboardSummary` — the data layer behind #49's Dashboard
 // screen. Same temporary hand-written seam as `client.ts`/`workers.ts` (see
 // `client.ts`'s module doc for why).
@@ -10,13 +8,10 @@ import "server-only";
 // exactly which model each field reads, under which context, and why a
 // bare percentage can't stand in for `hourlyBuckets`' own trend.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
 import type { OperatorCode } from "./client";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** One rolling hour of `Message.createdAt`, oldest first. `totalCount` is
  * that hour's throughput; `ucs2Count` is how many of those encoded UCS-2 —
@@ -79,10 +74,8 @@ export interface DashboardSummary {
   hourlyBuckets: HourlyBucket[];
 }
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function procedureUrl(procedure: string): string {
-  return new URL(`/$procs/${procedure}`, env.SMS_API_URL).toString();
+  return new URL(`/$procs/${procedure}`, GATEWAY_ORIGIN).toString();
 }
 
 /**
@@ -99,25 +92,14 @@ function procedureUrl(procedure: string): string {
 export async function dashboardSummary(): Promise<DashboardSummary> {
   const url = procedureUrl("dashboardSummary");
 
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ args: {} }),
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+  const response = await gatewayFetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({ args: {} }),
+  });
 
   const parsed = await parseGatewayJson(response);
   if (!response.ok) {

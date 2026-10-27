@@ -105,6 +105,7 @@ export default defineMd3Config({
           { text: "Architecture", link: "/architecture" },
           { text: "Multi-country", link: "/design/multi-country" },
           { text: "Console redesign", link: "/design/console-redesign" },
+          { text: "Console pairing", link: "/design/console-pairing" },
           { text: "Frontend package audit", link: "/design/frontend-package-audit" },
           { text: "better-auth evaluation", link: "/design/better-auth-evaluation" },
           { text: "ADR: GDPR readiness", link: "/design/gdpr-engineering-readiness-adr" },

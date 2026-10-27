@@ -1,5 +1,3 @@
-import "server-only";
-
 // `auditLog.list` / `auditLog.chainStatus` — #58's read-only Audit log
 // screen. Thin wraps over `@vsms/gateway`'s own `audit-log.ts`. No
 // mutations at all in this router — see that module's own doc for why

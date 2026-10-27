@@ -29,11 +29,11 @@ audit N1) and closes what used to be a real chicken-and-egg gap: creating
 the very first `App` a real production deployment sends through --
 ``App.create``'s own `@@allow` is `hasRole('owner') || hasRole('admin')`,
 and nothing this deployment can mint over HTTP carries either role until
-a human has logged into the console at least once (#194), which itself
-needs `sms-gateway bootstrap`/`seed-console-client`/`provision-user` to
-have already run. `create-app` writes through the same hand-built
+a human has paired a console (VS-5b), which itself needs
+`sms-gateway bootstrap`/`provision-user` to have already run.
+`create-app` writes through the same hand-built
 `owner`-role context every other bootstrap subcommand in this file uses
--- see step 5's own "before provisioning the console client" note.
+-- see step 5's own note on the composer's key.
 `vsms-demo-seed` (`ghcr.io/vaam-apps/vsms/demo`, a separate binary/image --
 see that crate's own module doc) is explicitly not a substitute for this
 in a real deployment: it's demo-only, seeds fixture data no production
@@ -278,35 +278,26 @@ end up `state = 'active'`, which the subcommand also guarantees (a fresh
 row is created `disabled` -- ``Provider.state``'s own `@default` -- and
 activated in a second write).
 
-==== Register the console's OIDC client and create the first operator
+==== Create the first operator
 
-Without this, the console starts, reports healthy, and nobody can log
-into it -- the human-login half of the same failure mode `seed-dispatch`
-above exists to prevent on the traffic half. On their own:
+The console has no login (VS-5b): nobody types a password into it. A person
+uses it with a key their own browser made and something vouched for -- a vaam
+admin phone, or, for the first operator and as the break-glass, you on the
+command line (<<Pairing the console>> below). Either way the key is attached
+to an *existing* account, so the first operator's account has to exist:
 
 [,bash]
 ----
-docker compose --env-file .env run --rm sms-gateway seed-console-client \
-  --client-id sms-console \
-  --redirect-uri "https://console.example.com/api/auth/callback"
-
 docker compose --env-file .env run --rm sms-gateway provision-user \
   --email you@example.com --display-name "Your Name" --role-key owner
 ----
 
-*The `--redirect-uri` must match `+${ADMIN_BASE_URL}/api/auth/callback+`
-exactly* -- ``authkestra_op``'s authorize handler compares the whole string
-per RFC 6749 §3.1.2, not by prefix or origin, so a trailing slash or an
-`http`/`https` mismatch fails the exchange with no useful diagnostic.
-`--client-id` must equal the console's own `SMS_CONSOLE_OIDC_CLIENT_ID`;
-`sms-gateway serve` no longer reads it (VS-3 removed the bearer-token
-audience check).
-
-`provision-user` prints a generated password *once* and never stores
-it. There is no password-rotation flow yet (https://github.com/vymalo/vsms/issues/58[#58]
-tracks the users-and-roles screens), so treat it as a bootstrap
-credential: use it to sign in, and provision real accounts from the
-console once one exists.
+`provision-user` still prints a generated password once; the console never
+asks for it (the password login and the OpenID routes it served go with
+VS-4). What matters here is the account: `pair-console-key --user
+you@example.com` attaches the browser's key to it, and the key speaks as
+that account's role. A person paired by a vaam admin phone instead gets an
+`admin` account created for them on first pairing, never an `owner`.
 
 `--role-key` takes any of §5.2's six built-in roles -- `owner`, `admin`,
 `operator`, `developer`, `auditor`, `support` -- all seeded by
@@ -314,20 +305,16 @@ console once one exists.
 `roles_key_not_reserved_check` rejects it, because a human account
 holding it could read the OP's signing key through generated CRUD.
 
-*As of #211, the console authenticates upstream as the signed-in human*,
-not its own machine credential -- a logged-in `owner`/`admin`/`operator` can
-now perform writes that require a human role (a `Provider` edit, for
-example). Two deliberate exceptions still use the console's own machine
-credential regardless of who is signed in: the composer's `previewMessage`/
-`sendMessage` calls (`sendMessage` structurally requires a machine caller --
-see `backends/crates/sms-api/src/procedures.rs::caller_client_id`), and the
-messages list's own live-update poll (a process-wide singleton shared by
-every open browser tab -- see ``frontends/packages/gateway/src/request-credential.ts``'s
-own module doc). One consequence worth knowing before you sign in: the
-messages list and the dashboard now read _every app's_ rows, not just this
-console's own -- any signed-in human, regardless of role, can see across
-`App` boundaries, per ``Message``'s own row policy. See
-https://github.com/vymalo/vsms/issues/211[#211].
+The console authenticates upstream as the *paired person's own key*, so a
+paired `owner`/`admin`/`operator` can perform the writes that need a human
+role (a `Provider` edit, for example). One exception remains by design: the
+composer's `previewMessage`/`sendMessage` calls, which `sendMessage` structurally
+requires an app principal for (see
+`backends/crates/sms-api/src/procedures.rs::caller_client_id`), go through the
+composer's own service key (<<The composer's key>> below). Worth knowing: the
+messages list, its live updates and the dashboard read _every app's_ rows,
+not just one's -- any paired human, regardless of role, can see across `App`
+boundaries, per ``Message``'s own row policy.
 
 == 4. Bring up sms-gateway and sms-worker
 
@@ -349,19 +336,20 @@ check). Give both `--start-period` a few seconds before checking status.
 the signing key and the `Provider` row from step 3's bootstrap already
 exist, so neither startup dependency is missing this time.
 
-== 5. Provision the admin console's OAuth client
+== 5. Provision the admin console's keys
 
-`sms-gateway provision-client` mints a real, HTTP-usable `private_key_jwt`
-client through the real `provisionAppClient` procedure -- no more manual
-keypair/JWK hand-rolling. It needs an `App` for the console's client to
-act on behalf of; a real deployment's first `App` is a business decision
-(quota, IP allowlist, a `SenderId` actually approved by a real provider
-account) this runbook cannot fully make for you, but it no longer has to
-be a raw `psql`/generated-CRUD write either -- `sms-gateway create-app
---slug <slug> --name "<display name>"` (production-readiness audit N1)
-writes the row through the same idempotent create-then-catch-`23505`
-pattern `seed-dispatch` already uses for `Provider`, under a hand-built
-`owner` context:
+The console holds two kinds of key, and neither is a login.
+
+=== The composer's key
+
+`previewMessage` and `sendMessage` are procedures only an *app* may call, so a
+person's browser key cannot, and the console's composer sends through a service
+key of its own: an Ed25519 `AppClient` key, registered once, whose private half
+never reaches vsms. A real deployment's first `App` is a business decision
+(quota, IP allowlist, a `SenderId` actually approved by a real provider account)
+this runbook cannot make for you; `sms-gateway create-app --slug <slug> --name
+"<display name>"` writes the row (idempotently, under a hand-built `owner`
+context):
 
 [,bash]
 ----
@@ -369,75 +357,83 @@ docker compose --env-file .env run --rm sms-gateway create-app \
   --slug my-app --name "My App"
 ----
 
-`monthlyQuota`/`ipAllowlist`/`transliterateToGsm7` are fixed placeholders
-this command doesn't expose flags for (see `Command::CreateApp`'s own doc
-comment) -- adjust the row afterward, once you have a way to (the console
-itself, once you can log into it with the account step 3 created, or a
-direct generated-CRUD write). Pass the printed app id below as
-`--app-id`:
+`monthlyQuota`/`ipAllowlist`/`transliterateToGsm7` are fixed placeholders this
+command doesn't expose flags for -- adjust the row afterward from the console.
+Then generate the key, hand the console its private half, and register the
+public half:
 
 [,bash]
 ----
+umask 077
 mkdir -p secrets && chmod 711 secrets
+openssl genpkey -algorithm ed25519 -out secrets/console-composer.pem
+sudo chown 10001:10001 secrets/console-composer.pem   # admin's runtime uid
+sudo chmod 0400 secrets/console-composer.pem
+
+# The public half as register-client takes it: the raw 32 bytes, base64url.
+PUBLIC_KEY="$(openssl pkey -in secrets/console-composer.pem -pubout -outform DER \
+  | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n')"
+
+docker compose --env-file .env run --rm sms-gateway register-client \
+  --app my-app --client-name console-composer --label "console composer" \
+  --scope sms:send --scope sms:read --public-key "$PUBLIC_KEY"
 ----
 
-*Production-readiness audit B2 (review round 1, blocker 2): the private
-key now gets provisioned by two dedicated one-shot compose services,*
-`provision-console-client` and `secrets-fix-perms`, *not a runbook
-incantation an operator has to get exactly right by hand.* Two real bugs
-in the previous revision of this step were found live, by actually
-running it end to end, not by inspection:
+`register-client` is idempotent: the key is identified by its RFC 9679
+thumbprint, so running it twice leaves one row. `--client-name` gives the
+composer its own principal (`appc_<slug>_console-composer`), so its rate-limit
+bucket, idempotency namespace and scopes are not shared with any other
+integration of the same App. Do *not* grant it `console:pair`: that scope
+belongs to vaam's pairing client alone, and the gateway refuses it anywhere
+but this command line.
 
-* `sms-gateway` itself runs as the distroless image's own uid `65532`; a
-  freshly `mkdir -p secrets && chmod 700 secrets`'d host directory (this
-  file's own earlier revision) is owned by the operator's own host user,
-  which `65532` cannot write into at all.
-* `chmod 0644` on the resulting private key -- this file's own earlier
-  fix -- is *wrong on its own terms*, not just unreachable: world-readable
-  is not an acceptable mode for a private key, regardless of who could
-  actually run the command to set it.
+``chmod 711`` on `secrets/` (not `700`) matters: a directory with no execute
+("search") bit for "other" blocks any other uid from even traversing into it,
+whatever the file inside allows. ``admin`` reads the key through a
+`configs:` reference (``SMS_COMPOSER_KEY_FILE``), which fails `docker compose
+up` outright if the file is missing, instead of a bind mount that would be
+created silently as an empty directory.
 
-`provision-console-client` runs as `user: '0:0'` (root bypasses
-host-side Unix permission checks on a bind mount entirely, confirmed
-live), so it can write into `secrets/` regardless of who owns it.
-`secrets-fix-perms` then `chown`s the key to admin's own runtime uid
-(`10001` -- `frontends/apps/admin/Dockerfile`'s `useradd --uid 10001`)
-and locks it to `0400` -- readable by that uid alone, not `0644`.
-`chmod 711` on the directory itself (not `700`) matters just as much:
-verified live, a directory with no execute ("search") bit for "other"
-blocks *any* other uid from even traversing into it, regardless of what
-mode the file inside has -- `711` allows traversal without allowing
-directory listing.
-
-`SMS_CONSOLE_APP_ID` (the App id from step 5's own `create-app` above)
-has to be set for the first command below to succeed -- either export it
-inline, or add it to `.env`:
+Also set `SMS_ENVELOPE_SERVER_KEY_CURRENT` and `SMS_ENVELOPE_SERVER_KEY_NEXT` in
+`.env` to the two *public* keys the gateway prints (they are what the browser
+pins, and what the composer's client verifies answers with):
 
 [,bash]
 ----
-SMS_CONSOLE_APP_ID=<the App id> \
-  docker compose --env-file .env --profile console up secrets-fix-perms
+docker compose --env-file .env run --rm sms-gateway server-keys
 ----
 
-*Run this exactly once* -- `secrets-fix-perms` depends on
-`provision-console-client`, and a *second* `up secrets-fix-perms`
-re-attempts `provision-console-client` too, which refuses to overwrite
-an already-existing `--key-out` (a real, intentional safety property --
-see `ProvisionClientResult::privateKeyPem`'s own doc: it's returned
-exactly once and never stored anywhere else, #23/#111) and fails the
-whole chain. To redo this step, remove
-`secrets/console-private-key.pem`/`secrets/console-client-id` by hand
-first.
+A console deployed without the composer key serves every other screen; only the
+composer reports that it has no key.
 
-Set `SMS_CONSOLE_CLIENT_ID` in `.env` to `$(cat secrets/console-client-id)`
-(or the `provisioned client: <id>` line in `docker compose logs
-provision-console-client`).
+=== Pairing the console
 
-*Proven live, not just described:* a `busybox` container run as uid
-`10001` (through the same `configs:` mechanism `admin` itself uses) can
-read the resulting key; the same container run as `65532` (sms-gateway's
-own uid) or any other uid gets `Permission denied` on both the file and
-listing the directory itself.
+A person's console key is made by their own browser the first time they open the
+console, and shown as a QR (docs/design/console-pairing.md). It becomes valid
+when the gateway has a ``ConsoleKey`` row for it, and there are two ways to make
+one:
+
+* *A vaam admin phone* scans the QR and approves with biometrics, and vaam
+  relays the pairing to ``registerConsoleKey`` with its pairing client (an
+  `AppClient` holding `console:pair`, registered with `sms-gateway
+  register-client --scope console:pair`, never through the console). The person
+  gets an `admin` account on first pairing, never an `owner`. This path depends
+  on vaam's relay (VA-4); until it exists, use the next one.
+* *You, on the command line*, which is also the break-glass and the only way to
+  enrol an `owner`:
++
+[,bash]
+----
+docker compose --env-file .env run --rm sms-gateway pair-console-key \
+  --user you@example.com --public-key "<the k field of the QR>"
+----
++
+It attaches the key to an existing active account, with no proof of possession
+(you holding the database is the authority), creates no user and changes no
+role. The console notices on its own within a couple of seconds.
+
+A key lasts 30 days and is never extended; the console says when it is close and
+asks for a new pairing when it ends. `/console` ("This console") revokes it.
 
 == 6. Bring up admin and Caddy
 
@@ -447,20 +443,12 @@ docker compose --env-file .env up -d --build admin caddy
 docker compose ps
 ----
 
-``admin``'s `HEALTHCHECK` hits its existing `GET /api/health` --
-unauthenticated, on purpose: found live wiring this up (#139), the same
-route was previously gated by ``middleware.ts``'s Basic Auth check like
-every other route, which meant an unauthenticated liveness probe got a
-permanent `401` under the Basic gate that then existed.
-https://github.com/vymalo/vsms/issues/194[#194] has since replaced that
-gate entirely with a real session, but the exemption matters exactly as
-much -- an unauthenticated probe would now be redirected to `/login`
-instead of 401'd, which a `HEALTHCHECK` reads as failure just the same.
-``frontends/apps/admin/middleware.ts``'s matcher excludes `api/health` explicitly -- see that file's own comment. `caddy`
-depends on both `sms-gateway` and `admin` being healthy before it starts
-routing -- see ``deploy/Caddyfile``'s own comment for why the gateway and
-admin domains have to stay two separate origins rather than one
-path-routed domain (the OIDC discovery document's URLs are only
+``admin``'s `HEALTHCHECK` hits its existing `GET /api/health`, which touches no
+external dependency and needs no credential: the console has no login, so there
+is nothing in front of it to exempt. `caddy` depends on both `sms-gateway` and
+`admin` being healthy before it starts routing -- see ``deploy/Caddyfile``'s own
+comment for why the gateway and admin domains have to stay two separate origins
+rather than one path-routed domain (the OIDC discovery document's URLs are only
 well-defined at an origin root).
 
 *`deploy/Caddyfile` uses `rate_limit`, a third-party module the stock
@@ -557,12 +545,12 @@ never start `admin` itself.
 *A `:?`-required env var interpolates for every service in the file,
 independent of which profile is active or which services you actually
 ask to start* -- confirmed live, not assumed (`docker compose config`
-failed on `ADMIN_BASE_URL` with `admin` excluded by every measure
+failed on `SMS_API_URL` with `admin` excluded by every measure
 available: no `--profile console`, not named on the command line). Every
 console-only var in ``admin``'s and ``caddy``'s own `environment:` blocks
 moved from `:?` to `:-` for exactly this reason; the fail-loud property
 survives at the point that actually matters instead -- ``@vsms/env``'s zod
-validation refuses to boot `admin` without a real `ADMIN_BASE_URL` etc.,
+validation refuses to boot `admin` without the gateway's two public keys,
 and Caddy refuses to serve an empty site address once `--profile console`
 is actually used without `SMS_GATEWAY_DOMAIN`/`SMS_ADMIN_DOMAIN` set.
 
@@ -573,12 +561,12 @@ chart requires unconditionally, and _no_ console-only value) renders
 exactly `Service vsms-gateway`, `Deployment vsms-gateway`/`vsms-worker`,
 and the three bootstrap ``Job``s -- no `admin` `Deployment`/`Service`
 anywhere. `admin.enabled=true` with the same input set fails immediately,
-naming `admin.baseUrl is required`. Both confirmed by rendering, not
+naming `admin.serverKeys.current is required`. Both confirmed by rendering, not
 inferred from the chart's own logic.
 
 The compose half was run against a real stack -- a fresh `deploy/.env`
 with every var this file marks required _except_ every console-only one
-(`ADMIN_BASE_URL`, `SMS_CONSOLE_SESSION_SECRET`, `SMS_CONSOLE_CLIENT_ID`,
+(`SMS_ENVELOPE_SERVER_KEY_CURRENT`, `SMS_ENVELOPE_SERVER_KEY_NEXT`,
 `CADDY_ACME_EMAIL`, `SMS_GATEWAY_DOMAIN`, `SMS_ADMIN_DOMAIN` all absent),
 `ORANGE_CM_BASE_URL` pointed at a manually-run `sms-fake-orange` container
 on the compose network (no `fake-orange` profile exists in this file yet
@@ -595,7 +583,7 @@ sms-gateway
 prometheus
 ----
 
-No `admin`, no `caddy` -- and this rendered with `ADMIN_BASE_URL` etc. all
+No `admin`, no `caddy` -- and this rendered with the console's variables all
 unset, which is the property that matters (a `:?` anywhere in the file
 would have failed this same command). `postgres`, `migrate`,
 `sms-gateway`, `sms-worker` were then brought up for real
@@ -819,7 +807,7 @@ exists only in this deploy path, not in the committed
 
 *No `sops` here*, despite §9.2 mentioning it. This deployment's secrets
 are: `POSTGRES_PASSWORD`, `ORANGE_CM_CLIENT_SECRET`, `SMS_HASH_PEPPER`,
-the admin console's `console-private-key.pem`, and the backup service's
+the admin console's `console-composer.pem`, and the backup service's
 `rclone.conf`. The first three live in `deploy/.env` (`chmod 600`, never
 committed -- `.gitignore`/`.dockerignore` both exclude it); the last two
 live in `deploy/secrets/` (also never committed -- `.gitignore` ignores
@@ -965,8 +953,7 @@ their own operator/subscription in front of one) supplies -- the same
 why it doesn't use `sops`.
 * *Does not create any Secret.* Every credential (`DATABASE_URL`,
 `SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `MTN_CLIENT_SECRET` when
-MTN is configured, `SMS_CONSOLE_SESSION_SECRET`, the admin console's
-private key PEM) is referenced by name from an `existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
+MTN is configured, the composer's service key PEM) is referenced by name from an `existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
 ever writes one into a ConfigMap or a rendered manifest. See
 ``values.yaml``'s own `existingSecrets` block for the exact key each
 Secret must contain.
@@ -1028,40 +1015,41 @@ helm dependency build deploy/charts/vsms
 # them:
 kubectl create secret generic vsms-hash-pepper \
   --from-literal=SMS_HASH_PEPPER="$(openssl rand -base64 48)"
-kubectl create secret generic vsms-console-key \
-  --from-file=console-private-key.pem=./console-private-key.pem
+kubectl create secret generic vsms-console-composer-key \
+  --from-file=console-composer.pem=./console-composer.pem
 
 helm install vsms deploy/charts/vsms \
   --set image.tag=<a real tag published by release.yml — see above> \
   --set oidcIssuer=https://api.example.com \
   --set orange.clientId=... \
   --set orange.senderNumber=... \
-  --set admin.consoleClientId=... \
+  --set admin.serverKeys.current=... \
+  --set admin.serverKeys.next=... \
   --set existingSecrets.database.name=vsms-database \
   --set existingSecrets.hashPepper.name=vsms-hash-pepper \
   --set existingSecrets.orange.name=vsms-orange \
-  --set existingSecrets.consoleSessionSecret.name=vsms-console-session \
-  --set existingSecrets.consolePrivateKey.name=vsms-console-key
+  --set existingSecrets.consoleComposerKey.name=vsms-console-composer-key
 ----
 
-(Production-readiness audit: an earlier revision of this example named
-`existingSecrets.dashboardBasicUsers`, which stopped existing when #194
-replaced the `DASHBOARD_AUTH` Basic gate with a real
-`authorization_code` + PKCE login -- `values.yaml`'s own
-`existingSecrets` block is the source of truth for the real five:
-`database`, `hashPepper`, `orange`, `consoleSessionSecret`,
-`consolePrivateKey`.)
+The composer's key is optional (`existingSecrets.consoleComposerKey.name` may stay
+empty when the console is disabled or the composer is not used); the console's own
+chart values are `admin.serverKeys.current` and `admin.serverKeys.next`, the two
+public keys `sms-gateway server-keys` prints. `values.yaml`'s own `existingSecrets`
+block is the source of truth for the secrets: `database`, `hashPepper`, `orange`,
+and `consoleComposerKey`.
 
-Every one of `image.tag`, `oidcIssuer`, `orange.clientId`,
-`orange.senderNumber`, `admin.consoleClientId`, and all five
-`existingSecrets.*.name` fields is enforced with Helm's `required`
-function -- an install with any of them missing fails immediately with a
-named field, not a cryptic render error or a silently-broken Pod.
+Every one of `image.tag`, `oidcIssuer`, `orange.clientId`, `orange.senderNumber`,
+the `existingSecrets.*.name` fields the gateway needs, and (with the console on)
+`admin.serverKeys.current`/`.next` is enforced with Helm's `required` function --
+an install with any of them missing fails immediately with a named field, not a
+cryptic render error or a silently-broken Pod.
 
 === Single sign-on (optional)
 
-Staff can sign in to the console through a Keycloak realm instead of a vsms
-password. It is off unless `sso.issuer` (Helm) / `SMS_SSO_ISSUER` (compose) is
+*The console no longer uses this (VS-5b): it has no login, and a vaam admin phone
+pairs it instead.* The gateway's own broker below stays until VS-4 removes the
+OpenID Provider with it. Staff could sign in through a Keycloak realm instead of
+a vsms password. It is off unless `sso.issuer` (Helm) / `SMS_SSO_ISSUER` (compose) is
 set; password sign-in is untouched and remains the break-glass path. Setup --
 the Keycloak client, the groups mapper, and the `amr` configuration that makes
 a second factor visible (Keycloak's `acr` does not) -- is in

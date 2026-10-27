@@ -1,5 +1,3 @@
-import "server-only";
-
 // `routes.list` / `routes.get` / `routes.create` / `routes.update` /
 // `routes.remove` — #54's Routes screen. Thin wraps over `@vsms/gateway`'s
 // `listRoutes`/`getRouteById`/`createRoute`/`updateRoute`/`deleteRoute` —

@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /providers`, `GET /providers/{id}`, `PATCH /providers/{id}` — #54's
 // Providers screen. Same temporary hand-written seam as `client.ts`/
 // `messages.ts`/`jobs.ts` (see `client.ts`'s module doc for why: T3/
@@ -54,13 +52,10 @@ import "server-only";
 // json.ts` now converts every response's `null` to `undefined` once, for
 // every model this package parses — see that file's own module doc.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, updateWithIfMatch, type WithEtag } from "./rest";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** `schema.cstack`'s `ProviderKind`, verbatim. */
 export type ProviderKind = "orange_cm_http" | "mtn_http" | "aggregator_http" | "smpp";
@@ -115,10 +110,8 @@ const LIST_FIELDS = [
 
 export type ProviderListItem = Pick<ProviderRecord, (typeof LIST_FIELDS)[number]>;
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function providersUrl(path: string, query: Record<string, string | number | undefined>): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -128,22 +121,11 @@ function providersUrl(path: string, query: Record<string, string | number | unde
 /** `GET` with a Bearer token, retrying once on an unexpected 401 — same
  * shape as `jobs.ts`'s own `authedRequest`, duplicated for the same
  * "independently-replaceable seam" reason that module's doc gives. */
-async function authedGet(url: string): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "GET",
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
-  return response;
+async function authedGet(url: string): Promise<Response> {
+  return gatewayFetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+  });
 }
 
 /**

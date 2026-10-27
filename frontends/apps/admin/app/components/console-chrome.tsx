@@ -1,6 +1,6 @@
 // Dumb component (R6): the console's frame — the navigation, the top app
 // bar and the content column. `console-shell.tsx` decides whether to render
-// it (not on `/login`) and hands it the data; every class lives here.
+// it (not on `/pair`) and hands it the data; every class lives here.
 //
 // # Why the floating `SideNav`, not the drawer it replaced
 //
