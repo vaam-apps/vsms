@@ -530,8 +530,9 @@ fn read_committed(root: &Path, f: &str) -> Result<String, String> {
     strip_dropped_tables(root, &text)
 }
 
-/// The statements of a migration file, without its `--` comment lines and
-/// blank lines.
+/// The statements of a migration file, without its comments and blank lines:
+/// `--` to the end of the line, wherever it starts, and `/* ... */`, across lines
+/// and nested as Postgres nests them.
 ///
 /// `0001_init` is frozen (see [`REWRITTEN_BY_LATER`]), so the generator
 /// changing only what it *says* about a migration must not force an edit to
@@ -540,12 +541,170 @@ fn read_committed(root: &Path, f: &str) -> Result<String, String> {
 /// the WARNING header of `up.sql` and the comment-only `up.pre.sql` scaffold
 /// are no longer emitted, while every statement is the same. A statement
 /// that changes still fails the comparison; only comment text is ignored.
+///
+/// A comment marker inside a quoted string is text, not a comment, and is kept:
+/// a `'...'` literal (`''` doubles a quote; `E'...'` also takes a backslash
+/// escape), a `"..."` identifier and a dollar-quoted `$tag$...$tag$` body. A
+/// block comment between two tokens is the whitespace it is in SQL, so
+/// `SELECT/* x */1` is `SELECT 1`.
 fn executable_sql(text: &str) -> String {
-    text.lines()
+    strip_comments(text)
+        .lines()
         .map(str::trim_end)
-        .filter(|line| !line.trim_start().is_empty() && !line.trim_start().starts_with("--"))
+        .filter(|line| !line.trim_start().is_empty())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// `text` with every comment removed and every string left as it was
+/// ([`executable_sql`]). A comment that is never closed runs to the end.
+fn strip_comments(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let rest = &chars[i..];
+        match rest {
+            ['-', '-', ..] => {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+            }
+            ['/', '*', ..] => {
+                i = end_of_block_comment(&chars, i);
+                // Whitespace on either side already separates the tokens.
+                let before = out.chars().next_back().is_some_and(|c| !c.is_whitespace());
+                let after = chars.get(i).is_some_and(|c| !c.is_whitespace());
+                if before && after {
+                    out.push(' ');
+                }
+            }
+            ['\'', ..] => {
+                let backslash_escapes = i > 0
+                    && matches!(chars[i - 1], 'E' | 'e')
+                    && (i < 2 || !(chars[i - 2].is_alphanumeric() || chars[i - 2] == '_'));
+                i = copy_quoted(&chars, i, '\'', backslash_escapes, &mut out);
+            }
+            ['"', ..] => i = copy_quoted(&chars, i, '"', false, &mut out),
+            ['$', ..] => match dollar_tag(&chars, i) {
+                Some(tag) => i = copy_dollar_quoted(&chars, i, &tag, &mut out),
+                None => {
+                    out.push('$');
+                    i += 1;
+                }
+            },
+            [c, ..] => {
+                out.push(*c);
+                i += 1;
+            }
+            [] => break,
+        }
+    }
+    out
+}
+
+/// The index just past the block comment that opens at `start`, nesting as
+/// Postgres does (`/* a /* b */ c */` is one comment).
+fn end_of_block_comment(chars: &[char], start: usize) -> usize {
+    let mut depth = 0_usize;
+    let mut i = start;
+    while i < chars.len() {
+        match chars[i..] {
+            ['/', '*', ..] => {
+                depth += 1;
+                i += 2;
+            }
+            ['*', '/', ..] => {
+                depth -= 1;
+                i += 2;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    chars.len()
+}
+
+/// Copies the quoted run that opens at `start` (a `quote` character) to `out`,
+/// through its closing quote, and returns the index after it. A doubled quote is
+/// part of the run; so is a backslash and the character after it when
+/// `backslash_escapes`. An unterminated run is copied to the end.
+fn copy_quoted(
+    chars: &[char],
+    start: usize,
+    quote: char,
+    backslash_escapes: bool,
+    out: &mut String,
+) -> usize {
+    out.push(quote);
+    let mut i = start + 1;
+    while i < chars.len() {
+        let c = chars[i];
+        out.push(c);
+        i += 1;
+        if backslash_escapes && c == '\\' {
+            if let Some(escaped) = chars.get(i) {
+                out.push(*escaped);
+                i += 1;
+            }
+        } else if c == quote {
+            if chars.get(i) == Some(&quote) {
+                out.push(quote);
+                i += 1;
+            } else {
+                return i;
+            }
+        }
+    }
+    i
+}
+
+/// The tag of a dollar quote that opens at `start` (`$$` is the empty tag,
+/// `$body$` is `body`), or `None` when the `$` is something else (a parameter
+/// such as `$1`, or a `$` inside an identifier).
+fn dollar_tag(chars: &[char], start: usize) -> Option<String> {
+    if start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+        return None;
+    }
+    let mut tag = String::new();
+    let mut i = start + 1;
+    while let Some(&c) = chars.get(i) {
+        if c == '$' {
+            return Some(tag);
+        }
+        let allowed = c.is_alphabetic() || c == '_' || (c.is_ascii_digit() && !tag.is_empty());
+        if !allowed {
+            return None;
+        }
+        tag.push(c);
+        i += 1;
+    }
+    None
+}
+
+/// Copies the dollar-quoted body that opens at `start` to `out`, through its
+/// closing `$tag$`, and returns the index after it. An unterminated body is
+/// copied to the end.
+fn copy_dollar_quoted(chars: &[char], start: usize, tag: &str, out: &mut String) -> usize {
+    let delimiter: Vec<char> = format!("${tag}$").chars().collect();
+    let mut i = start;
+    let mut opened = false;
+    while i < chars.len() {
+        if chars[i..].starts_with(&delimiter) {
+            out.extend(&delimiter);
+            i += delimiter.len();
+            if opened {
+                return i;
+            }
+            opened = true;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    i
 }
 
 /// Whether `sql` has a statement that mentions `name`. A comment that names it
@@ -734,6 +893,64 @@ mod tests {
         let fresh = "-- NOTE: y\nCREATE TABLE t (\n    c TEXT\n);\n";
         assert_eq!(executable_sql(applied), executable_sql(fresh));
         assert_eq!(executable_sql("-- only a comment\n"), executable_sql(""));
+    }
+
+    #[test]
+    fn block_comments_are_not_compared_even_across_lines_and_nested() {
+        let fresh = "CREATE TABLE t (\n    c TEXT\n);\n";
+        let with_comments = "/* header\n   spanning lines\n   /* and nested */ still a comment\n*/\n\
+                             CREATE TABLE t (\n    c TEXT /* trailing */\n);\n/* tail */\n";
+        assert_eq!(executable_sql(with_comments), executable_sql(fresh));
+        assert_eq!(executable_sql("/* only a comment */\n"), executable_sql(""));
+        // A comment between two tokens is whitespace, not their glue.
+        assert_eq!(executable_sql("SELECT/* x */1"), "SELECT 1");
+        assert_eq!(executable_sql("SELECT /* x */ 1"), "SELECT  1");
+    }
+
+    #[test]
+    fn a_statement_commented_out_in_a_block_comment_is_not_carried_or_declared() {
+        let commented = "/*\nALTER TABLE t ADD CONSTRAINT c_check CHECK (true);\n*/\nSELECT 1;\n";
+        assert!(!declares(commented, "c_check"));
+        assert!(!carries(
+            commented,
+            "ALTER TABLE t ADD CONSTRAINT c_check CHECK (true);"
+        ));
+        let live = "/* the rule: */\nALTER TABLE t ADD CONSTRAINT c_check CHECK (true);\n";
+        assert!(declares(live, "c_check"));
+        assert!(carries(
+            live,
+            "ALTER TABLE t ADD CONSTRAINT c_check CHECK (true);"
+        ));
+    }
+
+    #[test]
+    fn a_comment_marker_inside_a_quoted_string_is_not_a_comment() {
+        for statement in [
+            "INSERT INTO t VALUES ('a -- b', '/* c */');",
+            "INSERT INTO t VALUES ('it''s -- here /* still */ quoted');",
+            "INSERT INTO t VALUES ('multi\n-- line\n/* literal\n*/ text');",
+            "ALTER TABLE t RENAME COLUMN \"a--b\" TO \"c/*d*/\";",
+            "INSERT INTO t VALUES (E'it\\'s /* x */ -- y');",
+            "DO $$ BEGIN RAISE NOTICE 'a -- b /* c */'; END $$;",
+            "DO $body$ -- kept: a dollar-quoted body is a string\nSELECT 1; /* kept */ $body$;",
+        ] {
+            assert_eq!(executable_sql(statement), statement, "{statement}");
+            // ... and it is kept whatever comments surround it.
+            let wrapped = format!("-- a\n/* b\n*/\n{statement}\n/* c */ -- d\n");
+            assert_eq!(executable_sql(&wrapped), statement, "{statement}");
+        }
+    }
+
+    #[test]
+    fn an_apostrophe_in_a_comment_does_not_open_a_string() {
+        let text = "-- don't\n/* it's a \"comment\" */\nSELECT 'x -- y';\n";
+        assert_eq!(executable_sql(text), "SELECT 'x -- y';");
+    }
+
+    #[test]
+    fn a_trailing_line_comment_is_a_comment_too() {
+        assert_eq!(executable_sql("SELECT 1; -- one\n"), "SELECT 1;");
+        assert_eq!(executable_sql("SELECT '--'; -- one\n"), "SELECT '--';");
     }
 
     #[test]

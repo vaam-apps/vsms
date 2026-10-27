@@ -4567,6 +4567,11 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   `0010` in place (it is not on `main`), with `down.sql`, `HAND_WRITTEN_COLUMN_CONSTRAINTS` and the migration live test;
   `map_database_error` answers it with a 422 for a procedure, and a raw generated `PATCH` gets a 500 like the other CHECKs.
   Dropping it in `down.sql` is for symmetry only: `DROP COLUMN audience` removes it anyway, so removing that line fails no test.
+  (G, F8) `executable_sql` (`migrations-current`) dropped `--` lines only, so a statement commented out in a `/* ... */` block was
+  still "carried". It now strips line comments wherever they start and block comments across lines and nested, as a small
+  tokenizer that leaves `'...'` (with `''` and `E'\\''`), `"..."` and `$tag$...$tag$` text alone; a block comment between tokens is
+  the space it is in SQL. The unit tests hold both halves (a commented-out constraint is neither declared nor carried; a literal
+  holding `--` or `/*` survives) and each arm was sabotaged to fail one.
 - **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,
   and a signature cannot survive that. Its nonce memory is per process and cannot be replaced (the check runs in WebAssembly),
   unlike the Rust SDK's `with_nonce_store`; the README says so.
