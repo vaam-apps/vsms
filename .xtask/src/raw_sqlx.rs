@@ -42,7 +42,7 @@ const ALLOWLIST: [&str; 12] = [
     "sms-test-support/src/lib.rs",
     "sms-gateway/src/health.rs",
     "sms-migrate/src/main.rs",
-    "sms-gateway/tests/login_flow_live_postgres.rs",
+    "sms-api/tests/reserved_role_live_postgres.rs",
 ];
 
 /// Same pattern as the original `grep -E 'sqlx::(query|query_as|query_scalar|raw_sql)\b'`:

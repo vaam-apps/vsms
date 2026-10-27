@@ -279,34 +279,18 @@ No application row is ever read or written here.
 `rustls::crypto::ring::default_provider().install_default()` as the
 first line of `main`, documented at length on that call site: dropping
 `aws-lc-rs` (`AGENTS.md`'s "rustls, musl, and distroless" section) left
-authkestra's own `reqwest` 0.13.4 dependency — pinned
+`cratestack-client-rust`'s `reqwest` 0.13.4 dependency — pinned
 `default-features = false, features = ["rustls-no-provider"]` — with no
 crypto backend baked in, so the *first* TLS handshake it attempts
 panics unless something has already installed a provider process-wide.
 That fix covers every production binary, because `main` always runs.
 **It does not cover test binaries**, whose entry point is the libtest
-harness, not either crate's `main` — so any live suite that exercises a
-code path building a `reqwest` 0.13.4 client (this workspace's own
-`GatewayAuth`, via `authkestra_resource::jwt`'s `JwksCache`, is the one
-found live: it fetches the issuer's JWKS over HTTP to validate a real
-token, in-process, in whichever suite constructs it) panics with "No
-rustls crypto provider is configured" the same way an unfixed binary
-would have, and did — `backends/crates/sms-auth/tests/oidc_flow_live.rs` and
-`backends/crates/sms-auth/tests/rbac_layer2_live_postgres.rs` both construct
-`GatewayAuth` in-process and both panicked this way before
-[`install_default_crypto_provider`] existed. Every other live suite in
-this workspace was checked (`cargo test --workspace --no-fail-fast --
---ignored`, all 19 live test binaries, not just the one CI happened to
-stop on — `cargo test` is fail-fast across a workspace by default,
-which is why a single red binary hid the rest) and does not: the
-subprocess-spawning suites (`backends/apps/sms-gateway/tests/
-m1_acceptance_gate_live_postgres.rs`, `.../provision_client_cli_live_
-postgres.rs`, `backends/apps/sms-worker/tests/kill9_reclaim_live.rs`) exercise
-`GatewayAuth` only inside a real `sms-gateway`/`sms-worker` child
-process, whose own `main` already installs the provider;
-`backends/crates/sms-auth/tests/provision_app_client_live_postgres.rs` builds an
-in-process OP router but never a `GatewayAuth`, so it never reaches
-`authkestra_resource::jwt` at all.
+harness, not either crate's `main` — so any live suite that builds a
+`reqwest` 0.13.4 client in-process would panic with "No rustls crypto
+provider is configured" the same way an unfixed binary would have.
+(Until VS-4 the in-process `GatewayAuth` was the one that did, through
+`authkestra_resource`'s JWKS cache; the token verifier is deleted, and the
+sealed-request harness in this crate is what builds a client now.)
 
 [`install_default_crypto_provider`] is called unconditionally at the
 top of [`database_url`] rather than left for each live suite to
@@ -314,43 +298,9 @@ remember: every live suite in this workspace already calls
 `database_url` (it is how each one gets a migrated Postgres — see this
 module's own doc), so hooking the install there is the one change that
 reaches all of them, present and future, with no per-test-file edit and
-nothing to re-discover the next time a suite starts exercising
-`GatewayAuth`. `backends/apps/sms-gateway/tests/tls_no_provider_live.rs` is the
-one live suite that needs no database and so never calls
-`database_url` — it already installs the provider itself, for the same
-reason its own module doc gives (it exists specifically to prove this
-exact ordering, independently of this crate).
-
-**Correction, authkestra 0.8.0 bump (AGENTS.md's authkestra-0.8 section):
-the trigger condition this section describes — "fetches the issuer's
-JWKS over HTTP" — stopped being accurate the moment that dependency
-bumped, and the gap it left was not a live-suite gap this crate could
-close at all.** `authkestra_resource::jwt::JwksCache` gained an
-eagerly-built `client: reqwest::Client` field in 0.8.0 (0.5.4's own
-`JwksCache` had no `client` field, and never touched `reqwest` before an
-actual fetch — verified by reading both vendored sources directly, not
-inferred) — so `reqwest::Client::new()`, and therefore the crypto-provider
-panic, now fires the instant a `JwksCache` (and so a `GatewayAuth`) is
-*constructed*, whether or not anything is ever fetched. Found live by
-`cargo test -p sms-api --lib` (no `--ignored`, no database) failing five
-tests that never perform an HTTP call at all — `sms-api`'s own
-`auth::tests`/`router::tests` construct a bare `GatewayAuth` against an
-unreachable JWKS URL specifically *because* they never intend to reach
-the network, and none of them call [`database_url`], so
-[`install_default_crypto_provider`]'s own "every live suite already
-calls `database_url`" reasoning above never reached them — nor could it,
-since they are not live suites at all. Fixed at the actual choke point
-instead: `GatewayAuth::new` (`backends/crates/sms-api/src/auth.rs`) now installs
-the provider itself, idempotently, the same `let _ = rustls::crypto::ring::
-default_provider().install_default();` shape [`install_default_crypto_provider`]
-already uses, and for the identical reason `cratestack-client-rust`'s own
-`CratestackClient::new` does the same (AGENTS.md's "aws-lc-rs enters this
-tree from authkestra alone" section) — a library that itself constructs a
-`reqwest::Client` internally should not depend on every caller, live suite
-or plain unit test, remembering to install a provider first. This is a
-strictly stronger fix than adding another call to [`database_url`] would
-have been: it protects every current and future caller of `GatewayAuth::new`
-by construction, not just the ones that happen to be live-Postgres suites.
+nothing to re-discover the next time a suite starts building a client.
+`sealed::` calls it as well, for a test that builds a sealed client without
+ever asking for a database.
 
 # Sealed requests (VS-3)
 

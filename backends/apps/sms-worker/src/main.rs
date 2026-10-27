@@ -683,8 +683,8 @@ fn parse_roles(raw: &[String]) -> Result<Vec<Role>> {
 
 /// Installs `ring` as the process-wide default `rustls` `CryptoProvider` —
 /// see `backends/apps/sms-gateway/src/main.rs`'s identical function for the full
-/// reasoning (`authkestra-*`'s `rustls-no-provider` feature, the musl
-/// build it unblocks, why `ring` and not `aws-lc-rs`). `.ok()`, not
+/// reasoning (why `ring` and not `aws-lc-rs`, and why the call stays now
+/// that the `authkestra` stack that needed it is gone). `.ok()`, not
 /// `.expect(...)`, for the same reason as that copy: the only failure mode
 /// is "already installed," never a reason to abort startup.
 fn install_default_crypto_provider() {

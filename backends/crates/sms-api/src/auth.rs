@@ -6,19 +6,11 @@ use cratestack::{
 
 use crate::signers::{SignerDirectory, Standing};
 
-/// The `OauthClient.clientId` #194's own `sms-console` provisioning
-/// (`sms-gateway seed-console-client`) registers under, the OIDC client the
-/// password login and the SSO broker issue the console's tokens for. Nothing
-/// in this crate authenticates with that token any more (VS-3); it stays only
-/// for the OP routes that VS-4 deletes. Named once here rather than
-/// duplicated as a string literal across three crates.
-pub const DEFAULT_CONSOLE_CLIENT_ID: &str = "sms-console";
-
 /// Who a request is. Mirrors the `auth Principal` block in `schema.cstack`
 /// field for field — the names below are load-bearing, not cosmetic.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Principal {
-    /// OIDC subject. A user id for humans, a `client_id` for services.
+    /// Subject. A user id for humans, a `client_id` for services.
     pub sub: String,
     /// `"user"` or `"app"`. Splits human callers from machine callers in
     /// policy; `"system"` is the worker's role, not a kind.
@@ -34,9 +26,9 @@ pub struct Principal {
 /// The two kinds of caller the policies distinguish.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PrincipalKind {
-    /// A human, authenticated by authorization code + PKCE.
+    /// A human, authenticated by a paired console key.
     User,
-    /// A service account, authenticated by `client_credentials`.
+    /// A service account, authenticated by a registered client key.
     App,
 }
 
@@ -224,12 +216,12 @@ impl AuthProvider for SignedAuth {
 }
 
 /// The one place that mints the `system`-role context — the most
-/// privileged construct in this system (it is what `OauthSigningKey.
-/// privateKeyPem` and every `UserCredential.passwordHash` are gated
-/// behind). Every internal system-context write in this workspace —
+/// privileged construct in this system (it is what every registered
+/// `ClientKey` and `ConsoleKey` write is gated behind). Every internal
+/// system-context write in this workspace —
 /// `Procedures::sys()`, `webhooks.rs`'s own subscriber context, the
 /// signer directory's key and standing lookups, `sms-worker`'s `jobs` role,
-/// `sms-gateway`'s OP-adjacent writes, and `send_test_message.rs`'s
+/// `sms-gateway`'s operator commands, and `send_test_message.rs`'s
 /// standalone tool — calls this function rather than hand-rolling the
 /// same [`Principal`] literal, so the invariant below has exactly one
 /// place to hold, not six independently-drifting copies of it.
@@ -278,8 +270,8 @@ pub fn system_context(sub: impl Into<String>) -> CratestackContext {
 ///   `hasRole('system')` match for a real human.
 /// - `"app"` is reserved too, defensively, even though it is not
 ///   currently a privilege escalation: [`SignedAuth::context_for`]'s
-///   `role: "app"` sentinel matches no `hasRole(...)` clause in the schema
-///   (`OauthSigningKey`'s own comment is explicit about this), so a human
+///   `role: "app"` sentinel matches no `hasRole(...)` clause in the schema,
+///   so a human
 ///   `Role` keyed `"app"` would be confusing, not exploitable — reserved
 ///   to keep it that way rather than relying on that fact never changing.
 pub const RESERVED_ROLE_KEYS: &[&str] = &["system", "app"];

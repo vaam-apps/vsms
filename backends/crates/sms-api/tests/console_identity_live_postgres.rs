@@ -7,9 +7,12 @@
 //! cargo test -p sms-api --test console_identity_live_postgres -- --ignored
 //! ```
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::Utc;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use cratestack::{CratestackContext, Value};
+use sha2::Digest as _;
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack,
@@ -147,13 +150,14 @@ async fn seed_role(db: &Cratestack, key: &str, permissions: &[&str]) {
 // provisionUser (#52/#58)
 // ---------------------------------------------------------------------
 
-/// The headline case: `provisionUser` returns a plaintext password exactly
-/// once, and that password genuinely authenticates against the account it
-/// just created — proven by calling `sms_auth::login::authenticate_user`
-/// directly, the real login check, not a hand-rolled stand-in for it.
+/// The headline case, since VS-4: `provisionUser` makes a `User` and nothing
+/// to log in with - there is no password to return - and the way in is a
+/// console key paired to that user, here through the same function
+/// `sms-gateway pair-console-key` runs. Proves the row it made is one a key
+/// can attach to: active, its `subject` the row's own id, its role as asked.
 #[tokio::test]
 #[ignore = "needs a live, migrated Postgres — see module docs"]
-async fn a_provisioned_user_can_actually_log_in_with_the_returned_password() {
+async fn a_provisioned_user_has_no_credential_and_a_console_key_can_be_paired_to_it() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     seed_role(&db, "console_identity_owner_role", &["user:manage"]).await;
@@ -182,34 +186,53 @@ async fn a_provisioned_user_can_actually_log_in_with_the_returned_password() {
     .expect("provisioning a user");
 
     assert_eq!(result.email, email);
-    assert_ne!(result.password.len(), 0);
-    assert_eq!(
-        result.password.len(),
-        24,
-        "sms_core::password::generate_password's own documented length"
-    );
+    assert_eq!(result.roleKey, "console_identity_owner_role");
 
-    let sys = Principal {
-        sub: "console-identity-test-login-sys".to_owned(),
-        kind: PrincipalKind::App,
-        role: "system".to_owned(),
-        app_id: String::new(),
-    }
-    .into_context();
-
-    let authenticated = sms_auth::login::authenticate_user(&db, &sys, &email, &result.password)
+    let sys = sms_api::system_context("console-identity-test-sys");
+    let stored = db
+        .user()
+        .find_many()
+        .where_expr(cratestack::FilterExpr::from(
+            schema::user::email().eq(email.clone()),
+        ))
+        .limit(1)
+        .run(&sys)
         .await
-        .expect(
-            "the returned one-time password must authenticate against the account it just created",
-        );
-    assert_eq!(authenticated.subject, result.userId);
-    assert_eq!(authenticated.role_key, "console_identity_owner_role");
+        .expect("reading the user back")
+        .into_iter()
+        .next()
+        .expect("the provisioned user exists");
+    assert_eq!(stored.id, result.userId);
+    assert_eq!(
+        stored.subject, result.userId,
+        "subject is the row's own id, not the pending placeholder"
+    );
+    assert!(stored.active);
 
-    // The wrong password, against the same freshly provisioned account,
-    // must still fail — proves this isn't a login check that accepts
-    // anything for a freshly created row.
-    let wrong = sms_auth::login::authenticate_user(&db, &sys, &email, "definitely-not-it").await;
-    assert!(wrong.is_err(), "a wrong password must not authenticate");
+    // The break-glass path: a console key attaches to the account.
+    // A distinct key per run: a thumbprint belongs to one person for good.
+    let mut seed: [u8; 32] =
+        sha2::Sha256::digest(format!("console-identity-{suffix}-{}", std::process::id())).into();
+    let key = loop {
+        if let Ok(key) = p256::ecdsa::SigningKey::from_slice(&seed) {
+            break key;
+        }
+        seed = sha2::Sha256::digest(seed).into();
+    };
+    let public_key = URL_SAFE_NO_PAD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
+    let (paired, user, created) = sms_api::console_keys::pair_existing_user(
+        &db,
+        &sys,
+        &email,
+        &public_key,
+        Some("console identity test".to_owned()),
+        Utc::now(),
+    )
+    .await
+    .expect("pairing a key to the provisioned user");
+    assert!(created);
+    assert_eq!(paired.userId, result.userId);
+    assert_eq!(user.id, result.userId);
 }
 
 /// A second `provisionUser` call for the same email must be a clear

@@ -47,10 +47,10 @@
 //! doc), so running this needs only Docker and:
 //!
 //! ```bash
-//! cargo test -p sms-auth --test rbac_layer2_live_postgres -- --ignored
+//! cargo test -p sms-api --test rbac_layer2_live_postgres -- --ignored
 //! ```
 
-#[path = "../../sms-api/tests/support/sealed_fixtures.rs"]
+#[path = "support/sealed_fixtures.rs"]
 mod sealed_fixtures;
 
 use chrono::Utc;

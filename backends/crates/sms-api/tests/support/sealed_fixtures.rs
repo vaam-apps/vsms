@@ -7,8 +7,8 @@
 //! with a known server key, a listener, and rows that register a test key.
 //!
 //! It is included, not imported - `#[path = "..."] mod sealed_fixtures;` from
-//! `sms-api`'s own suites and from `sms-auth`'s - because a `tests/` helper has
-//! no crate of its own. Every including crate has `sms_api`,
+//! `sms-api`'s own suites and from `sms-gateway`'s - because a `tests/` helper
+//! has no crate of its own. Every including crate has `sms_api`,
 //! `sms_test_support` and `cratestack` as dependencies.
 #![allow(dead_code)]
 

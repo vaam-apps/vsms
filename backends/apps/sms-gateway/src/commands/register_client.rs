@@ -22,9 +22,8 @@ pub(crate) struct RegisterClientArgs {
     pub(crate) database_url: String,
 
     /// The `App.slug` the client acts for. The App must already exist and be
-    /// active (`sms-gateway create-app`), exactly like `provision-client
-    /// --app-slug`; this command never creates an App, whose quota and
-    /// allowlist are a business decision.
+    /// active (`sms-gateway create-app`); this command never creates an App,
+    /// whose quota and allowlist are a business decision.
     #[arg(long = "app")]
     pub(crate) app_slug: String,
 
@@ -59,7 +58,7 @@ pub(crate) struct RegisterClientArgs {
     pub(crate) scopes: Vec<String>,
 
     /// Which of `registerAppClientKey`'s two admitted roles to run the call
-    /// under. Same choice and default as `provision-client --role`.
+    /// under.
     #[arg(long, default_value = "owner")]
     pub(crate) role: String,
 }
@@ -68,8 +67,8 @@ pub(crate) struct RegisterClientArgs {
 /// pure function of the slug, so a second run (or a second key for the same
 /// app) finds the client the first one made instead of minting another, and
 /// `AppClient.clientId`'s unique index makes the find-or-create atomic.
-/// `provision-client` instead mints a random `appc_<uuid>` per run, which is
-/// why running it twice leaves two clients.
+/// (`provisionAppClient`, the console's HTTP path, mints a random `appc_<uuid>`
+/// per call instead, so calling it twice leaves two clients.)
 ///
 /// A `--client-name` gives the App another client, `appc_<slug>_<name>`,
 /// equally a pure function of its inputs.
@@ -260,7 +259,7 @@ async fn find_client(
 }
 
 /// A client id is global, so one that exists but belongs to another App (a
-/// slug that collides with an old `provision-client` id) is refused, never
+/// slug that collides with a console-provisioned `appc_<uuid>` id) is refused, never
 /// silently reused.
 fn same_app(existing: sms_api::schema::AppClient, app_id: &str, client_id: &str) -> Result<String> {
     if existing.appId != app_id {

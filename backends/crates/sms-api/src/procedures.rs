@@ -1,11 +1,7 @@
 #![doc = include_str!("procedures.md")]
 
-use authkestra_engine::TokenManager;
 use chrono::{DateTime, Datelike, Duration as ChronoDuration, Timelike, Utc};
 use cratestack::{CratestackContext, CratestackError, Decimal, FilterExpr, Value};
-use rand::rngs::OsRng;
-use rsa::RsaPrivateKey;
-use rsa::pkcs8::{EncodePrivateKey, LineEnding};
 use sms_core::pack;
 use sms_encoding::{SmsEncoding, analyse, normalise, transliterate_to_gsm7};
 use sms_msisdn::{Msisdn, OperatorPrefixTable};
@@ -19,8 +15,9 @@ use crate::pepper::{HashPepper, hmac_sha256_hex};
 use crate::rbac::require_permission;
 use crate::route_simulator;
 use crate::schema::{
-    self, app, app_client, consent_record, delivery_receipt, job, message, operator_prefix_rule,
-    opt_out, provider, sender_id, sender_id_registration, webhook_attempt, webhook_endpoint,
+    self, app, app_client, client_key, consent_record, delivery_receipt, job, message,
+    operator_prefix_rule, opt_out, provider, sender_id, sender_id_registration, webhook_attempt,
+    webhook_endpoint,
 };
 use crate::worker_locks;
 
@@ -30,14 +27,6 @@ use crate::worker_locks;
 /// each hands out this same delegate.
 type OperatorPrefixRules<'a> =
     cratestack::ModelDelegate<'a, schema::models::OperatorPrefixRule, String>;
-
-/// RSA modulus size for a freshly generated client keypair. Matches
-/// `sms_auth::op::RSA_KEY_BITS` — same reasoning: the smallest size still
-/// considered acceptable for RS256 in 2026, and this deployment has no need
-/// for the extra headroom of 3072/4096 at the cost of a larger PEM the
-/// caller has to store. Duplicated rather than imported: `sms-api` cannot
-/// depend on `sms-auth` (the dependency runs the other way).
-const CLIENT_RSA_KEY_BITS: usize = 2048;
 
 /// Marker for a procedure whose backing subsystem is not built yet.
 fn not_yet(procedure: &str, milestone: &str) -> CratestackError {
@@ -188,8 +177,8 @@ impl Procedures {
         hmac_sha256_hex(&self.pepper, input)
     }
 
-    /// A `system`-role context — the only one `OauthClient`-adjacent app
-    /// resolution and the send path's own reads and writes admit. Built
+    /// A `system`-role context — the only one the send path's app
+    /// resolution and its own reads and writes admit. Built
     /// fresh per call rather than cached: it carries no state worth
     /// reusing, and constructing it is a handful of `Value::String`
     /// allocations, not a query. See [`crate::auth::system_context`] for
@@ -599,7 +588,7 @@ impl Procedures {
         };
         if kind != PrincipalKind::App.as_str() {
             return Err(CratestackError::Validation(
-                "sendMessage currently requires a machine (client_credentials) caller — \
+                "sendMessage currently requires a machine (registered client key) caller — \
                  deriving an App for a human caller has no design yet"
                     .to_owned(),
             ));
@@ -627,8 +616,7 @@ impl Procedures {
         // `auth().kind == "app" || hasRole('owner') || hasRole('admin') ||
         // hasRole('operator')`) — nothing about *role* narrows a machine
         // caller down further, so this is the only thing standing between
-        // "any client_credentials token this OP ever issues" and "sends
-        // SMS", per §5.2's service-account scope table (`sms:send`).
+        // "any registered client key" and "sends SMS", per §5.2's service-account scope table (`sms:send`).
         require_permission(ctx, "sms:send")?;
 
         let sys = Self::sys();
@@ -802,33 +790,28 @@ impl Procedures {
         })
     }
 
-    /// #23: mint a fresh `AppClient` + `OauthClient` pair bound to
-    /// `private_key_jwt`, and hand back the generated private key exactly
-    /// once. No column anywhere holds it after this call returns — see
-    /// `OauthClient` in `schema.cstack` and `sms_auth::to_registration`'s
-    /// own comment on why no shared secret exists in this system (#6). This
-    /// is the asymmetric analogue of "secret shown once."
+    /// #23, reshaped by VS-4: mint a fresh `AppClient` and register the
+    /// caller's Ed25519 public key for it, in one transaction. The caller
+    /// generated the keypair and sends only the public half
+    /// (`args.publicKey`, the same encoding `registerAppClientKey` takes), so
+    /// nothing is generated here and nothing secret is returned: vsms never
+    /// holds a private key, which is the whole signed-transport design. It
+    /// used to generate an RSA keypair and hand back the private half once,
+    /// for a `private_key_jwt` token server that no longer exists.
     ///
     /// Both rows are written in one `serializable` transaction (the
-    /// procedure's own `@isolation`, §2.10): `OauthClient.appClientId`
-    /// references `AppClient.id`, and a caller must never observe one row
-    /// without the other — either the client is fully provisioned or it
-    /// does not exist yet.
+    /// procedure's own `@isolation`): `ClientKey.appClientId` references
+    /// `AppClient.id`, and a caller must never observe a client without its
+    /// key or the reverse — either the client is fully provisioned or it does
+    /// not exist yet. A thumbprint that is already registered (to this client
+    /// or another) is a `Conflict`: a new client cannot adopt a key that is
+    /// somebody's already.
     ///
-    /// **Retirement / overlap-window rotation is out of scope for this
-    /// procedure.** `OauthClient.update` is `hasRole('system')` only today
-    /// — there is no owner/admin-reachable write path to revoke or rotate a
-    /// client's key through the generated API yet, and a *true*
-    /// overlap-window rotation (publishing an old and a new public key
-    /// simultaneously, the way `sms_auth::op::rotate_signing_key` does for
-    /// the OP's own key) needs a per-client key-history model shaped like
-    /// `OauthSigningKey` — `OauthClient.jwks` holds exactly one JWK Set
-    /// per client today, not a history of them. Deactivating a client
-    /// (`AppClient.active` / `retiredAt`, already modelled) through the
-    /// generated `update` route is owner/admin-reachable today and, while
-    /// coarser than a real overlap window, is the honest scope this
-    /// procedure adds: it does not itself expose a bespoke retire/rotate
-    /// action. See #23's PR description for the full reasoning.
+    /// **Retirement and rotation are the existing procedures' job.**
+    /// `registerAppClientKey` adds a second key to a client and
+    /// `revokeAppClientKey` ends the old one (an overlap window, since both
+    /// verify until the old is revoked); `AppClient.active`/`retiredAt`
+    /// through the generated `update` route ends the whole client.
     async fn provision_client(
         &self,
         db: &schema::IsolatedCratestack,
@@ -842,12 +825,14 @@ impl Procedures {
         // `console:pair` lets a client attach a console key to any linked
         // person, so an owner or admin handing it out over HTTP is a way to
         // become someone else. It is granted by `sms-gateway register-client`.
-        // Refused before the app is read or a keypair is generated.
+        // Refused before the app is read or a key is looked at.
         crate::pair_scope::refuse_pair_scope(&scopes_packed)?;
+        // Before the database, so a typo'd key fails with nothing touched.
+        let parsed = crate::client_keys::parse_public_key(&args.publicKey)?;
 
         // The app must exist and be active before a client is allowed to
         // speak for it — provisioning a client for a deleted/deactivated
-        // app would silently mint working credentials for nothing.
+        // app would silently mint a working credential for nothing.
         let app = db
             .app()
             .find_many()
@@ -865,99 +850,86 @@ impl Procedures {
             )));
         }
 
-        // clientId is caller-visible immediately (it's what the token
-        // endpoint's `client_id` parameter and the assertion's `iss`/`sub`
-        // both carry), so it's generated here rather than left to a DB
-        // default — a `Cuid` default would also exclude it from
-        // CreateXInput entirely (§2.0). Not a `Cuid` itself: `AppClient`/
-        // `OauthClient.clientId` are plain `String @length(min: 8, max:
-        // 64)`, so there's no `[a-z0-9]{2,32}` format guard to satisfy.
+        // clientId is caller-visible immediately (it is what a signed
+        // request resolves to), so it is generated here rather than left to a
+        // DB default — a `Cuid` default would also exclude it from
+        // CreateXInput entirely (§2.0). Not a `Cuid` itself:
+        // `AppClient.clientId` is a plain `String @length(min: 8, max: 64)`,
+        // so there is no `[a-z0-9]{2,32}` format guard to satisfy.
         let client_id = format!("appc_{}", cratestack::uuid::Uuid::new_v4().simple());
-
-        // Generate the client's own RSA keypair server-side. Only the
-        // public half is ever persisted (below); the private half is
-        // returned to the caller and never stored anywhere.
-        let mut rng = OsRng;
-        let key = RsaPrivateKey::new(&mut rng, CLIENT_RSA_KEY_BITS).map_err(|error| {
-            CratestackError::Internal(format!("generating client keypair: {error}"))
-        })?;
-        let private_key_pem = key.to_pkcs8_pem(LineEnding::LF).map_err(|error| {
-            CratestackError::Internal(format!("encoding client key to PKCS#8 PEM: {error}"))
-        })?;
-
-        // `TokenManager::new_asymmetric` + `public_jwk()` derives n/e from
-        // the key without hand-rolling base64url encoding — the same
-        // pattern `sms_auth::op::load_signing_keys` uses for the OP's own
-        // key. `authkestra_op::client_assertion::verify_client_assertion`
-        // reads exactly this shape at the token endpoint: a JWK Set
-        // (`{"keys": [...]}`) — see `select_key` in that module, vendored
-        // source checked directly rather than assumed.
-        let manager =
-            TokenManager::new_asymmetric(private_key_pem.as_bytes(), None, Some(client_id.clone()))
-                .map_err(|error| {
-                    CratestackError::Internal(format!("deriving the client's public JWK: {error}"))
-                })?;
-        let public_jwk = manager.public_jwk().ok_or_else(|| {
-            CratestackError::Internal(
-                "TokenManager produced no public JWK for a freshly generated asymmetric key"
-                    .to_owned(),
-            )
-        })?;
-        let jwks_json = serde_json::json!({ "keys": [public_jwk] }).to_string();
-
-        // client_credentials only — the only grant type a machine caller in
-        // this system ever uses (§4.2; see `sms_auth::op`'s own module doc).
-        let grant_types_packed =
-            pack(["client_credentials"]).expect("a static literal always packs");
 
         let app_id = args.appId;
         let label = args.label;
 
-        db.transaction(async |tx| {
-            let sys = &sys;
-            let app_client = db
-                .app_client()
-                .create(schema::CreateAppClientInput {
-                    appId: app_id,
-                    clientId: client_id.clone(),
-                    label,
-                    scopes: scopes_packed.clone(),
-                    lastUsedAt: None,
-                    retiredAt: None,
-                })
-                .run_in_tx(tx, sys)
-                .await?
-                // cratestack 0.7.13 (#554): `run_in_tx` write builders
-                // now return `RunInTxOutcome<T>` (the value plus any
-                // `AuditEvent`s built for a caller-installed `AuditSink`
-                // to fan out after commit). This codebase installs no
-                // `AuditSink` — `@@audit` rows still land in
-                // `cratestack_audit` the way they always have, inside
-                // this same transaction, regardless — so `.value` is
-                // the only thing any call site here needs.
-                .value;
+        let key = db
+            .transaction(async |tx| {
+                let sys = &sys;
+                let thumbprint_taken = !db
+                    .client_key()
+                    .find_many()
+                    .where_expr(FilterExpr::from(
+                        client_key::thumbprint().eq(parsed.thumbprint.clone()),
+                    ))
+                    .limit(1)
+                    .run_in_tx(tx, sys)
+                    .await?
+                    .is_empty();
+                if thumbprint_taken {
+                    return Err(CratestackError::Conflict(
+                        "this public key is already registered to a client".to_owned(),
+                    ));
+                }
 
-            db.oauth_client()
-                .create(schema::CreateOauthClientInput {
-                    clientId: client_id.clone(),
-                    appClientId: Some(app_client.id),
-                    tokenEndpointAuthMethod: schema::ClientAuthMethod::private_key_jwt,
-                    jwks: Some(jwks_json),
-                    grantTypes: grant_types_packed,
-                    scopes: scopes_packed,
-                    redirectUris: sms_core::EMPTY.to_owned(),
-                    requirePkce: false,
-                })
-                .run_in_tx(tx, sys)
-                .await?;
+                let app_client = db
+                    .app_client()
+                    .create(schema::CreateAppClientInput {
+                        appId: app_id,
+                        clientId: client_id.clone(),
+                        label: label.clone(),
+                        scopes: scopes_packed,
+                        lastUsedAt: None,
+                        retiredAt: None,
+                    })
+                    .run_in_tx(tx, sys)
+                    .await?
+                    // cratestack 0.7.13 (#554): `run_in_tx` write builders
+                    // now return `RunInTxOutcome<T>` (the value plus any
+                    // `AuditEvent`s built for a caller-installed `AuditSink`
+                    // to fan out after commit). This codebase installs no
+                    // `AuditSink` — `@@audit` rows still land in
+                    // `cratestack_audit` the way they always have, inside
+                    // this same transaction, regardless — so `.value` is
+                    // the only thing any call site here needs.
+                    .value;
 
-            Ok(())
-        })
-        .await?;
+                let key = db
+                    .client_key()
+                    .create(schema::CreateClientKeyInput {
+                        appClientId: app_client.id,
+                        alg: schema::ClientKeyAlg::ed25519,
+                        publicKey: parsed.bytes.to_vec(),
+                        thumbprint: parsed.thumbprint.clone(),
+                        label: Some(label),
+                        revokedAt: None,
+                    })
+                    .run_in_tx(tx, sys)
+                    .await?
+                    .value;
+                Ok(key)
+            })
+            .await
+            .map_err(map_database_error)?;
 
+        info!(
+            client_id = %client_id,
+            key_id = %key.id,
+            thumbprint = %key.thumbprint,
+            "app client provisioned"
+        );
         Ok(schema::ProvisionClientResult {
             clientId: client_id,
-            privateKeyPem: private_key_pem.to_string(),
+            keyId: key.id,
+            thumbprint: key.thumbprint,
         })
     }
 
@@ -1737,28 +1709,20 @@ impl Procedures {
     }
 
     /// #52/#58: `provisionUser` — see `schema.cstack`'s own doc on this
-    /// procedure for the full reasoning (why `UserCredential` forces a
-    /// procedure rather than a plain `POST /users`, and why there is no
-    /// retire/rotate counterpart). Two writes in one transaction, the
-    /// identical two-write shape `backends/apps/sms-gateway/src/main.rs`'s own
-    /// `provision_user_command` (#194) already accepts for the CLI's
-    /// bootstrap path: `User.subject` is `@unique` and this delegate
-    /// doesn't know its own generated id ahead of the `create()` call, so
-    /// a unique placeholder is written first and corrected to the row's
-    /// own id in a second update.
+    /// procedure for the reasoning (why it is a procedure rather than a plain
+    /// `POST /users`, and why there is no retire counterpart). Since VS-4 it
+    /// makes a `User` row and no credential: no password, token or recovery
+    /// code exists to generate, so nothing is returned once. Two writes in
+    /// one transaction: `User.subject` is `@unique` and this delegate
+    /// doesn't know its own generated id ahead of the `create()` call, so a
+    /// unique placeholder is written first and corrected to the row's own id
+    /// in a second update — the identical shape `sms-gateway provision-user`
+    /// and console pairing's just-in-time user use.
     ///
-    /// **Mixed-context write, deliberately, not sloppily**: `User.create`/
+    /// Both writes run under the *caller's own* `ctx`: `User.create`/
     /// `User.update`'s own `@@allow` admits `hasRole('owner') ||
-    /// hasRole('admin')` — no `hasRole('system')` — so those two writes run
-    /// under the *caller's own* `ctx` (already role-checked by this
-    /// procedure's own `@allow`, which is exactly as restrictive).
-    /// `UserCredential.create` is `hasRole('system')`-only, so that write,
-    /// and only that one, runs under `sys`. Unlike `provisionAppClient`
-    /// (where every write target is `hasRole('system')`-only and `sys` is
-    /// used throughout), a single uniform context would either fail the
-    /// `User` writes (under `sys`, which `User`'s own policy doesn't
-    /// admit) or fail the `UserCredential` write (under `ctx`, which that
-    /// model's policy never admits from any human role).
+    /// hasRole('admin')` — no `hasRole('system')` — and this procedure's own
+    /// `@allow` is exactly as restrictive.
     async fn provision_console_user(
         &self,
         db: &schema::IsolatedCratestack,
@@ -1767,19 +1731,12 @@ impl Procedures {
     ) -> Result<schema::ProvisionUserResult, CratestackError> {
         require_permission(ctx, "user:manage")?;
 
-        let password = sms_core::password::generate_password(24);
-        let password_hash = sms_core::password::hash_password(&password).map_err(|error| {
-            CratestackError::Internal(format!("hashing the generated password: {error}"))
-        })?;
-
-        let sys = Self::sys();
         let email = args.email;
         let display_name = args.displayName;
         let role_key = args.roleKey;
 
         let user_id = db
             .transaction(async |tx| {
-                let sys = &sys;
                 let user = db
                     .user()
                     .create(schema::CreateUserInput {
@@ -1808,14 +1765,6 @@ impl Procedures {
                     .run_in_tx(tx, ctx)
                     .await?;
 
-                db.user_credential()
-                    .create(schema::CreateUserCredentialInput {
-                        userId: user_id.clone(),
-                        passwordHash: password_hash,
-                    })
-                    .run_in_tx(tx, sys)
-                    .await?;
-
                 Ok(user_id)
             })
             .await
@@ -1825,7 +1774,6 @@ impl Procedures {
             userId: user_id,
             email,
             roleKey: role_key,
-            password,
         })
     }
 

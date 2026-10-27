@@ -467,8 +467,7 @@ async fn attempt_count_for(db: &Cratestack, message_id: &str) -> usize {
 
 /// A real, spawned `sms-gateway serve` OS process — see
 /// `m1_acceptance_gate_live_postgres.rs`'s own `GatewayProcess` for the
-/// precedent this is modelled on. This suite never needs the OP/token
-/// machinery that struct also carries, so it's a leaner, local copy rather
+/// precedent this is modelled on. This suite is a leaner, local copy rather
 /// than sharing code across two different test binaries (Cargo integration
 /// tests can't share a module without a shared support crate, and this is
 /// the only other file that needs it).
@@ -479,7 +478,7 @@ struct GatewayProcess {
 
 impl GatewayProcess {
     async fn spawn(db_url: &str, port: u16) -> Self {
-        let issuer = format!("http://127.0.0.1:{port}");
+        let base_url = format!("http://127.0.0.1:{port}");
         // Required since VS-3: the gateway does not start without its
         // signed-transport keys. This suite never calls a sealed route.
         let (current_key, next_key) = sealed_fixtures::write_server_key_files(
@@ -492,8 +491,6 @@ impl GatewayProcess {
             .arg(format!("127.0.0.1:{port}"))
             .arg("--database-url")
             .arg(db_url)
-            .arg("--issuer")
-            .arg(&issuer)
             .arg("--orange-client-id")
             .arg("kill-mid-drain-test-orange-client-id")
             .arg("--orange-client-secret")
@@ -512,11 +509,10 @@ impl GatewayProcess {
         let mut child = command.spawn().expect("spawning sms-gateway serve");
         println!(
             "webhook_outbox_kill_mid_drain_live: spawned sms-gateway serve, pid {}, base_url \
-             {issuer}",
+             {base_url}",
             child.id()
         );
 
-        let base_url = issuer;
         wait_until_ready(&base_url, &mut child).await;
         Self { child, base_url }
     }
@@ -574,10 +570,7 @@ async fn wait_until_ready(base_url: &str, child: &mut Child) {
         if let Ok(Some(status)) = child.try_wait() {
             panic!("sms-gateway serve exited before becoming ready: {status:?}");
         }
-        if let Ok(response) = client
-            .get(format!("{base_url}/.well-known/openid-configuration"))
-            .send()
-            .await
+        if let Ok(response) = client.get(format!("{base_url}/healthz")).send().await
             && response.status().is_success()
         {
             return;
@@ -615,17 +608,6 @@ fn delivered_dlr_body(provider_ref: &str) -> serde_json::Value {
 async fn killing_sms_gateway_mid_drain_loses_no_event_and_creates_no_duplicate() {
     let database_url = sms_test_support::database_url().await;
     let db = db().await;
-
-    // `sms-gateway serve` fails at process start (not lazily) without an
-    // active OP signing key — see AGENTS.md's M1 section. Idempotent
-    // rotation isn't needed here the way `ensure_orange_cm_provider` is for
-    // the Provider row: `rotate_signing_key` always mints a fresh key and
-    // this database is never reset, so a rerun just accumulates keys, which
-    // is harmless and exactly what a real operator's own repeated rotations
-    // would do too.
-    sms_auth::op::rotate_signing_key(&db, &sys(), sms_auth::op::ROTATION_OVERLAP)
-        .await
-        .expect("rotating in an active OP signing key");
 
     let provider_id = ensure_orange_cm_provider(&db).await;
 

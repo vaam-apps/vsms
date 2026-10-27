@@ -19,8 +19,7 @@ cratestack.workspace = true
 # claim.rs's real dependency: the expanded Message/MessageState/etc. types
 # and the delegate methods that read and write them. include_server_schema!
 # is still invoked exactly once, in sms-api's own lib.rs — depending on
-# sms-api here links its already-compiled output, the same way sms-auth
-# already does, not a second expansion.
+# sms-api here links its already-compiled output, not a second expansion.
 sms-api.workspace = true
 # #63: dispatch.rs's failover bookkeeping reads/writes Message.excludedRouteIds
 # through the same sentinel-packed-string convention every other multi-value
@@ -69,10 +68,7 @@ hex.workspace = true
 # module's own doc for why the engine itself never does).
 rand.workspace = true
 # hooks.rs's own outbound HTTP client — same 0.12/rustls-tls resolution
-# sms-provider-orange-cm already uses (see AGENTS.md's "aws-lc-rs enters
-# this tree from authkestra alone" section: this is the `ring` path, not
-# the reqwest-0.13/authkestra one that needed an explicit CryptoProvider
-# install).
+# sms-provider-orange-cm already uses: the `ring` path.
 reqwest.workspace = true
 # hooks.rs builds and parses the §8.4 envelope (WebhookAttempt.payload is
 # already a JSON string; the envelope wraps it, never re-encodes it as a

@@ -1263,6 +1263,7 @@ async fn an_admin_cannot_grant_the_pair_scope() {
             "appId": app_id,
             "label": label,
             "scopes": ["sms:send", "console:pair"],
+            "publicKey": TestKey::app().public_key_b64u(),
         }}))
         .send()
         .await;

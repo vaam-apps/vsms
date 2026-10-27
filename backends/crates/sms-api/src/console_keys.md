@@ -4,8 +4,8 @@ The request-signing public keys of a human's console (signed transport, VS-5a).
 the only writers of the `ConsoleKey` model. Since VS-3 the envelope
 `AuthProvider` verifies a request signed by an unexpired, non-revoked row here
 as a user principal (`crate::signers`), beside `ClientKey` -> app principal.
-The password login, the Keycloak SSO and the OP's tokens are untouched (they go
-in VS-4).
+Since VS-4 a console key is the only way in: the password login, the Keycloak
+SSO and the OP's tokens are deleted.
 
 A console key is a `WebCrypto` **non-extractable P-256 key** (ESP256, COSE `-9`).
 `ConsoleKey.publicKey` is its **SEC1 uncompressed point**, 65 bytes

@@ -147,8 +147,7 @@ const PROVIDER_ROUTE_READ_ROUTES: &[RoutePermission] = &[
 ///
 /// A signed-in `owner`/`admin`/`operator` (for the sender routes) or
 /// `owner`/`admin`/`developer` (for the webhook routes) reaches these routes
-/// as a `user` principal: by a paired console key since VS-3 (before it, by
-/// the human's own bearer token, #194/#211).
+/// as a `user` principal, by a paired console key.
 ///
 /// `GET /sender_ids`, `GET /sender_id_registrations`, `GET
 /// /webhook_endpoints`, `GET /webhook_attempts` are deliberately absent —
@@ -200,7 +199,7 @@ const SENDER_AND_WEBHOOK_WRITE_ROUTES: &[RoutePermission] = &[
 /// #153: the TTL a cached `Idempotency-Key` response stays replayable —
 /// matches `docs/architecture.md` §4.5's own figure, 24 hours. Exposed so
 /// every construction site (the real `sms-gateway serve` command and the
-/// live HTTP test suites in `backends/crates/sms-auth/tests/`) shares one source of
+/// live HTTP test suites in `backends/crates/sms-api/tests/`) shares one source of
 /// truth instead of hand-copying the duration; `serve` still lets an
 /// operator override it via `--idempotency-ttl-secs`/`SMS_IDEMPOTENCY_TTL_SECS`.
 pub const DEFAULT_IDEMPOTENCY_TTL: Duration = Duration::from_hours(24);
@@ -209,12 +208,12 @@ pub const DEFAULT_IDEMPOTENCY_TTL: Duration = Duration::from_hours(24);
 /// refilling 2 tokens/second.
 ///
 /// Verified against this workspace's actual live HTTP call volume, not just
-/// asserted: only `backends/crates/sms-auth/tests/{rbac_layer2_live_postgres,
-/// oidc_flow_live}.rs` and `backends/apps/sms-gateway/tests/*_live_postgres.rs` ever
-/// drive requests through this router over real HTTP, now sealed — every other live
+/// asserted: only `backends/crates/sms-api/tests/rbac_layer2_live_postgres.rs`
+/// and `backends/apps/sms-gateway/tests/*_live_postgres.rs` ever
+/// drive requests through this router over real HTTP, sealed — every other live
 /// suite (the ones doing the heavy claim-loop/dispatch/chaos volume) calls
 /// `Procedures` directly, bypassing this layer entirely, or hits the
-/// separately-mounted `/dlr/{providerKey}` and `/token` routes, which this
+/// separately-mounted `/dlr/{providerKey}` route, which this
 /// layer never wraps (see `router()`'s own doc). Each of the suites that
 /// *does* go through this router builds its own server (a fresh
 /// `InMemoryRateLimitStore` per `router()` call) and sends at most a
@@ -379,8 +378,9 @@ fn source_fingerprint(req: &Request) -> String {
 /// callbacks `POST /dlr/{providerKey}` (a provider cannot sign, and each
 /// authenticates its own way — a shared secret, or SNS's X.509 signature),
 /// `/healthz` and `/readyz` (a liveness probe throttled or sealed into failure
-/// gets the container killed), and the OP's `/token`, `/jwks.json`, discovery
-/// and the `/login*` routes, which stay until VS-4 deletes them.
+/// gets the container killed). There is no token endpoint, key set, discovery
+/// document or login route to leave out: VS-4 deleted them, and a request for
+/// one is answered by the router's not-found.
 ///
 /// A sealed request must name `application/json` as its payload type
 /// (`Cratestack-Payload-Type`) and ask for it back: the router's codec is

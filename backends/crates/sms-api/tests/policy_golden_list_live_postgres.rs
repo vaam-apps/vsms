@@ -29,9 +29,9 @@
 //! - `create`/`update`/`delete` fail *loud* on denial — a real
 //!   `CratestackError::Forbidden` this file can assert against directly.
 //!   `find_many`-backed actions (`read`/`list`/`detail`) fail *quiet*:
-//!   confirmed live in `backends/crates/sms-auth/tests/oidc_flow_live.rs` (the
-//!   `OauthSigningKey` assertion), `CrateStack`'s policy enforcement there is
-//!   row-level filtering to an empty result, not a request-level error.
+//!   confirmed live in `system_context_golden_list_live_postgres.rs`,
+//!   `CrateStack`'s policy enforcement there is row-level filtering to an
+//!   empty result, not a request-level error.
 //!   Asserting that shape needs a seed-then-compare test per model, a
 //!   different technique this file doesn't also try to be.
 //!

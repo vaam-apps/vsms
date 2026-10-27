@@ -1,19 +1,19 @@
 //! `Command::Serve` — see that variant's own doc comment in `main.rs` for
-//! the flags. This file is the whole `serve` binding path: the pool, OP
-//! state, the DLR router, login router assembly, both listeners, and
-//! graceful shutdown.
+//! the flags. This file is the whole `serve` binding path: the pool, the
+//! signed-transport keys, the DLR router, both listeners, and graceful
+//! shutdown.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
-use sms_api::schema::{Cratestack, provider as provider_filter, role as role_filter};
+use sms_api::schema::{Cratestack, provider as provider_filter};
 use sms_provider::SmsProvider;
 use tracing::info;
 
 use crate::commands::server_keys;
-use crate::{dlr, health, login, op, sso, token_rate_limit};
+use crate::{dlr, health};
 use sms_api::system_context;
 
 /// `Command::Serve`'s flags. See `Command::Serve`'s own doc comment in
@@ -54,15 +54,6 @@ pub(crate) struct ServeArgs {
     /// does not start without them.
     #[command(flatten)]
     pub(crate) envelope_keys: crate::commands::server_keys::EnvelopeKeyArgs,
-
-    /// The OP's own identity — every token this OP mints carries this
-    /// as `iss`. Since VS-3 the API validates no token (it opens sealed
-    /// requests), so this only names the OP, whose routes stay mounted and
-    /// unsealed until VS-4 deletes them. Never `listen` (a bind address,
-    /// not an identity) — must be the externally reachable `https://`
-    /// origin this OP is actually served at.
-    #[arg(long, env = "SMS_OIDC_ISSUER")]
-    pub(crate) issuer: String,
 
     /// `OAuth2` `client_credentials` client id for Orange Cameroon's
     /// SMS API. Optional as of #61's MTN wiring — this binary always
@@ -214,8 +205,7 @@ pub(crate) struct ServeArgs {
     /// spend before throttling kicks in. Matches §4.5's own suggested
     /// default; see `sms_api::default_rate_limit_config`'s doc for why
     /// that default is safe against this workspace's actual live-suite
-    /// call volume. Distinct from `/token`'s own rate limiting, which
-    /// §4.2 scopes to the reverse-proxy edge instead.
+    /// call volume.
     #[arg(long, env = "SMS_RATE_LIMIT_BURST", default_value_t = 120)]
     pub(crate) rate_limit_burst: u32,
 
@@ -243,124 +233,17 @@ pub(crate) struct ServeArgs {
         default_value_t = 10.0
     )]
     pub(crate) source_rate_limit_refill_per_second: f64,
-
-    /// #168: burst capacity for the `/token` route's own defence-in-
-    /// depth limiter, keyed on the real `client_id` parsed from the
-    /// form-urlencoded request body — the composite dimension
-    /// `docs/architecture.md` §4.2 requires and `deploy/Caddyfile`'s
-    /// edge-level `token_per_ip`/`token_global` zones (#156) cannot
-    /// reach (see `token_rate_limit`'s module doc for why: `/token`
-    /// arrives only in the POST body, and every edge-level way to read
-    /// one field out of it was checked and rejected — #168). Default
-    /// mirrors `deploy/Caddyfile`'s own `token_per_ip` reasoning and
-    /// figure almost exactly (20 events/minute, off the same
-    /// 15-minute-token-TTL caching behaviour), expressed as a token
-    /// bucket rather than a fixed window.
-    #[arg(
-        long,
-        env = "SMS_TOKEN_RATE_LIMIT_BURST",
-        default_value_t = token_rate_limit::default_token_rate_limit_config().burst
-    )]
-    pub(crate) token_rate_limit_burst: u32,
-
-    /// #168: refill rate, in tokens/second, for the same bucket — 20
-    /// events/minute.
-    #[arg(
-        long,
-        env = "SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND",
-        default_value_t = token_rate_limit::default_token_rate_limit_config().refill_per_second
-    )]
-    pub(crate) token_rate_limit_refill_per_second: f64,
-
-    /// The staff identity provider's issuer URL (a Keycloak realm, e.g.
-    /// `https://auth.example.org/realms/staff`), compared byte for byte with
-    /// the discovery document's `issuer` and every `id_token`'s `iss`.
-    ///
-    /// **SSO is active exactly when this block is present** - there is no
-    /// separate switch. `--sso-issuer`, `--sso-client-id`,
-    /// `--sso-client-secret`, `--sso-redirect-uri` and `--sso-required-group`
-    /// must all be set together or not at all, and at least one of
-    /// `--sso-accepted-amr` / `--sso-accepted-acr` must be non-empty: SSO
-    /// that cannot enforce multi-factor refuses to start rather than run
-    /// without it. A blank value counts as unset. Password sign-in is
-    /// unchanged and remains the break-glass path. See
-    /// `docs/runbooks/sso.adoc`.
-    #[arg(long, env = "SMS_SSO_ISSUER")]
-    pub(crate) sso_issuer: Option<String>,
-
-    /// This gateway's confidential client id at the identity provider.
-    #[arg(long, env = "SMS_SSO_CLIENT_ID")]
-    pub(crate) sso_client_id: Option<String>,
-
-    /// Paired with `--sso-client-id` (`client_secret_basic`). Never logged.
-    #[arg(long, env = "SMS_SSO_CLIENT_SECRET", hide_env_values = true)]
-    pub(crate) sso_client_secret: Option<String>,
-
-    /// The gateway's own **public** callback, registered as the client's
-    /// only redirect URI at the identity provider - for example
-    /// `https://vsms.example.org/login/sso/callback`. Must end in exactly
-    /// `/login/sso/callback`.
-    #[arg(long, env = "SMS_SSO_REDIRECT_URI")]
-    pub(crate) sso_redirect_uri: Option<String>,
-
-    /// Scopes requested upstream. Defaults to `openid email profile`; must
-    /// include `openid`.
-    #[arg(long, env = "SMS_SSO_SCOPES")]
-    pub(crate) sso_scopes: Option<String>,
-
-    /// The identity-provider group a user must belong to to sign in at all
-    /// (exact match against the groups claim - with Keycloak's group-membership
-    /// mapper, set "Full group path" off).
-    #[arg(long, env = "SMS_SSO_REQUIRED_GROUP")]
-    pub(crate) sso_required_group: Option<String>,
-
-    /// The `id_token` claim the group list is read from. Defaults to `groups`.
-    #[arg(long, env = "SMS_SSO_GROUPS_CLAIM")]
-    pub(crate) sso_groups_claim: Option<String>,
-
-    /// `acr` values that satisfy the multi-factor rule, comma-separated. May
-    /// be empty if `--sso-accepted-amr` is not. Note that Keycloak's `acr`
-    /// of `1`/`0` proves nothing about a second factor - see the SSO runbook.
-    #[arg(long, env = "SMS_SSO_ACCEPTED_ACR", value_delimiter = ',')]
-    pub(crate) sso_accepted_acr: Vec<String>,
-
-    /// `amr` values that satisfy the multi-factor rule (any one of them
-    /// suffices), comma-separated - typically `otp`. May be empty if
-    /// `--sso-accepted-acr` is not.
-    #[arg(long, env = "SMS_SSO_ACCEPTED_AMR", value_delimiter = ',')]
-    pub(crate) sso_accepted_amr: Vec<String>,
-
-    /// The `Role.key` a just-in-time provisioned user is created with.
-    /// Defaults to `support`, the built-in role with the fewest permissions.
-    /// No token claim ever sets or changes a role; this is the one fixed
-    /// value, and it must name an existing, non-reserved role.
-    #[arg(long, env = "SMS_SSO_JIT_ROLE")]
-    pub(crate) sso_jit_role: Option<String>,
-
-    /// Floor, in seconds, on the gap between two fetches of the identity
-    /// provider's signing keys (an unknown `kid` triggers one refetch, never
-    /// more often than this). Defaults to 30. A string, parsed by hand, so a
-    /// blank env var is "unset" rather than a parse failure.
-    #[arg(long, env = "SMS_SSO_JWKS_MIN_REFRESH_SECS")]
-    pub(crate) sso_jwks_min_refresh_secs: Option<String>,
 }
 
 /// `Provider.id` for the row matching `provider.key()` — resolved once at
 /// startup, not re-checked per DLR callback. Safe to cache: a `Provider`
 /// row's own id is immutable once created, and if the row genuinely needs
-/// to change (a different key), that's a restart-worthy reconfiguration,
-/// not something this route needs to notice live the way key rotation did
-/// (see `op.rs`'s own module doc for the contrast — that one needed a live
-/// refresh because the *key material* itself changes, not just which row
-/// backs a lookup).
+/// to change (a different key), that's a restart-worthy reconfiguration.
 ///
 /// # Errors
 ///
-/// No `Provider` row has this `key` yet — an operator hasn't seeded one,
-/// which #34 has no CLI action for (unlike `rotate-signing-key`) since
-/// seeding a `Provider` is already `provisionAppClient`-adjacent, ordinary
-/// CRUD the admin console (M4) will do, not an ops action this binary
-/// should grow its own subcommand for.
+/// No `Provider` row has this `key` yet — an operator hasn't seeded one
+/// (`sms-gateway seed-dispatch`, or `bootstrap`).
 async fn resolve_provider_row_id(
     db: &Cratestack,
     sys: &cratestack::CratestackContext,
@@ -385,15 +268,10 @@ async fn resolve_provider_row_id(
     })
 }
 
-/// `Command::Serve`'s body, pulled out of `main`'s own `match` for the same
-/// `clippy::too_many_lines` reason `rotate_signing_key_command`
-/// (`commands::rotate_signing_key`) already was — #168 pushed `main` back
-/// over the limit by adding two more CLI flags and the `token_rate_limit`
-/// wiring they feed, the same shape of growth #139 caused originally.
-/// Takes `ServeArgs` directly rather than the whole `Command`: `main`'s own
-/// dispatch already extracts it from `Command::Serve` at the match site,
-/// the same shape `provision_client_command`'s (`commands::provision_client`)
-/// own doc describes.
+/// `Command::Serve`'s body, pulled out of `main`'s own `match` for the
+/// `clippy::too_many_lines` reason. Takes `ServeArgs` directly rather than
+/// the whole `Command`: `main`'s own dispatch already extracts it from
+/// `Command::Serve` at the match site.
 /// The four `--orange-*` values `serve` needs to construct the adapter.
 /// Grouped into one struct purely so [`build_dlr_router`] takes a single
 /// argument rather than four positional `String`s of the same type, which
@@ -725,122 +603,11 @@ pub(crate) fn fake_aws_receiver(
         .context("--aws-sms-events-topic-arn")
 }
 
-/// Loads the OP's signing keys, assembles its state, and starts the
-/// background key refresh.
-///
-/// Extracted from [`serve_command`] for the same reason
-/// [`build_dlr_router`] was — that function sits against clippy's
-/// `too_many_lines` ceiling, and this is a self-contained block whose
-/// values nothing downstream reads individually (only `op_state`).
-///
-/// Note this **fails at process start**, before the listener binds, if no
-/// active signing key exists — not lazily on the first `/token` request.
-/// That ordering is load-bearing for deployment: anything waiting for the
-/// gateway to be healthy before rotating a key would deadlock, which is
-/// why the deploy runbook uses `docker compose run --rm` rather than
-/// `exec`.
-async fn build_op_state(
-    db: &Cratestack,
-    sys: &cratestack::CratestackContext,
-    issuer: &str,
-) -> Result<op::OpState> {
-    let (signing, jwks) = sms_auth::op::load_signing_keys(db, sys, issuer)
-        .await
-        .context(
-            "loading OP signing keys — run `sms-gateway rotate-signing-key` if this is a fresh \
-             database",
-        )?;
-    let op_store = sms_auth::op::machine_only_store(std::sync::Arc::new(db.clone()), sys.clone());
-    let op_config = sms_auth::op::machine_only_config(issuer.to_owned());
-    let op_state = op::OpState::new(op_store, signing, op_config, jwks);
-    // Keeps a rotate-signing-key run against this already-running process
-    // from silently never taking effect — see op.rs's own module doc.
-    op::spawn_key_refresh(
-        op_state.clone(),
-        db.clone(),
-        sys.clone(),
-        issuer.to_owned(),
-        op::DEFAULT_KEY_REFRESH_INTERVAL,
-    );
-    Ok(op_state)
-}
-
-/// Validates the SSO block and, when present, builds the provider, checks the
-/// JIT role exists, and starts the transaction reaper. `Ok(None)` = SSO is not
-/// configured. Any invalid configuration is an error here, i.e. the process
-/// does not start: SSO that cannot enforce its own rules must not run.
-///
-/// Note what is *not* checked here: that the identity provider is reachable.
-/// Password sign-in is the break-glass path, so a dead Keycloak must not stop
-/// the gateway booting; discovery happens lazily, on the first sign-in.
-async fn build_sso(
-    args: &ServeArgs,
-    db: &Cratestack,
-    sys: &cratestack::CratestackContext,
-) -> Result<Option<sms_auth::sso::SsoProvider>> {
-    let jwks_min_refresh_secs = match args
-        .sso_jwks_min_refresh_secs
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        Some(raw) => Some(raw.parse::<u64>().with_context(|| {
-            format!("SMS_SSO_JWKS_MIN_REFRESH_SECS must be a whole number of seconds, got {raw:?}")
-        })?),
-        None => None,
-    };
-    let raw = sms_auth::sso::RawSsoConfig {
-        issuer: args.sso_issuer.clone(),
-        client_id: args.sso_client_id.clone(),
-        client_secret: args.sso_client_secret.clone(),
-        redirect_uri: args.sso_redirect_uri.clone(),
-        scopes: args.sso_scopes.clone(),
-        required_group: args.sso_required_group.clone(),
-        groups_claim: args.sso_groups_claim.clone(),
-        accepted_acr: args.sso_accepted_acr.clone(),
-        accepted_amr: args.sso_accepted_amr.clone(),
-        jit_role: args.sso_jit_role.clone(),
-        jwks_min_refresh_secs,
-    };
-    let Some(config) = sms_auth::sso::SsoConfig::from_raw(raw).context("SSO is misconfigured")?
-    else {
-        return Ok(None);
-    };
-
-    let role = db
-        .role()
-        .find_many()
-        .where_expr(FilterExpr::from(
-            role_filter::key().eq(config.jit_role_key.clone()),
-        ))
-        .limit(1)
-        .run(sys)
-        .await
-        .context("looking up the SSO just-in-time role")?;
-    if role.is_empty() {
-        anyhow::bail!(
-            "--sso-jit-role {:?} names no Role row - create it, or use one of the built-in roles",
-            config.jit_role_key
-        );
-    }
-
-    info!(
-        issuer = %config.issuer,
-        jit_role = %config.jit_role_key,
-        required_group = %config.required_group,
-        "SSO is configured (the identity provider is contacted on first use)"
-    );
-    let provider = sms_auth::sso::SsoProvider::new(config)
-        .map_err(|error| anyhow::anyhow!("building the SSO provider: {error}"))?;
-    sso::spawn_transaction_reaper(db.clone(), sys.clone());
-    Ok(Some(provider))
-}
-
 pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // Deliberately not one big `let ServeArgs { .. } = args;` up front —
     // that pattern alone used to span 27 source lines, and clippy's own
     // `too_many_lines` counts them. Every field the two `.await`s below
-    // need (`hash_pepper`, `database_url`, `max_connections`, `issuer`,
+    // need (`hash_pepper`, `database_url`, `max_connections`,
     // every `orange_*`/`mtn_*` flag) is read or moved straight off `args`
     // instead; the one destructure at the bottom, once `args` no longer
     // needs to be a value the two helpers below can still read from,
@@ -872,7 +639,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
         .context("connecting to Postgres")?;
 
     let db = Cratestack::builder(pool).build();
-    let sys = system_context("sms-gateway:op");
+    let sys = system_context("sms-gateway:serve");
 
     // #38/#39: this process's `Message` writes (`sendMessage`, DLR
     // ingestion) are the only ones this milestone wires a webhook
@@ -885,18 +652,6 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // own module doc for the full mechanism.
     sms_api::webhooks::register_subscribers(&db);
 
-    let op_state = build_op_state(&db, &sys, &args.issuer).await?;
-
-    // SSO: validated before the listener binds, so a misconfiguration is a
-    // startup failure, not a 500 on someone's first sign-in. When present,
-    // the OP's discovery document also starts advertising the start URL.
-    let sso_provider = build_sso(&args, &db, &sys).await?;
-    let op_state = op_state.with_sso_login_endpoint(
-        sso_provider
-            .as_ref()
-            .map(|_| format!("{}{}", args.issuer, sms_auth::sso::START_PATH)),
-    );
-
     let (dlr_router, health_router) = build_provider_routers(&db, &sys, &args).await?;
 
     let ServeArgs {
@@ -907,26 +662,8 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
         rate_limit_refill_per_second,
         source_rate_limit_burst,
         source_rate_limit_refill_per_second,
-        token_rate_limit_burst,
-        token_rate_limit_refill_per_second,
         ..
     } = args;
-
-    // #168: the /token route's own client_id-keyed defence-in-depth
-    // limiter — distinct from sms_api::router's two, which never wrap
-    // /token at all (see that function's own doc). See
-    // token_rate_limit's own module doc for why this belongs here and not
-    // in deploy/Caddyfile or authkestra-op.
-    let token_rate_limit =
-        token_rate_limit::TokenRateLimitState::new(cratestack::ratelimit::RateLimitConfig::new(
-            token_rate_limit_burst,
-            token_rate_limit_refill_per_second,
-        ));
-    // #194: built before `sms_api::router` below takes `db`/`sys` by value —
-    // same ordering constraint `dlr::router` above is already subject to.
-    let login_router = login::router(db.clone(), sys.clone(), op_state.clone());
-    let sso_router =
-        sso_provider.map(|provider| sso::router(db.clone(), sys, op_state.clone(), provider));
 
     let app = sms_api::router(
         db,
@@ -941,14 +678,12 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     )
     .context("assembling the signed-transport router")?
     // Everything merged from here on sits OUTSIDE the envelope layer, which
-    // `sms_api::router` applied to its own routes only: the OP's routes
-    // (until VS-4), the provider callbacks (a provider cannot sign) and the
-    // probes. See `sms_api::router::router`'s doc.
-    .merge(op::router(op_state, token_rate_limit))
+    // `sms_api::router` applied to its own routes only: the provider
+    // callbacks (a provider cannot sign) and the probes. See
+    // `sms_api::router::router`'s doc. There is nothing else: no token
+    // endpoint, no discovery document, no login.
     .merge(dlr_router)
-    .merge(health_router)
-    .merge(login_router)
-    .merge(sso_router.unwrap_or_default());
+    .merge(health_router);
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
@@ -993,7 +728,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
 /// uses. Pulled out of [`serve_command`] purely to stay under clippy's
 /// `too_many_lines` limit — see `main.rs`'s own git history for the
 /// established convention of extracting an arm rather than raising the
-/// limit (`16db8db`, for `rotate-signing-key`'s own arm).
+/// limit.
 async fn spawn_metrics_server(
     metrics_listen: &str,
 ) -> Result<tokio::task::JoinHandle<std::io::Result<()>>> {

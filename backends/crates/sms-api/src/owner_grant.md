@@ -56,7 +56,7 @@ sequenceDiagram
 `POST /$procs/provisionUser` also creates a `User`, but through the delegate
 under the caller's own context, so the schema half's `create` clause already
 refuses an admin provisioning an owner (proven end to end in
-`backends/apps/sms-gateway/tests/login_flow_live_postgres.rs`).
+`backends/crates/sms-api/tests/owner_grant_live_postgres.rs`).
 
 Adding a user-write route (a batch or upsert route, a new codec) means adding
 it to `GUARDED_ROUTES` — `every_generated_user_write_route_is_guarded` fails

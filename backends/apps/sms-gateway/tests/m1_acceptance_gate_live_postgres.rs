@@ -38,6 +38,15 @@
 //!   the real `developer` role, signing for real, and the refusal is the real
 //!   Layer 2 check.
 //!
+//! # VS-4: no `OpenID` Provider
+//!
+//! The process is started with no signing key of an `OpenID` Provider and no
+//! issuer: neither exists any more, and `serve` needs neither.
+//! `the_deleted_openid_provider_routes_are_not_served` requests each route the
+//! provider used to mount (`/token`, `/jwks.json`, discovery, `/login`,
+//! `/login/sso/*`) from that same real process and asserts the router's
+//! not-found.
+//!
 //! Ignored by default, same convention as this workspace's other live
 //! suites. `sms_test_support` provisions Postgres and applies every migration
 //! automatically (a shared, self-healing container - see its own module doc),
@@ -63,6 +72,11 @@ use sms_test_support::sealed::TestKey;
 #[path = "../../../crates/sms-api/tests/support/sealed_fixtures.rs"]
 mod sealed_fixtures;
 
+/// Both tests spawn real processes and share one database: one at a time,
+/// per the "any new live suite must take the per-binary mutex" rule (#102).
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 /// The `Provider.key` `sms-provider-orange-cm::OrangeCmProvider` reports —
 /// `backends/apps/sms-gateway/src/main.rs`'s own `resolve_provider_row_id` looks up
 /// exactly this row at startup and refuses to serve without it, since the
@@ -73,16 +87,6 @@ mod sealed_fixtures;
 const ORANGE_PROVIDER_KEY: &str = "orange_cm";
 
 const TEST_HASH_PEPPER: &str = "m1-acceptance-gate-live-postgres-test-pepper-over-minimum";
-
-fn sys() -> CratestackContext {
-    Principal {
-        sub: "m1-acceptance-gate-test-system".to_owned(),
-        kind: PrincipalKind::App,
-        role: "system".to_owned(),
-        app_id: String::new(),
-    }
-    .into_context()
-}
 
 fn owner() -> CratestackContext {
     Principal {
@@ -267,11 +271,11 @@ async fn seed_approved_sender(db: &Cratestack, provider_id: &str) -> String {
 
 /// A real, spawned `sms-gateway serve` OS process — `env!("CARGO_BIN_EXE_sms-gateway")`
 /// is only set for an integration test inside *this* package, which is
-/// exactly why this file lives here rather than in `sms-api`/`sms-auth`
+/// exactly why this file lives here rather than in `sms-api`
 /// alongside this workspace's other live suites.
 struct GatewayProcess {
     child: Child,
-    issuer: String,
+    base_url: String,
 }
 
 impl GatewayProcess {
@@ -281,7 +285,7 @@ impl GatewayProcess {
     /// constructed but never asked to reach the network) and waits for it
     /// to actually start serving before returning.
     async fn spawn(db_url: &str, port: u16) -> Self {
-        let issuer = format!("http://127.0.0.1:{port}");
+        let base_url = format!("http://127.0.0.1:{port}");
         // The same key files for both processes: a restart that changed the
         // server key would make every pinned client fail to verify.
         let (current_key, next_key) = sealed_fixtures::write_server_key_files(
@@ -294,8 +298,6 @@ impl GatewayProcess {
             .arg(format!("127.0.0.1:{port}"))
             .arg("--database-url")
             .arg(db_url)
-            .arg("--issuer")
-            .arg(&issuer)
             .arg("--orange-client-id")
             .arg("m1-acceptance-gate-test-orange-client-id")
             .arg("--orange-client-secret")
@@ -313,12 +315,12 @@ impl GatewayProcess {
 
         let mut child = command.spawn().expect("spawning sms-gateway serve");
         println!(
-            "m1_acceptance_gate_live_postgres: spawned sms-gateway serve, pid {}, issuer {issuer}",
+            "m1_acceptance_gate_live_postgres: spawned sms-gateway serve, pid {}, base_url {base_url}",
             child.id()
         );
 
-        wait_until_ready(&issuer, &mut child).await;
-        Self { child, issuer }
+        wait_until_ready(&base_url, &mut child).await;
+        Self { child, base_url }
     }
 
     /// SIGKILL, then reap — a hard kill, not a graceful shutdown, so
@@ -358,22 +360,19 @@ impl Drop for GatewayProcess {
     }
 }
 
-/// Polls `/.well-known/openid-configuration` until it answers, or fails
+/// Polls `/healthz` until it answers, or fails
 /// fast if the child has already exited (a misconfiguration — e.g. the
 /// `orange_cm` `Provider` row this suite seeds up front going missing —
 /// would otherwise just look like a slow-starting server until this
 /// function's own timeout, which is a much less useful failure to debug).
-async fn wait_until_ready(issuer: &str, child: &mut Child) {
+async fn wait_until_ready(base_url: &str, child: &mut Child) {
     let client = reqwest::Client::new();
     let deadline = tokio::time::Instant::now() + StdDuration::from_secs(15);
     loop {
         if let Ok(Some(status)) = child.try_wait() {
             panic!("sms-gateway serve exited before becoming ready: {status:?}");
         }
-        if let Ok(response) = client
-            .get(format!("{issuer}/.well-known/openid-configuration"))
-            .send()
-            .await
+        if let Ok(response) = client.get(format!("{base_url}/healthz")).send().await
             && response.status().is_success()
         {
             return;
@@ -420,18 +419,16 @@ async fn register_client_cli(db_url: &str, app_slug: &str, key: &TestKey) {
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
 async fn a_persisted_signing_client_survives_a_process_restart_and_a_developer_is_refused() {
+    let _guard = TEST_MUTEX.lock().await;
     let db_url = sms_test_support::database_url().await;
     let db = db().await;
 
     // --- Setup: everything `sms-gateway serve` itself requires before it
-    // will even start (an active OP signing key, until VS-4 deletes the OP;
-    // a `Provider` row keyed `orange_cm`, `resolve_provider_row_id`'s own
-    // requirement), plus what `sendMessage` needs downstream (an approved
-    // `SenderId`, an `App` to register a client for). ---
-    sms_auth::op::rotate_signing_key(&db, &sys(), sms_auth::op::ROTATION_OVERLAP)
-        .await
-        .expect("rotating in a first signing key");
-
+    // will even start (a `Provider` row keyed `orange_cm`,
+    // `resolve_provider_row_id`'s own requirement - and no signing key of an
+    // `OpenID` Provider, which no longer exists), plus what `sendMessage` needs
+    // downstream (an approved `SenderId`, an `App` to register a client
+    // for). ---
     let provider_id = ensure_orange_cm_provider(&db).await;
     let app = seed_app(&db).await;
     let sender_id_value = seed_approved_sender(&db, &provider_id).await;
@@ -481,7 +478,7 @@ async fn assert_persisted_client_can_send_after_restart(
     key: &TestKey,
     sender_id_value: &str,
 ) {
-    let reply = sealed_fixtures::client(&process.issuer, key)
+    let reply = sealed_fixtures::client(&process.base_url, key)
         .request("POST", "/$procs/sendMessage")
         .json(&serde_json::json!({"args": {
             "to": unique_mtn_msisdn(),
@@ -511,7 +508,7 @@ async fn assert_developer_is_refused_on_provider_write(
     developer_key: &TestKey,
     provider_id: &str,
 ) {
-    let reply = sealed_fixtures::client(&process.issuer, developer_key)
+    let reply = sealed_fixtures::client(&process.base_url, developer_key)
         .request("PATCH", "/providers/{id}")
         .params(&[provider_id])
         .json(&serde_json::json!({"maxTps": 10.0}))
@@ -526,4 +523,77 @@ async fn assert_developer_is_refused_on_provider_write(
         "expected the denial to name the missing permission: {}",
         reply.text()
     );
+}
+
+/// Every route the embedded `OpenID` Provider and the human login mounted
+/// before VS-4, with the method it was mounted for. Each is a request a stale
+/// client or a script might still make; each must now fall through to the
+/// router's not-found rather than reach any handler.
+const DELETED_ROUTES: &[(&str, &str)] = &[
+    ("POST", "/token"),
+    ("GET", "/jwks.json"),
+    ("GET", "/.well-known/openid-configuration"),
+    ("POST", "/login"),
+    ("GET", "/login/sso/start"),
+    ("GET", "/login/sso/callback"),
+];
+
+/// VS-4's acceptance: the deleted routes answer 404 from a real
+/// `sms-gateway serve`, which itself started with no OP signing key in the
+/// database (there is no such table) and no `--issuer`. A route that is still
+/// served (`/healthz`) is requested first, so a 404 below cannot be a process
+/// that is not listening or a wrong base URL.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres - see module docs"]
+async fn the_deleted_openid_provider_routes_are_not_served() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db_url = sms_test_support::database_url().await;
+    let db = db().await;
+    ensure_orange_cm_provider(&db).await;
+
+    let process = GatewayProcess::spawn(&db_url, free_port()).await;
+    let http = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("building an HTTP client");
+
+    let control = http
+        .get(format!("{}/healthz", process.base_url))
+        .send()
+        .await
+        .expect("requesting /healthz");
+    assert_eq!(
+        control.status().as_u16(),
+        200,
+        "the control route must still be served"
+    );
+
+    for (method, path) in DELETED_ROUTES {
+        let url = format!("{}{path}", process.base_url);
+        let request = match *method {
+            "POST" => http
+                .post(&url)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body("grant_type=client_credentials&client_id=appc_gone"),
+            _ => http.get(&url),
+        };
+        let response = request
+            .send()
+            .await
+            .unwrap_or_else(|error| panic!("requesting {method} {path}: {error}"));
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        assert_eq!(
+            status, 404,
+            "{method} {path} was an `OpenID` Provider route and must be gone, got {status}: {body}"
+        );
+        assert!(
+            !body.contains("access_token")
+                && !body.contains("\"keys\"")
+                && !body.contains("issuer"),
+            "{method} {path} must not return a token, a key set or a discovery document: {body}"
+        );
+    }
+
+    process.kill_and_wait().await;
 }

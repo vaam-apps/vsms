@@ -9,16 +9,10 @@
 # --- builder -----------------------------------------------------------
 # Alpine, not Debian: Alpine's own libc *is* musl, so `cargo build` on this
 # image produces a musl binary natively — no cross-compilation, no
-# `rustup target add`, no cross-linker. A static musl/scratch build was
-# ruled out before (an earlier revision of this file cited AGENTS.md:
-# `rustls-no-provider` panics at `reqwest::Client::new()` unless the
-# application installs a `CryptoProvider` in `main` first, and that runtime
-# path was unverified) — both are now done: `authkestra-op`/`-engine`/
-# `-resource`/`-axum` are pinned with `rustls-no-provider` (root
-# `Cargo.toml`), `main.rs`'s `install_default_crypto_provider` installs
-# `ring` before anything constructs an HTTP client, and
-# `tests/tls_no_provider_live.rs` proves that ordering against a real TLS
-# handshake, not just a mock. Same pin as the workspace's declared MSRV
+# `rustup target add`, no cross-linker. The TLS stack is `ring` throughout
+# (no `aws-lc-rs` anywhere in the graph), and `main.rs`'s
+# `install_default_crypto_provider` names it before anything constructs an
+# HTTP client. Same pin as the workspace's declared MSRV
 # floor (`rust-version = "1.98.0"`, root `Cargo.toml`) and the exact
 # release-line CI's `dtolnay/rust-toolchain@stable` currently resolves to;
 # `3.22` pinned rather than the floating `-alpine` tag so this build
@@ -27,12 +21,10 @@
 FROM rust:1.98-alpine3.22 AS builder
 
 # musl-dev + build-base (gcc, make, ...): `ring` (the sole crypto provider
-# left in this graph now that `aws-lc-rs` is gone — see the pin comment
-# above) needs a C compiler and libc headers to build its assembly/C
-# backend. Nothing here needs cmake or pkg-config any more: those existed
-# solely for `aws-lc-sys`, which no longer appears in the dependency graph
-# at all (`cargo tree -i aws-lc-rs` reports no match — verified, not
-# assumed).
+# in this graph) needs a C compiler and libc headers to build its
+# assembly/C backend. Nothing here needs cmake or pkg-config: those existed
+# solely for `aws-lc-sys`, which does not appear in the dependency graph
+# (`cargo tree -i aws-lc-rs` reports no match).
 # DL3018: no apk version pin, deliberately. Alpine drops a superseded package
 # revision from the 3.22 index when it ships the next one, so an exact pin
 # makes this build fail on the day the revision rotates out, for no change

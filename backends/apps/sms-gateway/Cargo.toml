@@ -11,18 +11,8 @@ publish.workspace = true
 
 [dependencies]
 sms-api.workspace = true
-sms-auth.workspace = true
 cratestack.workspace = true
-# op.rs mounts the OP's routes directly against authkestra-axum's handler
-# functions (#20) — see that module's own doc for why not the crate's
-# all-in-one op_axum_router().
-authkestra-axum = { workspace = true, features = ["op"] }
-authkestra-engine.workspace = true
-authkestra-op.workspace = true
 axum.workspace = true
-# token_rate_limit.rs's client_id extraction (#168) — see that module's
-# own doc.
-form_urlencoded.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait (#34), and the concrete
 # adapters that exist to construct it from — two as of #61's MTN wiring.
 sms-provider.workspace = true
@@ -35,12 +25,7 @@ sms-fake-aws = { workspace = true, optional = true }
 # float (see `MtnConfig::cost_per_segment_xaf`'s own doc).
 rust_decimal.workspace = true
 
-# Command::ProvisionUser (#194)'s one-time password generation and hashing —
-# #52/#58 moved `sms_core::password::{generate_password, hash_password}`
-# below both `sms-api` and `sms-auth` so the console's own `provisionUser`
-# procedure can call the identical logic; this binary now reaches it
-# directly rather than through `sms-auth::login`, which no longer re-exports
-# either function. See that module's own doc.
+# commands/register_client.rs's `pack` for the client's scopes.
 sms-core.workspace = true
 
 anyhow.workspace = true
@@ -52,14 +37,9 @@ rustls.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-# login.rs's LoginRequest/LoginResponse/LoginError (#194) — real
-# dependencies now, not just the dev-only test-fixture use they had
-# before this route existed.
 serde.workspace = true
 serde_json.workspace = true
-# sso.rs: the SSO routes' expiry stamps and the console error redirect's URL.
 chrono.workspace = true
-url.workspace = true
 
 [features]
 default = []
@@ -73,47 +53,23 @@ default = []
 fake-aws = ["dep:sms-fake-aws"]
 
 [dev-dependencies]
-# #25's acceptance gate spawns the real `sms-gateway` binary as two
-# separate OS processes (`CARGO_BIN_EXE_sms-gateway`, only available to an
-# integration test inside this same package) and drives them over real
-# HTTP — a real `private_key_jwt` client assertion, a real `/token`
-# exchange, and one hand-signed test-only token standing in for a
-# human-login path that doesn't exist yet (see
-# `tests/m1_acceptance_gate_live_postgres.rs`'s own module doc).
+# The acceptance gates spawn the real `sms-gateway` binary
+# (`CARGO_BIN_EXE_sms-gateway`, only available to an integration test inside
+# this same package) and drive it over real HTTP with sealed requests.
 async-trait.workspace = true
 base64.workspace = true
 # pair_console_key_cli_live_postgres.rs mints a P-256 public key to enrol.
 p256.workspace = true
-jsonwebtoken.workspace = true
 rand.workspace = true
 reqwest.workspace = true
-# tests/tls_no_provider_live.rs's own reqwest client, deliberately a
-# *second*, differently-configured instance of the same 0.13.4 already in
-# this workspace's dependency graph (via authkestra's own pin) rather than
-# the `reqwest.workspace` entry above — that one resolves 0.12 with
-# `rustls-tls` (auto-installs `ring`), which can't exercise the
-# `rustls-no-provider` code path this test exists to prove. `package =
-# "reqwest"` under an alias is how two differently-featured resolutions of
-# the same crate name coexist in one Cargo.toml.
-reqwest-no-provider = { package = "reqwest", version = "0.13.4", default-features = false, features = [
-  "rustls-no-provider",
-] }
-rsa.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-# login_flow_live_postgres.rs's own PKCE S256 challenge computation (#194) —
-# the identical hash this suite's own /token exchange must match against,
-# computed independently rather than imported from anywhere production
-# code builds it (there is no such helper — authkestra-op computes it
-# internally, unexported).
+# pair_console_key_cli_live_postgres.rs derives a distinct key per run.
 sha2.workspace = true
-# tests/sso_flow_live_postgres.rs: the scripted fake upstream IdP the SSO
-# broker is driven against.
-sms-fake-oidc.workspace = true
 # tests/m1_acceptance_gate_live_postgres.rs gets its DATABASE_URL from this
 # instead of the environment.
 sms-test-support.workspace = true
-# token_rate_limit.rs's own unit tests (#168) — tower::ServiceExt::oneshot
+# dlr.rs's own unit tests drive its router via `tower::ServiceExt::oneshot`
 # against an in-process router.
 tower.workspace = true
 

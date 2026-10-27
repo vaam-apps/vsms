@@ -4,7 +4,7 @@
 //! `pool.acquire()` shape; a unit test can't demonstrate it since it needs a
 //! second, independent connection to observe the lock's state from outside.
 //!
-//! Ignored by default, same convention as `sms-auth`'s live suite. `sms_
+//! Ignored by default, same convention as every live suite. `sms_
 //! test_support` provisions Postgres automatically (a shared, self-healing
 //! container — see its own module doc), so running this needs only Docker
 //! and:

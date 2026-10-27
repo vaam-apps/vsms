@@ -150,8 +150,6 @@ mod tests {
             "serve",
             "--database-url",
             "postgres://x",
-            "--issuer",
-            "http://localhost",
             "--hash-pepper",
             "p",
         ];
@@ -204,5 +202,23 @@ mod tests {
 
         // The control: with both, it parses.
         assert!(parse_serve(&[CURRENT, "current.pem", NEXT, "next.pem"]).is_ok());
+    }
+
+    /// VS-4: the envelope keys are the only keys `serve` takes. The embedded
+    /// `OpenID` Provider's `--issuer` (and its signing key, which had no flag
+    /// but made `serve` refuse to boot) are gone, and a stale deployment that
+    /// still passes `--issuer` is told so by the parser rather than ignored.
+    #[test]
+    fn serve_takes_no_issuer() {
+        let error = parse_serve(&[
+            "--envelope-signing-key-file",
+            "current.pem",
+            "--envelope-next-signing-key-file",
+            "next.pem",
+            "--issuer",
+            "http://localhost",
+        ])
+        .expect_err("--issuer no longer exists");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 }
