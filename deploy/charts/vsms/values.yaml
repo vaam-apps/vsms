@@ -703,8 +703,9 @@ controllers:
             value: '{{ .Values.awsSms.timeToLiveSeconds }}'
           # VS-8: the `hooks` role seals a `sealed` endpoint's deliveries with
           # the gateway's CURRENT envelope signing key (an `hmac` endpoint
-          # needs no key, VS-8R; without one, a sealed endpoint's attempts
-          # fail naming it). Only that one file is mounted into this pod.
+          # needs no key, VS-8R; without one, this worker claims no sealed
+          # endpoint's attempt and warns, naming the flag, how many wait).
+          # Only that one file is mounted into this pod.
           SMS_ENVELOPE_SIGNING_KEY_FILE:
             value: /run/envelope/current.pem
           RUST_LOG:

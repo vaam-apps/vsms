@@ -411,10 +411,12 @@ fn aws_sms_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
 /// The sealer `hooks` delivers `sealed` endpoints with, built from
 /// `--envelope-signing-key-file`.
 ///
-/// `None` (and a warning) when `hooks` runs without the flag: the role starts,
-/// delivers every `hmac` endpoint, and fails a `sealed` endpoint's attempt with a
-/// message that names the flag, rather than a process that refuses to start for a
-/// key an HMAC-only deployment never uses (VS-8R). A key that is given but cannot
+/// `None` (and a warning) when `hooks` runs without the flag: the role starts and
+/// delivers every `hmac` endpoint, rather than a process that refuses to start for
+/// a key an HMAC-only deployment never uses (VS-8R). It claims no `sealed`
+/// endpoint's attempt, which waits, untouched, for a worker that holds the key;
+/// the role says how many wait, naming the flag, every five minutes
+/// (`sms_worker::hooks::SealedBacklogWatch`). A key that is given but cannot
 /// be read is another matter and always an error: a path that was meant to work.
 /// A process that does not run `hooks` ignores the flag entirely, so a
 /// `dispatch`-only node needs no key and holds none.
@@ -430,8 +432,9 @@ fn webhook_sealer(cli: &Cli, roles: &[Role]) -> Result<Option<sms_webhook::Seale
     let Some(path) = cli.envelope_signing_key_file.as_ref() else {
         warn!(
             "hooks runs without --envelope-signing-key-file (SMS_ENVELOPE_SIGNING_KEY_FILE): \
-             `hmac` webhook endpoints are delivered, every `sealed` endpoint's attempts fail \
-             until the gateway's PKCS#8 PEM Ed25519 signing key is mounted"
+             `hmac` webhook endpoints are delivered, and this worker claims no `sealed` \
+             endpoint's attempt (they wait, uncounted, for a worker that holds the gateway's \
+             PKCS#8 PEM Ed25519 signing key)"
         );
         return Ok(None);
     };

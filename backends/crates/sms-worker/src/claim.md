@@ -18,3 +18,15 @@ corrections — see the doc comment on its `candidates` impl), for [`Job`]
 (`jobs`'s claim, #35), and for [`WebhookAttempt`] (`hooks`'s claim, M3
 #40 — see that `impl`'s own doc for how it differs from the other two:
 endpoint health, not just row state, decides what's claimable).
+
+A claim is also decided by **which delivery modes the claiming worker can serve**
+([`ServedModes`]). A `hooks` worker without the envelope signing key claims
+`hmac` attempts only, and that is a condition of the query that selects the rows
+(a correlated subquery on the endpoint's `deliveryMode`, applied to the fresh
+claim and to the expired-lease reclaim), never a filter over what the query
+returned: the over-fetch window is a fixed number of rows, and a sealed backlog the
+worker will not take would fill it and starve the `hmac` rows behind it. It is also
+why nothing is written for a row the worker cannot serve, which a "claim it, find
+out, hand it back" design could not say. [`claim_webhook_attempts`] is that claim;
+[`count_sealed_attempts_waiting`] is the `COUNT(*)` a keyless worker reports
+with.

@@ -51,8 +51,9 @@ pub struct WorkerContext {
     /// Seals a `sealed` webhook endpoint's deliveries under vsms's envelope
     /// signing key (VS-8). `Some` exactly when this process was given the key
     /// (`--envelope-signing-key-file`). An `hmac` endpoint (VS-8R) needs no key
-    /// and is delivered without one; with `None` a `sealed` endpoint's attempt
-    /// fails as an ordinary retryable failure that names the missing key.
+    /// and is delivered without one; with `None` this process claims no `sealed`
+    /// endpoint's attempt (`claim::ServedModes::HmacOnly`) and warns, naming the
+    /// missing key, how many are waiting (`hooks::SealedBacklogWatch`).
     /// No other role reads it, so a `dispatch`-only node needs no key.
     pub webhook_sealer: Option<sms_webhook::Sealer>,
 }

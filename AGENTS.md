@@ -4546,7 +4546,14 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   `an_empty_secret_and_an_empty_previous_secret_are_signed_as_the_base_did` proves the bytes against a vector computed with `openssl`, and the worker `warn`s naming the
   endpoint (never a key's value) at most every ten minutes per endpoint (`throttle.rs`), telling the operator to rotate. The
   runbook has the query that counts such endpoints before a deploy. A NULL secret (a CHECK makes it impossible) is an ordinary
-  `Retryable` failure.
+  `Retryable` failure. (B, F1/F2) Round 3's `Outcome::NotSent` (log, wait a minute, hand the increment back) treated the symptom
+  of a keyless worker claiming a sealed row it cannot send, and it still wrote that row. The claim now takes only what the worker
+  can serve: `claim::ServedModes::HmacOnly` adds `endpoint().deliveryMode() = hmac` to both candidate queries in SQL (a relation
+  path through the delegate, so R1 holds), ahead of the over-fetch window, so a 70-row sealed backlog cannot starve an `hmac` row
+  (`a_keyless_worker_delivers_hmac_past_a_sealed_backlog_and_leaves_the_sealed_rows_alone`, which fails when the filter is moved after the fetch). `NotSent`, `NOT_SENT_RETRY` and the attempts hand-back are deleted; a row the sealer refuses is an ordinary
+  `Retryable` again. A keyless `hooks` `warn`s the count of due sealed attempts every five minutes (`SealedBacklogWatch`, a
+  `COUNT(*)` through `aggregate()`), naming `--envelope-signing-key-file`, besides the start-up line. (C, F3) The runbook, the chart,
+  the compose file and `hooks.md` say so.
 - **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,
   and a signature cannot survive that. Its nonce memory is per process and cannot be replaced (the check runs in WebAssembly),
   unlike the Rust SDK's `with_nonce_store`; the README says so.

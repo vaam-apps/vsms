@@ -662,33 +662,6 @@ async fn force_column(endpoint_id: &str, column: &str, value: &str) {
     );
 }
 
-/// What a misconfiguration that **sent nothing** must and must not do, for any
-/// mode: the attempt is `failed` and waits about a minute, its `attempts` is
-/// what it was before the claim counted it, `lastError` names the fix, no
-/// request reached the receiver, and the endpoint's breaker is untouched.
-async fn assert_not_sent(
-    db: &Cratestack,
-    attempt_id: &str,
-    endpoint_id: &str,
-    fix_names: &str,
-) -> schema::WebhookAttempt {
-    let reread = reread_attempt(db, attempt_id).await;
-    assert_eq!(reread.state, AttemptState::failed, "{reread:?}");
-    assert_eq!(reread.attempts, 0, "a not-sent attempt is not counted");
-    assert_eq!(reread.lastStatusCode, None);
-    let error = reread.lastError.clone().unwrap_or_default();
-    assert!(error.contains(fix_names), "{error}");
-    let wait = reread.nextAttemptAt.expect("rescheduled") - Utc::now();
-    assert!(
-        wait > Duration::seconds(50) && wait <= Duration::seconds(60),
-        "about a minute, not the backoff schedule: {wait}"
-    );
-    let endpoint = reread_endpoint(db, endpoint_id).await;
-    assert_eq!(endpoint.consecutiveFailures, 0, "the breaker is not fed");
-    assert_eq!(endpoint.circuitOpenUntil, None);
-    reread
-}
-
 /// An `hmac` row whose `secret` and `prevSecret` are empty (a row from before the
 /// API's 32-character bound, or a hand edit) is delivered exactly as it was at
 /// `29f93c4`: signed with the empty key, the empty previous secret a second
@@ -804,14 +777,125 @@ async fn a_worker_without_a_signing_key_still_delivers_an_hmac_endpoint() {
     assert_eq!(reread.state, AttemptState::succeeded);
 }
 
-/// ... and sends nothing for a `sealed` endpoint, with a message that names the
-/// flag that is missing. It is the operator's to fix, not the endpoint's fault:
-/// the attempt waits a minute without being counted (even at `maxAttempts` 1, so
-/// it cannot go `dead`), the endpoint's breaker is untouched, and once the key
-/// is mounted the same attempt is delivered by the next poll, as the first one.
+/// Enough due `sealed` attempts to fill more than the claim's over-fetch window
+/// (`BUDGET` 20 times `CANDIDATE_OVERFETCH_FACTOR` 3 = 60), all due *earlier* than
+/// the `hmac` attempt the tests then seed, so a worker that fetched first and
+/// filtered after would find only sealed rows and starve the `hmac` one.
+const SEALED_BACKLOG: usize = 70;
+
+/// Seeds [`SEALED_BACKLOG`] due `sealed` attempts to `url`, each due an hour ago.
+async fn seed_sealed_backlog(
+    db: &Cratestack,
+    suffix: &str,
+    app_id: &str,
+    url: &str,
+) -> Vec<schema::WebhookAttempt> {
+    let endpoint = seed_endpoint(db, suffix, app_id, url, 8).await;
+    let mut attempts = Vec::new();
+    for n in 0..SEALED_BACKLOG {
+        let attempt = seed_attempt(
+            db,
+            &endpoint.id,
+            &format!("cmsgS{n}"),
+            "message.delivered",
+            "{}",
+        )
+        .await;
+        let due_earlier = db
+            .webhook_attempt()
+            .update(attempt.id.clone())
+            .set(UpdateWebhookAttemptInput {
+                nextAttemptAt: Some(Some(Utc::now() - Duration::hours(1))),
+                ..Default::default()
+            })
+            .if_match(attempt.version)
+            .run(&sys())
+            .await
+            .expect("making the sealed attempt due earlier");
+        attempts.push(due_earlier);
+    }
+    attempts
+}
+
+fn keyless(db: &Cratestack) -> WorkerContext {
+    WorkerContext {
+        webhook_sealer: None,
+        ..worker_context(db.clone())
+    }
+}
+
+/// A worker with no envelope signing key (VS-8R) delivers every `hmac` endpoint,
+/// which needs none, and does not claim a `sealed` attempt at all: not counted,
+/// not failed, not rescheduled, not touched. The filter is in the claim's own
+/// query, so a sealed backlog larger than the over-fetch window (here 70 rows
+/// due earlier than the `hmac` one) cannot crowd the `hmac` attempt out of it, and
+/// the one `hmac` attempt is delivered by a single tick.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn a_worker_without_a_signing_key_sends_nothing_for_a_sealed_endpoint_and_names_the_key() {
+async fn a_keyless_worker_delivers_hmac_past_a_sealed_backlog_and_leaves_the_sealed_rows_alone() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let sealed_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&sealed_server)
+        .await;
+    let sealed = seed_sealed_backlog(
+        &db,
+        &suffix,
+        &app_id,
+        &format!("{}/hook", sealed_server.uri()),
+    )
+    .await;
+
+    let hmac_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&hmac_server)
+        .await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", hmac_server.uri()),
+        8,
+        "whsec_nokey_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let hmac_attempt = seed_attempt(&db, &endpoint.id, "cmsgH", "message.delivered", "{}").await;
+
+    hooks::tick(&keyless(&db), &sys(), "test-worker", &http_client())
+        .await
+        .expect("tick succeeds without a key");
+
+    assert_eq!(
+        reread_attempt(&db, &hmac_attempt.id).await.state,
+        AttemptState::succeeded,
+        "the hmac attempt is delivered within one tick, behind a sealed backlog"
+    );
+    for before in &sealed {
+        let after = reread_attempt(&db, &before.id).await;
+        assert_eq!(after.state, AttemptState::pending, "{after:?}");
+        assert_eq!(
+            after.attempts, 0,
+            "a sealed row a keyless worker cannot serve is not counted"
+        );
+        assert_eq!(after.version, before.version, "and not written at all");
+    }
+    assert!(sealed_server.received_requests().await.unwrap().is_empty());
+}
+
+/// ... and a worker that holds the key then delivers the sealed rows the keyless
+/// one left, each once and counted once (the claim takes `BUDGET` rows a tick).
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyed_worker_then_delivers_the_sealed_rows_a_keyless_one_left() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
     let suffix = unique_suffix();
@@ -821,49 +905,94 @@ async fn a_worker_without_a_signing_key_sends_nothing_for_a_sealed_endpoint_and_
     Mock::given(method("POST"))
         .and(path("/hook"))
         .respond_with(ResponseTemplate::new(200))
-        .expect(1)
+        .expect(u64::try_from(SEALED_BACKLOG).unwrap())
         .mount(&server)
         .await;
-    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 1).await;
-    let attempt = seed_attempt(&db, &endpoint.id, "cmsgK", "message.delivered", "{}").await;
+    let sealed =
+        seed_sealed_backlog(&db, &suffix, &app_id, &format!("{}/hook", server.uri())).await;
 
-    let keyless = WorkerContext {
-        webhook_sealer: None,
-        ..worker_context(db.clone())
-    };
-    hooks::tick(&keyless, &sys(), "test-worker", &http_client())
+    hooks::tick(&keyless(&db), &sys(), "test-worker", &http_client())
         .await
-        .expect("tick succeeds");
-    let waiting = assert_not_sent(
-        &db,
-        &attempt.id,
-        &endpoint.id,
-        "--envelope-signing-key-file",
-    )
-    .await;
+        .expect("tick succeeds without a key");
     assert!(server.received_requests().await.unwrap().is_empty());
 
-    // Not due for a minute: another poll leaves it alone.
-    hooks::tick(&keyless, &sys(), "test-worker", &http_client())
+    let keyed = worker_context(db.clone());
+    for _ in 0..SEALED_BACKLOG.div_ceil(20) {
+        hooks::tick(&keyed, &sys(), "test-worker", &http_client())
+            .await
+            .expect("tick succeeds with the key");
+    }
+    for before in &sealed {
+        let after = reread_attempt(&db, &before.id).await;
+        assert_eq!(after.state, AttemptState::succeeded, "{after:?}");
+        assert_eq!(after.attempts, 1);
+    }
+}
+
+/// The crash-reclaim half of the claim has the same filter: a `delivering` sealed
+/// row whose lease expired is not taken by a keyless worker (it keeps its dead
+/// owner, its version and its count), while an expired `hmac` one is, and a keyed
+/// worker takes the sealed one afterwards without counting a second attempt.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_expired_lease_on_a_sealed_row_is_not_reclaimed_by_a_keyless_worker() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let url = format!("{}/hook", server.uri());
+    let sealed_endpoint = seed_endpoint(&db, &suffix, &app_id, &url, 8).await;
+    let hmac_endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &url,
+        8,
+        "whsec_reclaim_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let mut crashed = Vec::new();
+    for (endpoint, aggregate) in [(&sealed_endpoint, "cmsgR1"), (&hmac_endpoint, "cmsgR2")] {
+        let attempt = seed_attempt(&db, &endpoint.id, aggregate, "message.delivered", "{}").await;
+        crashed.push(
+            db.webhook_attempt()
+                .update(attempt.id.clone())
+                .set(UpdateWebhookAttemptInput {
+                    state: Some(AttemptState::delivering),
+                    attempts: Some(1),
+                    leaseOwner: Some(Some("crashed-worker".to_owned())),
+                    leaseUntil: Some(Some(Utc::now() - Duration::seconds(5))),
+                    ..Default::default()
+                })
+                .if_match(attempt.version)
+                .run(&sys())
+                .await
+                .expect("simulating a crashed worker's expired lease"),
+        );
+    }
+    let (sealed_row, hmac_row) = (&crashed[0], &crashed[1]);
+
+    hooks::tick(&keyless(&db), &sys(), "test-worker", &http_client())
         .await
-        .expect("tick succeeds");
+        .expect("tick succeeds without a key");
+    let untouched = reread_attempt(&db, &sealed_row.id).await;
+    assert_eq!(untouched.state, AttemptState::delivering, "{untouched:?}");
+    assert_eq!(untouched.leaseOwner.as_deref(), Some("crashed-worker"));
+    assert_eq!(untouched.version, sealed_row.version);
     assert_eq!(
-        reread_attempt(&db, &attempt.id).await.version,
-        waiting.version
+        reread_attempt(&db, &hmac_row.id).await.state,
+        AttemptState::succeeded,
+        "an expired hmac lease is reclaimed by a keyless worker"
     );
 
-    // The key is mounted (and the minute has passed): it goes out, as the
-    // attempt it always was, counted once.
-    db.webhook_attempt()
-        .update(attempt.id.clone())
-        .set(UpdateWebhookAttemptInput {
-            nextAttemptAt: Some(Some(Utc::now() - Duration::seconds(1))),
-            ..Default::default()
-        })
-        .if_match(waiting.version)
-        .run(&sys())
-        .await
-        .expect("making the retry due");
     hooks::tick(
         &worker_context(db.clone()),
         &sys(),
@@ -872,9 +1001,128 @@ async fn a_worker_without_a_signing_key_sends_nothing_for_a_sealed_endpoint_and_
     )
     .await
     .expect("tick succeeds with the key");
-    let delivered = reread_attempt(&db, &attempt.id).await;
-    assert_eq!(delivered.state, AttemptState::succeeded);
-    assert_eq!(delivered.attempts, 1);
+    let reclaimed = reread_attempt(&db, &sealed_row.id).await;
+    assert_eq!(reclaimed.state, AttemptState::succeeded, "{reclaimed:?}");
+    assert_eq!(reclaimed.attempts, 1, "resumed, not counted twice");
+}
+
+/// A keyless worker must not leave sealed rows pending silently: `SealedBacklogWatch`
+/// counts the due sealed attempts it cannot serve and `warn`s, naming
+/// `--envelope-signing-key-file` and the count, at most every five minutes. A worker
+/// that holds the key has nothing to say, and a count of zero says nothing.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyless_worker_says_how_many_sealed_attempts_it_cannot_serve_every_five_minutes() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let (logs, _guard_logs) = capture_logs();
+    let watch = hooks::SealedBacklogWatch::new();
+    let start = std::time::Instant::now();
+
+    assert_eq!(
+        watch.report(&keyless(&db), &sys(), start).await.unwrap(),
+        Some(0),
+        "nothing waiting: the query runs and says nothing"
+    );
+    assert!(!logs.text().contains("WARN"), "{}", logs.text());
+
+    let sealed =
+        seed_sealed_backlog(&db, &suffix, &app_id, "https://hooks.example.test/hook").await;
+    // Not counted: an `hmac` attempt, which a keyless worker serves.
+    let hmac_endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/hmac",
+        8,
+        "whsec_count_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    seed_attempt(&db, &hmac_endpoint.id, "cmsgC1", "message.delivered", "{}").await;
+    // Counted: a sealed attempt a crashed worker left `delivering`, lease expired.
+    db.webhook_attempt()
+        .update(sealed[0].id.clone())
+        .set(UpdateWebhookAttemptInput {
+            state: Some(AttemptState::delivering),
+            leaseOwner: Some(Some("crashed-worker".to_owned())),
+            leaseUntil: Some(Some(Utc::now() - Duration::seconds(5))),
+            ..Default::default()
+        })
+        .if_match(sealed[0].version)
+        .run(&sys())
+        .await
+        .expect("abandoning one sealed attempt");
+
+    let interval = hooks::SEALED_BACKLOG_WARNING_EVERY;
+    assert_eq!(
+        watch
+            .report(&keyless(&db), &sys(), start + interval / 2)
+            .await
+            .unwrap(),
+        None,
+        "not due: no query, no line"
+    );
+    assert!(!logs.text().contains("WARN"), "{}", logs.text());
+
+    let count = watch
+        .report(&keyless(&db), &sys(), start + interval)
+        .await
+        .unwrap();
+    assert_eq!(count, Some(SEALED_BACKLOG));
+    let text = logs.text();
+    assert_eq!(text.matches("WARN").count(), 1, "{text}");
+    assert!(text.contains("--envelope-signing-key-file"), "{text}");
+    assert!(text.contains(&format!("{SEALED_BACKLOG}")), "{text}");
+
+    assert_eq!(
+        hooks::SealedBacklogWatch::new()
+            .report(&worker_context(db.clone()), &sys(), start + interval)
+            .await
+            .unwrap(),
+        None,
+        "a worker with the key serves them: nothing to report"
+    );
+}
+
+/// What `tracing` is handed while the returned guard lives (thread-local: this
+/// file's tests run on `#[tokio::test]`'s current-thread runtime).
+#[derive(Clone, Default)]
+struct Logs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Logs {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl std::io::Write for Logs {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+    type Writer = Logs;
+
+    fn make_writer(&'a self) -> Logs {
+        self.clone()
+    }
+}
+
+fn capture_logs() -> (Logs, tracing::subscriber::DefaultGuard) {
+    let logs = Logs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_ansi(false)
+        .finish();
+    (logs, tracing::subscriber::set_default(subscriber))
 }
 
 /// Happy path for an `hmac` endpoint (#41, unchanged): claim, sign, POST,

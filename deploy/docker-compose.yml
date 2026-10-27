@@ -291,7 +291,8 @@ services:
       # own envelope signing key, so the `hooks` role (in SMS_WORKER_ROLES by
       # default) needs the CURRENT key to deliver a `sealed` endpoint (an
       # `hmac` endpoint, VS-8R, needs none, and without the key `hooks` still
-      # starts and fails a sealed endpoint's attempts, naming the flag). It is
+      # starts and delivers it, but claims no sealed endpoint's attempt: they
+      # wait, uncounted, and it warns how many, naming the flag). It is
       # the very file the gateway signs its answers with, so a receiver pins
       # one pair of public keys for both. Only this one: the `next` key signs
       # nothing and the worker never reads it. A worker that does not run

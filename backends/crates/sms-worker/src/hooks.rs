@@ -17,7 +17,7 @@ use tracing::{error, warn};
 
 use crate::WorkerContext;
 use crate::breaker::{self, BreakerPolicy};
-use crate::claim::claim_batch;
+use crate::claim::{ServedModes, claim_webhook_attempts, count_sealed_attempts_waiting};
 use crate::throttle::Throttle;
 
 /// How often this loop polls for claimable attempts. Same order of
@@ -39,14 +39,6 @@ const BUDGET: i64 = 20;
 /// identical reason (`reqwest::Client::new()` sets no timeout at all, and a
 /// connection that hangs forever is worse than one that fails fast).
 const REQUEST_TIMEOUT: StdDuration = StdDuration::from_secs(10);
-
-/// How long an attempt that **sent nothing** ([`Outcome::NotSent`]) waits before
-/// the next poll offers it again. It is a constant, not the backoff schedule: a
-/// misconfigured worker or row does not get better with age, the attempt is not
-/// counted ([`write_not_sent`]) so there is no attempt number to walk the
-/// schedule by, and the fix (mount a key, rotate a secret) should take effect
-/// within a minute of being made.
-const NOT_SENT_RETRY: Duration = Duration::minutes(1);
 
 /// §8.5, verbatim: "20 consecutive failures sets `circuitOpenUntil`" for
 /// 15 minutes. See `breaker.md` for why this and `dispatch::PROVIDER_
@@ -149,16 +141,84 @@ pub fn build_http_client() -> HttpClients {
     }
 }
 
+/// How often a worker without the envelope signing key repeats what it cannot
+/// serve. A backlog that grows by the second is still one line per interval.
+pub const SEALED_BACKLOG_WARNING_EVERY: StdDuration = StdDuration::from_secs(5 * 60);
+
+/// A worker without the envelope signing key claims no `sealed` attempt
+/// ([`ServedModes::HmacOnly`]), so those attempts stay `pending` and nothing in
+/// the claim loop says so. This is what does: every
+/// [`SEALED_BACKLOG_WARNING_EVERY`] it counts the sealed attempts that are due and
+/// `warn`s with the number and the flag to mount. Without it, a deployment that
+/// forgot the key would see sealed deliveries wait forever and no log line.
+pub struct SealedBacklogWatch {
+    every: Throttle,
+}
+
+impl SealedBacklogWatch {
+    /// A watch that has not reported yet, so its first call asks.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            every: Throttle::new(SEALED_BACKLOG_WARNING_EVERY),
+        }
+    }
+
+    /// Counts the sealed attempts `ctx` cannot serve and warns if there are any.
+    /// `None` when there was nothing to ask: the worker holds the key (it serves
+    /// them), or the last question was less than [`SEALED_BACKLOG_WARNING_EVERY`]
+    /// ago. `Some(count)` when it asked, `0` meaning nothing is waiting and nothing
+    /// was said.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the count returns; the interval is spent either way, so a
+    /// database that is down is asked again in five minutes, not every poll.
+    pub async fn report(
+        &self,
+        ctx: &WorkerContext,
+        sys: &CratestackContext,
+        now: Instant,
+    ) -> Result<Option<usize>, CratestackError> {
+        if ctx.webhook_sealer.is_some() || !self.every.admit("sealed-backlog", now) {
+            return Ok(None);
+        }
+        let waiting = count_sealed_attempts_waiting(&ctx.db, sys, Utc::now()).await?;
+        let waiting = usize::try_from(waiting).unwrap_or(0);
+        if waiting > 0 {
+            warn!(
+                waiting,
+                "sealed webhook deliveries are waiting that this worker cannot send: it holds no \
+                 envelope signing key. Start it with --envelope-signing-key-file \
+                 (SMS_ENVELOPE_SIGNING_KEY_FILE, the gateway's key), or run a hooks worker that \
+                 has it. hmac deliveries are unaffected, and nothing is counted against the sealed \
+                 attempts meanwhile"
+            );
+        }
+        Ok(Some(waiting))
+    }
+}
+
+impl Default for SealedBacklogWatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Never returns on its own, matching [`crate::run`]'s contract for every
 /// other role.
 pub async fn run(ctx: WorkerContext, worker: &str) {
     let sys = sys(worker);
     let http = build_http_client();
+    let backlog = SealedBacklogWatch::new();
     let mut interval = tokio::time::interval(POLL_INTERVAL);
     loop {
         interval.tick().await;
         if let Err(error) = tick(&ctx, &sys, worker, &http).await {
             error!(%error, "hooks tick failed; retrying next poll");
+        }
+        if let Err(error) = backlog.report(&ctx, &sys, Instant::now()).await {
+            error!(%error, "counting the sealed attempts this worker cannot serve failed");
         }
     }
 }
@@ -176,11 +236,10 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 ///
 /// Each claimed row is delivered by its endpoint's own `deliveryMode`
 /// ([`send`]): `hmac` needs nothing but the endpoint's secret, `sealed` needs
-/// `ctx.webhook_sealer`. A process without the signing key therefore still
-/// delivers every `hmac` endpoint, and a `sealed` one's attempt is
-/// [`Outcome::NotSent`]: logged at `error` naming the missing key, uncounted,
-/// off the endpoint's breaker, and offered again a minute later, so it goes out
-/// by itself once the key is mounted.
+/// `ctx.webhook_sealer`. A process without the signing key therefore claims
+/// `hmac` attempts only ([`ServedModes::HmacOnly`]); it never takes a `sealed`
+/// one, so nothing about one is written until a worker that holds the key
+/// does, and [`SealedBacklogWatch`] says that they are waiting.
 /// `backends/apps/sms-worker` says so at start when `hooks` runs without a key.
 ///
 /// # Errors
@@ -192,14 +251,19 @@ pub async fn tick(
     worker: &str,
     http: &HttpClients,
 ) -> Result<(), CratestackError> {
-    let claimed = claim_batch::<WebhookAttempt>(&ctx.db, sys, worker, BUDGET).await?;
+    let served = if ctx.webhook_sealer.is_some() {
+        ServedModes::Both
+    } else {
+        ServedModes::HmacOnly
+    };
+    let claimed = claim_webhook_attempts(&ctx.db, sys, worker, BUDGET, served).await?;
     for attempt in claimed {
         deliver_one(ctx, sys, http, ctx.webhook_sealer.as_ref(), attempt).await;
     }
     Ok(())
 }
 
-/// The five shapes a delivery attempt resolves to, before each is
+/// The four shapes a delivery attempt resolves to, before each is
 /// translated into a `WebhookAttempt`/`WebhookEndpoint` write by
 /// [`write_outcome`]. Kept distinct from [`AttemptState`] itself because
 /// `Retryable` still branches on `maxAttempts` before it knows whether the
@@ -211,9 +275,10 @@ enum Outcome {
     /// unconditionally — distinct from an ordinary exhausted-attempts
     /// `dead`, which touches only the attempt.
     Gone,
-    /// A non-2xx, non-410 status, or a transport error — genuinely a signal
-    /// about the *endpoint*, so this is what feeds `maxAttempts`/backoff
-    /// and the circuit breaker.
+    /// A non-2xx, non-410 status, a transport error, or a request that could
+    /// not be built (a signer that fails, a row with no secret): the delivery
+    /// failed, so this is what feeds `maxAttempts`/backoff and the circuit
+    /// breaker.
     Retryable {
         status: Option<u16>,
         message: String,
@@ -230,16 +295,6 @@ enum Outcome {
     /// reaching the same `dead` outcome anyway, more slowly and with the
     /// same endpoint-blaming bug on every attempt in between.
     MalformedPayload { message: String },
-    /// Nothing was sent, because this worker or this row is misconfigured: a
-    /// `sealed` attempt on a worker with no envelope signing key, or an `hmac`
-    /// row with no secret. Like [`Outcome::MalformedPayload`] it says nothing
-    /// about the endpoint, so it never touches its breaker; unlike it, the cause
-    /// is fixable and the next attempt can succeed, so it is not `dead` either.
-    /// It also does not count toward `maxAttempts` ([`write_not_sent`] hands the
-    /// claim's increment back): an operator who mounts the key an hour late
-    /// must not find eight events already dead. `message` names the fix and is
-    /// logged at `error` on every attempt.
-    NotSent { message: String },
 }
 
 /// Deliver one already-`delivering` attempt and write back whichever
@@ -361,15 +416,23 @@ async fn send(
 ///
 /// A delivery that cannot be sealed (no signing key in this process, no
 /// audience on the row, an audience or URL the seal refuses, a signer that
-/// fails) never reaches the network, and is [`Outcome::NotSent`]: the endpoint
-/// did nothing, so its breaker and the attempt's budget are left alone.
+/// fails) never reaches the network, and is an ordinary [`Outcome::Retryable`]:
+/// counted, backed off, able to trip the breaker and able to go `dead`, like any
+/// other failure. None of them is expected. A worker without the key never
+/// claims a sealed attempt ([`crate::claim::ServedModes`]), and the database
+/// refuses a sealed row whose audience or URL cannot be sealed, so what is left
+/// is a signer that fails, which is as much the delivery's failure as a
+/// connection that does.
 async fn sealed_request(
     http: &reqwest::Client,
     sealer: Option<&Sealer>,
     endpoint: &WebhookEndpoint,
     body: &str,
 ) -> Result<reqwest::RequestBuilder, Outcome> {
-    let not_sealed = |message: String| Outcome::NotSent { message };
+    let not_sealed = |message: String| Outcome::Retryable {
+        status: None,
+        message,
+    };
     let Some(sealer) = sealer else {
         return Err(not_sealed(
             "delivery not sealed: this worker holds no envelope signing key. Start it with \
@@ -557,10 +620,10 @@ async fn fetch_endpoint(
 /// else in this function needs to be atomic with. But which arms touch the
 /// endpoint at all is the load-bearing decision in this function:
 /// `Success`/`Gone`/`Retryable` all
-/// reflect something the endpoint actually did (or failed to do), so all
-/// three update its bookkeeping; `MalformedPayload` and `NotSent` reflect
-/// nothing about the endpoint — no request was ever sent to it — and must not
-/// touch it. Errors
+/// reflect something the endpoint actually did (or failed to do), or a delivery
+/// that could not be made, so all three update its bookkeeping;
+/// `MalformedPayload` reflects nothing about the endpoint — no request was ever
+/// sent to it and the row is our own bug — and must not touch it. Errors
 /// from either write are logged, not propagated, matching every other
 /// outcome-writer in this crate.
 async fn write_outcome(
@@ -608,20 +671,6 @@ async fn write_outcome(
                 write_failed_retry(ctx, sys, attempt, status, message, now).await;
             }
             record_endpoint_failure(ctx, sys, endpoint, now).await;
-        }
-        Outcome::NotSent { message } => {
-            // Loud on purpose, and on every attempt: this is an operator's to
-            // fix (a key to mount, a secret to mint), not routine traffic, and
-            // nothing else will say so while the attempt quietly waits. The
-            // endpoint's breaker is not touched (it did nothing wrong) and
-            // the attempt is handed its budget back (`write_not_sent`).
-            error!(
-                attempt_id = %attempt.id, endpoint_id = %endpoint.id,
-                delivery_mode = ?endpoint.deliveryMode, message,
-                "webhook delivery not sent: a misconfiguration, not the endpoint; \
-                 rescheduled without counting the attempt or touching the circuit breaker"
-            );
-            write_not_sent(ctx, sys, attempt, message, now).await;
         }
         Outcome::MalformedPayload { message } => {
             // Loud on purpose — this is our own bug (#38's subscriber wrote
@@ -679,46 +728,6 @@ async fn write_succeeded(
         log_write_failure(
             &attempt.id,
             AttemptState::succeeded,
-            &map_database_error(error),
-        );
-    }
-}
-
-/// `delivering -> failed` for an attempt that sent nothing ([`Outcome::NotSent`]):
-/// `nextAttemptAt` is [`NOT_SENT_RETRY`] away and `attempts` goes back to what
-/// it was before the claim counted this one, so a misconfiguration spends none
-/// of the endpoint's `maxAttempts` however long it lasts. `lastStatusCode` is
-/// cleared (there was no answer) and `lastError` names the fix, where an
-/// operator looking at the delivery log will find it.
-async fn write_not_sent(
-    ctx: &WorkerContext,
-    sys: &CratestackContext,
-    attempt: &WebhookAttempt,
-    message: String,
-    now: DateTime<Utc>,
-) {
-    if let Err(error) = ctx
-        .db
-        .webhook_attempt()
-        .update(attempt.id.clone())
-        .set(UpdateWebhookAttemptInput {
-            state: Some(AttemptState::failed),
-            attempts: Some((attempt.attempts - 1).max(0)),
-            lastStatusCode: Some(None),
-            lastError: Some(Some(message)),
-            lastAttemptAt: Some(Some(now)),
-            nextAttemptAt: Some(Some(now + NOT_SENT_RETRY)),
-            leaseOwner: Some(None),
-            leaseUntil: Some(None),
-            ..Default::default()
-        })
-        .if_match(attempt.version)
-        .run(sys)
-        .await
-    {
-        log_write_failure(
-            &attempt.id,
-            AttemptState::failed,
             &map_database_error(error),
         );
     }
@@ -1380,34 +1389,61 @@ mod tests {
         assert!(message.contains("rotateWebhookSecret"), "{message}");
     }
 
-    /// A sealed attempt on a worker with no signing key sends nothing, and says
-    /// how to fix it: not a retryable failure of the endpoint.
+    /// A sealed attempt that reaches a worker with no signing key (the claim does
+    /// not let one, [`crate::claim::ServedModes`]) is an ordinary failure that names
+    /// the flag: nothing is built, and `write_outcome` counts it, backs it off and
+    /// feeds the breaker like any other.
     #[tokio::test]
-    async fn a_sealed_endpoint_without_a_signing_key_sends_nothing_and_names_the_flag() {
-        let http = build_http_client().sealed;
-        let outcome = super::sealed_request(&http, None, &fixture_endpoint(), "{}").await;
-        let Err(super::Outcome::NotSent { message }) = outcome else {
-            panic!("a sealed request needs a signer: expected NotSent and nothing built");
+    async fn a_sealed_endpoint_without_a_signing_key_is_an_ordinary_failure_naming_the_flag() {
+        let http = build_http_client();
+        let outcome = super::send(
+            &http,
+            None,
+            &fixture_endpoint(),
+            &fixture_attempt(),
+            "{}",
+            Utc::now(),
+        )
+        .await;
+        let super::Outcome::Retryable {
+            status: None,
+            message,
+        } = outcome
+        else {
+            panic!("a sealed delivery with no signer must be Retryable, not a new outcome");
         };
         assert!(message.contains("--envelope-signing-key-file"), "{message}");
     }
 
     /// A sealed row whose URL the seal cannot bind never reaches the network and
-    /// is the row's misconfiguration, not the endpoint's failure. The database no
-    /// longer lets a sealed row hold one, so this is the worker's second line of
-    /// defence for a row it cannot trust, tested without one.
+    /// is an ordinary failure of the delivery: counted, backed off and able to go
+    /// `dead`. The database no longer lets a sealed row hold such a URL, so this is
+    /// the worker's second line of defence for a row it cannot trust, tested
+    /// without one.
     #[tokio::test]
-    async fn a_sealed_endpoint_whose_url_cannot_be_sealed_sends_nothing() {
-        let http = build_http_client().sealed;
+    async fn a_sealed_endpoint_whose_url_cannot_be_sealed_is_an_ordinary_failure() {
+        let http = build_http_client();
         let sealer =
             Sealer::new(cratestack::cose::Ed25519Signer::from_seed(&[0x42; 32])).expect("a sealer");
         let endpoint = WebhookEndpoint {
             url: "https://h.example.test/hook?tenant=1".to_owned(),
             ..fixture_endpoint()
         };
-        let outcome = super::sealed_request(&http, Some(&sealer), &endpoint, "{}").await;
-        let Err(super::Outcome::NotSent { message }) = outcome else {
-            panic!("a URL with a query cannot be sealed for: expected NotSent");
+        let outcome = super::send(
+            &http,
+            Some(&sealer),
+            &endpoint,
+            &fixture_attempt(),
+            "{}",
+            Utc::now(),
+        )
+        .await;
+        let super::Outcome::Retryable {
+            status: None,
+            message,
+        } = outcome
+        else {
+            panic!("a URL with a query cannot be sealed for: expected Retryable");
         };
         assert!(message.contains("not sealed"), "{message}");
     }

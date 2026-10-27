@@ -122,10 +122,13 @@ delivery mode is its own (`docs/integrating.md`, "Choosing a delivery mode"):
 an `hmac` endpoint is signed with its own secret and needs no key, so a
 deployment that has not moved a receiver to the seal may leave the file out. A
 `hooks` worker without it still starts and still delivers every `hmac`
-endpoint, and each attempt to a `sealed` endpoint fails with an error that names
-`--envelope-signing-key-file` (it counts toward `maxAttempts`, so mount the key
-before creating sealed endpoints, and replay the `dead` attempts if it was
-late). Both containers
+endpoint, and **claims no `sealed` endpoint's attempt at all**: those stay
+`pending` (or `failed`, resting out a backoff), untouched and uncounted toward
+`maxAttempts`, for a worker that holds the key, which delivers them as soon as it
+runs, so a late key loses nothing. Because the rows just wait, the keyless
+worker says so: every five minutes it logs a `warn` with the number of due sealed
+attempts it cannot serve, naming `--envelope-signing-key-file`, and it logs one
+at start. Treat either line as an unmounted key. Both containers
 run as uid 65532, which is why the one `chown`/`chmod 0400` above serves both.
 
 === Rotating the envelope keys

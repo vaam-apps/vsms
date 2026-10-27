@@ -65,32 +65,29 @@ default (`HttpClients`).
 | Authentication                                    | `Sealer::seal(audience, url, body)`, fresh per attempt                     | `sign_header([secret, prevSecret?], timestamp, eventId, body)`, the current secret first                |
 | Headers                                           | the seal's `Content-Type` and `Cratestack-*`                               | `X-Sms-Event`, `X-Sms-Event-Id`, `X-Sms-Timestamp`, `X-Sms-Signature`, `Content-Type: application/json` |
 | Needs                                             | `WorkerContext::webhook_sealer` (the envelope signing key) and an audience | the endpoint's `secret`                                                                                 |
-| Is *not sent* ([`Outcome::NotSent`]), below, when | no sealer, no audience, a URL or audience the seal refuses                 | never: a row with no secret (a CHECK makes it impossible) is an ordinary failure; an empty one is signed |
+
+# A worker without the signing key claims no sealed attempt
 
 A worker with no signing key still starts and still delivers every `hmac`
-endpoint; a `sealed` endpoint's attempt is not sent, with a message that names
-`--envelope-signing-key-file`.
+endpoint, and it does not **claim** a `sealed` attempt at all
+([`crate::claim::ServedModes::HmacOnly`]). The filter is in the claim's own query,
+a correlated subquery on the endpoint's `deliveryMode` for the fresh claim and the
+expired-lease reclaim alike, placed ahead of the over-fetch window: filtering the
+rows after fetching them would let a sealed backlog fill the window and starve the
+`hmac` rows behind it. A worker that holds the key claims both modes.
 
-# An attempt that sent nothing is not the endpoint's failure ([`Outcome::NotSent`])
+Nothing about a sealed row is therefore written by a keyless worker: it stays
+`pending` (or `failed`, resting out its backoff), its `attempts` unchanged, its
+endpoint's breaker untouched, and a worker that has the key delivers it as soon as
+it runs. A row the sealer refuses anyway (a signer that fails; the database already
+refuses an audience or URL it cannot seal) is an ordinary [`Outcome::Retryable`]
+like any other failed delivery: counted, backed off, able to open the breaker and
+to go `dead`.
 
-A misconfiguration that stops a request being built (a `sealed` attempt on a
-worker with no signing key, a row the seal refuses) says nothing about the endpoint, so it must not be charged to it, and
-`write_outcome`'s rule is that only an arm that reflects something the endpoint
-did touches its breaker. `NotSent` therefore:
-
-- logs at `error` on **every** attempt, naming the fix (the flag to mount), because nothing else says so while the attempt waits;
-- writes `delivering -> failed` with `nextAttemptAt` a fixed minute away
-  (`NOT_SENT_RETRY`), not the backoff schedule: there is no attempt number to
-  walk it by, since
-- **it hands the claim's `attempts` increment back**, so a misconfiguration
-  spends none of `maxAttempts` however long it lasts, and mounting a key an hour
-  late finds every event still waiting rather than `dead`;
-- never calls `record_endpoint_failure`: `consecutiveFailures` and
-  `circuitOpenUntil` stay as they were.
-
-Contrast `Retryable` (the endpoint answered badly or not at all: counted,
-backed off, fed to the breaker) and `MalformedPayload` (our own bug: straight to
-`dead`).
+Rows that wait silently are the cost, so [`SealedBacklogWatch`] pays it: a keyless
+`run` counts the due sealed attempts (a `COUNT(*)`, due or abandoned by a crashed
+worker) every five minutes and, if there are any, logs a `warn` with the number
+and `--envelope-signing-key-file`. `backends/apps/sms-worker` logs one at start.
 
 # Redirects
 
@@ -124,10 +121,10 @@ A retry runs this whole path again: **every attempt is sealed afresh**, so a
 retry after the receiver's 300 s skew still opens and a re-sent nonce is never
 what a receiver sees. The endpoint's `audience` is what the seal binds as the
 recipient; the route is the path of its `url` (`sms_webhook::delivery_route`).
-A delivery that cannot be sealed never reaches the network and is
-[`Outcome::NotSent`]. The signing key is `WorkerContext::webhook_sealer`, loaded
-from `--envelope-signing-key-file`; with none, a `sealed` endpoint's attempt
-fails (above) and `hmac` endpoints are unaffected. The receiver's answer is judged by status alone and
+A delivery that cannot be sealed never reaches the network and is an ordinary
+[`Outcome::Retryable`]. The signing key is `WorkerContext::webhook_sealer`, loaded
+from `--envelope-signing-key-file`; with none, the worker claims no `sealed`
+attempt (above) and `hmac` endpoints are unaffected. The receiver's answer is judged by status alone and
 never opened (`sms-webhook`'s `lib.md`, "The answer"). A sealed delivery follows
 no redirect.
 
