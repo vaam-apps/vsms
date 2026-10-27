@@ -1312,13 +1312,30 @@ mod tests {
             warn_empty_hmac_keys(&healthy, &throttle, start);
             warn_empty_hmac_keys(&weak, &throttle, start);
         });
-        assert_eq!(first.matches("WARN").count(), 1, "{first}");
-        assert!(first.contains("cendpointweak0000000000"), "{first}");
-        assert!(first.contains("prev_secret_empty=true"), "{first}");
-        assert!(first.contains("secret_empty=false"), "{first}");
-        assert!(first.contains("rotateWebhookSecret"), "{first}");
-        assert!(!first.contains("cendpointhealthy"), "{first}");
-        assert!(!first.contains(marker), "{first}");
+        assert_eq!(
+            first.matches("WARN").count(),
+            1,
+            "exactly one line, for the weak endpoint"
+        );
+        assert!(
+            first.contains("cendpointweak0000000000"),
+            "the line names the endpoint"
+        );
+        assert!(
+            first.contains("prev_secret_empty=true"),
+            "the line names which key is empty"
+        );
+        assert!(first.contains("secret_empty=false"), "and which is not");
+        assert!(
+            first.contains("rotateWebhookSecret"),
+            "and tells the operator what to do"
+        );
+        assert!(
+            !first.contains("cendpointhealthy"),
+            "an endpoint with real keys is not mentioned"
+        );
+        // Never the line itself in the message: were a key in it, the message would repeat it.
+        assert!(!first.contains(marker), "a key's value reached the log");
 
         let within = logged_during(|| {
             warn_empty_hmac_keys(&weak, &throttle, start + EMPTY_KEY_WARNING_EVERY / 2);

@@ -4569,7 +4569,7 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   Dropping it in `down.sql` is for symmetry only: `DROP COLUMN audience` removes it anyway, so removing that line fails no test.
   (G, F8) `executable_sql` (`migrations-current`) dropped `--` lines only, so a statement commented out in a `/* ... */` block was
   still "carried". It now strips line comments wherever they start and block comments across lines and nested, as a small
-  tokenizer that leaves `'...'` (with `''` and `E'\\''`), `"..."` and `$tag$...$tag$` text alone; a block comment between tokens is
+  tokenizer that leaves `'...'` (with `''` and the `E'...'` backslash escape), `"..."` and `$tag$...$tag$` text alone; a block comment between tokens is
   the space it is in SQL. The unit tests hold both halves (a commented-out constraint is neither declared nor carried; a literal
   holding `--` or `/*` survives) and each arm was sabotaged to fail one.
 - **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,

@@ -15,9 +15,9 @@ per model — "the job and webhook claims are the same function with
 different types" (§7.3). This module implements it for [`Message`]
 (`dispatch`'s claim, based on §7.3's own worked example, with two
 corrections — see the doc comment on its `candidates` impl), for [`Job`]
-(`jobs`'s claim, #35), and for [`WebhookAttempt`] (`hooks`'s claim, M3
-#40 — see that `impl`'s own doc for how it differs from the other two:
-endpoint health, not just row state, decides what's claimable).
+(`jobs`'s claim, #35), and for [`WebhookAttempt`] (`hooks`'s claim, M3 #40,
+see that `impl`'s own doc for how it differs from the other two: endpoint
+health, not just row state, decides what's claimable).
 
 A claim is also decided by **which delivery modes the claiming worker can serve**
 ([`ServedModes`]). A `hooks` worker without the envelope signing key claims
