@@ -124,10 +124,12 @@ run as uid 65532, which is why the one `chown`/`chmod 0400` above serves both.
 
 Both processes read their key once, at start-up, so a rotation is a restart:
 
-. Ship every client and every webhook receiver that pins the new `next` public
-  key (`docker compose run --rm sms-gateway server-keys` after the swap prints
-  it; an integrator pins *both* halves, so this step is what makes the
-  rotation a non-event for them).
+. Check that every client and every webhook receiver already pins today's
+  `next` public key: it is the key being promoted, and an integrator pins
+  *both* halves precisely so this step is a check and not a flag day (`docker
+  compose run --rm sms-gateway server-keys` prints them). Anyone who does not
+  yet has it must pin it before you go on, because the restart below makes it
+  the key that signs.
 . Promote it: move `secrets/envelope-next.pem` over
   `secrets/envelope-current.pem`, mint a new `envelope-next.pem`, keep the
   `chown`/`chmod` above.
@@ -139,6 +141,9 @@ Both processes read their key once, at start-up, so a rotation is a restart:
   *both* deployments: the chart mounts the worker's key with `subPath`, and a
   `subPath` Secret mount never sees an edited Secret, so the worker will not
   pick the new key up on its own the way a directory mount eventually would.
+. Hand every client and every webhook receiver the newly minted `next` public
+  key (`server-keys` after the restart prints it), so that they pin it before
+  the *next* rotation promotes it.
 . Retire the old public key from the receivers' pins once no delivery sealed
   with it can still be retried (a retry is sealed afresh, so after the restart
   nothing is).
