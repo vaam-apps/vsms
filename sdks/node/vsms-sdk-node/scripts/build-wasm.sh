@@ -19,36 +19,36 @@ rust="$(cd "$package/../../rust" && pwd)"
 features=()
 out="$package/wasm"
 if [ "${1:-}" = "--responder" ]; then
-  features=(--features responder)
-  out="$package/wasm-test"
+	features=(--features responder)
+	out="$package/wasm-test"
 fi
 
 wanted="$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/version = |"/, ""); print; exit}' "$rust/Cargo.lock")"
 if ! command -v wasm-bindgen >/dev/null 2>&1; then
-  echo "build-wasm: FAIL — wasm-bindgen is not on PATH." >&2
-  echo "build-wasm: run \`just wasm-tools\`, or: cargo install wasm-bindgen-cli --locked --version $wanted" >&2
-  exit 1
+	echo "build-wasm: FAIL — wasm-bindgen is not on PATH." >&2
+	echo "build-wasm: run \`just wasm-tools\`, or: cargo install wasm-bindgen-cli --locked --version $wanted" >&2
+	exit 1
 fi
 found="$(wasm-bindgen --version | awk '{print $2}')"
 if [ "$found" != "$wanted" ]; then
-  echo "build-wasm: FAIL — wasm-bindgen $found is installed, sdks/rust/Cargo.lock pins the crate at $wanted." >&2
-  echo "build-wasm: run \`just wasm-tools\`, or: cargo install wasm-bindgen-cli --locked --version $wanted --force" >&2
-  exit 1
+	echo "build-wasm: FAIL — wasm-bindgen $found is installed, sdks/rust/Cargo.lock pins the crate at $wanted." >&2
+	echo "build-wasm: run \`just wasm-tools\`, or: cargo install wasm-bindgen-cli --locked --version $wanted --force" >&2
+	exit 1
 fi
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
 
 # Size over speed: this is a signing call, not a hot loop, and the module is
 # embedded in the glue and parsed on every `require`.
 (
-  cd "$rust"
-  CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
-    cargo build --release --locked --target wasm32-unknown-unknown -p vsms-sdk-wasm "${features[@]}"
+	cd "$rust"
+	CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
+		cargo build --release --locked --target wasm32-unknown-unknown -p vsms-sdk-wasm "${features[@]}"
 )
 
 rm -rf "$out"
 mkdir -p "$out"
 wasm-bindgen --target nodejs --out-dir "$out" --out-name vsms_sdk_wasm \
-  "${CARGO_TARGET_DIR:-$rust/target}/wasm32-unknown-unknown/release/vsms_sdk_wasm.wasm"
+	"${CARGO_TARGET_DIR:-$rust/target}/wasm32-unknown-unknown/release/vsms_sdk_wasm.wasm"
 
 # wasm-bindgen's Node glue reads its `.wasm` from `${__dirname}` at load time.
 # A bundler that inlines the glue (Next's Turbopack does, for a workspace
@@ -72,8 +72,8 @@ awk -v b64file="$b64" '
   { print }
   END { if (path != 1 || bytes != 1) exit 1 }
 ' "$glue" >"$glue.embedded" || {
-  echo "build-wasm: FAIL — wasm-bindgen's glue no longer reads its module the way this script rewrites." >&2
-  exit 1
+	echo "build-wasm: FAIL — wasm-bindgen's glue no longer reads its module the way this script rewrites." >&2
+	exit 1
 }
 mv "$glue.embedded" "$glue"
 rm -f "$b64" "$out/vsms_sdk_wasm_bg.wasm"
