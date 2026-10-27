@@ -1335,12 +1335,14 @@ the user-facing account; this is what to know before touching it.
   tests and the live script use); it was `>=20` for `jose`.
 - **Tests run against a verifier that shares no code with the SDK.** `sdks/rust/vsms-sdk-wasm`'s `responder` feature
   (`src/responder.rs`, `cfg(any(test, feature = "responder"))`) is cratestack's `CoseEnvelope::server`: it finds the
-  operation from the URL, rebuilds the binding, verifies, refuses a replay and seals the answer. 32 native Rust tests and one doctest run
+  operation from the URL, rebuilds the binding, verifies, refuses a replay and seals the answer. 34 native Rust tests and one doctest run
   the sealing core against it (`cargo test`); `build:wasm-test` builds the same crate with the feature into `wasm-test/`
   (gitignored, not in `files`) for the Node suites in `test/`, which start real `node:http` servers and assert raw wire
   bytes (no `Authorization`, a COSE `Content-Type`, the redirect target never contacted, the cap, one attempt, the key
   forms, the config errors). `test/esp256.test.ts` signs with a WebCrypto non-extractable P-256 key. `support/` and `live/`
-  sit outside `src/` and `test/` on purpose: `node --test` treats everything under a `test/` directory as a test.
+  sit outside `src/` and `test/` on purpose: `node --test` treats everything under a `test/` directory as a test. `pnpm test`
+  runs `scripts/run-tests.mjs`, which names the files, turns type stripping on and **fails when fewer than 70 tests ran**:
+  `node --test` exits 0 over an empty suite, and before Node 22.18 it does not look for `.ts` files at all.
 - **Run against a real gateway** (2026-10-27, no GitHub job does): a scratch Postgres 16.15 cluster, `sms-migrate`,
   `sms-gateway bootstrap`, `create-app`, a generated Ed25519 key registered with `register-client`, a SenderId row, then
   `sms-gateway serve` with two generated envelope keys. `pnpm --filter @vaam-apps/vsms-node run test:live`
@@ -1359,7 +1361,36 @@ the user-facing account; this is what to know before touching it.
 - **The parity rule** is `cargo xtask sdk-parity-check` (`.xtask/src/sdk_parity.rs`, in `all-checks`, `just ci` step 9 and
   `ci.yml`'s `rules` job): the audience literal is equal in `sms_api::envelope`, `vsms-sdk-rust` and the wasm crate; the
   wasm crate expands `../vsms-sdk-rust/schema.cstack` alone and holds no `.cstack` of its own; it stays a workspace member
-  and the package `build-wasm.sh` builds.
+  and the package `build-wasm.sh` builds. Membership is read from `members` and `exclude` of `sdks/rust/Cargo.toml` (a name
+  in `exclude`, in a comment, or under `default-members` does not count), the build script is matched with its comments
+  removed, and every `ClientEnvelope::new(_, …)` in the Rust SDK and the wasm crate must pass the `AUDIENCE` constant itself:
+  a literal that happens to equal it today is a second place to change.
+- **Review of #444 (2026-10-27) found four ways the above did not hold, and one rule for each.**
+  1. *A signing callback is the caller's code.* `Uint8Array::new` over a returned `-1`, `1e10` or an object with a
+     throwing `length` throws inside a wasm future: an uncaught exception that kills a default Node process, and leaves
+     wasm-bindgen's task queue marked as running so every later call on every sealer hangs. `signature_bytes` (`js.rs`)
+     accepts a `Uint8Array` or `ArrayBuffer` of at most 128 bytes, copied through `Reflect::construct` so that even a
+     detached buffer comes back as a `Result`; `identity.ts` checks the same before the module sees the value. A signer that
+     never answers is bounded: `timeoutMs` is **one** deadline for signing, sending and reading (`withinDeadline`, and the
+     request gets what is left of it), and the sealer that hung once signs the next call.
+  2. *The URL sent must be the target signed.* `baseUrl` is parsed once (`base-url.ts`): `http:`/`https:`, and a query,
+     a fragment or userinfo is a `config` error (a bare `#` or `?` parses to an empty `hash`/`search`, so the text is
+     checked; userinfo would become `Authorization: Basic`, a shared secret). `sealedUrl` builds the URL from the parsed
+     base and the signed target and refuses unless its `pathname + search` equals them, and `concrete_path` refuses `.`
+     and `..` (they survive percent-encoding and a URL parser resolves them away). All of it fails closed before the send,
+     as `seal`.
+  3. *`seal` means nothing was sent.* The wasm module's `OpenError::Other` and a non-UTF-8 answer now cross as
+     `unreadable`, and `sealed-call.ts` maps every failure after the send to `unsigned`, `unverified` or `unreadable`,
+     including a trap that is not a module failure object at all; `sealFailure` is the only producer of `seal`.
+  4. *`sdk-parity-check` accepted trees that broke its rules*: a crate in `exclude`, an audience literal beside an
+     unchanged constant, and the build command in a comment. See the parity rule above; each has a unit case and was run
+     against the real tree.
+
+  Smaller: `vsms-sdk-rust`'s `send_message` now reads at most `MAX_RESPONSE_BYTES` (8 MiB, as the Node SDK does) and
+  fails `SdkError::ResponseTooLarge`, on the declared length and on the bytes that arrive; the wasm crate wipes the seed
+  copies it holds (`zeroize`); `RUSTUP_TOOLCHAIN` is a hashed `env` of the two turbo tasks because it changes what is built;
+  the replay hint is compared case-insensitively; the ESP256 suite forces a low-s and a high-s signature instead of getting
+  either by chance; the esbuild bundle claim in the README now says it is untested.
 
 **Guard-failure proofs** (each guard loosened, seen to fail, restored; the Rust ones with `cargo test --lib` in
 `sdks/rust/vsms-sdk-wasm`, the Node ones with `node --test` after `build:ts`):
