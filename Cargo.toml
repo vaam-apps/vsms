@@ -99,10 +99,11 @@ publish = false
 sms-core = { path = "./backends/crates/sms-core" }
 sms-encoding = { path = "./backends/crates/sms-encoding" }
 sms-msisdn = { path = "./backends/crates/sms-msisdn" }
-# #41: outbound webhook HMAC signing/verification and secret generation.
-# Pure (bar generate_secret's OS randomness) and deliberately not
-# schema-coupled — both sms-api (rotateWebhookSecret) and sms-worker's
-# hooks role (#40) depend on this directly rather than on each other.
+# #41, VS-8: the sealer an outbound webhook delivery is signed with (a
+# COSE_Sign1 request under the gateway's envelope key), and the digest of the
+# delivery contract. Deliberately not schema-coupled: sms-worker's hooks role
+# (#40) and its binary depend on this directly, and the SDKs hold a copy of
+# the digest that `cargo xtask sdk-parity-check` keeps equal.
 sms-webhook = { path = "./backends/crates/sms-webhook" }
 # #70/#71: metric name/help/label definitions, so sms-api and sms-worker
 # (two separate processes — see the crate's own module doc) can't drift
@@ -173,6 +174,12 @@ axum = "0.8"
 # subscription and certificate endpoints.
 url = "2"
 
+# sms-webhook's `url_can_be_sealed`: the pattern a `sealed` WebhookEndpoint's URL
+# must match, run by the procedure that switches an endpoint's mode and by the
+# tests that hold it narrower than `delivery_route`. The same pattern is a CHECK
+# in migration 0010. Already in the tree through cratestack.
+regex = "1"
+
 anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -227,11 +234,11 @@ sha2 = "0.10"
 # #134: keys `sha2` for `Procedures`'s `msisdnHash`/`bodyHash` HMAC under a
 # server-held pepper.
 hmac = "0.12"
-# #41: sms-webhook's hex encode/decode for signature bytes. Already present
-# in Cargo.lock transitively (0.4.3, pulled in by several crypto-adjacent
-# dependencies already in the tree) — named directly here rather than
-# hand-rolling a third hex codec alongside pepper.rs's manual `{byte:02x}`
-# loop and whatever else already exists transitively.
+# Hex encode/decode (the audit chain's hashes, a console key's thumbprint).
+# Already present in Cargo.lock transitively (0.4.3, pulled in by several
+# crypto-adjacent dependencies already in the tree) — named directly here
+# rather than hand-rolling a third hex codec alongside pepper.rs's manual
+# `{byte:02x}` loop and whatever else already exists transitively.
 hex = "0.4"
 # VS-5a: `console_keys.rs` checks a console key's proof of possession - a raw
 # ECDSA-P-256-SHA-256 signature, the shape WebCrypto's `sign` returns - over a

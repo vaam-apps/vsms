@@ -76,7 +76,7 @@ export const SCOPE_DESCRIPTIONS: Record<KnownScope, string> = {
   "provider:update": "Edit providers",
   "route:read": "Read routes and simulate routing",
   "sender:manage": "Create and edit sender IDs",
-  "webhook:manage": "Manage webhook endpoints, rotate secrets, replay",
+  "webhook:manage": "Manage webhook endpoints, replay deliveries",
   "optout:manage": "Record and remove opt-outs",
   "dashboard:read": "Read dashboard summaries",
   "audit:read": "Read the audit log",

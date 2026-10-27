@@ -11,12 +11,66 @@ pub const SM001: &str = "SM001";
 /// because `upsert` does not exist when the `@id` carries a default.
 pub const UNIQUE_VIOLATION: &str = "23505";
 
+/// SQLSTATE for `check_violation`.
+pub const CHECK_VIOLATION: &str = "23514";
+
+/// The CHECKs of `0010_sealed_webhooks` that a caller can break with a request
+/// (a row whose mode and columns disagree, an audience or URL the mode cannot
+/// have), and what to tell them. Any other `webhook_endpoints_` CHECK is the
+/// generator's own (`..._enum_check`, `..._length_check`): still the caller's.
+const WEBHOOK_ENDPOINT_RULES: &[(&str, &str)] = &[
+    (
+        "webhook_endpoints_audience_not_vsms_check",
+        "the audience cannot be vsms: that is the name the gateway's own routes answer to",
+    ),
+    (
+        "webhook_endpoints_audience_only_for_sealed_check",
+        "an hmac endpoint names no audience: leave it out (or clear it, when switching from sealed)",
+    ),
+    (
+        "webhook_endpoints_audience_required_for_sealed_check",
+        "a sealed endpoint needs an audience",
+    ),
+    (
+        "webhook_endpoints_delivery_mode_hmac_needs_secret_check",
+        "an hmac endpoint needs a secret",
+    ),
+    (
+        "webhook_endpoints_delivery_mode_sealed_holds_no_secret_check",
+        "a sealed endpoint holds no secret: secret, prevSecret and secretRotatedAt must be null",
+    ),
+    (
+        "webhook_endpoints_url_sealable_for_sealed_check",
+        "a sealed endpoint's URL must be http(s) with an ASCII host, no credentials, query or \
+         fragment, and no `{`, `}` or `%` in its path: a delivery binds the path as its route",
+    ),
+];
+
+/// What a webhook endpoint's CHECK says to a caller, or `None` for a constraint
+/// that is not one of this table's.
+fn webhook_endpoint_rule(constraint: &str) -> Option<String> {
+    if !constraint.starts_with("webhook_endpoints_") {
+        return None;
+    }
+    let message = WEBHOOK_ENDPOINT_RULES
+        .iter()
+        .find(|(name, _)| *name == constraint)
+        .map_or("the endpoint breaks a rule the database holds", |(_, m)| m);
+    Some(format!("{message} ({constraint})"))
+}
+
 /// Map database rejections that are really client errors onto the right shape.
 ///
 /// - `SM001` → [`CratestackError::Conflict`] → HTTP 409.
 /// - `23505` → [`CratestackError::Conflict`] → HTTP 409, so a duplicate
 ///   `idempotencyKey` or a re-inserted webhook attempt reads as "already
 ///   exists" rather than as an internal fault.
+///
+/// - `23514` on a `webhook_endpoints_*` CHECK → [`CratestackError::Validation`]
+///   → HTTP 422 naming the rule, so a request that breaks the delivery mode's
+///   rules is answered as the caller's mistake it is. Only the procedures reach
+///   this: the generated routes do not pass their errors through here, and
+///   answer the same violation as a database error (500).
 ///
 /// Everything else is returned untouched. In particular a genuine database
 /// fault stays a 500, because turning every database error into a 4xx would
@@ -36,6 +90,10 @@ pub fn map_database_error(error: CratestackError) -> CratestackError {
             || "resource already exists".to_owned(),
             |c| format!("resource already exists ({c})"),
         )),
+        Some(CHECK_VIOLATION) => match error.db_constraint().and_then(webhook_endpoint_rule) {
+            Some(message) => CratestackError::Validation(message),
+            None => error,
+        },
         _ => error,
     }
 }
@@ -188,6 +246,58 @@ mod tests {
         let mapped = map_database_error(error);
         assert_eq!(mapped.status_code(), 500);
         assert_eq!(mapped.code(), "DATABASE_ERROR");
+    }
+
+    #[test]
+    fn a_webhook_endpoint_check_is_a_422_that_names_the_rule() {
+        for (name, words) in [
+            (
+                "webhook_endpoints_audience_only_for_sealed_check",
+                "names no audience",
+            ),
+            (
+                "webhook_endpoints_audience_required_for_sealed_check",
+                "needs an audience",
+            ),
+            (
+                "webhook_endpoints_delivery_mode_hmac_needs_secret_check",
+                "needs a secret",
+            ),
+            (
+                "webhook_endpoints_delivery_mode_sealed_holds_no_secret_check",
+                "holds no secret",
+            ),
+            (
+                "webhook_endpoints_url_sealable_for_sealed_check",
+                "URL must be http(s)",
+            ),
+            (
+                "webhook_endpoints_audience_not_vsms_check",
+                "cannot be vsms",
+            ),
+            // The generator's own, which has no sentence of its own.
+            (
+                "webhook_endpoints_delivery_mode_enum_check",
+                "breaks a rule",
+            ),
+        ] {
+            let mapped =
+                map_database_error(db_error(CHECK_VIOLATION, "violates check", Some(name)));
+            assert_eq!(mapped.status_code(), 422, "{name}");
+            let text = mapped.to_string();
+            assert!(text.contains(words) && text.contains(name), "{text}");
+        }
+    }
+
+    #[test]
+    fn any_other_check_violation_stays_a_500() {
+        // A CHECK on another table, or one with no name, is not known to be the
+        // caller's doing.
+        for constraint in [Some("messages_body_check"), None] {
+            let mapped =
+                map_database_error(db_error(CHECK_VIOLATION, "violates check", constraint));
+            assert_eq!(mapped.status_code(), 500);
+        }
     }
 
     #[test]

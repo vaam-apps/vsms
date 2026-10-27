@@ -1,0 +1,102 @@
+The `hmac` delivery mode (`#41`) — HMAC-SHA256 over a canonical string,
+with a Unix timestamp folded into the signed bytes to bound replay to
+event freshness. It is the older of an endpoint's two delivery modes and
+the one every receiver that predates VS-8 verifies; the other is the
+sealed request in the crate root. Both are always available, and an
+endpoint's `deliveryMode` chooses between them (`sealed` is the
+recommended one; a deployment will later be able to switch this one off).
+Pure, with one deliberate exception
+([`generate_secret`], which reads OS randomness): no schema coupling,
+no clock reads — every function that needs "now" takes it as a
+parameter rather than calling one.
+
+`backends/crates/sms-worker`'s `hooks` role is the sender-side caller of
+[`sign_header`] for an `hmac` endpoint; `backends/crates/sms-api`'s
+`rotate_webhook_secret` procedure is the caller of [`generate_secret`].
+`examples/node/webhook-receiver` is the reference *receiver* — an
+independent, from-scratch Node/TypeScript implementation of the exact
+scheme below, kept deliberately separate so this module's own tests
+(see `tests/cross_language_fixtures.rs`) can prove the two agree
+byte-for-byte rather than merely being self-consistent with themselves.
+
+# Headers
+
+§4.4 of `docs/architecture.md` specifies four headers; the `hooks` role
+must send exactly these, named exactly this way — [`HEADER_EVENT`],
+[`HEADER_EVENT_ID`], [`HEADER_TIMESTAMP`], [`HEADER_SIGNATURE`] are the
+constants for them. Use the constants, not a retyped literal, so a typo
+can't silently diverge sender and receiver:
+
+```text
+X-Sms-Event:      message.delivered
+X-Sms-Event-Id:   <WebhookAttempt.sourceEventId, lowercase-hyphenated UUID>
+X-Sms-Timestamp:  <unix seconds, decimal, no sign, no leading zero>
+X-Sms-Signature:  v1=<hex>[,v1=<hex>]   (current secret first, prevSecret second — oldest last)
+```
+
+# Canonical string — the exact bytes that get HMAC'd
+
+```text
+v1\n{timestamp}\n{eventId}\n{sha256_hex(body)}
+```
+
+- `{timestamp}` — the exact ASCII decimal string sent as
+  `X-Sms-Timestamp` (base 10, no sign, no leading zeros — e.g.
+  `1753699200`).
+- `{eventId}` — the exact string sent as `X-Sms-Event-Id`, byte for
+  byte.
+- `sha256_hex(body)` — lowercase hex SHA-256 of the *raw* request body
+  bytes, exactly as they go on the wire. Never a re-serialised or
+  whitespace-normalised copy — that would silently diverge from
+  whatever a receiver hashes off its own raw socket read.
+- Fields are joined by a single `\n` (0x0A, LF only — no CR); there is
+  no trailing newline after the fourth field. See [`canonical_string`],
+  which is exposed publicly precisely so nobody has to reverse-engineer
+  this prose back into bytes.
+
+`HMAC-SHA256(key = secret, message = canonical string)`, lowercase hex,
+is the value that follows `v1=` in `X-Sms-Signature`. See [`sign_v1`].
+
+# Rotation
+
+`X-Sms-Signature` may carry two `v1=` values — current secret first,
+`WebhookEndpoint.prevSecret` second, "oldest last" per §4.4. (The `hooks`
+role passes [`sign_header`] whatever the row holds, as the pre-sealed worker did
+(owner's ruling R5): an empty `secret` signs with the empty key and an empty
+`prevSecret` is a second value, byte for byte what `29f93c4` sent, and the worker
+warns about the endpoint instead of changing the bytes. [`verify`] skips an empty
+candidate secret, so a receiver built on it rejects such a delivery until the
+endpoint is rotated.) A receiver
+should accept if *any* presented value verifies against *any* secret it
+holds; [`verify`] implements exactly that (every presented value
+against every candidate secret, first match wins — order of
+`candidate_secrets` doesn't matter to this function even though
+[`sign_header`]'s caller-facing convention is "current first"). §4.4,
+in its own words: "a job clears `prevSecret` after 24 hours" — that job
+is out of this crate's scope (see `rotate_webhook_secret`'s own doc
+comment in `backends/crates/sms-api/src/procedures.rs` for the current
+scope cut). Once it runs, `prevSecret` naturally stops being a
+candidate because it is no longer stored anywhere — not because of
+anything in this module.
+
+# Public API (the contract `hooks` and `rotate_webhook_secret` code against)
+
+```text
+sign_v1(secret: &str, timestamp: i64, event_id: &str, body: &[u8]) -> String
+sign_header(secrets: &[&str], timestamp: i64, event_id: &str, body: &[u8]) -> String
+verify(candidate_secrets: &[&str], timestamp: i64, event_id: &str, body: &[u8], signature_header: &str) -> bool
+canonical_string(timestamp: i64, event_id: &str, body: &[u8]) -> String
+is_timestamp_fresh(timestamp: i64, now: i64, tolerance_secs: i64) -> bool
+generate_secret() -> String
+```
+
+# Constant-time comparison
+
+[`verify`] never compares a hex string or raw bytes with `==`. Every
+candidate signature is checked via [`hmac::Mac::verify_slice`], which
+performs a `subtle::ConstantTimeEq` comparison internally — the
+standard defence against a timing side channel that would otherwise let
+an attacker recover a valid signature one byte at a time by measuring
+how long a comparison takes to fail.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

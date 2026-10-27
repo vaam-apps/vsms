@@ -12,7 +12,7 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// The suites hold 86 tests. The floor is below that so a few can be deleted on
+// The suites hold 97 tests. The floor is below that so a few can be deleted on
 // purpose, and far above what an undiscovered suite would give (0).
 const FLOOR = 70;
 

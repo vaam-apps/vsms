@@ -6,7 +6,7 @@ use base64::Engine as _;
 use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 
-use crate::responder::{key32, OpenedRequest, Responder};
+use crate::responder::{key32, seal_delivery, OpenedRequest, Responder};
 
 fn failure(message: &str) -> JsValue {
     JsValue::from_str(message)
@@ -144,4 +144,44 @@ impl JsOpenedRequest {
         let _ = Reflect::set(&out, &"body".into(), &Uint8Array::from(sealed.as_slice()));
         Ok(out.into())
     }
+}
+
+/// A webhook delivery as the gateway's worker seals it, signed with the seed of
+/// the pinned server key. `contract_hex` (64 hex characters) replaces the
+/// delivery contract digest, to test that a receiver refuses another one;
+/// `iat_seconds` pins the timestamp. For tests only.
+#[wasm_bindgen(js_name = "sealDelivery")]
+#[allow(
+    unreachable_pub,
+    reason = "wasm-bindgen exports it from this private module; the structs beside it are `pub` for the same reason"
+)]
+pub async fn js_seal_delivery(
+    seed: String,
+    audience: String,
+    route: String,
+    body: String,
+    contract_hex: Option<String>,
+    iat_seconds: Option<f64>,
+) -> Result<Uint8Array, JsValue> {
+    let seed = key32(&seed).map_err(|e| failure(&e))?;
+    let contract = match contract_hex {
+        None => None,
+        Some(hex) => {
+            let bytes = (0..hex.len())
+                .step_by(2)
+                .map(|at| {
+                    hex.get(at..at + 2)
+                        .and_then(|pair| u8::from_str_radix(pair, 16).ok())
+                })
+                .collect::<Option<Vec<u8>>>()
+                .ok_or_else(|| failure("contractHex must be hex"))?;
+            Some(<[u8; 32]>::try_from(bytes).map_err(|_| failure("contractHex must be 32 bytes"))?)
+        }
+    };
+    #[allow(clippy::cast_possible_truncation)]
+    let iat = iat_seconds.map(|seconds| seconds as i64);
+    seal_delivery(&seed, &audience, &route, contract, &body, iat)
+        .await
+        .map(|bytes| Uint8Array::from(bytes.as_slice()))
+        .map_err(|e| failure(&e))
 }

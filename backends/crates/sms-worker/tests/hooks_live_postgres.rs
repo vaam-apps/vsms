@@ -5,6 +5,12 @@
 //! — the `attempt_state_transitions` state machine this PR adds, driven for
 //! real rather than only unit-tested in isolation.
 //!
+//! Both delivery modes (VS-8R): a `sealed` endpoint's deliveries are opened by
+//! a real `EnvelopeLayer`, an `hmac` endpoint's are verified with
+//! `sms_webhook::verify` against the exact bytes `wiremock` recorded, including
+//! the rotation overlap and the unchanged four-field body. The status handling
+//! (retry, dead, 410, breaker) is one path for both and is exercised on each.
+//!
 //! Ignored by default, same convention as this crate's other live suites.
 //! Run explicitly:
 //!
@@ -20,6 +26,8 @@ use sms_api::schema::{
     self, AttemptState, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput,
     UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, webhook_attempt,
 };
+use sms_test_support::webhook_receiver::WebhookReceiver;
+use sms_webhook::{CONTRACT_SHA, Sealer};
 use sms_worker::WorkerContext;
 use sms_worker::hooks;
 use wiremock::matchers::{method, path};
@@ -188,10 +196,12 @@ async fn seed_endpoint(
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: url.to_owned(),
-            eventTypes: " message.delivered ".to_owned(),
-            secret: format!("whsec_test_{suffix}"),
+            deliveryMode: schema::WebhookDeliveryMode::sealed,
+            audience: Some(format!("hooks-test-{suffix}")),
+            secret: None,
             prevSecret: None,
             secretRotatedAt: None,
+            eventTypes: " message.delivered ".to_owned(),
             maskRecipient: true,
             maxAttempts: max_attempts,
             circuitOpenUntil: None,
@@ -199,6 +209,35 @@ async fn seed_endpoint(
         .run(&owner())
         .await
         .expect("seeding the webhook endpoint")
+}
+
+/// An `hmac` endpoint (VS-8R): a secret, no audience, and `prev_secret` while a
+/// rotation's overlap window is open.
+async fn seed_hmac_endpoint(
+    db: &Cratestack,
+    app_id: &str,
+    url: &str,
+    max_attempts: i64,
+    secret: &str,
+    prev_secret: Option<&str>,
+) -> schema::WebhookEndpoint {
+    db.webhook_endpoint()
+        .create(CreateWebhookEndpointInput {
+            appId: app_id.to_owned(),
+            url: url.to_owned(),
+            deliveryMode: schema::WebhookDeliveryMode::hmac,
+            audience: None,
+            secret: Some(secret.to_owned()),
+            prevSecret: prev_secret.map(str::to_owned),
+            secretRotatedAt: prev_secret.map(|_| Utc::now()),
+            eventTypes: " message.delivered ".to_owned(),
+            maskRecipient: true,
+            maxAttempts: max_attempts,
+            circuitOpenUntil: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the hmac webhook endpoint")
 }
 
 /// Seeds one `pending` `WebhookAttempt` — the shape #38's own subscribers
@@ -296,24 +335,52 @@ fn worker_context(db: Cratestack) -> WorkerContext {
             "unused".to_owned(),
             std::sync::Arc::new(NeverCalled) as std::sync::Arc<dyn sms_provider::SmsProvider>,
         )])),
+        webhook_sealer: Some(Sealer::new(vsms_signer()).expect("a sealer")),
     }
 }
 
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .expect("reqwest client builder with only a timeout set never fails")
+/// vsms's envelope signing key, as the worker would load it from its file.
+fn vsms_signer() -> cratestack::cose::Ed25519Signer {
+    cratestack::cose::Ed25519Signer::from_seed(&[0x42; 32])
 }
 
-/// Happy path end to end: claim, sign, POST, `-> succeeded`. Verifies the
-/// signature against `sms_webhook::verify` — the same function a real
-/// receiver would call — and the envelope shape §8.4 documents, against the
-/// actual bytes wiremock received, not a reconstruction of what should have
-/// been sent.
+/// What a receiver pins: the public half of [`vsms_signer`].
+fn vsms_public_key() -> [u8; 32] {
+    vsms_signer()
+        .verify_key()
+        .ed25519_bytes()
+        .expect("an Ed25519 key")
+}
+
+/// The headers `wiremock` recorded, as the `(name, value)` pairs a receiver sees.
+fn wire_headers(request: &wiremock::Request) -> Vec<(String, String)> {
+    request
+        .headers
+        .iter()
+        .map(|(name, value)| (name.as_str().to_owned(), value.to_str().unwrap().to_owned()))
+        .collect()
+}
+
+/// A receiver the way vaam configures it: a real `EnvelopeLayer`, pinned to
+/// vsms's key, answering for `audience` on `/hook`.
+fn receiver_for(audience: &str) -> WebhookReceiver {
+    WebhookReceiver::new(&[vsms_public_key()], audience, &["/hook"], CONTRACT_SHA)
+}
+
+/// The client the worker itself builds: a test that built its own would prove
+/// nothing about the redirect policy production runs with.
+fn http_client() -> hooks::HttpClients {
+    hooks::build_http_client()
+}
+
+/// Happy path end to end: claim, seal, POST, `-> succeeded`. The bytes
+/// `wiremock` recorded are handed to a real `EnvelopeLayer` (`Required`)
+/// configured with vsms's public key and the endpoint's audience — what vaam
+/// runs on `/webhooks/vsms` — and the envelope its handler sees is the one
+/// §8.4 documents, with the event id inside the sealed body.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn a_successful_delivery_reaches_succeeded_with_a_verifiable_signature_and_envelope() {
+async fn a_successful_delivery_reaches_succeeded_and_a_real_envelope_layer_opens_it() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
     let suffix = unique_suffix();
@@ -360,59 +427,1042 @@ async fn a_successful_delivery_reaches_succeeded_with_a_verifiable_signature_and
         .expect("request recording is on by default");
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
+    let headers = wire_headers(request);
 
-    let event_id = request
-        .headers
-        .get("x-sms-event-id")
-        .expect("event id header present")
-        .to_str()
-        .unwrap();
-    let timestamp: i64 = request
-        .headers
-        .get("x-sms-timestamp")
-        .expect("timestamp header present")
-        .to_str()
-        .unwrap()
-        .parse()
-        .expect("timestamp is a decimal integer");
-    let signature = request
-        .headers
-        .get("x-sms-signature")
-        .expect("signature header present")
-        .to_str()
-        .unwrap();
-    assert_eq!(
-        request
-            .headers
-            .get("x-sms-event")
-            .unwrap()
-            .to_str()
-            .unwrap(),
-        "message.delivered"
-    );
-
+    // No HMAC scheme is left on the wire: not the signature, not the timestamp,
+    // and not the unauthenticated event headers the seal made redundant.
+    for (name, _) in &headers {
+        assert!(
+            !name.starts_with("x-sms") && !name.contains("signature"),
+            "unexpected header {name}"
+        );
+    }
     assert!(
-        sms_webhook::verify(
-            &[&endpoint.secret],
-            timestamp,
-            event_id,
-            &request.body,
-            signature
-        ),
-        "the signature over the exact bytes wiremock received must verify against the \
-         endpoint's own secret"
+        headers
+            .iter()
+            .any(|(name, value)| name == "content-type" && value.starts_with("application/cose")),
+        "{headers:?}"
     );
 
-    let envelope: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    let receiver = receiver_for(endpoint.audience.as_deref().expect("a sealed endpoint"));
+    let verdict = receiver.deliver("/hook", &headers, &request.body).await;
+    assert_eq!(
+        verdict.status, 200,
+        "a real EnvelopeLayer pinned to vsms's key and the endpoint's audience must accept \
+         exactly the bytes the worker sent"
+    );
+
+    let bodies = receiver.bodies();
+    assert_eq!(bodies.len(), 1);
+    let envelope: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
     assert_eq!(envelope["id"], attempt.id);
+    assert_eq!(envelope["eventId"], attempt.sourceEventId.to_string());
     assert_eq!(envelope["type"], "message.delivered");
     assert!(envelope["occurredAt"].is_string());
+    // The two values a receiver compares with its own to know the delivery was
+    // made for it, not merely addressed to its audience: signed with the rest.
+    assert_eq!(envelope["appId"], endpoint.appId);
+    assert_eq!(envelope["endpointId"], endpoint.id);
     assert_eq!(envelope["data"]["messageId"], "cmsg000000000000000000");
 
     // A clean delivery must not touch the endpoint's failure bookkeeping.
     let endpoint_after = reread_endpoint(&db, &endpoint.id).await;
     assert_eq!(endpoint_after.consecutiveFailures, 0);
     assert!(endpoint_after.circuitOpenUntil.is_none());
+}
+
+/// The worker's actual bytes, offered to receivers that are wrong in one way
+/// each: another audience, a flipped bit, a second delivery of the same bytes.
+/// Each is refused by the real layer, so none of the guards in `sms-webhook`'s
+/// own suite is a property of a test fixture the worker does not produce.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn what_the_worker_sent_is_refused_by_a_wrong_audience_a_tampering_and_a_replay() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
+    seed_attempt(&db, &endpoint.id, "cmsgA", "message.delivered", "{}").await;
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds");
+    let requests = server.received_requests().await.expect("recording is on");
+    assert_eq!(requests.len(), 1);
+    let headers = wire_headers(&requests[0]);
+    let body = requests[0].body.clone();
+
+    // Another receiver's audience.
+    let elsewhere = receiver_for("some-other-service");
+    assert_eq!(
+        elsewhere.deliver("/hook", &headers, &body).await.status,
+        401
+    );
+    assert_eq!(elsewhere.bodies(), Vec::<String>::new());
+
+    // One flipped bit.
+    let mut tampered = body.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0x01;
+    let receiver = receiver_for(endpoint.audience.as_deref().expect("a sealed endpoint"));
+    assert_eq!(
+        receiver.deliver("/hook", &headers, &tampered).await.status,
+        401
+    );
+
+    // The genuine bytes open once, and only once.
+    assert_eq!(receiver.deliver("/hook", &headers, &body).await.status, 200);
+    assert_eq!(receiver.deliver("/hook", &headers, &body).await.status, 401);
+    assert_eq!(receiver.bodies().len(), 1);
+}
+
+/// A retry is a **new** sealed request: a fresh nonce and timestamp over the
+/// same `id` and `eventId`. Both attempts open under one receiver (a re-sent
+/// nonce would be refused as a replay), and the first one's bytes are not the
+/// second's.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_retry_is_sealed_afresh_with_the_same_event_id() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgR", "message.delivered", "{}").await;
+
+    let ctx = worker_context(db.clone());
+    let http = http_client();
+    hooks::tick(&ctx, &sys(), "test-worker", &http)
+        .await
+        .expect("first tick");
+    assert_eq!(
+        reread_attempt(&db, &attempt.id).await.state,
+        AttemptState::failed
+    );
+    // The first backoff entry is 1 s.
+    tokio::time::sleep(std::time::Duration::from_millis(1_300)).await;
+    hooks::tick(&ctx, &sys(), "test-worker", &http)
+        .await
+        .expect("second tick");
+    assert_eq!(
+        reread_attempt(&db, &attempt.id).await.state,
+        AttemptState::succeeded
+    );
+
+    let requests = server.received_requests().await.expect("recording is on");
+    assert_eq!(requests.len(), 2);
+    assert_ne!(
+        requests[0].body, requests[1].body,
+        "a retry must not resend the first bytes"
+    );
+
+    let receiver = receiver_for(endpoint.audience.as_deref().expect("a sealed endpoint"));
+    for request in &requests {
+        assert_eq!(
+            receiver
+                .deliver("/hook", &wire_headers(request), &request.body)
+                .await
+                .status,
+            200
+        );
+    }
+    let bodies = receiver.bodies();
+    let ids: Vec<serde_json::Value> = bodies
+        .iter()
+        .map(|body| serde_json::from_str::<serde_json::Value>(body).unwrap())
+        .collect();
+    assert_eq!(ids[0]["id"], ids[1]["id"]);
+    assert_eq!(ids[0]["eventId"], ids[1]["eventId"]);
+}
+
+/// A redirect is a refusal, not a hop: the sealed bytes (recipient and text
+/// included) are never re-sent to a host the seal was not made for.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_redirect_is_not_followed() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(307).insert_header("location", "/elsewhere"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/elsewhere"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgT", "message.delivered", "{}").await;
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds");
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(reread.state, AttemptState::failed);
+    assert_eq!(reread.lastStatusCode, Some(307));
+}
+
+/// Writes `value` into one of an endpoint's secret columns behind the API's back,
+/// with `psql`. The API refuses a secret under 32 characters, so a short or empty
+/// one exists only from before that bound, or from a hand edit; the worker still
+/// signs with it (R5), and this is how the test gets one.
+async fn force_column(endpoint_id: &str, column: &str, value: &str) {
+    assert!(matches!(column, "secret" | "prev_secret"), "{column}");
+    let database_url = sms_test_support::database_url().await;
+    let output = std::process::Command::new("psql")
+        .arg(database_url)
+        .args(["-v", "ON_ERROR_STOP=1", "-q", "-c"])
+        .arg(format!(
+            "UPDATE webhook_endpoints SET {column} = '{value}' WHERE id = '{endpoint_id}'"
+        ))
+        .output()
+        .expect("spawning `psql`");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// An `hmac` row whose `secret` and `prevSecret` are empty (a row from before the
+/// API's 32-character bound, or a hand edit) is delivered exactly as it was at
+/// `29f93c4`: signed with the empty key, the empty previous secret a second
+/// `v1=` value. Owner's ruling R5: vsms serves apps beyond vaam, so the HMAC
+/// delivery stays byte-identical for the receivers built against it. The
+/// worker warns instead of withholding (`hooks.rs`'s unit test reads the line).
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_hmac_endpoint_with_empty_secrets_is_delivered_signed_with_the_empty_key() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", server.uri()),
+        1,
+        "whsec_to_be_emptied_0123456789abcdef0123456789",
+        Some("whsec_prev_to_be_emptied_0123456789abcdef01234"),
+    )
+    .await;
+    force_column(&endpoint.id, "secret", "").await;
+    force_column(&endpoint.id, "prev_secret", "").await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgE", "message.delivered", "{}").await;
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds");
+
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(reread.state, AttemptState::succeeded, "{reread:?}");
+    assert_eq!(reread.attempts, 1);
+    let requests = server.received_requests().await.expect("recording is on");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    let header = |name: &str| {
+        request
+            .headers
+            .get(name)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    };
+    let timestamp: i64 = header("x-sms-timestamp").parse().unwrap();
+    let empty_key = sms_webhook::sign_v1(
+        "",
+        timestamp,
+        &attempt.sourceEventId.to_string(),
+        &request.body,
+    );
+    assert_eq!(
+        header("x-sms-signature"),
+        format!("v1={empty_key},v1={empty_key}"),
+        "the empty secret signs, and the empty previous secret is a second value"
+    );
+    assert_eq!(
+        reread_endpoint(&db, &endpoint.id).await.consecutiveFailures,
+        0
+    );
+}
+
+/// A process with no signing key (VS-8R) still delivers an `hmac` endpoint,
+/// which needs none: the signature is the endpoint's own secret.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_worker_without_a_signing_key_still_delivers_an_hmac_endpoint() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", server.uri()),
+        8,
+        "whsec_nokey_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgK", "message.delivered", "{}").await;
+
+    let ctx = WorkerContext {
+        webhook_sealer: None,
+        ..worker_context(db.clone())
+    };
+    hooks::tick(&ctx, &sys(), "test-worker", &http_client())
+        .await
+        .expect("tick succeeds without a key");
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(reread.state, AttemptState::succeeded);
+}
+
+/// Enough due `sealed` attempts to fill more than the claim's over-fetch window
+/// (`BUDGET` 20 times `CANDIDATE_OVERFETCH_FACTOR` 3 = 60), all due *earlier* than
+/// the `hmac` attempt the tests then seed, so a worker that fetched first and
+/// filtered after would find only sealed rows and starve the `hmac` one.
+const SEALED_BACKLOG: usize = 70;
+
+/// Seeds [`SEALED_BACKLOG`] due `sealed` attempts to `url`, each due an hour ago.
+async fn seed_sealed_backlog(
+    db: &Cratestack,
+    suffix: &str,
+    app_id: &str,
+    url: &str,
+) -> Vec<schema::WebhookAttempt> {
+    let endpoint = seed_endpoint(db, suffix, app_id, url, 8).await;
+    let mut attempts = Vec::new();
+    for n in 0..SEALED_BACKLOG {
+        let attempt = seed_attempt(
+            db,
+            &endpoint.id,
+            &format!("cmsgS{n}"),
+            "message.delivered",
+            "{}",
+        )
+        .await;
+        let due_earlier = db
+            .webhook_attempt()
+            .update(attempt.id.clone())
+            .set(UpdateWebhookAttemptInput {
+                nextAttemptAt: Some(Some(Utc::now() - Duration::hours(1))),
+                ..Default::default()
+            })
+            .if_match(attempt.version)
+            .run(&sys())
+            .await
+            .expect("making the sealed attempt due earlier");
+        attempts.push(due_earlier);
+    }
+    attempts
+}
+
+fn keyless(db: &Cratestack) -> WorkerContext {
+    WorkerContext {
+        webhook_sealer: None,
+        ..worker_context(db.clone())
+    }
+}
+
+/// A worker with no envelope signing key (VS-8R) delivers every `hmac` endpoint,
+/// which needs none, and does not claim a `sealed` attempt at all: not counted,
+/// not failed, not rescheduled, not touched. The filter is in the claim's own
+/// query, so a sealed backlog larger than the over-fetch window (here 70 rows
+/// due earlier than the `hmac` one) cannot crowd the `hmac` attempt out of it, and
+/// the one `hmac` attempt is delivered by a single tick.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyless_worker_delivers_hmac_past_a_sealed_backlog_and_leaves_the_sealed_rows_alone() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let sealed_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&sealed_server)
+        .await;
+    let sealed = seed_sealed_backlog(
+        &db,
+        &suffix,
+        &app_id,
+        &format!("{}/hook", sealed_server.uri()),
+    )
+    .await;
+
+    let hmac_server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&hmac_server)
+        .await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", hmac_server.uri()),
+        8,
+        "whsec_nokey_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let hmac_attempt = seed_attempt(&db, &endpoint.id, "cmsgH", "message.delivered", "{}").await;
+
+    hooks::tick(&keyless(&db), &sys(), "test-worker", &http_client())
+        .await
+        .expect("tick succeeds without a key");
+
+    assert_eq!(
+        reread_attempt(&db, &hmac_attempt.id).await.state,
+        AttemptState::succeeded,
+        "the hmac attempt is delivered within one tick, behind a sealed backlog"
+    );
+    for before in &sealed {
+        let after = reread_attempt(&db, &before.id).await;
+        assert_eq!(after.state, AttemptState::pending, "{after:?}");
+        assert_eq!(
+            after.attempts, 0,
+            "a sealed row a keyless worker cannot serve is not counted"
+        );
+        assert_eq!(after.version, before.version, "and not written at all");
+    }
+    assert!(sealed_server.received_requests().await.unwrap().is_empty());
+}
+
+/// ... and a worker that holds the key then delivers the sealed rows the keyless
+/// one left, each once and counted once (the claim takes `BUDGET` rows a tick).
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyed_worker_then_delivers_the_sealed_rows_a_keyless_one_left() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(u64::try_from(SEALED_BACKLOG).unwrap())
+        .mount(&server)
+        .await;
+    let sealed =
+        seed_sealed_backlog(&db, &suffix, &app_id, &format!("{}/hook", server.uri())).await;
+
+    hooks::tick(&keyless(&db), &sys(), "test-worker", &http_client())
+        .await
+        .expect("tick succeeds without a key");
+    assert!(server.received_requests().await.unwrap().is_empty());
+
+    let keyed = worker_context(db.clone());
+    for _ in 0..SEALED_BACKLOG.div_ceil(20) {
+        hooks::tick(&keyed, &sys(), "test-worker", &http_client())
+            .await
+            .expect("tick succeeds with the key");
+    }
+    for before in &sealed {
+        let after = reread_attempt(&db, &before.id).await;
+        assert_eq!(after.state, AttemptState::succeeded, "{after:?}");
+        assert_eq!(after.attempts, 1);
+    }
+}
+
+/// The crash-reclaim half of the claim has the same filter: a `delivering` sealed
+/// row whose lease expired is not taken by a keyless worker (it keeps its dead
+/// owner, its version and its count), while an expired `hmac` one is, and a keyed
+/// worker takes the sealed one afterwards without counting a second attempt.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_expired_lease_on_a_sealed_row_is_not_reclaimed_by_a_keyless_worker() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let url = format!("{}/hook", server.uri());
+    let sealed_endpoint = seed_endpoint(&db, &suffix, &app_id, &url, 8).await;
+    let hmac_endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &url,
+        8,
+        "whsec_reclaim_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let mut crashed = Vec::new();
+    for (endpoint, aggregate) in [(&sealed_endpoint, "cmsgR1"), (&hmac_endpoint, "cmsgR2")] {
+        let attempt = seed_attempt(&db, &endpoint.id, aggregate, "message.delivered", "{}").await;
+        crashed.push(
+            db.webhook_attempt()
+                .update(attempt.id.clone())
+                .set(UpdateWebhookAttemptInput {
+                    state: Some(AttemptState::delivering),
+                    attempts: Some(1),
+                    leaseOwner: Some(Some("crashed-worker".to_owned())),
+                    leaseUntil: Some(Some(Utc::now() - Duration::seconds(5))),
+                    ..Default::default()
+                })
+                .if_match(attempt.version)
+                .run(&sys())
+                .await
+                .expect("simulating a crashed worker's expired lease"),
+        );
+    }
+    let (sealed_row, hmac_row) = (&crashed[0], &crashed[1]);
+
+    hooks::tick(&keyless(&db), &sys(), "test-worker", &http_client())
+        .await
+        .expect("tick succeeds without a key");
+    let untouched = reread_attempt(&db, &sealed_row.id).await;
+    assert_eq!(untouched.state, AttemptState::delivering, "{untouched:?}");
+    assert_eq!(untouched.leaseOwner.as_deref(), Some("crashed-worker"));
+    assert_eq!(untouched.version, sealed_row.version);
+    assert_eq!(
+        reread_attempt(&db, &hmac_row.id).await.state,
+        AttemptState::succeeded,
+        "an expired hmac lease is reclaimed by a keyless worker"
+    );
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds with the key");
+    let reclaimed = reread_attempt(&db, &sealed_row.id).await;
+    assert_eq!(reclaimed.state, AttemptState::succeeded, "{reclaimed:?}");
+    assert_eq!(reclaimed.attempts, 1, "resumed, not counted twice");
+}
+
+/// A keyless worker must not leave sealed rows pending silently: `SealedBacklogWatch`
+/// counts the due sealed attempts it cannot serve and `warn`s, naming
+/// `--envelope-signing-key-file` and the count, at most every five minutes. A worker
+/// that holds the key has nothing to say, and a count of zero says nothing.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyless_worker_says_how_many_sealed_attempts_it_cannot_serve_every_five_minutes() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let (logs, _guard_logs) = capture_logs();
+    let watch = hooks::SealedBacklogWatch::new();
+    let start = std::time::Instant::now();
+
+    assert_eq!(
+        watch.report(&keyless(&db), &sys(), start).await.unwrap(),
+        Some(0),
+        "nothing waiting: the query runs and says nothing"
+    );
+    assert!(!logs.text().contains("WARN"), "{}", logs.text());
+
+    let sealed =
+        seed_sealed_backlog(&db, &suffix, &app_id, "https://hooks.example.test/hook").await;
+    // Not counted: an `hmac` attempt, which a keyless worker serves.
+    let hmac_endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/hmac",
+        8,
+        "whsec_count_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    seed_attempt(&db, &hmac_endpoint.id, "cmsgC1", "message.delivered", "{}").await;
+    // Counted: a sealed attempt a crashed worker left `delivering`, lease expired.
+    db.webhook_attempt()
+        .update(sealed[0].id.clone())
+        .set(UpdateWebhookAttemptInput {
+            state: Some(AttemptState::delivering),
+            leaseOwner: Some(Some("crashed-worker".to_owned())),
+            leaseUntil: Some(Some(Utc::now() - Duration::seconds(5))),
+            ..Default::default()
+        })
+        .if_match(sealed[0].version)
+        .run(&sys())
+        .await
+        .expect("abandoning one sealed attempt");
+
+    let interval = hooks::SEALED_BACKLOG_WARNING_EVERY;
+    assert_eq!(
+        watch
+            .report(&keyless(&db), &sys(), start + interval / 2)
+            .await
+            .unwrap(),
+        None,
+        "not due: no query, no line"
+    );
+    assert!(!logs.text().contains("WARN"), "{}", logs.text());
+
+    let count = watch
+        .report(&keyless(&db), &sys(), start + interval)
+        .await
+        .unwrap();
+    assert_eq!(count, Some(SEALED_BACKLOG));
+    let text = logs.text();
+    assert_eq!(text.matches("WARN").count(), 1, "{text}");
+    assert!(text.contains("--envelope-signing-key-file"), "{text}");
+    assert!(text.contains(&format!("{SEALED_BACKLOG}")), "{text}");
+
+    assert_eq!(
+        hooks::SealedBacklogWatch::new()
+            .report(&worker_context(db.clone()), &sys(), start + interval)
+            .await
+            .unwrap(),
+        None,
+        "a worker with the key serves them: nothing to report"
+    );
+}
+
+/// What `tracing` is handed while the returned guard lives (thread-local: this
+/// file's tests run on `#[tokio::test]`'s current-thread runtime).
+#[derive(Clone, Default)]
+struct Logs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl Logs {
+    fn text(&self) -> String {
+        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+    }
+}
+
+impl std::io::Write for Logs {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+    type Writer = Logs;
+
+    fn make_writer(&'a self) -> Logs {
+        self.clone()
+    }
+}
+
+fn capture_logs() -> (Logs, tracing::subscriber::DefaultGuard) {
+    let logs = Logs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_ansi(false)
+        .finish();
+    (logs, tracing::subscriber::set_default(subscriber))
+}
+
+/// Happy path for an `hmac` endpoint (#41, unchanged): claim, sign, POST,
+/// `-> succeeded`. The signature is checked with `sms_webhook::verify` — what a
+/// receiver calls — over the exact bytes `wiremock` received, the body is the
+/// original four-field envelope (no `eventId`, `appId` or `endpointId`), the
+/// event id travels in the signed header, and nothing a sealed delivery carries
+/// is present (no COSE content type, no `Cratestack-*` header).
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_successful_hmac_delivery_is_signed_and_keeps_the_four_field_body() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", server.uri()),
+        8,
+        "whsec_hmac_delivery_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let payload =
+        r#"{"messageId":"cmsg000000000000000000","to":"+2376****89","state":"delivered"}"#;
+    let attempt = seed_attempt(
+        &db,
+        &endpoint.id,
+        "cmsg000000000000000000",
+        "message.delivered",
+        payload,
+    )
+    .await;
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds");
+
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(reread.state, AttemptState::succeeded);
+    assert_eq!(reread.attempts, 1);
+    assert_eq!(reread.lastStatusCode, Some(200));
+    assert!(reread.deliveredAt.is_some());
+
+    let requests = server.received_requests().await.expect("recording is on");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    let header = |name: &str| {
+        request
+            .headers
+            .get(name)
+            .unwrap_or_else(|| panic!("header {name} present"))
+            .to_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_eq!(header("x-sms-event"), "message.delivered");
+    assert_eq!(header("x-sms-event-id"), attempt.sourceEventId.to_string());
+    assert_eq!(header("content-type"), "application/json");
+    let timestamp: i64 = header("x-sms-timestamp")
+        .parse()
+        .expect("a decimal integer");
+    assert!(
+        sms_webhook::verify(
+            &["whsec_hmac_delivery_0123456789abcdef0123456789abcdef"],
+            timestamp,
+            &header("x-sms-event-id"),
+            &request.body,
+            &header("x-sms-signature"),
+        ),
+        "the signature over the exact bytes received must verify against the endpoint's secret"
+    );
+    assert!(
+        !sms_webhook::verify(
+            &["some-other-secret"],
+            timestamp,
+            &header("x-sms-event-id"),
+            &request.body,
+            &header("x-sms-signature"),
+        ),
+        "and against nothing else"
+    );
+    for sealed_only in ["cratestack-contract", "cratestack-payload-type"] {
+        assert!(request.headers.get(sealed_only).is_none(), "{sealed_only}");
+    }
+
+    let envelope: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    let mut keys: Vec<&str> = envelope
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["data", "id", "occurredAt", "type"]);
+    assert_eq!(envelope["id"], attempt.id);
+    assert_eq!(envelope["type"], "message.delivered");
+    assert_eq!(envelope["data"]["messageId"], "cmsg000000000000000000");
+
+    let endpoint_after = reread_endpoint(&db, &endpoint.id).await;
+    assert_eq!(endpoint_after.consecutiveFailures, 0);
+    assert!(endpoint_after.circuitOpenUntil.is_none());
+}
+
+/// Rotation overlap (#41, §4.4): while `prevSecret` is set, the header carries a
+/// `v1=` for the current secret first and one for the previous secret second,
+/// so a receiver that has learnt only one of them verifies.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_hmac_delivery_in_a_rotation_window_verifies_under_either_secret() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", server.uri()),
+        8,
+        "whsec_new_generation_0123456789abcdef0123456789abcdef",
+        Some("whsec_old_generation_0123456789abcdef0123456789abcdef"),
+    )
+    .await;
+    seed_attempt(&db, &endpoint.id, "cmsgR", "message.delivered", "{}").await;
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds");
+
+    let requests = server.received_requests().await.unwrap();
+    let request = &requests[0];
+    let signature = request.headers["x-sms-signature"].to_str().unwrap();
+    let event_id = request.headers["x-sms-event-id"].to_str().unwrap();
+    let timestamp: i64 = request.headers["x-sms-timestamp"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let values: Vec<&str> = signature.split(',').collect();
+    assert_eq!(values.len(), 2, "{signature}");
+    for (generation, secret) in [
+        (
+            "the new generation",
+            "whsec_new_generation_0123456789abcdef0123456789abcdef",
+        ),
+        (
+            "the old generation",
+            "whsec_old_generation_0123456789abcdef0123456789abcdef",
+        ),
+    ] {
+        assert!(
+            sms_webhook::verify(&[secret], timestamp, event_id, &request.body, signature),
+            "{generation}'s secret must verify the delivery"
+        );
+    }
+    // Current first: the first value is the new secret's alone.
+    assert!(sms_webhook::verify(
+        &["whsec_new_generation_0123456789abcdef0123456789abcdef"],
+        timestamp,
+        event_id,
+        &request.body,
+        values[0],
+    ));
+    assert!(sms_webhook::verify(
+        &["whsec_old_generation_0123456789abcdef0123456789abcdef"],
+        timestamp,
+        event_id,
+        &request.body,
+        values[1],
+    ));
+}
+
+/// The status handling is one path for both modes: a `410 Gone` kills the
+/// attempt and deactivates an `hmac` endpoint exactly as it does a sealed one.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_410_deactivates_an_hmac_endpoint_and_a_500_backs_it_off() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let gone = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(410))
+        .mount(&gone)
+        .await;
+    let failing = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(500))
+        .mount(&failing)
+        .await;
+    let gone_endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", gone.uri()),
+        8,
+        "whsec_a_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let failing_endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", failing.uri()),
+        8,
+        "whsec_b_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let gone_attempt =
+        seed_attempt(&db, &gone_endpoint.id, "cmsgG", "message.delivered", "{}").await;
+    let failing_attempt = seed_attempt(
+        &db,
+        &failing_endpoint.id,
+        "cmsgF",
+        "message.delivered",
+        "{}",
+    )
+    .await;
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds");
+
+    assert_eq!(
+        reread_attempt(&db, &gone_attempt.id).await.state,
+        AttemptState::dead
+    );
+    assert!(!reread_endpoint(&db, &gone_endpoint.id).await.active);
+
+    let failed = reread_attempt(&db, &failing_attempt.id).await;
+    assert_eq!(failed.state, AttemptState::failed);
+    assert_eq!(failed.lastStatusCode, Some(500));
+    assert_eq!(
+        reread_endpoint(&db, &failing_endpoint.id)
+            .await
+            .consecutiveFailures,
+        1
+    );
+}
+
+/// An `hmac` delivery follows redirects as it always did (R5: the scheme is
+/// unchanged for the apps that rely on it, and a receiver behind a `308` keeps
+/// working): the redirected request carries the same signed body and the same
+/// signature headers, and the answer of the final host decides the attempt. A
+/// `sealed` delivery follows none (`a_redirect_is_not_followed`).
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_hmac_redirect_is_followed_and_resends_the_signed_body() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(308).insert_header("location", "/moved"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/moved"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let secret = "whsec_redirected_0123456789abcdef0123456789";
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", server.uri()),
+        8,
+        secret,
+        None,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgT", "message.delivered", "{}").await;
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds");
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(reread.state, AttemptState::succeeded);
+    assert_eq!(reread.lastStatusCode, Some(200));
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "the original and the redirected one");
+    let (first, second) = (&requests[0], &requests[1]);
+    assert_eq!(first.url.path(), "/hook");
+    assert_eq!(second.url.path(), "/moved");
+    assert_eq!(first.body, second.body, "a 308 re-sends the same body");
+    let signature = second.headers["x-sms-signature"].to_str().unwrap();
+    let event_id = second.headers["x-sms-event-id"].to_str().unwrap();
+    let timestamp: i64 = second.headers["x-sms-timestamp"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        sms_webhook::verify(&[secret], timestamp, event_id, &second.body, signature),
+        "the redirected request still verifies"
+    );
 }
 
 /// A retryable failure (500) lands in `failed` with a scheduled retry, and
@@ -659,17 +1709,24 @@ async fn a_masked_recipient_reaches_the_endpoint_unchanged_never_reconstructed()
 
     let requests = server.received_requests().await.expect("recording is on");
     assert_eq!(requests.len(), 1);
-    let envelope: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    // The body on the wire is a sealed message, so the value is read where a
+    // receiver reads it: from the envelope a real `EnvelopeLayer` hands its handler.
+    let receiver = receiver_for(endpoint.audience.as_deref().expect("a sealed endpoint"));
+    let verdict = receiver
+        .deliver("/hook", &wire_headers(&requests[0]), &requests[0].body)
+        .await;
+    assert_eq!(verdict.status, 200, "{verdict:?}");
+    let opened = receiver.bodies().remove(0);
+    let envelope: serde_json::Value = serde_json::from_str(&opened).unwrap();
     assert_eq!(
         envelope["data"]["to"], "+2376****89",
         "the masked value must reach the endpoint byte-for-byte, not a reconstructed real MSISDN"
     );
-    // The full request body must contain no plausible unmasked E.164
+    // The envelope the receiver opened must contain no plausible unmasked E.164
     // Cameroon mobile number for this fixture's own MSISDN — a coarse but
     // real second check that nothing else in the pipeline re-derived one.
-    let body_text = String::from_utf8_lossy(&requests[0].body);
     assert!(
-        !body_text.contains("+237677900000"),
+        !opened.contains("+237677900000"),
         "an unmasked MSISDN must never appear anywhere in the delivered body"
     );
 }

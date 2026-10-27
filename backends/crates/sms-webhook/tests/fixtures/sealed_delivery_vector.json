@@ -1,0 +1,22 @@
+{
+  "$comment": "Written by backends/crates/sms-webhook/tests/sealed_vector.rs; the SDKs hold a byte-identical copy. Do not edit: regenerate with SMS_WEBHOOK_WRITE_VECTORS=1, then biome format and copy it to the SDK.",
+  "appId": "capp00000000000000000",
+  "audience": "vaam",
+  "contractSha256": "c61394a50e9f02ece411674fb3f398ae323e685b7a14f9c7b85538aa33a30423",
+  "ctiHex": "c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7",
+  "endpointId": "cendpoint0000000000000",
+  "headers": [
+    ["content-type", "application/cose; cose-type=\"cose-sign1\""],
+    ["accept", "application/cose; cose-type=\"cose-sign1\""],
+    ["cratestack-contract", "xhOUpQ6fAuw"],
+    ["cratestack-payload-type", "application/json"],
+    ["cratestack-payload-accept", "application/json"]
+  ],
+  "iat": 1793000000,
+  "plaintext": "{\"id\":\"cattempt00000000000000\",\"eventId\":\"11111111-1111-4111-8111-111111111111\",\"type\":\"message.delivered\",\"occurredAt\":\"2026-10-27T10:00:00Z\",\"appId\":\"capp00000000000000000\",\"endpointId\":\"cendpoint0000000000000\",\"data\":{\"messageId\":\"cmsg000000000000000000\",\"to\":\"+2376****89\",\"state\":\"delivered\"}}",
+  "publicKeyHex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+  "route": "/webhooks/vsms",
+  "sealedHex": "d2845827a301320448866eefbd6718c8840fa2061a6adf02400750c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7a059012a7b226964223a2263617474656d70743030303030303030303030303030222c226576656e744964223a2231313131313131312d313131312d343131312d383131312d313131313131313131313131222c2274797065223a226d6573736167652e64656c697665726564222c226f636375727265644174223a22323032362d31302d32375431303a30303a30305a222c226170704964223a22636170703030303030303030303030303030303030222c22656e64706f696e744964223a2263656e64706f696e7430303030303030303030303030222c2264617461223a7b226d6573736167654964223a22636d7367303030303030303030303030303030303030222c22746f223a222b323337362a2a2a2a3839222c227374617465223a2264656c697665726564227d7d58404c2e2135d5ba341c2a5c336d9ec3e632e734aca289c4cd4189527b0a6f5013ff7c5b5da6bcf8f4ac0b62c426d30f3a1363579f7a411dd82bb13d247490082606",
+  "seedHex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+  "url": "https://api.vaam.store/webhooks/vsms"
+}

@@ -18,12 +18,24 @@ It does both halves at once, against real containers, over real HTTP:
 3. Starts a small Express server on `:9000` (`POST /webhooks`) and polls
    `GET /messages/{id}` until the message reaches a terminal state, printing
    a timeline with wall-clock deltas as it goes.
-4. Verifies every inbound webhook's `X-Sms-Signature` — via `signature.ts`,
-   a byte-for-byte copy of `../webhook-receiver/src/signature.ts` (see
-   `verbatim-copy.test.ts`, which fails loudly the moment the two drift).
+4. Opens every inbound webhook in the endpoint's delivery mode (`DEMO_WEBHOOK_MODE`,
+   `sealed` by default: the mode the compose stacks seed). A sealed
+   delivery is opened with the SDK's `WebhookOpener`. It is a
+   sealed request signed with the gateway's own key (the one whose public half
+   is in `server-keys.txt`), addressed to the audience the demo's
+   `WebhookEndpoint` was created with, so there is no secret to hand this
+   container and no signature header to check. The opener is built with the
+   endpoint's own id (the binding: a receiver serves exactly one endpoint) and
+   its app's id, and refuses a delivery made through any other endpoint. In
+   `hmac` mode (the original `X-Sms-Signature` scheme, for an endpoint seeded
+   with `vsms-demo-seed --webhook-secret-out` instead of `--webhook-audience`)
+   it verifies with `src/signature.ts` instead, a byte-for-byte copy of
+   `../webhook-receiver/src/signature.ts` that `verbatim-copy.test.ts` keeps
+   honest, against the secret in `DEMO_WEBHOOK_SECRET` or the file
+   `DEMO_WEBHOOK_SECRET_PATH`.
 
 **Exit code is the whole point.** `0` only if the message reached `delivered`
-**and** at least one webhook for it verified its signature. Anything else is
+**and** at least one webhook for it opened under the gateway's pinned key. Anything else is
 a loud, non-zero failure that names exactly what didn't happen — meant to be
 read from `docker compose logs demo-app` (or `just demo-app`), not just
 trusted to have worked.
@@ -41,7 +53,7 @@ state) — **not** webhook delivery. `sms-worker`'s `hooks` role runs
 *inside* the Compose network and has no route to a process listening on
 the host's own loopback; nothing in `compose.dev.yaml` maps a host port
 onto `hooks`' own outbound reachability, and `hooks` doesn't consult
-`DEMO_WEBHOOK_SECRET` or anything else this process's own environment
+`DEMO_WEBHOOK_AUDIENCE` or anything else this process's own environment
 sets — it delivers to whatever URL is actually stored on the
 `WebhookEndpoint` row, which is Compose-internal by construction. A host
 run's webhook server starts and listens exactly as it does in the
@@ -60,7 +72,6 @@ pnpm install --ignore-workspace --frozen-lockfile
 VSMS_BASE_URL=http://127.0.0.1:8080 \
 VSMS_SIGNING_KEY_PATH=../../../dev-keys/demo-app.pem \
 VSMS_SERVER_KEYS_PATH=../../../dev-keys/server-keys.txt \
-DEMO_WEBHOOK_SECRET=<any placeholder — nothing will call this receiver> \
   pnpm start
 ```
 
@@ -73,28 +84,39 @@ register-client` and pin that gateway's `sms-gateway server-keys`.)
 Every value has a default matching what `compose.dev.yaml`/`compose.demo.yaml`
 pass, so nothing below is required inside those stacks:
 
-| Variable                   | Default                     | What it is                                                                                                                                                                                                                                                                                                                                                                                  |
-| -------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VSMS_BASE_URL`            | `http://sms-gateway:8080`   | The gateway's origin.                                                                                                                                                                                                                                                                                                                                                                       |
-| `VSMS_SIGNING_KEY_PATH`    | `/run/demo/demo-app.pem`    | The app's Ed25519 private key (PKCS#8 PEM); its public half is what `register-client` registered.                                                                                                                                                                                                                                                                                           |
-| `VSMS_SERVER_KEYS_PATH`    | `/run/demo/server-keys.txt` | The gateway's two public sealing keys, as `sms-gateway server-keys` prints them (`current:` / `next:`).                                                                                                                                                                                                                                                                                     |
-| `DEMO_WEBHOOK_SECRET`      | *(unset)*                   | If set, used directly as the signing secret to verify against — **this is the override to pass a deliberately wrong value with, to prove signature verification actually fails closed.** Otherwise read from `DEMO_WEBHOOK_SECRET_PATH`.                                                                                                                                                    |
-| `DEMO_WEBHOOK_SECRET_PATH` | `/secrets/webhook-secret`   | Where `vsms-demo-seed`'s `--webhook-secret-out` wrote the `WebhookEndpoint.secret` it created/found.                                                                                                                                                                                                                                                                                        |
-| `DEMO_WEBHOOK_PREV_SECRET` | *(unset)*                   | An optional second secret accepted alongside `DEMO_WEBHOOK_SECRET`, per §4.4's rotation-overlap design (`sms-webhook`: a receiver is handed both the current and previous secret and accepts either). `vsms-demo-seed`'s own seeded `WebhookEndpoint` always has `prevSecret: None` today, so nothing in the stack drives this — it's wired for completeness, not exercised by `just demo`. |
-| `DEMO_WEBHOOK_PORT`        | `9000`                      | Port this process's own receiver listens on.                                                                                                                                                                                                                                                                                                                                                |
-| `DEMO_TO`                  | `+237677123456`             | Recipient MSISDN.                                                                                                                                                                                                                                                                                                                                                                           |
-| `DEMO_SENDER_ID`           | `VSMS`                      | Must match the `SenderId.value` `vsms-demo-seed` approved.                                                                                                                                                                                                                                                                                                                                  |
-| `DEMO_BODY`                | *(a sample OTP body)*       | Message body.                                                                                                                                                                                                                                                                                                                                                                               |
-| `DEMO_TIMEOUT_MS`          | `90000`                     | Overall deadline — send retries, state polling, and the webhook settle period all share this one budget.                                                                                                                                                                                                                                                                                    |
+| Variable                                          | Default                                  | What it is                                                                                                                                                                                                                                                                            |
+| ------------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VSMS_BASE_URL`                                   | `http://sms-gateway:8080`                | The gateway's origin.                                                                                                                                                                                                                                                                 |
+| `VSMS_SIGNING_KEY_PATH`                           | `/run/demo/demo-app.pem`                 | The app's Ed25519 private key (PKCS#8 PEM); its public half is what `register-client` registered.                                                                                                                                                                                     |
+| `VSMS_SERVER_KEYS_PATH`                           | `/run/demo/server-keys.txt`              | The gateway's two public sealing keys, as `sms-gateway server-keys` prints them (`current:` / `next:`).                                                                                                                                                                               |
+| `DEMO_WEBHOOK_MODE`                               | `sealed`                                 | `sealed` or `hmac`: how the demo's `WebhookEndpoint` is delivered to (anything else refuses to start). The compose stacks seed a sealed one.                                                                                                                                          |
+| `DEMO_WEBHOOK_SECRET`, `DEMO_WEBHOOK_SECRET_PATH` | *(none)*, `/secrets/webhook-secret`      | `hmac` only: the endpoint's signing secret, or the file `vsms-demo-seed --webhook-secret-out` wrote it to.                                                                                                                                                                            |
+| `DEMO_WEBHOOK_PREV_SECRET`                        | *(none)*                                 | `hmac` only: the previous secret while a rotation's overlap window is open; a delivery signed with either verifies.                                                                                                                                                                   |
+| `DEMO_WEBHOOK_AUDIENCE`                           | `demo-app`                               | The audience the demo's `WebhookEndpoint` was created with (`vsms-demo-seed --webhook-audience`). A delivery is addressed to it; **pass a different value to prove the opener fails closed.**                                                                                         |
+| `DEMO_WEBHOOK_ENDPOINT_ID`                        | *(from the file below)*                  | The id of the `WebhookEndpoint` this receiver serves (**required**, here or in the file): the binding between a delivery and this receiver. A delivery made through any other endpoint is refused, even one of the same app that names the same audience. Set, it wins over the file. |
+| `DEMO_WEBHOOK_ENDPOINT_ID_PATH`                   | `/run/demo-endpoint/webhook-endpoint-id` | A file holding the endpoint's id. `vsms-demo-seed --webhook-endpoint-id-out` writes it, and the compose stacks share it with this container through a volume. With neither the variable nor the file the demo refuses to start.                                                       |
+| `DEMO_WEBHOOK_APP_ID`                             | *(learned)*                              | The id of the app the endpoint belongs to. Unset, the demo reads it from the verified answer to its own `getMessage` (the message's `appId`); set, it is used as given, which is how a real receiver is configured. A delivery made for another app is refused.                       |
+| `DEMO_WEBHOOK_PORT`                               | `9000`                                   | Port this process's own receiver listens on.                                                                                                                                                                                                                                          |
+| `DEMO_TO`                                         | `+237677123456`                          | Recipient MSISDN.                                                                                                                                                                                                                                                                     |
+| `DEMO_SENDER_ID`                                  | `VSMS`                                   | Must match the `SenderId.value` `vsms-demo-seed` approved.                                                                                                                                                                                                                            |
+| `DEMO_BODY`                                       | *(a sample OTP body)*                    | Message body.                                                                                                                                                                                                                                                                         |
+| `DEMO_TIMEOUT_MS`                                 | `90000`                                  | Overall deadline — send retries, state polling, and the webhook settle period all share this one budget.                                                                                                                                                                              |
 
-## What "wrong secret" looks like
+## What "wrong audience" looks like
 
-Pass a `DEMO_WEBHOOK_SECRET` that doesn't match what `vsms-demo-seed` actually
-wrote to the `WebhookEndpoint` row, and the message still reaches `delivered`
-(the send/delivery path has no idea this receiver exists) but every received
-webhook logs `[webhook] SIGNATURE VERIFICATION FAILED`, the process reports
-zero verified webhooks, and exits non-zero — proving `verifySignature` fails
-closed rather than accepting whatever arrives.
+Pass a `DEMO_WEBHOOK_AUDIENCE` that doesn't match what `vsms-demo-seed` wrote
+to the `WebhookEndpoint` row, and the message still reaches `delivered` (the
+send/delivery path has no idea this receiver exists) but every received
+webhook logs `[webhook] DELIVERY NOT OPENED`, the process reports zero verified
+webhooks, and exits non-zero. `WebhookOpener` fails closed rather than
+accepting whatever arrives.
+
+A delivery made through a different endpoint than `DEMO_WEBHOOK_ENDPOINT_ID`
+names, or for a different app than `DEMO_WEBHOOK_APP_ID` names, is refused the
+same way, even though everything else about it verifies: one gateway key signs
+every app's deliveries, and anyone who may create endpoints can register one
+under this app with this audience, so the audience alone does not say whose
+delivery it is. The endpoint id is the value only the gateway chooses.
 
 ## Tests
 
@@ -107,13 +129,7 @@ verifies dependencies before every `run` against the *root* workspace
 lockfile, which does not know this standalone package, and refuses. The
 `js` CI job invokes `tsc` and `node --test` the same way.)
 
-`cross-language-vectors.test.ts` checks `verifySignature` against fixtures a
-*third*, independent tool computed (`openssl dgst -sha256 -hmac` — see that
-file's own header). `verbatim-copy.test.ts` checks that this package's copy
-of `signature.ts`/`cross-language-vectors.test.ts` hasn't drifted from
-`../webhook-receiver`'s own originals (a repo-checkout test — it isn't, and
-can't be, run inside the built image, since the sibling directory it reads
-is outside this package's own Docker build context). `decision.test.ts`
+`decision.test.ts`
 covers all four (delivered × verified) quadrants of `decide()` — the one
 function that turns a run's own observations into the process's exit code
 — directly, with no server, no HTTP, no SDK.

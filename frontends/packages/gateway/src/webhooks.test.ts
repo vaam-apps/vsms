@@ -7,7 +7,14 @@
 // everything (an empty column read as "no filter" rather than "no events").
 
 import { describe, expect, it } from "vitest";
-import { packEventTypes, unpackEventTypes } from "./webhooks";
+import { configureGatewayFetch } from "./upstream";
+import {
+  type CreateWebhookEndpointFields,
+  createWebhookEndpoint,
+  generateWebhookSecret,
+  packEventTypes,
+  unpackEventTypes,
+} from "./webhooks";
 
 describe("packEventTypes", () => {
   it("wraps a single value in sentinel spaces", () => {
@@ -48,5 +55,59 @@ describe("unpackEventTypes", () => {
       "message.accepted",
       "message.delivered",
     ]);
+  });
+});
+
+// VS-8R: an `hmac` endpoint is created with a secret generated here, in the
+// exact format `sms_webhook::generate_secret()` produces, and a `sealed` one
+// with an audience and no secret. The gateway answers a mismatch with a
+// database error (CHECKs in migration 0010), so what this module sends is the
+// first line of defence.
+describe("createWebhookEndpoint", () => {
+  const fields = {
+    appId: "capp00000000000000000",
+    url: "https://receiver.example/webhooks/vsms",
+    eventTypes: ["message.delivered" as const],
+    maskRecipient: true,
+    maxAttempts: 8,
+  };
+
+  async function sent(input: CreateWebhookEndpointFields) {
+    const bodies: Record<string, unknown>[] = [];
+    configureGatewayFetch(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({
+          ...bodies[0],
+          id: "cendpoint",
+          eventTypes: " message.delivered ",
+          version: 1,
+        }),
+        { status: 201, headers: { "content-type": "application/json" } },
+      );
+    });
+    const created = await createWebhookEndpoint(input);
+    return { body: bodies[0] ?? {}, created };
+  }
+
+  it("sends a sealed endpoint with its audience and no secret", async () => {
+    const { body, created } = await sent({ ...fields, deliveryMode: "sealed", audience: "vaam" });
+    expect(body.deliveryMode).toBe("sealed");
+    expect(body.audience).toBe("vaam");
+    expect("secret" in body).toBe(false);
+    expect(created.secret).toBeUndefined();
+  });
+
+  it("sends an hmac endpoint with a generated secret and no audience, and hands the secret back", async () => {
+    const { body, created } = await sent({ ...fields, deliveryMode: "hmac" });
+    expect(body.deliveryMode).toBe("hmac");
+    expect("audience" in body).toBe(false);
+    expect(body.secret).toMatch(/^whsec_[0-9a-f]{64}$/);
+    expect(created.secret).toBe(body.secret);
+  });
+
+  it("generates a different secret every time", () => {
+    expect(generateWebhookSecret()).not.toBe(generateWebhookSecret());
+    expect(generateWebhookSecret()).toMatch(/^whsec_[0-9a-f]{64}$/);
   });
 });

@@ -31,6 +31,7 @@ export function EndpointTable({
         <TableRow>
           <TableHead>Active</TableHead>
           <TableHead>URL</TableHead>
+          <TableHead hideBelow="md">Delivery</TableHead>
           <TableHead hideBelow="md">Events</TableHead>
           <TableHead hideBelow="sm">Circuit</TableHead>
           <TableHead align="end" hideBelow="md">
@@ -43,7 +44,7 @@ export function EndpointTable({
           Array.from({ length: 3 }).map((_, i) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: static skeleton rows, never reordered or diffed
             <TableRow key={i}>
-              <TableCell colSpan={5}>
+              <TableCell colSpan={6}>
                 <Skeleton className="h-4 w-full" />
               </TableCell>
             </TableRow>
@@ -51,7 +52,7 @@ export function EndpointTable({
 
         {!isLoading && (endpoints?.length ?? 0) === 0 && (
           <tr>
-            <td colSpan={5}>
+            <td colSpan={6}>
               <InlineEmptyState message="No webhook endpoints configured yet." />
             </td>
           </tr>
@@ -76,6 +77,9 @@ export function EndpointTable({
                 <span className="line-clamp-1 max-w-[220px] sm:max-w-[320px]" title={endpoint.url}>
                   {endpoint.url}
                 </span>
+              </TableCell>
+              <TableCell hideBelow="md">
+                <span className="text-caption text-muted-foreground">{endpoint.deliveryMode}</span>
               </TableCell>
               <TableCell hideBelow="md">
                 <span className="text-caption text-muted-foreground">

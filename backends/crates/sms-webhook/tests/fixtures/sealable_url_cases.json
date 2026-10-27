@@ -1,0 +1,317 @@
+{
+  "$comment": "One corpus, two languages, for the URLs a `sealed` WebhookEndpoint may hold. `pattern` is whether sms_webhook::SEALABLE_URL_PATTERN accepts the text as typed (the database's CHECK is that pattern, and the console's early check is its TypeScript twin, frontends/packages/gateway/src/webhook-rules.ts); `sealable` is whether the worker can also seal for it, that is the pattern AND delivery_route (URL parsing) agreeing. Rows with pattern true and sealable false are the ones the pattern alone lets through, which `@uri` and the worker's delivery_route refuse. sms-webhook's tests/sealable_url_cases.rs and the gateway package's webhook-rules.test.ts both read this file. Add a row when a URL surprises either side.",
+  "cases": [
+    {
+      "url": "https://api.vaam.store/webhooks/vsms",
+      "pattern": true,
+      "sealable": true,
+      "why": "the usual receiver"
+    },
+    {
+      "url": "http://localhost:9000/webhooks",
+      "pattern": true,
+      "sealable": true,
+      "why": "plain http with a port"
+    },
+    {
+      "url": "HTTPS://Example.COM/Hook",
+      "pattern": true,
+      "sealable": true,
+      "why": "the scheme and host are case-insensitive, the path is not folded"
+    },
+    {
+      "url": "https://example.com",
+      "pattern": true,
+      "sealable": true,
+      "why": "no path is the root route"
+    },
+    {
+      "url": "https://example.com/",
+      "pattern": true,
+      "sealable": true,
+      "why": "the root route"
+    },
+    {
+      "url": "https://example.com:1/h",
+      "pattern": true,
+      "sealable": true,
+      "why": "the lowest port"
+    },
+    {
+      "url": "https://example.com:65535/h",
+      "pattern": true,
+      "sealable": true,
+      "why": "the highest port"
+    },
+    {
+      "url": "https://example.com:8443/a/b/",
+      "pattern": true,
+      "sealable": true,
+      "why": "a trailing slash is part of the route"
+    },
+    {
+      "url": "https://[::1]:8443/hook",
+      "pattern": true,
+      "sealable": true,
+      "why": "an IPv6 literal"
+    },
+    {
+      "url": "https://1.2.3.4/hook",
+      "pattern": true,
+      "sealable": true,
+      "why": "an IPv4 literal"
+    },
+    {
+      "url": "https://xn--bcher-kva.example/hook",
+      "pattern": true,
+      "sealable": true,
+      "why": "an internationalised name in its punycode form"
+    },
+    {
+      "url": "https://a-b.example/x",
+      "pattern": true,
+      "sealable": true,
+      "why": "a hyphen inside a label"
+    },
+    {
+      "url": "https://example.com/a;b=c,d:e@f/g-h_i.j~k!l$m&n'o(p)q*r+s",
+      "pattern": true,
+      "sealable": true,
+      "why": "every unreserved and sub-delim character a path may carry"
+    },
+    {
+      "url": "https://bücher.example/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "an internationalised host as typed: the pattern wants ASCII, though URL parsing would punycode it"
+    },
+    {
+      "url": "https://exämple.com/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "a non-ASCII letter in the host"
+    },
+    {
+      "url": "https://my_host.example/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "an underscore in the host: URL parsing allows it, the pattern does not"
+    },
+    {
+      "url": "https://example.com:0/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "port 0: URL parsing allows it, the pattern does not"
+    },
+    {
+      "url": "https://example.com:65536/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "one past the highest port"
+    },
+    {
+      "url": "https://example.com:99999/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "a five-digit port out of range"
+    },
+    {
+      "url": "https://example.com:080/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "a port with a leading zero"
+    },
+    {
+      "url": "https://example.com:/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "an empty port"
+    },
+    {
+      "url": "https://example.com:abc/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "a port that is not a number"
+    },
+    {
+      "url": "https://user:pw@example.com/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "credentials"
+    },
+    {
+      "url": "https://user@example.com/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "a user name"
+    },
+    {
+      "url": "https://example.com/hook?x=1",
+      "pattern": false,
+      "sealable": false,
+      "why": "a query"
+    },
+    {
+      "url": "https://example.com/hook?",
+      "pattern": false,
+      "sealable": false,
+      "why": "a bare query marker"
+    },
+    {
+      "url": "https://example.com/hook#frag",
+      "pattern": false,
+      "sealable": false,
+      "why": "a fragment"
+    },
+    {
+      "url": "https://example.com/hook#",
+      "pattern": false,
+      "sealable": false,
+      "why": "a bare fragment marker"
+    },
+    {
+      "url": "https://example.com/hooks/{tenant}",
+      "pattern": false,
+      "sealable": false,
+      "why": "a route parameter"
+    },
+    {
+      "url": "https://example.com/a%2Fb",
+      "pattern": false,
+      "sealable": false,
+      "why": "a percent escape in the path"
+    },
+    {
+      "url": "https://example.com/a b",
+      "pattern": false,
+      "sealable": false,
+      "why": "a space in the path"
+    },
+    {
+      "url": "ftp://example.com/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "not http(s)"
+    },
+    {
+      "url": "ws://example.com/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "not http(s)"
+    },
+    {
+      "url": "https:///hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "no host"
+    },
+    {
+      "url": "https://-bad.example/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "a host that starts with a hyphen"
+    },
+    {
+      "url": "https://bad-.example/hook",
+      "pattern": true,
+      "sealable": true,
+      "why": "a label that ends with a hyphen: the pattern is not a hostname validator and URL parsing accepts it, so it is sealed for like any other"
+    },
+    {
+      "url": "https://example.com./hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "a trailing dot on the host"
+    },
+    {
+      "url": "https://ex ample.com/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "a space in the host"
+    },
+    {
+      "url": "https://[zz]/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "an IPv6 literal that is not hexadecimal"
+    },
+    {
+      "url": "https://[::1/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "an unclosed IPv6 literal"
+    },
+    {
+      "url": "https://[]/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "an empty IPv6 literal"
+    },
+    {
+      "url": " https://example.com/hook",
+      "pattern": false,
+      "sealable": false,
+      "why": "leading whitespace"
+    },
+    {
+      "url": "https://example.com/hook ",
+      "pattern": false,
+      "sealable": false,
+      "why": "trailing whitespace"
+    },
+    {
+      "url": "https://example.com/hook\n",
+      "pattern": false,
+      "sealable": false,
+      "why": "a trailing newline: $ is the end of the text in every engine"
+    },
+    {
+      "url": "",
+      "pattern": false,
+      "sealable": false,
+      "why": "empty"
+    },
+    {
+      "url": "not a url",
+      "pattern": false,
+      "sealable": false,
+      "why": "not a URL"
+    },
+    {
+      "url": "https://[:]/hook",
+      "pattern": true,
+      "sealable": false,
+      "why": "IPv6-shaped: the pattern accepts, URL parsing refuses, so a sealed row can only be written around @uri"
+    },
+    {
+      "url": "https://[1:2]/hook",
+      "pattern": true,
+      "sealable": false,
+      "why": "too few IPv6 groups: the pattern accepts, URL parsing refuses"
+    },
+    {
+      "url": "https://1.2.3.999/hook",
+      "pattern": true,
+      "sealable": false,
+      "why": "IPv4-shaped with an octet out of range: the pattern accepts, URL parsing refuses"
+    },
+    {
+      "url": "https://999.999.999.999/hook",
+      "pattern": true,
+      "sealable": false,
+      "why": "IPv4-shaped, every octet out of range"
+    },
+    {
+      "url": "https://x.0/hook",
+      "pattern": true,
+      "sealable": false,
+      "why": "a numeric last label: URL parsing reads the host as an IPv4 address and refuses it"
+    },
+    {
+      "url": "https://example.0/hook",
+      "pattern": true,
+      "sealable": false,
+      "why": "a numeric last label"
+    }
+  ]
+}

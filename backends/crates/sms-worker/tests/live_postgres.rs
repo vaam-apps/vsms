@@ -208,6 +208,7 @@ async fn run_singleton_reports_held_then_released_on_the_lease_gauge() {
             std::sync::Arc::new(NeverCalledProvider)
                 as std::sync::Arc<dyn sms_provider::SmsProvider>,
         )])),
+        webhook_sealer: None,
     };
 
     let gauge = sms_metrics::SINGLETON_LEASE_HELD.with_label_values(&["smpp"]);

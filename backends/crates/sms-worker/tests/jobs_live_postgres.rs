@@ -129,6 +129,7 @@ fn worker_context(db: &Cratestack) -> WorkerContext {
             "unused".to_owned(),
             Arc::new(NeverCalledProvider) as Arc<dyn sms_provider::SmsProvider>,
         )])),
+        webhook_sealer: None,
     }
 }
 

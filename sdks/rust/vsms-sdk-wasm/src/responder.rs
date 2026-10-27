@@ -215,3 +215,48 @@ pub fn key32(text: &str) -> Result<[u8; 32], String> {
         .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
         .ok_or_else(|| "a key must be 32 bytes of unpadded base64url".to_owned())
 }
+
+/// Seals a webhook delivery the way the gateway's worker does (`sms-webhook`'s
+/// `Sealer`), for the Node SDK's tests: audience, `POST`, `route`, the delivery
+/// contract (or `contract`, to test a refusal), `application/json` both ways.
+/// `iat` pins the timestamp (Unix seconds); `None` reads the clock. It is
+/// cratestack's own `ClientEnvelope`, which shares no code with
+/// [`crate::webhook::WebhookOpener`].
+///
+/// # Errors
+///
+/// A message when the call cannot be sealed.
+pub async fn seal_delivery(
+    seed: &[u8; 32],
+    audience: &str,
+    route: &str,
+    contract: Option<[u8; 32]>,
+    body: &str,
+    iat: Option<i64>,
+) -> Result<Vec<u8>, String> {
+    use cratestack::client_rust::{ClientEnvelope, RouteRef, SealCall};
+
+    let mut builder = CoseEnvelope::client(
+        CoseMode::Sign1,
+        Arc::new(Ed25519Signer::from_seed(seed)),
+        Arc::new(StaticVerifierResolver::new()),
+    );
+    if let Some(iat) = iat {
+        builder = builder.clock(move || iat);
+    }
+    let cose = builder.build().map_err(|error| error.to_string())?;
+    let envelope =
+        ClientEnvelope::new(cose, audience.to_owned()).map_err(|error| error.to_string())?;
+    let call = SealCall::new(
+        "POST",
+        RouteRef::new(route, &[]),
+        contract.unwrap_or_else(crate::webhook::webhook_contract_sha),
+    )
+    .payload(body.as_bytes(), JSON)
+    .accept(JSON);
+    let sealed = envelope
+        .seal_call(call)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(sealed.body.to_vec())
+}

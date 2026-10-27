@@ -1,17 +1,24 @@
 "use client";
 
 // The Webhooks screen (#55): endpoint CRUD, attempt history with status
-// codes and errors, one-click replay, and secret rotation with the overlap
-// window made visible. "Endpoint CRUD, attempt history with status codes
-// and errors, one-click replay, and rotation with the overlap window made
-// visible" — the issue's own words, verbatim.
+// codes and errors, one-click replay, and, for an `hmac` endpoint, secret
+// rotation with the overlap window made visible. "Endpoint CRUD, attempt
+// history with status codes and errors, one-click replay, and rotation with
+// the overlap window made visible" — the issue's own words, verbatim.
+//
+// An endpoint is `sealed` (the recommended mode: signed with the gateway's own
+// key, addressed to an audience, no secret) or `hmac` (the original scheme: a
+// secret shared with the receiver). The mode is chosen when the endpoint is
+// created and shapes what the endpoint's panel shows: what a sealed receiver is
+// configured with, or an hmac endpoint's secret and Rotate (VS-8R).
 //
 // # Quick vs. more detail (console-redesign.md §3/D14)
 //
 // An endpoint row opens `QuickDetailDrawer` (URL, active, circuit state,
-// event count, the current secret masked) with a "View full details"
-// action that upgrades to `MoreDetailDrawer` (`?panel=<id>`) — the edit
-// form, event-type toggles, and secret reveal/rotate. A delivery attempt
+// event count, delivery mode and its audience or masked secret) with a "View
+// full details" action that upgrades to `MoreDetailDrawer` (`?panel=<id>`) — the
+// edit form, event-type toggles, and the sealed receiver's configuration or the
+// hmac secret reveal/rotate. A delivery attempt
 // row opens its own `QuickDetailDrawer` (state/event/endpoint/attempts/
 // status/error, a Replay action) with "View payload" upgrading to a second
 // `MoreDetailDrawer` (`?attempt=<id>`) holding `PayloadInspector` — the
@@ -29,8 +36,8 @@
 // on this screen is "New webhook endpoint" — triggered from the toolbar
 // while no drawer is open.
 //
-// # `WebhookEndpoint.secret`/`prevSecret` are shown, masked by default, with
-// an explicit Reveal — see `@vsms/gateway/webhooks.ts`'s own module doc for
+// # `WebhookEndpoint.secret`/`prevSecret` (hmac) are shown, masked by default,
+// with an explicit Reveal — see `@vsms/gateway/webhooks.ts`'s own module doc for
 // the full reasoning (`@sensitive` doesn't redact API responses, only audit
 // snapshots — #187's read policy, `owner`/`admin`/`developer`/`system`, is
 // the only real control, and it already ran before this screen ever
@@ -43,12 +50,11 @@
 // an *overlap window* with no fixed end: the just-rotated-away secret keeps
 // verifying as `prevSecret` until the NEXT rotation, whenever that happens
 // (`sms_webhook::verify` tries every candidate; #59's own doc on
-// `rotateWebhookSecret`). The confirm panel below says this before the
-// click, not after, and the immediate post-rotation view keeps both values
-// visible side by side with `secretRotatedAt` — "can I safely stop
-// accepting the old one yet?" is the operational question this whole
-// feature exists to answer, and hiding the window would be exactly the
-// failure mode the issue calls out.
+// `rotateWebhookSecret`). The confirm panel says this before the click, not
+// after, and the immediate post-rotation view keeps both values visible side by
+// side with `secretRotatedAt` — "can I safely stop accepting the old one yet?"
+// is the operational question this whole feature exists to answer, and hiding
+// the window would be exactly the failure mode the issue calls out.
 //
 // # Replay is a re-send, not a retry-in-place
 //
@@ -81,7 +87,7 @@ import {
 import { trpc } from "@vsms/hooks";
 import { parseAsString, parseAsStringEnum, useQueryState, useQueryStates } from "nuqs";
 import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { Caption } from "@/components/caption";
 import { ListSurface } from "@/components/list-surface";
 import { LiveChip } from "@/components/live-chip";
@@ -132,7 +138,9 @@ export function WebhooksScreen({
     void setPanelId(endpoint.id);
     setEventTypes(endpoint.eventTypes);
     form.reset({
+      deliveryMode: endpoint.deliveryMode,
       url: endpoint.url,
+      audience: endpoint.audience ?? "",
       maxAttempts: String(endpoint.maxAttempts),
       maskRecipient: endpoint.maskRecipient,
       active: endpoint.active,
@@ -157,6 +165,8 @@ export function WebhooksScreen({
       id: panelTarget.id,
       etag: String(panelTarget.version),
       url: values.url,
+      // Only a sealed endpoint has an audience to edit.
+      ...(panelTarget.deliveryMode === "sealed" ? { audience: values.audience } : {}),
       eventTypes,
       maskRecipient: values.maskRecipient,
       active: values.active,
@@ -186,52 +196,71 @@ export function WebhooksScreen({
 
   // Rotation always targets whatever endpoint the more-detail drawer is
   // currently open on — a boolean "is the confirm armed" flag, not a second
-  // copy of the endpoint the way the original centered-`Dialog` version's
-  // own `rotateTarget: EndpointListItem | null` was.
+  // copy of the endpoint.
   const [rotateArmed, setRotateArmed] = useState(false);
   const rotateMutation = trpc.webhookEndpoints.rotateSecret.useMutation({
     onSuccess: (updated) => {
       toast({ title: "Secret rotated", variant: "success" });
       setRotateArmed(false);
-      setJustRotatedSecret(updated.secret);
+      setJustRotatedSecret(updated.secret ?? null);
       void utils.webhookEndpoints.list.invalidate();
     },
   });
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createEventTypes, setCreateEventTypes] = useState<EventType[]>([]);
+  const newEndpointDefaults: CreateEndpointFormValues = {
+    appId: "",
+    deliveryMode: "sealed",
+    url: "",
+    audience: "",
+    maxAttempts: "8",
+    maskRecipient: true,
+  };
   const createForm = useForm<CreateEndpointFormValues>({
     resolver: zodResolver(createEndpointSchema),
-    defaultValues: { appId: "", url: "", maxAttempts: "8", maskRecipient: true },
+    defaultValues: newEndpointDefaults,
+  });
+  const createDeliveryMode = useWatch({
+    control: createForm.control,
+    name: "deliveryMode",
+    defaultValue: newEndpointDefaults.deliveryMode,
   });
   const createMutation = trpc.webhookEndpoints.create.useMutation({
     onSuccess: (created) => {
       toast({ title: "Endpoint created", variant: "success" });
       setCreateOpen(false);
-      createForm.reset({ appId: "", url: "", maxAttempts: "8", maskRecipient: true });
+      createForm.reset(newEndpointDefaults);
       setCreateEventTypes([]);
       void utils.webhookEndpoints.list.invalidate();
       void setPanelId(created.endpoint.id);
       setEventTypes(created.endpoint.eventTypes);
       form.reset({
+        deliveryMode: created.endpoint.deliveryMode,
         url: created.endpoint.url,
+        audience: created.endpoint.audience ?? "",
         maxAttempts: String(created.endpoint.maxAttempts),
         maskRecipient: created.endpoint.maskRecipient,
         active: created.endpoint.active,
       });
-      setJustCreatedSecret(created.secret);
+      setJustCreatedSecret(created.secret ?? null);
       setJustRotatedSecret(null);
     },
   });
 
   function submitCreate(values: CreateEndpointFormValues) {
-    createMutation.mutate({
+    const common = {
       appId: values.appId,
       url: values.url,
       eventTypes: createEventTypes,
       maskRecipient: values.maskRecipient,
       maxAttempts: Number(values.maxAttempts),
-    });
+    };
+    createMutation.mutate(
+      values.deliveryMode === "sealed"
+        ? { ...common, deliveryMode: "sealed", audience: values.audience }
+        : { ...common, deliveryMode: "hmac" },
+    );
   }
 
   // --- Attempts: quick + more detail -----------------------------------
@@ -253,8 +282,7 @@ export function WebhooksScreen({
     { refetchInterval: attemptsRefetchIntervalMs },
   );
 
-  // A boolean, not a copy of the row — same reasoning as `rotateArmed`
-  // above: replay always targets whatever `quickAttempt` is currently open.
+  // A boolean, not a copy of the row — same reasoning as `rotateArmed` above: replay always targets whatever `quickAttempt` is currently open.
   const [replayArmed, setReplayArmed] = useState(false);
   const replayMutation = trpc.webhookAttempts.replay.useMutation({
     onSuccess: () => {
@@ -284,7 +312,7 @@ export function WebhooksScreen({
     <ScreenStack>
       <PageHeader
         title="Webhooks"
-        description="Where each app is told about its messages, what was delivered, and the signing secrets."
+        description="Where each app is told about its messages, what was delivered, and the signing secrets of HMAC endpoints."
         actions={
           <Button type="button" onClick={() => setCreateOpen(true)}>
             New endpoint
@@ -337,9 +365,10 @@ export function WebhooksScreen({
         {quickDetail !== undefined && <EndpointQuickDetailBody endpoint={quickDetail} />}
       </QuickDetailDrawer>
 
-      {/* More detail — the endpoint's own edit form, secret reveal/rotate,
-          and Delete (D14). Body/footer swap to whichever inline
-          confirmation (delete or rotate) is currently armed. */}
+      {/* More detail — the endpoint's own edit form, what a sealed receiver is
+          configured with or an hmac endpoint's secret reveal/rotate, and Delete
+          (D14). Body/footer swap to whichever inline confirmation (delete or
+          rotate) is currently armed. */}
       <MoreDetailDrawer
         open={panelId !== null}
         onOpenChange={(open) => !open && closeMore()}
@@ -406,6 +435,7 @@ export function WebhooksScreen({
         open={createOpen}
         onOpenChange={(open) => !open && setCreateOpen(false)}
         form={createForm}
+        deliveryMode={createDeliveryMode}
         eventTypes={createEventTypes}
         onEventTypesChange={setCreateEventTypes}
         onSubmit={submitCreate}
@@ -456,8 +486,10 @@ export function WebhooksScreen({
 
       <Caption>
         Changes are saved as you and need the webhook:manage permission, which owner, admin and
-        developer hold. Secrets are the live values, masked on screen only so they do not leak in a
-        screen share.
+        developer hold. A sealed delivery is signed with the gateway's own key: the receiver is
+        configured with the audience and route shown for the endpoint, and the gateway's public
+        keys. An HMAC endpoint's secret is the live value, masked on screen only so it does not leak
+        in a screen share.
       </Caption>
 
       {/* Attempt quick detail — a peek, no route (D14). Body/footer swap to

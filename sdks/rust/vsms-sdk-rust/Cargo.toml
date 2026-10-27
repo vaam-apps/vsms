@@ -90,6 +90,10 @@ rustls = { version = "0.23", default-features = false, features = [
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# webhook.rs: the delivery contract's digest, and the bytes `open_request` takes.
+# Both are already in the graph through cratestack-cose.
+sha2 = "0.11"
+bytes = "1"
 # `SigningKey::generate`: 32 bytes straight from the operating system's CSPRNG.
 getrandom = "0.4"
 # The seed is wiped when a `SigningKey` is dropped. Already in the graph
@@ -98,6 +102,8 @@ zeroize = "1"
 
 [dev-dependencies]
 anyhow = "1"
+# tests/webhook.rs implements `NonceStore` for a store that is down.
+async-trait = "0.1"
 clap = { version = "4", features = ["derive", "env"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 # A local stand-in for the gateway in tests/transport.rs: proves what the SDK

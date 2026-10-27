@@ -234,6 +234,12 @@ export {
   provisionUser,
   updateUser,
 } from "./users";
+export {
+  GATEWAY_AUDIENCE,
+  GATEWAY_AUDIENCE_MESSAGE,
+  receiverRoute,
+  urlRefusal,
+} from "./webhook-rules";
 export type {
   AttemptState,
   CreatedWebhookEndpoint,
@@ -242,6 +248,7 @@ export type {
   ListWebhookAttemptsResult,
   UpdateWebhookEndpointFields,
   WebhookAttemptRecord,
+  WebhookDeliveryMode,
   WebhookEndpointRecord,
   WebhookEventType,
 } from "./webhooks";
@@ -255,6 +262,7 @@ export {
   replayWebhookAttempt,
   rotateWebhookSecret,
   updateWebhookEndpoint,
+  WEBHOOK_DELIVERY_MODES,
   WEBHOOK_EVENT_TYPES,
 } from "./webhooks";
 export type { WorkerLockInfo, WorkerLocksResult, WorkerRole } from "./workers";

@@ -1,7 +1,5 @@
 #![doc = include_str!("main.md")]
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use cratestack::FilterExpr;
@@ -9,8 +7,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::schema::{
     Cratestack, CreateAppInput, CreateSenderIdInput, CreateSenderIdRegistrationInput,
     CreateWebhookEndpointInput, SenderIdKind, SenderIdRegistrationStatus, UpdateSenderIdInput,
-    app as app_filter, provider as provider_filter, sender_id as sender_id_filter,
-    sender_id_registration as sender_id_registration_filter,
+    WebhookDeliveryMode, app as app_filter, provider as provider_filter,
+    sender_id as sender_id_filter, sender_id_registration as sender_id_registration_filter,
     webhook_endpoint as webhook_endpoint_filter,
 };
 use sms_api::{Principal, PrincipalKind};
@@ -105,19 +103,39 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     webhook_mask_recipient: bool,
 
-    /// Where to write the signing secret this command ends up using —
-    /// freshly generated (`sms_webhook::generate_secret()`) on first run,
-    /// or the existing row's own `secret` on every rerun against an
-    /// already-seeded database. `demo-app` has no other way to learn this
-    /// value: `WebhookEndpoint.secret` is server-generated here, exactly
-    /// the "one container's computed output, a sibling container's
-    /// input" problem, solved through a shared volume. Ordinary
-    /// create-or-truncate semantics, no restrictive mode: not the
-    /// half of a credential that authenticates a caller, and this whole
-    /// stack is a disposable, obviously-demo deployment regardless (see
-    /// `SMS_HASH_PEPPER`'s own inline compose comments).
+    /// VS-8: the audience a `sealed` delivery to `--webhook-url` binds — the
+    /// name the receiver's `EnvelopeLayer` is built with (`demo-app` opens
+    /// deliveries as `DEMO_WEBHOOK_AUDIENCE`, defaulting to this same value).
+    /// Passing it makes the endpoint `sealed`, the recommended mode and the
+    /// one the compose stacks seed: there is no secret to hand the receiver,
+    /// which pins the gateway's public keys (`sms-gateway server-keys`) and
+    /// checks the audience. Exactly one of this and `--webhook-secret-out` is
+    /// required alongside `--webhook-url`, and either is refused without it, so
+    /// a stray flag never looks like it did something; no default, because a
+    /// default would be a receiver identity nobody chose.
+    #[arg(long, conflicts_with = "webhook_secret_out")]
+    webhook_audience: Option<String>,
+
+    /// Where to write the signing secret of an `hmac` endpoint (VS-8R) — the
+    /// legacy mode, for a receiver that still verifies `X-Sms-Signature`.
+    /// Passing it makes the endpoint `hmac`: the secret is freshly generated
+    /// (`sms_webhook::generate_secret()`) on first run, or the existing row's
+    /// own `secret` on every rerun against an already-seeded database, and
+    /// written only here, never printed (stdout is a container log, which is
+    /// where a signing secret must not end up). `demo-app` has no other way to
+    /// learn it. Ordinary create-or-truncate semantics, no restrictive mode: this
+    /// whole stack is a disposable, obviously-demo deployment.
+    #[arg(long, conflicts_with = "webhook_audience")]
+    webhook_secret_out: Option<std::path::PathBuf>,
+
+    /// Where to write the id of the `WebhookEndpoint` this call created or
+    /// found. A receiver serves exactly one endpoint and its opener is built
+    /// with that endpoint's id, which the gateway mints, so the demo's receiver
+    /// (`demo-app`) cannot be configured until the row exists: the compose
+    /// stacks share the file through a volume. Refused without `--webhook-url`,
+    /// so a stray flag never looks like it did something.
     #[arg(long)]
-    webhook_secret_out: Option<PathBuf>,
+    webhook_endpoint_id_out: Option<std::path::PathBuf>,
 }
 
 /// `create` the `App` row, or resolve the id of the one that already
@@ -274,31 +292,111 @@ async fn ensure_demo_sender_id(
     Ok(())
 }
 
-/// Ensure a `WebhookEndpoint` pointed at the demo app's own receiver
-/// exists, and return the signing secret it currently uses — freshly
-/// generated on the row this call creates, or read straight back off an
-/// already-existing row on a rerun. `WebhookEndpoint` carries no unique
-/// constraint on `(appId, url)` (unlike `App.slug`), so idempotency here
-/// is read-then-create, the same accepted-TOCTOU-window shape
-/// `ensure_demo_sender_id`'s own approved-registration check already
-/// uses — safe for the same reason: this only ever runs from one
-/// container in one sequential compose dependency chain, never
-/// concurrently with itself.
+/// How the demo endpoint is delivered to, chosen by which of `--webhook-audience`
+/// and `--webhook-secret-out` was passed ([`delivery_plan`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Delivery<'a> {
+    /// A sealed delivery to this audience.
+    Sealed { audience: &'a str },
+    /// An HMAC-signed delivery; the secret goes to the file at this path.
+    Hmac { secret_path: &'a std::path::Path },
+}
+
+impl Delivery<'_> {
+    /// The mode's name, the only thing about a delivery that is printed.
+    const fn mode(&self) -> &'static str {
+        match self {
+            Self::Sealed { .. } => "sealed",
+            Self::Hmac { .. } => "hmac",
+        }
+    }
+}
+
+/// Writes the webhook secret to `path`, readable by its owner alone. The mode
+/// is set at creation (no window where the file is world-readable) and again
+/// afterwards, for a file that already existed with another one.
+fn write_secret_file(path: &std::path::Path, secret: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(secret.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
+/// What the webhook flags ask for, or why they are wrong. Pure so the rules are
+/// tested without a database: exactly one of the two mode flags goes with
+/// `--webhook-url`, and neither goes without it.
+fn delivery_plan<'a>(
+    url: Option<&'a str>,
+    audience: Option<&'a str>,
+    secret_path: Option<&'a std::path::Path>,
+) -> Result<Option<(&'a str, Delivery<'a>)>> {
+    match (url, audience, secret_path) {
+        (Some(url), Some(audience), None) => Ok(Some((url, Delivery::Sealed { audience }))),
+        (Some(url), None, Some(secret_path)) => Ok(Some((url, Delivery::Hmac { secret_path }))),
+        (Some(_), Some(_), Some(_)) => bail!(
+            "--webhook-audience and --webhook-secret-out were both given — an endpoint is sealed \
+             (an audience) or hmac (a secret), not both. Pass one."
+        ),
+        (Some(_), None, None) => bail!(
+            "--webhook-url was given without --webhook-audience or --webhook-secret-out — the \
+             endpoint must say how its deliveries are authenticated. Pass --webhook-audience \
+             <name> (sealed, recommended: the name the receiver's EnvelopeLayer is built with) \
+             or --webhook-secret-out <path> (hmac: where the receiver reads the signing secret)."
+        ),
+        (None, Some(_), _) => bail!(
+            "--webhook-audience was given but --webhook-url was not — nothing would ever use it. \
+             Pass --webhook-url too, or drop --webhook-audience."
+        ),
+        (None, None, Some(_)) => bail!(
+            "--webhook-secret-out was given but --webhook-url was not — nothing would ever be \
+             written to it. Pass --webhook-url too, or drop --webhook-secret-out."
+        ),
+        (None, None, None) => Ok(None),
+    }
+}
+
+/// The endpoint this call created or found, and the secret its receiver needs
+/// (`hmac` only).
+struct DemoEndpoint {
+    id: String,
+    secret: Option<String>,
+}
+
+/// Ensure a `WebhookEndpoint` pointed at the demo app's own receiver exists.
+/// `WebhookEndpoint` carries no unique constraint on `(appId, url)` (unlike
+/// `App.slug`), so idempotency here is read-then-create, the same
+/// accepted-TOCTOU-window shape `ensure_demo_sender_id`'s own
+/// approved-registration check already uses — safe for the same reason: this
+/// only ever runs from one container in one sequential compose dependency
+/// chain, never concurrently with itself.
 ///
-/// Deliberately does NOT try to keep an existing row's `secret` in sync
-/// with a caller-supplied `--webhook-secret-out` value from a *previous*
-/// run that used a different generated secret — the row's own `secret`
-/// is always the one written back to `webhook_secret_out`, so `demo-app`
-/// and the database never disagree about which value is current, even
-/// across a restart that skips re-creation.
+/// A row that already exists keeps the mode, audience and secret it was created
+/// with; a rerun that asks for something else says so instead of silently
+/// editing an endpoint an operator may have changed in the console. For an
+/// `hmac` endpoint that means the row's own `secret` is the one written back,
+/// so `demo-app` and the database never disagree about which value is current,
+/// even across a restart that skips re-creation. An existing `sealed` row
+/// asked for as `hmac` has no secret to write, and that is an error.
 async fn ensure_demo_webhook_endpoint(
     db: &Cratestack,
     ctx: &cratestack::CratestackContext,
     app_id: &str,
     url: &str,
+    delivery: &Delivery<'_>,
     max_attempts: i64,
     mask_recipient: bool,
-) -> Result<String> {
+) -> Result<DemoEndpoint> {
     let existing = db
         .webhook_endpoint()
         .find_many()
@@ -313,7 +411,31 @@ async fn ensure_demo_webhook_endpoint(
 
     if let Some(row) = existing.into_iter().next() {
         println!("reusing existing WebhookEndpoint {} (url={url:?})", row.id);
-        return Ok(row.secret);
+        let asked = match delivery {
+            Delivery::Sealed { audience } => {
+                row.deliveryMode == WebhookDeliveryMode::sealed
+                    && row.audience.as_deref() == Some(*audience)
+            }
+            Delivery::Hmac { .. } => row.deliveryMode == WebhookDeliveryMode::hmac,
+        };
+        if !asked {
+            println!(
+                "note: it keeps its delivery mode ({:?}) and audience ({:?}), not what was \
+                 passed now",
+                row.deliveryMode, row.audience
+            );
+        }
+        if matches!(delivery, Delivery::Hmac { .. }) && row.secret.is_none() {
+            bail!(
+                "the existing WebhookEndpoint {} is sealed and has no secret to write to \
+                 --webhook-secret-out; delete it, or switch it to hmac in the console",
+                row.id
+            );
+        }
+        return Ok(DemoEndpoint {
+            id: row.id,
+            secret: row.secret,
+        });
     }
 
     let event_types =
@@ -323,17 +445,30 @@ async fn ensure_demo_webhook_endpoint(
                  space-free array, should never fail to pack"
             )
         })?;
-    let secret = sms_webhook::generate_secret();
+    let (delivery_mode, audience, secret) = match delivery {
+        Delivery::Sealed { audience } => (
+            WebhookDeliveryMode::sealed,
+            Some((*audience).to_owned()),
+            None,
+        ),
+        Delivery::Hmac { .. } => (
+            WebhookDeliveryMode::hmac,
+            None,
+            Some(sms_webhook::generate_secret()),
+        ),
+    };
 
     let created = db
         .webhook_endpoint()
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: url.to_owned(),
-            eventTypes: event_types,
-            secret: secret.clone(),
+            deliveryMode: delivery_mode,
+            audience,
+            secret,
             prevSecret: None,
             secretRotatedAt: None,
+            eventTypes: event_types,
             maskRecipient: mask_recipient,
             maxAttempts: max_attempts,
             circuitOpenUntil: None,
@@ -341,9 +476,41 @@ async fn ensure_demo_webhook_endpoint(
         .run(ctx)
         .await
         .context("creating the WebhookEndpoint row")?;
-    println!("created WebhookEndpoint {} (url={url:?})", created.id);
+    println!(
+        "created WebhookEndpoint {} (url={url:?}, mode={:?})",
+        created.id, created.deliveryMode
+    );
 
-    Ok(created.secret)
+    Ok(DemoEndpoint {
+        id: created.id,
+        secret: created.secret,
+    })
+}
+
+/// `--webhook-endpoint-id-out` without `--webhook-url` would look like it did
+/// something: no endpoint exists to write the id of.
+fn refuse_endpoint_id_out_without_url(
+    out: Option<&std::path::Path>,
+    url: Option<&str>,
+) -> Result<()> {
+    if out.is_some() && url.is_none() {
+        bail!(
+            "--webhook-endpoint-id-out was given but --webhook-url was not — no WebhookEndpoint \
+             would exist to write the id of. Pass --webhook-url (and --webhook-audience) too, or \
+             drop --webhook-endpoint-id-out."
+        );
+    }
+    Ok(())
+}
+
+/// Writes the endpoint's id where `--webhook-endpoint-id-out` says, if it does.
+fn write_endpoint_id(out: Option<&std::path::Path>, endpoint_id: &str) -> Result<()> {
+    if let Some(path) = out {
+        std::fs::write(path, endpoint_id)
+            .with_context(|| format!("writing the endpoint id to {}", path.display()))?;
+        println!("wrote the endpoint id to {}", path.display());
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -367,7 +534,9 @@ async fn main() -> Result<()> {
         webhook_url,
         webhook_max_attempts,
         webhook_mask_recipient,
+        webhook_audience,
         webhook_secret_out,
+        webhook_endpoint_id_out,
     } = Cli::parse();
 
     if role != "owner" && role != "admin" {
@@ -423,47 +592,45 @@ async fn main() -> Result<()> {
     // at a default that only resolves inside a stack that also runs
     // `demo-app` — R4 (CONTRIBUTING.md): a backend-only deployment must
     // not silently get an endpoint that will error on every delivery
-    // attempt forever. `--webhook-secret-out` with no `--webhook-url` is
+    // attempt forever. `--webhook-audience` with no `--webhook-url` is
     // a caller error, not a silent no-op — it would otherwise look like
     // it did something.
-    match (&webhook_url, &webhook_secret_out) {
-        (Some(url), _) => {
-            let webhook_secret = ensure_demo_webhook_endpoint(
+    refuse_endpoint_id_out_without_url(webhook_endpoint_id_out.as_deref(), webhook_url.as_deref())?;
+    match delivery_plan(
+        webhook_url.as_deref(),
+        webhook_audience.as_deref(),
+        webhook_secret_out.as_deref(),
+    )? {
+        Some((url, delivery)) => {
+            let endpoint = ensure_demo_webhook_endpoint(
                 &db,
                 &ctx,
                 &app_id,
                 url,
+                &delivery,
                 webhook_max_attempts,
                 webhook_mask_recipient,
             )
             .await?;
+            write_endpoint_id(webhook_endpoint_id_out.as_deref(), &endpoint.id)?;
 
             // The secret is never printed: stdout is a container log, and a
-            // log is exactly where a signing secret must not end up
-            // (CodeQL flagged the previous fallback as cleartext logging).
+            // log is exactly where a signing secret must not end up (CodeQL
+            // flagged the pre-sealed fallback as cleartext logging).
             // `--webhook-secret-out` is the only way to receive it.
-            let Some(path) = &webhook_secret_out else {
-                bail!(
-                    "--webhook-url was given without --webhook-secret-out — the webhook secret \
-                     is only ever written to a file, never printed. Pass --webhook-secret-out \
-                     <path> (a path the receiver container can read)."
-                );
-            };
-            std::fs::write(path, &webhook_secret)
-                .with_context(|| format!("writing the webhook secret to {}", path.display()))?;
-            println!("webhook secret written to: {}", path.display());
+            if let (Delivery::Hmac { secret_path }, Some(secret)) = (&delivery, &endpoint.secret) {
+                write_secret_file(secret_path, secret).with_context(|| {
+                    format!("writing the webhook secret to {}", secret_path.display())
+                })?;
+                println!("webhook secret written to: {}", secret_path.display());
+            }
 
             println!(
-                "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?})"
+                "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?}, delivery={})",
+                delivery.mode()
             );
         }
-        (None, Some(_)) => {
-            bail!(
-                "--webhook-secret-out was given but --webhook-url was not — nothing would ever \
-                 be written to it. Pass --webhook-url too, or drop --webhook-secret-out."
-            );
-        }
-        (None, None) => {
+        None => {
             println!(
                 "demo App/SenderId fixtures ready (slug={slug:?}, sender={sender_id:?}); no \
                  --webhook-url given, so no WebhookEndpoint was seeded"
@@ -472,4 +639,95 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Delivery, delivery_plan};
+    use std::path::Path;
+
+    #[test]
+    fn an_audience_makes_the_endpoint_sealed_and_a_secret_file_makes_it_hmac() {
+        let sealed = delivery_plan(
+            Some("http://demo-app:9000/webhooks"),
+            Some("demo-app"),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            sealed,
+            (
+                "http://demo-app:9000/webhooks",
+                Delivery::Sealed {
+                    audience: "demo-app"
+                }
+            )
+        );
+        let hmac = delivery_plan(
+            Some("http://demo-app:9000/webhooks"),
+            None,
+            Some(Path::new("/secrets/webhook-secret")),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            hmac,
+            (
+                "http://demo-app:9000/webhooks",
+                Delivery::Hmac {
+                    secret_path: Path::new("/secrets/webhook-secret")
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn a_delivery_prints_as_its_mode_alone() {
+        let hmac = Delivery::Hmac {
+            secret_path: Path::new("/secrets/webhook-secret"),
+        };
+        assert_eq!(hmac.mode(), "hmac");
+        assert_eq!(Delivery::Sealed { audience: "a" }.mode(), "sealed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_secret_file_is_readable_by_its_owner_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("vsms-demo-seed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("webhook-secret");
+        // A file that already exists with a wider mode is narrowed, not trusted.
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::write_secret_file(&path, "the-new-value").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the-new-value");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn no_url_means_no_endpoint_and_a_stray_mode_flag_is_an_error() {
+        assert_eq!(delivery_plan(None, None, None).unwrap(), None);
+        assert!(delivery_plan(None, Some("demo-app"), None).is_err());
+        assert!(delivery_plan(None, None, Some(Path::new("/s"))).is_err());
+    }
+
+    #[test]
+    fn a_url_needs_exactly_one_way_of_authenticating_deliveries() {
+        let url = Some("http://demo-app:9000/webhooks");
+        let none = delivery_plan(url, None, None).unwrap_err().to_string();
+        assert!(
+            none.contains("--webhook-audience") && none.contains("--webhook-secret-out"),
+            "{none}"
+        );
+        let both = delivery_plan(url, Some("demo-app"), Some(Path::new("/s")))
+            .unwrap_err()
+            .to_string();
+        assert!(both.contains("not both"), "{both}");
+    }
 }

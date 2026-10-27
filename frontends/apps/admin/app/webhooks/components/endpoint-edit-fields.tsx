@@ -1,15 +1,17 @@
 import { FormField, InlineBanner, Input } from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
-import type { EndpointFormValues, EventType } from "../webhook-domain";
+import type { DeliveryMode, EndpointFormValues, EventType } from "../webhook-domain";
 import { EventTypeToggles } from "./event-type-toggles";
 
-// Dumb (R6): the endpoint edit form's own fields (URL, event types, max
-// attempts, mask-recipient/active checkboxes). The secret panel above it
-// (`EndpointSecretPanel`) is a separate component — this one owns only
-// what `endpointSchema` validates.
+// Dumb (R6): the endpoint edit form's own fields (URL, audience for a sealed
+// endpoint, event types, max attempts, mask-recipient/active checkboxes). The
+// panel above it (`EndpointReceiverPanel` or `EndpointSecretPanel`) is a
+// separate component — this one owns only what `endpointSchema` validates. The
+// delivery mode is not editable here: it is fixed when the endpoint is created.
 export function EndpointEditFields({
   formId,
   form,
+  deliveryMode,
   eventTypes,
   onEventTypesChange,
   onSubmit,
@@ -17,6 +19,8 @@ export function EndpointEditFields({
 }: {
   formId: string;
   form: UseFormReturn<EndpointFormValues>;
+  /** The endpoint's own mode, read off the row: this form cannot change it. */
+  deliveryMode: DeliveryMode;
   eventTypes: EventType[];
   onEventTypesChange: (types: EventType[]) => void;
   onSubmit: (values: EndpointFormValues) => void;
@@ -29,6 +33,19 @@ export function EndpointEditFields({
       <FormField label="URL" htmlFor="endpoint-url" error={formState.errors.url?.message}>
         <Input id="endpoint-url" aria-invalid={formState.errors.url != null} {...register("url")} />
       </FormField>
+      {deliveryMode === "sealed" && (
+        <FormField
+          label="Audience"
+          htmlFor="endpoint-audience"
+          error={formState.errors.audience?.message}
+        >
+          <Input
+            id="endpoint-audience"
+            aria-invalid={formState.errors.audience != null}
+            {...register("audience")}
+          />
+        </FormField>
+      )}
 
       {/* Not a `FormField` — see `create-endpoint-fields.tsx`'s identical
           comment: `EventTypeToggles` is a group of toggle buttons with no

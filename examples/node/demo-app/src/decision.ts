@@ -18,7 +18,7 @@
 export interface DecisionInput {
   /** Did the message reach the terminal `delivered` state? */
   delivered: boolean;
-  /** How many received webhooks verified their signature. */
+  /** How many received webhooks verified: opened under the gateway's pinned keys (sealed) or under the endpoint's secret (hmac). */
   verifiedCount: number;
   /** How many webhooks were received at all (verified or not). */
   eventCount: number;
@@ -55,7 +55,7 @@ export function decide({ delivered, verifiedCount, eventCount }: DecisionInput):
     reasons.push(
       eventCount === 0
         ? "no webhook was received at all"
-        : `${eventCount} webhook(s) were received but NONE verified their signature — check that WEBHOOK secret matches the seeded WebhookEndpoint`,
+        : `${eventCount} webhook(s) were received but NONE could be verified — check that the receiver matches the seeded WebhookEndpoint: for a sealed one the gateway keys pinned from server-keys.txt and DEMO_WEBHOOK_AUDIENCE, for an hmac one its secret`,
     );
   }
   return { exitCode: 1, reasons };

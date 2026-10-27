@@ -36,6 +36,7 @@
 mod contracts;
 mod core;
 mod opener;
+mod webhook;
 
 // The JavaScript surface exists only where there is a JavaScript to bind to.
 // On a host the crate is `core` alone, which is what `cargo test` compiles and
@@ -53,8 +54,15 @@ mod responder_js;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod webhook_tests;
+
 pub use crate::contracts::{contract_digest, operations, route_of};
 pub use crate::core::{
     Algorithm, Bound, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys, AUDIENCE,
 };
 pub use crate::opener::Opener;
+pub use crate::webhook::{
+    webhook_contract_sha, WebhookError, WebhookOpener, WEBHOOK_CONTRACT_DOCUMENT,
+    WEBHOOK_CONTRACT_DOMAIN,
+};

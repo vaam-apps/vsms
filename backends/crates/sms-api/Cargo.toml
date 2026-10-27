@@ -34,10 +34,10 @@ sms-routing.workspace = true
 # than reinvented — see sms-core's own module doc for why the sentinel form
 # matters even though `contains`/`unpack` tolerate the plain OAuth form too.
 sms-core.workspace = true
-# #41: rotate_webhook_secret's generate_secret() — the one non-pure
-# function in sms-webhook, generating a fresh whsec_<hex> value. The
-# signing/verification side of that crate has no caller here; it's
-# sms-worker's hooks role (#40) that signs outbound deliveries.
+# #41: rotate_webhook_secret's generate_secret() - the one non-pure
+# function in sms-webhook, generating a fresh whsec_<hex> value for an `hmac`
+# endpoint (VS-8R). The signing and sealing sides of that crate have no caller
+# here; it's sms-worker's hooks role (#40) that delivers.
 sms-webhook.workspace = true
 # #70/#71: errors.rs's map_database_error is the one place every SM001 this
 # workspace ever sees is classified — this crate's own count of it.

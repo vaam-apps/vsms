@@ -287,7 +287,25 @@ services:
       AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER:
       AWS_SMS_ENDPOINT_URL:
       AWS_SMS_TIME_TO_LIVE_SECONDS:
+      # VS-8: a sealed webhook delivery is a request signed with the gateway's
+      # own envelope signing key, so the `hooks` role (in SMS_WORKER_ROLES by
+      # default) needs the CURRENT key to deliver a `sealed` endpoint (an
+      # `hmac` endpoint, VS-8R, needs none, and without the key `hooks` still
+      # starts and delivers it, but claims no sealed endpoint's attempt: they
+      # wait, uncounted, and it warns how many, naming the flag). It is
+      # the very file the gateway signs its answers with, so a receiver pins
+      # one pair of public keys for both. Only this one: the `next` key signs
+      # nothing and the worker never reads it. A worker that does not run
+      # `hooks` reads no key at all.
+      SMS_ENVELOPE_SIGNING_KEY_FILE: /run/envelope/current.pem
       RUST_LOG: ${SMS_WORKER_LOG:-sms_worker=info,sms_worker_bin=info}
+    # Read-only, mode 0400 and owned by uid 65532, like the gateway's copy of
+    # the same file (see the comment on its volumes): 65532 is the distroless
+    # `nonroot` user both images run as, so one `chown` serves both. Read once
+    # at start-up, so a rotation restarts the worker together with the gateway
+    # (docs/runbooks/deployment.adoc, "Rotating the envelope keys").
+    volumes:
+      - ./secrets/envelope-current.pem:/run/envelope/current.pem:ro
     depends_on:
       postgres:
         condition: service_healthy

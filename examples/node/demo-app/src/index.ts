@@ -8,7 +8,7 @@
  * both, against the *real* stack those compose files bring up, and reports
  * pass/fail on the one property an evaluator actually cares about —
  * "did a message I sent really get delivered, and did I really get told
- * about it, with a signature that really verifies?"
+ * about it, with a delivery that really opens under the gateway's key?"
  *
  * What this proves, end to end, over real HTTP, against real containers:
  *
@@ -20,12 +20,13 @@
  *   3. The message is actually routed, submitted (to `sms-fake-orange`,
  *      never a real carrier — see that binary's own module doc), and
  *      reaches a real terminal state via a real DLR round trip.
- *   4. vsms's `hooks` worker role really signs and POSTs a webhook for
+ *   4. vsms's `hooks` worker role really seals and POSTs a webhook for
  *      that message back to *this* process's own `POST /webhooks` route,
- *      and the signature genuinely verifies — `signature.ts` (copied
- *      verbatim from `examples/node/webhook-receiver`, see
- *      `verbatim-copy.test.ts`) is exactly the code a real integrator's
- *      receiver would run.
+ *      and the delivery genuinely opens — `WebhookOpener` from the same SDK
+ *      (the gateway's own envelope signing key, pinned from
+ *      `dev-keys/server-keys.txt`, for the audience this app's endpoint was
+ *      created with) is exactly the code a real integrator's receiver
+ *      would run.
  *
  * Exit code is the whole point: `0` only if the message reached
  * `delivered` AND at least one webhook for it verified. Anything else is
@@ -51,7 +52,13 @@ import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Message, MessageState } from "@vaam-apps/vsms-node";
-import { parseServerKeysReport, SdkError, VsmsClient } from "@vaam-apps/vsms-node";
+import {
+  parseServerKeysReport,
+  SdkError,
+  VsmsClient,
+  type WebhookEvent,
+  WebhookOpener,
+} from "@vaam-apps/vsms-node";
 import type { Request, Response } from "express";
 import express from "express";
 import { decide } from "./decision.ts";
@@ -80,20 +87,49 @@ function readFileTrimmed(path: string): string {
   return readFileSync(path, "utf8").trim();
 }
 
+/** `DEMO_WEBHOOK_MODE`: `sealed` (default) or `hmac`; anything else refuses to start. */
+function webhookMode(): "sealed" | "hmac" {
+  const mode = process.env.DEMO_WEBHOOK_MODE;
+  if (mode === undefined || mode === "" || mode === "sealed") return "sealed";
+  if (mode === "hmac") return "hmac";
+  throw new Error(`DEMO_WEBHOOK_MODE must be "sealed" or "hmac", not ${JSON.stringify(mode)}`);
+}
+
 const BASE_URL = (process.env.VSMS_BASE_URL ?? "http://sms-gateway:8080").replace(/\/+$/, "");
 const SIGNING_KEY_PATH = process.env.VSMS_SIGNING_KEY_PATH ?? "/run/demo/demo-app.pem";
 const SERVER_KEYS_PATH = process.env.VSMS_SERVER_KEYS_PATH ?? "/run/demo/server-keys.txt";
 
 const WEBHOOK_PORT = envInt("DEMO_WEBHOOK_PORT", 9000);
+// How the demo's `WebhookEndpoint` is delivered to (`WebhookEndpoint.deliveryMode`,
+// chosen when `vsms-demo-seed` created it): `sealed` (the default, and what the
+// compose stacks seed) or `hmac`, the legacy `X-Sms-Signature` scheme, for which
+// `signature.ts` (copied verbatim from `examples/node/webhook-receiver`, see
+// `verbatim-copy.test.ts`) is exactly the code a real integrator's receiver would
+// run. A receiver serves one endpoint and so has one mode.
+const WEBHOOK_MODE = webhookMode();
+// `hmac` only: the endpoint's signing secret, from `vsms-demo-seed
+// --webhook-secret-out`'s file, or `DEMO_WEBHOOK_SECRET`. Also the previous one
+// while a rotation's overlap window is open, per §4.4: a receiver is handed both
+// and accepts if either verifies (nothing in the seeded stack rotates, so it is
+// there for completeness).
 const WEBHOOK_SECRET_PATH = process.env.DEMO_WEBHOOK_SECRET_PATH ?? "/secrets/webhook-secret";
-// §4.4's own rotation-overlap design (backends/crates/sms-webhook):
-// a receiver is handed BOTH the current and previous secret, and accepts
-// if either one verifies. `vsms-demo-seed`'s own `ensure_demo_webhook_endpoint`
-// always writes `prevSecret: None` today (this demo never rotates its own
-// endpoint's secret), so this env var exists for completeness/future use
-// rather than anything the seeded stack currently exercises — the wiring
-// is real, just not driven by anything yet.
 const WEBHOOK_PREV_SECRET = process.env.DEMO_WEBHOOK_PREV_SECRET;
+// `sealed` only: the audience the demo's `WebhookEndpoint` was created with
+// (`vsms-demo-seed --webhook-audience`; the compose stacks pass `demo-app`).
+// The delivery is addressed to it, and the opener refuses one that is not.
+const WEBHOOK_AUDIENCE = process.env.DEMO_WEBHOOK_AUDIENCE ?? "demo-app";
+// The id of the app the endpoint belongs to. Unset, the demo learns it from the
+// verified answer to its own `getMessage` (see the inbound half below); set, it
+// is used as given, which is how a real receiver is configured.
+const WEBHOOK_APP_ID = process.env.DEMO_WEBHOOK_APP_ID || undefined;
+// The id of the endpoint itself: the binding, required. A receiver serves
+// exactly one endpoint and learns its id when the endpoint is created;
+// `vsms-demo-seed --webhook-endpoint-id-out` writes it to the file the compose
+// stacks share with this container. `DEMO_WEBHOOK_ENDPOINT_ID` wins over it.
+const WEBHOOK_ENDPOINT_ID_PATH =
+  process.env.DEMO_WEBHOOK_ENDPOINT_ID_PATH ?? "/run/demo-endpoint/webhook-endpoint-id";
+// The path of `WebhookEndpoint.url` (`http://demo-app:9000/webhooks`).
+const WEBHOOK_ROUTE = "/webhooks";
 
 const DEMO_TO = process.env.DEMO_TO ?? "+237677123456";
 const DEMO_SENDER_ID = process.env.DEMO_SENDER_ID ?? "VSMS";
@@ -132,9 +168,15 @@ const TERMINAL_STATES: ReadonlySet<MessageState> = new Set([
 ]);
 
 // ---------------------------------------------------------------------------
-// Inbound half: a minimal receiver, `signature.ts`'s verifySignature is the
-// entire security-relevant logic — same function a real integrator's own
-// receiver would call.
+// Inbound half: a minimal receiver. `WebhookOpener.open` is the entire
+// security-relevant logic: the same call a real integrator's own receiver
+// makes. It needs the id of its endpoint (the binding) and of the app the
+// endpoint belongs to, because the gateway signs every app's deliveries with
+// one key; a real receiver reads both from its configuration. This demo reads
+// the endpoint id from its configuration too (`webhookEndpointId`), and learns
+// the app id from the one place it can trust without being told: the verified
+// answer to its own `getMessage`, which names the app the message (and so the
+// endpoint) belongs to.
 // ---------------------------------------------------------------------------
 
 interface ReceivedWebhook {
@@ -147,63 +189,94 @@ interface ReceivedWebhook {
   dataState: string | undefined;
 }
 
-function startWebhookServer(port: number, secrets: readonly string[], events: ReceivedWebhook[]) {
+/** What the demo reads off a delivery once it is verified, in either mode. */
+interface OpenedDelivery {
+  type: string;
+  /** The dedupe key: `WebhookAttempt.id` (sealed) or the signed `X-Sms-Event-Id` (hmac). */
+  id: string;
+  data: unknown;
+}
+
+/** Verifies one delivery in the endpoint's mode and returns it, or throws why not. */
+type OpenDelivery = (req: Request, rawBody: Buffer) => Promise<OpenedDelivery>;
+
+/** `sealed`: `WebhookOpener.open` is the entire security-relevant logic. */
+function openSealed(opener: Promise<WebhookOpener>): OpenDelivery {
+  return async (_req, rawBody) => {
+    const opened: WebhookEvent = await (await opener).open(rawBody);
+    return { type: opened.type, id: opened.id, data: opened.data };
+  };
+}
+
+/**
+ * `hmac`: `signature.ts`'s `verifySignature` is the entire security-relevant
+ * logic, over the exact bytes and the three headers it signs.
+ */
+function openHmac(secrets: readonly string[]): OpenDelivery {
+  return async (req, rawBody) => {
+    const eventId = req.header("x-sms-event-id");
+    const result = verifySignature({
+      rawBody,
+      timestamp: req.header("x-sms-timestamp"),
+      eventId,
+      signatureHeader: req.header("x-sms-signature"),
+      secrets,
+    });
+    if (!result.ok || eventId === undefined) {
+      throw new Error(result.ok ? "missing X-Sms-Event-Id" : result.reason);
+    }
+    let data: unknown;
+    try {
+      data = (JSON.parse(rawBody.toString("utf8")) as { data?: unknown }).data;
+    } catch {
+      // Verified, but not JSON: still a delivery the signature vouches for.
+    }
+    return { type: req.header("x-sms-event") ?? "unknown", id: eventId, data };
+  };
+}
+
+function startWebhookServer(port: number, open: OpenDelivery, events: ReceivedWebhook[]) {
   const app = express();
 
-  // Raw bytes, not `express.json()` — verification is over the exact
-  // bytes vsms signed, and a JSON-parse-then-reserialize round trip is
-  // not guaranteed to reproduce them byte-for-byte (`hooks.rs`'s own
-  // module doc makes the identical point about signing vs. sending).
+  // Raw bytes, not `express.json()`: a sealed body is a COSE_Sign1 message and
+  // an hmac one is signed byte for byte, so either way verification is over the
+  // exact bytes vsms sent (a JSON parse-then-reserialize round trip is not
+  // guaranteed to reproduce them; `hooks.rs`'s own module doc makes the
+  // identical point about signing vs. sending).
   app.post(
-    "/webhooks",
-    express.raw({ type: "*/*", limit: "1mb" }),
-    (req: Request, res: Response) => {
+    WEBHOOK_ROUTE,
+    express.raw({ type: () => true, limit: "1mb" }),
+    async (req: Request, res: Response) => {
       const rawBody = req.body instanceof Buffer ? req.body : Buffer.alloc(0);
-      const result = verifySignature({
-        rawBody,
-        timestamp: req.header("x-sms-timestamp"),
-        eventId: req.header("x-sms-event-id"),
-        signatureHeader: req.header("x-sms-signature"),
-        secrets,
-      });
 
-      let messageId: string | undefined;
-      let dataState: string | undefined;
+      let opened: OpenedDelivery | undefined;
+      let failure: string | undefined;
       try {
-        const parsed = JSON.parse(rawBody.toString("utf8")) as {
-          data?: { messageId?: unknown; state?: unknown };
-        };
-        messageId = typeof parsed.data?.messageId === "string" ? parsed.data.messageId : undefined;
-        dataState = typeof parsed.data?.state === "string" ? parsed.data.state : undefined;
-      } catch {
-        // A body that doesn't even parse as JSON still gets recorded below,
-        // as an unverified/unattributable event — signature.ts's own
-        // verification already ran against the raw bytes regardless.
+        opened = await open(req, rawBody);
+      } catch (err) {
+        failure = err instanceof Error ? err.message : String(err);
       }
 
+      const data = opened?.data as { messageId?: unknown; state?: unknown } | undefined;
       const event: ReceivedWebhook = {
-        type: req.header("x-sms-event") ?? "unknown",
-        eventId: req.header("x-sms-event-id") ?? "unknown",
-        verified: result.ok,
-        reason: result.ok ? undefined : result.reason,
+        type: opened?.type ?? "unknown",
+        eventId: opened?.id ?? "unknown",
+        verified: opened !== undefined,
+        reason: failure,
         receivedAtMs: Date.now(),
-        messageId,
-        dataState,
+        messageId: typeof data?.messageId === "string" ? data.messageId : undefined,
+        dataState: typeof data?.state === "string" ? data.state : undefined,
       };
       events.push(event);
 
-      if (result.ok) {
+      if (opened !== undefined) {
         console.log(
           `[webhook] VERIFIED  type=${event.type} messageId=${event.messageId ?? "?"} state=${event.dataState ?? "?"}`,
         );
         res.status(200).json({ ok: true });
       } else {
-        console.error(
-          `[webhook] SIGNATURE VERIFICATION FAILED  type=${event.type} messageId=${event.messageId ?? "?"} reason=${event.reason}`,
-        );
-        res
-          .status(401)
-          .json({ ok: false, error: "signature verification failed", reason: event.reason });
+        console.error(`[webhook] DELIVERY NOT OPENED  reason=${event.reason}`);
+        res.status(401).json({ ok: false, error: "delivery not verified" });
       }
     },
   );
@@ -215,10 +288,31 @@ function startWebhookServer(port: number, secrets: readonly string[], events: Re
   const server = createServer(app);
   return new Promise<typeof server>((resolve) => {
     server.listen(port, "0.0.0.0", () => {
-      console.log(`[demo-app] webhook receiver listening on :${port} (POST /webhooks)`);
+      console.log(`[demo-app] webhook receiver listening on :${port} (POST ${WEBHOOK_ROUTE})`);
       resolve(server);
     });
   });
+}
+
+/** The endpoint this receiver serves: the environment, else the file the seed wrote. */
+function webhookEndpointId(): string {
+  const fromEnv = process.env.DEMO_WEBHOOK_ENDPOINT_ID?.trim();
+  if (fromEnv) return fromEnv;
+  let fromFile = "";
+  try {
+    fromFile = readFileTrimmed(WEBHOOK_ENDPOINT_ID_PATH);
+  } catch {
+    // reported below, with the one message for both ways of not having it
+  }
+  if (fromFile === "") {
+    throw new Error(
+      "the endpoint id is required: set DEMO_WEBHOOK_ENDPOINT_ID, or point " +
+        `DEMO_WEBHOOK_ENDPOINT_ID_PATH (now ${WEBHOOK_ENDPOINT_ID_PATH}) at a file holding it ` +
+        "(`vsms-demo-seed --webhook-endpoint-id-out` writes one). A receiver serves exactly one " +
+        "endpoint; there is no mode that accepts a delivery without knowing which",
+    );
+  }
+  return fromFile;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,14 +416,40 @@ async function pollUntilTerminal(
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<number> {
-  const secret = process.env.DEMO_WEBHOOK_SECRET ?? readFileTrimmed(WEBHOOK_SECRET_PATH);
-  // Both the current and previous secret are accepted, per §4.4's own
-  // rotation-overlap design — see WEBHOOK_PREV_SECRET's own comment for
-  // why nothing in the seeded stack drives this today.
-  const secrets = [secret, WEBHOOK_PREV_SECRET].filter((s): s is string => Boolean(s));
+  // The gateway's two public keys: the ones it seals its answers with, and
+  // the very ones that sign a webhook delivery. One pin for both.
+  const serverKeys = parseServerKeysReport(readFileTrimmed(SERVER_KEYS_PATH));
+  let learnedAppId: (appId: string) => void = () => {};
+  let failedToLearnAppId: (reason: unknown) => void = () => {};
+  let open: OpenDelivery;
+  if (WEBHOOK_MODE === "hmac") {
+    const secret = process.env.DEMO_WEBHOOK_SECRET ?? readFileTrimmed(WEBHOOK_SECRET_PATH);
+    const secrets = [secret, WEBHOOK_PREV_SECRET].filter((s): s is string => Boolean(s));
+    open = openHmac(secrets);
+  } else {
+    const endpointId = webhookEndpointId();
+    const opener = new Promise<WebhookOpener>((resolve, reject) => {
+      failedToLearnAppId = reject;
+      learnedAppId = (appId) =>
+        resolve(
+          new WebhookOpener({
+            serverKeys,
+            audience: WEBHOOK_AUDIENCE,
+            route: WEBHOOK_ROUTE,
+            appId,
+            endpointId,
+          }),
+        );
+    });
+    // Each request reads the rejection itself and answers `401`; this only keeps
+    // a rejection nobody has awaited yet from being an unhandled one.
+    opener.catch(() => {});
+    if (WEBHOOK_APP_ID !== undefined) learnedAppId(WEBHOOK_APP_ID);
+    open = openSealed(opener);
+  }
 
   const events: ReceivedWebhook[] = [];
-  const server = await startWebhookServer(WEBHOOK_PORT, secrets, events);
+  const server = await startWebhookServer(WEBHOOK_PORT, open, events);
 
   const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS;
 
@@ -338,7 +458,7 @@ async function main(): Promise<number> {
   const client = new VsmsClient({
     baseUrl: BASE_URL,
     keyPath: SIGNING_KEY_PATH,
-    serverKeys: parseServerKeysReport(readFileTrimmed(SERVER_KEYS_PATH)),
+    serverKeys,
   });
   console.log(`[demo-app] signing as the registered key ${client.publicKey}`);
 
@@ -351,6 +471,18 @@ async function main(): Promise<number> {
       `[demo-app] accepted messageId=${sent.messageId} state=${sent.state} encoding=${sent.encoding} ` +
         `segments=${sent.segments} operator=${sent.operator} estimatedCostXaf=${sent.estimatedCostXaf}`,
     );
+
+    if (WEBHOOK_MODE === "sealed" && WEBHOOK_APP_ID === undefined) {
+      const created = await withDeadline(
+        client.getMessage(sent.messageId),
+        deadlineMs,
+        "getMessage",
+      );
+      if (typeof created.appId !== "string" || created.appId === "") {
+        throw new Error("the gateway's answer for the message names no appId");
+      }
+      learnedAppId(created.appId);
+    }
 
     const { timeline, final } = await pollUntilTerminal(
       client,
@@ -414,6 +546,10 @@ async function main(): Promise<number> {
       console.error(`[demo-app] FAILURE: messageId=${sent.messageId} — ${reasons.join("; ")}`);
     }
   } catch (err) {
+    // Whatever stopped the run, a webhook request still waiting on the opener
+    // (the app id never learned) is failed rather than left hanging, so the
+    // server below can close. A no-op when the opener already resolved.
+    failedToLearnAppId(err);
     if (err instanceof SdkError) {
       console.error(
         `[demo-app] FAILURE: SdkError: ${err.message} (httpStatus=${err.httpStatus ?? "n/a"})`,

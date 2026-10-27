@@ -102,7 +102,7 @@ fn help_text() -> &'static str {
      bootstrap-sql <out>   regenerate 0002_bootstrap/up.sql from docs/architecture.md §2.10\n  \
      bootstrap-sql-check   fail if 0002_bootstrap/up.sql has drifted from the design doc\n  \
      sdk-schema-check      fail if the vendored SDK schema has drifted\n  \
-     sdk-parity-check      fail if the Rust and Node SDKs would bind different bytes (audience, one operation table)\n  \
+     sdk-parity-check      fail if the Rust and Node SDKs would bind different bytes (audience, one operation table, the webhook delivery contract)\n  \
      sdk-schema-vendor     refresh the vendored SDK schema copy\n  \
      cratestack-pin         print the pinned cratestack version from Cargo.toml\n  \
      cratestack-pin-check   every other copy of that pin (codec-json, the two client manifests, ci/runner/Dockerfile) matches it\n  \

@@ -69,6 +69,52 @@ never follows a redirect.
 See `examples/rust/sms-send` in the main vsms repo for a complete, runnable
 version of this against a real gateway (`just demo`).
 
+## Receiving webhooks
+
+vsms delivers an event to a sealed endpoint as a sealed request signed with the
+gateway's own key (the one that signs its answers): no webhook secret, no
+signature header. (An endpoint can also be set to the original `hmac` mode,
+`X-Sms-Signature` under a shared secret, for a receiver that has not moved;
+`WebhookOpener` opens sealed deliveries only, and an `hmac` receiver verifies the
+signature itself, `docs/integrating.md` "Choosing a delivery mode".) Pin the same
+two public keys and open the body:
+
+```rust
+use vsms_sdk::{ServerKeys, WebhookOpener};
+
+let keys = ServerKeys::parse_report(&std::fs::read_to_string("server-keys.txt")?)?;
+// `audience` is the name on your WebhookEndpoint (choose one only you can have);
+// `route` is the whole path of its URL; `app_id` and `endpoint_id` are the ids
+// of your App and of your WebhookEndpoint (the console shows the latter when
+// the endpoint is created). Both are required.
+let opener = WebhookOpener::new(
+    &keys,
+    "https://hooks.example.com",
+    "/webhooks/vsms",
+    "capp00000000000000000",
+    "cend00000000000000000",
+)?;
+let event = opener.open(&raw_request_body).await?;
+println!("{} {}", event.event_type, event.id);
+```
+
+One gateway key signs every app's deliveries, so a signature and an audience say
+only that vsms sent this to your name. **`endpoint_id` is the binding**: a
+receiver serves exactly one endpoint, whose id it learns when the endpoint is
+created, and it is compared with the `endpointId` inside the signed envelope. A
+global role may register an endpoint under any app, so `app_id` is compared too
+and additionally catches an endpoint registered under another app. The unique
+audience is defence in depth, not the binding. A delivery made through someone
+else's endpoint is refused. There is no opener without both ids.
+
+`open` returns `WebhookError::Unverified` for a forgery, a body sealed by a key
+you did not pin, a delivery made for another app or endpoint, another audience or
+route, a stale timestamp (300 s) and a replayed body, and one answer is all it
+gives: reply `401`. Dedupe on `event.id`: delivery is
+at-least-once and a retry is a new sealed request carrying the same id. The nonce
+store is per process by default; give a multi-replica receiver one it shares with
+`WebhookOpener::builder(..).with_nonce_store(..)`.
+
 ## What's vendored, and why
 
 `schema.cstack` in this directory is a plain copy of the main repo's

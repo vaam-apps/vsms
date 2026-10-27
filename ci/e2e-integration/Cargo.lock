@@ -1994,12 +1994,14 @@ name = "vsms-sdk-rust"
 version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "cratestack-client",
  "getrandom 0.4.3",
  "reqwest",
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "zeroize",
 ]

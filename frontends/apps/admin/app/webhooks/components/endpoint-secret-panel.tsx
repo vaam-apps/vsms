@@ -17,7 +17,9 @@ function SecretRevealNotice({ children }: { children: ReactNode }) {
 }
 
 // Dumb (R6): the current/previous secret display plus "Rotate secret" —
-// the panel that sits above the endpoint's own edit form in more-detail.
+// the panel that sits above an `hmac` endpoint's own edit form in
+// more-detail (a `sealed` endpoint has no secret and gets
+// `EndpointReceiverPanel` instead).
 export function EndpointSecretPanel({
   endpoint,
   justCreatedSecret,
@@ -47,7 +49,7 @@ export function EndpointSecretPanel({
       )}
 
       <div className="flex flex-col gap-3 rounded-sm border border-edge bg-surface-2 p-3">
-        <SecretField label="Current secret" value={endpoint.secret} />
+        {endpoint.secret != null && <SecretField label="Current secret" value={endpoint.secret} />}
         {endpoint.prevSecret != null && (
           <>
             <SecretField label="Previous secret (still verifies)" value={endpoint.prevSecret} />
@@ -61,6 +63,11 @@ export function EndpointSecretPanel({
             </p>
           </>
         )}
+        <p className="text-caption text-subtle-foreground">
+          Deliveries to this endpoint carry <span className="font-mono">X-Sms-Signature</span>,
+          HMAC-SHA256 over the exact body, keyed by this secret. A sealed endpoint holds no secret
+          at all and is the recommended mode.
+        </p>
         <div>
           <Button type="button" variant="secondary" size="sm" onClick={onRotate}>
             Rotate secret

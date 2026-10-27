@@ -23,6 +23,7 @@ use zeroize::{Zeroize as _, Zeroizing};
 use crate::contracts::route_of;
 use crate::core::{Bound, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys};
 use crate::opener::Opener;
+use crate::webhook::{WebhookError, WebhookOpener};
 
 fn error(kind: &str, message: &str, status: Option<u16>) -> JsValue {
     let object = Object::new();
@@ -43,6 +44,16 @@ fn seal_error(error_: &SealError) -> JsValue {
     match error_ {
         SealError::Unbound(message) => error("unbound", message, None),
         SealError::Seal(message) => error("seal", message, None),
+    }
+}
+
+fn webhook_error(error_: &WebhookError) -> JsValue {
+    match error_ {
+        WebhookError::Unverified => error("unverified", &error_.to_string(), None),
+        WebhookError::Unreadable => error("unreadable", &error_.to_string(), None),
+        WebhookError::Malformed(_) => error("malformed", &error_.to_string(), None),
+        WebhookError::Backend(message) => error("backend", message, None),
+        WebhookError::Invalid(message) => error("invalid", message, None),
     }
 }
 
@@ -458,5 +469,60 @@ impl JsOpener {
             .await
             .map_err(|e| open_error(&e))?;
         String::from_utf8(payload).map_err(|_| error("unreadable", "the answer is not UTF-8", None))
+    }
+}
+
+/// Opens the sealed webhooks vsms delivers to one receiver: the gateway's
+/// worker seals each delivery with its envelope signing key, and this verifies
+/// it under the two pinned server keys, for this audience and this route, then
+/// checks the endpoint and the app named inside it.
+#[wasm_bindgen(js_name = "WebhookOpener")]
+#[derive(Debug)]
+pub struct JsWebhookOpener {
+    inner: WebhookOpener,
+}
+
+#[wasm_bindgen(js_class = "WebhookOpener")]
+impl JsWebhookOpener {
+    /// An opener believing `server_current` and `server_next` (unpadded
+    /// base64url, both required and distinct) for deliveries to `route` (the
+    /// whole path of the endpoint's URL) that name `audience` and were made for
+    /// the app `app_id` through the endpoint `endpoint_id` (both required: the
+    /// endpoint id is the binding, the app id additionally catches an endpoint
+    /// registered under another app). `now_seconds`,
+    /// when given, is a fixed clock in Unix seconds, for tests and for
+    /// replaying a recorded delivery.
+    #[wasm_bindgen(js_name = "forServerKeys")]
+    pub fn for_server_keys(
+        server_current: &str,
+        server_next: &str,
+        audience: &str,
+        route: &str,
+        app_id: &str,
+        endpoint_id: &str,
+        now_seconds: Option<f64>,
+    ) -> Result<JsWebhookOpener, JsValue> {
+        let keys = server_keys(server_current, server_next)?;
+        let clock = match now_seconds {
+            None => None,
+            Some(seconds) if seconds.is_finite() && seconds.fract() == 0.0 => {
+                let fixed = seconds as i64;
+                Some(Arc::new(move || fixed) as Arc<dyn Fn() -> i64 + Send + Sync>)
+            }
+            Some(_) => return Err(invalid("nowSeconds must be a whole number of seconds")),
+        };
+        let inner = WebhookOpener::new(&keys, audience, route, app_id, endpoint_id, clock)
+            .map_err(|e| webhook_error(&e))?;
+        Ok(JsWebhookOpener { inner })
+    }
+
+    /// The verified envelope, as JSON text, of one delivery's body (the raw
+    /// request bytes). Rejects with `unverified` (one answer for every reason,
+    /// another app's delivery included), `unreadable`, `malformed` or `backend`.
+    pub async fn open(&self, body: Uint8Array) -> Result<String, JsValue> {
+        self.inner
+            .open(&body.to_vec())
+            .await
+            .map_err(|e| webhook_error(&e))
     }
 }

@@ -1,25 +1,44 @@
+import type { IncomingHttpHeaders } from "node:http";
+
 /**
- * The event envelope shape from `docs/architecture.md` §8.4's worked
- * example. This is the *design doc's* shape, not a shape ever observed from
- * a real vsms — outbound delivery (#38–#42) doesn't exist yet, so nothing
- * has ever actually sent one of these.
+ * One delivery as it arrived: the raw body bytes and the request headers. A
+ * `sealed` delivery is checked from the body alone, an `hmac` one from the
+ * body and three headers, so the seam hands an opener both.
  */
-export interface WebhookEnvelope {
-  /** CrateStack's outbox `event_id` (§2.10's `sourceEventId`) — for tracing
-   *  and duplicate diagnosis only. NOT the dedupe key; see store.ts. */
-  id: string;
-  /** e.g. "message.delivered" — see §8.4's event catalogue. */
-  type: string;
-  occurredAt: string;
-  data: Record<string, unknown> & { messageId?: string };
+export interface Delivery {
+  body: Uint8Array;
+  headers: IncomingHttpHeaders;
 }
 
+/**
+ * The part of an opened event this receiver acts on, in either mode.
+ *
+ * - `sealed`: the SDK's `WebhookEvent` (`docs/architecture.md` section 8.4's
+ *   envelope plus the `eventId`, `appId` and `endpointId` that ride inside the
+ *   sealed body); `id` is `WebhookAttempt.id`.
+ * - `hmac`: the original four-field envelope; `id` is the signed
+ *   `X-Sms-Event-Id` header, the dedupe key that mode has always documented.
+ *
+ * Either way `id` is the key to dedupe on: a retry and an operator's replay
+ * carry the same one.
+ */
+export interface ReceivedEvent {
+  id: string;
+  type: string;
+  occurredAt: string;
+  data: unknown;
+}
+
+/**
+ * What this receiver reports about each request it handled.
+ */
 export type ProcessedStatus =
   | "accepted-new"
   | "accepted-duplicate"
   | "accepted-out-of-order-ignored"
-  | "rejected-signature"
-  | "rejected-malformed";
+  | "rejected-unverified"
+  | "rejected-malformed"
+  | "failed-backend";
 
 export interface ProcessedResult {
   status: ProcessedStatus;

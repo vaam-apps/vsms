@@ -40,9 +40,9 @@ sms-msisdn.workspace = true
 # fetches Route/Provider rows, converts the schema's own enums onto this
 # crate's mirrored ones, and applies the resulting Decision.
 sms-routing.workspace = true
-# hooks.rs's real dependency: sign_header, generate_secret's sibling
-# constants (header names), and the canonical-string contract #41 already
-# proved cross-language. This crate never reimplements signing.
+# hooks.rs's real dependency: the Sealer that turns a delivery into a sealed
+# request (VS-8) and the route rule it binds. This crate never builds an
+# envelope of its own.
 sms-webhook.workspace = true
 # #70/#71: the four worker-side gauges (singleton lease held, dispatch
 # in-flight submits, drain's oldest-undelivered age, reap_outbox's poison
@@ -120,6 +120,11 @@ axum.workspace = true
 # `parse_dlr`-only fakes) — `cost_per_segment_xaf` is a real `Decimal`,
 # not this crate's own re-export of one.
 rust_decimal.workspace = true
+
+# hooks.rs's own unit tests read the warnings it logs (the empty-key line, the
+# keyless sealed backlog): a line an operator must see is only proved by looking
+# at what the subscriber was handed.
+tracing-subscriber.workspace = true
 
 [lints]
 workspace = true

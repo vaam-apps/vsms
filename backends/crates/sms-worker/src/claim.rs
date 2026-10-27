@@ -7,8 +7,8 @@ use chrono::{DateTime, Duration, Utc};
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::schema::{
     AttemptState, Cratestack, Job, JobState, Message, MessageState, UpdateJobInput,
-    UpdateMessageInput, UpdateWebhookAttemptInput, WebhookAttempt, job, message, webhook_attempt,
-    webhook_endpoint,
+    UpdateMessageInput, UpdateWebhookAttemptInput, WebhookAttempt, WebhookDeliveryMode, job,
+    message, webhook_attempt, webhook_endpoint,
 };
 use tracing::warn;
 
@@ -81,7 +81,20 @@ pub async fn claim_batch<C: Claimable>(
 ) -> Result<Vec<C>, CratestackError> {
     let now = Utc::now();
     let candidates = C::candidates(db, sys, now, budget).await?;
+    lease_candidates(db, sys, worker, now, candidates).await
+}
 
+/// [`claim_batch`]'s loop over candidates already selected: take each lease,
+/// tell a lost race from a denied write from a real failure. One function so a
+/// claim with its own candidate selection ([`claim_webhook_attempts`]) cannot
+/// grow its own reading of those three outcomes.
+async fn lease_candidates<C: Claimable>(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    worker: &str,
+    now: DateTime<Utc>,
+    candidates: Vec<C>,
+) -> Result<Vec<C>, CratestackError> {
     let mut claimed = Vec::with_capacity(candidates.len());
     for candidate in candidates {
         // #71: mapped before this match ever inspects it — `take_lease`'s
@@ -590,6 +603,139 @@ async fn filter_by_endpoint_health(
         .collect())
 }
 
+/// Which `WebhookEndpoint.deliveryMode`s the claiming worker can deliver.
+///
+/// A `sealed` delivery needs the envelope signing key
+/// (`--envelope-signing-key-file`); an `hmac` one needs nothing but the row. A
+/// worker without the key must not **claim** a sealed attempt at all: claiming
+/// writes the row (`delivering`, a lease, an attempt counted), and a worker that
+/// then cannot send it has either failed an attempt that never reached the
+/// endpoint or invented a bookkeeping state to hide that. So the mode is decided
+/// where the rows are chosen, in the claim's own query, ahead of the over-fetch
+/// window: a sealed backlog the worker will not take cannot crowd the `hmac` rows
+/// it will out of that window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServedModes {
+    /// The worker holds the signing key: `hmac` and `sealed` attempts alike.
+    Both,
+    /// The worker holds no signing key: `hmac` attempts only.
+    HmacOnly,
+}
+
+/// Attempts waiting for their turn: `pending` (never tried) or `failed` (resting
+/// out a backoff), whose `nextAttemptAt` has arrived. The due-list
+/// `webhook_due_idx` (§2.10) indexes.
+fn due_attempts(now: DateTime<Utc>) -> FilterExpr {
+    FilterExpr::from(webhook_attempt::state().in_([AttemptState::pending, AttemptState::failed]))
+        .and(
+            FilterExpr::from(webhook_attempt::nextAttemptAt().is_null())
+                .or(webhook_attempt::nextAttemptAt().lte(now)),
+        )
+}
+
+/// A crashed worker's abandoned attempts: `delivering` with a lease that has run
+/// out (`webhook_attempts_lease_reclaim_idx`).
+fn expired_leases(now: DateTime<Utc>) -> FilterExpr {
+    FilterExpr::from(webhook_attempt::state().eq(AttemptState::delivering))
+        .and(webhook_attempt::leaseUntil().lt(now))
+}
+
+/// The attempts whose endpoint delivers in `mode`, as a correlated subquery on
+/// `endpointId` the delegate renders itself (the endpoint's own read policy
+/// applies inside it, as for any relation filter).
+fn endpoint_delivers(mode: WebhookDeliveryMode) -> FilterExpr {
+    webhook_attempt::endpoint().deliveryMode().eq(mode)
+}
+
+/// `filter`, narrowed to what a worker serving `served` may claim.
+fn restricted_to(filter: FilterExpr, served: ServedModes) -> FilterExpr {
+    match served {
+        ServedModes::Both => filter,
+        ServedModes::HmacOnly => filter.and(endpoint_delivers(WebhookDeliveryMode::hmac)),
+    }
+}
+
+/// [`Claimable::candidates`] for [`WebhookAttempt`], for a worker serving `served`.
+async fn webhook_candidates(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    now: DateTime<Utc>,
+    budget: i64,
+    served: ServedModes,
+) -> Result<Vec<WebhookAttempt>, CratestackError> {
+    let fetch_budget = budget
+        .saturating_mul(CANDIDATE_OVERFETCH_FACTOR)
+        .max(budget);
+
+    let mut ready = db
+        .webhook_attempt()
+        .find_many()
+        .where_expr(restricted_to(due_attempts(now), served))
+        .order_by(webhook_attempt::nextAttemptAt().asc())
+        .limit(fetch_budget)
+        .run(sys)
+        .await?;
+
+    let remaining = fetch_budget - i64::try_from(ready.len()).unwrap_or(fetch_budget);
+    if remaining > 0 {
+        let reclaimable = db
+            .webhook_attempt()
+            .find_many()
+            .where_expr(restricted_to(expired_leases(now), served))
+            .order_by(webhook_attempt::leaseUntil().asc())
+            .limit(remaining)
+            .run(sys)
+            .await?;
+        ready.extend(reclaimable);
+    }
+
+    filter_by_endpoint_health(db, sys, ready, now, budget).await
+}
+
+/// Claim up to `budget` webhook attempts a worker serving `served` can deliver
+/// ([`ServedModes`]). [`claim_batch`] for a [`WebhookAttempt`] claims
+/// [`ServedModes::Both`]; `hooks` calls this with what its signing key allows.
+///
+/// # Errors
+///
+/// Whatever [`claim_batch`] returns.
+pub async fn claim_webhook_attempts(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    worker: &str,
+    budget: i64,
+    served: ServedModes,
+) -> Result<Vec<WebhookAttempt>, CratestackError> {
+    let now = Utc::now();
+    let candidates = webhook_candidates(db, sys, now, budget, served).await?;
+    lease_candidates(db, sys, worker, now, candidates).await
+}
+
+/// How many `sealed` attempts are waiting for a worker that holds the signing key:
+/// due, or abandoned by a crashed worker, whose endpoint delivers `sealed`. A
+/// worker without the key counts them to say so ([`ServedModes::HmacOnly`] never
+/// claims one), with a `COUNT(*)` rather than the rows, which carry payloads.
+///
+/// # Errors
+///
+/// Whatever the aggregate returns.
+pub async fn count_sealed_attempts_waiting(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    now: DateTime<Utc>,
+) -> Result<i64, CratestackError> {
+    db.webhook_attempt()
+        .aggregate()
+        .count()
+        .where_expr(
+            due_attempts(now)
+                .or(expired_leases(now))
+                .and(endpoint_delivers(WebhookDeliveryMode::sealed)),
+        )
+        .run(sys)
+        .await
+}
+
 #[async_trait]
 impl Claimable for WebhookAttempt {
     fn id(&self) -> String {
@@ -607,51 +753,15 @@ impl Claimable for WebhookAttempt {
     /// the query itself can't express "and the endpoint is healthy" without
     /// a join this schema's delegates don't offer, and `WebhookEndpoint`
     /// carries no `@version` for that join to claim against even if it
-    /// could.
+    /// could. This selects for a worker that can deliver both modes;
+    /// [`claim_webhook_attempts`] is the one that takes the mode into account.
     async fn candidates(
         db: &Cratestack,
         sys: &CratestackContext,
         now: DateTime<Utc>,
         budget: i64,
     ) -> Result<Vec<Self>, CratestackError> {
-        let fetch_budget = budget
-            .saturating_mul(CANDIDATE_OVERFETCH_FACTOR)
-            .max(budget);
-
-        let mut ready = db
-            .webhook_attempt()
-            .find_many()
-            .where_expr(
-                FilterExpr::from(
-                    webhook_attempt::state().in_([AttemptState::pending, AttemptState::failed]),
-                )
-                .and(
-                    FilterExpr::from(webhook_attempt::nextAttemptAt().is_null())
-                        .or(webhook_attempt::nextAttemptAt().lte(now)),
-                ),
-            )
-            .order_by(webhook_attempt::nextAttemptAt().asc())
-            .limit(fetch_budget)
-            .run(sys)
-            .await?;
-
-        let remaining = fetch_budget - i64::try_from(ready.len()).unwrap_or(fetch_budget);
-        if remaining > 0 {
-            let reclaimable = db
-                .webhook_attempt()
-                .find_many()
-                .where_expr(
-                    FilterExpr::from(webhook_attempt::state().eq(AttemptState::delivering))
-                        .and(webhook_attempt::leaseUntil().lt(now)),
-                )
-                .order_by(webhook_attempt::leaseUntil().asc())
-                .limit(remaining)
-                .run(sys)
-                .await?;
-            ready.extend(reclaimable);
-        }
-
-        filter_by_endpoint_health(db, sys, ready, now, budget).await
+        webhook_candidates(db, sys, now, budget, ServedModes::Both).await
     }
 
     /// `pending`/`failed` both target `delivering` the same way — the only

@@ -920,8 +920,10 @@ async fn seed_and_verify_webhook_endpoint(
         .create(schema::CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: format!("https://example.test/webhooks/{suffix}"),
+            deliveryMode: schema::WebhookDeliveryMode::hmac,
+            audience: None,
             eventTypes: " message.delivered ".to_owned(),
-            secret: format!("sys-golden-secret-{suffix}"),
+            secret: Some(format!("sys-golden-secret-0123456789abcdef-{suffix}")),
             prevSecret: None,
             secretRotatedAt: None,
             maskRecipient: true,

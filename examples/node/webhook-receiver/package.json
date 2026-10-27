@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Reference Express receiver for vsms delivery webhooks \u2014 the inbound half of #150. Signature scheme (HMAC-SHA256, #41) is confirmed against backends/crates/sms-webhook; see README.",
+  "description": "Reference Express receiver for vsms delivery webhooks \u2014 the inbound half of #150. A delivery is a sealed request signed with the gateway's own key, opened with @vaam-apps/vsms-node's WebhookOpener; see README.",
   "scripts": {
     "start": "node src/index.ts",
     "start:gate": "node src/gate-receiver.ts",
@@ -16,6 +16,7 @@
     "node": ">=23.6.0"
   },
   "dependencies": {
+    "@vaam-apps/vsms-node": "file:../../../sdks/node/vsms-sdk-node",
     "express": "^5.3.0"
   },
   "devDependencies": {

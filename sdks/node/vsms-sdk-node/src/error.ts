@@ -23,7 +23,10 @@
  *   UTF-8). Whether the gateway acted on the call is unknown: do not retry a
  *   write without its `Idempotency-Key`.
  * - `remote`: a sealed, verified answer with a non-2xx status.
- * - `decode`: a sealed, verified 2xx answer whose body is not the expected JSON.
+ * - `decode`: a sealed, verified 2xx answer whose body is not the expected JSON,
+ *   or a verified webhook delivery that is not the documented envelope.
+ * - `backend`: a webhook delivery could not be checked because the receiver's
+ *   own machinery failed (answer `5xx`; vsms retries).
  */
 export type SdkErrorKind =
   | "config"
@@ -34,7 +37,8 @@ export type SdkErrorKind =
   | "unverified"
   | "unreadable"
   | "remote"
-  | "decode";
+  | "decode"
+  | "backend";
 
 export interface SdkErrorOptions {
   kind?: SdkErrorKind | undefined;

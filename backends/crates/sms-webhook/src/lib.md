@@ -1,89 +1,255 @@
-Outbound webhook signing (`#41`) — HMAC-SHA256 over a canonical string,
-with a Unix timestamp folded into the signed bytes to bound replay to
-event freshness. Pure, with one deliberate exception
-([`generate_secret`], which reads OS randomness): no schema coupling,
-no clock reads — every function that needs "now" takes it as a
-parameter rather than calling one.
+Outbound webhook delivery in its two modes. An endpoint's `deliveryMode` says
+which: `sealed` (VS-8, recommended) or `hmac` (the original scheme, #41). Both
+are always available; a deployment will later be able to switch `hmac` off
+(VSA-1). Pure and schema-free; `backends/crates/sms-worker`'s `hooks` role is
+the caller.
 
-`backends/crates/sms-worker`'s `hooks` role is the sender-side caller of
-[`sign_header`]; `backends/crates/sms-api`'s `rotate_webhook_secret`
-procedure is the caller of [`generate_secret`].
-`examples/node/webhook-receiver` is the reference *receiver* — an
-independent, from-scratch Node/TypeScript implementation of the exact
-scheme below, kept deliberately separate so this module's own tests
-(see `tests/cross_language_fixtures.rs`) can prove the two agree
-byte-for-byte rather than merely being self-consistent with themselves.
+| Mode     | What authenticates a delivery                                                  | Per-endpoint secret    | Receiver verifies with                         | Lives in    |
+| -------- | ------------------------------------------------------------------------------ | ---------------------- | ---------------------------------------------- | ----------- |
+| `sealed` | a `COSE_Sign1` request under vsms's envelope signing key, bound to an audience | none                   | vsms's public keys (`sms-gateway server-keys`) | this page   |
+| `hmac`   | `X-Sms-Signature`, HMAC-SHA256 under the endpoint's own `secret`               | `secret`, `prevSecret` | the shared secret                              | [`hmac_v1`] |
 
-# Headers
+**Choosing.** Use `sealed` for a receiver that can run a cratestack
+`EnvelopeLayer` (or the SDKs' `WebhookOpener`): it holds nothing secret, a
+leaked database or backup cannot forge a delivery, and there is no rotation to
+get wrong. Use `hmac` for a receiver that already verifies `X-Sms-Signature`
+and has not moved yet: nothing about its deliveries changed. The same
+envelope JSON is sent either way, with one difference in what carries it
+("What an hmac delivery carries", below).
 
-§4.4 of `docs/architecture.md` specifies four headers; the `hooks` role
-must send exactly these, named exactly this way — [`HEADER_EVENT`],
-[`HEADER_EVENT_ID`], [`HEADER_TIMESTAMP`], [`HEADER_SIGNATURE`] are the
-constants for them. Use the constants, not a retyped literal, so a typo
-can't silently diverge sender and receiver:
+The rest of this page is the `sealed` mode. vsms serves other apps besides
+vaam; the ruling that every request to vaam, vpay or vsms is a `COSE_Sign1`
+envelope from a registered key ("keypairs everywhere") is vaam's, and `sealed`
+is how a deployment that follows it receives webhooks. A shared secret is what
+`sealed` removes, and what `hmac` keeps, on purpose, for everyone else.
+
+A `sealed` delivery is a **sealed request**, the same envelope the gateway's own
+routes open, signed with vsms's envelope signing key. The receiver pins vsms's
+public keys, the ones it already pins to open vsms's answers
+(`sms-gateway server-keys`), and verifies with a cratestack `EnvelopeLayer`.
+There is no per-endpoint secret, no rotation overlap and no `prevSecret`.
+
+```mermaid
+sequenceDiagram
+    participant W as sms-worker hooks
+    participant S as Sealer (this crate)
+    participant R as Receiver's EnvelopeLayer (Required)
+    participant H as Receiver's handler
+    W->>S: seal(audience, endpoint url, envelope JSON)
+    S->>S: route = path of the url, digest = CONTRACT_SHA, fresh cti, iat = now
+    S-->>W: COSE_Sign1 + Content-Type / Cratestack-* headers
+    W->>R: POST route (the sealed bytes)
+    R->>R: audience, method, route, digest, payload type, key, iat, nonce
+    R->>H: the plain JSON envelope + VerifiedSigner
+    H-->>R: 2xx
+    R-->>W: 2xx, sealed under the receiver's own key
+    Note over W: a 2xx is delivered, the body is not read
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> Sealed: Sealer::seal, per attempt
+    Sealed --> Opened: every check passes at the receiver
+    Sealed --> Refused401: wrong audience, route, digest, key, stale iat, replayed cti, tampered bytes
+    Refused401 --> Resealed: the worker retries on its backoff
+    Resealed --> Opened: a new cti and a new iat
+    Opened --> [*]
+```
+
+# What a delivery binds
+
+[`Sealer::seal`] calls cratestack's `ClientEnvelope::seal_call`. The seal binds,
+and the receiver rebuilds from its own configuration:
+
+| Bound value     | A delivery's value                                               | Where the receiver gets it                         |
+| --------------- | ---------------------------------------------------------------- | -------------------------------------------------- |
+| audience        | `WebhookEndpoint.audience`, chosen when the endpoint is created  | the name its `EnvelopeLayer` is built with         |
+| method          | `POST` ([`METHOD`])                                              | the route it mounts                                |
+| route           | the **whole path** of `WebhookEndpoint.url` ([`delivery_route`]) | the template axum matched (`/webhooks/vsms`)       |
+| path parameters | none                                                             | the route has none                                 |
+| query           | none (a URL with a query is refused)                             | none                                               |
+| contract digest | [`CONTRACT_SHA`], from the document in [`CONTRACT_DOCUMENT`]     | its `AcceptedContracts` row for `POST <route>`     |
+| payload type    | `application/json` ([`PAYLOAD_TYPE`]), and it asks for the same  | `payload_media_types(["application/json"], [...])` |
+| nonce, `iat`    | a fresh 16-byte `cti` and the worker's clock, **per attempt**    | the layer's nonce store and its 300 s skew         |
+
+The `kid` in the message is the thumbprint prefix of vsms's public key; the
+receiver's resolver maps it to the key it pinned.
+
+**The route is the whole path, not a suffix of it.** The seal binds exactly the
+path of the endpoint's URL, and the receiver's router must match exactly that
+path: an endpoint at `https://api.example.com/webhooks/vsms` is a delivery to
+`/webhooks/vsms`, and the receiver mounts `/webhooks/vsms`. A gateway or ingress
+may rewrite the host or the scheme, but never the path: one that strips a prefix
+(`/api/webhooks/vsms` in, `/webhooks/vsms` out) makes the receiver's router see a
+route the seal was not made for, and every delivery is a `401`. Put the path the
+receiver sees in the URL.
+
+That is a rule about a `sealed` endpoint's URL, and only one: an `hmac` delivery
+binds no route and keeps any URL it was registered with, a query string
+included. A sealed endpoint's URL is held to [`SEALABLE_URL_PATTERN`] (a CHECK in
+`0010_sealed_webhooks`), which is narrower than [`delivery_route`] in the text it
+reads (an ASCII host, a port of 1 to 65535) and wider in what only a parser sees
+(`[:]`, `1.2.3.999`, `x.0`): together with `@uri` it never accepts what
+[`delivery_route`] refuses. [`url_can_be_sealed`] runs it.
+
+The envelope JSON is `{id, eventId, type, occurredAt, appId, endpointId, data}`.
+`id` is `WebhookAttempt.id`, the dedupe key §8.5 already names; `eventId` is
+`WebhookAttempt.sourceEventId`, which used to travel only in the
+`X-Sms-Event-Id` header and so was signed by the HMAC. Headers are not part of a
+seal, so the id moved into the signed body. The `X-Sms-Event`, `X-Sms-Event-Id`,
+`X-Sms-Timestamp` and `X-Sms-Signature` headers are gone: nothing outside the
+sealed body is meant to be believed.
+
+`appId` (`WebhookEndpoint.appId`) and `endpointId` (`WebhookEndpoint.id`) are
+there for a reason the audience cannot cover. **One gateway key signs every app's
+deliveries**, so a signature and an audience say only that vsms sent this to the
+name `vaam`. The audience is a name chosen by whoever creates the endpoint. The
+gateway hands each name to one endpoint and refuses `vsms`, but that is a
+registry of names, not proof of who should hold one: anyone with
+`webhook:manage` can create an endpoint, for any app, at a URL of their own and
+named for a receiver they do not control. Its deliveries are validly signed by
+the gateway, addressed to that name, and open at any receiver that answers to
+the name until they are 300 s old. `appId` and `endpointId` are inside the signed
+body, so the receiver reads who a delivery was made for from something the
+gateway signed, and an opener that compares them refuses it. Both are `cuid`s
+the gateway generated; a receiver learns its own from the console's endpoint
+screen when the endpoint is created.
+
+# What a receiver configures
+
+Everything below is public; none of it is a secret.
+
+1. **The pinned keys.** `current` and `next` from `sms-gateway server-keys`.
+   Resolve a `kid` to either (`StaticVerifierResolver` with both
+   `CoseVerifyKey::ed25519`). Pinning both makes a rotation of vsms's key a
+   non-event.
+2. **The audience.** Any non-empty name the receiver picks, set once on the
+   `WebhookEndpoint` and in `EnvelopeLayer::builder(.., audience, ..)`. **Choose
+   one nobody else can have: your own origin (`https://hooks.example.com`) is the
+   natural choice.** The gateway hands each name to one endpoint and the second
+   to ask is refused, so a generic name (`webhooks`, `prod`) is a name someone
+   else may already hold, or may take before you. It must not be `vsms` (the name
+   the gateway's own routes answer to; a name used in both directions gives up the
+   reflection protection), which the gateway refuses on write.
+3. **The route.** One literal `POST` route, e.g. `/webhooks/vsms`, and the
+   endpoint URL's path is exactly that path (see above: nothing may rewrite
+   it). A tiny `BindingResolver` names it.
+4. **The contract.** The row `("POST /webhooks/vsms", &[CONTRACT_SHA])` in the
+   `AcceptedContracts` table, with [`CONTRACT_SHA_HEX`]
+   `c61394a50e9f02ece411674fb3f398ae323e685b7a14f9c7b85538aa33a30423`. Derive it
+   as `SHA-256("vsms/webhook-delivery/v2\0" || CONTRACT_DOCUMENT)`.
+5. **The mode.** `EnvelopeMode::Required`, JSON payloads only, a nonce store
+   shared by every replica (the in-memory one is per process).
+6. **The endpoint and the app, in the handler.** **A receiver behind an
+   `EnvelopeLayer` must check `endpointId` and `appId` itself**: the layer opens
+   the seal and hands the handler the plain envelope, but it has no notion of an
+   endpoint or an app, and a delivery made for someone else's endpoint that names
+   your audience passes everything the layer checks (`tests/sealed_delivery.rs`,
+   `the_layer_cannot_tell_another_apps_delivery_but_the_signed_body_can` and
+   `the_layer_cannot_tell_another_endpoint_of_the_same_app_but_the_endpoint_id_can`).
+   **`endpointId` is the binding**: a receiver serves exactly one endpoint, learns
+   its id when the endpoint is created (the console shows it) and refuses any
+   other, because it is the one signed value no one but the gateway chooses. A
+   global role may create an endpoint under *any* app id, so `appId` alone does not
+   bind; compare it too, to catch an endpoint registered under another app. The
+   unique audience (step 2) is defence in depth, not the binding: the name is free
+   before your endpoint carries it, after it is deleted or renamed, and while
+   someone squats it. Read both from the envelope, compare them with your own, and
+   answer `401` on any difference, before acting on `type` or `data`. The SDKs'
+   `WebhookOpener` does this and cannot be built without both ids; a handler
+   written by hand needs this check, before it reads anything else:
+
+```text
+let envelope: serde_json::Value = serde_json::from_slice(&body)?;
+if envelope["appId"] != MY_APP_ID || envelope["endpointId"] != MY_ENDPOINT_ID {
+    return StatusCode::UNAUTHORIZED;
+}
+```
+
+```text
+struct WebhookRoutes;
+impl BindingResolver for WebhookRoutes {
+    fn resolve(&self, r: &RouteRequest<'_>) -> Resolution {
+        match r.matched_path() {
+            Some(path @ "/webhooks/vsms") if r.method() == Method::POST => {
+                Resolution::Op(ResolvedRoute::new(path.to_owned(), Vec::new()))
+            }
+            _ => Resolution::Unresolved,
+        }
+    }
+}
+static ACCEPTED: AcceptedContracts = &[("POST /webhooks/vsms", &[CONTRACT_SHA])];
+let layer = EnvelopeLayer::builder(envelope, "vaam", ACCEPTED)
+    .binding_resolver(WebhookRoutes)
+    .policy(EnvelopeMode::Required)
+    .payload_media_types(["application/json"], ["application/json"])
+    .build()?;
+```
+
+`tests/sealed_delivery.rs` is this snippet running: a real `EnvelopeLayer`
+accepts a delivery and refuses another audience, another route, a tampered body
+(an `appId` rewritten in the sealed bytes included), a replay, an unpinned key, a
+stale `iat` and an undeclared contract. It also shows what the layer alone cannot
+refuse, which is step 6.
+
+# Retries and replay
+
+The nonce and timestamp stop a captured delivery from being replayed; they do
+not make a retry safe, and they must not be confused with dedupe. A retry is a
+**new** sealed request ([`Sealer::seal`] runs again, with a fresh `cti` and
+`iat`, so a retry after the receiver's 300 s skew still opens), carrying the
+same `id` and `eventId`. Delivery is at-least-once: dedupe on `id`.
+
+# The answer
+
+A delivery is delivered when the receiver answers 2xx; 410 deactivates the
+endpoint; anything else retries (`docs/architecture.md` §8.5, unchanged). If the
+receiver is a cratestack layer its answer is a sealed message under the
+receiver's own key. The worker does **not** open it and treats it as proof of
+nothing: opening it would need the receiver's public keys pinned per endpoint,
+which is one more credential store, one more console field and one more
+rotation story for a property the protocol does not rest on. A 2xx is the
+receiver's HTTP server saying it accepted the request, authenticated by TLS to
+the endpoint's host, exactly as before. An unsigned 2xx is accepted on the same
+terms, and never read.
+
+# What an hmac delivery carries
+
+The `hmac` mode is the scheme every receiver that predates VS-8 verifies, and it
+is **byte-compatible with it**: nothing about an `hmac` endpoint's deliveries
+changed when `sealed` was added. [`hmac_v1`] has the canonical string, the
+rotation overlap and the constant-time comparison; in short, `hooks` POSTs the
+four-field envelope as JSON with the four headers
 
 ```text
 X-Sms-Event:      message.delivered
-X-Sms-Event-Id:   <WebhookAttempt.sourceEventId, lowercase-hyphenated UUID>
-X-Sms-Timestamp:  <unix seconds, decimal, no sign, no leading zero>
-X-Sms-Signature:  v1=<hex>[,v1=<hex>]   (current secret first, prevSecret second — oldest last)
+X-Sms-Event-Id:   <WebhookAttempt.sourceEventId>
+X-Sms-Timestamp:  <unix seconds>
+X-Sms-Signature:  v1=<hex>[,v1=<hex>]   (current secret first, prevSecret second)
 ```
 
-# Canonical string — the exact bytes that get HMAC'd
+and the body `{id, type, occurredAt, data}`. The `sealed` envelope above carries
+three more fields, `eventId`, `appId` and `endpointId`: an HMAC receiver reads the
+event id from the header it signs, and has no audience for `appId` and
+`endpointId` to disambiguate, because it holds its endpoint's own secret and
+nobody else does. The two bodies are therefore **not** interchangeable, and an
+endpoint's mode is what picks which one `hooks` builds.
+
+# Public API
+
+The `hmac` mode's functions are re-exported from [`hmac_v1`]: `sign_v1`,
+`sign_header`, `verify`, `canonical_string`, `is_timestamp_fresh`,
+`generate_secret`, the four `HEADER_*` names and `SIGNATURE_VERSION`.
 
 ```text
-v1\n{timestamp}\n{eventId}\n{sha256_hex(body)}
+METHOD, PAYLOAD_TYPE, CONTRACT_DOMAIN, CONTRACT_DOCUMENT, CONTRACT_SHA, CONTRACT_SHA_HEX
+contract_sha() -> [u8; 32]
+delivery_route(url: &str) -> Result<String, SealError>
+SEALABLE_URL_PATTERN: &str
+url_can_be_sealed(url: &str) -> bool
+Sealer::new(signer: Ed25519Signer) -> Result<Sealer, SealError>
+Sealer::from_envelope(cose: CoseEnvelope) -> Result<Sealer, SealError>
+Sealer::seal(&self, audience: &str, url: &str, body: &[u8]) -> Result<SealedDelivery, SealError>
 ```
 
-- `{timestamp}` — the exact ASCII decimal string sent as
-  `X-Sms-Timestamp` (base 10, no sign, no leading zeros — e.g.
-  `1753699200`).
-- `{eventId}` — the exact string sent as `X-Sms-Event-Id`, byte for
-  byte.
-- `sha256_hex(body)` — lowercase hex SHA-256 of the *raw* request body
-  bytes, exactly as they go on the wire. Never a re-serialised or
-  whitespace-normalised copy — that would silently diverge from
-  whatever a receiver hashes off its own raw socket read.
-- Fields are joined by a single `\n` (0x0A, LF only — no CR); there is
-  no trailing newline after the fourth field. See [`canonical_string`],
-  which is exposed publicly precisely so nobody has to reverse-engineer
-  this prose back into bytes.
-
-`HMAC-SHA256(key = secret, message = canonical string)`, lowercase hex,
-is the value that follows `v1=` in `X-Sms-Signature`. See [`sign_v1`].
-
-# Rotation
-
-`X-Sms-Signature` may carry two `v1=` values — current secret first,
-`WebhookEndpoint.prevSecret` second, "oldest last" per §4.4. A receiver
-should accept if *any* presented value verifies against *any* secret it
-holds; [`verify`] implements exactly that (every presented value
-against every candidate secret, first match wins — order of
-`candidate_secrets` doesn't matter to this function even though
-[`sign_header`]'s caller-facing convention is "current first"). §4.4,
-in its own words: "a job clears `prevSecret` after 24 hours" — that job
-is out of this crate's scope (see `rotate_webhook_secret`'s own doc
-comment in `backends/crates/sms-api/src/procedures.rs` for the current
-scope cut). Once it runs, `prevSecret` naturally stops being a
-candidate because it is no longer stored anywhere — not because of
-anything in this module.
-
-# Public API (the contract `hooks` and `rotate_webhook_secret` code against)
-
-```text
-sign_v1(secret: &str, timestamp: i64, event_id: &str, body: &[u8]) -> String
-sign_header(secrets: &[&str], timestamp: i64, event_id: &str, body: &[u8]) -> String
-verify(candidate_secrets: &[&str], timestamp: i64, event_id: &str, body: &[u8], signature_header: &str) -> bool
-canonical_string(timestamp: i64, event_id: &str, body: &[u8]) -> String
-is_timestamp_fresh(timestamp: i64, now: i64, tolerance_secs: i64) -> bool
-generate_secret() -> String
-```
-
-# Constant-time comparison
-
-[`verify`] never compares a hex string or raw bytes with `==`. Every
-candidate signature is checked via [`hmac::Mac::verify_slice`], which
-performs a `subtle::ConstantTimeEq` comparison internally — the
-standard defence against a timing side channel that would otherwise let
-an attacker recover a valid signature one byte at a time by measuring
-how long a comparison takes to fail.
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

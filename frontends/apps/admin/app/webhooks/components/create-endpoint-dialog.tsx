@@ -9,19 +9,20 @@ import {
   DialogTitle,
 } from "@vaam-apps/ui";
 import type { UseFormReturn } from "react-hook-form";
-import type { CreateEndpointFormValues, EventType } from "../webhook-domain";
+import type { CreateEndpointFormValues, DeliveryMode, EventType } from "../webhook-domain";
 import { CreateEndpointFields } from "./create-endpoint-fields";
 
 // Dumb (R6): the "New webhook endpoint" dialog, start to finish. Not
 // affected by the nested-Dialog-in-drawer bug (see webhooks-screen.tsx's
 // own module doc) — it opens from the toolbar while no drawer is open, so
 // it stays a real `Dialog`: `DialogFullScreen`, because it is a form of
-// five inputs (AGENTS.md's rule for which presentation a dialog takes) —
+// six inputs (AGENTS.md's rule for which presentation a dialog takes) —
 // full-screen below 640px, centred from 640px up.
 export function CreateEndpointDialog({
   open,
   onOpenChange,
   form,
+  deliveryMode,
   eventTypes,
   onEventTypesChange,
   onSubmit,
@@ -31,6 +32,7 @@ export function CreateEndpointDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   form: UseFormReturn<CreateEndpointFormValues>;
+  deliveryMode: DeliveryMode;
   eventTypes: EventType[];
   onEventTypesChange: (types: EventType[]) => void;
   onSubmit: (values: CreateEndpointFormValues) => void;
@@ -43,12 +45,15 @@ export function CreateEndpointDialog({
         <DialogHeader>
           <DialogTitle>New webhook endpoint</DialogTitle>
           <DialogDescription>
-            A signing secret is generated automatically and shown once creation completes.
+            Choose how deliveries are authenticated. Sealed deliveries are signed with the gateway's
+            own key and addressed to an audience; your receiver is configured with the same name.
+            HMAC deliveries are signed with a secret shared with your receiver.
           </DialogDescription>
         </DialogHeader>
         <CreateEndpointFields
           formId="create-endpoint-form"
           form={form}
+          deliveryMode={deliveryMode}
           eventTypes={eventTypes}
           onEventTypesChange={onEventTypesChange}
           onSubmit={onSubmit}

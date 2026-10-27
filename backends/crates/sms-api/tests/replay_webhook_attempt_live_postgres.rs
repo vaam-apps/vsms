@@ -142,8 +142,10 @@ async fn seed_endpoint(db: &Cratestack, suffix: &str, app_id: &str) -> schema::W
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: "https://example.test/webhooks/vsms".to_owned(),
+            deliveryMode: schema::WebhookDeliveryMode::hmac,
+            audience: None,
             eventTypes: " message.delivered ".to_owned(),
-            secret: format!("whsec_test_{suffix}"),
+            secret: Some(format!("whsec_test_0123456789abcdef0123456789_{suffix}")),
             prevSecret: None,
             secretRotatedAt: None,
             maskRecipient: true,

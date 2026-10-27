@@ -5,7 +5,9 @@ this doc comment used to claim (stale since #56/#57 added `requeueJob`/
 drift further).
 
 `previewMessage`, `sendMessage`, `provisionAppClient`, (#41)
-`rotateWebhookSecret`, (#43) `replayWebhookAttempt`, (#56) `requeueJob`,
+`rotateWebhookSecret` (an `hmac` endpoint only: a `sealed` one has no secret
+and is refused, VS-8R), `switchWebhookDeliveryMode` (VS-8R: a validated move
+between `sealed` and `hmac`), (#43) `replayWebhookAttempt`, (#56) `requeueJob`,
 (#57) `workerLocks`, and (#50) `listMessageReceipts` are implemented.
 `cancelMessage` and `enqueueJob` touch the job queue or a mutation this
 milestone doesn't build yet; each returns a clearly-labelled error
@@ -30,3 +32,5 @@ in different processes, with no span context to inherit it through. See
 `docs/runbooks/alerting.adoc`'s "Correlating a message end to end" section
 for why `Message.id` is the join key and not a `traceparent`, and for a
 worked example query across all three log lines.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

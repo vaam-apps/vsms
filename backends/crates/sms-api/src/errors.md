@@ -22,3 +22,16 @@ claim.rs`, `dispatch.rs`, `jobs.rs`, `hooks.rs`, and `jobs/
 expire_stale.rs`, plus this crate's own `dlr.rs`), passes through here
 exactly once. §9.1 of the design doc calls the resulting metric "the
 highest-signal one in the list... in a correct system it is flat zero."
+
+# `23514` on a webhook endpoint's CHECKs
+
+[`map_database_error`] also turns a `check_violation` on one of
+`webhook_endpoints_*` (`0010_sealed_webhooks`: a mode and its columns
+disagreeing, an audience `vsms`, a `sealed` URL no delivery can be sealed for)
+into `Validation`, HTTP 422, naming the rule and the constraint. It is
+deliberately limited to that table's constraints: a check violation anywhere
+else is not known to be the caller's doing, and stays a 500. Only a procedure
+(`switchWebhookDeliveryMode`) passes its errors through here; the generated
+routes do not, and answer the same violation as a database error (500).
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

@@ -2,7 +2,8 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 /**
  * ============================================================================
- * #41 LANDED — this file's algorithm is confirmed, not a guess any more.
+ * The `hmac` delivery mode's verifier (#41; kept when VS-8 added the sealed
+ * mode beside it, VS-8R). This file's algorithm is confirmed, not a guess.
  * ============================================================================
  *
  * This file was written against `docs/architecture.md` §4.4's prose
@@ -52,7 +53,7 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
  * STILL A DELIBERATE SCOPE DECISION, NOT A GAP IN §4.4 OR IN #41: no
  * bounded freshness/replay window is enforced on `X-Sms-Timestamp` here.
  * It is folded into the signed bytes, so a *tampered* timestamp already
- * fails verification (proven by the emitter's forged-signature case) —
+ * fails verification (proven by `index.ts`'s forged-signature case) —
  * but a byte-for-byte replay of a previously-valid, correctly-signed
  * request, no matter how old its timestamp, verifies successfully here.
  * `sms-webhook` itself *does* now ship a composable freshness check
@@ -64,8 +65,8 @@ import { createHash, createHmac, timingSafeEqual } from "node:crypto";
  * §4.4's own "receivers need a dedupe key" line) — not this file. A
  * stale-but-never-before-seen forged timestamp on an otherwise-valid
  * signature (impossible without the secret, but worth being explicit
- * about) would still verify; this is demonstrated live by the emitter's
- * "timestamp freshness" check.
+ * about) would still verify; this is why `HmacOpener` (hmac-opener.ts) says
+ * plainly that it checks no freshness window.
  *
  * Everything callers need is this one function: `verifySignature`.
  * Nothing else in this example inspects a header or does crypto.
@@ -90,7 +91,7 @@ function signingString(timestamp: string, eventId: string, rawBody: Buffer): str
   return `v1\n${timestamp}\n${eventId}\n${sha256Hex(rawBody)}`;
 }
 
-/** Exported so the local emitter (a stand-in sender) computes signatures the
+/** Exported so `index.ts`'s demo sender (a stand-in for the worker) computes signatures the
  *  same way a real vsms presumably would — one implementation, not two
  *  copies that can silently drift apart. */
 export function computeSignature(

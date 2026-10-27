@@ -3,6 +3,10 @@
 //! called directly, the same discipline `send_message_live_postgres.rs`
 //! documents in its own module doc.
 //!
+//! VS-8R: only an `hmac` endpoint has a secret to rotate. A `sealed` endpoint
+//! is refused with a 422 (`CratestackError::Validation`) that says why, and
+//! nothing about it changes: `rotating_a_sealed_endpoint_is_refused_and_changes_nothing`.
+//!
 //! This is also the live proof behind `schema.cstack`'s own new
 //! `hasRole('system')` clause on `WebhookEndpoint`'s `read`/`update`
 //! policy: before that clause existed, every assertion below would have
@@ -140,7 +144,9 @@ async fn seed_endpoint(db: &Cratestack, app_id: &str, secret: &str) -> schema::W
             appId: app_id.to_owned(),
             url: "https://example.test/webhooks/vsms".to_owned(),
             eventTypes: sms_core::pack(["message.delivered"]).expect("a static literal packs"),
-            secret: secret.to_owned(),
+            deliveryMode: schema::WebhookDeliveryMode::hmac,
+            audience: None,
+            secret: Some(secret.to_owned()),
             prevSecret: None,
             secretRotatedAt: None,
             maskRecipient: true,
@@ -183,15 +189,19 @@ async fn rotating_moves_the_current_secret_to_prev_and_mints_a_fresh_one() {
     .expect("rotating a fresh endpoint's secret");
 
     assert_eq!(rotated.id, endpoint.id);
+    let secret = rotated
+        .secret
+        .as_deref()
+        .expect("an hmac endpoint keeps a secret");
     assert_ne!(
-        rotated.secret, "original-secret-before-any-rotation",
+        secret, "original-secret-before-any-rotation",
         "the secret must actually change"
     );
     assert!(
-        rotated.secret.starts_with("whsec_"),
-        "generate_secret's documented shape — got {:?}",
-        rotated.secret
+        secret.starts_with("whsec_"),
+        "generate_secret's documented shape: a whsec_ prefix"
     );
+    assert_eq!(rotated.deliveryMode, schema::WebhookDeliveryMode::hmac);
     assert_eq!(
         rotated.prevSecret.as_deref(),
         Some("original-secret-before-any-rotation"),
@@ -215,7 +225,7 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
-    let endpoint = seed_endpoint(&db, &app_id, "generation-zero-secret").await;
+    let endpoint = seed_endpoint(&db, &app_id, "generation-zero-secret-0123456789abcdef").await;
     let procedures = Procedures::new(test_pepper());
 
     let args = || rotate_webhook_secret::Args {
@@ -234,7 +244,10 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
     })
     .await
     .expect("first rotation");
-    assert_eq!(first.prevSecret.as_deref(), Some("generation-zero-secret"));
+    assert_eq!(
+        first.prevSecret.as_deref(),
+        Some("generation-zero-secret-0123456789abcdef")
+    );
 
     let second_args = args();
     let second =
@@ -246,7 +259,7 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
         .expect("second rotation");
     assert_eq!(
         second.prevSecret.as_deref(),
-        Some(first.secret.as_str()),
+        first.secret.as_deref(),
         "the second rotation's prevSecret must be the FIRST rotation's fresh secret, \
          not the original generation-zero one — the overlap window shifts, it doesn't reset"
     );
@@ -255,7 +268,8 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
         "each rotation must mint a genuinely new secret"
     );
     assert_ne!(
-        second.secret, "generation-zero-secret",
+        second.secret.as_deref(),
+        Some("generation-zero-secret-0123456789abcdef"),
         "the original secret must not resurface"
     );
 }
@@ -344,4 +358,70 @@ async fn rotate_denies_a_caller_with_no_webhook_manage_permission() {
             "expected the denial to name the missing permission: {message}"
         );
     }
+}
+
+/// VS-8R: a `sealed` endpoint has no secret. Rotating one is a 422 that names
+/// the endpoint and the reason, and the row is exactly as it was: still sealed,
+/// still without a secret, its version unmoved. (A write that tried would be
+/// refused by `webhook_endpoints_delivery_mode_sealed_holds_no_secret_check`
+/// anyway; this is the answer that tells the caller why, before any write.)
+#[tokio::test]
+#[ignore = "needs a live, migrated Postgres — see module docs"]
+async fn rotating_a_sealed_endpoint_is_refused_and_changes_nothing() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = db().await;
+    let app_id = seed_app(&db).await;
+    let sealed = db
+        .webhook_endpoint()
+        .create(schema::CreateWebhookEndpointInput {
+            appId: app_id,
+            url: "https://example.test/webhooks/vsms".to_owned(),
+            eventTypes: sms_core::pack(["message.delivered"]).expect("a static literal packs"),
+            deliveryMode: schema::WebhookDeliveryMode::sealed,
+            audience: Some(format!("rotate-sealed-{}", unique_suffix())),
+            secret: None,
+            prevSecret: None,
+            secretRotatedAt: None,
+            maskRecipient: true,
+            maxAttempts: 8,
+            circuitOpenUntil: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding a sealed endpoint");
+
+    let procedures = Procedures::new(test_pepper());
+    let ctx = owner_with_webhook_manage();
+    let args = rotate_webhook_secret::Args {
+        args: schema::EndpointInput {
+            endpointId: sealed.id.clone(),
+        },
+    };
+    let error = rotate_webhook_secret::invoke_with_db(&db, &args, &ctx, |db, authorized| {
+        let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
+        async move { p.rotate_webhook_secret(&db, &c, a, authorized).await }
+    })
+    .await
+    .expect_err("a sealed endpoint has no secret to rotate");
+
+    match error {
+        cratestack::CratestackError::Validation(message) => {
+            assert!(message.contains(&sealed.id), "{message}");
+            assert!(message.contains("sealed"), "{message}");
+        }
+        other => panic!("expected a Validation (422), got {other:?}"),
+    }
+
+    let after = db
+        .webhook_endpoint()
+        .find_unique(sealed.id.clone())
+        .run(&owner())
+        .await
+        .expect("re-reading the endpoint")
+        .expect("the endpoint still exists");
+    assert_eq!(after.deliveryMode, schema::WebhookDeliveryMode::sealed);
+    assert_eq!(after.secret, None);
+    assert_eq!(after.prevSecret, None);
+    assert_eq!(after.secretRotatedAt, None);
+    assert_eq!(after.version, sealed.version, "nothing was written");
 }

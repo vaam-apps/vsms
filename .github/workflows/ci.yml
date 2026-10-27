@@ -103,10 +103,16 @@ jobs:
               - '.cargo/**'
               - '.github/workflows/ci.yml'
             # Same compiled inputs as rust, plus the Node receiver it spawns
-            # as a real subprocess (`hooks_node_receiver_live`).
+            # as a real subprocess (`hooks_node_receiver_live`) and the Node SDK
+            # that receiver opens deliveries with (VS-8: `sdks/rust/**`, its
+            # wasm crate, is already in `rust`).
             live:
               - *rust
               - 'examples/node/webhook-receiver/**'
+              - 'sdks/node/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
             js:
               - 'frontends/**'
               - 'sdks/node/**'
@@ -565,26 +571,38 @@ jobs:
       # job needs a Node toolchain and that package's dependencies — express
       # is a real runtime dependency, not a dev one.
       #
-      # This step did not exist when #192 landed the gate, so the suite has
-      # never once passed in CI: it fails at spawn with the test's own
-      # "check that `pnpm install` has been run" panic, and `main` was red
-      # on exactly that from #192 until this commit. It passed locally
-      # because a human had run `pnpm install` in that directory by hand.
+      # VS-8: the receiver opens a delivery with `@vaam-apps/vsms-node`
+      # (`WebhookOpener`), which it depends on by path (`file:`). pnpm copies a
+      # directory dependency at install time, so the SDK must be BUILT before
+      # the receiver is installed: its signed transport is Rust compiled to
+      # WebAssembly (`sdks/rust/vsms-sdk-wasm`), so this needs the wasm32
+      # target and `wasm-bindgen`'s command-line tool at exactly the version
+      # sdks/rust/Cargo.lock pins (`just wasm-tools` reads it from the lock),
+      # exactly as the `js` job does.
       #
-      # `--ignore-workspace` is required: pnpm-workspace.yaml covers `admin`
-      # and `packages/*` only, so without it pnpm resolves this package
-      # against the root workspace and installs no lockfile at all. The
-      # example is deliberately outside the workspace — it is meant to be
-      # copied out and run standalone by an integrator — so it carries its
-      # own committed pnpm-lock.yaml instead, and `--frozen-lockfile` keeps
-      # a floating `express@^5.1.0` from silently changing under CI.
+      # `--ignore-workspace` is required for the receiver's own install: the
+      # example is deliberately outside the root workspace — it is meant to be
+      # copied out and run standalone by an integrator — so it carries its own
+      # committed pnpm-lock.yaml, and `--frozen-lockfile` keeps a floating
+      # `express@^5` from silently changing under CI. `--trust-lockfile`:
+      # see the `js` job's demo-app step.
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '26'
       - name: Enable corepack (pins pnpm from packageManager)
         run: corepack enable
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: just
+      - name: Add the wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Build the Node SDK the sample receiver opens deliveries with
+        run: |
+          just wasm-tools
+          pnpm install --frozen-lockfile
+          pnpm --filter @vaam-apps/vsms-node run build
       - name: Install the sample Node receiver's dependencies
-        run: pnpm install --ignore-workspace --frozen-lockfile
+        run: pnpm install --ignore-workspace --frozen-lockfile --trust-lockfile
         working-directory: examples/node/webhook-receiver
 
       # ubuntu-latest ships a running Docker daemon — sms-test-support
@@ -716,23 +734,9 @@ jobs:
       - name: Tests
         run: pnpm turbo run test
 
-      # `pnpm turbo run test` above covers workspace packages only — `admin`
-      # and `packages/*` — so it has never reached this one. That mattered:
-      # AGENTS.md claims the webhook signature scheme is proven across two
-      # languages by asserting both implementations against fixtures a third
-      # tool (`openssl dgst -sha256 -hmac`) computed, and names `pnpm test`
-      # as the gate for the TypeScript half. The Rust half really was gated
-      # (`backends/crates/sms-webhook/tests/cross_language_fixtures.rs`, plain `cargo
-      # test`); the TypeScript half had only ever been run by hand. A
-      # cross-language agreement proof that only one side actually checks in
-      # CI is the half that silently drifts.
-      - name: Sample Node receiver — cross-language signature vectors
-        run: pnpm install --ignore-workspace --frozen-lockfile && node --test
-        working-directory: examples/node/webhook-receiver
-
-      # NOT `--ignore-workspace`, unlike the webhook-receiver step above.
-      # That example is deliberately outside `pnpm-workspace.yaml` so an
-      # integrator can copy it out and run it standalone; this SDK is a real
+      # NOT `--ignore-workspace`, unlike the example steps below. Those
+      # examples are deliberately outside `pnpm-workspace.yaml` so an
+      # integrator can copy them out and run them standalone; this SDK is a real
       # workspace member (`sdks/node/*`), already installed by the root
       # install at the top of this job.
       #
@@ -771,21 +775,34 @@ jobs:
           npm pack --dry-run
         working-directory: sdks/node/vsms-sdk-node
 
-      # `examples/node/demo-app` — the demo showcase's own evaluator (the
-      # `demo-app` compose service) — carries a byte-for-byte copy of
-      # `signature.ts`/`cross-language-vectors.test.ts` from the
-      # webhook-receiver step just above, per that package's own README.
-      # Gate it exactly the same way, plus a typecheck (this package has
-      # no live-gateway run in CI — see `just demo`/`just e2e-integration`
-      # for that — so a compile error is the one class of regression this
-      # step can catch on its own): `verbatim-copy.test.ts` (part of `node
-      # --test` below) is what actually proves the copy hasn't drifted
-      # from the file the step above just tested.
+      # `examples/node/webhook-receiver` and `examples/node/demo-app` both open
+      # webhooks with `@vaam-apps/vsms-node` (VS-8), which they depend on by path
+      # (`file:`). pnpm copies a directory dependency at install time, so both sit
+      # AFTER the Node SDK step above: its `dist/` and `wasm/` must already be
+      # built when they install.
       #
-      # It sits AFTER the Node SDK step below, not beside the webhook receiver:
-      # it depends on `@vaam-apps/vsms-node` by path (`file:`), and pnpm copies a
-      # directory dependency at install time, so the SDK's `dist/` and `wasm/`
-      # must already be built when this step installs.
+      # The receiver's tests open the delivery the gateway's own `sms-webhook`
+      # crate sealed (`sdks/rust/vsms-sdk-rust/tests/fixtures/sealed_delivery_vector.json`)
+      # with the real opener, so this is the TypeScript half of the cross-language
+      # proof; `backends/crates/sms-webhook/tests/sealed_vector.rs` and
+      # `sdks/rust/vsms-sdk-rust/tests/webhook.rs` are the Rust halves, and
+      # `cargo xtask sdk-parity-check` holds the fixture copy equal.
+      - name: Sample Node receiver — the real opener against the gateway's own vector, and the cross-language HMAC vectors
+        run: |
+          # --trust-lockfile: the lockfile here is committed and reviewed, and
+          # pnpm's 24h quarantine would otherwise refuse a freshly published
+          # first-party version (see the demo-app step below).
+          pnpm install --ignore-workspace --frozen-lockfile --trust-lockfile
+          node_modules/.bin/tsc --noEmit
+          node --test
+        working-directory: examples/node/webhook-receiver
+
+      # `examples/node/demo-app` — the demo showcase's own evaluator (the
+      # `demo-app` compose service). Typecheck and its own tests (this package
+      # has no live-gateway run in CI — see `just demo`/`just e2e-integration`
+      # for that — so a compile error is the one class of regression this step
+      # can catch on its own).
+      #
       # `tsc` is invoked from node_modules directly rather than via `pnpm
       # run typecheck`: pnpm 11 verifies dependencies before every `run`,
       # and from a directory under the repo root — without
@@ -794,7 +811,7 @@ jobs:
       # package, and fails with ERR_PNPM_OUTDATED_LOCKFILE. Found on the
       # first CI run of this step; the install line above is unaffected
       # because it passes the flag.
-      - name: Demo app — typecheck and cross-language signature vectors
+      - name: Demo app — typecheck and tests (its verbatim copy of the HMAC verifier included)
         run: |
           # --trust-lockfile: the lockfile here is committed and reviewed, and
           # pnpm's 24h quarantine would otherwise refuse a freshly published

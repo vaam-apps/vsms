@@ -449,6 +449,7 @@ async fn harness(policy: FaultPolicy, with_orange: bool) -> Harness {
         ctx: WorkerContext {
             db: state.db.clone(),
             providers: Arc::new(registry),
+            webhook_sealer: None,
         },
         aws,
         aws_row_id,

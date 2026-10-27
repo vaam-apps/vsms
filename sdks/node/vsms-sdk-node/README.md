@@ -104,6 +104,30 @@ const text = await opener.open(
 
 `routeOf(method, path)` is the schema's route for a concrete path, or `undefined` for anything the gateway does not seal; a pass-through asks it before opening a connection.
 
+## Receiving webhooks
+
+vsms delivers an event to a sealed endpoint as a sealed request signed with the gateway's own key (the one that signs its answers): no webhook secret, no signature header. (An endpoint can also be set to the original `hmac` mode, `X-Sms-Signature` under a shared secret, for a receiver that has not moved; `WebhookOpener` opens sealed deliveries only, and an `hmac` receiver verifies the signature itself, `docs/integrating.md` "Choosing a delivery mode".) Pin the same two public keys and open the body:
+
+```ts
+import { parseServerKeysReport, WebhookOpener } from "@vaam-apps/vsms-node";
+
+const opener = new WebhookOpener({
+  serverKeys: parseServerKeysReport(readFileSync("server-keys.txt", "utf8")),
+  audience: "https://hooks.example.com", // the name on your WebhookEndpoint: choose one only you can have
+  route: "/webhooks/vsms", // the whole path of its URL
+  appId: "capp00000000000000000", // your App's id (required)
+  endpointId: "cendpoint0000000000000", // your WebhookEndpoint's id (required): the binding
+});
+// `rawBody` is the request's bytes (a Buffer), never text a framework decoded.
+const event = await opener.open(rawBody); // { id, eventId, type, occurredAt, appId, endpointId, data }
+```
+
+One gateway key signs every app's deliveries, so a signature and an audience say only that vsms sent this to your name. **`endpointId` is the binding**: a receiver serves exactly one endpoint, whose id it learns when the endpoint is created (the console panel shows it), and `open` compares it with the `endpointId` inside the signed envelope. It is the one signed value nobody but the gateway chooses: whoever may create endpoints can register one under your `appId` and, while your audience name is free, give it that name. `appId` additionally catches an endpoint registered under another app, and the unique audience is defence in depth. A delivery made through someone else's endpoint is refused like a forgery. There is no way to build an opener without both ids (the constructor throws `config` on a missing or empty one).
+
+`open` takes bytes only (`Uint8Array`/`Buffer`) and throws an `SdkError` of kind `config` for a string: re-encoding text a framework already decoded can change the bytes, and a signature cannot survive that. Read the body raw (`express.raw({ type: "*/*" })`, `await request.arrayBuffer()`).
+
+`open` rejects with an `SdkError` of kind `unverified` for a forgery, a body sealed by a key you did not pin, a delivery made for another app or endpoint, another audience or route, a stale timestamp (300 s) and a replayed body, and one answer is all it gives: reply `401`. `decode` means it verified and is not the documented envelope; `backend` that the check itself failed (reply `5xx`; vsms retries). Dedupe on `event.id`: delivery is at-least-once and a retry is a new sealed request carrying the same id. **The nonce memory is per process and cannot be replaced** (the Rust SDK's `WebhookOpener::builder(..).with_nonce_store(..)` can; here the check runs in WebAssembly, which cannot await a JavaScript store): a body replayed within the 300 s window to another replica, or to this one after a restart, opens a second time, so behind several replicas the id is your defence. `examples/node/webhook-receiver` is a complete receiver.
+
 ## Errors
 
 Every failure is an `SdkError` with a `kind`:
@@ -118,7 +142,8 @@ Every failure is an `SdkError` with a `kind`:
 | `unverified`         | The answer is sealed but does not verify under a pinned key, or does not answer this request.                                                                     |
 | `unreadable`         | The request **was sent**, and an answer arrived that could not be read. Whether the gateway acted is unknown: do not retry a write without its `Idempotency-Key`. |
 | `remote`             | A sealed, verified answer with a non-2xx status (`gatewayCode`, `fieldErrors`, `isConflict()`, ...)                                                               |
-| `decode`             | A sealed, verified 2xx answer whose body is not the expected JSON.                                                                                                |
+| `decode`             | A sealed, verified 2xx answer whose body is not the expected JSON, or a verified webhook delivery that is not the documented envelope.                            |
+| `backend`            | A webhook delivery could not be checked because the receiver's own machinery failed (answer `5xx`).                                                               |
 
 `seal` is the only kind that means "nothing was sent"; every failure after the send is `transport`, `response_too_large`, `unsigned`, `unverified` or `unreadable`.
 

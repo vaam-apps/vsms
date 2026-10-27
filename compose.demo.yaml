@@ -245,16 +245,19 @@ services:
   # profile-skipped service. Same image as `seed-demo-app` (idempotent —
   # this run's own App/SenderId lookups just find what that service
   # already created), invoked a second time with
-  # `--webhook-url`/`--webhook-secret-out` instead. `--webhook-secret-out`
-  # is what lets `demo-app` (`--profile demo` too) read the
-  # freshly-generated `WebhookEndpoint.secret` — the identical "one
-  # container's computed output, a sibling's input" problem, solved
-  # through the shared `vsms_demo_secrets` volume.
+  # `--webhook-url`/`--webhook-audience` instead. VS-8: a delivery is sealed
+  # with the gateway's own key, so there is no secret to hand `demo-app` any
+  # more (the shared `vsms_demo_secrets` volume and its `secrets-init` fixup
+  # are gone): `demo-app` pins the gateway's public keys
+  # (`dev-keys/server-keys.txt`) and the audience this endpoint is created
+  # with, `demo-app`.
   #
   # A real bootstrap gap through `v0.2.1`, closed as of `v0.3.0`:
-  # `--webhook-url`/`--webhook-secret-out` did not exist in `v0.2.1` — they land in `v0.3.0` and every tag since,
+  # `--webhook-url` did not exist in `v0.2.1` — it lands in `v0.3.0` and every tag since,
   # this file's current default, so no default-tag special-casing is
-  # needed here any more. Showcasing `v0.2.1` (`VSMS_IMAGE_OWNER=vymalo`
+  # needed here any more. `--webhook-audience` and the worker's
+  # `SMS_ENVELOPE_SIGNING_KEY_FILE` exist from the release that carries VS-8;
+  # the default tags below move to it with release-please. Showcasing `v0.2.1` (`VSMS_IMAGE_OWNER=vymalo`
   # plus every tag knob — see the header) still hits the old gap:
   # `--profile demo` at that tag fails loudly at this one-shot
   # (`unexpected argument '--webhook-url'`) rather than at interpolation
@@ -267,35 +270,19 @@ services:
     command:
       - --webhook-url
       - http://demo-app:9000/webhooks
-      - --webhook-secret-out
-      - /secrets/webhook-secret
+      - --webhook-audience
+      - demo-app
+      - --webhook-endpoint-id-out
+      - /run/demo-endpoint/webhook-endpoint-id
+    volumes:
+      # The endpoint's id, which the gateway mints at creation and `demo-app`'s
+      # opener is built with (the binding between a delivery and its receiver).
+      - vsms_demo_endpoint:/run/demo-endpoint
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
-    volumes:
-      - vsms_demo_secrets:/secrets
     depends_on:
       seed-demo-app:
         condition: service_completed_successfully
-      secrets-init:
-        condition: service_completed_successfully
-    restart: 'no'
-
-  # `chmod 0777` on a *fresh* named volume before `seed-demo-webhook` (a
-  # non-root image) writes the webhook secret to it: Compose creates a new
-  # named volume root-owned at 0755, which blocks a write from any other
-  # uid. `busybox` (Docker Hub, not GHCR): the one non-GHCR image in this
-  # file, alongside `postgres` above — small, stock, official
-  # infrastructure glue, not a vsms application image. "Only pre-built
-  # images from GHCR, no `build:` stanza" is about never compiling vsms
-  # source inside this file, not about refusing an off-the-shelf image for
-  # a two-line permissions fixup, the same reading
-  # `deploy/docker-compose.yml` already relies on for its own
-  # `postgres:16-alpine`.
-  secrets-init:
-    image: busybox:1.36
-    command: ['sh', '-c', 'mkdir -p /secrets && chmod 0777 /secrets']
-    volumes:
-      - vsms_demo_secrets:/secrets
     restart: 'no'
 
   # The composer's own service key (VS-5b): the console sends through an
@@ -497,6 +484,15 @@ services:
       ORANGE_CM_CLIENT_SECRET: placeholder
       ORANGE_CM_SENDER_NUMBER: '+2370000'
       ORANGE_CM_BASE_URL: http://sms-fake-orange:8090
+      # VS-8: a sealed webhook delivery is a request signed with the gateway's
+      # own envelope signing key, so `hooks` needs the CURRENT key file (never
+      # the `next` one, which signs nothing) to deliver a `sealed` endpoint (an
+      # `hmac` endpoint needs none, VS-8R; the demo seeds a sealed one).
+      # The very file the gateway signs its answers with, so a receiver pins
+      # one pair of public keys (`dev-keys/server-keys.txt`) for both.
+      SMS_ENVELOPE_SIGNING_KEY_FILE: /run/envelope/current.pem
+    volumes:
+      - ./dev-keys/envelope-current.pem:/run/envelope/current.pem:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -643,14 +639,16 @@ services:
       VSMS_BASE_URL: http://sms-gateway:8080
       VSMS_SIGNING_KEY_PATH: /run/demo/demo-app.pem
       VSMS_SERVER_KEYS_PATH: /run/demo/server-keys.txt
-      DEMO_WEBHOOK_SECRET_PATH: /secrets/webhook-secret
+      DEMO_WEBHOOK_AUDIENCE: demo-app
       DEMO_WEBHOOK_PORT: '9000'
     volumes:
-      - vsms_demo_secrets:/secrets:ro
       # The demo app's DEV signing key and the gateway's two public sealing
       # keys, both minted by `just dev-keys` into the git-ignored `dev-keys/`.
       - ./dev-keys/demo-app.pem:/run/demo/demo-app.pem:ro
       - ./dev-keys/server-keys.txt:/run/demo/server-keys.txt:ro
+      # The id of the demo's `WebhookEndpoint`, written by `seed-demo-webhook`
+      # (which `depends_on` below completes first): `DEMO_WEBHOOK_ENDPOINT_ID_PATH`.
+      - vsms_demo_endpoint:/run/demo-endpoint:ro
     depends_on:
       sms-gateway:
         condition: service_healthy
@@ -663,4 +661,4 @@ services:
 
 volumes:
   vsms_demo_pgdata:
-  vsms_demo_secrets:
+  vsms_demo_endpoint:

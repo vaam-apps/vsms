@@ -18,6 +18,7 @@ pub mod jobs;
 pub mod lease;
 pub mod routing;
 pub mod scheduler;
+mod throttle;
 
 /// A provider adapter registry, keyed by [`SmsProvider::key`] — matching
 /// `Provider.key`, the column [`routing::decide`] resolves a chosen
@@ -47,6 +48,14 @@ pub struct WorkerContext {
     /// resolves the one a routed message needs by `Provider.key`; see
     /// [`ProviderRegistry`]'s own doc.
     pub providers: ProviderRegistry,
+    /// Seals a `sealed` webhook endpoint's deliveries under vsms's envelope
+    /// signing key (VS-8). `Some` exactly when this process was given the key
+    /// (`--envelope-signing-key-file`). An `hmac` endpoint (VS-8R) needs no key
+    /// and is delivered without one; with `None` this process claims no `sealed`
+    /// endpoint's attempt (`claim::ServedModes::HmacOnly`) and warns, naming the
+    /// missing key, how many are waiting (`hooks::SealedBacklogWatch`).
+    /// No other role reads it, so a `dispatch`-only node needs no key.
+    pub webhook_sealer: Option<sms_webhook::Sealer>,
 }
 
 /// A role `sms-worker` can run. §7.1's table, verbatim.
@@ -418,6 +427,7 @@ mod tests {
         WorkerContext {
             db: sms_api::schema::Cratestack::builder(pool).build(),
             providers: Arc::new(providers),
+            webhook_sealer: None,
         }
     }
 

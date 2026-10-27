@@ -20,7 +20,7 @@ test("delivered with zero verified webhooks fails", () => {
   const result = decide({ delivered: true, verifiedCount: 0, eventCount: 3 });
   assert.equal(result.exitCode, 1);
   assert.deepEqual(result.reasons, [
-    "3 webhook(s) were received but NONE verified their signature — check that WEBHOOK secret matches the seeded WebhookEndpoint",
+    "3 webhook(s) were received but NONE could be verified — check that the receiver matches the seeded WebhookEndpoint: for a sealed one the gateway keys pinned from server-keys.txt and DEMO_WEBHOOK_AUDIENCE, for an hmac one its secret",
   ]);
 });
 

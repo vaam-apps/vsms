@@ -115,12 +115,86 @@ integrator pins the public half of *both*; print them once the stack is up with
 hand the two lines to the integrator. They are paths, not secret values, in
 `.env`-land: the files are the secret.
 
+The worker's `hooks` role seals every `sealed` webhook endpoint's delivery with
+`secrets/envelope-current.pem` too, so a receiver pins the same two public keys
+for the gateway's answers and for the deliveries it receives. An endpoint's
+delivery mode is its own (`docs/integrating.md`, "Choosing a delivery mode"):
+an `hmac` endpoint is signed with its own secret and needs no key, so a
+deployment that has not moved a receiver to the seal may leave the file out. A
+`hooks` worker without it still starts and still delivers every `hmac`
+endpoint, and **claims no `sealed` endpoint's attempt at all**: those stay
+`pending` (or `failed`, resting out a backoff), untouched and uncounted toward
+`maxAttempts`, for a worker that holds the key, which delivers them as soon as it
+runs, so a late key loses nothing. Because the rows just wait, the keyless
+worker says so: every five minutes it logs a `warn` with the number of due sealed
+attempts it cannot serve, naming `--envelope-signing-key-file`, and it logs one
+at start. Treat either line as an unmounted key. Both containers
+run as uid 65532, which is why the one `chown`/`chmod 0400` above serves both.
+
+=== Rotating the envelope keys
+
+Both processes read their key once, at start-up, so a rotation is a restart:
+
+. Check that every client and every webhook receiver already pins today's
+  `next` public key: it is the key being promoted, and an integrator pins
+  *both* halves precisely so this step is a check and not a flag day (`docker
+  compose run --rm sms-gateway server-keys` prints them). Anyone who does not
+  yet has it must pin it before you go on, because the restart below makes it
+  the key that signs.
+. Promote it: move `secrets/envelope-next.pem` over
+  `secrets/envelope-current.pem`, mint a new `envelope-next.pem`, keep the
+  `chown`/`chmod` above.
+. **Restart the gateway and the worker together** (`docker compose up -d
+  --force-recreate sms-gateway sms-worker`). A worker left running keeps
+  sealing deliveries with the old key; receivers that still pin it accept them,
+  but the moment the old key is retired from their pins every delivery from that
+  worker is refused. On Kubernetes the same step is `kubectl rollout restart` of
+  *both* deployments: the chart mounts the worker's key with `subPath`, and a
+  `subPath` Secret mount never sees an edited Secret, so the worker will not
+  pick the new key up on its own the way a directory mount eventually would.
+. Hand every client and every webhook receiver the newly minted `next` public
+  key (`server-keys` after the restart prints it), so that they pin it before
+  the *next* rotation promotes it.
+. Retire the old public key from the receivers' pins once no delivery sealed
+  with it can still be retried (a retry is sealed afresh, so after the restart
+  nothing is).
+
 `SMS_HASH_PEPPER` backs `Message.msisdnHash`/`bodyHash` (HMAC-SHA256) --
 `sms-gateway serve` validates it (minimum 32 bytes) before doing anything
 else, so a missing or too-short value fails the container at boot, not at
 the first `sendMessage` call. Generate it once and keep it: rotating later
 does not retroactively rehash rows already written under the old value --
 see ``backends/crates/sms-api/src/pepper.rs``'s own module doc.
+
+=== Before deploying: hmac endpoints with an empty or short key
+
+An `hmac` delivery is byte-identical to what it was before the sealed mode
+existed (owner's ruling R5: vsms serves apps beyond vaam), including for an
+endpoint whose secret is empty, which is signed with the empty key and an empty
+`prevSecret` a second `v1=` value. A signature under an empty key is one anyone
+can compute, so before the deploy count the endpoints that have one, against the
+database the migration is about to run on (it prints counts and ids, never a
+secret):
+
+[,bash]
+----
+psql "$DATABASE_URL" -c "
+  SELECT count(*) FILTER (WHERE secret = '')                       AS empty_secret,
+         count(*) FILTER (WHERE length(secret) BETWEEN 1 AND 31)   AS short_secret,
+         count(*) FILTER (WHERE prev_secret = '')                  AS empty_prev_secret
+    FROM webhook_endpoints"
+----
+
+Add `WHERE delivery_mode = 'hmac'` once migration `0010_sealed_webhooks` has
+run (before it, every row is an `hmac` endpoint and the column does not exist;
+after it, a `sealed` endpoint holds no secret and so counts for nothing). To
+see which, select `id, app_id` with the same predicates. After the deploy the
+worker names each such endpoint in a `warn` line (at most every ten minutes per
+endpoint) that reads "signs with an empty key". The fix is
+`rotateWebhookSecret` on each, twice when the secret itself is empty (the first
+rotation moves the empty secret into `prevSecret`), and handing the new secret to
+that endpoint's receiver; a short, non-empty secret signs correctly and is only
+weak, so rotate those at leisure.
 
 == 2. Build and bring up Postgres + migrations first
 

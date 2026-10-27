@@ -47,7 +47,15 @@ export interface WasmSealer {
 
 /** What the wasm module rejects with: a plain object, never an `Error`. */
 export interface WasmFailure {
-  kind: "unbound" | "seal" | "unsigned" | "unverified" | "unreadable" | "invalid";
+  kind:
+    | "unbound"
+    | "seal"
+    | "unsigned"
+    | "unverified"
+    | "unreadable"
+    | "malformed"
+    | "backend"
+    | "invalid";
   message: string;
   status?: number;
 }
@@ -66,6 +74,12 @@ export interface WasmOpener {
   ): Promise<string>;
 }
 
+/** Opens a sealed webhook delivery; see {@link WebhookOpener}. */
+export interface WasmWebhookOpener {
+  /** The verified envelope's JSON text. Rejects with a {@link WasmFailure}. */
+  open(body: Uint8Array): Promise<string>;
+}
+
 export type WasmSign = (tbs: Uint8Array) => Uint8Array | Promise<Uint8Array>;
 
 export interface WasmModule {
@@ -73,6 +87,17 @@ export interface WasmModule {
   routeOf(method: string, path: string): { route: string; params: string[] };
   Opener: {
     forServerKeys(serverCurrent: string, serverNext: string): WasmOpener;
+  };
+  WebhookOpener: {
+    forServerKeys(
+      serverCurrent: string,
+      serverNext: string,
+      audience: string,
+      route: string,
+      appId: string,
+      endpointId: string,
+      nowSeconds: number | undefined,
+    ): WasmWebhookOpener;
   };
   Sealer: {
     fromSeed(seedBase64url: string, serverCurrent: string, serverNext: string): WasmSealer;
