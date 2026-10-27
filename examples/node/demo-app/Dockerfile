@@ -64,14 +64,16 @@ RUN npm install -g corepack@0.35.0 && corepack enable
 
 RUN useradd --system --uid 10002 --home-dir /nonexistent --shell /usr/sbin/nologin demoapp
 
-# The SDK sits at the path `package.json`'s `file:../../../sdks/node/vsms-sdk-node`
-# names, relative to the app: pnpm copies a directory dependency at install
-# time, so only what the package publishes (`files`: `dist`, `wasm`) is needed.
-COPY --from=sdk /repo/sdks/node/vsms-sdk-node/package.json /repo/sdks/node/vsms-sdk-node/package.json
-COPY --from=sdk /repo/sdks/node/vsms-sdk-node/dist /repo/sdks/node/vsms-sdk-node/dist
-COPY --from=sdk /repo/sdks/node/vsms-sdk-node/wasm /repo/sdks/node/vsms-sdk-node/wasm
+# The SDK sits where `package.json`'s `file:../../../sdks/node/vsms-sdk-node`
+# resolves from `/app` (three levels up from `/app` is `/`): pnpm copies a
+# directory dependency at install time, so only what the package publishes
+# (`files`: `dist`, `wasm`) is needed. The app stays at `/app`, the path
+# images.yml's assert scans.
+COPY --from=sdk /repo/sdks/node/vsms-sdk-node/package.json /sdks/node/vsms-sdk-node/package.json
+COPY --from=sdk /repo/sdks/node/vsms-sdk-node/dist /sdks/node/vsms-sdk-node/dist
+COPY --from=sdk /repo/sdks/node/vsms-sdk-node/wasm /sdks/node/vsms-sdk-node/wasm
 
-WORKDIR /repo/examples/node/demo-app
+WORKDIR /app
 COPY examples/node/demo-app/package.json examples/node/demo-app/pnpm-lock.yaml ./
 COPY examples/node/demo-app/src ./src
 COPY examples/node/demo-app/tsconfig.json ./
@@ -101,7 +103,7 @@ COPY examples/node/demo-app/tsconfig.json ./
 RUN corepack prepare pnpm@11.18.0 --activate \
     && pnpm install --ignore-workspace --frozen-lockfile --trust-lockfile --prod
 
-RUN chown -R demoapp:demoapp /repo/examples/node/demo-app
+RUN chown -R demoapp:demoapp /app
 # Numeric uid, not `USER demoapp` — a kubelet cannot verify a named user
 # is non-root under `runAsNonRoot: true` (see frontends/apps/admin/Dockerfile).
 # 10002 is the uid created above.
