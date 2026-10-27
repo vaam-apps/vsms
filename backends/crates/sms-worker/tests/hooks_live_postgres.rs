@@ -1993,6 +1993,76 @@ async fn a_keyless_claim_never_reads_the_sealed_backlogs_index_entries() {
     psql("DELETE FROM webhook_attempts WHERE aggregate_id LIKE 'bulk-%'").await;
 }
 
+/// The keyless claim asks for each `hmac` endpoint's due attempts separately and
+/// merges them, and the merge must keep what a single query gave: the oldest due
+/// attempts first, whichever endpoint holds them. Two endpoints, three attempts
+/// each, one endpoint's all older than the other's; a claim of the two oldest takes
+/// both of the older endpoint's. Run with each endpoint older in turn, because the
+/// order the endpoints are read in is the database's to choose, and a merge that
+/// kept it would pass whenever the older endpoint happened to come first.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyless_claim_takes_the_oldest_due_attempts_across_hmac_endpoints() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let mut endpoints = Vec::new();
+    for n in 0..2 {
+        endpoints.push(
+            seed_hmac_endpoint(
+                &db,
+                &app_id,
+                &format!("https://hooks.example.test/order-{n}"),
+                8,
+                "whsec_order_0123456789abcdef0123456789abcdef",
+                None,
+            )
+            .await,
+        );
+    }
+
+    for (round, (older, newer)) in [(0, 1), (1, 0)].into_iter().enumerate() {
+        clear_claimable_backlog(&db).await;
+        let mut oldest = Vec::new();
+        for (endpoint, minutes_ago) in [(older, [60, 50, 40]), (newer, [30, 20, 10])] {
+            for (n, minutes) in minutes_ago.into_iter().enumerate() {
+                let attempt = seed_attempt(
+                    &db,
+                    &endpoints[endpoint].id,
+                    &format!("cmsgO{round}{endpoint}{n}"),
+                    "message.delivered",
+                    "{}",
+                )
+                .await;
+                psql(&format!(
+                    "UPDATE webhook_attempts SET next_attempt_at = now() - interval '{minutes} minutes' \
+                     WHERE id = '{}'",
+                    attempt.id
+                ))
+                .await;
+                if endpoint == older && n < 2 {
+                    oldest.push(attempt.id);
+                }
+            }
+        }
+
+        let mut claimed: Vec<String> =
+            claim_webhook_attempts(&db, &sys(), "keyless-worker", 2, ServedModes::HmacOnly)
+                .await
+                .expect("the keyless claim")
+                .into_iter()
+                .map(|attempt| attempt.id)
+                .collect();
+        claimed.sort();
+        oldest.sort();
+        assert_eq!(
+            claimed, oldest,
+            "round {round}: the two oldest due attempts, both from endpoint {older}"
+        );
+    }
+}
+
 /// L1: an operator switches an endpoint `hmac` to `sealed` while a keyless worker
 /// holds one of its attempts. The worker can no longer send it, and must not
 /// pretend it tried: the attempt was counted at the claim and `maxAttempts` is 1,
