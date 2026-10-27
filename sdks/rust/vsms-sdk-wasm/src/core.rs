@@ -27,7 +27,7 @@ use crate::contracts::contract_digest;
 pub const AUDIENCE: &str = "vsms";
 
 /// The only payload type the gateway seals, in both directions.
-const PAYLOAD_TYPE: &str = "application/json";
+pub(crate) const PAYLOAD_TYPE: &str = "application/json";
 
 /// Why a call could not be sealed. Nothing was sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,8 +86,8 @@ impl std::error::Error for OpenError {}
 /// `ServerKeys` holds them: with one pinned, a rotation is a flag day.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerKeys {
-    current: [u8; 32],
-    next: [u8; 32],
+    pub(crate) current: [u8; 32],
+    pub(crate) next: [u8; 32],
 }
 
 impl ServerKeys {

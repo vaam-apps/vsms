@@ -84,8 +84,9 @@ pub fn operations() -> Vec<(&'static str, &'static str)> {
 /// parsing it back itself: the template and parameters returned here are what
 /// `Sealer.sealCall` takes, and its `target` is rebuilt from them, so a
 /// mismatch between the path asked for and the path signed is caught by
-/// comparing the two. When two templates match (a literal segment and a
-/// parameter in the same place), the one with fewer parameters wins.
+/// comparing the two. When two templates match, the gateway's router would
+/// pick the one with a literal segment at the first position where they
+/// differ, and so does this ([`resolve`]).
 ///
 /// ```
 /// # use vsms_sdk_wasm::route_of;
@@ -99,18 +100,39 @@ pub fn operations() -> Vec<(&'static str, &'static str)> {
 /// ```
 #[must_use]
 pub fn route_of(method: &str, path: &str) -> Option<(String, Vec<String>)> {
-    let segments: Vec<&str> = path.split('/').collect();
-    operations()
+    let templates: Vec<&str> = operations()
         .into_iter()
         .filter(|(m, _)| *m == method)
-        .filter_map(|(_, template)| {
+        .map(|(_, template)| template)
+        .collect();
+    resolve(&templates, path)
+}
+
+fn is_parameter(segment: &str) -> bool {
+    segment.starts_with('{') && segment.ends_with('}')
+}
+
+/// The template of `templates` that `path` is, with the decoded values of its
+/// parameters.
+///
+/// Several can match (`/a/{x}/c` and `/{y}/b/c` both match `/a/b/c`). The
+/// router the gateway serves with (axum, over matchit) walks a tree in which a
+/// literal segment is tried before a parameter at every step, so the winner is
+/// the template that is literal at the **first** segment where the two differ
+/// in kind: not the one with fewer parameters, which would pick the other here
+/// and sign a route the gateway does not run.
+fn resolve(templates: &[&str], path: &str) -> Option<(String, Vec<String>)> {
+    let segments: Vec<&str> = path.split('/').collect();
+    templates
+        .iter()
+        .filter_map(|template| {
             let parts: Vec<&str> = template.split('/').collect();
             if parts.len() != segments.len() {
                 return None;
             }
             let mut params = Vec::new();
             for (part, segment) in parts.iter().zip(&segments) {
-                if part.starts_with('{') && part.ends_with('}') {
+                if is_parameter(part) {
                     let decoded = percent_decode_str(segment).decode_utf8().ok()?.into_owned();
                     if decoded.is_empty() || decoded == "." || decoded == ".." {
                         return None;
@@ -120,9 +142,22 @@ pub fn route_of(method: &str, path: &str) -> Option<(String, Vec<String>)> {
                     return None;
                 }
             }
-            Some((template.to_owned(), params))
+            Some(((*template).to_owned(), params))
         })
-        .min_by_key(|(_, params)| params.len())
+        .min_by(|(a, _), (b, _)| literal_first(a, b))
+}
+
+/// `Less` when `a` is literal where `b` is a parameter at the first segment in
+/// which they differ in kind, `Greater` for the reverse.
+fn literal_first(a: &str, b: &str) -> std::cmp::Ordering {
+    for (x, y) in a.split('/').zip(b.split('/')) {
+        match (is_parameter(x), is_parameter(y)) {
+            (false, true) => return std::cmp::Ordering::Less,
+            (true, false) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 #[cfg(test)]
@@ -132,9 +167,10 @@ mod tests {
 
     #[test]
     fn a_route_without_parameters_is_found_as_itself() {
-        // No two templates collide in today's schema, so the "fewer parameters
-        // wins" rule has nothing to decide yet; it is what keeps a future literal
-        // sibling (`/messages/export`) from being read as an id.
+        // No two templates collide in today's schema, so the tie-break has
+        // nothing to decide yet; `a_literal_segment_beats_a_parameter_at_the_first_difference`
+        // is what keeps a future literal sibling (`/messages/export`) from
+        // being read as an id.
         let operations = operations();
         for (method, template) in &operations {
             if template.contains('{') {
@@ -192,5 +228,47 @@ mod tests {
     fn a_method_the_template_is_not_served_under_is_unbound() {
         let error = contract_digest("DELETE", "/$procs/sendMessage").unwrap_err();
         assert!(matches!(error, SealError::Unbound(_)), "{error:?}");
+    }
+
+    #[test]
+    fn a_literal_segment_beats_a_parameter_at_the_first_difference() {
+        let templates = ["/a/{x}/c", "/{y}/b/c"];
+        // Both match. The router tries the literal `a` before a parameter at
+        // the first segment, so `/a/{x}/c` runs, though it has the same number
+        // of parameters as the other.
+        assert_eq!(
+            resolve(&templates, "/a/b/c"),
+            Some(("/a/{x}/c".to_owned(), vec!["b".to_owned()]))
+        );
+        // The order the table lists them in does not matter.
+        let reversed = ["/{y}/b/c", "/a/{x}/c"];
+        assert_eq!(resolve(&reversed, "/a/b/c").unwrap().0, "/a/{x}/c");
+        // Where only the second matches, it is the second.
+        assert_eq!(
+            resolve(&templates, "/z/b/c"),
+            Some(("/{y}/b/c".to_owned(), vec!["z".to_owned()]))
+        );
+    }
+
+    #[test]
+    fn fewer_parameters_does_not_decide_when_the_first_difference_says_otherwise() {
+        // `/{a}/b/c` has one parameter and `/x/{b}/{c}` has two, and both match
+        // `/x/b/c`: the first segment is where they differ, and a literal wins
+        // there, so the template with more parameters is the one that runs.
+        let templates = ["/{a}/b/c", "/x/{b}/{c}"];
+        assert_eq!(resolve(&templates, "/x/b/c").unwrap().0, "/x/{b}/{c}");
+    }
+
+    #[test]
+    fn a_literal_sibling_is_not_read_as_an_id() {
+        let templates = ["/messages/{id}", "/messages/export"];
+        assert_eq!(
+            resolve(&templates, "/messages/export").unwrap(),
+            ("/messages/export".to_owned(), Vec::new())
+        );
+        assert_eq!(
+            resolve(&templates, "/messages/m1").unwrap().1,
+            vec!["m1".to_owned()]
+        );
     }
 }

@@ -65,7 +65,7 @@ function sealFailure(err: unknown): SdkError {
  * (`unsigned`, `unverified`) or cannot be read (`unreadable`). Never `seal`,
  * since the request was delivered and a retry would send it twice.
  */
-function answerFailure(err: unknown, status: number): SdkError {
+export function answerFailure(err: unknown, status: number): SdkError {
   if (!isWasmFailure(err)) {
     return new SdkError("the answer could not be read", {
       kind: "unreadable",

@@ -35,6 +35,7 @@
 
 mod contracts;
 mod core;
+mod opener;
 
 // The JavaScript surface exists only where there is a JavaScript to bind to.
 // On a host the crate is `core` alone, which is what `cargo test` compiles and
@@ -56,3 +57,4 @@ pub use crate::contracts::{contract_digest, operations, route_of};
 pub use crate::core::{
     Algorithm, Bound, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys, AUDIENCE,
 };
+pub use crate::opener::Opener;
