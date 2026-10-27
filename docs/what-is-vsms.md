@@ -72,7 +72,7 @@ of building from source.
 | Path                                           | What it is                                                                                  |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `schemas/vsms.cstack`                          | The schema: models, enums and procedures, expanded into the server by CrateStack.           |
-| `backends/apps/sms-gateway/`                   | The API server binary, and the operator commands (`bootstrap`, `provision-client`, …).      |
+| `backends/apps/sms-gateway/`                   | The API server binary, and the operator commands (`bootstrap`, `register-client`, …).       |
 | `backends/apps/sms-worker/`                    | The role-selectable worker binary (`--roles dispatch,scheduler,jobs,...`).                  |
 | `backends/crates/`                             | The libraries: API, auth, worker, encoding, MSISDN parsing, webhooks and provider adapters. |
 | `frontends/apps/admin/`, `frontends/packages/` | The Next.js admin console and its shared TypeScript packages.                               |

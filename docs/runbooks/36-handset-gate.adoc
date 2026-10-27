@@ -67,12 +67,11 @@ step is).
 export DATABASE_URL=postgres://...   # the real instance
 
 cargo run -p sms-migrate   # ci/apply-migrations.sh is gone — this is the real production migration runner
-sms-gateway rotate-signing-key
 ----
 
-`rotate-signing-key` needs `max_connections >= 2` internally (fixed -- see
-``backends/apps/sms-gateway/src/main.rs``'s own comment on `Command::RotateSigningKey` for
-why); nothing to configure here, just run it once against a fresh database.
+There is no signing-key step any more: VS-4 deleted the OpenID Provider
+and its `rotate-signing-key` command, and `serve` needs only its envelope
+sealing keys.
 
 == Running both binaries
 
@@ -275,7 +274,7 @@ Orange's HTTP API -- was run end to end. It proved:
 `/dlr/orange_cm` correctly correlates (via `callbackData`/
 `providerMessageRefAlt`, https://github.com/vymalo/vsms/issues/95[#95])
 → `delivered`, with a real `DeliveryReceipt` row.
-* `rotate-signing-key` genuinely works against a live database (a real bug
+* (Historical, before VS-4 deleted the command.) `rotate-signing-key` genuinely worked against a live database (a real bug
 in its connection pool sizing was found and fixed this way -- see
 `backends/apps/sms-gateway/src/main.rs`).
 * The `kill -9` mechanic works exactly as designed: a crash mid-submit

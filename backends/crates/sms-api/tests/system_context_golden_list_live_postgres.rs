@@ -1011,8 +1011,8 @@ async fn seed_and_verify_role(db: &Cratestack, suffix: &str) -> schema::Role {
 
 /// #194: `sms_api::signers::SignerDirectory`'s own `User`-by-id lookup runs
 /// under `sys` — the first internal system-context reader this model had,
-/// and the reason its `read`/`update` `@@allow` clauses gained
-/// `hasRole('system')`. Neither reader writes `User` under `sys`
+/// and the reason its `read` `@@allow` clause gained `hasRole('system')`
+/// (`update` had it too until VS-4 deleted the login that needed it). Neither reader writes `User` under `sys`
 /// (this seed only proves the read).
 async fn seed_and_verify_user(db: &Cratestack, suffix: &str, role_key: &str) -> schema::User {
     let seeded = db

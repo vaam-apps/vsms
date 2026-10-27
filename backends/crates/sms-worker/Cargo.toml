@@ -111,9 +111,7 @@ sms-fake-aws.workspace = true
 sms-provider-aws-sms.workspace = true
 # chaos_live_postgres.rs stands up a minimal in-process axum server for
 # `POST /dlr/{providerKey}` — the real one lives in `backends/apps/sms-gateway`, a
-# binary crate with no `lib.rs` (same reason `oidc_flow_live.rs` duplicates
-# `op.rs`'s own route assembly, see AGENTS.md), so this is the same small
-# duplication, not a new pattern.
+# binary crate with no `lib.rs`, so this is a small, deliberate duplication.
 axum.workspace = true
 # #63: dispatch_live_postgres.rs's own scripted fake providers construct a
 # real `sms_provider::Capabilities` (dispatch's `total_tps_ceiling` reads
