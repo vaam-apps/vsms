@@ -9,7 +9,7 @@ use sms_api::auth::system_context;
 use sms_api::map_database_error;
 use sms_api::schema::{
     AttemptState, UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, WebhookAttempt,
-    WebhookEndpoint, webhook_endpoint,
+    WebhookDeliveryMode, WebhookEndpoint, webhook_endpoint,
 };
 use sms_webhook::Sealer;
 use tracing::{error, warn};
@@ -131,30 +131,26 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 /// a routing hop" filter to apply before delivering, the way `dispatch`
 /// filters out `queued` and `jobs` filters out `pending`.
 ///
-/// **Fails closed before it claims anything** when the process holds no
-/// sealer: a claim increments `attempts`, so claiming a row this process cannot
-/// deliver would spend the endpoint's `maxAttempts` on nothing.
-/// `backends/apps/sms-worker` refuses to start `hooks` without the signing key,
-/// so this is the second line, not the first.
+/// Each claimed row is delivered by its endpoint's own `deliveryMode`
+/// ([`send`]): `hmac` needs nothing but the endpoint's secret, `sealed` needs
+/// `ctx.webhook_sealer`. A process without the signing key therefore still
+/// delivers every `hmac` endpoint, and fails a `sealed` one's attempt as an
+/// ordinary retryable failure that names the missing key (a claim has already
+/// counted it, and the row recovers by replay once the key is mounted).
+/// `backends/apps/sms-worker` says so at start when `hooks` runs without a key.
 ///
 /// # Errors
 ///
-/// [`CratestackError::Internal`] when `ctx` has no sealer; otherwise whatever
-/// the claim returns.
+/// Whatever the claim returns.
 pub async fn tick(
     ctx: &WorkerContext,
     sys: &CratestackContext,
     worker: &str,
     http: &reqwest::Client,
 ) -> Result<(), CratestackError> {
-    let Some(sealer) = ctx.webhook_sealer.as_ref() else {
-        return Err(CratestackError::Internal(
-            "the hooks role has no webhook sealer: it holds no envelope signing key".to_owned(),
-        ));
-    };
     let claimed = claim_batch::<WebhookAttempt>(&ctx.db, sys, worker, BUDGET).await?;
     for attempt in claimed {
-        deliver_one(ctx, sys, http, sealer, attempt).await;
+        deliver_one(ctx, sys, http, ctx.webhook_sealer.as_ref(), attempt).await;
     }
     Ok(())
 }
@@ -201,7 +197,7 @@ async fn deliver_one(
     ctx: &WorkerContext,
     sys: &CratestackContext,
     http: &reqwest::Client,
-    sealer: &Sealer,
+    sealer: Option<&Sealer>,
     attempt: WebhookAttempt,
 ) {
     // The FK `wha_endpoint_fk ... ON DELETE CASCADE` (§2.10) means a
@@ -250,49 +246,36 @@ async fn deliver_one(
         }
     };
 
-    let outcome = send(http, sealer, &endpoint, &body).await;
+    let outcome = send(http, sealer, &endpoint, &attempt, &body, now).await;
     write_outcome(ctx, sys, &attempt, &endpoint, outcome, now).await;
 }
 
-/// The actual sealed HTTP POST. Split from [`deliver_one`] so the
-/// request-building logic is directly unit-testable without a database —
-/// [`build_envelope`] is a pure function of its inputs.
+/// The actual HTTP POST, in the endpoint's own delivery mode. Split from
+/// [`deliver_one`] so the request-building logic is directly unit-testable
+/// without a database — [`build_envelope`] is a pure function of its inputs.
 ///
-/// **Every call seals afresh.** A retry is a new request with a new nonce and a
-/// new timestamp, never the first attempt's bytes sent again: a delivery whose
-/// backoff outlasts the receiver's 300 s skew (the schedule runs to 24 h) would
-/// otherwise be refused as stale, and a re-sent nonce is refused as a replay.
-/// The `id` and `eventId` inside the body are what stay the same.
-///
-/// A delivery that cannot be sealed (an audience or URL the seal refuses, a
-/// signer that fails) never reaches the network, and is an endpoint failure
-/// like any other: it backs off and counts toward the circuit breaker.
+/// A `sealed` endpoint's request is [`sealed_request`], an `hmac` endpoint's
+/// [`hmac_request`]; the status handling after the send is one function for
+/// both, so a `410` deactivates and a `5xx` retries whichever way the bytes were
+/// authenticated. Neither follows a redirect ([`build_http_client`]).
 async fn send(
     http: &reqwest::Client,
-    sealer: &Sealer,
+    sealer: Option<&Sealer>,
     endpoint: &WebhookEndpoint,
+    attempt: &WebhookAttempt,
     body: &str,
+    now: DateTime<Utc>,
 ) -> Outcome {
-    let delivery = match sealer
-        .seal(&endpoint.audience, &endpoint.url, body.as_bytes())
-        .await
-    {
-        Ok(delivery) => delivery,
-        Err(error) => {
-            return Outcome::Retryable {
-                status: None,
-                message: format!("delivery not sealed: {error}"),
-            };
-        }
+    let request = match endpoint.deliveryMode {
+        WebhookDeliveryMode::sealed => sealed_request(http, sealer, endpoint, body).await,
+        WebhookDeliveryMode::hmac => hmac_request(http, endpoint, attempt, body, now),
+    };
+    let request = match request {
+        Ok(request) => request,
+        Err(outcome) => return outcome,
     };
 
-    let mut request = http.post(&endpoint.url).body(delivery.body);
-    for (name, value) in &delivery.headers {
-        request = request.header(name, value);
-    }
-    let result = request.send().await;
-
-    match result {
+    match request.send().await {
         Ok(response) if response.status().is_success() => Outcome::Success {
             status: response.status().as_u16(),
         },
@@ -308,13 +291,111 @@ async fn send(
     }
 }
 
-/// The §8.4 envelope — `{id, eventId, type, occurredAt, appId, endpointId,
-/// data}` — built from the stored rows at delivery time. This module's own doc
-/// covers `id`/`type`; `appId` and `endpointId` are the endpoint's own, in the
-/// signed body so a receiver can tell a delivery made *for it* from one merely
-/// addressed to its audience (`sms-webhook`'s `lib.md`, "What a receiver
-/// configures"). Documented here is `occurredAt`, the one field that is a
-/// genuine, tracked approximation rather than a faithful reconstruction.
+/// A `sealed` delivery: the envelope JSON inside a `COSE_Sign1` under vsms's
+/// envelope signing key, addressed to the endpoint's `audience`.
+///
+/// **Every call seals afresh.** A retry is a new request with a new nonce and a
+/// new timestamp, never the first attempt's bytes sent again: a delivery whose
+/// backoff outlasts the receiver's 300 s skew (the schedule runs to 24 h) would
+/// otherwise be refused as stale, and a re-sent nonce is refused as a replay.
+/// The `id` and `eventId` inside the body are what stay the same.
+///
+/// A delivery that cannot be sealed (no signing key in this process, no
+/// audience on the row, an audience or URL the seal refuses, a signer that
+/// fails) never reaches the network, and is an endpoint failure like any other:
+/// it backs off and counts toward the circuit breaker.
+async fn sealed_request(
+    http: &reqwest::Client,
+    sealer: Option<&Sealer>,
+    endpoint: &WebhookEndpoint,
+    body: &str,
+) -> Result<reqwest::RequestBuilder, Outcome> {
+    let not_sealed = |message: String| Outcome::Retryable {
+        status: None,
+        message,
+    };
+    let Some(sealer) = sealer else {
+        return Err(not_sealed(
+            "delivery not sealed: this worker holds no envelope signing key \
+             (--envelope-signing-key-file)"
+                .to_owned(),
+        ));
+    };
+    // The CHECK `webhook_endpoints_audience_required_for_sealed_check` makes a
+    // sealed row without one impossible; an empty one is `NoAudience` below.
+    let audience = endpoint.audience.as_deref().unwrap_or_default();
+    let delivery = sealer
+        .seal(audience, &endpoint.url, body.as_bytes())
+        .await
+        .map_err(|error| not_sealed(format!("delivery not sealed: {error}")))?;
+    let mut request = http.post(&endpoint.url).body(delivery.body);
+    for (name, value) in &delivery.headers {
+        request = request.header(name, value);
+    }
+    Ok(request)
+}
+
+/// An `hmac` delivery, exactly as it was before sealed mode existed (#41): the
+/// four-field envelope as JSON, the four `X-Sms-*` headers, and
+/// `X-Sms-Signature` over `v1\n{timestamp}\n{eventId}\n{sha256(body)}` keyed by
+/// the endpoint's `secret` and, while a rotation's overlap window is open, by its
+/// `prevSecret` too (current first, "oldest last" per §4.4).
+///
+/// There is no signer to hold and nothing to fail but a row with no secret,
+/// which the CHECK `webhook_endpoints_delivery_mode_hmac_needs_secret_check`
+/// makes impossible: it is an endpoint failure here rather than a request signed
+/// with an empty key, because a signature anyone can compute is worse than none.
+fn hmac_request(
+    http: &reqwest::Client,
+    endpoint: &WebhookEndpoint,
+    attempt: &WebhookAttempt,
+    body: &str,
+    now: DateTime<Utc>,
+) -> Result<reqwest::RequestBuilder, Outcome> {
+    let Some(secret) = endpoint
+        .secret
+        .as_deref()
+        .filter(|secret| !secret.is_empty())
+    else {
+        return Err(Outcome::Retryable {
+            status: None,
+            message: "delivery not signed: this hmac endpoint has no secret".to_owned(),
+        });
+    };
+    let timestamp = now.timestamp();
+    let event_id = attempt.sourceEventId.to_string();
+    let secrets: Vec<&str> = std::iter::once(secret)
+        .chain(
+            endpoint
+                .prevSecret
+                .as_deref()
+                .filter(|prev| !prev.is_empty()),
+        )
+        .collect();
+    let signature = sms_webhook::sign_header(&secrets, timestamp, &event_id, body.as_bytes());
+
+    Ok(http
+        .post(&endpoint.url)
+        .header(sms_webhook::HEADER_EVENT, &attempt.eventType)
+        .header(sms_webhook::HEADER_EVENT_ID, &event_id)
+        .header(sms_webhook::HEADER_TIMESTAMP, timestamp.to_string())
+        .header(sms_webhook::HEADER_SIGNATURE, signature)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_owned()))
+}
+
+/// The §8.4 envelope, built from the stored rows at delivery time, in the shape
+/// the endpoint's mode delivers: a `sealed` endpoint's is `{id, eventId, type,
+/// occurredAt, appId, endpointId, data}` (contract v2), an `hmac` endpoint's is
+/// the original `{id, type, occurredAt, data}`, byte for byte what its receiver
+/// verifies today (`eventId` rides in `X-Sms-Event-Id`, which the HMAC signs, and
+/// there is no audience for `appId` and `endpointId` to disambiguate). This
+/// module's own doc covers `id`/`type`; a sealed `appId` and `endpointId` are the
+/// endpoint's own, in the signed body so a receiver can tell a delivery made
+/// *for it* from one merely addressed to its audience (`sms-webhook`'s
+/// `lib.md`, "What a receiver configures"). Documented here is `occurredAt`,
+/// the one field that is a genuine, tracked approximation rather than a
+/// faithful reconstruction.
 ///
 /// `WebhookAttempt` carries no creation timestamp — no `@use(Timestamps)`
 /// on the model — and the framework's own `ModelEvent::occurred_at` (the
@@ -334,15 +415,24 @@ fn build_envelope(
     now: DateTime<Utc>,
 ) -> Result<String, serde_json::Error> {
     let data: serde_json::Value = serde_json::from_str(&attempt.payload)?;
-    let envelope = serde_json::json!({
-        "id": attempt.id,
-        "eventId": attempt.sourceEventId,
-        "type": attempt.eventType,
-        "occurredAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        "appId": endpoint.appId,
-        "endpointId": endpoint.id,
-        "data": data,
-    });
+    let occurred_at = now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let envelope = match endpoint.deliveryMode {
+        WebhookDeliveryMode::sealed => serde_json::json!({
+            "id": attempt.id,
+            "eventId": attempt.sourceEventId,
+            "type": attempt.eventType,
+            "occurredAt": occurred_at,
+            "appId": endpoint.appId,
+            "endpointId": endpoint.id,
+            "data": data,
+        }),
+        WebhookDeliveryMode::hmac => serde_json::json!({
+            "id": attempt.id,
+            "type": attempt.eventType,
+            "occurredAt": occurred_at,
+            "data": data,
+        }),
+    };
     Ok(envelope.to_string())
 }
 
@@ -686,9 +776,9 @@ fn log_write_failure(attempt_id: &str, attempted_state: AttemptState, error: &Cr
 
 #[cfg(test)]
 mod tests {
-    use super::{BACKOFF_SCHEDULE, backoff_for, build_envelope};
+    use super::{BACKOFF_SCHEDULE, backoff_for, build_envelope, build_http_client, hmac_request};
     use chrono::{Duration, TimeZone, Utc};
-    use sms_api::schema::WebhookEndpoint;
+    use sms_api::schema::{WebhookDeliveryMode, WebhookEndpoint};
 
     #[test]
     fn the_first_attempt_backs_off_by_the_schedules_first_entry() {
@@ -739,8 +829,12 @@ mod tests {
             id: "cendpoint0000000000000".to_owned(),
             appId: "capp00000000000000000".to_owned(),
             url: "https://api.vaam.store/webhooks/vsms".to_owned(),
-            audience: "vaam".to_owned(),
+            deliveryMode: WebhookDeliveryMode::sealed,
+            audience: Some("vaam".to_owned()),
             eventTypes: " message.delivered ".to_owned(),
+            secret: None,
+            prevSecret: None,
+            secretRotatedAt: None,
             maskRecipient: true,
             active: true,
             maxAttempts: 8,
@@ -791,5 +885,147 @@ mod tests {
         let mut attempt = fixture_attempt();
         attempt.payload = "not json".to_owned();
         assert!(build_envelope(&attempt, &fixture_endpoint(), Utc::now()).is_err());
+    }
+
+    fn hmac_endpoint() -> WebhookEndpoint {
+        WebhookEndpoint {
+            deliveryMode: WebhookDeliveryMode::hmac,
+            audience: None,
+            secret: Some("whsec_current".to_owned()),
+            ..fixture_endpoint()
+        }
+    }
+
+    /// An `hmac` endpoint's body is the four-field envelope its receivers verify
+    /// today, byte for byte: nothing VS-8 added (`eventId`, `appId`,
+    /// `endpointId`) is in it, and the key order is the one `serde_json`'s map
+    /// has always written. A receiver hashing the raw body would notice a
+    /// difference, which is the whole reason this is an exact-string assertion.
+    #[test]
+    fn an_hmac_envelope_is_the_original_four_field_body_byte_for_byte() {
+        let now = Utc.with_ymd_and_hms(2026, 7, 28, 14, 3, 11).unwrap();
+        let body = build_envelope(&fixture_attempt(), &hmac_endpoint(), now).unwrap();
+        assert_eq!(
+            body,
+            concat!(
+                r#"{"data":{"messageId":"cmsg000000000000000000","to":"+2376****89"},"#,
+                r#""id":"cattempt00000000000000","occurredAt":"2026-07-28T14:03:11Z","#,
+                r#""type":"message.delivered"}"#
+            )
+        );
+    }
+
+    #[test]
+    fn a_sealed_envelope_carries_the_seven_fields_of_contract_v2() {
+        let body = build_envelope(&fixture_attempt(), &fixture_endpoint(), Utc::now()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let mut keys: Vec<&str> = parsed
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "appId",
+                "data",
+                "endpointId",
+                "eventId",
+                "id",
+                "occurredAt",
+                "type"
+            ]
+        );
+    }
+
+    fn header(request: &reqwest::Request, name: &str) -> String {
+        request.headers()[name].to_str().unwrap().to_owned()
+    }
+
+    /// The request an `hmac` endpoint gets: the four `X-Sms-*` headers, the
+    /// signature over exactly the body sent, current secret first and the
+    /// previous one second while an overlap window is open.
+    #[test]
+    fn an_hmac_request_is_signed_with_the_current_secret_and_the_previous_one() {
+        let http = build_http_client();
+        let now = Utc.with_ymd_and_hms(2026, 7, 28, 14, 3, 11).unwrap();
+        let attempt = fixture_attempt();
+        let mut endpoint = hmac_endpoint();
+        let body = build_envelope(&attempt, &endpoint, now).unwrap();
+
+        let single = hmac_request(&http, &endpoint, &attempt, &body, now)
+            .ok()
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(header(&single, "x-sms-event"), "message.delivered");
+        assert_eq!(
+            header(&single, "x-sms-event-id"),
+            attempt.sourceEventId.to_string()
+        );
+        assert_eq!(
+            header(&single, "x-sms-timestamp"),
+            now.timestamp().to_string()
+        );
+        assert_eq!(header(&single, "content-type"), "application/json");
+        let signature = header(&single, "x-sms-signature");
+        assert_eq!(signature.matches("v1=").count(), 1, "{signature}");
+        assert!(sms_webhook::verify(
+            &["whsec_current"],
+            now.timestamp(),
+            &attempt.sourceEventId.to_string(),
+            body.as_bytes(),
+            &signature,
+        ));
+
+        endpoint.prevSecret = Some("whsec_previous".to_owned());
+        let overlap = hmac_request(&http, &endpoint, &attempt, &body, now)
+            .ok()
+            .unwrap()
+            .build()
+            .unwrap();
+        let signature = header(&overlap, "x-sms-signature");
+        assert_eq!(signature.matches("v1=").count(), 2, "{signature}");
+        // Each secret alone verifies it: a receiver on the old one is not cut off.
+        for secret in ["whsec_current", "whsec_previous"] {
+            assert!(sms_webhook::verify(
+                &[secret],
+                now.timestamp(),
+                &attempt.sourceEventId.to_string(),
+                body.as_bytes(),
+                &signature,
+            ));
+        }
+        // And the current secret comes first on the wire.
+        assert!(signature.starts_with(&format!(
+            "v1={}",
+            sms_webhook::sign_v1(
+                "whsec_current",
+                now.timestamp(),
+                &attempt.sourceEventId.to_string(),
+                body.as_bytes()
+            )
+        )));
+    }
+
+    /// A row with no secret (the CHECK makes one impossible) is a failed
+    /// delivery, never a request signed with an empty key.
+    #[test]
+    fn an_hmac_endpoint_without_a_secret_sends_nothing() {
+        let http = build_http_client();
+        let attempt = fixture_attempt();
+        for secret in [None, Some(String::new())] {
+            let endpoint = WebhookEndpoint {
+                secret,
+                ..hmac_endpoint()
+            };
+            let outcome = hmac_request(&http, &endpoint, &attempt, "{}", Utc::now());
+            assert!(
+                matches!(outcome, Err(super::Outcome::Retryable { status: None, .. })),
+                "an hmac endpoint with no secret must not produce a request"
+            );
+        }
     }
 }

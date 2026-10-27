@@ -1,19 +1,23 @@
-//! `0010_sealed_webhooks` against a database that already holds a webhook
-//! endpoint with the HMAC secrets VS-8 deletes: the migration keeps the row,
-//! gives it an `audience` (the URL's origin, lower-cased, without credentials,
-//! and distinct even when two rows share one), and the three secret columns are
-//! gone afterwards. The audience is unique and never `vsms`, which the database
-//! itself enforces. Its `down.sql` refuses: a secret that was deleted on
-//! purpose must not come back from a rollback.
+//! `0010_sealed_webhooks` against a database that already holds webhook
+//! endpoints with HMAC secrets (VS-8, re-scoped by VS-8R): every existing row
+//! becomes an `hmac` endpoint with its secrets exactly as they were and no
+//! audience, because its receiver verifies an HMAC today. Nothing is dropped.
+//! The database itself then holds the two modes apart: a `sealed` endpoint needs
+//! an audience and holds no secret, an `hmac` endpoint needs a secret. The
+//! audience, when there is one, is unique and never `vsms`, and any number of
+//! endpoints may have none. `down.sql` reverses the migration, and refuses only
+//! when a `sealed` endpoint exists, which holds no HMAC secret to go back to.
 //!
 //! Plain `psql`, like the harness's own migration step: no generated client is
-//! involved, because the point is the SQL and the client no longer has the
-//! columns to write the "before" state with.
+//! involved, because the point is the SQL and the "before" state predates the
+//! client's columns.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const SCRATCH: &str = "vsms_mig0010_scratch";
+/// One scratch database per test: the two run in parallel.
+const SCRATCH_UP: &str = "vsms_mig0010_up_scratch";
+const SCRATCH_DOWN: &str = "vsms_mig0010_down_scratch";
 
 fn migrations_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -68,70 +72,118 @@ fn column_names(url: &str) -> Vec<String> {
     .collect()
 }
 
-/// NOT NULL and non-empty are the database's own refusals, not the API's.
-fn assert_audience_is_required(url: &str) {
-    let (ok, _, stderr) = psql(
-        url,
-        &[
-            "-c",
-            "INSERT INTO webhook_endpoints \
-             (id, app_id, url, event_types, mask_recipient, max_attempts, version) \
-             VALUES ('ep3', 'app1', 'https://h.example.test/x', ' ', true, 8, 1)",
-        ],
-    );
-    assert!(!ok && stderr.contains("audience"), "{stderr}");
-    let (ok, _, stderr) = psql(
-        url,
-        &[
-            "-c",
-            "INSERT INTO webhook_endpoints \
-             (id, app_id, url, event_types, audience, mask_recipient, max_attempts, version) \
-             VALUES ('ep4', 'app1', 'https://h.example.test/x', ' ', '', true, 8, 1)",
-        ],
-    );
-    assert!(
-        !ok && stderr.contains("webhook_endpoints_audience_length_check"),
-        "{stderr}"
-    );
-}
-
-fn insert_with_audience(url: &str, id: &str, audience: &str) -> (bool, String, String) {
+/// An insert of one endpoint with exactly the columns named, so each case
+/// states what the CHECK it targets looks at and nothing else.
+fn insert_endpoint(
+    url: &str,
+    id: &str,
+    mode: &str,
+    audience: Option<&str>,
+    secret: Option<&str>,
+    prev_secret: Option<&str>,
+) -> (bool, String, String) {
+    let quote = |value: Option<&str>| value.map_or_else(|| "NULL".to_owned(), |v| format!("'{v}'"));
     psql(
         url,
         &[
             "-c",
             &format!(
                 "INSERT INTO webhook_endpoints \
-                 (id, app_id, url, event_types, audience, mask_recipient, max_attempts, version) \
-                 VALUES ('{id}', 'app1', 'https://h.example.test/x', ' ', '{audience}', true, 8, 1)"
+                 (id, app_id, url, event_types, delivery_mode, audience, secret, prev_secret, \
+                  mask_recipient, max_attempts, version) \
+                 VALUES ('{id}', 'app1', 'https://h.example.test/x', ' ', '{mode}', {}, {}, {}, \
+                         true, 8, 1)",
+                quote(audience),
+                quote(secret),
+                quote(prev_secret),
             ),
         ],
     )
 }
 
+fn refused_by(result: (bool, String, String), constraint: &str) {
+    let (ok, _, stderr) = result;
+    assert!(!ok && stderr.contains(constraint), "{constraint}: {stderr}");
+}
+
+/// The mode and the columns it decides agree, by the database's own CHECKs.
+fn assert_the_modes_are_held_apart(url: &str) {
+    // `sealed` needs an audience ...
+    refused_by(
+        insert_endpoint(url, "m1", "sealed", None, None, None),
+        "webhook_endpoints_audience_required_for_sealed_check",
+    );
+    // ... and holds no secret, current or previous.
+    refused_by(
+        insert_endpoint(url, "m2", "sealed", Some("recv-m2"), Some("whsec_x"), None),
+        "webhook_endpoints_delivery_mode_sealed_holds_no_secret_check",
+    );
+    refused_by(
+        insert_endpoint(
+            url,
+            "m3",
+            "sealed",
+            Some("recv-m3"),
+            None,
+            Some("whsec_old"),
+        ),
+        "webhook_endpoints_delivery_mode_sealed_holds_no_secret_check",
+    );
+    // `hmac` needs a secret.
+    refused_by(
+        insert_endpoint(url, "m4", "hmac", None, None, None),
+        "webhook_endpoints_delivery_mode_hmac_needs_secret_check",
+    );
+    // Only the two modes exist.
+    refused_by(
+        insert_endpoint(url, "m5", "plain", None, Some("whsec_x"), None),
+        "webhook_endpoints_delivery_mode_enum_check",
+    );
+    // The legitimate shapes go in: a sealed one with an audience and no secret,
+    // and any number of `hmac` ones with a secret and no audience (NULLs do not
+    // collide in the unique index).
+    for (id, result) in [
+        (
+            "m6",
+            insert_endpoint(url, "m6", "sealed", Some("recv-m6"), None, None),
+        ),
+        (
+            "m7",
+            insert_endpoint(url, "m7", "hmac", None, Some("whsec_m7"), None),
+        ),
+        (
+            "m8",
+            insert_endpoint(url, "m8", "hmac", None, Some("whsec_m8"), Some("whsec_old")),
+        ),
+    ] {
+        assert!(result.0, "{id}: {}", result.2);
+    }
+}
+
 /// Two receivers cannot share a name (the gateway has one signing key for every
 /// app, so the name is what tells their seals apart), and `vsms` is the name the
-/// gateway's own routes answer to.
+/// gateway's own routes answer to. The length CHECK is the generator's.
 fn assert_audience_is_unique_and_never_vsms(url: &str) {
-    let (ok, _, stderr) = insert_with_audience(url, "ep10", "https://hooks.example.test:8443");
-    assert!(
-        !ok && stderr.contains("webhook_endpoints_audience_key"),
-        "{stderr}"
+    refused_by(
+        insert_endpoint(url, "a1", "sealed", Some("recv-m6"), None, None),
+        "webhook_endpoints_audience_key",
     );
-    let (ok, _, stderr) = insert_with_audience(url, "ep11", "vsms");
-    assert!(
-        !ok && stderr.contains("webhook_endpoints_audience_not_vsms_check"),
-        "{stderr}"
+    refused_by(
+        insert_endpoint(url, "a2", "sealed", Some("vsms"), None, None),
+        "webhook_endpoints_audience_not_vsms_check",
+    );
+    refused_by(
+        insert_endpoint(url, "a3", "sealed", Some(""), None, None),
+        "webhook_endpoints_audience_length_check",
     );
     // Only the exact name: `vsms-receiver` and `Vsms` are other names.
-    for (id, audience) in [("ep12", "vsms-receiver"), ("ep13", "Vsms")] {
-        let (ok, _, stderr) = insert_with_audience(url, id, audience);
+    for (id, audience) in [("a4", "vsms-receiver"), ("a5", "Vsms")] {
+        let (ok, _, stderr) = insert_endpoint(url, id, "sealed", Some(audience), None, None);
         assert!(ok, "{audience}: {stderr}");
     }
 }
 
 fn seed_legacy_endpoints(url: &str) {
-    // Two endpoints that carry live HMAC secrets.
     must(
         url,
         &[
@@ -140,6 +192,9 @@ fn seed_legacy_endpoints(url: &str) {
              VALUES ('app1', 'legacy app', 'legacy-app', 1000, ' ', false, 1)",
         ],
     );
+    // Endpoints as 0001_init allowed them: one rotated with an overlap secret,
+    // the rest with a secret alone, and URLs of every shape (the migration
+    // must not look at the URL).
     must(
         url,
         &[
@@ -148,54 +203,20 @@ fn seed_legacy_endpoints(url: &str) {
              (id, app_id, url, event_types, secret, prev_secret, secret_rotated_at, mask_recipient, max_attempts, version) \
              VALUES \
              ('ep1', 'app1', 'https://hooks.example.test:8443/webhooks/vsms?x=1', ' message.delivered ', \
-              'sms_webhook_current', 'sms_webhook_previous', now(), true, 8, 1), \
+              'sms_webhook_current', 'sms_webhook_previous', '2026-03-01T00:00:00Z', true, 8, 1), \
              ('ep2', 'app1', 'http://plain.example.test/hook', ' message.delivered ', \
               'sms_webhook_other', NULL, NULL, false, 8, 1), \
              ('ep3', 'app1', 'https://u:p@ss@raw-at.example.test/x', ' message.delivered ', \
               'sms_webhook_rawat', NULL, NULL, false, 8, 1), \
-             ('ep5', 'app1', 'HTTPS://Upper.Example.TEST/hook', ' message.delivered ', \
-              'sms_webhook_upper', NULL, NULL, false, 8, 1), \
-             ('ep8', 'app1', 'ftp://u:pw@files.example.test/x', ' message.delivered ', \
-              'sms_webhook_ftp', NULL, NULL, false, 8, 1), \
-             ('ep9', 'app1', 'not-a-url-u@pw', ' message.delivered ', \
-              'sms_webhook_none', NULL, NULL, false, 8, 1)",
-        ],
-    );
-    // A URL that carries a credential, and a second endpoint at the same origin.
-    // `ep7` is the older of the two, so it keeps the bare origin although its id
-    // sorts after `ep6`'s.
-    must(
-        url,
-        &[
-            "-c",
-            "INSERT INTO webhook_endpoints \
-             (id, app_id, url, event_types, secret, created_at, mask_recipient, max_attempts, version) \
-             VALUES \
-             ('ep6', 'app1', 'https://deploy:s3cret@creds.example.test/hook', ' message.delivered ', \
-              'sms_webhook_creds', '2026-02-01T00:00:00Z', false, 8, 1), \
-             ('ep7', 'app1', 'https://creds.example.test/other', ' message.delivered ', \
-              'sms_webhook_creds2', '2026-01-01T00:00:00Z', false, 8, 1)",
+             ('ep4', 'app1', 'https://creds.example.test/other', ' message.delivered ', \
+              'sms_webhook_creds', NULL, NULL, false, 8, 1), \
+             ('ep5', 'app1', 'https://creds.example.test/other', ' message.delivered ', \
+              'sms_webhook_creds2', NULL, NULL, false, 8, 1)",
         ],
     );
 }
 
-#[tokio::test]
-#[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn the_migration_keeps_an_endpoint_gives_it_an_audience_and_drops_the_secrets() {
-    let base = sms_test_support::database_url().await;
-    let admin = with_database(&base, "postgres");
-    let scratch = with_database(&base, SCRATCH);
-
-    must(
-        &admin,
-        &[
-            "-c",
-            &format!("DROP DATABASE IF EXISTS {SCRATCH} WITH (FORCE)"),
-        ],
-    );
-    must(&admin, &["-c", &format!("CREATE DATABASE {SCRATCH}")]);
-
-    // Everything up to, but not including, 0010: what a deployed database holds.
+fn migration_dirs() -> (Vec<PathBuf>, PathBuf) {
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(migrations_root())
         .expect("reading the migrations")
         .filter_map(Result::ok)
@@ -213,87 +234,186 @@ async fn the_migration_keeps_an_endpoint_gives_it_an_audience_and_drops_the_secr
         1,
         "0010 is the newest migration: later ones need a case here"
     );
-    for dir in &before {
+    (before, from_0010.into_iter().next().expect("0010"))
+}
+
+fn recreate_scratch(admin: &str, name: &str) {
+    drop_scratch(admin, name);
+    must(admin, &["-c", &format!("CREATE DATABASE {name}")]);
+}
+
+fn drop_scratch(admin: &str, name: &str) {
+    must(
+        admin,
+        &[
+            "-c",
+            &format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"),
+        ],
+    );
+}
+
+fn apply_before_0010(scratch: &str, before: &[PathBuf]) {
+    for dir in before {
         for file in ["up.pre.sql", "up.sql"] {
             let path = dir.join(file);
             if path.exists() {
-                apply(&scratch, &path);
+                apply(scratch, &path);
             }
         }
     }
+}
+
+const SECRETS: &str = "SELECT id, secret, coalesce(prev_secret, '-'), \
+                       coalesce(secret_rotated_at::text, '-') FROM webhook_endpoints ORDER BY id";
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn legacy_endpoints_become_hmac_with_their_secrets_and_no_audience() {
+    let base = sms_test_support::database_url().await;
+    let admin = with_database(&base, "postgres");
+    let scratch = with_database(&base, SCRATCH_UP);
+    recreate_scratch(&admin, SCRATCH_UP);
+    let (before, from_0010) = migration_dirs();
+    apply_before_0010(&scratch, &before);
 
     let legacy = column_names(&scratch);
     for column in ["secret", "prev_secret", "secret_rotated_at"] {
         assert!(legacy.contains(&column.to_owned()), "{column} before 0010");
     }
     assert!(!legacy.contains(&"audience".to_owned()));
+    assert!(!legacy.contains(&"delivery_mode".to_owned()));
 
     seed_legacy_endpoints(&scratch);
+    let secrets_before = must(&scratch, &["-c", SECRETS]);
 
-    apply(&scratch, &from_0010[0].join("up.sql"));
+    apply(&scratch, &from_0010.join("up.sql"));
 
+    // Nothing was dropped: every column of before is still there, and the two
+    // new ones are.
     let after = column_names(&scratch);
-    for column in ["secret", "prev_secret", "secret_rotated_at"] {
-        assert!(
-            !after.contains(&column.to_owned()),
-            "{column} survived 0010"
-        );
+    for column in &legacy {
+        assert!(after.contains(column), "{column} did not survive 0010");
     }
-    assert!(after.contains(&"audience".to_owned()));
+    for column in ["audience", "delivery_mode"] {
+        assert!(after.contains(&column.to_owned()), "{column} after 0010");
+    }
 
-    // The rows survive, addressed to their URL's origin until an operator names
-    // the receiver's real audience: the scheme and host in lower case whatever
-    // the URL spelled, no credential, the older of two rows at one origin
-    // keeping it and the newer one told apart by its id, a URL with no origin
-    // never copied. A credential may hold a raw `@` (`u:p@ss@host`): the
-    // userinfo runs to the last `@` of the authority, as a URL parser reads it.
-    let rows = must(
-        &scratch,
-        &[
-            "-c",
-            "SELECT id, audience FROM webhook_endpoints ORDER BY id",
-        ],
+    // Every existing row is an `hmac` endpoint with the secrets it had, byte for
+    // byte (rotation timestamp included), and no audience: a guessed one would
+    // occupy a name a real endpoint may need.
+    assert_eq!(must(&scratch, &["-c", SECRETS]), secrets_before);
+    assert_eq!(
+        must(
+            &scratch,
+            &[
+                "-c",
+                "SELECT delivery_mode, count(*), count(audience) FROM webhook_endpoints GROUP BY 1"
+            ],
+        ),
+        "hmac|5|0"
+    );
+
+    // `secret` is optional now (a sealed endpoint has none) and the rest of the
+    // table kept its shape.
+    assert_eq!(
+        must(
+            &scratch,
+            &[
+                "-c",
+                "SELECT is_nullable FROM information_schema.columns \
+                     WHERE table_name = 'webhook_endpoints' AND column_name = 'secret'"
+            ],
+        ),
+        "YES"
     );
     assert_eq!(
-        rows,
-        "ep1|https://hooks.example.test:8443\n\
-         ep2|http://plain.example.test\n\
-         ep3|https://raw-at.example.test\n\
-         ep5|https://upper.example.test\n\
-         ep6|https://creds.example.test#ep6\n\
-         ep7|https://creds.example.test\n\
-         ep8|ftp://files.example.test\n\
-         ep9|endpoint-ep9"
+        must(
+            &scratch,
+            &[
+                "-c",
+                "SELECT is_nullable FROM information_schema.columns \
+                     WHERE table_name = 'webhook_endpoints' AND column_name = 'delivery_mode'"
+            ],
+        ),
+        "NO"
     );
-    let leaked = must(
-        &scratch,
-        &[
-            "-c",
-            "SELECT count(*) FROM webhook_endpoints \
-             WHERE audience LIKE '%s3cret%' OR audience LIKE '%deploy%' OR audience LIKE '%pw%' \
-             OR audience LIKE '%@%'",
-        ],
-    );
-    assert_eq!(leaked, "0", "a credential was copied into an audience");
 
-    assert_audience_is_required(&scratch);
+    assert_the_modes_are_held_apart(&scratch);
     assert_audience_is_unique_and_never_vsms(&scratch);
 
-    // Forward-only: the rollback refuses instead of restoring empty secrets.
-    let (ok, _, stderr) = psql(
+    drop_scratch(&admin, SCRATCH_UP);
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn the_rollback_restores_the_legacy_shape_and_refuses_only_for_a_sealed_endpoint() {
+    let base = sms_test_support::database_url().await;
+    let admin = with_database(&base, "postgres");
+    let scratch = with_database(&base, SCRATCH_DOWN);
+    recreate_scratch(&admin, SCRATCH_DOWN);
+    let (before, from_0010) = migration_dirs();
+    apply_before_0010(&scratch, &before);
+    seed_legacy_endpoints(&scratch);
+    let secrets_before = must(&scratch, &["-c", SECRETS]);
+    let columns_before = column_names(&scratch);
+
+    apply(&scratch, &from_0010.join("up.sql"));
+    let down = from_0010.join("down.sql");
+    let down = down.to_str().expect("a path");
+
+    // A sealed endpoint holds no HMAC secret to go back to: the rollback says so
+    // and changes nothing.
+    must(
         &scratch,
         &[
-            "-f",
-            from_0010[0].join("down.sql").to_str().expect("a path"),
-        ],
-    );
-    assert!(!ok && stderr.contains("destructive migration"), "{stderr}");
-
-    must(
-        &admin,
-        &[
             "-c",
-            &format!("DROP DATABASE IF EXISTS {SCRATCH} WITH (FORCE)"),
+            "INSERT INTO webhook_endpoints \
+        (id, app_id, url, event_types, delivery_mode, audience, mask_recipient, max_attempts, version) \
+        VALUES ('sealed1', 'app1', 'https://s.example.test/x', ' ', 'sealed', 'recv-s1', true, 8, 1)",
         ],
     );
+    let (ok, _, stderr) = psql(&scratch, &["-f", down]);
+    assert!(
+        !ok && stderr.contains("1 sealed webhook endpoint"),
+        "{stderr}"
+    );
+    assert!(column_names(&scratch).contains(&"delivery_mode".to_owned()));
+
+    // Gone, the rollback goes through, and the table is what 0001_init made it,
+    // secrets untouched.
+    must(
+        &scratch,
+        &["-c", "DELETE FROM webhook_endpoints WHERE id = 'sealed1'"],
+    );
+    must(&scratch, &["-f", down]);
+    assert_eq!(column_names(&scratch), columns_before);
+    assert_eq!(must(&scratch, &["-c", SECRETS]), secrets_before);
+    assert_eq!(
+        must(
+            &scratch,
+            &[
+                "-c",
+                "SELECT is_nullable FROM information_schema.columns \
+                     WHERE table_name = 'webhook_endpoints' AND column_name = 'secret'"
+            ],
+        ),
+        "NO"
+    );
+    assert_eq!(
+        must(
+            &scratch,
+            &[
+                "-c",
+                "SELECT count(*) FROM pg_constraint \
+                     WHERE conrelid = 'webhook_endpoints'::regclass AND contype = 'c'"
+            ],
+        ),
+        "0"
+    );
+
+    // And forward again: the migration is repeatable over what the rollback left.
+    apply(&scratch, &from_0010.join("up.sql"));
+    assert_eq!(must(&scratch, &["-c", SECRETS]), secrets_before);
+
+    drop_scratch(&admin, SCRATCH_DOWN);
 }

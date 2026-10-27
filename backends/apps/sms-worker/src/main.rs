@@ -82,11 +82,14 @@ struct Cli {
     #[arg(long, env = "SMS_WORKER_ID")]
     worker_id: Option<String>,
 
-    /// PKCS#8 PEM Ed25519 private key that seals every webhook delivery —
-    /// the same file `sms-gateway serve` signs its answers with
+    /// PKCS#8 PEM Ed25519 private key that seals a `sealed` webhook endpoint's
+    /// deliveries — the same file `sms-gateway serve` signs its answers with
     /// (`--envelope-signing-key-file`), so a receiver pins one pair of public
-    /// keys for both (VS-8). Required when `hooks` is one of `--roles`, and
-    /// read by no other role. A path, not a secret: the file is the secret and
+    /// keys for both (VS-8). Read only when `hooks` is one of `--roles`. Without
+    /// it `hooks` still starts and still delivers every `hmac` endpoint (VS-8R:
+    /// an app that has not moved its receivers onto the seal needs no key), but
+    /// every `sealed` endpoint's attempts fail until it is mounted, and the
+    /// worker says so at start. A path, not a secret: the file is the secret and
     /// must be mounted `0400`; it never goes in the database.
     #[arg(long, env = "SMS_ENVELOPE_SIGNING_KEY_FILE")]
     envelope_signing_key_file: Option<std::path::PathBuf>,
@@ -405,28 +408,32 @@ fn aws_sms_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
     }
 }
 
-/// The sealer `hooks` delivers with, built from `--envelope-signing-key-file`.
+/// The sealer `hooks` delivers `sealed` endpoints with, built from
+/// `--envelope-signing-key-file`.
 ///
-/// Fails closed (VS-8): `hooks` without the key is a refusal to start, never a
-/// worker that claims deliveries it cannot seal. A process that does not run
-/// `hooks` ignores the flag entirely, so a `dispatch`-only node needs no key
-/// and holds none.
+/// `None` (and a warning) when `hooks` runs without the flag: the role starts,
+/// delivers every `hmac` endpoint, and fails a `sealed` endpoint's attempt with a
+/// message that names the flag, rather than a process that refuses to start for a
+/// key an HMAC-only deployment never uses (VS-8R). A key that is given but cannot
+/// be read is another matter and always an error: a path that was meant to work.
+/// A process that does not run `hooks` ignores the flag entirely, so a
+/// `dispatch`-only node needs no key and holds none.
 ///
 /// # Errors
 ///
-/// `hooks` in `roles` with no `--envelope-signing-key-file`, a file that cannot
-/// be read, or one that is not a PKCS#8 Ed25519 private key. The text names
-/// the flag and the path, never the content.
+/// A file that cannot be read, or one that is not a PKCS#8 Ed25519 private key.
+/// The text names the flag and the path, never the content.
 fn webhook_sealer(cli: &Cli, roles: &[Role]) -> Result<Option<sms_webhook::Sealer>> {
     if !roles.contains(&Role::Hooks) {
         return Ok(None);
     }
     let Some(path) = cli.envelope_signing_key_file.as_ref() else {
-        bail!(
-            "--roles includes hooks, which seals every webhook delivery with vsms's envelope \
-             signing key: pass --envelope-signing-key-file (or SMS_ENVELOPE_SIGNING_KEY_FILE), \
-             the same PKCS#8 PEM Ed25519 file `sms-gateway serve` signs its answers with"
+        warn!(
+            "hooks runs without --envelope-signing-key-file (SMS_ENVELOPE_SIGNING_KEY_FILE): \
+             `hmac` webhook endpoints are delivered, every `sealed` endpoint's attempts fail \
+             until the gateway's PKCS#8 PEM Ed25519 signing key is mounted"
         );
+        return Ok(None);
     };
     let pem = std::fs::read(path)
         .with_context(|| format!("reading --envelope-signing-key-file {}", path.display()))?;
@@ -859,14 +866,14 @@ mod tests {
         path
     }
 
-    /// VS-8, fail closed: a `hooks` worker with no signing key refuses to start,
-    /// rather than claiming deliveries it cannot seal.
+    /// VS-8R: an HMAC-only deployment needs no signing key. `hooks` starts
+    /// without one and holds no sealer, so its `hmac` endpoints are delivered
+    /// and a `sealed` endpoint's attempt fails with a message naming the flag.
     #[test]
-    fn hooks_without_the_signing_key_refuses_to_start() {
-        let error = webhook_sealer(&base_cli(), &[Role::Hooks, Role::Jobs])
-            .expect_err("hooks needs the envelope signing key");
-        let text = format!("{error:#}");
-        assert!(text.contains("--envelope-signing-key-file"), "{text}");
+    fn hooks_without_the_signing_key_starts_and_holds_no_sealer() {
+        let sealer = webhook_sealer(&base_cli(), &[Role::Hooks, Role::Jobs])
+            .expect("hooks starts without a signing key");
+        assert!(sealer.is_none());
     }
 
     /// A node that does not run `hooks` needs no key and loads none, even when

@@ -1,5 +1,5 @@
-//! The audience is the one thing that tells one receiver's deliveries from
-//! another's (the gateway signs every app's with one key), so the database
+//! A `sealed` endpoint's audience is the one thing that tells one receiver's
+//! deliveries from another's (the gateway signs every app's with one key), so the database
 //! hands each name out once: a second `WebhookEndpoint` cannot take an
 //! audience already in use, whichever app it belongs to, on create or on
 //! update. Also end to end through the delegate: a URL that cannot be sealed
@@ -67,7 +67,11 @@ fn endpoint(app_id: &str, url: &str, audience: &str) -> CreateWebhookEndpointInp
     CreateWebhookEndpointInput {
         appId: app_id.to_owned(),
         url: url.to_owned(),
-        audience: audience.to_owned(),
+        deliveryMode: schema::WebhookDeliveryMode::sealed,
+        audience: Some(audience.to_owned()),
+        secret: None,
+        prevSecret: None,
+        secretRotatedAt: None,
         eventTypes: " message.delivered ".to_owned(),
         maskRecipient: true,
         maxAttempts: 8,
@@ -141,7 +145,7 @@ async fn a_second_endpoint_cannot_take_an_audience_already_in_use() {
         .webhook_endpoint()
         .update(mine.id.clone())
         .set(UpdateWebhookEndpointInput {
-            audience: Some(audience.clone()),
+            audience: Some(Some(audience.clone())),
             ..Default::default()
         })
         .if_match(mine.version)

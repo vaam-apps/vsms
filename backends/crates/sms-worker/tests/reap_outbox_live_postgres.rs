@@ -118,8 +118,12 @@ async fn seed_endpoint(db: &Cratestack, app_id: &str, event_types: &str) {
         .create(schema::CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: format!("https://example.test/webhooks/{}", unique_suffix()),
+            deliveryMode: schema::WebhookDeliveryMode::hmac,
+            audience: None,
             eventTypes: event_types.to_owned(),
-            audience: format!("test-receiver-{}", unique_suffix()),
+            secret: Some(format!("test-secret-{}", unique_suffix())),
+            prevSecret: None,
+            secretRotatedAt: None,
             maskRecipient: false,
             maxAttempts: 8,
             circuitOpenUntil: None,

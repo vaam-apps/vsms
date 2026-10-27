@@ -933,6 +933,141 @@ impl Procedures {
         })
     }
 
+    /// #41: rotate `WebhookEndpoint.secret` with a 24-hour overlap window
+    /// — the current `secret` moves to `prevSecret` (nothing is thrown
+    /// away; the endpoint keeps verifying signatures made with its old
+    /// secret until `prevSecret` is cleared) and a fresh
+    /// `sms_webhook::generate_secret()` value takes its place.
+    /// `secretRotatedAt` records when this happened.
+    ///
+    /// **Clearing `prevSecret` after 24 hours is out of scope for this
+    /// procedure.** §4.4's own words: "a job clears `prevSecret` after 24
+    /// hours" — that's §7.5's `cleanup_secrets` job, one of the eight job
+    /// kinds this repo's own M2 status notes (`AGENTS.md`, `#35`) already
+    /// lists as not yet built, for the same reason every other one isn't:
+    /// no `jobs` role infrastructure gap here, just no story that wires
+    /// this specific job kind up yet. Until it exists, an operator who
+    /// rotates a secret is responsible for knowing when 24 hours have
+    /// passed and, if they want the old secret to stop working sooner,
+    /// rotating a second time (which overwrites `prevSecret` again).
+    ///
+    /// **Update, #59:** `WebhookEndpoint` gained `@version`, and the write
+    /// below now carries `if_match(endpoint.version)` too. This procedure's
+    /// own `@isolation("serializable")` transaction is still the primary
+    /// guard against two concurrent rotations of the same endpoint racing
+    /// — Postgres aborts the second transaction with a serialization
+    /// failure rather than silently letting one rotation's write clobber
+    /// the other's `prevSecret` — `if_match` is additional, not a
+    /// replacement: it turns the same race into a named
+    /// `PreconditionFailed` for a caller that reaches this procedure with
+    /// a stale `ETag` from a prior read, rather than relying solely on a
+    /// database-level serialization-failure retry the caller has no
+    /// visibility into.
+    ///
+    /// **VS-8R: a `sealed` endpoint has no secret and is refused**
+    /// (`CratestackError::Validation`, 422) before anything is written: there
+    /// is nothing to rotate, and minting one would hand the endpoint a
+    /// shared secret its mode exists to not have (the CHECK
+    /// `webhook_endpoints_delivery_mode_sealed_holds_no_secret_check` would
+    /// refuse the write too; this is the answer that tells the caller why).
+    /// An `hmac` endpoint rotates exactly as before.
+    ///
+    /// Reads and writes as `sys`, matching every other procedure's write
+    /// path in this file (see `Procedures::sys`'s own doc) — not the
+    /// caller's own `ctx`, even though `ctx`'s owner/frontends/apps/admin/developer role
+    /// already satisfies `WebhookEndpoint`'s `read`/`update` policy on its
+    /// own. `WebhookEndpoint` had no `hasRole('system')` clause until this
+    /// change — the schema's own comment on that clause explains why (no
+    /// internal system-context reader existed before this procedure), and
+    /// it is the eighth instance of the exact shape `AGENTS.md`'s
+    /// "Invariants that fail the build rather than production" section
+    /// already names seven times over. See that file and
+    /// `backends/crates/sms-api/tests/system_context_golden_list_live_postgres.rs`.
+    ///
+    /// #193: calls `require_permission(ctx, "webhook:manage")` (Layer 2,
+    /// §5.1) before touching anything — `replayWebhookAttempt` (#43, #191)
+    /// already did, and rotation is the *more* sensitive of the two
+    /// operations (it changes the credential every future delivery is
+    /// signed with and starts the `prevSecret` overlap clock), so it made
+    /// no sense to be the one left ungated. The issue's own alternative —
+    /// decide Layer 2 is redundant given `WebhookEndpoint.update`'s
+    /// already-role-scoped Layer 1, and strike `webhook:manage` from
+    /// §5.2's vocabulary instead — was rejected: a permission that appears
+    /// in the role table and is never checked anywhere is worse than no
+    /// permission, since it implies a control that doesn't exist, and
+    /// `replayWebhookAttempt` already relies on it being real. Uses `ctx`
+    /// (the caller's own context, for the permission check only) rather
+    /// than the `_ctx` this function used to ignore; every read/write
+    /// below still goes through `sys`, unaffected by this change. Same
+    /// latency as #187: before VS-3 no credential carried a human role
+    /// (#97/#98's scope cut), so this check had no live *allow* path to
+    /// prove — only *deny*, covered by `rotate_webhook_secret_live_postgres.rs`'s
+    /// `rotate_denies_a_caller_with_no_webhook_manage_permission`.
+    async fn rotate_secret(
+        &self,
+        db: &schema::IsolatedCratestack,
+        ctx: &CratestackContext,
+        args: schema::EndpointInput,
+    ) -> Result<schema::WebhookEndpoint, CratestackError> {
+        require_permission(ctx, "webhook:manage")?;
+
+        let sys = Self::sys();
+        let endpoint_id = args.endpointId;
+
+        db.transaction(async |tx| {
+            let sys = &sys;
+            let endpoint = db
+                .webhook_endpoint()
+                .find_many()
+                .where_expr(FilterExpr::from(
+                    webhook_endpoint::id().eq(endpoint_id.clone()),
+                ))
+                .limit(1)
+                .run_in_tx(tx, sys)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    CratestackError::NotFound(format!("no WebhookEndpoint with id {endpoint_id}"))
+                })?;
+
+            if endpoint.deliveryMode != schema::WebhookDeliveryMode::hmac {
+                return Err(CratestackError::Validation(format!(
+                    "webhook endpoint {endpoint_id} is sealed: it has no signing secret to \
+                     rotate (its deliveries are sealed under vsms's envelope signing key)"
+                )));
+            }
+
+            let updated = db
+                .webhook_endpoint()
+                .update(endpoint_id)
+                .set(schema::UpdateWebhookEndpointInput {
+                    secret: Some(Some(sms_webhook::generate_secret())),
+                    prevSecret: Some(endpoint.secret),
+                    secretRotatedAt: Some(Some(Utc::now())),
+                    ..Default::default()
+                })
+                // #59: WebhookEndpoint gained `@version`. `@isolation
+                // ("serializable")` above already stops two concurrent
+                // rotations of the same row from clobbering each
+                // other's `prevSecret` — this doc comment's own
+                // reasoning predates the field existing — so
+                // `if_match` here is defense in depth, not the primary
+                // guard: it makes a losing race a named
+                // `PreconditionFailed` instead of relying solely on a
+                // serialization-failure retry.
+                .if_match(endpoint.version)
+                .run_in_tx(tx, sys)
+                .await?
+                // cratestack 0.7.13 (#554): see the identical comment on
+                // `provisionAppClient`'s own `run_in_tx` call above.
+                .value;
+
+            Ok(updated)
+        })
+        .await
+    }
+
     /// #43: re-fire a stuck `WebhookAttempt` from the admin surface — an
     /// operator's explicit "I fixed the receiving end, try again" action.
     /// See §8.5's own "Implementation, #43" note in the design doc for the
@@ -2012,6 +2147,20 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         Output = Result<schema::procedures::authorize_composition::Output, CratestackError>,
     > + Send {
         core::future::ready(crate::composition::authorize(ctx, args.args))
+    }
+
+    fn rotate_webhook_secret(
+        &self,
+        db: &schema::IsolatedCratestack,
+        ctx: &CratestackContext,
+        args: schema::procedures::rotate_webhook_secret::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::rotate_webhook_secret::Authorized,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::rotate_webhook_secret::Output, CratestackError>,
+    > + Send {
+        self.rotate_secret(db, ctx, args.args)
     }
 
     fn replay_webhook_attempt(

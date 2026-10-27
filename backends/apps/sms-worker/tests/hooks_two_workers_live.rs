@@ -185,13 +185,36 @@ async fn seed_app(db: &Cratestack) -> String {
         .id
 }
 
-async fn seed_endpoint(db: &Cratestack, app_id: &str, mock_url: &str) -> schema::WebhookEndpoint {
+/// The two delivery modes the race runs under (VS-8R): the claim discipline is
+/// mode-blind, and this proves it by running the same race for each.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Mode {
+    Sealed,
+    Hmac,
+}
+
+/// The secret an `hmac` endpoint of this race is signed with.
+const HMAC_SECRET: &str = "whsec_two_workers_race";
+
+async fn seed_endpoint(
+    db: &Cratestack,
+    app_id: &str,
+    mock_url: &str,
+    mode: Mode,
+) -> schema::WebhookEndpoint {
     db.webhook_endpoint()
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: format!("{mock_url}/webhooks/vsms"),
             eventTypes: " message.delivered ".to_owned(),
-            audience: AUDIENCE.to_owned(),
+            deliveryMode: match mode {
+                Mode::Sealed => schema::WebhookDeliveryMode::sealed,
+                Mode::Hmac => schema::WebhookDeliveryMode::hmac,
+            },
+            audience: (mode == Mode::Sealed).then(|| AUDIENCE.to_owned()),
+            secret: (mode == Mode::Hmac).then(|| HMAC_SECRET.to_owned()),
+            prevSecret: None,
+            secretRotatedAt: None,
             maskRecipient: false,
             maxAttempts: 8,
             circuitOpenUntil: None,
@@ -366,7 +389,18 @@ async fn wait_until_all_terminal(
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres and the built sms-worker binary — see module \
             docs"]
-async fn two_real_hooks_workers_never_double_deliver_the_same_attempt() {
+async fn two_real_hooks_workers_never_double_deliver_the_same_sealed_attempt() {
+    race(Mode::Sealed).await;
+}
+
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres and the built sms-worker binary — see module \
+            docs"]
+async fn two_real_hooks_workers_never_double_deliver_the_same_hmac_attempt() {
+    race(Mode::Hmac).await;
+}
+
+async fn race(mode: Mode) {
     let database_url = sms_test_support::database_url().await;
     let db = db().await;
 
@@ -378,7 +412,7 @@ async fn two_real_hooks_workers_never_double_deliver_the_same_attempt() {
         .await;
 
     let app_id = seed_app(&db).await;
-    let endpoint = seed_endpoint(&db, &app_id, &server.uri()).await;
+    let endpoint = seed_endpoint(&db, &app_id, &server.uri(), mode).await;
     let seeded = seed_attempts(&db, &endpoint.id, ROW_COUNT).await;
     let ids: Vec<String> = seeded.iter().map(|a| a.id.clone()).collect();
 
@@ -455,40 +489,74 @@ async fn two_real_hooks_workers_never_double_deliver_the_same_attempt() {
     // Per-event granularity: not just the right *total*, but exactly one
     // request per distinct event id (a total that happened to add up right
     // while some events got zero and others got two would be exactly the
-    // failure this per-event check exists to catch). The event id is inside the
-    // sealed body now, so each request is opened by a real `EnvelopeLayer`
-    // pinned to vsms's key first: which also proves both racing processes seal
-    // with the one key, and that no two deliveries shared a nonce.
-    let receiver = WebhookReceiver::new(
-        &[vsms_public_key()],
-        AUDIENCE,
-        &["/webhooks/vsms"],
-        sms_webhook::CONTRACT_SHA,
-    );
-    for request in &requests {
-        let headers: Vec<(String, String)> = request
-            .headers
-            .iter()
-            .map(|(name, value)| (name.as_str().to_owned(), value.to_str().unwrap().to_owned()))
-            .collect();
-        let verdict = receiver
-            .deliver("/webhooks/vsms", &headers, &request.body)
-            .await;
-        assert_eq!(verdict.status, 200, "a delivery the real layer refused");
-    }
+    // failure this per-event check exists to catch).
     let mut requests_per_event: HashMap<String, u32> = HashMap::new();
-    for body in receiver.bodies() {
-        let envelope: serde_json::Value = serde_json::from_str(&body).unwrap();
-        let event_id = envelope["eventId"]
-            .as_str()
-            .expect("every real hooks delivery carries its eventId in the sealed body")
-            .to_owned();
-        *requests_per_event.entry(event_id).or_insert(0) += 1;
+    match mode {
+        // The event id is inside the sealed body, so each request is opened by a
+        // real `EnvelopeLayer` pinned to vsms's key first: which also proves
+        // both racing processes seal with the one key, and that no two
+        // deliveries shared a nonce.
+        Mode::Sealed => {
+            let receiver = WebhookReceiver::new(
+                &[vsms_public_key()],
+                AUDIENCE,
+                &["/webhooks/vsms"],
+                sms_webhook::CONTRACT_SHA,
+            );
+            for request in &requests {
+                let headers: Vec<(String, String)> = request
+                    .headers
+                    .iter()
+                    .map(|(name, value)| {
+                        (name.as_str().to_owned(), value.to_str().unwrap().to_owned())
+                    })
+                    .collect();
+                let verdict = receiver
+                    .deliver("/webhooks/vsms", &headers, &request.body)
+                    .await;
+                assert_eq!(verdict.status, 200, "a delivery the real layer refused");
+            }
+            for body in receiver.bodies() {
+                let envelope: serde_json::Value = serde_json::from_str(&body).unwrap();
+                let event_id = envelope["eventId"]
+                    .as_str()
+                    .expect("every real hooks delivery carries its eventId in the sealed body")
+                    .to_owned();
+                *requests_per_event.entry(event_id).or_insert(0) += 1;
+            }
+        }
+        // The event id is the signed `X-Sms-Event-Id` header, and each request
+        // is verified under the endpoint's secret.
+        Mode::Hmac => {
+            for request in &requests {
+                let header = |name: &str| {
+                    request
+                        .headers
+                        .get(name)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_else(|| panic!("every hmac delivery sets {name}"))
+                        .to_owned()
+                };
+                let event_id = header(sms_webhook::HEADER_EVENT_ID);
+                let timestamp: i64 = header(sms_webhook::HEADER_TIMESTAMP).parse().unwrap();
+                assert!(
+                    sms_webhook::verify(
+                        &[HMAC_SECRET],
+                        timestamp,
+                        &event_id,
+                        &request.body,
+                        &header(sms_webhook::HEADER_SIGNATURE),
+                    ),
+                    "a delivery whose signature does not verify"
+                );
+                *requests_per_event.entry(event_id).or_insert(0) += 1;
+            }
+        }
     }
     assert_eq!(
         requests_per_event.len(),
         ROW_COUNT,
-        "expected {ROW_COUNT} distinct eventId values across all received requests, got \
+        "expected {ROW_COUNT} distinct event ids across all received requests, got \
          {}: {requests_per_event:?}",
         requests_per_event.len()
     );

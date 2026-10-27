@@ -19,7 +19,9 @@
 //! Plain `cargo test`: no Docker, no Postgres.
 
 use sms_api::schema::models::WebhookEndpoint;
-use sms_api::schema::{CreateWebhookEndpointInput, UpdateWebhookEndpointInput};
+use sms_api::schema::{
+    CreateWebhookEndpointInput, UpdateWebhookEndpointInput, WebhookDeliveryMode,
+};
 use sms_webhook::delivery_route;
 
 use cratestack::{CreateModelInput, UpdateModelInput};
@@ -28,7 +30,11 @@ fn create(url: &str, audience: &str) -> CreateWebhookEndpointInput {
     CreateWebhookEndpointInput {
         appId: "capp00000000000000000".to_owned(),
         url: url.to_owned(),
-        audience: audience.to_owned(),
+        deliveryMode: WebhookDeliveryMode::sealed,
+        audience: Some(audience.to_owned()),
+        secret: None,
+        prevSecret: None,
+        secretRotatedAt: None,
         eventTypes: " message.delivered ".to_owned(),
         maskRecipient: true,
         maxAttempts: 8,
@@ -192,7 +198,7 @@ fn an_update_is_held_to_the_same_rules() {
     assert!(validate(update()));
     assert!(validate(UpdateWebhookEndpointInput {
         url: Some("https://api.vaam.store/webhooks/vsms".to_owned()),
-        audience: Some("vaam".to_owned()),
+        audience: Some(Some("vaam".to_owned())),
         ..update()
     }));
     assert!(!validate(UpdateWebhookEndpointInput {
@@ -204,7 +210,59 @@ fn an_update_is_held_to_the_same_rules() {
         ..update()
     }));
     assert!(!validate(UpdateWebhookEndpointInput {
-        audience: Some("vsms".to_owned()),
+        audience: Some(Some("vsms".to_owned())),
         ..update()
     }));
+}
+
+/// An `hmac` endpoint has no audience, so the audience rules must not demand
+/// one: the field is optional, and `null` is a valid value for it.
+#[test]
+fn an_hmac_endpoint_needs_no_audience() {
+    let input = CreateWebhookEndpointInput {
+        deliveryMode: WebhookDeliveryMode::hmac,
+        audience: None,
+        secret: Some("whsec_x".to_owned()),
+        ..create("https://api.vaam.store/webhooks/vsms", "unused")
+    };
+    assert!(
+        <CreateWebhookEndpointInput as CreateModelInput<WebhookEndpoint>>::validate(&input).is_ok()
+    );
+}
+
+/// The wire shape the console switches an endpoint's mode with: an explicit
+/// `null` clears a nullable column (`Some(None)`), an omitted key leaves it
+/// alone (`None`). Without that distinction a `sealed` switch could not remove
+/// the secrets, and the CHECK would refuse the write.
+#[test]
+fn a_json_null_clears_a_nullable_column_and_an_omitted_key_leaves_it() {
+    let cleared: UpdateWebhookEndpointInput = serde_json::from_str(
+        r#"{"deliveryMode":"sealed","audience":"vaam","secret":null,"prevSecret":null,"secretRotatedAt":null}"#,
+    )
+    .unwrap();
+    assert_eq!(cleared.deliveryMode, Some(WebhookDeliveryMode::sealed));
+    assert_eq!(cleared.audience, Some(Some("vaam".to_owned())));
+    assert_eq!(cleared.secret, Some(None));
+    assert_eq!(cleared.prevSecret, Some(None));
+    assert_eq!(cleared.secretRotatedAt, Some(None));
+
+    let untouched: UpdateWebhookEndpointInput =
+        serde_json::from_str(r#"{"active":false}"#).unwrap();
+    assert_eq!(untouched.secret, None);
+    assert_eq!(untouched.audience, None);
+    assert_eq!(untouched.deliveryMode, None);
+}
+
+/// The wire names of the two modes are the schema's variants, lower case.
+#[test]
+fn the_modes_are_named_sealed_and_hmac_on_the_wire() {
+    assert_eq!(
+        serde_json::to_string(&WebhookDeliveryMode::sealed).unwrap(),
+        r#""sealed""#
+    );
+    assert_eq!(
+        serde_json::to_string(&WebhookDeliveryMode::hmac).unwrap(),
+        r#""hmac""#
+    );
+    assert!(serde_json::from_str::<WebhookDeliveryMode>(r#""plain""#).is_err());
 }

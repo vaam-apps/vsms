@@ -7,8 +7,8 @@ use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::schema::{
     Cratestack, CreateAppInput, CreateSenderIdInput, CreateSenderIdRegistrationInput,
     CreateWebhookEndpointInput, SenderIdKind, SenderIdRegistrationStatus, UpdateSenderIdInput,
-    app as app_filter, provider as provider_filter, sender_id as sender_id_filter,
-    sender_id_registration as sender_id_registration_filter,
+    WebhookDeliveryMode, app as app_filter, provider as provider_filter,
+    sender_id as sender_id_filter, sender_id_registration as sender_id_registration_filter,
     webhook_endpoint as webhook_endpoint_filter,
 };
 use sms_api::{Principal, PrincipalKind};
@@ -287,7 +287,7 @@ async fn ensure_demo_sender_id(
 /// only ever runs from one container in one sequential compose dependency
 /// chain, never concurrently with itself.
 ///
-/// A row that already exists keeps the audience it was created with; a rerun
+/// A row that already exists keeps the mode and the audience it was created with; a rerun
 /// with a different `--webhook-audience` says so instead of silently editing an
 /// endpoint an operator may have changed in the console.
 async fn ensure_demo_webhook_endpoint(
@@ -313,10 +313,11 @@ async fn ensure_demo_webhook_endpoint(
 
     if let Some(row) = existing.into_iter().next() {
         println!("reusing existing WebhookEndpoint {} (url={url:?})", row.id);
-        if row.audience != audience {
+        if row.audience.as_deref() != Some(audience) {
             println!(
-                "note: it keeps its audience {:?}, not the {audience:?} passed now",
-                row.audience
+                "note: it keeps its delivery mode ({:?}) and audience ({:?}), not the sealed \
+                 {audience:?} passed now",
+                row.deliveryMode, row.audience
             );
         }
         return Ok(row.id);
@@ -335,7 +336,13 @@ async fn ensure_demo_webhook_endpoint(
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: url.to_owned(),
-            audience: audience.to_owned(),
+            // The showcase receiver (`examples/node/demo-app`) opens sealed
+            // deliveries: the mode the demo exists to show.
+            deliveryMode: WebhookDeliveryMode::sealed,
+            audience: Some(audience.to_owned()),
+            secret: None,
+            prevSecret: None,
+            secretRotatedAt: None,
             eventTypes: event_types,
             maskRecipient: mask_recipient,
             maxAttempts: max_attempts,

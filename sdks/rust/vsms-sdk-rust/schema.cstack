@@ -101,6 +101,20 @@ enum AttemptState {
   dead
 }
 
+// How one endpoint's deliveries are authenticated (VS-8R). `sealed` is a
+// COSE_Sign1 request under the gateway's envelope signing key, addressed to the
+// endpoint's `audience`; no secret exists. `hmac` is the legacy
+// `X-Sms-Signature` HMAC-SHA256 under the endpoint's own `secret`. vsms serves
+// other apps besides vaam, and an app that has not moved its receivers onto a
+// cratestack `EnvelopeLayer` keeps working: both modes are always available
+// (a deployment will later be able to switch `hmac` off, VSA-1). A row's mode
+// and its columns agree by CHECKs in 0010: `sealed` has an audience and no
+// secret, `hmac` has a secret.
+enum WebhookDeliveryMode {
+  sealed
+  hmac
+}
+
 // The lifecycle of one (sender, provider) registration. Was a bare
 // `String` until this change, with the four values living only as a
 // `KNOWN_STATUSES` array in the console — so the database happily accepted
@@ -1037,38 +1051,59 @@ model WebhookEndpoint {
   id Cuid @id @default(dbgenerated())
   appId Cuid
   app App @relation(fields: [appId], references: [id])
-  // VS-8: a delivery binds the path of this URL as its route, so a URL that
-  // cannot be one route (credentials, a query, a fragment, a `{`, `}` or `%` in
-  // the path, a scheme other than http(s), a non-ASCII host) could only be
+  // VS-8: a `sealed` delivery binds the path of this URL as its route, so a URL
+  // that cannot be one route (credentials, a query, a fragment, a `{`, `}` or `%`
+  // in the path, a scheme other than http(s), a non-ASCII host) could only be
   // refused at delivery, burning attempts and tripping the breaker. The pattern
-  // refuses it on write instead. It is deliberately narrower than what
+  // refuses it on write, for either mode (a mode can be switched later without
+  // the URL being rewritten). It is deliberately narrower than what
   // `sms_webhook::delivery_route` accepts (an IDN host is written in its
   // punycode form), never wider: sms-webhook's tests hold that.
   url String @uri @regex("^(?i:https?)://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\x5B[0-9A-Fa-f:.]+\x5D)(?::(?:6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(?:/[A-Za-z0-9._~!$&'()*+,;=:@/-]*)?$")
-  // VS-8: the receiver's identity, the name a delivery's seal binds as its
-  // audience (cratestack ADR 0006 section 4). Required and without a default: a
-  // default would silently mean "any receiver". There is no signing secret on
-  // this model any more - a delivery is sealed under vsms's envelope signing
-  // key, which lives in a file, never a column (sms-webhook's lib.md).
-  // `@unique`: every app's deliveries are signed by the one gateway key, so the
-  // audience is what tells one receiver's seals from another's. Two endpoints
-  // sharing a name would let whoever holds `webhook:manage` collect a victim's
-  // audience-bound seals at a URL of their own and replay them. It is never
+  // VS-8R: how this endpoint's deliveries are authenticated. Required and
+  // without a default: a default would drop it from the create input, and an
+  // endpoint is created knowing which receiver contract it serves. Existing
+  // rows were migrated to `hmac`, because their receivers verify an HMAC today.
+  deliveryMode WebhookDeliveryMode
+  // VS-8: the receiver's identity, the name a `sealed` delivery's seal binds as
+  // its audience (cratestack ADR 0006 section 4). Required exactly when the mode
+  // is `sealed` (a CHECK in 0010; a default would silently mean "any receiver")
+  // and optional for `hmac`, which has no seal to address. A sealed delivery is
+  // signed under vsms's envelope signing key, which lives in a file, never a
+  // column (sms-webhook's lib.md).
+  // `@unique`: every app's sealed deliveries are signed by the one gateway key,
+  // so the audience is what tells one receiver's seals from another's. Two
+  // endpoints sharing a name would let whoever holds `webhook:manage` collect a
+  // victim's audience-bound seals at a URL of their own and replay them. NULLs
+  // do not collide, so any number of `hmac` endpoints have none. It is never
   // `vsms`, the name the gateway's own routes answer to (the pattern below and a
   // CHECK in 0010: `@db_enforce` does nothing for a `@regex`).
-  audience String @unique @length(min: 1, max: 255) @db_enforce @regex("^(?:vsms.+|(?:[^v]|v[^s]|vs[^m]|vsm[^s]).*|v|vs|vsm)$")
+  audience String? @unique @length(min: 1, max: 255) @db_enforce @regex("^(?:vsms.+|(?:[^v]|v[^s]|vs[^m]|vsm[^s]).*|v|vs|vsm)$")
   eventTypes String
+  // The `hmac` mode's signing secret (`whsec_` and 64 hex characters), the one
+  // `X-Sms-Signature` is keyed by, and the one a rotation moves to `prevSecret`
+  // for an overlap window. Present exactly when the mode is `hmac` and absent
+  // for `sealed` (CHECKs in 0010). `@sensitive` redacts it from audit snapshots
+  // (and only from those: the API still returns it, to the three roles that can
+  // write this model).
+  secret String? @sensitive
+  prevSecret String? @sensitive
+  secretRotatedAt DateTime?
   maskRecipient Boolean
   active Boolean @default(true)
   maxAttempts Int
   circuitOpenUntil DateTime?
   consecutiveFailures Int @default(0)
-  // #59: hooks.rs's consecutiveFailures/circuitOpenUntil/active writes were a
-  // documented best-effort read-modify-write because this field didn't exist.
-  // They now use .if_match(); their existing "log and drop on any error"
-  // handling absorbs a lost race exactly like it already absorbed any other
-  // write failure, so this is strictly a detected-and-rejected race replacing a
-  // silent one. See backends/crates/sms-worker/src/hooks.rs.
+  // #59: named explicitly in the ticket as evidence the absence was felt —
+  // rotateWebhookSecret leaned on @isolation("serializable") alone, and
+  // hooks.rs's consecutiveFailures/circuitOpenUntil/active writes were a
+  // documented best-effort read-modify-write, both because this field
+  // didn't exist. Both call sites now use .if_match(); their existing
+  // "log and drop on any error" handling absorbs a lost race exactly like
+  // it already absorbed any other write failure, so this is strictly a
+  // detected-and-rejected race replacing a silent one, not a behaviour
+  // change. See backends/crates/sms-worker/src/hooks.rs and
+  // backends/crates/sms-api/src/procedures.rs::rotate_webhook_secret.
   version Int @version
 
   attempts WebhookAttempt[] @relation(fields: [id], references: [endpointId])
@@ -1080,21 +1115,21 @@ model WebhookEndpoint {
   // `@@allow` omits `hasRole('system')` doesn't error - it silently
   // filters an internal system-context read down to an empty array.
   //
-  // The Message.created/updated subscribers
-  // (`backends/crates/sms-api/src/webhooks.rs`) and the hooks role
-  // (`backends/crates/sms-worker/src/hooks.rs`) resolve which endpoints
-  // subscribe to an event type, and update an endpoint's failure counters,
-  // under a system context. Without the clause the subscriber matches zero
+  // `rotateWebhookSecret` reads and updates this model under a system context
+  // (`Procedures::sys`, #41), the Message.created/updated subscribers
+  // (`backends/crates/sms-api/src/webhooks.rs`) resolve which endpoints
+  // subscribe to an event type under one (#38/#39), and the hooks role
+  // (`backends/crates/sms-worker/src/hooks.rs`) updates an endpoint's failure
+  // counters under one. Without the clause the subscriber matches zero
   // endpoints against every event, forever, with nothing anywhere to notice.
   //
   // Guarded by `backends/crates/sms-api/tests/system_context_golden_list_live_postgres.rs`.
   //
-  // `read` is the three human roles that can write the model (#187). Before
-  // VS-8 it had to be: `secret` and `prevSecret` were live HMAC keys that
-  // `@sensitive` would not have hidden from an API response. There is no secret
-  // on this model now, so the narrowing is a product call, not a forced one;
-  // it stays, because an auditor's oversight need is served by the delivery
-  // log (`WebhookAttempt`), not by the endpoint's configuration.
+  // `read` is the three human roles that can write the model (#187): an
+  // `hmac` endpoint's `secret` and `prevSecret` are live keys, and `@sensitive`
+  // redacts audit snapshots only, never an API response. An auditor's oversight
+  // need is served by the delivery log (`WebhookAttempt`) and by seeing *that* a
+  // secret exists and when it was rotated, not by its value.
   @@audit
   @@allow("read", hasRole('owner') || hasRole('admin') || hasRole('developer') || hasRole('system'))
   @@allow("create", hasRole('owner') || hasRole('admin') || hasRole('developer'))
@@ -1429,6 +1464,10 @@ type CancelInput {
   reason String?
 }
 
+type EndpointInput {
+  endpointId Cuid
+}
+
 type ReplayWebhookAttemptInput {
   attemptId Cuid
 }
@@ -1523,10 +1562,17 @@ type CompositionAuthorization {
 procedure authorizeComposition(args: AuthorizeCompositionInput): CompositionAuthorization
   @allow(auth().kind == "user" && (hasRole('owner') || hasRole('admin') || hasRole('operator')))
 
-// #43: re-fire a stuck WebhookAttempt from the admin surface. The same
-// three human roles the endpoint itself is managed by, plus a Layer 2
-// `webhook:manage` check (`require_permission`, §5.1) inside the procedure
-// body. `@authorize` requires the
+// VS-8R: rotate an `hmac` endpoint's signing secret with an overlap window.
+// A `sealed` endpoint has no secret and is refused (422).
+mutation procedure rotateWebhookSecret(args: EndpointInput): WebhookEndpoint
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @isolation("serializable")
+
+// #43: re-fire a stuck WebhookAttempt from the admin surface. Same @allow
+// set as rotateWebhookSecret — the same three human roles the endpoint
+// itself is managed by — plus a Layer 2 `webhook:manage` check
+// (`require_permission`, §5.1) inside the procedure body, as
+// rotateWebhookSecret has too (#193). `@authorize` requires the
 // caller to already be able to see the row (WebhookAttempt's own `detail`
 // policy) before the mutation runs, the same guard `cancelMessage` uses.
 mutation procedure replayWebhookAttempt(args: ReplayWebhookAttemptInput): WebhookAttempt

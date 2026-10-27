@@ -1,7 +1,7 @@
 //! `dashboardSummary` (#49) against a real, fully migrated Postgres — the
 //! actual `ProcedureRegistry` trait method, not `Procedures::
 //! dashboard_snapshot` called directly, the same discipline
-//! `replay_webhook_attempt_live_postgres.rs`/`worker_locks_live_postgres.rs`
+//! `rotate_webhook_secret_live_postgres.rs`/`worker_locks_live_postgres.rs`
 //! document in their own module docs.
 //!
 //! The headline claim this file exists to prove, not just assert: **a
@@ -223,8 +223,12 @@ async fn seed_endpoint(db: &Cratestack, app_id: &str) -> schema::WebhookEndpoint
         .create(schema::CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: format!("https://example.test/webhooks/{}", unique_suffix()),
+            deliveryMode: schema::WebhookDeliveryMode::hmac,
+            audience: None,
             eventTypes: " message.delivered ".to_owned(),
-            audience: format!("test-receiver-{}", unique_suffix()),
+            secret: Some(format!("test-secret-{}", unique_suffix())),
+            prevSecret: None,
+            secretRotatedAt: None,
             maskRecipient: true,
             maxAttempts: 8,
             circuitOpenUntil: None,

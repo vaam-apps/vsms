@@ -101,44 +101,61 @@ const DROPPED_BY_LATER: (&str, &[&str]) = (
 );
 
 /// A forward migration that changes the columns of a table `0001_init` already
-/// creates (VS-8: `webhook_endpoints` gained `audience` and lost its three
-/// secret columns). The statement-level lists above cannot express it: the
-/// generator emits the whole `CREATE TABLE` anew, and the applied one differs
-/// by exactly these columns. `(directory, table, added, dropped)`.
+/// creates (VS-8, VS-8R: `webhook_endpoints` gained `delivery_mode` and
+/// `audience`, and `secret` stopped being required). The statement-level lists
+/// above cannot express it: the generator emits the whole `CREATE TABLE` anew,
+/// and the applied one differs by exactly these columns.
+/// `(directory, table, added, relaxed, constraint prefixes)`.
 ///
-/// Every column definition of `dropped` is removed from the committed
-/// `0001_init`, every one of `added` from the generator's output, and the
-/// migration's `up.sql` must carry `ALTER TABLE <table> DROP COLUMN <column>;`
-/// for each dropped one and, for each added one, an `ADD COLUMN` that spells
-/// the same type (and default) the generator's `CREATE TABLE` line does, with
+/// Every column definition of `added` is removed from the generator's output,
+/// and the migration's `up.sql` must carry an `ADD COLUMN` that spells the same
+/// type (and default) the generator's `CREATE TABLE` line does, with
 /// `ALTER COLUMN <column> SET NOT NULL;` exactly when that line says `NOT NULL`
-/// ([`check_column_carrier`]): a migration that adds `audience` as `VARCHAR`,
-/// or leaves it nullable, no longer agrees with the schema and fails here.
+/// ([`check_column_carrier`]): a migration that adds `delivery_mode` as
+/// `VARCHAR`, or leaves it nullable, no longer agrees with the schema and fails
+/// here.
 ///
-/// The fifth element is the name prefix of the constraints and indexes the
+/// A `relaxed` column keeps its definition on both sides, except that the
+/// migration's `ALTER TABLE <table> ALTER COLUMN <column> DROP NOT NULL;` is
+/// applied to the committed `0001_init` before the comparison
+/// ([`relax_columns`]): the type must still agree, and the generator must now
+/// emit the column nullable. Nothing is dropped: dropping one is
+/// [`DROPPED_BY_LATER`]'s business, and no column of this table is.
+///
+/// The last element lists the name prefixes of the constraints and indexes the
 /// generator emits for those columns (`webhook_endpoints_audience_key`, the
-/// length CHECK). Their statements are taken out of the generator's output too,
-/// and must appear verbatim in the migration ([`split_added`] with the prefix as
-/// a "table" name), so `@unique` or `@db_enforce` cannot change without the
-/// migration following. Delete the entry, and regenerate `0001_init`, when the
-/// migrations are squashed.
-const COLUMNS_CHANGED_BY_LATER: (&str, &str, &[&str], &[&str], &str) = (
+/// length CHECK, the enum CHECK). Their statements are taken out of the
+/// generator's output too, and must appear verbatim in the migration
+/// ([`split_added`] with each prefix as a "table" name), so `@unique`, an enum
+/// or `@db_enforce` cannot change without the migration following. Delete the
+/// entry, and regenerate `0001_init`, when the migrations are squashed.
+const COLUMNS_CHANGED_BY_LATER: (&str, &str, &[&str], &[&str], &[&str]) = (
     "backends/migrations/postgres/0010_sealed_webhooks",
     "webhook_endpoints",
-    &["audience"],
-    &["secret", "prev_secret", "secret_rotated_at"],
-    "webhook_endpoints_audience",
+    &["audience", "delivery_mode"],
+    &["secret"],
+    &[
+        "webhook_endpoints_audience",
+        "webhook_endpoints_delivery_mode",
+    ],
 );
 
 /// Constraints the migration above writes by hand because the schema has no
-/// attribute that makes the generator emit them (`audience <> 'vsms'`:
-/// `@db_enforce` does nothing for a `@regex`). Every other statement the
-/// migration carries under [`COLUMNS_CHANGED_BY_LATER`]'s name prefix must be
-/// one the generator emits, so removing `@unique` or `@db_enforce` from the
-/// schema leaves a statement nothing asks for and fails here, and each name
-/// below must really be in the migration (a live test proves it refuses the
-/// value). Delete an entry when the schema can express it.
-const HAND_WRITTEN_COLUMN_CONSTRAINTS: &[&str] = &["webhook_endpoints_audience_not_vsms_check"];
+/// attribute that makes the generator emit them: `audience <> 'vsms'`
+/// (`@db_enforce` does nothing for a `@regex`) and the three that tie
+/// `delivery_mode` to the columns it decides (a rule across columns, which no
+/// attribute expresses). Every other statement the migration carries under
+/// [`COLUMNS_CHANGED_BY_LATER`]'s name prefixes must be one the generator
+/// emits, so removing `@unique` or `@db_enforce` from the schema leaves a
+/// statement nothing asks for and fails here, and each name below must really
+/// be in the migration (a live test proves it refuses the value). Delete an
+/// entry when the schema can express it.
+const HAND_WRITTEN_COLUMN_CONSTRAINTS: &[&str] = &[
+    "webhook_endpoints_audience_not_vsms_check",
+    "webhook_endpoints_audience_required_for_sealed_check",
+    "webhook_endpoints_delivery_mode_hmac_needs_secret_check",
+    "webhook_endpoints_delivery_mode_sealed_holds_no_secret_check",
+];
 
 /// Removes its temp directory on drop, on every exit path — success,
 /// error-return, or an early `?` — matching the bash version's own
@@ -387,27 +404,67 @@ fn check_added_column(
     Ok(())
 }
 
-/// Checks that [`COLUMNS_CHANGED_BY_LATER`]'s migration drops exactly the
+/// Checks that [`COLUMNS_CHANGED_BY_LATER`]'s migration relaxes exactly the
 /// columns it lists and adds each added column as the generator spells it
 /// (`added_definitions`, from [`column_definitions`]).
 fn check_column_carrier(root: &Path, added_definitions: &[String]) -> Result<(), String> {
-    let (dir, table, _, dropped, _) = COLUMNS_CHANGED_BY_LATER;
+    let (dir, table, _, relaxed, _) = COLUMNS_CHANGED_BY_LATER;
     let carrier = root.join(dir).join("up.sql");
     let text = fs::read_to_string(&carrier).map_err(|e| format!("{}: {e}", carrier.display()))?;
     for definition in added_definitions {
         check_added_column(&text, &carrier, table, definition)?;
     }
-    for column in dropped {
-        let wanted = format!("ALTER TABLE {table} DROP COLUMN {column};");
+    for column in relaxed {
+        let wanted = format!("ALTER TABLE {table} ALTER COLUMN {column} DROP NOT NULL;");
         if !text.lines().any(|line| line.trim() == wanted) {
             return Err(format!(
                 "migrations-current: {} does not contain `{wanted}`, but \
-                 COLUMNS_CHANGED_BY_LATER says it drops {table}.{column}",
+                 COLUMNS_CHANGED_BY_LATER says it makes {table}.{column} nullable",
                 carrier.display()
             ));
         }
     }
     Ok(())
+}
+
+/// `sql` with the `NOT NULL` taken off the definitions of `columns` inside
+/// `CREATE TABLE <table> (`: the committed `0001_init` as the migration that
+/// relaxes them leaves it ([`check_column_carrier`] has already required the
+/// migration to say so). A column that is not `NOT NULL` there is an error, so
+/// the list cannot name one the migration has nothing to relax.
+fn relax_columns(sql: &str, table: &str, columns: &[&str]) -> Result<String, String> {
+    let opening = format!("CREATE TABLE {table} (");
+    let mut inside = false;
+    let mut relaxed = Vec::new();
+    let mut out = Vec::new();
+    for line in sql.lines() {
+        let trimmed = line.trim();
+        if trimmed == opening {
+            inside = true;
+        } else if inside && trimmed == ");" {
+            inside = false;
+        } else if inside
+            && let Some(name) = trimmed.split_whitespace().next()
+            && columns.contains(&name)
+        {
+            let without = line.replacen(" NOT NULL", "", 1);
+            if without != line {
+                relaxed.push(name.to_owned());
+                out.push(without);
+                continue;
+            }
+        }
+        out.push(line.to_owned());
+    }
+    for column in columns {
+        if !relaxed.iter().any(|name| name == column) {
+            return Err(format!(
+                "migrations-current: {table}.{column} is not `NOT NULL` in the committed \
+                 `0001_init`, but COLUMNS_CHANGED_BY_LATER says a later migration relaxes it"
+            ));
+        }
+    }
+    Ok(out.join("\n"))
 }
 
 /// Takes the statements about the columns' constraints and indexes
@@ -416,10 +473,10 @@ fn check_column_carrier(root: &Path, added_definitions: &[String]) -> Result<(),
 /// `up.sql`; the generator's `down` statements are only dropped, because the
 /// migration is forward-only (its `down.sql` says why).
 fn strip_column_statements(root: &Path, f: &str, fresh: &str) -> Result<String, String> {
-    let (dir, _, _, _, prefix) = COLUMNS_CHANGED_BY_LATER;
+    let (dir, _, _, _, prefixes) = COLUMNS_CHANGED_BY_LATER;
     let carrier = root.join(dir).join("up.sql");
     let text = fs::read_to_string(&carrier).map_err(|e| format!("{}: {e}", carrier.display()))?;
-    let (kept, moved) = split_added(fresh, &[prefix]);
+    let (kept, moved) = split_added(fresh, prefixes);
     if f != "up" {
         return Ok(kept);
     }
@@ -441,9 +498,9 @@ fn strip_column_statements(root: &Path, f: &str, fresh: &str) -> Result<String, 
             ));
         }
     }
-    let named = format!("{prefix}_");
+    let named: Vec<String> = prefixes.iter().map(|prefix| format!("{prefix}_")).collect();
     for line in text.lines().map(str::trim) {
-        if line.starts_with("--") || !line.contains(&named) {
+        if line.starts_with("--") || !named.iter().any(|named| line.contains(named.as_str())) {
             continue;
         }
         let generated = moved.iter().any(|block| block.trim() == line);
@@ -452,7 +509,7 @@ fn strip_column_statements(root: &Path, f: &str, fresh: &str) -> Result<String, 
             .any(|name| line.contains(name));
         if !generated && !by_hand {
             return Err(format!(
-                "migrations-current: {} carries a statement about {prefix}_* that the \
+                "migrations-current: {} carries a statement about {prefixes:?} that the \
                  generator does not emit for the current schema (a `@unique` or `@db_enforce` \
                  removed from it?), and that is not in HAND_WRITTEN_COLUMN_CONSTRAINTS:\n{line}",
                 carrier.display()
@@ -505,9 +562,9 @@ fn compare_up_and_down(
         let mut committed = committed;
         fresh = strip_column_statements(root, f, &fresh)?;
         if f == "up" {
-            let (_, table, added, dropped, _) = COLUMNS_CHANGED_BY_LATER;
+            let (_, table, added, relaxed, _) = COLUMNS_CHANGED_BY_LATER;
             check_column_carrier(root, &column_definitions(&fresh, table, added)?)?;
-            committed = without_columns(&committed, table, dropped);
+            committed = relax_columns(&committed, table, relaxed)?;
             fresh = without_columns(&fresh, table, added);
             let later =
                 fs::read_to_string(root.join(LATER_UP)).map_err(|e| format!("{LATER_UP}: {e}"))?;
@@ -718,22 +775,50 @@ mod tests {
     }
 
     #[test]
-    fn a_column_change_is_removed_from_the_side_that_lacks_it_only() {
+    fn an_added_column_is_removed_from_the_side_that_lacks_it_only() {
         let applied = "CREATE TABLE t (\n    id TEXT NOT NULL,\n    secret TEXT NOT NULL,\n    \
-                       prev_secret TEXT,\n    PRIMARY KEY (id)\n);\n";
-        let fresh = "CREATE TABLE t (\n    id TEXT NOT NULL,\n    audience TEXT NOT NULL,\n    \
-                     PRIMARY KEY (id)\n);\n";
-        let a = without_columns(applied, "t", &["secret", "prev_secret"]);
+                       PRIMARY KEY (id)\n);\n";
+        let fresh = "CREATE TABLE t (\n    id TEXT NOT NULL,\n    audience TEXT,\n    \
+                     secret TEXT NOT NULL,\n    PRIMARY KEY (id)\n);\n";
         let b = without_columns(fresh, "t", &["audience"]);
-        assert_eq!(executable_sql(&a), executable_sql(&b));
+        assert_eq!(executable_sql(applied), executable_sql(&b));
         // Another table's column of the same name is not touched.
-        let other = "CREATE TABLE u (\n    secret TEXT\n);\n";
-        assert!(without_columns(other, "t", &["secret"]).contains("secret"));
+        let other = "CREATE TABLE u (\n    audience TEXT\n);\n";
+        assert!(without_columns(other, "t", &["audience"]).contains("audience"));
         // A column the list does not name still differs.
-        let drifted = "CREATE TABLE t (\n    id TEXT NOT NULL,\n    audience TEXT NOT NULL,\n    \
-                       extra TEXT,\n    PRIMARY KEY (id)\n);\n";
+        let drifted = "CREATE TABLE t (\n    id TEXT NOT NULL,\n    audience TEXT,\n    \
+                       extra TEXT,\n    secret TEXT NOT NULL,\n    PRIMARY KEY (id)\n);\n";
         let c = without_columns(drifted, "t", &["audience"]);
-        assert_ne!(executable_sql(&a), executable_sql(&c));
+        assert_ne!(executable_sql(applied), executable_sql(&c));
+    }
+
+    #[test]
+    fn a_relaxed_column_loses_its_not_null_on_the_committed_side_only() {
+        let applied = "CREATE TABLE t (\n    id TEXT NOT NULL,\n    secret TEXT NOT NULL,\n    \
+                       PRIMARY KEY (id)\n);\n";
+        let fresh = "CREATE TABLE t (\n    id TEXT NOT NULL,\n    secret TEXT,\n    \
+                     PRIMARY KEY (id)\n);\n";
+        let relaxed = relax_columns(applied, "t", &["secret"]).unwrap();
+        assert_eq!(executable_sql(&relaxed), executable_sql(fresh));
+        // `id` stays required: only the named column is relaxed.
+        assert!(relaxed.contains("id TEXT NOT NULL"));
+        // A schema that went back to `String` (required) no longer agrees.
+        let required = fresh.replace("secret TEXT,", "secret TEXT NOT NULL,");
+        assert_ne!(executable_sql(&relaxed), executable_sql(&required));
+        // Another type is not hidden by the relaxation.
+        let retyped = fresh.replace("secret TEXT,", "secret VARCHAR,");
+        assert_ne!(executable_sql(&relaxed), executable_sql(&retyped));
+        // A column the committed side already allows NULL in has nothing to relax.
+        assert!(relax_columns(fresh, "t", &["secret"]).is_err());
+        // Another table's column of the same name is not touched, and so is an error.
+        assert!(
+            relax_columns(
+                "CREATE TABLE u (\n    secret TEXT NOT NULL\n);",
+                "t",
+                &["secret"]
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -791,11 +876,13 @@ mod tests {
         let fresh = "CREATE TABLE t (\n    audience TEXT NOT NULL\n);\n\n\
                      CREATE UNIQUE INDEX webhook_endpoints_audience_key ON webhook_endpoints (audience);\n\n\
                      ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_audience_length_check CHECK (length(audience) BETWEEN 1 AND 255);\n\n\
+                     ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_delivery_mode_enum_check CHECK (delivery_mode IN ('sealed', 'hmac'));\n\n\
                      ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_app_id_fkey FOREIGN KEY (app_id) REFERENCES apps (id);";
-        let (kept, moved) = split_added(fresh, &[COLUMNS_CHANGED_BY_LATER.4]);
-        assert_eq!(moved.len(), 2, "{moved:?}");
+        let (kept, moved) = split_added(fresh, COLUMNS_CHANGED_BY_LATER.4);
+        assert_eq!(moved.len(), 3, "{moved:?}");
         assert!(kept.contains("webhook_endpoints_app_id_fkey"));
         assert!(!kept.contains("webhook_endpoints_audience_"));
+        assert!(!kept.contains("webhook_endpoints_delivery_mode_"));
     }
 
     #[test]

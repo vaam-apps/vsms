@@ -47,11 +47,12 @@ pub struct WorkerContext {
     /// resolves the one a routed message needs by `Provider.key`; see
     /// [`ProviderRegistry`]'s own doc.
     pub providers: ProviderRegistry,
-    /// Seals the `hooks` role's deliveries under vsms's envelope signing key
-    /// (VS-8). `Some` exactly when this process was given the key
-    /// (`--envelope-signing-key-file`); `backends/apps/sms-worker` refuses to
-    /// start `hooks` without it, and [`hooks::tick`] claims nothing when it is
-    /// absent. No other role reads it, so a `dispatch`-only node needs no key.
+    /// Seals a `sealed` webhook endpoint's deliveries under vsms's envelope
+    /// signing key (VS-8). `Some` exactly when this process was given the key
+    /// (`--envelope-signing-key-file`). An `hmac` endpoint (VS-8R) needs no key
+    /// and is delivered without one; with `None` a `sealed` endpoint's attempt
+    /// fails as an ordinary retryable failure that names the missing key.
+    /// No other role reads it, so a `dispatch`-only node needs no key.
     pub webhook_sealer: Option<sms_webhook::Sealer>,
 }
 
