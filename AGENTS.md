@@ -4572,6 +4572,31 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   tokenizer that leaves `'...'` (with `''` and the `E'...'` backslash escape), `"..."` and `$tag$...$tag$` text alone; a block comment between tokens is
   the space it is in SQL. The unit tests hold both halves (a commented-out constraint is neither declared nor carried; a literal
   holding `--` or `/*` survives) and each arm was sabotaged to fail one.
+- **Review round 5 (the final review of #447, merged as `47b8f1a`).** Five follow-ups, one commit each.
+  (M1) A keyless `hooks` worker's claim was `EXISTS (... delivery_mode = 'hmac')` on the attempt's endpoint, which Postgres cannot
+  push into `webhook_due_idx`: it read that index in time order and looked every entry's endpoint up, the whole sealed backlog
+  when there are few `hmac` rows (200 000 due sealed rows and 5 `hmac` ones: 13 929 buffers, 102 ms a poll; 2 000 000: 64 253,
+  877 ms). The claim now reads the active, circuit-closed `hmac` endpoints first and asks `webhook_endpoint_due_idx (endpoint_id,
+  next_attempt_at) WHERE state IN ('pending','failed')` (migration `0011`) for each one's due attempts, merged oldest first:
+  4 buffers an endpoint at either size. The suggested `endpoint_id IN (...)` was measured and rejected: even with the new index
+  the planner walked `webhook_due_idx` and filtered (64 207 buffers, 604 ms at 2 000 000), because its statistics span the whole
+  table, history included, so an endpoint with a long past looks like a few percent of the rows; an equality leaves it no such
+  plan. The reclaim read needs no new index (`webhook_attempts_lease_reclaim_idx` holds `delivering` rows only, so it costs what
+  is in flight, not the backlog). `claim.md` has the table and the reasoning; the commit message has the raw figures.
+  Guarded by `a_keyless_claim_never_reads_the_sealed_backlogs_index_entries` (200 000 due sealed rows; reads
+  `pg_stat_user_indexes` after the claim's connections close, so it needs an exited backend to have flushed its counters;
+  it failed with 200 001 entries read on the old claim), the migration test, and
+  `a_keyless_claim_takes_the_oldest_due_attempts_across_hmac_endpoints` for the merge. A partial index is not something the
+  generator emits and `0002_bootstrap` is generated from `docs/architecture.md` §2.10's SQL block, so `0011` is described in prose
+  there and is not in that block (`bootstrap-sql-check` fails otherwise).
+  (L1) `deliver_one` re-reads the endpoint after the claim, so an operator's `hmac` to `sealed` switch in between made the
+  keyless worker fail an attempt it never sent (counted, breaker fed, `dead` at `maxAttempts` 1). It leaves the row `delivering`
+  now (`cannot_serve`), like a vanished endpoint: the lease expires, a keyless reclaim skips it, a keyed worker resumes it
+  uncounted. `hooks::deliver_claimed` is the seam between claim and delivery that the live test uses. (N1) The sealed-backlog
+  warning counts active endpoints only; an open circuit still counts (a pause that ends by itself, and a relation filter has no
+  comparison on an optional timestamp). (N2) "wait, uncounted" is "wait without spending an attempt", everywhere it was. (N3)
+  The CHECK on a sealed URL is a pattern; it is the pattern **together with `@uri`** that never accepts what the sealer refuses,
+  and a row written with `psql` can still reach the sealer as an ordinary `Retryable`.
 - **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,
   and a signature cannot survive that. Its nonce memory is per process and cannot be replaced (the check runs in WebAssembly),
   unlike the Rust SDK's `with_nonce_store`; the README says so.
