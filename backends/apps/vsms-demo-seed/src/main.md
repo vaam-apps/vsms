@@ -79,3 +79,5 @@ uses: safe to run on every `docker compose up`. Requires the `Provider`
 row named by `--provider-key` to already exist (i.e. `sms-gateway
 seed-dispatch` has already run) — `SenderIdRegistration.providerId` is a
 real foreign key.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

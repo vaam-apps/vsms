@@ -20,3 +20,5 @@ that subcommand's own file — `seed_dispatch::seed_dispatch_core` and
 `provision_user::create_console_user_if_absent` are the two exceptions,
 `pub(crate)` because `bootstrap::bootstrap_command` reuses them directly
 rather than re-deriving their logic (see `bootstrap.rs`'s own doc for why).
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

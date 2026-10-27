@@ -100,7 +100,7 @@ this example touches a header or does crypto.
 
 ## Layout
 
-```
+```text
 src/
   index.ts                        entry point: starts the receiver, runs the local emitter, prints a summary
   server.ts                       the Express app: raw-body capture, fast ack, off-path processing
