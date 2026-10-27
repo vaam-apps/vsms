@@ -456,8 +456,8 @@ jobs:
     if: needs.changes.outputs.deny == 'true'
 
     # #174: this check existed (`just deny`, `deny.toml`) but nothing in CI
-    # ever ran it, so RUSTSEC-2023-0071 (Marvin Attack, in `rsa` via
-    # authkestra's RS256 path) had been failing silently for however long it
+    # ever ran it, so RUSTSEC-2023-0071 (Marvin Attack, in `rsa`, which authkestra's RS256 path
+    # pulled in then; only `sms-fake-aws` links it now) had been failing silently for however long it
     # was present. Same shape as the pre-#118 problem of live suites nobody
     # ran. `deny.toml`'s `[advisories] ignore` entry for that one advisory
     # carries the reachability analysis inline — this job fails on any
@@ -730,36 +730,6 @@ jobs:
         run: pnpm install --ignore-workspace --frozen-lockfile && node --test
         working-directory: examples/node/webhook-receiver
 
-      # `examples/node/demo-app` — the demo showcase's own evaluator (the
-      # `demo-app` compose service) — carries a byte-for-byte copy of
-      # `signature.ts`/`cross-language-vectors.test.ts` from the
-      # webhook-receiver step just above, per that package's own README.
-      # Gate it exactly the same way, plus a typecheck (this package has
-      # no live-gateway run in CI — see `just demo`/`just e2e-integration`
-      # for that — so a compile error is the one class of regression this
-      # step can catch on its own): `verbatim-copy.test.ts` (part of `node
-      # --test` below) is what actually proves the copy hasn't drifted
-      # from the file the step above just tested.
-      # `tsc` is invoked from node_modules directly rather than via `pnpm
-      # run typecheck`: pnpm 11 verifies dependencies before every `run`,
-      # and from a directory under the repo root — without
-      # `--ignore-workspace` — that check resolves against the ROOT
-      # workspace lockfile, which knows nothing about this standalone
-      # package, and fails with ERR_PNPM_OUTDATED_LOCKFILE. Found on the
-      # first CI run of this step; the install line above is unaffected
-      # because it passes the flag.
-      - name: Demo app — typecheck and cross-language signature vectors
-        run: |
-          # --trust-lockfile: the lockfile here is committed and reviewed, and
-          # pnpm's 24h quarantine would otherwise refuse a freshly published
-          # first-party version. Under --ignore-workspace the root
-          # minimumReleaseAgeExclude is silently unread, so an entry there does
-          # nothing — the Dockerfile already uses this flag for the same reason.
-          pnpm install --ignore-workspace --frozen-lockfile --trust-lockfile
-          node_modules/.bin/tsc --noEmit
-          node --test
-        working-directory: examples/node/demo-app
-
       # NOT `--ignore-workspace`, unlike the webhook-receiver step above.
       # That example is deliberately outside `pnpm-workspace.yaml` so an
       # integrator can copy it out and run it standalone; this SDK is a real
@@ -800,6 +770,41 @@ jobs:
           pnpm --filter @vaam-apps/vsms-node run test
           npm pack --dry-run
         working-directory: sdks/node/vsms-sdk-node
+
+      # `examples/node/demo-app` — the demo showcase's own evaluator (the
+      # `demo-app` compose service) — carries a byte-for-byte copy of
+      # `signature.ts`/`cross-language-vectors.test.ts` from the
+      # webhook-receiver step just above, per that package's own README.
+      # Gate it exactly the same way, plus a typecheck (this package has
+      # no live-gateway run in CI — see `just demo`/`just e2e-integration`
+      # for that — so a compile error is the one class of regression this
+      # step can catch on its own): `verbatim-copy.test.ts` (part of `node
+      # --test` below) is what actually proves the copy hasn't drifted
+      # from the file the step above just tested.
+      #
+      # It sits AFTER the Node SDK step below, not beside the webhook receiver:
+      # it depends on `@vaam-apps/vsms-node` by path (`file:`), and pnpm copies a
+      # directory dependency at install time, so the SDK's `dist/` and `wasm/`
+      # must already be built when this step installs.
+      # `tsc` is invoked from node_modules directly rather than via `pnpm
+      # run typecheck`: pnpm 11 verifies dependencies before every `run`,
+      # and from a directory under the repo root — without
+      # `--ignore-workspace` — that check resolves against the ROOT
+      # workspace lockfile, which knows nothing about this standalone
+      # package, and fails with ERR_PNPM_OUTDATED_LOCKFILE. Found on the
+      # first CI run of this step; the install line above is unaffected
+      # because it passes the flag.
+      - name: Demo app — typecheck and cross-language signature vectors
+        run: |
+          # --trust-lockfile: the lockfile here is committed and reviewed, and
+          # pnpm's 24h quarantine would otherwise refuse a freshly published
+          # first-party version. Under --ignore-workspace the root
+          # minimumReleaseAgeExclude is silently unread, so an entry there does
+          # nothing — the Dockerfile already uses this flag for the same reason.
+          pnpm install --ignore-workspace --frozen-lockfile --trust-lockfile
+          node_modules/.bin/tsc --noEmit
+          node --test
+        working-directory: examples/node/demo-app
 
   rules:
     name: R1, R2 and R6 — engineering rules

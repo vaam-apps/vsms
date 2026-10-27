@@ -12,8 +12,10 @@
  *
  * What this proves, end to end, over real HTTP, against real containers:
  *
- *   1. `private_key_jwt` token acquisition works (`@vaam-apps/vsms-node`,
- *      the same SDK an external integrator would use — not a shortcut).
+ *   1. A signed request is accepted (`@vaam-apps/vsms-node`, the same SDK
+ *      an external integrator would use — not a shortcut): every request is
+ *      a COSE_Sign1 envelope under this app's own Ed25519 key, and every
+ *      answer is verified against the gateway's two pinned keys.
  *   2. `sendMessage` accepts a real OTP send.
  *   3. The message is actually routed, submitted (to `sms-fake-orange`,
  *      never a real carrier — see that binary's own module doc), and
@@ -34,25 +36,22 @@
  * doc comment for why (a sabotaged inline predicate passed every test
  * this package had before the extraction).
  *
- * # Credential reuse, deliberately not a second provisioned client
+ * # Its own key
  *
- * This process authenticates as the *same* machine credential
- * `compose.dev.yaml`/`compose.demo.yaml`'s own `provision-client` step
- * already provisions for the admin console (`vsms_*_secrets` volume,
- * `/secrets/console-client-key.pem` + `/secrets/console-client-id`) — not
- * a second, separately-provisioned `AppClient`. That credential already
- * carries `sms:send`/`sms:read` (among other scopes `admin` needs), so a
- * second client would duplicate provisioning for no capability this one
- * lacks. Reusing it also means a real evaluator watching `docker compose
- * logs -f` sees the *same* client id show up in the admin console's own
- * Messages screen, not an unexplained second identity.
+ * This process signs as its own `AppClient`, registered by the compose
+ * stacks' `register-demo-app` step from the public half of
+ * `dev-keys/demo-app.pem` (`just dev-keys` mints it), with the two scopes it
+ * uses, `sms:send` and `sms:read`. The gateway's two public sealing keys it
+ * pins come from `dev-keys/server-keys.txt`, the same two values
+ * `sms-gateway server-keys` prints. Nothing is acquired or refreshed: there is
+ * no token.
  */
 
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Message, MessageState } from "@vaam-apps/vsms-node";
-import { SdkError, VsmsClient } from "@vaam-apps/vsms-node";
+import { parseServerKeysReport, SdkError, VsmsClient } from "@vaam-apps/vsms-node";
 import type { Request, Response } from "express";
 import express from "express";
 import { decide } from "./decision.ts";
@@ -62,7 +61,9 @@ import { verifySignature } from "./signature.ts";
 // Configuration — every value has a default matching what
 // compose.dev.yaml/compose.demo.yaml's own `demo-app` service passes, so a
 // human can also just `cd examples/node/demo-app && pnpm install && pnpm
-// start` against a `just demo` stack with nothing set beyond VSMS_ISSUER.
+// start` against a `just demo` stack with nothing set beyond VSMS_BASE_URL
+// (the container-network address is the default; a host process points it at
+// the published port) and the two key paths.
 // ---------------------------------------------------------------------------
 
 function envInt(name: string, fallback: number): number {
@@ -79,10 +80,9 @@ function readFileTrimmed(path: string): string {
   return readFileSync(path, "utf8").trim();
 }
 
-const ISSUER = (process.env.VSMS_ISSUER ?? "http://sms-gateway:8080").replace(/\/+$/, "");
-const SCOPE = process.env.VSMS_SCOPE ?? "sms:send sms:read";
-const CLIENT_ID_PATH = process.env.VSMS_CLIENT_ID_PATH ?? "/secrets/console-client-id";
-const PRIVATE_KEY_PATH = process.env.VSMS_PRIVATE_KEY_PATH ?? "/secrets/console-client-key.pem";
+const BASE_URL = (process.env.VSMS_BASE_URL ?? "http://sms-gateway:8080").replace(/\/+$/, "");
+const SIGNING_KEY_PATH = process.env.VSMS_SIGNING_KEY_PATH ?? "/run/demo/demo-app.pem";
+const SERVER_KEYS_PATH = process.env.VSMS_SERVER_KEYS_PATH ?? "/run/demo/server-keys.txt";
 
 const WEBHOOK_PORT = envInt("DEMO_WEBHOOK_PORT", 9000);
 const WEBHOOK_SECRET_PATH = process.env.DEMO_WEBHOOK_SECRET_PATH ?? "/secrets/webhook-secret";
@@ -226,19 +226,11 @@ function startWebhookServer(port: number, secrets: readonly string[], events: Re
 // ---------------------------------------------------------------------------
 
 /**
- * `@vaam-apps/vsms-node` accepts no `fetch` override and no `signal`/timeout
- * option anywhere in its public API — checked directly against
- * `sdks/node/vsms-sdk-node/src/{client,token}.ts`, not assumed: every
- * `fetch(...)` call in that package (the token exchange, `sendMessage`,
- * `getMessage`, `previewMessage`) is bare, with no way for a caller to
- * bound it. Without this wrapper, a genuinely stalled gateway would
- * block a single SDK call for however long undici's own default request
- * timeout is (~300s), regardless of `DEMO_TIMEOUT_MS` — this package's
- * own documented overall budget would be silently meaningless the
- * moment one request hangs rather than erroring. `Promise.race`d
- * against the remaining deadline is the workaround available without
- * the SDK's cooperation; a real fix (an SDK-level `signal`/timeout
- * option) is being filed upstream separately, not attempted here.
+ * The SDK bounds each call with its own `timeoutMs` (30s by default) but knows
+ * nothing of this process's overall `DEMO_TIMEOUT_MS` budget, and a sealed call
+ * is never retried by the SDK. `Promise.race`d against the remaining deadline,
+ * a call started late in the budget cannot outlive it: a client-side bound, not
+ * a cancellation of the request.
  */
 function withDeadline<T>(promise: Promise<T>, deadlineMs: number, label: string): Promise<T> {
   const remainingMs = Math.max(deadlineMs - Date.now(), 0);
@@ -247,8 +239,7 @@ function withDeadline<T>(promise: Promise<T>, deadlineMs: number, label: string)
       reject(
         new Error(
           `${label} exceeded the remaining ${remainingMs}ms budget (deadline reached) — ` +
-            "@vaam-apps/vsms-node's fetch calls carry no AbortSignal, so this is a client-side " +
-            "bound, not a real request cancellation",
+            "this is a client-side bound on the overall budget, not a cancellation of the request",
         ),
       );
     }, remainingMs);
@@ -332,7 +323,6 @@ async function pollUntilTerminal(
 
 async function main(): Promise<number> {
   const secret = process.env.DEMO_WEBHOOK_SECRET ?? readFileTrimmed(WEBHOOK_SECRET_PATH);
-  const clientId = process.env.VSMS_CLIENT_ID ?? readFileTrimmed(CLIENT_ID_PATH);
   // Both the current and previous secret are accepted, per §4.4's own
   // rotation-overlap design — see WEBHOOK_PREV_SECRET's own comment for
   // why nothing in the seeded stack drives this today.
@@ -343,16 +333,14 @@ async function main(): Promise<number> {
 
   const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS;
 
-  console.log(
-    `[demo-app] issuer=${ISSUER} clientId=${clientId} to=${DEMO_TO} senderId=${DEMO_SENDER_ID}`,
-  );
+  console.log(`[demo-app] baseUrl=${BASE_URL} to=${DEMO_TO} senderId=${DEMO_SENDER_ID}`);
 
-  const client = VsmsClient.privateKeyJwt({
-    issuer: ISSUER,
-    clientId,
-    keyPath: PRIVATE_KEY_PATH,
-    scope: SCOPE,
+  const client = new VsmsClient({
+    baseUrl: BASE_URL,
+    keyPath: SIGNING_KEY_PATH,
+    serverKeys: parseServerKeysReport(readFileTrimmed(SERVER_KEYS_PATH)),
   });
+  console.log(`[demo-app] signing as the registered key ${client.publicKey}`);
 
   let exitCode = 1;
   try {

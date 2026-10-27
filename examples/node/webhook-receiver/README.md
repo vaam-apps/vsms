@@ -28,8 +28,8 @@ The signature scheme itself was already confirmed independently, and still
 is: `src/cross-language-vectors.test.ts` checks this file's `verifySignature`
 against fixtures computed by a *third* implementation (`openssl dgst -sha256
 -hmac`), so three implementations agree rather than one asserting.
-`docs/architecture.md` §4 is explicit that request signing was dropped for
-*inbound* API calls in favour of `private_key_jwt`; that decision says
+`docs/architecture.md` §4 is explicit that inbound API calls are sealed with
+the caller's own key (§4.0), not signed with a shared secret; that decision says
 nothing about *this*, the outbound signature vsms attaches to a webhook it
 sends you — §4.4 is the relevant section.
 

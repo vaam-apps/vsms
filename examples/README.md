@@ -26,9 +26,8 @@ key, and the gateway stores only its public half.
 `@vaam-apps/vsms-node` under `sdks/node/vsms-sdk-node`, [#242](https://github.com/vymalo/vsms/issues/242))
 instead of hand-rolling it - see each SDK's own docs for what it owns (the
 sealing and the opening) and this file's own "Design decisions" section
-below. `examples/node/demo-app` is the exception, for now: it still depends on
-a token-era release of the Node SDK and cannot reach a gateway until it signs
-(it is not part of VS-5b, which moved the operator console).
+below. `examples/node/demo-app` depends on the same SDK by path rather than
+from npm, and its image builds the SDK from this checkout.
 
 ## Layout
 
