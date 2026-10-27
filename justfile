@@ -109,6 +109,7 @@ fmt:
 deny:
 	cargo deny check
 	cargo deny --manifest-path sdks/rust/vsms-sdk-rust/Cargo.toml check
+	cargo deny --manifest-path sdks/rust/vsms-sdk-wasm/Cargo.toml check
 	cargo deny --manifest-path ci/e2e-integration/vsms-e2e-integration/Cargo.toml check
 	cargo deny --manifest-path examples/rust/sms-send/Cargo.toml check
 	cargo deny --manifest-path deploy/backup-tool/Cargo.toml check
@@ -135,6 +136,7 @@ all-checks: lint test
 	{{_cargo}} xtask r6
 	{{_cargo}} xtask node-sdk-types-check
 	{{_cargo}} xtask sdk-schema-check
+	{{_cargo}} xtask sdk-parity-check
 	{{_cargo}} xtask bootstrap-sql-check
 	{{_cargo}} xtask migrations-current
 
@@ -167,10 +169,10 @@ workflow-paths:
 docs-drift:
 	{{_cargo}} xtask docs-drift
 
-# The cratestack pin is written in five places (Cargo.toml twice, the two
+# The cratestack pin is written in six places (Cargo.toml twice, the three
 # workspace-excluded client manifests, ci/runner/Dockerfile's ARG default);
 # the Dockerfile copy drifted once (0.8.10 against a 0.11.0 pin) and just ci
-# built a runner its own first step then refused. Four are exact; the fifth,
+# built a runner its own first step then refused. Five are exact; the sixth,
 # sdks/rust/vsms-sdk-rust, is the one published library here and carries a
 # `~` range instead — its floor still has to track the pin, but an exact
 # requirement in a published library vetoes every consumer's own patch
@@ -192,6 +194,42 @@ r6:
 # The Rust SDK's vendored schema.cstack must match schemas/vsms.cstack
 sdk-schema-check:
 	{{_cargo}} xtask sdk-schema-check
+
+# The Rust and Node SDKs bind the same bytes: one audience everywhere, one
+# operation table (the wasm crate expands the Rust SDK's vendored schema)
+sdk-parity-check:
+	{{_cargo}} xtask sdk-parity-check
+
+# Installs the `wasm-bindgen` command-line tool at the version
+# sdks/rust/Cargo.lock pins for the crate, if the one on PATH is not that, and
+# the wasm32 target. CI and `just ci` run this, not a copy of it, so the
+# version has one source. `cargo install` and not a prebuilt download: the
+# tool and the crate agree on a private interface, and a download pinned
+# anywhere but the lock is a second place for the version to drift from.
+wasm-tools:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	wanted="$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/version = |"/, ""); print; exit}' sdks/rust/Cargo.lock)"
+	if command -v wasm-bindgen >/dev/null 2>&1 && [ "$(wasm-bindgen --version | awk '{print $2}')" = "$wanted" ]; then
+		echo "wasm-tools: wasm-bindgen $wanted is installed"
+	else
+		cargo install wasm-bindgen-cli --locked --version "$wanted" --force
+	fi
+	rustup target add wasm32-unknown-unknown
+
+# The Node SDK's sealing module and the Rust crate it is built from.
+#
+# `@vaam-apps/vsms-node` does not implement the signed transport in
+# TypeScript: it calls `sdks/rust/vsms-sdk-wasm` (the Rust SDK's own sealing
+# path over cratestack's envelope), compiled to WebAssembly and wrapped for
+# Node by `wasm-bindgen`. `just wasm-tools` installs what this needs.
+wasm-build:
+	bash sdks/node/vsms-sdk-node/scripts/build-wasm.sh
+
+# The same crate with its `responder` feature on: cratestack's server
+# envelope, which the Node SDK's tests run against. Not shipped.
+wasm-build-test:
+	bash sdks/node/vsms-sdk-node/scripts/build-wasm.sh --responder
 
 # 0001_init must match what `cratestack migrate diff` produces from the
 # current schema.cstack. Needs a `cratestack` CLI on PATH, version-locked
@@ -621,7 +659,7 @@ ci:
 
 # The fast-iteration subset: everything in `ci` except the live-Postgres
 # suites (step 14, the slowest single step by a wide margin) and the JS
-# typecheck+build+test (steps 18-19, skipped together — turbo.json's own
+# typecheck+build+test (steps 18-19, skipped together — turbo.jsonc's own
 # "test" task depends on "build", so skipping only the build step saves
 # nothing; `pnpm turbo run test` would just trigger the identical build as
 # one of its own dependency tasks). Good for "did I break something
@@ -710,6 +748,18 @@ ci-inner:
 	  && cargo test \
 	  && ( cargo tree -i aws-lc-rs && exit 1 || true ) \
 	  && cargo publish --dry-run --allow-dirty )
+	# The Node SDK's sealing module (VS-7): the crate `@vaam-apps/vsms-node`
+	# loads as WebAssembly. Linted for the host, for wasm32 (where the
+	# JavaScript surface, which the host build does not compile, lives) and
+	# with the test-only `responder` feature; its native tests run against
+	# cratestack's server envelope. Mirrors ci.yml's `rust` job.
+	( cd sdks/rust/vsms-sdk-wasm \
+	  && rustup target add wasm32-unknown-unknown \
+	  && cargo check --locked --all-targets \
+	  && cargo clippy --all-targets -- -D warnings \
+	  && cargo clippy --target wasm32-unknown-unknown -- -D warnings \
+	  && cargo clippy --target wasm32-unknown-unknown --features responder -- -D warnings \
+	  && cargo test )
 
 	step 6 23 "Examples (Rust) — check, clippy"
 	( cd examples/rust && cargo check --all-targets && cargo clippy --all-targets -- -D warnings )
@@ -717,13 +767,14 @@ ci-inner:
 	step 7 23 "Backup tool (deploy/backup-tool) — check, clippy, test"
 	( cd deploy/backup-tool && cargo check --all-targets && cargo clippy --all-targets -- -D warnings && cargo test )
 
-	step 8 23 "cargo deny — advisories, bans, licenses, sources (all five manifests)"
+	step 8 23 "cargo deny — advisories, bans, licenses, sources (all six manifests)"
 	just deny
 
 	step 9 23 "R1/R2/R6 and drift guards (cargo xtask)"
 	{{_cargo}} xtask no-raw-sqlx
 	{{_cargo}} xtask parity
 	{{_cargo}} xtask sdk-schema-check
+	{{_cargo}} xtask sdk-parity-check
 	{{_cargo}} xtask workflow-paths
 	{{_cargo}} xtask cratestack-pin-check
 	{{_cargo}} xtask release-versions
@@ -773,8 +824,12 @@ ci-inner:
 		{{_cargo}} test --workspace --no-fail-fast -- --ignored
 	fi
 
-	step 15 23 "pnpm install (workspace)"
+	step 15 23 "pnpm install (workspace), and the wasm toolchain the Node SDK builds with"
 	pnpm install --frozen-lockfile
+	# The Node SDK's signed transport is Rust compiled to WebAssembly: its
+	# `build` (which `pnpm turbo run build` below runs) needs `wasm-bindgen` at
+	# the version sdks/rust/Cargo.lock pins, and the wasm32 target.
+	just wasm-tools
 
 	step 16 23 "Biome (format + lint)"
 	pnpm biome ci .
@@ -783,7 +838,7 @@ ci-inner:
 	just client-check
 
 	# Steps 18 and 19 are skipped together under VSMS_CI_QUICK, not
-	# independently — found in review: turbo.json's own "test" task
+	# independently — found in review: turbo.jsonc's own "test" task
 	# `dependsOn: ["build"]`, so skipping only step 18 saves nothing at
 	# all. `pnpm turbo run test` would simply trigger the identical build
 	# as one of its own dependency tasks, just folded silently into step
@@ -815,9 +870,11 @@ ci-inner:
 	( cd examples/node/demo-app && pnpm install --ignore-workspace --frozen-lockfile && node_modules/.bin/tsc --noEmit && node --test )
 
 	step 22 23 "Official Node SDK (@vaam-apps/vsms-node) — build, typecheck, test, pack dry-run"
+	# `pnpm test` also builds the test-only responder module the suites run against.
 	pnpm --filter @vaam-apps/vsms-node run build
 	pnpm --filter @vaam-apps/vsms-node run typecheck
-	( cd sdks/node/vsms-sdk-node && node --test && npm pack --dry-run )
+	pnpm --filter @vaam-apps/vsms-node run test
+	( cd sdks/node/vsms-sdk-node && npm pack --dry-run )
 
 	step 23 23 "Mermaid diagrams parse (no browser)"
 	( cd ci/mermaid-parse && npm ci )

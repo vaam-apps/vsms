@@ -3,35 +3,36 @@
 Runnable, copy-pasteable examples of the thing nothing else in this repo
 demonstrates: **a third-party backend calling vsms over real HTTP.**
 `backends/crates/sms-api/examples/send_test_message.rs` calls
-`Procedures::send_message` in-process — useful for seeding fixtures, but it
-never proves the `private_key_jwt` token exchange or the REST surface an
-actual integrator uses. These do. See
-[#149](https://github.com/vymalo/vsms/issues/149).
+`Procedures::send_message` in-process - useful for seeding fixtures, but it
+never proves the signed transport or the REST surface an actual integrator
+uses. These do. See [#149](https://github.com/vymalo/vsms/issues/149).
 
 Both examples do the identical, real thing, end to end:
 
-1. Read the PEM `sms-gateway provision-client` wrote.
-2. Sign an RFC 7523 §3 `private_key_jwt` client assertion.
-3. Exchange it at `POST {issuer}/token` for a `client_credentials` access
-   token.
-4. Call `POST {issuer}/$procs/sendMessage` with that Bearer token.
-5. Read the message back with `GET {issuer}/messages/{id}` and print its
-   state.
+1. Read the Ed25519 key (PKCS#8 PEM) and the gateway's two pinned public keys
+   (`sms-gateway server-keys`' output).
+2. Seal `POST {base-url}/$procs/sendMessage` in a COSE_Sign1 envelope signed
+   with the key, bound to the route, the audience `vsms` and a fresh nonce.
+3. Open the gateway's answer against the pinned keys. An answer that is not
+   sealed, or does not verify, is an error whatever its status.
+4. Seal and open `GET {base-url}/messages/{id}` to read the message back and
+   print its state.
 
-Both mirror `frontends/packages/gateway/src/token.ts` — the admin console's own
-token acquisition — for steps 1-3, rather than inventing a second
-interpretation of the same exchange.
+There is no token exchange and nothing to refresh; the only credential is the
+key, and the gateway stores only its public half.
 
-**Both examples now do steps 1-3 by depending on official SDKs**
+**Both examples do all of that by depending on official SDKs**
 (`vsms-sdk-rust` under `sdks/rust/vsms-sdk-rust`, [#171](https://github.com/vymalo/vsms/issues/171);
 `@vaam-apps/vsms-node` under `sdks/node/vsms-sdk-node`, [#242](https://github.com/vymalo/vsms/issues/242))
-instead of hand-rolling them — see each SDK's own docs for what it
-owns (the `private_key_jwt` credential lifecycle) and this file's own
-"Design decisions" section below for what that did to each example's size.
+instead of hand-rolling it - see each SDK's own docs for what it owns (the
+sealing and the opening) and this file's own "Design decisions" section
+below. `examples/node/demo-app` is the exception, for now: it still depends on
+a token-era release of the Node SDK and cannot reach a gateway until it signs
+(VS-5b).
 
 ## Layout
 
-```
+```text
 examples/
 ├── README.md              this file — the only doc either example needs
 ├── rust/                  a separate Cargo workspace (own [workspace], root
@@ -72,62 +73,69 @@ Both are genuinely separate from the product's own workspaces:
 
 ## Running either example
 
-Both need a live gateway and a provisioned credential. The fastest path is
-`just demo` from the repo root (see `docs/runbooks/getting-started.adoc`),
-which brings up a scratch Postgres, `sms-gateway`, `sms-worker`,
-`sms-fake-orange` (an impersonation of Orange Cameroon — no real SMS is
-ever sent), and prints/writes a provisioned client at
-`.demo/console-client-key.pem`. `sms-gateway routes` needs no database and
-is useful for sanity-checking the route surface these examples call.
+Both need a live gateway and a registered key. The fastest path is `just
+demo` from the repo root (see `docs/runbooks/getting-started.adoc`), which
+brings up a scratch Postgres, `sms-gateway`, `sms-worker`, `sms-fake-orange`
+(an impersonation of Orange Cameroon - no real SMS is ever sent). `sms-gateway
+routes` needs no database and is useful for sanity-checking the route surface
+these examples call.
 
-If you'd rather provision your own client by hand against any running
-gateway:
+Register your own key against any running gateway:
 
 ```bash
-./target/debug/sms-gateway provision-client \
-  --app-id <an existing, active App.id> \
-  --label "integration example" \
-  --scope sms:send --scope sms:read \
-  --key-out /path/to/client-key.pem
+openssl genpkey -algorithm ed25519 -out vsms-signing-key.pem
+./target/debug/sms-gateway register-client \
+  --app <an existing App.slug> \
+  --public-key <the public key the example's --print-public-key printed> \
+  --scope sms:send --scope sms:read
+./target/debug/sms-gateway server-keys \
+  --envelope-signing-key-file current.pem \
+  --envelope-next-signing-key-file next.pem > server-keys.txt
 ```
 
-prints `provisioned client: <clientId>` and writes the private key once,
-`0600`, to `--key-out`.
+`register-client` stores the public half only; the private key never leaves
+you and there is nothing to return once.
 
 ### Rust
 
 ```bash
 cd examples/rust
+cargo run -p vsms-example-send -- --print-public-key --signing-key-path vsms-signing-key.pem
 cargo run -p vsms-example-send -- \
-  --issuer http://127.0.0.1:8080 \
-  --client-id <clientId provision-client printed> \
-  --private-key-path /path/to/client-key.pem \
+  --base-url http://127.0.0.1:8080 \
+  --signing-key-path vsms-signing-key.pem \
+  --server-keys-path server-keys.txt \
   --to +237677123456 \
   --sender-id VYMALO \
   --body "Hello from the vsms Rust example" \
   --client-ref rust-example-1
 ```
 
-Every flag also reads from an env var (`VSMS_ISSUER`, `VSMS_CLIENT_ID`,
-`VSMS_PRIVATE_KEY_PATH`, `VSMS_SCOPE`).
+Every flag also reads from an env var (`VSMS_BASE_URL`,
+`VSMS_SIGNING_KEY_PATH`, `VSMS_SERVER_KEYS_PATH`).
 
 ### Node.js
 
+The SDK's signing is Rust compiled to WebAssembly, so the SDK has to be built
+before the example can load it (`just wasm-tools` once, then):
+
 ```bash
+pnpm --filter @vaam-apps/vsms-node run build     # from the repo root
 cd examples/node/sms-send-example
 pnpm install    # or: cd examples && pnpm install (installs the whole workspace)
+node src/index.mjs --print-public-key --signing-key-path vsms-signing-key.pem
 node src/index.mjs \
-  --issuer http://127.0.0.1:8080 \
-  --client-id <clientId provision-client printed> \
-  --private-key-path /path/to/client-key.pem \
+  --base-url http://127.0.0.1:8080 \
+  --signing-key-path vsms-signing-key.pem \
+  --server-keys-path server-keys.txt \
   --to +237677123456 \
   --sender-id VYMALO \
   --body "Hello from the vsms Node example" \
   --client-ref node-example-1
 ```
 
-Same env vars as the Rust example (`VSMS_ISSUER`, `VSMS_CLIENT_ID`,
-`VSMS_PRIVATE_KEY_PATH`, `VSMS_SCOPE`).
+Same env vars as the Rust example (`VSMS_BASE_URL`, `VSMS_SIGNING_KEY_PATH`,
+`VSMS_SERVER_KEYS_PATH`).
 
 ## Verified against a live stack
 
@@ -140,10 +148,10 @@ reached `delivered` (`sms-worker`'s `dispatch` role picked them up and
 `sms-fake-orange` delivered them, exactly like `just demo`'s own
 composer-to-`/messages` path):
 
-| Example | messageId | state after send | state after dispatch | providerMessageRef |
-|---|---|---|---|---|
-| Rust | `c689dc4d33ed19311d7a1aa` | `accepted` | `delivered` | `res-c689dc4d33ed19311d7a1aa` |
-| Node.js | `c989d795a7c0509a07bc140` | `accepted` | `delivered` | `res-c989d795a7c0509a07bc140` |
+| Example | messageId                 | state after send | state after dispatch | providerMessageRef            |
+| ------- | ------------------------- | ---------------- | -------------------- | ----------------------------- |
+| Rust    | `c689dc4d33ed19311d7a1aa` | `accepted`       | `delivered`          | `res-c689dc4d33ed19311d7a1aa` |
+| Node.js | `c989d795a7c0509a07bc140` | `accepted`       | `delivered`          | `res-c989d795a7c0509a07bc140` |
 
 The `--client-ref` dedupe path was also exercised on both: resending the
 identical `clientRef` (`rust-example-verify-1` / `node-example-verify-1`)
@@ -154,32 +162,30 @@ prove.
 
 ## Design decisions
 
-### Rust: `vsms-sdk-rust`, not a hand-rolled token dance
+### Rust: `vsms-sdk-rust`, not a hand-rolled envelope
 
-`examples/rust/sms-send/src/main.rs` used to hand-roll RFC 7523 assertion
-signing, the `/token` exchange, and token caching itself (~230 lines of
-it) — the exact duplication [#171](https://github.com/vymalo/vsms/issues/171)
-was filed to stop, since `frontends/packages/gateway/src/token.ts` and
-`backends/apps/sms-gateway/tests/provision_client_cli_live_postgres.rs` each
-implemented the identical dance separately. It now depends on
-`sdks/rust/vsms-sdk-rust` (a path dependency here — a real integrator
-outside this monorepo would depend on the published crates.io version
-instead) and shrank from 377 to 152 lines; `Cargo.toml` dropped
-`jsonwebtoken`, `reqwest`, `serde`, `serde_json`, and `uuid` as direct
-dependencies (they're still there transitively, via the SDK). See that
-crate's own module doc for what's generated (`cratestack::
-include_client_schema!` — the model/input/procedure surface) versus
-hand-written (the auth layer, which is the part that used to live here).
+`examples/rust/sms-send/src/main.rs` once hand-rolled RFC 7523 assertion
+signing, the `/token` exchange and token caching itself (~230 lines) - the
+exact duplication [#171](https://github.com/vymalo/vsms/issues/171) was filed
+to stop. Since the signed transport (VS-3, VS-6) there is no token at all, and
+the example depends on `sdks/rust/vsms-sdk-rust` (a path dependency here - a
+real integrator outside this monorepo would depend on the published crates.io
+version instead) for everything between building a `SendMessageInput` and
+reading the result. See that crate's own module doc for what's generated
+(`cratestack::include_client_schema!` - the model/input/procedure surface)
+versus hand-written (the key, the pinned server keys, and the sealing of
+`send_message`).
 
-### Node: `@vaam-apps/vsms-node`, not a hand-rolled token dance
+### Node: `@vaam-apps/vsms-node`, not a hand-rolled envelope
 
-`examples/node/sms-send-example/src/index.mjs` used to hand-roll RFC 7523
-assertion signing, the `/token` exchange, and token caching itself (~230
-lines of boilerplate). It now depends on `@vaam-apps/vsms-node` (`sdks/node/vsms-sdk-node`,
-[#242](https://github.com/vymalo/vsms/issues/242)) and shrank from 298 to 110 lines;
-the example no longer directly depends on `jose` or hand-rolls token caching,
-relying on `@vaam-apps/vsms-node`'s built-in credential lifecycle, automatic bounded 401
-refresh, and typed procedures.
+`examples/node/sms-send-example/src/index.mjs` once hand-rolled the same token
+dance (~230 lines). It depends on `@vaam-apps/vsms-node`
+(`sdks/node/vsms-sdk-node`, [#242](https://github.com/vymalo/vsms/issues/242))
+and does nothing but parse flags, build a client and call `sendMessage` /
+`getMessage`. Unlike the old SDK, which was TypeScript over `jose`, this one
+does not reimplement the envelope: it calls `sdks/rust/vsms-sdk-wasm`, the Rust
+SDK's own sealing path compiled to WebAssembly (VS-7), so a Node and a Rust
+caller bind the same bytes.
 
 *(Note: In this monorepo, `examples/node/sms-send-example` references `@vaam-apps/vsms-node`
 via a local `file:../../../sdks/node/vsms-sdk-node` dependency for local integration
@@ -225,13 +231,15 @@ returns `422 idempotency_key_conflict` rather than either sending or
 replaying — both examples print an explanation, not a bare error, when
 that fires.
 
-### `aud` on the client assertion
+### The audience is `vsms`, never the host
 
-Both examples set `aud` to the token endpoint URL (`{issuer}/token`),
-matching `frontends/packages/gateway/src/token.ts` exactly. `authkestra` 0.3.2+ also
-accepts the bare issuer — the live test suites in `backends/apps/sms-gateway/tests/`
-use that form — but matching the canonical reference removes one axis of
-divergence to debug if the exchange ever starts failing.
+A request is bound to an audience, and the gateway refuses one sealed for any
+other. It is a *configured name* of the service, `vsms`
+(`sms_api::envelope::AUDIENCE`), not the `Host` header or the base URL a caller
+happens to reach it by (a proxy rewrites that, and the sender does not control
+it), so both SDKs carry it as a constant and a caller sets nothing. A
+mismatch is the same coarse unsigned `401` as every other refused signature;
+`cargo xtask sdk-parity-check` holds the server's and both SDKs' copies equal.
 
 ## demo-app: a third package, a different job
 

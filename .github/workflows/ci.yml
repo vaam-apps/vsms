@@ -110,6 +110,11 @@ jobs:
             js:
               - 'frontends/**'
               - 'sdks/node/**'
+              # The Node SDK's signed transport is `sdks/rust/vsms-sdk-wasm`
+              # compiled to WebAssembly, which this job builds and runs its
+              # tests against; the Rust SDK's vendored schema is the table it
+              # expands.
+              - 'sdks/rust/**'
               - 'examples/node/**'
               - 'schemas/**'
               - 'backends/**'
@@ -117,7 +122,7 @@ jobs:
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
               - 'biome.json'
-              - 'turbo.json'
+              - 'turbo.jsonc'
               - '.npmrc'
               - 'justfile'
               - 'ci/*.mjs'
@@ -172,7 +177,7 @@ jobs:
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
-              - 'turbo.json'
+              - 'turbo.jsonc'
               - '.npmrc'
               - '.nvmrc'
               - '.dockerignore'
@@ -402,6 +407,24 @@ jobs:
           cargo publish --dry-run
         working-directory: sdks/rust/vsms-sdk-rust
 
+      # The Node SDK's sealing module (VS-7): `@vaam-apps/vsms-node` seals
+      # through this crate compiled to WebAssembly, so the signed transport has
+      # one implementation. Another member of the `sdks/rust` workspace, so the
+      # SDK step above never reaches it. Its JavaScript surface compiles only for
+      # wasm32 (`src/js.rs`, `src/responder_js.rs`), which no host build or lint
+      # sees, so it is linted for that target too, with and without the
+      # test-only `responder` feature. `cargo test` runs the sealing core
+      # natively against cratestack's own server envelope.
+      - name: Node SDK sealing module (vsms-sdk-wasm) — check, clippy (host and wasm32), test
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check --locked --all-targets
+          cargo clippy --all-targets -- -D warnings
+          cargo clippy --target wasm32-unknown-unknown -- -D warnings
+          cargo clippy --target wasm32-unknown-unknown --features responder -- -D warnings
+          cargo test
+        working-directory: sdks/rust/vsms-sdk-wasm
+
       # `--locked` for the same reason as the SDK step above: this
       # workspace has its own lockfile nothing else checks.
       - name: Examples (Rust) — cargo check and clippy
@@ -464,6 +487,16 @@ jobs:
         with:
           command: check
           manifest-path: sdks/rust/vsms-sdk-rust/Cargo.toml
+
+      # The Node SDK's sealing module ships inside an npm package as
+      # WebAssembly, so an advisory in its graph reaches integrators the same way
+      # the published crate's does. Same workspace as `vsms-sdk-rust`, but
+      # cargo-deny checks the package the manifest names, not its siblings.
+      - name: cargo deny on vsms-sdk-wasm
+        uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2
+        with:
+          command: check
+          manifest-path: sdks/rust/vsms-sdk-wasm/Cargo.toml
 
       # #324: the same workspace-`exclude` gap as vsms-sdk-rust above, on
       # three more manifests the root check above can never reach —
@@ -662,6 +695,21 @@ jobs:
       - name: Generate the client and check its routes against the server
         run: just client-check
 
+      # The Node SDK's signed transport is Rust compiled to WebAssembly
+      # (`sdks/rust/vsms-sdk-wasm`), so its `build` (which turbo runs below, and
+      # which every test and typecheck depends on) needs a Rust toolchain, the
+      # wasm32 target and `wasm-bindgen`'s command-line tool at exactly the
+      # version sdks/rust/Cargo.lock pins for the crate. `just wasm-tools` reads
+      # that version from the lock, so CI and a developer install the same one.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # `stable` branch head, 2026-10-16
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: sdks/rust
+      - name: Install the wasm toolchain (wasm-bindgen at the lockfile's version)
+        run: just wasm-tools
+
       - name: Typecheck and build
         run: pnpm turbo run typecheck build
       - name: Tests
@@ -740,11 +788,15 @@ jobs:
       # builds from the packaged source, and aborts before upload — it
       # never asks crates.io whether the version exists. Run locally
       # against the already-published 0.2.0, it exits 0.
+      #
+      # `pnpm run test`, not `node --test`: it first builds the test-only
+      # responder module (`wasm-test/`, cratestack's server envelope) the suites
+      # run against.
       - name: Official Node SDK (@vaam-apps/vsms-node) — test, typecheck and pack validation
         run: |
           pnpm --filter @vaam-apps/vsms-node run build
           pnpm --filter @vaam-apps/vsms-node run typecheck
-          node --test
+          pnpm --filter @vaam-apps/vsms-node run test
           npm pack --dry-run
         working-directory: sdks/node/vsms-sdk-node
 
@@ -778,6 +830,9 @@ jobs:
       # edge that looks legal in the documentation.
       - run: cargo xtask parity
       - run: cargo xtask sdk-schema-check
+      # VS-7: the Rust and Node SDKs seal through the same envelope, so one
+      # audience and one operation table. See .xtask/src/sdk_parity.rs.
+      - run: cargo xtask sdk-parity-check
 
       # Every path a workflow names must exist. `release` runs only on
       # push to main and on v*.*.* tags, so no PR ever executes it — #271's

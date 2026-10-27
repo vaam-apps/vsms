@@ -39,7 +39,15 @@ ENV CARGO_BUILD_JOBS=4 \
     DEBIAN_FRONTEND=noninteractive
 
 # rustfmt/clippy: the `rust` and `rules` CI jobs both need them.
-RUN rustup component add rustfmt clippy
+#
+# The wasm32 target: the Node SDK's signed transport is `sdks/rust/vsms-sdk-wasm`
+# compiled to WebAssembly (VS-7), which `just ci` builds (step 22) and lints
+# (step 5). `wasm-bindgen`'s command-line tool is deliberately NOT installed
+# here: it must be exactly the version sdks/rust/Cargo.lock pins for the crate,
+# and an image `ARG` would be a second place for that to drift. `just
+# wasm-tools` installs it from the lock when `just ci` runs.
+RUN rustup component add rustfmt clippy \
+    && rustup target add wasm32-unknown-unknown
 
 # postgresql-client from the PGDG apt repo, not Debian bookworm's own
 # (which ships PostgreSQL 15's client, not 16) — sms-test-support and the
@@ -93,7 +101,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh \
 
 # cargo-deny, via cargo-binstall (a prebuilt binary install, not a
 # from-source compile) — the `deny` CI job's own tool, checked against all
-# five manifests inside `ci-inner`. Both moving pieces here are pinned, not
+# six manifests inside `ci-inner`. Both moving pieces here are pinned, not
 # floating: the installer script itself is fetched at a tagged ref
 # (`v1.22.0`, not `main`, which could change what it fetches or how,
 # out from under this image on a rebuild with no Dockerfile change at all

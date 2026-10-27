@@ -422,3 +422,87 @@ async fn an_answer_from_a_redirect_hop_is_refused() {
         "{error:?}"
     );
 }
+
+/// An answer longer than `MAX_RESPONSE_BYTES` is refused, whatever it says it
+/// is. Declared: the `Content-Length` alone settles it, before a byte of the
+/// body is read. The raw socket sends the headers and a few bytes and then goes
+/// quiet, so a client that waited for the body (counting what arrives) would
+/// hang, and the timeout turns that into a failure.
+#[tokio::test]
+async fn an_answer_that_declares_more_than_the_cap_is_refused_unread() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a local port");
+    let address = listener.local_addr().expect("its address");
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut request = vec![0_u8; 64 * 1024];
+        let _ = socket.read(&mut request).await;
+        let head = format!(
+            "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\nxxxxxxxxxx",
+            vsms_sdk::MAX_RESPONSE_BYTES + 1
+        );
+        let _ = socket.write_all(head.as_bytes()).await;
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+    });
+    let client = VsmsClient::signed(format!("http://{address}"), SigningKey::generate(), keys())
+        .expect("a client");
+
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.send_message(args(), None),
+    )
+    .await
+    .expect("refused on the declared length, without waiting for the body");
+
+    assert!(
+        matches!(outcome, Err(SdkError::ResponseTooLarge { limit }) if limit == vsms_sdk::MAX_RESPONSE_BYTES),
+        "{outcome:?}"
+    );
+}
+
+/// Chunked: no length is declared, so the bytes that arrive are counted. A raw
+/// socket stands in for the gateway because a mock always sets the length.
+#[tokio::test]
+async fn an_answer_that_streams_more_than_the_cap_is_refused() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a local port");
+    let address = listener.local_addr().expect("its address");
+    tokio::spawn(async move {
+        let Ok((mut socket, _)) = listener.accept().await else {
+            return;
+        };
+        let mut request = vec![0_u8; 64 * 1024];
+        let _ = socket.read(&mut request).await;
+        let _ = socket
+            .write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n")
+            .await;
+        let chunk = vec![b'x'; 1024 * 1024];
+        for _ in 0..=(vsms_sdk::MAX_RESPONSE_BYTES / chunk.len()) {
+            let framed = [format!("{:x}\r\n", chunk.len()).as_bytes(), &chunk, b"\r\n"].concat();
+            if socket.write_all(&framed).await.is_err() {
+                return;
+            }
+        }
+        let _ = socket.write_all(b"0\r\n\r\n").await;
+    });
+    let client = VsmsClient::signed(format!("http://{address}"), SigningKey::generate(), keys())
+        .expect("a client");
+
+    let error = client
+        .send_message(args(), None)
+        .await
+        .expect_err("a streamed answer over the cap is an error");
+
+    assert!(
+        matches!(error, SdkError::ResponseTooLarge { .. }),
+        "{error:?}"
+    );
+}

@@ -21,6 +21,15 @@ pub enum SdkError {
     #[error("signing key: {0}")]
     Key(String),
 
+    /// The answer to `send_message` is longer than this client reads
+    /// ([`crate::MAX_RESPONSE_BYTES`]). The request **was** sent; nothing in the
+    /// answer was read.
+    #[error("the answer is longer than {limit} bytes")]
+    ResponseTooLarge {
+        /// The bound that was exceeded.
+        limit: usize,
+    },
+
     /// A deliberate, small, closed set of configuration mistakes this SDK
     /// can catch itself, rather than let surface as an opaque transport or
     /// parse error three calls later.

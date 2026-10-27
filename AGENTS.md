@@ -1185,6 +1185,7 @@ and the layer order; this section is what to know before touching it.
 - **What is deliberately not done here:** the Next.js console and the Node SDK still speak the removed token protocol and
   cannot reach a live gateway until VS-5b and VS-7 (no GitHub job runs them against one: `ci.yml` only typechecks and
   unit-tests them). The Helm chart does not mount the two key files yet (VS-9). Nothing in OP issuance moved (VS-4).
+  (VS-7 has landed since: the Node SDK signs, see "The Node SDK seals through WebAssembly", below. The console is still VS-5b's.)
 
 **Guard-failure proofs** (each guard was loosened, seen to fail, and restored; `git checkout` of the file after each):
 
@@ -1272,6 +1273,167 @@ state they exist to forbid.
 - A `default_value` on `--envelope-next-signing-key-file` - failed `serve_does_not_parse_without_the_key_flags`.
 - SDK: the response URL check removed - failed `an_answer_from_a_redirect_hop_is_refused`; a key that is not
   pinned added to the pinned set - failed `an_answer_sealed_by_a_key_that_is_not_pinned_is_refused`.
+
+## The Node SDK seals through WebAssembly: `sdks/rust/vsms-sdk-wasm` (VS-7)
+
+`@vaam-apps/vsms-node` speaks the signed transport now, and the token protocol is gone from it: `token.ts`, `jose`, the
+`private_key_jwt` client factory, the `tokenStore` accessor and the bounded 401 refresh are deleted, with no fallback and
+no compatibility mode (a breaking `feat(sdk-node)!`). The package does not reimplement the envelope in TypeScript: a
+COSE_Sign1 binding is a dozen byte-exact facts (audience, method, route template, path parameters, canonical query, the
+operation's contract digest, payload type, `Idempotency-Key`), and two implementations eventually disagree about one.
+It calls `sdks/rust/vsms-sdk-wasm`, cratestack's own `ClientEnvelope` compiled to WebAssembly by `wasm-bindgen --target
+nodejs`, the model being vpay's VP-7 (`sdks/rust/wasm` there). `docs/sdks.md` and `sdks/node/vsms-sdk-node/README.md` are
+the user-facing account; this is what to know before touching it.
+
+- **One operation table, by construction.** The wasm crate expands `include_client_schema!` over the Rust SDK's own
+  vendored `schema.cstack` (`../vsms-sdk-rust/schema.cstack`, held to `schemas/vsms.cstack` by `sdk-schema-check`), so the
+  digest an operation binds is the generated Rust client's, not a second table kept in step. The crate is a member of the
+  `sdks/rust` workspace for that reason and for the shared `Cargo.lock`, where `wasm-bindgen`'s version is pinned; it is
+  `publish = false` and carries no release-please line. Its `cratestack-client` pin is `=` and is the sixth copy
+  `cratestack-pin-check` reads.
+- **The JS surface** (`src/js.rs`, compiled for wasm32 only, so a host `cargo clippy` never sees it): `Sealer.fromSeed`,
+  `Sealer.fromCallback` (an Ed25519 key behind `crypto.sign`, a KMS, via `ExternalSigner::ed25519`) and
+  `Sealer.fromEsp256Callback` (the console's P-256 key, below); `sealCall(method, route, params, body, query,
+  idempotencyKey)` returning `{ body, headers, target, openResponse }`. **The route is the schema's template plus its
+  decoded parameters, not a path**: a path would have to be parsed back into the template, and the URL and the binding
+  would be two renderings of one id. The wasm builds `target` from the very parameters it bound, percent-encoded, so a
+  request cannot be signed for `m1` and sent to `m2`. A method and template the schema does not serve are refused before
+  anything is signed, including a table key (`"GET /messages/{id}"`) passed as a template. Failures cross as a plain
+  `{ kind, message, status? }`. The audience is the constant `vsms`, never a host. Both pinned server keys are required
+  and must differ, exactly as the Rust SDK's `ServerKeys`; the rule lives in the wasm crate only, because the TypeScript
+  copy of it that was written first could be deleted without any test noticing (two layers, one test).
+- **ESP256 for the console (VS-5b).** `Sealer.fromEsp256Callback(publicKey, sign, current, next)` signs with a P-256 key
+  that never enters the module: `sign` gets the bytes to sign and returns ECDSA-over-SHA-256 as raw 64-byte `r || s`
+  (what `crypto.subtle.sign` returns) or DER. `publicKey` is the SEC1 point, compressed or not; `publicKey` the getter
+  returns is always the 65-byte uncompressed form `registerConsoleKey`/`pair-console-key` take, and a signature by any
+  other key is refused before it is sent. The gateway reads `ClientKey` for Ed25519 and `ConsoleKey` for ESP256 only, so
+  the algorithm is the caller's identity: the Node client offers Ed25519 alone and refuses an RSA or P-256 key naming no
+  key material. No `--target web` build exists yet; VS-5b adds the second `wasm-bindgen` invocation.
+- **The transport is `node:http(s)`, not `fetch`**: a sealed `GET` carries the COSE message as its body, which `fetch`
+  refuses. One attempt, no retry (a retry is a new nonce, the caller's decision), no redirect followed (the signed body
+  would reach a host the signature was not addressed to; a 3xx is just an unsealed answer), an 8 MiB cap on the answer
+  whether declared or chunked, and an unsealed answer is an error **whatever its status**, its body unread. The
+  gateway's refusal of a signature is `SdkError{ kind: "unsigned", httpStatus: 401 }`, `isUnauthorized()`.
+- **A bundler rewrites `__dirname`.** wasm-bindgen's Node glue reads its `.wasm` from `${__dirname}`; Next/Turbopack
+  inlines a workspace package and rewrites that to a build-time path that does not exist at runtime (vpay's shop never
+  redirected a payer to hosted checkout because of it). `scripts/build-wasm.sh` rewrites the glue to carry the bytes as a
+  base64 literal and **fails the build** unless it finds each of the two lines it rewrites exactly once, so a
+  wasm-bindgen that words them differently breaks the build rather than shipping a module that still reads from disk.
+  `test/wasm.test.ts` asserts the glue holds neither `__dirname` nor `readFileSync`, ships no `.wasm` file, and loads
+  from a directory that has none.
+- **Building it** needs the wasm32 target and `wasm-bindgen`'s CLI at exactly the version `sdks/rust/Cargo.lock` pins for
+  the crate (they agree on a private interface; a mismatch fails at load time naming neither). `just wasm-tools` installs
+  both from the lock and is what CI runs (`ci.yml`'s `js` job and `release.yml`'s `publish-node-sdk`), `just wasm-build` /
+  `wasm-build-test` call the script. `pnpm build` is `build:wasm && build:ts`, so every `turbo run build` needs the
+  toolchain: `just ci` runs `wasm-tools` at step 15, `ci/runner/Dockerfile` bakes the wasm32 target (the CLI is not baked:
+  an image `ARG` would be a second copy of a version that must equal the lock), `turbo.jsonc` declares `wasm/**` an output
+  of `@vaam-apps/vsms-node#build` and the crate, the vendored schema and the lock its inputs (otherwise a cache hit
+  restores `dist/` and leaves a package that cannot load its sealing module, or serves a stale one after a Rust change),
+  and the `js` filter in `ci.yml` now includes `sdks/rust/**`. The admin console's Docker build is unaffected
+  (`turbo run build --filter=admin...` does not reach this package, which `admin` does not depend on) and needs no Rust
+  stage. `engines.node` is `>=22.11.0` (global `crypto` for `getrandom`'s `wasm_js` backend, and the type stripping the
+  tests and the live script use); it was `>=20` for `jose`.
+- **Tests run against a verifier that shares no code with the SDK.** `sdks/rust/vsms-sdk-wasm`'s `responder` feature
+  (`src/responder.rs`, `cfg(any(test, feature = "responder"))`) is cratestack's `CoseEnvelope::server`: it finds the
+  operation from the URL, rebuilds the binding, verifies, refuses a replay and seals the answer. 34 native Rust tests and one doctest run
+  the sealing core against it (`cargo test`); `build:wasm-test` builds the same crate with the feature into `wasm-test/`
+  (gitignored, not in `files`) for the Node suites in `test/`, which start real `node:http` servers and assert raw wire
+  bytes (no `Authorization`, a COSE `Content-Type`, the redirect target never contacted, the cap, one attempt, the key
+  forms, the config errors). `test/esp256.test.ts` signs with a WebCrypto non-extractable P-256 key. `support/` and `live/`
+  sit outside `src/` and `test/` on purpose: `node --test` treats everything under a `test/` directory as a test. `pnpm test`
+  runs `scripts/run-tests.mjs`, which names the files, turns type stripping on and **fails when fewer than 70 tests ran**:
+  `node --test` exits 0 over an empty suite, and before Node 22.18 it does not look for `.ts` files at all.
+- **Run against a real gateway** (2026-10-27, no GitHub job does): a scratch Postgres 16.15 cluster, `sms-migrate`,
+  `sms-gateway bootstrap`, `create-app`, a generated Ed25519 key registered with `register-client`, a SenderId row, then
+  `sms-gateway serve` with two generated envelope keys. `pnpm --filter @vaam-apps/vsms-node run test:live`
+  (`live/gateway.live.ts`) passed 4/4: a sealed `previewMessage`; `sendMessage` with an `Idempotency-Key`, the same call
+  again (same `messageId`, `idempotencyReplayed`, one `Message` row per run) and `getMessage`; an unregistered key refused
+  as the unsigned 401; answers not believed under keys that were not pinned. `examples/node/sms-send-example` sent,
+  replayed under its key, and hit the `clientRef` 409. And the ESP256 path: a WebCrypto non-extractable P-256 key paired
+  with `pair-console-key` for the bootstrapped owner, then sealed `GET /apps` returned 200 and verified, the same key's
+  bad query a sealed 400 that opened. Not in CI: the live script needs the key files and a gateway (its header says how).
+- **Found and left alone:** `types.ts`'s `Message` says `to` where the row's field is `msisdn` (the live test reads it
+  through the index signature); the Node SDK's hand-written types are checked for four enums only
+  (`node-sdk-types-check`). `examples/node/demo-app` depends on `@vaam-apps/vsms-node ^0.3.3` from the registry, a
+  token-era release, so nothing here compiles against a deleted symbol and it is untouched (VS-5b); it still cannot reach
+  a sealed gateway. `sdks/node/vsms-sdk-node/pnpm-lock.yaml` was a stale orphan (jose 5, swc 0.6; the workspace uses the
+  root lock) and is deleted rather than left naming a deleted dependency.
+- **The parity rule** is `cargo xtask sdk-parity-check` (`.xtask/src/sdk_parity.rs`, in `all-checks`, `just ci` step 9 and
+  `ci.yml`'s `rules` job): the audience literal is equal in `sms_api::envelope`, `vsms-sdk-rust` and the wasm crate; the
+  wasm crate expands `../vsms-sdk-rust/schema.cstack` alone and holds no `.cstack` of its own; it stays a workspace member
+  and the package `build-wasm.sh` builds. Membership is read from `members` and `exclude` of `sdks/rust/Cargo.toml` (a name
+  in `exclude`, in a comment, or under `default-members` does not count), the build script is matched with its comments
+  removed, and every `ClientEnvelope::new(_, …)` in the Rust SDK and the wasm crate must pass the `AUDIENCE` constant itself:
+  a literal that happens to equal it today is a second place to change.
+- **Review of #444 (2026-10-27) found four ways the above did not hold, and one rule for each.**
+  1. *A signing callback is the caller's code.* `Uint8Array::new` over a returned `-1`, `1e10` or an object with a
+     throwing `length` throws inside a wasm future: an uncaught exception that kills a default Node process, and leaves
+     wasm-bindgen's task queue marked as running so every later call on every sealer hangs. `signature_bytes` (`js.rs`)
+     accepts a `Uint8Array` or `ArrayBuffer` of at most 128 bytes, copied through `Reflect::construct` so that even a
+     detached buffer comes back as a `Result`; `identity.ts` checks the same before the module sees the value. A signer that
+     never answers is bounded: `timeoutMs` is **one** deadline for signing, sending and reading (`withinDeadline`, and the
+     request gets what is left of it), and the sealer that hung once signs the next call.
+  2. *The URL sent must be the target signed.* `baseUrl` is parsed once (`base-url.ts`): `http:`/`https:`, and a query,
+     a fragment or userinfo is a `config` error (a bare `#` or `?` parses to an empty `hash`/`search`, so the text is
+     checked; userinfo would become `Authorization: Basic`, a shared secret). `sealedUrl` builds the URL from the parsed
+     base and the signed target and refuses unless its `pathname + search` equals them, and `concrete_path` refuses `.`
+     and `..` (they survive percent-encoding and a URL parser resolves them away). All of it fails closed before the send,
+     as `seal`.
+  3. *`seal` means nothing was sent.* The wasm module's `OpenError::Other` and a non-UTF-8 answer now cross as
+     `unreadable`, and `sealed-call.ts` maps every failure after the send to `unsigned`, `unverified` or `unreadable`,
+     including a trap that is not a module failure object at all; `sealFailure` is the only producer of `seal`.
+  4. *`sdk-parity-check` accepted trees that broke its rules*: a crate in `exclude`, an audience literal beside an
+     unchanged constant, and the build command in a comment. See the parity rule above; each has a unit case and was run
+     against the real tree.
+
+  Smaller: `vsms-sdk-rust`'s `send_message` now reads at most `MAX_RESPONSE_BYTES` (8 MiB, as the Node SDK does) and
+  fails `SdkError::ResponseTooLarge`, on the declared length and on the bytes that arrive; the wasm crate wipes the seed
+  copies it holds (`zeroize`); `RUSTUP_TOOLCHAIN` is a hashed `env` of the two turbo tasks because it changes what is built;
+  the replay hint is compared case-insensitively; the ESP256 suite forces a low-s and a high-s signature instead of getting
+  either by chance; the esbuild bundle claim in the README now says it is untested.
+
+**Guard-failure proofs** (each guard loosened, seen to fail, restored; the Rust ones with `cargo test --lib` in
+`sdks/rust/vsms-sdk-wasm`, the Node ones with `node --test` after `build:ts`):
+
+- Rust, wasm crate: the leading-`/` check in `contract_digest` made `if false` - failed
+  `a_route_the_schema_does_not_serve_is_unbound` (a table key was accepted as a route). The surplus-parameter check in
+  `concrete_path` made `if false` - failed `parameters_must_fit_the_route`. The same-key refusal in `ServerKeys::new` made
+  `if false` - failed `server_keys_must_be_two_distinct_points`. `AUDIENCE` changed to `vsmsX` - failed every test that
+  reaches the responder. The URL built from the raw parameter instead of `encode_path_segment` - failed
+  `a_read_carries_its_parameter_in_the_path_and_its_query_after_it` and `a_read_binds_the_parameter_the_url_carries`. The
+  ESP256 public key reported as given instead of canonical - failed
+  `a_compressed_p256_key_is_reported_in_its_canonical_uncompressed_form`. Only the current server key pinned - failed
+  `an_answer_sealed_under_the_next_key_is_trusted`. The `Idempotency-Key` not sealed - failed four tests, among them
+  `the_idempotency_key_is_bound_as_sent`. The query not sealed - failed `a_read_binds_the_parameter_the_url_carries` and
+  `the_query_is_bound`; **the first version of `the_query_is_bound` passed under that sabotage** (it opened a query-less
+  request with `fields=body`, which is refused whether or not the query was ever bound), so it now drops the query after
+  sealing, changes it, and sends it as sealed.
+- Node: following a `Location` in `transport.ts` - failed `a redirect is not followed` (the redirect target was
+  contacted, answered 200 where 307 was expected). The chunked-body cap disabled, and separately the declared-length check
+  disabled - both failed `an answer longer than the cap is refused` (the second after the client waited out its 30 s
+  timeout, `transport` where `response_too_large` was expected). An `unsigned` answer returned as a result - failed
+  `a plain 200 is not believed`, `the gateway's coarse unsigned 401 ...` and the redirect test. An `unverified` answer
+  returned as a result - failed `an answer sealed by a key that is not pinned is unverified` (a `decode` error where
+  `unverified` was). An `Authorization: Bearer` header added to the sealed request - failed
+  `a sealed request carries no bearer`. A failed write retried once - failed `a write is attempted once` (2 attempts).
+  The Ed25519 algorithm check removed - failed `only an Ed25519 key is an app client's`. The `Idempotency-Key` dropped by
+  the client - failed `sendMessage seals the call`.
+- **A guard that two layers hold, one test cannot tell apart:** the TypeScript check that the two pinned keys differ was
+  removed and `a client without a usable key or pinned keys does not construct` stayed green, because the wasm crate
+  refuses the same pair. The TypeScript copy was deleted (a rule that exists twice will disagree with itself); the rule is
+  proved once, in Rust (`server_keys_must_be_two_distinct_points`).
+- The glue: `build-wasm.sh` made to leave wasm-bindgen's output untouched - failed three of `test/wasm.test.ts`'s four
+  (`__dirname` and `readFileSync` present, a `.wasm` file shipped, the glue unable to load from a directory without one);
+  one of the two lines it rewrites reworded - the script exits 1 with `wasm-bindgen's glue no longer reads its module the
+  way this script rewrites`, after compiling, before writing anything the package ships.
+- `cargo xtask`: the Rust SDK's `AUDIENCE` changed, and separately the wasm crate's - `sdk-parity-check` named all three
+  values. The wasm crate given a `schema.cstack` of its own, and its `include_client_schema!` pointed at it - both named.
+  The crate dropped from `sdks/rust/Cargo.toml`'s members - named. Its `cratestack-client` pin moved to `=0.16.1` -
+  `cratestack-pin-check` named the manifest.
+- The ESP256 tests first passed for the wrong reason: `crypto.sign("sha256", tbs, key, { dsaEncoding })` is not the
+  signature of `crypto.sign` (the options go in the key argument), the callback threw, and "a signature by another key is
+  refused" saw a `seal` failure. Both now pass `{ key, dsaEncoding }` and the second asserts the message
+  (`does not verify under the public key`).
 
 ## cratestack bumped to `=0.15.0` (from `=0.11.0`)
 

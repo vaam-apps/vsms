@@ -59,7 +59,7 @@ VSMS_DEMO_GATEWAY_PORT=18080 just demo
 
 The gateway answers only COSE_Sign1-signed requests and signs its answers, so it needs two Ed25519 server keys to boot. `just demo` and `just demo-up` run `just dev-keys` first, which writes a current and a next key to the git-ignored `dev-keys/` (kept if already present, so a restarted stack keeps the identity a client pinned) and `compose.dev.yaml` mounts them read-only. They are dev keys. `docker compose -f compose.dev.yaml run --rm -T sms-gateway server-keys` prints the two public keys to pin.
 
-`just e2e-integration` signs. The `admin` console and `demo-app` still speak the removed token protocol, so they start but cannot reach the sealed API until they sign (VS-5b and VS-7); nothing in CI runs them against a live gateway.
+`just e2e-integration` signs. The `admin` console and `demo-app` still speak the removed token protocol, so they start but cannot reach the sealed API until they sign (VS-5b; the Node SDK itself signs since VS-7, but `demo-app` still depends on a token-era release of it); nothing in CI runs them against a live gateway.
 
 == The demo app
 

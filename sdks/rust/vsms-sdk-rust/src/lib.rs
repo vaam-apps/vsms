@@ -78,7 +78,7 @@ mod error;
 mod server_keys;
 mod signer;
 
-pub use client::{SendMessageOutcome, VsmsClient, VsmsClientBuilder, AUDIENCE};
+pub use client::{SendMessageOutcome, VsmsClient, VsmsClientBuilder, AUDIENCE, MAX_RESPONSE_BYTES};
 pub use error::SdkError;
 pub use server_keys::ServerKeys;
 pub use signer::SigningKey;

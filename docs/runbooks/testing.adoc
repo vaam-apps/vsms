@@ -27,10 +27,10 @@ This builds (or reuses) the runner image, starts a disposable Postgres 16 for it
 . `cargo fmt --check` + `cargo clippy --workspace --all-targets -- -D warnings`
 . `cargo test --workspace` (unit + in-process)
 . `cargo metadata --locked` (the committed `Cargo.lock` must be current)
-. The Rust SDK (`sdks/rust/vsms-sdk-rust`) -- check, clippy, test, `aws-lc-rs` absence, `cargo publish --dry-run --allow-dirty` (local runs are routinely against an uncommitted tree; `--allow-dirty` is deliberately NOT in ci.yml's own copy of this step, which runs on a clean checkout and treats a dirty one there as a real problem)
+. The Rust SDK (`sdks/rust/vsms-sdk-rust`) -- check, clippy, test, `aws-lc-rs` absence, `cargo publish --dry-run --allow-dirty`; and the Node SDK's sealing module (`sdks/rust/vsms-sdk-wasm`) -- check, clippy for the host and for `wasm32-unknown-unknown` (with and without the test-only `responder` feature, since the JavaScript surface compiles only there), test (local runs are routinely against an uncommitted tree; `--allow-dirty` is deliberately NOT in ci.yml's own copy of this step, which runs on a clean checkout and treats a dirty one there as a real problem)
 . `examples/rust` -- check, clippy
-. `cargo deny check` against all five manifests (root, the Rust SDK, `ci/e2e-integration`, `examples/rust/sms-send`, `deploy/backup-tool`)
-. R1/R2/R6 and every drift guard -- `cargo xtask no-raw-sqlx parity sdk-schema-check workflow-paths docs-drift r6 node-sdk-types-check`
+. `cargo deny check` against all six manifests (root, the Rust SDK, the Node SDK's sealing module `sdks/rust/vsms-sdk-wasm`, `ci/e2e-integration`, `examples/rust/sms-send`, `deploy/backup-tool`)
+. R1/R2/R6 and every drift guard -- `cargo xtask no-raw-sqlx parity sdk-schema-check sdk-parity-check workflow-paths docs-drift r6 node-sdk-types-check`
 . `0001_init` matches `cratestack migrate diff`
 . `0002_bootstrap` matches the design doc
 . Apply migrations for real (`cargo run -p sms-migrate`) to a **fresh, per-run scratch database** created on the `postgres` service and dropped again afterward (even on failure -- see that step's own comment in `justfile` for why it can't just reuse the persistent database the rest of the gate shares: that database survives across runs by design, so reapplying migrations against it a second time is a silent no-op, "already applied -- skipping" for all three, which would let a genuinely broken `0001_init` pass `just ci` while still failing CI's own fresh-container `migrations` job), then `ci/test-state-machine.sql`'s assertions against that same scratch database
@@ -43,7 +43,7 @@ This builds (or reuses) the runner image, starts a disposable Postgres 16 for it
 . Test (`pnpm turbo run test`)
 . The sample Node receiver's cross-language HMAC signature vectors
 . The demo app (`examples/node/demo-app`) -- typecheck, plus its own copy of the same cross-language HMAC signature vectors (it carries a byte-for-byte copy of `signature.ts`/`cross-language-vectors.test.ts` from the step above, per that package's own README)
-. The official Node SDK (`@vaam-apps/vsms-node`) -- build, typecheck, test, `npm pack --dry-run`
+. The official Node SDK (`@vaam-apps/vsms-node`) -- build (its signed transport is Rust compiled to WebAssembly, so `just wasm-tools` installs `wasm-bindgen` at the version `sdks/rust/Cargo.lock` pins, in step 15), typecheck, test (against cratestack's server envelope, built as `wasm-test/`), `npm pack --dry-run`
 . Every mermaid diagram in `docs/architecture.md`/`docs/roadmap.md` parses (no browser)
 
 A failing step stops the gate there (`set -euo pipefail`), with a `=== STEP n/22: ... ===` banner printed before each one so the log says exactly where it got to.
@@ -68,7 +68,7 @@ NOTE: pnpm's content-addressable store normally lives outside any project (`~/.l
 just ci-quick
 ----
 
-Everything above except the live-Postgres suites (step 13) and the JS typecheck+build+test steps (17-18, skipped together -- `turbo.json`'s own `test` task `dependsOn: ["build"]`, so skipping only step 17 saves nothing at all: `pnpm turbo run test` would just trigger the identical build as one of its own dependency tasks, folded silently into step 18's own timing instead of appearing as step 17's). These are the slowest steps in the gate and the least likely to catch a mistake in a small, focused change. Not a substitute for `just ci` before opening a PR; a genuine "did I break something obvious" loop while iterating.
+Everything above except the live-Postgres suites (step 13) and the JS typecheck+build+test steps (17-18, skipped together -- `turbo.jsonc`'s own `test` task `dependsOn: ["build"]`, so skipping only step 17 saves nothing at all: `pnpm turbo run test` would just trigger the identical build as one of its own dependency tasks, folded silently into step 18's own timing instead of appearing as step 17's). These are the slowest steps in the gate and the least likely to catch a mistake in a small, focused change. Not a substitute for `just ci` before opening a PR; a genuine "did I break something obvious" loop while iterating.
 
 === Running one suite by hand
 
@@ -158,10 +158,13 @@ just check                # cargo check --workspace --all-targets
 just lint                 # fmt --check, then clippy -D warnings
 just test                 # unit + in-process only
 just test-live            # every live-Postgres suite -- brings up its own Postgres via `compose.yml`
-just deny                 # cargo deny check, against all five manifests
+just deny                 # cargo deny check, against all six manifests
 just parity                # R2: state diagram and transition table agree
 just r6                   # R6: no CSS classes or raw markup in view files
 just node-sdk-types-check # #252: the Node SDK's enum unions match schema.cstack
+just sdk-parity-check     # VS-7: both SDKs bind the same audience and one operation table
+just wasm-tools           # VS-7: wasm-bindgen at the lockfile's version, and the wasm32 target
+just wasm-build           # VS-7: the Node SDK's sealing module (sdks/rust/vsms-sdk-wasm) as WebAssembly
 just all-checks            # lint, test, and every xtask guard that runs without Docker
 ----
 

@@ -1,20 +1,7 @@
 import { strict as assert } from "node:assert";
-import { generateKeyPairSync } from "node:crypto";
 import { test } from "node:test";
-import { PrivateKeyJwtTokenStore, SdkError, VsmsClient } from "../dist/index.js";
-
-// Generate a test RSA keypair in PEM PKCS#8 format
-const { privateKey } = generateKeyPairSync("rsa", {
-  modulusLength: 2048,
-  publicKeyEncoding: {
-    type: "spki",
-    format: "pem",
-  },
-  privateKeyEncoding: {
-    type: "pkcs8",
-    format: "pem",
-  },
-});
+import * as sdk from "../dist/index.js";
+import { SdkError } from "../dist/index.js";
 
 test("SdkError classification methods work correctly", () => {
   const genericErr = new SdkError("something went wrong", { httpStatus: 500 });
@@ -42,63 +29,17 @@ test("SdkError classification methods work correctly", () => {
   assert.equal(unauthErr.isUnauthorized(), true);
 });
 
-test("PrivateKeyJwtTokenStore initializes properly with PEM string", async () => {
-  const store = PrivateKeyJwtTokenStore.fromKeyPem(
-    "http://127.0.0.1:8080",
-    "test-client-id",
-    privateKey,
-    "sms:send sms:read",
-  );
-  assert.ok(store);
-});
-
-test("PrivateKeyJwtTokenStore rejects empty or whitespace-only scope", () => {
-  assert.throws(
-    () => {
-      new PrivateKeyJwtTokenStore(
-        {
-          issuer: "http://127.0.0.1:8080",
-          clientId: "test-client-id",
-          scope: "   ",
-        },
-        { pemString: privateKey },
-      );
-    },
-    (err: unknown) => {
-      return err instanceof SdkError && err.message.includes("scope cannot be empty");
-    },
-  );
-});
-
-test("VsmsClient.privateKeyJwt constructs client", () => {
-  const client = VsmsClient.privateKeyJwt({
-    issuer: "http://127.0.0.1:8080",
-    clientId: "test-client-id",
-    privateKeyPem: privateKey,
-  });
-  assert.ok(client);
-  assert.ok(client.tokenStore);
-});
-
-test("VsmsClient wraps transport and non-JSON response parsing errors in SdkError", async () => {
-  // Test with custom tokenStore that returns a dummy token
-  const mockTokenStore = {
-    get: async () => "mock-token",
-    invalidate: () => {},
-  };
-
-  // Point to a port that fails to connect
-  const unreachableClient = new VsmsClient({
-    baseUrl: "http://127.0.0.1:1",
-    tokenStore: mockTokenStore,
-  });
-
-  await assert.rejects(
-    async () => {
-      await unreachableClient.previewMessage({ body: "test" });
-    },
-    (err: unknown) => {
-      return err instanceof SdkError && err.message.includes("network error");
-    },
-  );
+test("the package exports a client and its errors and no token machinery", () => {
+  // The removed token protocol had a token store, a private_key_jwt client
+  // factory and a `tokenStore` accessor. There is no compatibility mode: not
+  // one of them may come back as an export.
+  assert.deepEqual(Object.keys(sdk).sort(), [
+    "DEFAULT_TIMEOUT_MS",
+    "MAX_RESPONSE_BYTES",
+    "SdkError",
+    "VsmsClient",
+    "parseServerKeysReport",
+  ]);
+  assert.equal("privateKeyJwt" in sdk.VsmsClient, false);
+  assert.equal("tokenStore" in sdk.VsmsClient.prototype, false);
 });

@@ -1,22 +1,23 @@
 //! Every second copy of the cratestack pin must equal the one
 //! `cratestack_pin::read_pin` reads from `Cargo.toml`.
 //!
-//! The pin is written in five places that no single `cargo` invocation
+//! The pin is written in six places that no single `cargo` invocation
 //! sees together: the `cratestack-pg` line `read_pin` parses, the
-//! `cratestack-codec-json` line beside it, the two `cratestack-client`
+//! `cratestack-codec-json` line beside it, the three `cratestack-client`
 //! manifests excluded from the workspace (`sdks/rust/vsms-sdk-rust`,
-//! `ci/e2e-integration/vsms-e2e-integration`), and `ci/runner/Dockerfile`'s
+//! `sdks/rust/vsms-sdk-wasm`, `ci/e2e-integration/vsms-e2e-integration`), and
+//! `ci/runner/Dockerfile`'s
 //! `ARG CRATESTACK_VERSION=` default, which a build `ARG` cannot derive.
 //! The 0.11.0 bump raised the first and missed the last, so `just ci` built
 //! a runner whose own step 1 refused to run — the right outcome, one image
 //! build too late — and the excluded manifests are exactly where a missed
-//! bump stays green in CI. This check reads all five and fails on any
+//! bump stays green in CI. This check reads all six and fails on any
 //! disagreement, naming each.
 //!
-//! # Why one of the five is a `~` range rather than an `=` pin
+//! # Why one of the six is a `~` range rather than an `=` pin
 //!
 //! "Every copy is exact" was the original rule, and it was wrong for
-//! exactly one of the five. `sdks/rust/vsms-sdk-rust` is the only entry
+//! exactly one of the six. `sdks/rust/vsms-sdk-rust` is the only entry
 //! here that is a **published library** (`publish = true`, on crates.io);
 //! everything else in this list is an application, a binary, or an image
 //! build argument, and for those an exact pin binds only itself.
@@ -50,13 +51,18 @@ const CLIENT_PREFIX: &str = "cratestack = { package = \"cratestack-client\", ver
 /// must use — see this module's own doc for why they differ. `~` is only
 /// correct for the published library; `=` is only correct for the crates
 /// that ship nothing to crates.io.
-const CLIENT_MANIFESTS: [(&str, &str); 2] = [
+const CLIENT_MANIFESTS: [(&str, &str); 3] = [
     // Published to crates.io — an exact pin here is a veto over every
     // consumer's graph, so this one carries `~X.Y.Z` (>=X.Y.Z, <X.(Y+1).0).
     ("sdks/rust/vsms-sdk-rust/Cargo.toml", "~"),
     // `publish = false`, a binary run by CI against a compose stack.
     // Nothing downstream resolves against it, so exact is free here.
     ("ci/e2e-integration/vsms-e2e-integration/Cargo.toml", "="),
+    // `publish = false`: the Node SDK's sealing module, shipped inside the npm
+    // package as WebAssembly (`sdks/rust/vsms-sdk-wasm`, VS-7). It expands the
+    // same schema through the same facade as the published SDK, so a missed
+    // bump here would make the two SDKs bind different contract digests.
+    ("sdks/rust/vsms-sdk-wasm/Cargo.toml", "="),
 ];
 
 pub fn run(root: &Path) -> Result<(), String> {
