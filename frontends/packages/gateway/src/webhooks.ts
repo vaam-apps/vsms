@@ -1,46 +1,19 @@
 // `GET /webhook_endpoints`, `GET /webhook_attempts`, `POST`/`PATCH`/`DELETE
-// /webhook_endpoints/{id}`, and the two procedures `rotateWebhookSecret`/
-// `replayWebhookAttempt` (#41/#43, already real and tested server-side) —
-// #55's Webhooks screen. Same temporary hand-written seam as
-// `providers.ts`/`routes.ts`/`senders.ts` (see `client.ts`'s module doc for
-// why).
+// /webhook_endpoints/{id}`, and the procedure `replayWebhookAttempt` (#43,
+// already real and tested server-side) — #55's Webhooks screen. Same
+// temporary hand-written seam as `providers.ts`/`routes.ts`/`senders.ts` (see
+// `client.ts`'s module doc for why).
 //
-// # `WebhookEndpoint.secret`/`prevSecret` — displayed, not hidden, and here
-// is why that is the honest choice rather than the cautious-looking one
+// # No secret (VS-8)
 //
-// AGENTS.md's own trap, verbatim: "`@sensitive` does NOT redact it from an
-// API response — it only affects audit snapshots." `WebhookEndpoint.read`'s
-// `@@allow` (`schema.cstack`, narrowed by #187) is `hasRole('owner') ||
-// hasRole('admin') || hasRole('developer') || hasRole('system')` — a real
-// GET by any of those three human roles genuinely returns the live
-// plaintext `secret`/`prevSecret` columns, every time, not once at creation
-// the way a freshly generated secret is shown at creation. There is no
-// server-side mechanism this console
-// could add to make it a true one-time secret without changing
-// `WebhookEndpoint`'s own schema (storing a hash instead, which would break
-// `sms_webhook::verify`'s own "try every candidate secret" design — it needs
-// the plaintext to HMAC against). So this module does not pretend otherwise:
-// it returns the real value on every read, and `webhooks-screen.tsx` masks
-// it *in the UI* (a display discipline against shoulder-surfing and screen
-// shares, with an explicit "Reveal" toggle) rather than withholding data
-// that already crossed the wire to an authorized, authenticated browser
-// session — withholding it here would be security theatre, not a boundary.
-//
-// # Create needs a caller-supplied secret — `WebhookEndpoint.secret` has no
-// `@default`
-//
-// Unlike a client key (whose private half the caller makes), nothing
-// generates this endpoint's initial secret server-side — `createWebhookEndpoint` below does it here,
-// with `crypto.randomBytes(32)`, in the exact wire format
-// `sms_webhook::generate_secret()` produces (`whsec_<64 lowercase hex
-// chars>`, verified against that function's own doc: 32 bytes of secure
-// randomness, hex-encoded). This is the one place in this file that
-// generates a secret rather than sending one the operator typed — the
-// created row's `secret` is the same value this function already has, so
-// `webhooks-screen.tsx`'s create dialog can show a "copy it now" banner
-// exactly once, even though (per the section above) the value is not actually gone
-// from the API afterward — it is simply the *newest*, least-likely-to-need-
-// re-copying moment to show it.
+// An endpoint used to carry an HMAC signing secret (`secret`, `prevSecret`,
+// `secretRotatedAt`), generated here at creation and rotated by
+// `rotateWebhookSecret`. Both are gone: a delivery is a sealed request signed
+// with the gateway's own envelope signing key, so there is nothing per endpoint
+// to generate, display, copy or rotate. What an endpoint carries instead is its
+// `audience`: the name the receiver's envelope layer is built with, which the
+// operator chooses when creating the endpoint (`sms-webhook`'s `lib.md`, "What
+// a receiver configures").
 //
 // # `eventTypes` — space-sentinel packed, not a JSON array on the wire
 //
@@ -62,10 +35,10 @@
 // `owner`/`admin` (delete) only. Every write here goes through `gatewayFetch`
 // (`./upstream.ts`), signed by the paired person's own key, and is gated further at Layer 2 by
 // `router::SENDER_AND_WEBHOOK_WRITE_ROUTES` (`webhook:manage`, granted to
-// `owner`/`admin`/`developer` per §5.2's seeded roles). `rotateWebhookSecret`/
-// `replayWebhookAttempt` (procedures, not REST) carry their own
-// `require_permission(ctx, "webhook:manage")` server-side (#193/#43) —
-// nothing new to gate here, this module just calls them.
+// `owner`/`admin`/`developer` per §5.2's seeded roles). `replayWebhookAttempt`
+// (a procedure, not REST) carries its own `require_permission(ctx,
+// "webhook:manage")` server-side (#43) — nothing new to gate here, this module
+// just calls it.
 
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
@@ -137,18 +110,10 @@ export interface WebhookEndpointRecord {
   id: string;
   appId: string;
   url: string;
+  /** The receiver's identity: the audience a delivery's seal binds. The name
+   * the receiver's envelope layer is built with. */
+  audience: string;
   eventTypes: WebhookEventType[];
-  /** The live plaintext HMAC secret — see this module's own doc for why
-   * this is the real value, not a placeholder, and why that's correct. */
-  secret: string;
-  /** Set only while an overlap window is open (#41/#59: `rotateWebhookSecret`
-   * moves the pre-rotation `secret` here). `sms_webhook::verify` accepts a
-   * signature made with either this or `secret` for exactly this reason —
-   * a receiver that hasn't picked up the new value yet keeps working. */
-  prevSecret?: string | undefined;
-  /** When the *current* `secret` was minted — `undefined` for an endpoint
-   * that has never been rotated since creation. */
-  secretRotatedAt?: string | undefined;
   maskRecipient: boolean;
   active: boolean;
   maxAttempts: number;
@@ -247,34 +212,21 @@ export async function getWebhookEndpointById(
 export interface CreateWebhookEndpointFields {
   appId: string;
   url: string;
+  audience: string;
   eventTypes: WebhookEventType[];
   maskRecipient: boolean;
   maxAttempts: number;
 }
 
-export interface CreatedWebhookEndpoint {
-  endpoint: WebhookEndpointRecord;
-  /** The freshly generated plaintext secret — identical to
-   * `endpoint.secret`, surfaced separately so the create dialog can show a
-   * "copy it now" banner without every other caller of this type needing
-   * to know that's what a fresh creation means. See module doc. */
-  secret: string;
-}
-
-/** `POST /webhook_endpoints`. Generates the initial secret here — see
- * module doc for why nothing server-side does it for this model. */
+/** `POST /webhook_endpoints`. */
 export async function createWebhookEndpoint(
   fields: CreateWebhookEndpointFields,
-): Promise<CreatedWebhookEndpoint> {
-  // 32 bytes from the browser's CSPRNG, hex: the same wire format the server's
-  // `randomBytes(32)` gave when this ran there.
-  const entropy = crypto.getRandomValues(new Uint8Array(32));
-  const secret = `whsec_${Array.from(entropy, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+): Promise<WebhookEndpointRecord> {
   const body = JSON.stringify({
     appId: fields.appId,
     url: fields.url,
+    audience: fields.audience,
     eventTypes: packEventTypes(fields.eventTypes),
-    secret,
     maskRecipient: fields.maskRecipient,
     maxAttempts: fields.maxAttempts,
   });
@@ -287,21 +239,19 @@ export async function createWebhookEndpoint(
   if (!response.ok) {
     throw mapGatewayError(response.status, parsed, "createWebhookEndpoint");
   }
-  return { endpoint: normalizeEndpoint(parsed as WireEndpoint), secret };
+  return normalizeEndpoint(parsed as WireEndpoint);
 }
 
 export interface UpdateWebhookEndpointFields {
   url?: string | undefined;
+  audience?: string | undefined;
   eventTypes?: WebhookEventType[] | undefined;
   maskRecipient?: boolean | undefined;
   active?: boolean | undefined;
   maxAttempts?: number | undefined;
 }
 
-/** `PATCH /webhook_endpoints/{id}` with `If-Match`. Deliberately cannot
- * touch `secret`/`prevSecret`/`secretRotatedAt` — [`rotateWebhookSecret`]
- * below is the only path this module exposes for that, the audited
- * procedure built for exactly this write rather than a plain field edit. */
+/** `PATCH /webhook_endpoints/{id}` with `If-Match`. */
 export async function updateWebhookEndpoint(
   id: string,
   etag: string,
@@ -336,25 +286,6 @@ export async function deleteWebhookEndpoint(id: string, etag?: string): Promise<
     "deleteWebhookEndpoint",
     etag,
   );
-}
-
-/**
- * `POST /$procs/rotateWebhookSecret` (#41/#59/#193). Moves the current
- * `secret` to `prevSecret`, mints a fresh `secret`, stamps
- * `secretRotatedAt` — the whole overlap-window mechanism lives server-side
- * in `Procedures::rotate_secret`; this function is a thin call, same shape
- * `jobs.ts`'s `requeueJob` already has for a mutation procedure.
- */
-export async function rotateWebhookSecret(endpointId: string): Promise<WebhookEndpointRecord> {
-  const response = await authedRequest(gatewayUrl("/$procs/rotateWebhookSecret"), {
-    method: "POST",
-    body: JSON.stringify({ args: { endpointId } }),
-  });
-  const parsed = await parseGatewayJson(response);
-  if (!response.ok) {
-    throw mapGatewayError(response.status, parsed, "rotateWebhookSecret");
-  }
-  return normalizeEndpoint(parsed as WireEndpoint);
 }
 
 export interface ListWebhookAttemptsInput {

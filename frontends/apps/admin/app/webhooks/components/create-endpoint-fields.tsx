@@ -43,6 +43,18 @@ export function CreateEndpointFields({
           {...register("url")}
         />
       </FormField>
+      <FormField
+        label="Audience"
+        htmlFor="new-endpoint-audience"
+        error={formState.errors.audience?.message}
+      >
+        <Input
+          id="new-endpoint-audience"
+          placeholder="the name the receiver's envelope layer is built with"
+          aria-invalid={formState.errors.audience != null}
+          {...register("audience")}
+        />
+      </FormField>
       {/* Not a `FormField`: `EventTypeToggles` is a group of toggle buttons,
           not one labelable control, so there is no single `id` for a
           `htmlFor` to name. A `<fieldset>`/`<legend>` instead of an

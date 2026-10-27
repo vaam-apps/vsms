@@ -1,8 +1,9 @@
-// `webhookEndpoints.list/get/create/update/remove/rotateSecret` and
+// `webhookEndpoints.list/get/create/update/remove` and
 // `webhookAttempts.list/replay` — #55's Webhooks screen. Thin wraps over
 // `@vsms/gateway`'s `webhooks.ts` (see that module's own doc for the
-// `secret` display decision, the `eventTypes` packing, and why writes are
-// real and reachable as of #211).
+// `eventTypes` packing, the audience, and why writes are real and reachable
+// as of #211). There is no secret to create or rotate (VS-8): a delivery is
+// sealed under the gateway's own key.
 
 import { z } from "zod";
 import { rethrowGatewayError } from "../gateway-error";
@@ -18,9 +19,14 @@ const eventType = z.enum([
   "message.cancelled",
 ]);
 
+// What a delivery is addressed to: the name the receiver's envelope layer is
+// built with. Free text of 1-255 characters, as `WebhookEndpoint.audience`.
+const audience = z.string().trim().min(1).max(255);
+
 const createInput = z.object({
   appId: z.string().min(1),
   url: z.string().url(),
+  audience,
   eventTypes: z.array(eventType).min(1),
   maskRecipient: z.boolean(),
   maxAttempts: z.number().int().min(1).max(20),
@@ -30,6 +36,7 @@ const updateInput = z.object({
   id: z.string().min(1),
   etag: z.string().min(1),
   url: z.string().url().optional(),
+  audience: audience.optional(),
   eventTypes: z.array(eventType).min(1).optional(),
   maskRecipient: z.boolean().optional(),
   active: z.boolean().optional(),
@@ -76,23 +83,6 @@ export const webhookEndpointsRouter = router({
       try {
         await ctx.gateway.deleteWebhookEndpoint(input.id, input.etag);
         return { id: input.id };
-      } catch (error) {
-        rethrowGatewayError(error);
-      }
-    }),
-
-  // Deliberately its own top-level mutation, not folded into `update` —
-  // rotation is a materially different, more consequential action (it
-  // starts the `prevSecret` overlap clock) and goes through the dedicated
-  // `rotateWebhookSecret` procedure server-side, not a plain field PATCH.
-  // No `etag`/`If-Match` here: the procedure reads and writes the row
-  // itself under `@isolation("serializable")` (`procedures.rs`'s own doc),
-  // the same reason `jobs.requeue` needs no `etag` either.
-  rotateSecret: publicProcedure
-    .input(z.object({ endpointId: z.string().min(1) }))
-    .mutation(async ({ ctx, input }) => {
-      try {
-        return await ctx.gateway.rotateWebhookSecret(input.endpointId);
       } catch (error) {
         rethrowGatewayError(error);
       }

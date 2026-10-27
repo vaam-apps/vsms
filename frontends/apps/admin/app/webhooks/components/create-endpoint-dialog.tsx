@@ -16,7 +16,7 @@ import { CreateEndpointFields } from "./create-endpoint-fields";
 // affected by the nested-Dialog-in-drawer bug (see webhooks-screen.tsx's
 // own module doc) — it opens from the toolbar while no drawer is open, so
 // it stays a real `Dialog`: `DialogFullScreen`, because it is a form of
-// five inputs (AGENTS.md's rule for which presentation a dialog takes) —
+// six inputs (AGENTS.md's rule for which presentation a dialog takes) —
 // full-screen below 640px, centred from 640px up.
 export function CreateEndpointDialog({
   open,
@@ -43,7 +43,8 @@ export function CreateEndpointDialog({
         <DialogHeader>
           <DialogTitle>New webhook endpoint</DialogTitle>
           <DialogDescription>
-            A signing secret is generated automatically and shown once creation completes.
+            Deliveries are sealed with the gateway's own key. The audience names the receiver they
+            are addressed to; the receiver is configured with the same name.
           </DialogDescription>
         </DialogHeader>
         <CreateEndpointFields

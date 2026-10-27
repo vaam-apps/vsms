@@ -1,9 +1,7 @@
 // Pure, React-free domain logic for the Webhooks screen (#55, R6): event
-// type vocabulary, form schemas, and `payloadFor`, the one small formatter
-// that doesn't need a component to exist. The secret-masking formatter
-// that used to live here (`maskSecret`) is gone — `secret-field.tsx` now
-// renders `@vaam-apps/ui`'s own `MaskedValue`, the component that library
-// was written to replace this exact hand-rolled mask with.
+// type vocabulary, form schemas, `payloadFor` and `receiverRoute`, the two
+// small formatters that don't need a component to exist. (There is no secret
+// to mask any more: VS-8 sealed webhooks under the gateway's own key.)
 // Extracted verbatim out of webhooks-screen.tsx per AGENTS.md's R6 — a
 // screen file should read as fetch + handlers + composition.
 
@@ -34,8 +32,33 @@ export function payloadFor(attempt: Pick<AttemptListItem, "payload">): string {
   }
 }
 
+// What a delivery is addressed to (`WebhookEndpoint.audience`, 1-255
+// characters): the name the receiver's envelope layer is built with.
+const audienceField = z.string().trim().min(1, "Audience is required").max(255, "At most 255");
+
+/**
+ * The route a delivery to `url` binds: its path, or `null` when the URL cannot
+ * carry a sealed delivery. The same rule as `sms_webhook::delivery_route`
+ * (http(s), no credentials, no query, no fragment, a path with no `{`, `}` or
+ * `%`), which is what the worker applies at delivery time.
+ */
+export function receiverRoute(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+  if (parsed.username !== "" || parsed.password !== "") return null;
+  if (parsed.search !== "" || parsed.hash !== "") return null;
+  if (/[{}%]/.test(parsed.pathname)) return null;
+  return parsed.pathname;
+}
+
 export const endpointSchema = z.object({
   url: z.string().trim().min(1, "URL is required"),
+  audience: audienceField,
   maxAttempts: z
     .string()
     .trim()
@@ -50,6 +73,7 @@ export type EndpointFormValues = z.infer<typeof endpointSchema>;
 export const createEndpointSchema = z.object({
   appId: z.string().trim().min(1, "App id is required"),
   url: z.string().trim().min(1, "URL is required"),
+  audience: audienceField,
   maxAttempts: z
     .string()
     .trim()

@@ -1,7 +1,7 @@
 import { Button } from "@vaam-apps/ui";
 
 // Dumb (R6): the more-detail drawer's own footer for the endpoint edit
-// form (not shown while an inline confirmation — delete or rotate — is
+// form (not shown while an inline confirmation — delete — is
 // armed; the screen swaps `footer` to `undefined` for those, since
 // `InlineConfirm` supplies its own action row).
 export function EndpointEditFooter({

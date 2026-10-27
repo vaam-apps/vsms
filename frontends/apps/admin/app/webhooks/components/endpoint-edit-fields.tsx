@@ -3,10 +3,10 @@ import { Controller, type UseFormReturn } from "react-hook-form";
 import type { EndpointFormValues, EventType } from "../webhook-domain";
 import { EventTypeToggles } from "./event-type-toggles";
 
-// Dumb (R6): the endpoint edit form's own fields (URL, event types, max
-// attempts, mask-recipient/active checkboxes). The secret panel above it
-// (`EndpointSecretPanel`) is a separate component — this one owns only
-// what `endpointSchema` validates.
+// Dumb (R6): the endpoint edit form's own fields (URL, audience, event
+// types, max attempts, mask-recipient/active checkboxes). The receiver panel
+// above it (`EndpointReceiverPanel`) is a separate component — this one owns
+// only what `endpointSchema` validates.
 export function EndpointEditFields({
   formId,
   form,
@@ -28,6 +28,17 @@ export function EndpointEditFields({
     <form id={formId} onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
       <FormField label="URL" htmlFor="endpoint-url" error={formState.errors.url?.message}>
         <Input id="endpoint-url" aria-invalid={formState.errors.url != null} {...register("url")} />
+      </FormField>
+      <FormField
+        label="Audience"
+        htmlFor="endpoint-audience"
+        error={formState.errors.audience?.message}
+      >
+        <Input
+          id="endpoint-audience"
+          aria-invalid={formState.errors.audience != null}
+          {...register("audience")}
+        />
       </FormField>
 
       {/* Not a `FormField` — see `create-endpoint-fields.tsx`'s identical

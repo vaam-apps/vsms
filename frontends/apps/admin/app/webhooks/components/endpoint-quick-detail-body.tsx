@@ -1,6 +1,5 @@
 import { DetailList, DetailRow } from "@vaam-apps/ui";
 import { type EndpointListItem, EVENT_TYPES } from "../webhook-domain";
-import { SecretField } from "./secret-field";
 
 // Dumb (R6): the `QuickDetailDrawer`'s summary `dl` for one endpoint.
 export function EndpointQuickDetailBody({ endpoint }: { endpoint: EndpointListItem }) {
@@ -23,7 +22,9 @@ export function EndpointQuickDetailBody({ endpoint }: { endpoint: EndpointListIt
           <span className="text-muted-foreground">closed</span>
         )}
       </DetailRow>
-      <SecretField label="Current secret" value={endpoint.secret} />
+      <DetailRow label="Audience">
+        <span className="font-mono text-caption">{endpoint.audience}</span>
+      </DetailRow>
     </DetailList>
   );
 }

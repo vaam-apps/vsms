@@ -236,7 +236,6 @@ export {
 } from "./users";
 export type {
   AttemptState,
-  CreatedWebhookEndpoint,
   CreateWebhookEndpointFields,
   ListWebhookAttemptsInput,
   ListWebhookAttemptsResult,
@@ -253,7 +252,6 @@ export {
   listWebhookAttempts,
   listWebhookEndpoints,
   replayWebhookAttempt,
-  rotateWebhookSecret,
   updateWebhookEndpoint,
   WEBHOOK_EVENT_TYPES,
 } from "./webhooks";
