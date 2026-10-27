@@ -20,7 +20,7 @@ npm install @vaam-apps/vsms-node
 pnpm add @vaam-apps/vsms-node
 ```
 
-Node 22.11 or newer. The package carries its WebAssembly module inside its JavaScript (as base64), so it loads from a bundle (Next.js, esbuild) without a `.wasm` file beside it.
+Node 22.11 or newer. The package carries its WebAssembly module inside its JavaScript (as base64), so it loads from a bundle without a `.wasm` file beside it. That is tested for Node itself loading the built package from a directory that holds no `.wasm` file; bundling it into a single file with a particular bundler (Next.js, esbuild) is **not** tested here.
 
 ## Get a credential
 
@@ -70,6 +70,10 @@ const message = await client.getMessage(outcome.result.messageId);
 console.log("Status:", message.state);
 ```
 
+## The gateway's address
+
+`baseUrl` is an `http:` or `https:` origin with an optional path prefix (`https://sms.example.com`, `https://example.com/sms/`). A query string, a fragment or credentials (`user:password@`) in it is a `config` error: each would let the URL a request goes to differ from the route the signature binds, and credentials would make Node add an `Authorization: Basic` header, which a keypair-only client never sends. Before a request is sent, the URL is checked against the target that was signed; an id of `.` or `..` is refused for the same reason.
+
 ## Keys
 
 Give exactly one of:
@@ -88,16 +92,21 @@ Only Ed25519 is an app client's key. A P-256 key is a *console* key, which a bro
 
 Every failure is an `SdkError` with a `kind`:
 
-| `kind`               | Meaning                                                                                             |
-| -------------------- | --------------------------------------------------------------------------------------------------- |
-| `config`             | An option is missing or unusable. Thrown by the constructor, never by the first request.            |
-| `seal`               | The call could not be signed, or the answer could not be read. Nothing was sent / believed.         |
-| `transport`          | The request could not be sent or the answer not received (refused connection, timeout).             |
-| `response_too_large` | The answer is longer than `MAX_RESPONSE_BYTES`.                                                     |
-| `unsigned`           | The answer is not sealed. The gateway refusing your signature is this with `httpStatus` 401.        |
-| `unverified`         | The answer is sealed but does not verify under a pinned key, or does not answer this request.       |
-| `remote`             | A sealed, verified answer with a non-2xx status (`gatewayCode`, `fieldErrors`, `isConflict()`, ...) |
-| `decode`             | A sealed, verified 2xx answer whose body is not the expected JSON.                                  |
+| `kind`               | Meaning                                                                                                                                                           |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config`             | An option is missing or unusable. Thrown by the constructor, never by the first request.                                                                          |
+| `seal`               | Refused **before anything was sent**: the signer failed or took longer than `timeoutMs`, an id does not fit its route, or the URL would not be the signed one.    |
+| `transport`          | The request could not be sent or the answer not received (refused connection, timeout).                                                                           |
+| `response_too_large` | The answer is longer than `MAX_RESPONSE_BYTES`.                                                                                                                   |
+| `unsigned`           | The answer is not sealed. The gateway refusing your signature is this with `httpStatus` 401.                                                                      |
+| `unverified`         | The answer is sealed but does not verify under a pinned key, or does not answer this request.                                                                     |
+| `unreadable`         | The request **was sent**, and an answer arrived that could not be read. Whether the gateway acted is unknown: do not retry a write without its `Idempotency-Key`. |
+| `remote`             | A sealed, verified answer with a non-2xx status (`gatewayCode`, `fieldErrors`, `isConflict()`, ...)                                                               |
+| `decode`             | A sealed, verified 2xx answer whose body is not the expected JSON.                                                                                                |
+
+`seal` is the only kind that means "nothing was sent"; every failure after the send is `transport`, `response_too_large`, `unsigned`, `unverified` or `unreadable`.
+
+`timeoutMs` (default 30 s) is one deadline for the whole call, signing included: a `signer` that never answers (a hung KMS) ends the call with `seal` at the deadline, and the client signs the next call normally. A `signer` must return its signature as a `Uint8Array`; any other value (a string, a number, an `ArrayBuffer`) is a `seal` failure, not a crash.
 
 `isUnauthorized()` means the gateway did not accept the signature. It is deliberately one answer for an unknown or revoked key, an inactive client, a stale clock (the gateway allows five minutes), a replayed request and a bad signature: check that the public half is registered and not revoked, and this machine's clock.
 
@@ -108,7 +117,7 @@ The signing is `sdks/rust/vsms-sdk-wasm`, compiled to WebAssembly by `scripts/bu
 ```bash
 pnpm --filter @vaam-apps/vsms-node run build      # wasm/ and dist/
 pnpm --filter @vaam-apps/vsms-node run typecheck
-pnpm --filter @vaam-apps/vsms-node run test       # builds wasm-test/ too, then node --test
+pnpm --filter @vaam-apps/vsms-node run test       # builds wasm-test/ too, then scripts/run-tests.mjs
 ```
 
 `pnpm test` runs against `wasm-test/`, the same crate with its `responder` feature on: cratestack's *server* envelope, so the suite verifies what the SDK seals with code that is not the SDK's. `test:live` runs `live/gateway.live.ts` against a real `sms-gateway serve` (see that file's header for how to start one).

@@ -68,7 +68,9 @@ function parseCli() {
   }
 
   return {
-    baseUrl: values["base-url"].replace(/\/+$/, ""),
+    // The client strips trailing slashes itself, and refuses a query string, a
+    // fragment or credentials in the URL.
+    baseUrl: values["base-url"],
     signingKeyPath: values["signing-key-path"],
     serverKeysPath: values["server-keys-path"],
     printPublicKey: values["print-public-key"],

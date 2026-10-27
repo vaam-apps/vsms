@@ -92,6 +92,12 @@ export interface Reply {
   body: string;
   /** Extra headers, outside the seal (so: only hints). */
   headers?: Record<string, string>;
+  /**
+   * Rewrites the headers the seal produced (`content-type`, the payload-type
+   * selector) before they are sent: an answer that verifies as a message and
+   * still cannot be read as the one that was asked for.
+   */
+  tamper?: (sealed: Record<string, string>) => Record<string, string>;
 }
 
 export type SealedHandler = (request: OpenedRecord) => Reply;
@@ -177,7 +183,9 @@ export async function startSealedServer(
             const reply = handler(record);
             return request.sealResponse(reply.status, reply.body).then((sealed) => {
               const headers: Record<string, string> = { ...reply.headers };
-              for (const [name, value] of sealed.headers) headers[name] = value;
+              const sealedHeaders: Record<string, string> = {};
+              for (const [name, value] of sealed.headers) sealedHeaders[name] = value;
+              Object.assign(headers, reply.tamper ? reply.tamper(sealedHeaders) : sealedHeaders);
               res.writeHead(reply.status, headers);
               res.end(Buffer.from(sealed.body));
             });

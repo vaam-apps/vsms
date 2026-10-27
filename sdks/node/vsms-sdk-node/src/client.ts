@@ -1,5 +1,6 @@
 import type { Agent as HttpAgent } from "node:http";
 import type { Agent as HttpsAgent } from "node:https";
+import { parseBaseUrl } from "./base-url.js";
 import { SdkError } from "./error.js";
 import { type IdentityOptions, resolveSealer } from "./identity.js";
 import { type CallContext, type OpenedAnswer, performSealedCall } from "./sealed-call.js";
@@ -33,7 +34,12 @@ export interface SendMessageOutcome {
 }
 
 export interface VsmsClientOptions extends IdentityOptions {
-  /** The gateway's externally reachable origin, e.g. `https://sms.example.com`. */
+  /**
+   * The gateway's externally reachable origin, e.g. `https://sms.example.com`,
+   * with an optional path prefix. `http:` or `https:`, and no credentials, query
+   * string or fragment: any of them is a `config` error, because each would let
+   * the URL a request goes to differ from the route the signature binds.
+   */
   baseUrl: string;
   /** Default {@link DEFAULT_TIMEOUT_MS}. */
   timeoutMs?: number | undefined;
@@ -59,24 +65,11 @@ interface CratestackErrorResponseBody {
  *   serverKeys: parseServerKeysReport(readFileSync("server-keys.txt", "utf8")),
  * });
  */
-/**
- * `baseUrl` with every trailing `/` removed. A loop rather than `/\/+$/`:
- * that pattern backtracks quadratically on a string of many `/` that does
- * not end in one (CodeQL js/polynomial-redos), and this runs on caller input.
- */
-function withoutTrailingSlashes(url: string): string {
-  let end = url.length;
-  while (end > 0 && url.charCodeAt(end - 1) === 0x2f) end -= 1;
-  return url.slice(0, end);
-}
-
 export class VsmsClient {
   readonly #context: CallContext;
 
   constructor(options: VsmsClientOptions) {
-    if (typeof options.baseUrl !== "string" || options.baseUrl.length === 0) {
-      throw new SdkError("baseUrl is required", { kind: "config" });
-    }
+    const base = parseBaseUrl(options.baseUrl);
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
       throw new SdkError(`timeoutMs must be a positive integer, got ${timeoutMs}`, {
@@ -84,7 +77,7 @@ export class VsmsClient {
       });
     }
     this.#context = {
-      baseUrl: withoutTrailingSlashes(options.baseUrl),
+      base,
       timeoutMs,
       agent: options.agent,
       sealer: resolveSealer(options),
@@ -153,7 +146,7 @@ export class VsmsClient {
     });
     return {
       result: this.#decode<SendMessageResult>(answer.text, answer.status, "sendMessage"),
-      idempotencyReplayed: answer.headers[IDEMPOTENCY_REPLAYED_HEADER] === "true",
+      idempotencyReplayed: answer.headers[IDEMPOTENCY_REPLAYED_HEADER]?.toLowerCase() === "true",
     };
   }
 

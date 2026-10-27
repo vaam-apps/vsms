@@ -6,9 +6,11 @@
  *
  * - `config`: an option is missing or unusable (a key, the pinned server keys).
  *   Thrown by the constructor, never by the first request.
- * - `seal`: the call could not be signed (the signer failed, a parameter does
- *   not fit its route), or the answer could not be read at all. Nothing was
- *   sent, or nothing in the answer was trusted.
+ * - `seal`: the call was refused **before anything was sent**: the signer
+ *   failed or took longer than `timeoutMs`, a parameter does not fit its route,
+ *   or the URL would not be the one that was signed. No request left this
+ *   process, so a caller may treat this kind as safe to retry. It is never used
+ *   for a failure after the send.
  * - `transport`: the request could not be sent or the answer not received
  *   (a refused connection, a timeout, a severed body).
  * - `response_too_large`: the answer is longer than this client reads.
@@ -16,6 +18,10 @@
  *   gateway's own refusal of a signature is this kind with `httpStatus` 401.
  * - `unverified`: the answer claims to be sealed and does not verify under a
  *   pinned server key, or does not answer this request.
+ * - `unreadable`: the request **was sent**, and the answer arrived but could not
+ *   be read (an unexpected payload type, a malformed header, text that is not
+ *   UTF-8). Whether the gateway acted on the call is unknown: do not retry a
+ *   write without its `Idempotency-Key`.
  * - `remote`: a sealed, verified answer with a non-2xx status.
  * - `decode`: a sealed, verified 2xx answer whose body is not the expected JSON.
  */
@@ -26,6 +32,7 @@ export type SdkErrorKind =
   | "response_too_large"
   | "unsigned"
   | "unverified"
+  | "unreadable"
   | "remote"
   | "decode";
 

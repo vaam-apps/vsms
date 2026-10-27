@@ -23,7 +23,7 @@ import type { HeaderPairs } from "./wasm.js";
  * a COSE message around JSON; the largest honest one is a page of messages,
  * a few hundred kilobytes. Eight mebibytes is far above that and far below
  * what a hostile peer could otherwise make this process hold. The same number
- * as `vsms-sdk-rust`'s ceiling on a buffered answer.
+ * as `vsms-sdk-rust`'s `MAX_RESPONSE_BYTES` on the answer to `send_message`.
  */
 export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
@@ -72,6 +72,13 @@ export function sendSealed(
       url = new URL(request.url);
     } catch (err) {
       fail(err);
+      return;
+    }
+    // `url` is built by `sealedUrl`, which refuses these; Node would turn
+    // userinfo into a Basic `Authorization` header, so the last gate before the
+    // wire says no too.
+    if (url.username !== "" || url.password !== "" || url.hash !== "") {
+      fail(new Error("the URL carries credentials or a fragment"));
       return;
     }
     const send = url.protocol === "https:" ? httpsRequest : httpRequest;

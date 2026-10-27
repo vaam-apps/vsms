@@ -47,7 +47,7 @@ export interface WasmSealer {
 
 /** What the wasm module rejects with: a plain object, never an `Error`. */
 export interface WasmFailure {
-  kind: "unbound" | "seal" | "unsigned" | "unverified" | "invalid";
+  kind: "unbound" | "seal" | "unsigned" | "unverified" | "unreadable" | "invalid";
   message: string;
   status?: number;
 }

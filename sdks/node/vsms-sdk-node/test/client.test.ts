@@ -6,59 +6,13 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { parseBaseUrl } from "../dist/base-url.js";
 import { MAX_RESPONSE_BYTES, SdkError, VsmsClient } from "../dist/index.js";
+import { performSealedCall } from "../dist/sealed-call.js";
+import type { WasmSealer } from "../dist/wasm.js";
+import { INPUT, ok, rejection, SEND_RESULT, withServer } from "../support/helpers.ts";
 import { newTestIdentity } from "../support/responder.ts";
-import {
-  type Reply,
-  type SealedHandler,
-  type SealedServerOptions,
-  startSealedServer,
-  startTestServer,
-} from "../support/server.ts";
-
-const SEND_RESULT = {
-  messageId: "m1",
-  state: "queued",
-  encoding: "gsm7",
-  segments: 1,
-  operator: "orange",
-  estimatedCostXaf: "15",
-};
-
-const ok = (body: unknown, headers?: Record<string, string>): Reply => ({
-  status: 200,
-  body: JSON.stringify(body),
-  ...(headers ? { headers } : {}),
-});
-
-/** Runs `body` against a sealed server and always closes it. */
-async function withServer(
-  handler: SealedHandler,
-  body: (
-    server: Awaited<ReturnType<typeof startSealedServer>>,
-    client: VsmsClient,
-  ) => Promise<void>,
-  options?: SealedServerOptions,
-): Promise<void> {
-  const server = await startSealedServer(handler, options);
-  try {
-    await body(server, new VsmsClient(server.clientOptions));
-  } finally {
-    await server.close();
-  }
-}
-
-async function rejection(promise: Promise<unknown>): Promise<SdkError> {
-  try {
-    await promise;
-  } catch (err) {
-    assert.ok(err instanceof SdkError, `not an SdkError: ${String(err)}`);
-    return err;
-  }
-  assert.fail("expected the call to be rejected");
-}
-
-const INPUT = { to: "+237677123456", body: "Your code is 4471", senderId: "VYMALO" };
+import { startSealedServer, startTestServer } from "../support/server.ts";
 
 // ------------------------------------------------------------ what is sent
 
@@ -151,6 +105,23 @@ test("the replay hint is read from the response header, and is only a hint", asy
   );
 });
 
+test("the replay hint is read case-insensitively, as the Rust SDK reads it", async () => {
+  for (const value of ["True", "TRUE", "true"]) {
+    await withServer(
+      () => ok(SEND_RESULT, { "idempotency-replayed": value }),
+      async (_server, client) => {
+        assert.equal((await client.sendMessage(INPUT)).idempotencyReplayed, true, value);
+      },
+    );
+  }
+  await withServer(
+    () => ok(SEND_RESULT, { "idempotency-replayed": "false" }),
+    async (_server, client) => {
+      assert.equal((await client.sendMessage(INPUT)).idempotencyReplayed, false);
+    },
+  );
+});
+
 // ------------------------------------------------------ what is believed
 
 test("a sealed error answer is the gateway's, with its status and code", async () => {
@@ -197,6 +168,74 @@ test("a sealed 2xx whose body is not JSON is a decode error, not a result", asyn
       assert.equal(error.httpStatus, 200);
     },
   );
+});
+
+test("an answer that arrives and cannot be read is unreadable, never seal: the request was sent", async () => {
+  await withServer(
+    () => ({
+      status: 200,
+      body: JSON.stringify(SEND_RESULT),
+      // Sealed under the right key for this very request, and delivered with a
+      // payload type this client did not ask for.
+      tamper: (sealed) =>
+        Object.fromEntries(
+          Object.entries(sealed).map(([name, value]) => [
+            name,
+            name.toLowerCase() === "cratestack-payload-type" ? "text/plain" : value,
+          ]),
+        ),
+    }),
+    async (server, client) => {
+      const error = await rejection(client.sendMessage(INPUT, { idempotencyKey: "k-1" }));
+      assert.equal(error.kind, "unreadable");
+      assert.equal(error.httpStatus, 200);
+      assert.equal(
+        server.opened.length,
+        1,
+        "the request was delivered, so this is not a seal failure",
+      );
+      assert.equal(server.opened[0]?.idempotencyKey, "k-1");
+    },
+  );
+});
+
+test("anything that fails in opening the answer, even a trap in the module, is unreadable and not seal", async () => {
+  const gateway = await startTestServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" }).end("{}");
+  });
+  try {
+    for (const thrown of [
+      new TypeError("the module trapped"),
+      { kind: "invalid", message: "headers must be an array of [name, value] string pairs" },
+      { kind: "unreadable", message: "the answer is not UTF-8" },
+    ]) {
+      // A sealer that signs nothing: the call goes out as a plain request, and
+      // what is under test is only how a failure in `openResponse` is named.
+      const sealer = {
+        publicKey: "",
+        algorithm: "ed25519",
+        sealCall: async () => ({
+          body: new Uint8Array([1]),
+          headers: [],
+          target: "/$procs/sendMessage",
+          openResponse: async () => {
+            throw thrown;
+          },
+        }),
+      } as unknown as WasmSealer;
+      const error = await rejection(
+        performSealedCall(
+          { base: parseBaseUrl(gateway.url), timeoutMs: 2_000, sealer },
+          { method: "POST", route: "/$procs/sendMessage" },
+        ),
+      );
+      assert.equal(error.kind, "unreadable", JSON.stringify(thrown));
+      assert.equal(error.httpStatus, 200);
+    }
+    assert.equal(gateway.requests.length, 3, "every one of them had been delivered");
+  } finally {
+    await gateway.close();
+  }
 });
 
 test("a plain 200 is not believed, whatever it says", async () => {

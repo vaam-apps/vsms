@@ -154,3 +154,48 @@ test("a public key that is not a P-256 point is refused at construction", () => 
     (failure: { kind: string }) => failure.kind === "invalid",
   );
 });
+
+// ECDSA signatures come in pairs: (r, s) and (r, n - s) both verify. Which one a
+// signer returns is its own business (WebCrypto returns either), so the module
+// must accept both, and these two tests force each instead of leaving it to
+// chance.
+const P256_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
+
+function withS(signature: Buffer, high: boolean): Buffer {
+  const r = signature.subarray(0, 32);
+  let s = BigInt(`0x${signature.subarray(32).toString("hex")}`);
+  const isHigh = s > P256_ORDER / 2n;
+  if (isHigh !== high) s = P256_ORDER - s;
+  assert.equal(s > P256_ORDER / 2n, high, "the s value is forced to the requested half");
+  return Buffer.concat([r, Buffer.from(s.toString(16).padStart(64, "0"), "hex")]);
+}
+
+for (const high of [false, true]) {
+  test(`a ${high ? "high" : "low"}-s P-256 signature is accepted, whichever half the signer produced`, async () => {
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const jwk = createPublicKey(privateKey).export({ format: "jwk" });
+    const publicKey = Buffer.concat([
+      Buffer.from([4]),
+      Buffer.from(jwk.x as string, "base64url"),
+      Buffer.from(jwk.y as string, "base64url"),
+    ]).toString("base64url");
+    const { identity, responder } = server([publicKey]);
+    const sealer = loadWasm().Sealer.fromEsp256Callback(
+      publicKey,
+      (tbs) => withS(sign("sha256", tbs, { key: privateKey, dsaEncoding: "ieee-p1363" }), high),
+      identity.serverPublic,
+      identity.nextPublic,
+    );
+    const sealed = await sealer.sealCall(
+      "POST",
+      "/$procs/sendMessage",
+      [],
+      SEND,
+      undefined,
+      undefined,
+    );
+    assert.ok(
+      await responder.openRequest("POST", sealed.target, undefined, sealed.headers, sealed.body),
+    );
+  });
+}

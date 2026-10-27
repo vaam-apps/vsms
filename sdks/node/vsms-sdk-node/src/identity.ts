@@ -87,6 +87,36 @@ function config(message: string, cause?: unknown): SdkError {
 }
 
 /**
+ * The most a signer may return. A pure Ed25519 signature is 64 bytes; this is
+ * the bound the sealing module applies too, so a value that is not a signature
+ * is refused here, with a message, rather than inside the module.
+ */
+const MAX_SIGNATURE_BYTES = 128;
+
+/**
+ * Wraps a caller's signing function so that only a `Uint8Array` of a
+ * signature's size reaches the sealing module. A signer is the caller's code
+ * (a KMS client, an HSM) and may hand back a string, a number, a plain object
+ * or an `ArrayBuffer`; each is a `seal` failure, raised before the module
+ * would have to cope with it. The returned bytes are copied, so a view over a
+ * buffer the signer goes on to reuse cannot change under the call.
+ */
+function checkedSigner(
+  sign: (tbs: Uint8Array) => Uint8Array | Promise<Uint8Array>,
+): (tbs: Uint8Array) => Promise<Uint8Array> {
+  return async (tbs) => {
+    const returned: unknown = await sign(tbs);
+    if (!(returned instanceof Uint8Array) || returned.byteLength > MAX_SIGNATURE_BYTES) {
+      throw new SdkError(
+        `the signer must return the signature as a Uint8Array of at most ${MAX_SIGNATURE_BYTES} bytes`,
+        { kind: "seal" },
+      );
+    }
+    return new Uint8Array(returned);
+  };
+}
+
+/**
  * 32 bytes as unpadded base64url. Anything else is a `config` error naming the
  * field and never quoting the value: it may be a private seed.
  */
@@ -164,7 +194,7 @@ export function resolveSealer(options: IdentityOptions): WasmSealer {
       const external = options.signer;
       return wasm.Sealer.fromCallback(
         toKeyBase64url(external.publicKey, "signer.publicKey"),
-        (tbs) => external.sign(tbs),
+        checkedSigner((tbs) => external.sign(tbs)),
         current,
         next,
       );
@@ -188,7 +218,12 @@ export function resolveSealer(options: IdentityOptions): WasmSealer {
     }
     const signer =
       typeof privateKey === "string" ? signerFromPem(privateKey) : signerFromKeyObject(privateKey);
-    return wasm.Sealer.fromCallback(signer.publicKey, (tbs) => signer.sign(tbs), current, next);
+    return wasm.Sealer.fromCallback(
+      signer.publicKey,
+      checkedSigner((tbs) => signer.sign(tbs)),
+      current,
+      next,
+    );
   } catch (err) {
     if (err instanceof SdkError) throw err;
     // The wasm module rejects with a plain `{ kind, message }`; its messages

@@ -121,7 +121,8 @@ The key can also be a `crypto.KeyObject`, the 32-byte seed, or a `signer`
 callback for a key this process cannot read (a KMS); an answer sealed under
 the pinned `next` key is trusted, so a rotation is not a flag day. Every
 failure is an `SdkError` with a `kind` (`config`, `seal`, `transport`,
-`unsigned`, `unverified`, `remote`, ...), and the client reports whether a send
+`unsigned`, `unverified`, `unreadable`, `remote`, ...; `seal` alone means
+nothing was sent), and the client reports whether a send
 was replayed under its `Idempotency-Key` (`idempotencyReplayed`); see the
 [package README](../sdks/node/vsms-sdk-node/README.md).
 [`examples/node/sms-send-example`](../examples/node/sms-send-example) is the
