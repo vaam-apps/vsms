@@ -68,7 +68,7 @@ NOTE: pnpm's content-addressable store normally lives outside any project (`~/.l
 just ci-quick
 ----
 
-Everything above except the live-Postgres suites (step 13) and the JS typecheck+build+test steps (17-18, skipped together -- `turbo.json`'s own `test` task `dependsOn: ["build"]`, so skipping only step 17 saves nothing at all: `pnpm turbo run test` would just trigger the identical build as one of its own dependency tasks, folded silently into step 18's own timing instead of appearing as step 17's). These are the slowest steps in the gate and the least likely to catch a mistake in a small, focused change. Not a substitute for `just ci` before opening a PR; a genuine "did I break something obvious" loop while iterating.
+Everything above except the live-Postgres suites (step 13) and the JS typecheck+build+test steps (17-18, skipped together -- `turbo.jsonc`'s own `test` task `dependsOn: ["build"]`, so skipping only step 17 saves nothing at all: `pnpm turbo run test` would just trigger the identical build as one of its own dependency tasks, folded silently into step 18's own timing instead of appearing as step 17's). These are the slowest steps in the gate and the least likely to catch a mistake in a small, focused change. Not a substitute for `just ci` before opening a PR; a genuine "did I break something obvious" loop while iterating.
 
 === Running one suite by hand
 

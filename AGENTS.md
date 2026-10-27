@@ -1326,7 +1326,7 @@ the user-facing account; this is what to know before touching it.
   both from the lock and is what CI runs (`ci.yml`'s `js` job and `release.yml`'s `publish-node-sdk`), `just wasm-build` /
   `wasm-build-test` call the script. `pnpm build` is `build:wasm && build:ts`, so every `turbo run build` needs the
   toolchain: `just ci` runs `wasm-tools` at step 15, `ci/runner/Dockerfile` bakes the wasm32 target (the CLI is not baked:
-  an image `ARG` would be a second copy of a version that must equal the lock), `turbo.json` declares `wasm/**` an output
+  an image `ARG` would be a second copy of a version that must equal the lock), `turbo.jsonc` declares `wasm/**` an output
   of `@vaam-apps/vsms-node#build` and the crate, the vendored schema and the lock its inputs (otherwise a cache hit
   restores `dist/` and leaves a package that cannot load its sealing module, or serves a stale one after a Rust change),
   and the `js` filter in `ci.yml` now includes `sdks/rust/**`. The admin console's Docker build is unaffected

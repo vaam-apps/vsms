@@ -659,7 +659,7 @@ ci:
 
 # The fast-iteration subset: everything in `ci` except the live-Postgres
 # suites (step 14, the slowest single step by a wide margin) and the JS
-# typecheck+build+test (steps 18-19, skipped together — turbo.json's own
+# typecheck+build+test (steps 18-19, skipped together — turbo.jsonc's own
 # "test" task depends on "build", so skipping only the build step saves
 # nothing; `pnpm turbo run test` would just trigger the identical build as
 # one of its own dependency tasks). Good for "did I break something
@@ -838,7 +838,7 @@ ci-inner:
 	just client-check
 
 	# Steps 18 and 19 are skipped together under VSMS_CI_QUICK, not
-	# independently — found in review: turbo.json's own "test" task
+	# independently — found in review: turbo.jsonc's own "test" task
 	# `dependsOn: ["build"]`, so skipping only step 18 saves nothing at
 	# all. `pnpm turbo run test` would simply trigger the identical build
 	# as one of its own dependency tasks, just folded silently into step
