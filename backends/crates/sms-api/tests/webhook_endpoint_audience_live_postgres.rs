@@ -2,8 +2,9 @@
 //! deliveries from another's (the gateway signs every app's with one key), so the database
 //! hands each name out once: a second `WebhookEndpoint` cannot take an
 //! audience already in use, whichever app it belongs to, on create or on
-//! update. Also end to end through the delegate: a URL that cannot be sealed
-//! and the audience `vsms` are refused before the database is asked.
+//! update. Also end to end through the delegate: the audience `vsms` is refused
+//! before the database is asked, and a URL that cannot be sealed is refused by
+//! the database for a `sealed` endpoint alone (an `hmac` one keeps it).
 //!
 //! Ignored by default, same convention as this crate's other live suites:
 //!
@@ -78,6 +79,9 @@ fn endpoint(app_id: &str, url: &str, audience: &str) -> CreateWebhookEndpointInp
         circuitOpenUntil: None,
     }
 }
+
+/// The CHECK that holds a `sealed` endpoint's URL to a route a delivery can bind.
+const CHECK: &str = "webhook_endpoints_url_sealable_for_sealed_check";
 
 fn is_unique_violation(error: &cratestack::CratestackError) -> bool {
     error.db_sqlstate() == Some("23505")
@@ -177,28 +181,42 @@ async fn a_second_endpoint_cannot_take_an_audience_already_in_use() {
 
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres - see module docs"]
-async fn the_delegate_refuses_an_unsealable_url_and_the_audience_vsms() {
+async fn a_sealed_endpoint_refuses_an_unsealable_url_and_an_hmac_one_keeps_it() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app = seed_app(&db).await;
-
     for url in [
         "https://h.example/hook?x=1",
         "https://u:pw@h.example/hook",
         "https://h.example/{tenant}",
         "ftp://h.example/hook",
     ] {
+        // A sealed endpoint: the database says no, naming the CHECK, and
+        // `map_database_error` turns that into the 422 a procedure answers.
         let refused = db
             .webhook_endpoint()
             .create(endpoint(&app, url, &format!("url-{}", unique_suffix())))
             .run(&owner())
             .await;
-        assert!(refused.is_err(), "{url} should be refused");
-        assert!(
-            !refused.as_ref().is_err_and(is_unique_violation),
-            "{url}: refused by the pattern, not by the database"
-        );
+        let error = refused.expect_err(&format!("{url} should be refused for sealed"));
+        assert_eq!(error.db_sqlstate(), Some("23514"), "{url}: {error:?}");
+        assert_eq!(error.db_constraint(), Some(CHECK), "{url}");
+        assert_eq!(sms_api::map_database_error(error).status_code(), 422);
+
+        // An hmac endpoint binds no route: it keeps whatever it was given.
+        let hmac = db
+            .webhook_endpoint()
+            .create(CreateWebhookEndpointInput {
+                deliveryMode: schema::WebhookDeliveryMode::hmac,
+                audience: None,
+                secret: Some("whsec_url_keeper_0123456789abcdef0123456789".to_owned()),
+                ..endpoint(&app, url, "unused")
+            })
+            .run(&owner())
+            .await;
+        assert!(hmac.is_ok(), "{url} should be kept by hmac: {hmac:?}");
     }
+
     let vsms = db
         .webhook_endpoint()
         .create(endpoint(&app, "https://h.example/hook", "vsms"))
@@ -207,7 +225,8 @@ async fn the_delegate_refuses_an_unsealable_url_and_the_audience_vsms() {
     assert!(vsms.is_err());
     assert!(!vsms.as_ref().is_err_and(is_unique_violation));
 
-    // And an update cannot move a stored endpoint onto an unsealable URL.
+    // And an update cannot move a stored sealed endpoint onto an unsealable
+    // URL, while an hmac endpoint's moves freely.
     let stored = db
         .webhook_endpoint()
         .create(endpoint(
@@ -228,5 +247,28 @@ async fn the_delegate_refuses_an_unsealable_url_and_the_audience_vsms() {
         .if_match(stored.version)
         .run(&owner())
         .await;
-    assert!(moved.is_err());
+    let error = moved.expect_err("a sealed endpoint cannot move onto a fragment");
+    assert_eq!(error.db_constraint(), Some(CHECK), "{error:?}");
+
+    let legacy = db
+        .webhook_endpoint()
+        .create(CreateWebhookEndpointInput {
+            deliveryMode: schema::WebhookDeliveryMode::hmac,
+            audience: None,
+            secret: Some("whsec_url_mover_0123456789abcdef0123456789".to_owned()),
+            ..endpoint(&app, "https://h.example/hook", "unused")
+        })
+        .run(&owner())
+        .await
+        .expect("an hmac endpoint");
+    db.webhook_endpoint()
+        .update(legacy.id.clone())
+        .set(UpdateWebhookEndpointInput {
+            url: Some("https://h.example/hook?token=abc#frag".to_owned()),
+            ..Default::default()
+        })
+        .if_match(legacy.version)
+        .run(&owner())
+        .await
+        .expect("an hmac endpoint's URL moves onto a query string");
 }

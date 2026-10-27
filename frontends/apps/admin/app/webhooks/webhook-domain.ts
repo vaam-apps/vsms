@@ -69,31 +69,33 @@ const audienceField = z
   .max(255, "At most 255")
   .refine((v) => v !== GATEWAY_AUDIENCE, { message: GATEWAY_AUDIENCE_MESSAGE });
 
-// The URL a delivery is POSTed to. One the worker could not seal for (see
-// `receiverRoute`) is refused here, as the gateway refuses it on write, instead
-// of failing at delivery.
-const urlField = z
-  .string()
-  .trim()
-  .min(1, "URL is required")
-  .superRefine((v, ctx) => {
-    const refusal = urlRefusal(v);
-    if (refusal !== null) ctx.addIssue({ code: "custom", message: refusal });
-  });
+// The URL a delivery is POSTed to. Any URL will do for an `hmac` endpoint, as it
+// always has: its signature rides in headers, and a receiver may well be
+// addressed with a query string. Only a `sealed` delivery binds the URL's path as
+// its route, so the rule that refuses a URL the worker could not seal for (see
+// `receiverRoute`) is [`sealedNeedsAudienceAndRoute`]'s, and applies to that mode
+// alone.
+const urlField = z.string().trim().min(1, "URL is required");
 
-// A `sealed` endpoint needs an audience, valid as the column holds it. An `hmac`
-// endpoint has none: whatever the (hidden) field holds is ignored, and the
-// screen never sends it.
-function sealedNeedsAudience(
-  value: { deliveryMode: DeliveryMode; audience: string },
+// What only a `sealed` endpoint needs, checked as the gateway checks it (a CHECK
+// on the row, `schemas/vsms.cstack`): an audience valid as the column holds it,
+// and a URL its deliveries can be sealed for, which would otherwise fail at
+// delivery and burn attempts instead of failing a form. An `hmac` endpoint has no
+// audience (whatever the hidden field holds is ignored, and the screen never
+// sends it) and keeps the URL it has, a query string included.
+function sealedNeedsAudienceAndRoute(
+  value: { deliveryMode: DeliveryMode; audience: string; url: string },
   ctx: z.RefinementCtx,
 ) {
   if (value.deliveryMode !== "sealed") return;
-  const parsed = audienceField.safeParse(value.audience);
-  if (parsed.success) return;
-  for (const issue of parsed.error.issues) {
-    ctx.addIssue({ code: "custom", path: ["audience"], message: issue.message });
+  const audience = audienceField.safeParse(value.audience);
+  if (!audience.success) {
+    for (const issue of audience.error.issues) {
+      ctx.addIssue({ code: "custom", path: ["audience"], message: issue.message });
+    }
   }
+  const refusal = urlRefusal(value.url.trim());
+  if (refusal !== null) ctx.addIssue({ code: "custom", path: ["url"], message: refusal });
 }
 
 const deliveryModeField = z.enum(DELIVERY_MODES);
@@ -112,7 +114,7 @@ export const endpointSchema = z
     maskRecipient: z.boolean(),
     active: z.boolean(),
   })
-  .superRefine(sealedNeedsAudience);
+  .superRefine(sealedNeedsAudienceAndRoute);
 export type EndpointFormValues = z.infer<typeof endpointSchema>;
 
 export const createEndpointSchema = z
@@ -129,5 +131,5 @@ export const createEndpointSchema = z
       }),
     maskRecipient: z.boolean(),
   })
-  .superRefine(sealedNeedsAudience);
+  .superRefine(sealedNeedsAudienceAndRoute);
 export type CreateEndpointFormValues = z.infer<typeof createEndpointSchema>;

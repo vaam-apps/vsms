@@ -19,7 +19,7 @@ export function EndpointEditFields({
 }: {
   formId: string;
   form: UseFormReturn<EndpointFormValues>;
-  /** The endpoint's own mode: fixed for its life, read off the row. */
+  /** The endpoint's own mode, read off the row: this form cannot change it. */
   deliveryMode: DeliveryMode;
   eventTypes: EventType[];
   onEventTypesChange: (types: EventType[]) => void;

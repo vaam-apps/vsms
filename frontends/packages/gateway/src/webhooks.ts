@@ -19,8 +19,9 @@
 //   moved to the seal. It has no audience.
 //
 // The database holds them apart (CHECKs in migration 0010): a `sealed` row has
-// an audience and no secret, an `hmac` row has a secret. The rules are written
-// once more here (`./webhook-rules.ts`) so the console says no before asking.
+// an audience, no secret and a URL its deliveries can be sealed for, an `hmac`
+// row has a secret and any URL. The rules are written once more here
+// (`./webhook-rules.ts`) so the console says no before asking.
 //
 // # `WebhookEndpoint.secret`/`prevSecret` (`hmac` only) — displayed, not hidden,
 // and here is why that is the honest choice rather than the cautious-looking one
@@ -331,9 +332,9 @@ export async function createWebhookEndpoint(
 
 export interface UpdateWebhookEndpointFields {
   url?: string | undefined;
-  /** A `sealed` endpoint's audience. Sending one for an `hmac` endpoint is not
-   * refused by the database (the column is simply unused there); the console
-   * never does. */
+  /** A `sealed` endpoint's audience. The database does not refuse one on an
+   * `hmac` row (the column is simply unused there), so `webhookEndpoints.update`
+   * does, after reading the row's mode. */
   audience?: string | undefined;
   eventTypes?: WebhookEventType[] | undefined;
   maskRecipient?: boolean | undefined;
@@ -345,9 +346,10 @@ export interface UpdateWebhookEndpointFields {
  * `deliveryMode` or `secret`/`prevSecret`/`secretRotatedAt`:
  * [`rotateWebhookSecret`] below is the only path this module exposes for the
  * secret, the audited procedure built for exactly this write rather than a
- * plain field edit. (Switching an endpoint's mode is a single `PATCH` the API
- * accepts - `docs/integrating.md` has the two bodies - and this console does not
- * offer it.) */
+ * plain field edit. (Switching an endpoint's mode is the `switchWebhookDeliveryMode`
+ * procedure - `docs/integrating.md` - which validates and mints or clears the
+ * secret; the console offers no switch, and a raw `PATCH` of the mode is answered
+ * with a database error when it breaks a CHECK.) */
 export async function updateWebhookEndpoint(
   id: string,
   etag: string,

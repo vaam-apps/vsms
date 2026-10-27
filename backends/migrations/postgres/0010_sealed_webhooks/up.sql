@@ -61,6 +61,21 @@
 --   webhook_endpoints_audience_required_for_sealed_check         (a cross-column rule)
 --   webhook_endpoints_delivery_mode_hmac_needs_secret_check      (a cross-column rule)
 --   webhook_endpoints_delivery_mode_sealed_holds_no_secret_check (a cross-column rule)
+--   webhook_endpoints_url_sealable_for_sealed_check              (a cross-column rule, below)
+--
+-- The last is the one rule about `url`, and it holds `sealed` rows alone. A
+-- sealed delivery binds the path of the URL as its route, so a URL that cannot be
+-- one literal route (credentials, a query, a fragment, a `{`, `}` or `%` in the
+-- path, a scheme other than http(s), a non-ASCII or underscored host) could only
+-- fail at delivery, burning attempts and tripping the endpoint's breaker. An
+-- `hmac` delivery binds no route and keeps every URL it was registered with, a
+-- query string included, so nothing is asserted of those: `url` stays a plain
+-- `@uri` in the schema, and the pattern is `sms_webhook::SEALABLE_URL_PATTERN`,
+-- which `sealed_webhooks_migration_live_postgres.rs` and
+-- `webhook_endpoint_validation.rs` hold equal to this statement's (its `'`
+-- doubled for SQL). It is written to mean the same to Rust's regex and to
+-- Postgres. Existing rows are all `hmac`, so the constraint is satisfied by
+-- every row this migration finds.
 --
 -- `0001_init` has already been applied to deployed databases and `sms-migrate`
 -- records migrations by name, so it cannot stop creating `secret NOT NULL`; this
@@ -104,5 +119,7 @@ ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_audience_required
 ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_delivery_mode_hmac_needs_secret_check CHECK (delivery_mode <> 'hmac' OR secret IS NOT NULL);
 
 ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_delivery_mode_sealed_holds_no_secret_check CHECK (delivery_mode <> 'sealed' OR (secret IS NULL AND prev_secret IS NULL AND secret_rotated_at IS NULL));
+
+ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_url_sealable_for_sealed_check CHECK (delivery_mode <> 'sealed' OR url ~ '^[Hh][Tt][Tt][Pp][Ss]?://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::(?:6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(?:/[A-Za-z0-9._~!$&''()*+,;=:@/-]*)?$');
 
 CREATE UNIQUE INDEX webhook_endpoints_audience_key ON webhook_endpoints (audience);

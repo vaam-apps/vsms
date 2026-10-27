@@ -82,7 +82,30 @@ fn insert_endpoint(
     secret: Option<&str>,
     prev_secret: Option<&str>,
 ) -> (bool, String, String) {
+    insert_endpoint_at(
+        url,
+        id,
+        "https://h.example.test/x",
+        mode,
+        audience,
+        secret,
+        prev_secret,
+    )
+}
+
+/// [`insert_endpoint`] with the endpoint's own URL (`endpoint_url`, the column;
+/// `url` is the database being connected to).
+fn insert_endpoint_at(
+    url: &str,
+    id: &str,
+    endpoint_url: &str,
+    mode: &str,
+    audience: Option<&str>,
+    secret: Option<&str>,
+    prev_secret: Option<&str>,
+) -> (bool, String, String) {
     let quote = |value: Option<&str>| value.map_or_else(|| "NULL".to_owned(), |v| format!("'{v}'"));
+    let endpoint_url = endpoint_url.replace('\'', "''");
     psql(
         url,
         &[
@@ -91,7 +114,7 @@ fn insert_endpoint(
                 "INSERT INTO webhook_endpoints \
                  (id, app_id, url, event_types, delivery_mode, audience, secret, prev_secret, \
                   mask_recipient, max_attempts, version) \
-                 VALUES ('{id}', 'app1', 'https://h.example.test/x', ' ', '{mode}', {}, {}, {}, \
+                 VALUES ('{id}', 'app1', '{endpoint_url}', ' ', '{mode}', {}, {}, {}, \
                          true, 8, 1)",
                 quote(audience),
                 quote(secret),
@@ -158,6 +181,92 @@ fn assert_the_modes_are_held_apart(url: &str) {
     ] {
         assert!(result.0, "{id}: {}", result.2);
     }
+}
+
+/// The one rule about `url` holds a `sealed` endpoint alone: a sealed delivery
+/// binds the URL's path as its route. An `hmac` endpoint keeps any URL, a query
+/// string included, and the migration's seed already holds such rows.
+fn assert_the_url_rule_is_a_sealed_endpoints_alone(url: &str) {
+    const CHECK: &str = "webhook_endpoints_url_sealable_for_sealed_check";
+    let unsealable = [
+        "https://h.example.test/hook?token=abc",
+        "https://h.example.test/hook?",
+        "https://h.example.test/hook#frag",
+        "https://u:pw@h.example.test/hook",
+        "https://h.example.test/hooks/{tenant}",
+        "https://h.example.test/a%2Fb",
+        "ftp://h.example.test/hook",
+        "https://exämple.test/hook",
+        "https://under_score.example.test/hook",
+        "https://h.example.test:0/hook",
+        "https://h.example.test:65536/hook",
+    ];
+    for (i, endpoint_url) in unsealable.iter().enumerate() {
+        refused_by(
+            insert_endpoint_at(
+                url,
+                &format!("u{i}"),
+                endpoint_url,
+                "sealed",
+                Some(&format!("recv-u{i}")),
+                None,
+                None,
+            ),
+            CHECK,
+        );
+        let (ok, _, stderr) = insert_endpoint_at(
+            url,
+            &format!("h{i}"),
+            endpoint_url,
+            "hmac",
+            None,
+            Some("whsec_url_rule"),
+            None,
+        );
+        assert!(ok, "an hmac endpoint keeps {endpoint_url}: {stderr}");
+    }
+    for (i, endpoint_url) in [
+        "https://h.example.test/webhooks/vsms",
+        "HTTP://H.example.test:8080",
+        "https://[::1]:8443/hook",
+        "https://h.example.test/a,b;c=d@e:f'g",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (ok, _, stderr) = insert_endpoint_at(
+            url,
+            &format!("s{i}"),
+            endpoint_url,
+            "sealed",
+            Some(&format!("recv-s{i}")),
+            None,
+            None,
+        );
+        assert!(ok, "a sealed endpoint at {endpoint_url}: {stderr}");
+    }
+}
+
+/// The CHECK carries `sms_webhook::SEALABLE_URL_PATTERN` and nothing else: the
+/// Rust constant the corpus test holds narrower than `delivery_route` is the
+/// pattern the database applies.
+#[test]
+fn the_migration_carries_the_pattern_the_rust_constant_names() {
+    let up = std::fs::read_to_string(migrations_root().join("0010_sealed_webhooks/up.sql"))
+        .expect("0010/up.sql");
+    let statement = up
+        .lines()
+        .find(|line| {
+            line.starts_with("ALTER TABLE")
+                && line.contains("webhook_endpoints_url_sealable_for_sealed_check")
+        })
+        .expect("0010 adds webhook_endpoints_url_sealable_for_sealed_check");
+    let expected = format!(
+        "ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_url_sealable_for_sealed_check \
+         CHECK (delivery_mode <> 'sealed' OR url ~ '{}');",
+        sms_webhook::SEALABLE_URL_PATTERN.replace('\'', "''")
+    );
+    assert_eq!(statement, expected);
 }
 
 /// Two receivers cannot share a name (the gateway has one signing key for every
@@ -340,6 +449,7 @@ async fn legacy_endpoints_become_hmac_with_their_secrets_and_no_audience() {
 
     assert_the_modes_are_held_apart(&scratch);
     assert_audience_is_unique_and_never_vsms(&scratch);
+    assert_the_url_rule_is_a_sealed_endpoints_alone(&scratch);
 
     drop_scratch(&admin, SCRATCH_UP);
 }
@@ -411,8 +521,56 @@ async fn the_rollback_restores_the_legacy_shape_and_refuses_only_for_a_sealed_en
         "0"
     );
 
-    // And forward again: the migration is repeatable over what the rollback left.
+    // Forward again: the migration is repeatable over what the rollback left.
+    // Then a rollback is one transaction. Make its middle fail (a constraint it
+    // drops by name is gone) and run it the way `psql -f` runs a file by
+    // default, carrying on past an error: the statements before the failure are
+    // undone with it, not left half applied.
     apply(&scratch, &from_0010.join("up.sql"));
+    must(
+        &scratch,
+        &[
+            "-c",
+            "ALTER TABLE webhook_endpoints \
+             DROP CONSTRAINT webhook_endpoints_delivery_mode_hmac_needs_secret_check",
+        ],
+    );
+    let constraints = "SELECT count(*) FROM pg_constraint \
+                       WHERE conrelid = 'webhook_endpoints'::regclass AND contype = 'c'";
+    let constraints_before = must(&scratch, &["-c", constraints]);
+    let output = Command::new("psql")
+        .arg(&scratch)
+        .args(["-q", "-f", down])
+        .output()
+        .expect("spawning psql");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("does not exist"),
+        "the rollback must fail: {stderr}"
+    );
+    assert_eq!(must(&scratch, &["-c", constraints]), constraints_before);
+    assert!(column_names(&scratch).contains(&"delivery_mode".to_owned()));
+    assert_eq!(
+        must(
+            &scratch,
+            &[
+                "-c",
+                "SELECT count(*) FROM pg_indexes WHERE indexname = 'webhook_endpoints_audience_key'"
+            ],
+        ),
+        "1"
+    );
+    must(
+        &scratch,
+        &[
+            "-c",
+            "ALTER TABLE webhook_endpoints ADD CONSTRAINT webhook_endpoints_delivery_mode_hmac_needs_secret_check \
+             CHECK (delivery_mode <> 'hmac' OR secret IS NOT NULL)",
+        ],
+    );
+
+    // The migration was repeatable over what the first rollback left (the
+    // `apply` above), and the secrets are what they were.
     assert_eq!(must(&scratch, &["-c", SECRETS]), secrets_before);
 
     drop_scratch(&admin, SCRATCH_DOWN);

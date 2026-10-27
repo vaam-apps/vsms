@@ -124,21 +124,56 @@ describe("the router in the page", () => {
       expect(fetcher).toHaveBeenCalledTimes(1);
     });
 
-    it.each([
+    const unsealable = [
       ["a query", "https://receiver.example/webhooks/vsms?x=1"],
       ["a bare query marker", "https://receiver.example/webhooks/vsms?"],
       ["a bare fragment marker", "https://receiver.example/webhooks/vsms#"],
       ["credentials", "https://u:pw@receiver.example/webhooks/vsms"],
       ["a path parameter", "https://receiver.example/webhooks/{tenant}"],
-    ])("refuses a URL with %s, on create and on update", async (_name, url) => {
-      const fetcher = vi.fn<GatewayFetch>();
-      configureGatewayFetch(fetcher);
-      const created = await call("webhookEndpoints.create", { ...base, url }, "POST");
-      expect(created.status).toBe(400);
-      const updated = await call("webhookEndpoints.update", { id: "e", etag: "1", url }, "POST");
-      expect(updated.status).toBe(400);
-      expect(fetcher).not.toHaveBeenCalled();
-    });
+    ] as const;
+
+    it.each(unsealable)(
+      "refuses a sealed endpoint's URL with %s, on create and on update",
+      async (_name, url) => {
+        // The update reads the row to learn its mode, and goes no further.
+        const requests: string[] = [];
+        configureGatewayFetch(async (u, init) => {
+          requests.push(`${init?.method} ${new URL(String(u)).pathname}`);
+          return json(200, { id: "e", deliveryMode: "sealed", eventTypes: " ", version: 1 });
+        });
+        const created = await call("webhookEndpoints.create", { ...base, url }, "POST");
+        expect(created.status).toBe(400);
+        expect(requests).toEqual([]);
+        const updated = await call("webhookEndpoints.update", { id: "e", etag: "1", url }, "POST");
+        expect(updated.status).toBe(400);
+        expect(requests).toEqual(["GET /webhook_endpoints/e"]);
+      },
+    );
+
+    it.each(unsealable)(
+      "lets an hmac endpoint keep a URL with %s, on create and on update",
+      async (_name, url) => {
+        const requests: string[] = [];
+        configureGatewayFetch(async (u, init) => {
+          requests.push(`${init?.method} ${new URL(String(u)).pathname}`);
+          return json(200, { id: "e", deliveryMode: "hmac", eventTypes: " ", version: 1 });
+        });
+        const { audience: _audience, deliveryMode: _mode, ...common } = base;
+        const created = await call(
+          "webhookEndpoints.create",
+          { ...common, deliveryMode: "hmac", url },
+          "POST",
+        );
+        expect(created.status).toBe(200);
+        const updated = await call("webhookEndpoints.update", { id: "e", etag: "1", url }, "POST");
+        expect(updated.status).toBe(200);
+        expect(requests).toEqual([
+          "POST /webhook_endpoints",
+          "GET /webhook_endpoints/e",
+          "PATCH /webhook_endpoints/e",
+        ]);
+      },
+    );
 
     it("refuses the audience vsms, on create and on update", async () => {
       const fetcher = vi.fn<GatewayFetch>();
@@ -152,6 +187,64 @@ describe("the router in the page", () => {
       );
       expect(updated.status).toBe(400);
       expect(fetcher).not.toHaveBeenCalled();
+    });
+
+    it("refuses an audience on an hmac endpoint's update, and sends nothing", async () => {
+      const requests: string[] = [];
+      configureGatewayFetch(async (u, init) => {
+        requests.push(`${init?.method} ${new URL(String(u)).pathname}`);
+        return json(200, { id: "e", deliveryMode: "hmac", eventTypes: " ", version: 1 });
+      });
+      const { status, result } = await call(
+        "webhookEndpoints.update",
+        { id: "e", etag: "1", audience: "victim-receiver" },
+        "POST",
+      );
+      expect(status).toBe(400);
+      expect(String(result.error?.json && JSON.stringify(result.error.json))).toContain(
+        "no audience",
+      );
+      expect(requests).toEqual(["GET /webhook_endpoints/e"]);
+    });
+
+    it("lets a sealed endpoint's update name an audience, and reads nothing else first", async () => {
+      const requests: string[] = [];
+      configureGatewayFetch(async (u, init) => {
+        requests.push(`${init?.method} ${new URL(String(u)).pathname}`);
+        return json(200, { id: "e", deliveryMode: "sealed", eventTypes: " ", version: 1 });
+      });
+      const { status } = await call(
+        "webhookEndpoints.update",
+        { id: "e", etag: "1", audience: "vaam" },
+        "POST",
+      );
+      expect(status).toBe(200);
+      expect(requests).toEqual(["GET /webhook_endpoints/e", "PATCH /webhook_endpoints/e"]);
+    });
+
+    it("updates a field that carries neither rule without reading the row", async () => {
+      const requests: string[] = [];
+      configureGatewayFetch(async (u, init) => {
+        requests.push(`${init?.method} ${new URL(String(u)).pathname}`);
+        return json(200, { id: "e", deliveryMode: "hmac", eventTypes: " ", version: 1 });
+      });
+      const { status } = await call(
+        "webhookEndpoints.update",
+        { id: "e", etag: "1", active: false },
+        "POST",
+      );
+      expect(status).toBe(200);
+      expect(requests).toEqual(["PATCH /webhook_endpoints/e"]);
+    });
+
+    it("answers an update of an endpoint that does not exist with not found", async () => {
+      configureGatewayFetch(async () => json(404, { code: "NOT_FOUND", message: "no row" }));
+      const { status } = await call(
+        "webhookEndpoints.update",
+        { id: "gone", etag: "1", audience: "vaam" },
+        "POST",
+      );
+      expect(status).toBe(404);
     });
   });
 

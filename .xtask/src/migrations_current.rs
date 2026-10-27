@@ -142,9 +142,10 @@ const COLUMNS_CHANGED_BY_LATER: (&str, &str, &[&str], &[&str], &[&str]) = (
 
 /// Constraints the migration above writes by hand because the schema has no
 /// attribute that makes the generator emit them: `audience <> 'vsms'`
-/// (`@db_enforce` does nothing for a `@regex`) and the three that tie
-/// `delivery_mode` to the columns it decides (a rule across columns, which no
-/// attribute expresses). Every other statement the migration carries under
+/// (`@db_enforce` does nothing for a `@regex`), the three that tie
+/// `delivery_mode` to the columns it decides, and the one that holds a `sealed`
+/// row's `url` to `sms_webhook::SEALABLE_URL_PATTERN` (each a rule across
+/// columns, which no attribute expresses). Every other statement the migration carries under
 /// [`COLUMNS_CHANGED_BY_LATER`]'s name prefixes must be one the generator
 /// emits, so removing `@unique` or `@db_enforce` from the schema leaves a
 /// statement nothing asks for and fails here, and each name below must really
@@ -155,6 +156,7 @@ const HAND_WRITTEN_COLUMN_CONSTRAINTS: &[&str] = &[
     "webhook_endpoints_audience_required_for_sealed_check",
     "webhook_endpoints_delivery_mode_hmac_needs_secret_check",
     "webhook_endpoints_delivery_mode_sealed_holds_no_secret_check",
+    "webhook_endpoints_url_sealable_for_sealed_check",
 ];
 
 /// Removes its temp directory on drop, on every exit path — success,

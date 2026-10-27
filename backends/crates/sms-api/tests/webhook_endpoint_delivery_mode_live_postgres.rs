@@ -4,9 +4,10 @@
 //! - **`sealed` needs an audience and holds no secret; `hmac` needs a secret.**
 //!   The database says so with CHECKs (`0010_sealed_webhooks`), and a write that
 //!   breaks one is refused with SQLSTATE `23514` naming the constraint. (Through
-//!   the generated REST routes that surfaces as a database error; the console
-//!   checks the same rules before it asks, `frontends/packages/gateway/src/
-//!   webhook-rules.ts`.)
+//!   the generated REST routes that surfaces as a database error (500); a
+//!   procedure maps it to a 422 with `map_database_error`, and
+//!   `switchWebhookDeliveryMode` checks first; the console checks the same rules
+//!   before it asks, `frontends/packages/gateway/src/webhook-rules.ts`.)
 //! - **A mode switch is one update.** `hmac -> sealed` names an audience and
 //!   clears all three secret columns with explicit `null`s; `sealed -> hmac`
 //!   supplies a secret. Either half left out is refused and changes nothing.
@@ -135,6 +136,11 @@ fn refused_by(
     let error = result.expect_err("the database must refuse this row");
     assert_eq!(error.db_sqlstate(), Some("23514"), "{error:?}");
     assert_eq!(error.db_constraint(), Some(constraint), "{error:?}");
+    // The generated routes answer this as a database error (500). What a
+    // procedure answers is `map_database_error`'s: a 422 that names the rule.
+    let mapped = sms_api::map_database_error(error);
+    assert_eq!(mapped.status_code(), 422, "{constraint}");
+    assert!(mapped.to_string().contains(constraint), "{mapped}");
 }
 
 #[tokio::test]
@@ -152,7 +158,7 @@ async fn a_sealed_endpoint_needs_an_audience_and_holds_no_secret() {
         create(
             &db,
             CreateWebhookEndpointInput {
-                secret: Some("whsec_smuggled".to_owned()),
+                secret: Some("whsec_smuggled_0123456789abcdef0123456789abcdef".to_owned()),
                 ..sealed(&app, Some(format!("recv-{}", unique_suffix())))
             },
         )
@@ -163,7 +169,7 @@ async fn a_sealed_endpoint_needs_an_audience_and_holds_no_secret() {
         create(
             &db,
             CreateWebhookEndpointInput {
-                prevSecret: Some("whsec_smuggled_old".to_owned()),
+                prevSecret: Some("whsec_smuggled_old_0123456789abcdef0123456789abcdef".to_owned()),
                 secretRotatedAt: Some(Utc::now()),
                 ..sealed(&app, Some(format!("recv-{}", unique_suffix())))
             },
@@ -214,9 +220,12 @@ async fn switching_hmac_to_sealed_names_an_audience_and_clears_every_secret() {
     let db = db().await;
     let app = seed_app(&db).await;
     let rotated = CreateWebhookEndpointInput {
-        prevSecret: Some("whsec_previous".to_owned()),
+        prevSecret: Some("whsec_previous_0123456789abcdef0123456789abcdef".to_owned()),
         secretRotatedAt: Some(Utc::now()),
-        ..hmac(&app, Some("whsec_current".to_owned()))
+        ..hmac(
+            &app,
+            Some("whsec_current_0123456789abcdef0123456789abcdef".to_owned()),
+        )
     };
     let endpoint = create(&db, rotated).await.expect("a rotated hmac endpoint");
     let audience = format!("recv-{}", unique_suffix());
@@ -268,8 +277,14 @@ async fn switching_hmac_to_sealed_names_an_audience_and_clears_every_secret() {
     );
     let untouched = reread(&db, &endpoint.id).await;
     assert_eq!(untouched.deliveryMode, WebhookDeliveryMode::hmac);
-    assert_eq!(untouched.secret.as_deref(), Some("whsec_current"));
-    assert_eq!(untouched.prevSecret.as_deref(), Some("whsec_previous"));
+    assert_eq!(
+        untouched.secret.as_deref(),
+        Some("whsec_current_0123456789abcdef0123456789abcdef")
+    );
+    assert_eq!(
+        untouched.prevSecret.as_deref(),
+        Some("whsec_previous_0123456789abcdef0123456789abcdef")
+    );
     assert_eq!(untouched.version, endpoint.version, "nothing was written");
 
     let switched = update(
@@ -372,11 +387,11 @@ async fn a_secret_is_redacted_from_every_audit_snapshot() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app = seed_app(&db).await;
-    let secret = format!("whsec_audit_{}", unique_suffix());
+    let secret = format!("whsec_audit_0123456789abcdef_{}", unique_suffix());
     let endpoint = create(&db, hmac(&app, Some(secret.clone())))
         .await
         .expect("an hmac endpoint");
-    let rotated_to = format!("whsec_audit_rotated_{}", unique_suffix());
+    let rotated_to = format!("whsec_audit_rotated_0123456789abcdef_{}", unique_suffix());
     update(
         &db,
         &endpoint,

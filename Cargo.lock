@@ -3493,6 +3493,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "rand 0.8.7",
+ "regex",
  "serde_json",
  "sha2 0.10.9",
  "sms-test-support",

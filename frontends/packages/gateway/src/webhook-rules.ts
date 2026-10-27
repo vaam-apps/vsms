@@ -1,8 +1,10 @@
 // What a `WebhookEndpoint` may hold, written once for every place in the console
 // that checks it (the Webhooks screen's forms and the tRPC router behind them).
-// The gateway enforces both again on write (`schemas/vsms.cstack`'s `@regex` on
-// `url` and `audience`, a CHECK and a unique index on `audience`), so these are
-// the early, friendly half of the same rules, never the only one.
+// The gateway enforces both again on write (a CHECK on `url` for a `sealed`
+// endpoint alone, `@regex` and a CHECK on `audience`, a unique index on it), so
+// these are the early, friendly half of the same rules, never the only one.
+// The route rule is a `sealed` endpoint's: an `hmac` delivery binds no route and
+// keeps whatever URL it was registered with.
 
 /**
  * The audience the gateway's own routes answer to. A receiver that used it for

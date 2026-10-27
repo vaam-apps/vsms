@@ -7,6 +7,7 @@
 // input says with a discriminated union so a mismatch is refused here, before
 // the gateway's CHECKs would answer it with a database error.
 
+import { TRPCError } from "@trpc/server";
 import { GATEWAY_AUDIENCE, GATEWAY_AUDIENCE_MESSAGE, urlRefusal } from "@vsms/gateway";
 import { z } from "zod";
 import { rethrowGatewayError } from "../gateway-error";
@@ -33,33 +34,40 @@ const audience = z
   .max(255)
   .refine((v) => v !== GATEWAY_AUDIENCE, { message: GATEWAY_AUDIENCE_MESSAGE });
 
+// Any http(s) URL is an `hmac` endpoint's, as it always was: its signature rides
+// in headers and its receiver may be addressed with a query string.
+const url = z.string().url();
+
 // A URL the worker can seal a delivery for (`@vsms/gateway`'s `receiverRoute`,
 // the rule `sms_webhook::delivery_route` applies): one it cannot would only
-// fail at delivery, burn the endpoint's attempts and trip its breaker.
-const url = z
-  .string()
-  .url()
-  .superRefine((v, ctx) => {
-    const refusal = urlRefusal(v);
-    if (refusal !== null) ctx.addIssue({ code: "custom", message: refusal });
-  });
+// fail at delivery, burn the endpoint's attempts and trip its breaker. The rule
+// is a `sealed` endpoint's alone, because only a sealed delivery binds the path
+// as its route (the CHECK on the row says the same, `schemas/vsms.cstack`).
+const sealableUrl = url.superRefine((v, ctx) => {
+  const refusal = urlRefusal(v);
+  if (refusal !== null) ctx.addIssue({ code: "custom", message: refusal });
+});
 
 const createCommon = {
   appId: z.string().min(1),
-  url,
   eventTypes: z.array(eventType).min(1),
   maskRecipient: z.boolean(),
   maxAttempts: z.number().int().min(1).max(20),
 };
 
-// `sealed` names the audience its receiver answers to. `hmac` has none: the
-// object is strict, so an audience sent with it is an error, not a value the
-// database would quietly keep unused.
+// `sealed` names the audience its receiver answers to, and a URL it can be
+// sealed for. `hmac` has no audience: the object is strict, so an audience sent
+// with it is an error, not a value the database would quietly keep unused.
 const createInput = z.discriminatedUnion("deliveryMode", [
-  z.object({ deliveryMode: z.literal("sealed"), audience, ...createCommon }).strict(),
-  z.object({ deliveryMode: z.literal("hmac"), ...createCommon }).strict(),
+  z
+    .object({ deliveryMode: z.literal("sealed"), audience, url: sealableUrl, ...createCommon })
+    .strict(),
+  z.object({ deliveryMode: z.literal("hmac"), url, ...createCommon }).strict(),
 ]);
 
+// An update does not say which mode the row is in, so the fields only the
+// sealed mode has a rule for (the URL's route, the audience) are checked in
+// `update` below, against the row, once the router has read its mode.
 const updateInput = z.object({
   id: z.string().min(1),
   etag: z.string().min(1),
@@ -70,6 +78,18 @@ const updateInput = z.object({
   active: z.boolean().optional(),
   maxAttempts: z.number().int().min(1).max(20).optional(),
 });
+
+// Why an update of a row in `mode` is refused before it is sent, or `null`.
+function updateRefusal(
+  mode: "sealed" | "hmac",
+  fields: { url?: string | undefined; audience?: string | undefined },
+): string | null {
+  if (mode === "hmac" && fields.audience !== undefined) {
+    return "An hmac endpoint has no audience: switch it to sealed first";
+  }
+  if (mode === "sealed" && fields.url !== undefined) return urlRefusal(fields.url);
+  return null;
+}
 
 export const webhookEndpointsRouter = router({
   list: publicProcedure.query(async ({ ctx }) => {
@@ -99,6 +119,16 @@ export const webhookEndpointsRouter = router({
   update: publicProcedure.input(updateInput).mutation(async ({ ctx, input }) => {
     const { id, etag, ...fields } = input;
     try {
+      // The mode decides which rules a URL or an audience is held to, so the
+      // row is read when either is on the way: a sealed row's URL must be one
+      // its deliveries can be sealed for, and an hmac row has no audience to
+      // set (it would squat a name a sealed endpoint may need).
+      if (fields.url !== undefined || fields.audience !== undefined) {
+        const row = await ctx.gateway.getWebhookEndpointById(id);
+        if (row === null) throw new TRPCError({ code: "NOT_FOUND", message: "No such endpoint" });
+        const refusal = updateRefusal(row.data.deliveryMode, fields);
+        if (refusal !== null) throw new TRPCError({ code: "BAD_REQUEST", message: refusal });
+      }
       return await ctx.gateway.updateWebhookEndpoint(id, etag, fields);
     } catch (error) {
       rethrowGatewayError(error);

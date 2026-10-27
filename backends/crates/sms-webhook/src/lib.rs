@@ -9,6 +9,9 @@ pub use hmac_v1::{
 
 use cratestack::client_rust::{ClientEnvelope, ClientError, RouteRef, SealCall};
 use cratestack::cose::{CoseEnvelope, CoseMode, CoseRole, Ed25519Signer, StaticVerifierResolver};
+use std::sync::LazyLock;
+
+use regex::Regex;
 use sha2::{Digest, Sha256};
 use url::Url;
 
@@ -130,6 +133,41 @@ pub fn delivery_route(url: &str) -> Result<String, SealError> {
         return Err(SealError::Url("the path is not one literal route"));
     }
     Ok(path.to_owned())
+}
+
+/// The URLs a `sealed` `WebhookEndpoint` may hold, as a regular expression that
+/// is valid in both Rust's `regex` and Postgres (an advanced regular expression):
+/// no case-insensitive flag (the scheme spells both cases out), no escapes
+/// beyond `\[` and `\]`, nothing Rust and Postgres read differently.
+///
+/// Migration `0010_sealed_webhooks` carries it verbatim in the CHECK
+/// `webhook_endpoints_url_sealable_for_sealed_check`
+/// (`delivery_mode <> 'sealed' OR url ~ '<this>'`, its `'` doubled for SQL), which
+/// `sms-api`'s `webhook_endpoint_validation.rs` asserts. An `hmac` endpoint is
+/// held to none of it.
+///
+/// It is deliberately **narrower** than [`delivery_route`], never wider: a host
+/// is ASCII (an IDN is written in its punycode form) and a port is 1 to 65535.
+/// `sms-api`'s `every_url_the_pattern_accepts_can_be_sealed` holds that over a
+/// generated corpus, with [`delivery_route`] as the oracle.
+pub const SEALABLE_URL_PATTERN: &str = r"^[Hh][Tt][Tt][Pp][Ss]?://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::(?:6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(?:/[A-Za-z0-9._~!$&'()*+,;=:@/-]*)?$";
+
+static SEALABLE_URL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(SEALABLE_URL_PATTERN).expect("SEALABLE_URL_PATTERN is a valid regular expression")
+});
+
+/// Whether a `sealed` endpoint may be registered at `url`: it matches
+/// [`SEALABLE_URL_PATTERN`], which is also what the database checks.
+///
+/// ```
+/// use sms_webhook::url_can_be_sealed;
+///
+/// assert!(url_can_be_sealed("https://api.vaam.store/webhooks/vsms"));
+/// assert!(!url_can_be_sealed("https://api.vaam.store/webhooks/vsms?token=1"));
+/// ```
+#[must_use]
+pub fn url_can_be_sealed(url: &str) -> bool {
+    SEALABLE_URL.is_match(url)
 }
 
 /// One delivery, sealed: the request body and every header the seal depends on.

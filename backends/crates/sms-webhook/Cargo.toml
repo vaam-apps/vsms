@@ -25,6 +25,9 @@ rand.workspace = true
 cratestack.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+# `url_can_be_sealed` runs `SEALABLE_URL_PATTERN`, the pattern migration 0010's
+# CHECK carries.
+regex.workspace = true
 # `delivery_route` parses the endpoint URL: the route a delivery binds is its
 # path, and a URL the receiver could not route is refused before anything is
 # signed.

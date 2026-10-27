@@ -1051,15 +1051,23 @@ model WebhookEndpoint {
   id Cuid @id @default(dbgenerated())
   appId Cuid
   app App @relation(fields: [appId], references: [id])
-  // VS-8: a `sealed` delivery binds the path of this URL as its route, so a URL
-  // that cannot be one route (credentials, a query, a fragment, a `{`, `}` or `%`
-  // in the path, a scheme other than http(s), a non-ASCII host) could only be
-  // refused at delivery, burning attempts and tripping the breaker. The pattern
-  // refuses it on write, for either mode (a mode can be switched later without
-  // the URL being rewritten). It is deliberately narrower than what
-  // `sms_webhook::delivery_route` accepts (an IDN host is written in its
-  // punycode form), never wider: sms-webhook's tests hold that.
-  url String @uri @regex("^(?i:https?)://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\x5B[0-9A-Fa-f:.]+\x5D)(?::(?:6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(?:/[A-Za-z0-9._~!$&'()*+,;=:@/-]*)?$")
+  // Any URL a receiver is addressed by is accepted (`@uri`), whatever its mode,
+  // as it always was: an `hmac` delivery carries its signature in headers and a
+  // receiver may well be addressed with a query string. Only a `sealed` delivery
+  // binds the path of this URL as its route, so a URL that cannot be one route
+  // (credentials, a query, a fragment, a `{`, `}` or `%` in the path, a scheme
+  // other than http(s), a non-ASCII host) could only be refused at delivery,
+  // burning attempts and tripping the breaker. That rule is therefore a CHECK in
+  // 0010 that applies to `sealed` rows alone,
+  // `webhook_endpoints_url_sealable_for_sealed_check` (`delivery_mode <> 'sealed'
+  // OR url ~ <pattern>`), not an attribute here: an attribute would hold `hmac`
+  // endpoints to it too. The pattern is `sms_webhook::SEALABLE_URL_PATTERN`, which
+  // the migration must contain verbatim; it is deliberately narrower than what
+  // `sms_webhook::delivery_route` accepts (an IDN host is written in its punycode
+  // form), never wider, and sms-webhook's tests hold that. The
+  // `switchWebhookDeliveryMode` procedure answers 422 before the database is
+  // asked.
+  url String @uri
   // VS-8R: how this endpoint's deliveries are authenticated. Required and
   // without a default: a default would drop it from the create input, and an
   // endpoint is created knowing which receiver contract it serves. Existing

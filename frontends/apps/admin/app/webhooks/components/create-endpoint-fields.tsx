@@ -56,7 +56,8 @@ export function CreateEndpointFields({
       </FormField>
       {/* A radio group, not a dropdown: two options, both shown. Sealed is
           first and the default; hmac is the legacy scheme. The choice is made
-          here and is fixed for the endpoint's life. */}
+          here; the console offers no switch afterwards (the API does, through
+          `switchWebhookDeliveryMode`). */}
       <FormField
         label="Delivery"
         htmlFor="new-endpoint-delivery-mode"

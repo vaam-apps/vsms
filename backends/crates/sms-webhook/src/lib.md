@@ -84,6 +84,12 @@ may rewrite the host or the scheme, but never the path: one that strips a prefix
 route the seal was not made for, and every delivery is a `401`. Put the path the
 receiver sees in the URL.
 
+That is a rule about a `sealed` endpoint's URL, and only one: an `hmac` delivery
+binds no route and keeps any URL it was registered with, a query string
+included. A sealed endpoint's URL is held to [`SEALABLE_URL_PATTERN`] (a CHECK in
+`0010_sealed_webhooks`), which is narrower than [`delivery_route`] and never
+wider (an ASCII host, a port of 1 to 65535); [`url_can_be_sealed`] runs it.
+
 The envelope JSON is `{id, eventId, type, occurredAt, appId, endpointId, data}`.
 `id` is `WebhookAttempt.id`, the dedupe key §8.5 already names; `eventId` is
 `WebhookAttempt.sourceEventId`, which used to travel only in the
@@ -237,6 +243,8 @@ The `hmac` mode's functions are re-exported from [`hmac_v1`]: `sign_v1`,
 METHOD, PAYLOAD_TYPE, CONTRACT_DOMAIN, CONTRACT_DOCUMENT, CONTRACT_SHA, CONTRACT_SHA_HEX
 contract_sha() -> [u8; 32]
 delivery_route(url: &str) -> Result<String, SealError>
+SEALABLE_URL_PATTERN: &str
+url_can_be_sealed(url: &str) -> bool
 Sealer::new(signer: Ed25519Signer) -> Result<Sealer, SealError>
 Sealer::from_envelope(cose: CoseEnvelope) -> Result<Sealer, SealError>
 Sealer::seal(&self, audience: &str, url: &str, body: &[u8]) -> Result<SealedDelivery, SealError>

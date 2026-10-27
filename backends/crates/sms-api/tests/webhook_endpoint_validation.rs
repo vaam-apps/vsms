@@ -2,15 +2,19 @@
 //! generated create and update inputs' own `validate()`, which every write
 //! through the generated routes and delegates runs first.
 //!
-//! - **The URL must be one a delivery can be sealed for.** The worker binds the
-//!   path of the endpoint's URL as the seal's route and refuses a URL with
-//!   credentials, a query, a fragment, a `{`, `}` or `%` in the path, or a scheme
-//!   other than http(s) (`sms_webhook::delivery_route`). A URL stored anyway
-//!   could only fail at delivery, burn eight attempts and trip the endpoint's
-//!   breaker, so the schema's `@regex` refuses it on write. The pattern is
-//!   narrower than `delivery_route` (a host is ASCII, a port is 1..=65535), never
-//!   wider; `every_url_the_schema_accepts_can_be_sealed` holds that over a
-//!   generated corpus, with `delivery_route` as the oracle.
+//! - **A sealed endpoint's URL must be one a delivery can be sealed for.** The
+//!   worker binds the path of the endpoint's URL as the seal's route and refuses
+//!   a URL with credentials, a query, a fragment, a `{`, `}` or `%` in the path,
+//!   or a scheme other than http(s) (`sms_webhook::delivery_route`). A sealed
+//!   URL stored anyway could only fail at delivery, burn eight attempts and trip
+//!   the endpoint's breaker, so the database refuses it (a CHECK that applies to
+//!   `sealed` rows alone, `sealed_webhooks_migration_live_postgres.rs`) and the
+//!   mode-switching procedure refuses it first. An **`hmac`** endpoint binds no
+//!   route and keeps any URL (`url` is a plain `@uri`), a query string included.
+//!   The CHECK's pattern is `sms_webhook::SEALABLE_URL_PATTERN`: narrower than
+//!   `delivery_route` (a host is ASCII, a port is 1..=65535), never wider;
+//!   `every_url_the_pattern_accepts_can_be_sealed` holds that over a generated
+//!   corpus, with `delivery_route` as the oracle.
 //! - **The audience is never `vsms`.** That is the name the gateway's own routes
 //!   answer to. The migration adds the same refusal as a CHECK
 //!   (`sealed_webhooks_migration_live_postgres.rs` proves the database says no
@@ -22,7 +26,7 @@ use sms_api::schema::models::WebhookEndpoint;
 use sms_api::schema::{
     CreateWebhookEndpointInput, UpdateWebhookEndpointInput, WebhookDeliveryMode,
 };
-use sms_webhook::delivery_route;
+use sms_webhook::{delivery_route, url_can_be_sealed};
 
 use cratestack::{CreateModelInput, UpdateModelInput};
 
@@ -42,11 +46,23 @@ fn create(url: &str, audience: &str) -> CreateWebhookEndpointInput {
     }
 }
 
-fn accepts_url(url: &str) -> bool {
-    <CreateWebhookEndpointInput as CreateModelInput<WebhookEndpoint>>::validate(&create(
-        url, "vaam",
-    ))
-    .is_ok()
+/// A secret of a length the API takes, shaped like the ones it mints.
+const SECRET: &str = "whsec_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+fn hmac_create(url: &str) -> CreateWebhookEndpointInput {
+    CreateWebhookEndpointInput {
+        deliveryMode: WebhookDeliveryMode::hmac,
+        audience: None,
+        secret: Some(SECRET.to_owned()),
+        ..create(url, "unused")
+    }
+}
+
+/// Whether the generated create input takes `url` for an `hmac` endpoint: it
+/// holds only `@uri`, so a query string, credentials or a `%` all pass.
+fn accepts_hmac_url(url: &str) -> bool {
+    <CreateWebhookEndpointInput as CreateModelInput<WebhookEndpoint>>::validate(&hmac_create(url))
+        .is_ok()
 }
 
 fn accepts_audience(audience: &str) -> bool {
@@ -58,7 +74,7 @@ fn accepts_audience(audience: &str) -> bool {
 }
 
 #[test]
-fn a_url_a_delivery_can_be_sealed_for_is_accepted() {
+fn a_url_a_delivery_can_be_sealed_for_matches_the_pattern() {
     for url in [
         "https://api.vaam.store/webhooks/vsms",
         "http://127.0.0.1:8080/webhooks/vsms",
@@ -70,13 +86,13 @@ fn a_url_a_delivery_can_be_sealed_for_is_accepted() {
         "https://sub.domain.example.co.uk/a/b/c/",
         "https://example.com/a,b;c=d@e:f",
     ] {
-        assert!(accepts_url(url), "{url} should be accepted");
+        assert!(url_can_be_sealed(url), "{url} should match");
         assert!(delivery_route(url).is_ok(), "{url} should be sealable");
     }
 }
 
 #[test]
-fn a_url_that_cannot_be_sealed_is_refused_on_write() {
+fn a_url_that_cannot_be_sealed_does_not_match_the_pattern() {
     for url in [
         // Credentials, a query, a fragment (empty ones included: `?` and `#`
         // are refused whatever follows them).
@@ -102,18 +118,38 @@ fn a_url_that_cannot_be_sealed_is_refused_on_write() {
         // A host this pattern does not write (an IDN is written in punycode),
         // and a port out of range or zero.
         "https://exämple.com/hook",
+        "https://under_score.example.com/hook",
         "https://example.com:99999/hook",
         "https://example.com:0/hook",
         "https://example.com:/hook",
     ] {
-        assert!(!accepts_url(url), "{url:?} should be refused on write");
+        assert!(!url_can_be_sealed(url), "{url:?} should not match");
+    }
+}
+
+/// The rule is a sealed endpoint's alone. Every URL above is a URL an `hmac`
+/// endpoint may hold, as it always could: the generated input checks `@uri` and
+/// nothing about a route.
+#[test]
+fn an_hmac_endpoint_keeps_a_url_a_sealed_one_could_not_have() {
+    for url in [
+        "https://example.com/hook?token=abc123",
+        "https://example.com/hook?",
+        "https://example.com/hook#frag",
+        "https://user:pw@example.com/hook",
+        "https://example.com/hooks/{tenant}",
+        "https://example.com/a%2Fb",
+        "https://under_score.example.com/hook",
+        "https://api.vaam.store/webhooks/vsms",
+    ] {
+        assert!(accepts_hmac_url(url), "{url} should be accepted for hmac");
     }
 }
 
 /// Every combination of the pieces a URL is made of, good and bad: whenever the
-/// API would store one, the worker can seal for it.
+/// pattern would let a sealed endpoint keep one, the worker can seal for it.
 #[test]
-fn every_url_the_schema_accepts_can_be_sealed() {
+fn every_url_the_pattern_accepts_can_be_sealed() {
     let schemes = ["https://", "http://", "HTTP://", "ftp://", "ws://", ""];
     let userinfo = ["", "u@", "u:p@", "@"];
     let hosts = [
@@ -125,6 +161,7 @@ fn every_url_the_schema_accepts_can_be_sealed() {
         "bad-.example",
         "ex ample.com",
         "exämple.com",
+        "under_score.example",
         "",
         "h{x}.com",
     ];
@@ -144,11 +181,11 @@ fn every_url_the_schema_accepts_can_be_sealed() {
                         for tail in tails {
                             let url = format!("{scheme}{user}{host}{port}{path}{tail}");
                             total += 1;
-                            if accepts_url(&url) {
+                            if url_can_be_sealed(&url) {
                                 accepted += 1;
                                 assert!(
                                     delivery_route(&url).is_ok(),
-                                    "the API stores {url:?} but delivery_route refuses it: \
+                                    "the pattern accepts {url:?} but delivery_route refuses it: \
                                      {:?}",
                                     delivery_route(&url)
                                 );
@@ -160,7 +197,7 @@ fn every_url_the_schema_accepts_can_be_sealed() {
         }
     }
     // The corpus is not vacuous: it holds both kinds.
-    assert!(total > 10_000, "{total}");
+    assert!(total > 100_000, "{total}");
     assert!(accepted > 100, "only {accepted} of {total} accepted");
     assert!(accepted < total / 2, "{accepted} of {total} accepted");
 }
@@ -190,7 +227,7 @@ fn an_audience_is_never_the_name_the_gateways_own_routes_answer_to() {
 }
 
 #[test]
-fn an_update_is_held_to_the_same_rules() {
+fn an_update_is_held_to_the_audience_rules() {
     let validate = |input: UpdateWebhookEndpointInput| {
         <UpdateWebhookEndpointInput as UpdateModelInput<WebhookEndpoint>>::validate(&input).is_ok()
     };
@@ -202,15 +239,14 @@ fn an_update_is_held_to_the_same_rules() {
         ..update()
     }));
     assert!(!validate(UpdateWebhookEndpointInput {
-        url: Some("https://api.vaam.store/webhooks/vsms?x=1".to_owned()),
-        ..update()
-    }));
-    assert!(!validate(UpdateWebhookEndpointInput {
-        url: Some("https://user:pw@api.vaam.store/webhooks/vsms".to_owned()),
-        ..update()
-    }));
-    assert!(!validate(UpdateWebhookEndpointInput {
         audience: Some(Some("vsms".to_owned())),
+        ..update()
+    }));
+    // The URL is not held to the route rule here: the row's mode decides that
+    // (a CHECK), and an update does not carry it. A legacy `hmac` endpoint's URL
+    // with a query string saves as it was.
+    assert!(validate(UpdateWebhookEndpointInput {
+        url: Some("https://api.vaam.store/webhooks/vsms?token=1".to_owned()),
         ..update()
     }));
 }
@@ -219,12 +255,8 @@ fn an_update_is_held_to_the_same_rules() {
 /// one: the field is optional, and `null` is a valid value for it.
 #[test]
 fn an_hmac_endpoint_needs_no_audience() {
-    let input = CreateWebhookEndpointInput {
-        deliveryMode: WebhookDeliveryMode::hmac,
-        audience: None,
-        secret: Some("whsec_x".to_owned()),
-        ..create("https://api.vaam.store/webhooks/vsms", "unused")
-    };
+    let input = hmac_create("https://api.vaam.store/webhooks/vsms");
+    assert!(input.audience.is_none());
     assert!(
         <CreateWebhookEndpointInput as CreateModelInput<WebhookEndpoint>>::validate(&input).is_ok()
     );
