@@ -4,238 +4,137 @@ A minimal Express receiver showing what a *correct* handler of vsms delivery
 webhooks looks like — the inbound half of a vsms integration. The outbound
 half (authenticating and sending) is [#149](https://github.com/vymalo/vsms/issues/149).
 
-## Status: this is now verified against a live sender
+## A delivery is a sealed request
 
-**An earlier revision of this file said vsms could not deliver webhooks over
-HTTP yet, and that this receiver had never been verified against a live vsms
-process. Both were true when written and are no longer true.**
-[#38–#40](https://github.com/vymalo/vsms/issues/38) landed: the `drain` and
-`hooks` worker roles are real bodies, not idling stubs, and `hooks` does
-signed HTTP delivery with retries and circuit breaking.
+Since VS-8 there is no webhook secret and no signature header. vsms's worker
+**seals** each delivery: the body is a `COSE_Sign1` message signed with the
+gateway's own envelope signing key (the key that signs its answers), bound to
+the receiver's audience, `POST`, the route, the delivery contract, a fresh nonce
+and a timestamp. A receiver pins the two public keys it already pins to open
+vsms's answers (`sms-gateway server-keys` prints them) and opens the body with
+[`@vaam-apps/vsms-node`](https://www.npmjs.com/package/@vaam-apps/vsms-node)'s
+`WebhookOpener`:
 
-What changed for this example specifically: `backends/apps/sms-worker/tests/hooks_node_receiver_live.rs`
-— [#44](https://github.com/vymalo/vsms/issues/44)'s own acceptance gate —
-spawns a genuinely separate `sms-worker --roles hooks` process and a
-genuinely separate `node src/gate-receiver.ts` process, with a real loopback
-TCP connection between them and a real Postgres-backed `WebhookAttempt` row
-claimed through the real CAS claim loop. **It runs this directory's actual
-code** — not a copy, not a reimplementation. So the assumptions this file
-used to flag as unconfirmed (that what gets signed is byte-identical to what
-goes on the wire; that the four headers are really what a receiver sees) are
-now demonstrated properties, and a regression in any of them fails CI.
+```ts
+const opener = new WebhookOpener({
+  serverKeys: parseServerKeysReport(readFileSync("server-keys.txt", "utf8")),
+  audience: "my-receiver", // the audience the WebhookEndpoint was created with
+  route: "/webhooks/vsms", // the path of the endpoint's URL
+});
+const event = await opener.open(rawBody); // throws SdkError kind "unverified" on anything wrong
+```
 
-The signature scheme itself was already confirmed independently, and still
-is: `src/cross-language-vectors.test.ts` checks this file's `verifySignature`
-against fixtures computed by a *third* implementation (`openssl dgst -sha256
--hmac`), so three implementations agree rather than one asserting.
-`docs/architecture.md` §4 is explicit that inbound API calls are sealed with
-the caller's own key (§4.0), not signed with a shared secret; that decision says
-nothing about *this*, the outbound signature vsms attaches to a webhook it
-sends you — §4.4 is the relevant section.
+`event` is `{ id, eventId, type, occurredAt, data }` (`docs/architecture.md`
+§8.4). `id` is the dedupe key; `eventId` is the source event's id, which used to
+travel in the `X-Sms-Event-Id` header and now rides inside the sealed body,
+because a header is no part of a seal. The `X-Sms-Event`, `X-Sms-Event-Id`,
+`X-Sms-Timestamp` and `X-Sms-Signature` headers are gone.
 
-Both CI jobs are real gates, not decoration: the cross-language vectors and
-the live gate receiver each run on every push.
+What `open` refuses, with one answer (`unverified`, reply `401`) that never says
+which: a body not signed by a pinned key, another receiver's delivery (audience),
+another route, another contract, a stale timestamp (±300 s), a **replayed** body
+(the nonce is remembered) and a flipped bit. The nonce memory is per process;
+behind several replicas, dedupe on `event.id` as well, which at-least-once
+delivery asks of every receiver anyway.
 
-## What's settled
+A retry is a **new** sealed request (new nonce, new timestamp) carrying the same
+`id`: the nonce stops a captured request being replayed, it is not the dedupe
+key. An operator's replay does the same.
 
-**All of the signature scheme is settled — confirmed, not just specified.**
-`docs/architecture.md` §4.4 specifies, literally: the four header names,
-the exact rotation semantics (`X-Sms-Signature` can carry two `v1=`
-values, accept if either verifies), and the exact signing string
-(`v1 \n {timestamp} \n {eventId} \n {sha256(body)}`, keyed by
-`WebhookEndpoint.secret`/`.prevSecret`, HMAC-SHA256). `src/signature.ts` is
-a transcription of that spec for all of the above, and
-`src/cross-language-vectors.test.ts` is what turns "transcription" into
-"confirmed against the real implementation."
+## Verified against a live sender
 
-Settled, cited inline in the source:
-
-- **The dedupe key.** §4.4, in its own words: *"Send `X-Sms-Event-Id` and
-  mean it — delivery is at-least-once and receivers need a dedupe key."*
-  That's the documented **receiver** contract, and this receiver's primary
-  idempotency key. It is a different thing from `WebhookAttempt`'s own
-  unique index on `(endpoint_id, aggregate_id, event_type)` (§2.10, §8.3),
-  which is vsms's **sender-side** guard against creating duplicate
-  `WebhookAttempt` rows — that index says nothing about what a receiver
-  should key on once at-least-once HTTP delivery reaches it. This receiver
-  also keeps the `(aggregateId, eventType)` tuple as a **secondary,
-  defensive** check, strictly stronger than but *not* part of §4.4's
-  contract — see `store.ts`'s doc comment for why.
-- `WebhookEndpoint` holds both `secret` and `prevSecret` — rotation has a
-  designed 24-hour overlap window (§4.4: *"a job clears `prevSecret` after
-  24 hours"*), and a correct receiver accepts either while that window is
-  open.
-- §8.5: delivery order is not guaranteed; receivers must tolerate
-  `message.delivered` arriving before `message.submitted`.
-
-**Confirmed by #41, not just settled in prose any more:**
-
-- **The MAC algorithm is HMAC-SHA256.** §4.4 shows the `v1=<hex>` wrapper
-  and the four-line signing string but never names the primitive that
-  turns that string into the hex digest. `src/signature.ts` implemented
-  HMAC-SHA256 as the obvious Stripe-style reading of that shape *before*
-  #41 existed — that substitution was this example's one genuine guess.
-  `backends/crates/sms-webhook` (#41) is now the real answer, and it agrees:
-  `src/cross-language-vectors.test.ts` proves it by checking this file's
-  `verifySignature` against fixture signatures neither implementation
-  computed (a third, independent `openssl` computation instead) — see
-  that test file and `backends/crates/sms-webhook/src/lib.rs`'s own module doc for
-  the full cross-language proof.
-
-**Still a deliberate scope decision by this example, not a gap in §4.4 or
-in #41** (§4.4 says nothing about this either way, so it isn't an inferred
-reading of an ambiguous spec): no bounded freshness/replay window is
-enforced on `X-Sms-Timestamp` here. It's folded into the signed bytes, so
-a *tampered* timestamp already fails verification — but a correctly-signed
-request with a stale timestamp still verifies. Demonstrated live, not just
-asserted; see "What it demonstrates, live" below.
-`sms_webhook::is_timestamp_fresh` (#41) now ships a composable freshness
-check for a caller that wants one — a receiver in this language could call
-its own equivalent before or after `verifySignature`; this example simply
-doesn't, the same choice it made before #41 existed.
-
-`src/signature.ts` — specifically `computeSignature` and
-`verifySignature` — was the entire diff #41 needed here. Nothing else in
-this example touches a header or does crypto.
+`backends/apps/sms-worker/tests/hooks_node_receiver_live.rs`
+([#44](https://github.com/vymalo/vsms/issues/44)'s acceptance gate) spawns a
+genuinely separate `sms-worker --roles hooks` process and a genuinely separate
+`node src/gate-receiver.ts` process, with a real loopback TCP connection between
+them and a real Postgres-backed `WebhookAttempt` row claimed through the real CAS
+claim loop. It runs this directory's actual code. The opener is cratestack's
+envelope compiled to WebAssembly; the worker's sealer is `sms-webhook` over the
+same cratestack crates called natively. A second case seeds the endpoint with the
+wrong audience and watches the receiver refuse it, so a regression on either side
+fails the gate in both directions.
 
 ## Layout
 
 ```text
 src/
-  index.ts                        entry point: starts the receiver, runs the local emitter, prints a summary
-  server.ts                       the Express app: raw-body capture, fast ack, off-path processing
-  signature.ts                    THE SEAM — a §4.4 transcription, confirmed correct by #41 (see its own doc comment)
-  cross-language-vectors.test.ts  proves signature.ts against fixture signatures backends/crates/sms-webhook (#41) didn't compute
-  store.ts                        in-memory idempotency (primary: X-Sms-Event-Id; secondary: aggregateId+eventType) + out-of-order-tolerant state tracking
-  work-queue.ts                   a tiny off-request-path queue (what "work off the request path" means, made concrete)
-  emitter.ts                      local stand-in for vsms; drives #150's required scenarios plus a timestamp-freshness check
-  types.ts                        the §8.4 envelope shape
+  index.ts          entry point: starts the receiver and opens the committed gateway vector and a tampered copy
+  config.ts         builds the opener from the environment: pinned keys, audience, the one route
+  server.ts         the Express app: raw-body capture, WebhookOpener, fast ack, off-path processing
+  receiver.test.ts  the receiver against the real opener and the vector, and against a stub opener for dedupe and ordering
+  store.ts          in-memory idempotency (primary: the event id; secondary: aggregateId+eventType) + out-of-order-tolerant state tracking
+  work-queue.ts     a tiny off-request-path queue (what "work off the request path" means, made concrete)
+  gate-receiver.ts  the receiver #44's live gate spawns, plus a test-only /__test__/results route
+  types.ts          what the receiver reports about each request
 ```
 
 ## Running it
 
-Requires Node with native TypeScript support unflagged (Node ≥23.6; this
-repo's own `.nvmrc` pins Node 26, which has it — no `ts-node`/`tsx`
-dependency needed).
+Requires Node with native TypeScript support unflagged (Node ≥23.6; this repo's
+own `.nvmrc` pins Node 26, which has it — no `ts-node`/`tsx` dependency needed).
+The package depends on the Node SDK by path (`file:../../../sdks/node/vsms-sdk-node`),
+so **build the SDK first** (`pnpm --filter @vaam-apps/vsms-node run build` from the
+repo root, which needs the wasm toolchain — `just wasm-tools`), then:
 
 ```bash
 cd examples/node/webhook-receiver
-pnpm install
-pnpm test    # the #41 cross-language proof — no server, no network, ~0.1s
-pnpm start   # the full local-emitter demo below
+pnpm install --ignore-workspace --frozen-lockfile
+node --test   # the receiver against the real opener and the gateway's own vector
+pnpm start    # the demo below
 ```
 
-This package is a member of the `examples/` pnpm workspace (`examples/pnpm-workspace.yaml`,
-glob `node/*`), which is a *separate* workspace from the repo root's — so installing here
-never touches `frontends/apps/admin/`'s lockfile. `pnpm install` from this directory resolves
-`examples/` as its nearest workspace root and works with no flags.
-
-One trap worth knowing if you ever add an example *outside* that glob: pnpm walks up to
-the nearest `pnpm-workspace.yaml`, and if the directory is not a declared member it
-**installs nothing and exits successfully** — no error, no warning. This package hit
-exactly that before the `node/*` glob existed.
-
 `pnpm start` boots the receiver on `http://localhost:4790` (override with
-`WEBHOOK_RECEIVER_PORT`), then runs the local emitter against it, then
-prints a summary and exits. Nothing here binds port 3000, 8080, 8090, or
-3100 — those are held by other in-flight work in this repo.
+`WEBHOOK_RECEIVER_PORT`), posts the committed vector two ways, prints a
+summary and exits. Nothing here binds port 3000, 8080, 8090, or 3100.
 
 ## What it demonstrates, live
 
-The emitter drives these sequences against the receiver over real HTTP
-(loopback), in order:
+1. **A genuine delivery.** Bytes the gateway's own `sms-webhook` crate sealed
+   (`backends/crates/sms-webhook/tests/sealed_vector.rs` writes them, signed by a
+   throwaway test key) are opened, acked with `202` and processed off the request
+   path.
+2. **A tampered body.** One flipped bit: `401`.
 
-1. **Duplicate delivery.** The exact same `message.delivered` event
-   (same `X-Sms-Event-Id`) is POSTed twice (an at-least-once sender
-   retrying). First call: processed, `HTTP 202`. Second call: recognised
-   as a duplicate by §4.4's own documented key — `X-Sms-Event-Id` — `HTTP
-   202` again, but explicitly *not* reprocessed, logged
-   `accepted-duplicate` and tagged "primary contract per §4.4".
-2. **Out-of-order arrival.** `message.delivered` for a message is POSTed
-   *before* `message.submitted` for the same message. The receiver applies
-   `delivered` (a higher-precedence, more-settled state) first; when the
-   late `submitted` arrives, it's accepted (`HTTP 202` — it's a legitimate
-   event, not an error) but logged as `accepted-out-of-order-ignored`,
-   because applying it would regress the tracked state backwards. The
-   aggregate's displayed state stays `message.delivered`, not corrupted
-   back to `message.submitted`.
-3. **Bonus — rotation overlap.** A third event for the same message,
-   signed with `prevSecret` instead of `secret`, is accepted normally —
-   proving the receiver's rotation tolerance live, not just asserting it in
-   a comment.
-4. **Bad signature.** An event signed with neither known secret is POSTed.
-   Rejected with `HTTP 401` *before* the body is even parsed as JSON — a
-   receiver should not act on bytes it can't attribute to vsms.
-5. **Additional check, not one of #150's four required cases — timestamp
-   freshness.** An event is signed correctly, but for a timestamp 30 days
-   in the past (a genuine signature over stale material, not a forged
-   one). It's accepted, `HTTP 202` — proving live, rather than only
-   asserting in `signature.ts`'s doc comment, that `X-Sms-Timestamp` is
-   not checked for age. See "What's settled vs. what's still ahead of a
-   real sender" above for why that's a deliberate scope decision, not an
-   oversight.
+A recording cannot show a **replay** being refused: the nonce memory expires an
+entry against the real clock, and the demo pins the opener's clock at the
+recording's own timestamp, far behind it. The replay is proved where a delivery
+is sealed afresh: `sdks/node/vsms-sdk-node/test/webhook.test.ts` and
+`sdks/rust/vsms-sdk-rust/tests/webhook.rs`.
 
-Run it yourself and read the log; every line above is something the
-process actually printed on this machine, not a description of expected
-behaviour.
+`receiver.test.ts` adds what needs events the test chooses: a retry (same `id`)
+acked but not reprocessed, `message.delivered` arriving before
+`message.submitted`, a wrong audience, a stale timestamp, a body that is not a
+COSE message, an opener that refuses, and the `400`/`401`/`500` mapping.
+
+## Configuring a real receiver
+
+Everything is public; none of it is a secret.
+
+| Setting                                              | What it is                                                                                                       |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `WEBHOOK_RECEIVER_SERVER_KEYS_PATH`                  | The file `sms-gateway server-keys` printed (`current:` / `next:`) ...                                            |
+| `WEBHOOK_RECEIVER_SERVER_CURRENT`, `..._SERVER_NEXT` | ... or the same two keys, unpadded base64url.                                                                    |
+| `WEBHOOK_RECEIVER_AUDIENCE`                          | The audience the `WebhookEndpoint` was created with (default `webhook-receiver-example`).                        |
+| the endpoint URL's path                              | Must be `/webhooks/vsms`: the delivery's route is the path of `WebhookEndpoint.url`, with no query or `{param}`. |
+
+A receiver that cannot name the gateway's keys refuses to start: there is no
+mode that skips them.
+
+## `src/gate-receiver.ts` — the `#44` live gate
+
+The exact same `createReceiver` code, started with no demo attached and one
+test-only diagnostic route (`GET /__test__/results`) so a driving test can
+observe what it did over HTTP rather than scraping stdout. Point a real
+`sms-worker --roles hooks` process at it (a `WebhookEndpoint.url` of
+`http://<host>:<port>/webhooks/vsms` and the matching audience, the worker holding
+the gateway's signing key) and it opens a real, live delivery.
 
 ## What this does and doesn't prove
 
-**Does prove:** this receiver's handling of duplicates, out-of-order
-arrival, and signature rejection/rotation is correct, against real HTTP
-requests, over a real (if local) network round trip, with a real async
-work queue decoupling the response from the "database write" it simulates
-— **and**, separately (`cross-language-vectors.test.ts`, no HTTP involved),
-that `verifySignature`'s algorithm itself is HMAC-SHA256 over exactly
-§4.4's canonical string, agreeing with `backends/crates/sms-webhook` (#41) and with
-a third, independent computation neither of them produced.
+**Does prove:** the receiver's handling of duplicates, out-of-order arrival and
+refusal is correct over real HTTP; that the SDK's opener opens exactly what the
+gateway's sealer produces (the vector); and that a real worker's delivery opens
+in a separate process.
 
-**Does not prove, from `pnpm start` alone:** that this matches what a real,
-webhook-*sending* vsms does end to end — see the next section,
-`src/gate-receiver.ts`, for what closes that gap and what it confirms.
-Still unverified even with that gate, and unverifiable until the
-corresponding work lands:
-
-- Any latency, retry timing, or backoff behaviour (§8.5 documents 1s, 5s,
-  25s, 2m, 10m, 1h, 6h, 24h, eight attempts then `dead` — neither this
-  example's local emitter nor `#44`'s live gate attempt to reproduce that
-  schedule; they prove the receiver survives duplicates, reordering, and a
-  real delivery, not the exact cadence retries arrive under).
-- Real-world network conditions (`#44`'s gate is loopback-only, same as
-  this example's own local emitter).
-
-## `src/gate-receiver.ts` — the `#44` live gate, not the local-emitter demo
-
-`#40` landed real outbound HTTP delivery, and `#44` (the M3 gate) needed
-"a sample Node receiver verifies the signature" proven against that live
-path, not just against `emitter.ts`'s local stand-in. `src/gate-receiver.ts`
-is that: the exact same `createReceiver`/`verifySignature` code this
-package already ships, started with **no** local emitter attached, plus one
-test-only diagnostic route (`GET /__test__/results`) so a driving test can
-observe what it verified over HTTP rather than scraping stdout. Point a real
-`sms-worker --roles hooks` process at it (a real `WebhookEndpoint.url`
-pointed at `http://<host>:<port>/webhooks/vsms`, matching secret) and it
-verifies a real, live delivery — see
-`backends/apps/sms-worker/tests/hooks_node_receiver_live.rs` for the automated version
-of exactly this, and the two assumptions this section used to flag as
-unconfirmed:
-
-- **`X-Sms-Event-Id` really is `WebhookAttempt.sourceEventId`** — confirmed:
-  `hooks.rs`'s `send` sets it from `attempt.sourceEventId` verbatim.
-- **`data.messageId` really is what a receiver should key on** — confirmed
-  for `message.*` events specifically, the only ones this milestone's
-  subscriber (`#38`) builds.
-
-`src/index.ts`'s own local-emitter demo (`pnpm start`) is still here,
-deliberately not deleted: it's still the fastest way to see this receiver's
-own duplicate/out-of-order/rotation/bad-signature handling without standing
-up a database, a provider adapter, and a live vsms — a property `#44`'s own
-one-shot gate doesn't need or want to reproduce.
-
-## Revisit this when M3 (webhooks) fully lands
-
-- Decide, deliberately, whether a bounded freshness/replay window on
-  `X-Sms-Timestamp` is worth adding on top of the dedupe-based protection
-  this receiver already has — `sms_webhook::is_timestamp_fresh` (#41) is
-  available for it, but nothing requires a receiver to call it, and this
-  example still doesn't.
+**Does not prove:** retry timing (§8.5's 1s, 5s, 25s, 2m, 10m, 1h, 6h, 24h), or
+anything about real-world network conditions; the gate is loopback-only.

@@ -38,25 +38,23 @@ function rankOf(eventType: string): number {
 export type DuplicateReason = "event-id" | "aggregate-tuple" | null;
 
 export class WebhookStore {
-  // PRIMARY dedupe key, and the documented receiver contract: §4.4 says,
-  // in so many words, "Send X-Sms-Event-Id and mean it — delivery is
-  // at-least-once and receivers need a dedupe key." This is NOT the same
-  // thing as `webhook_attempts`' own unique index — that index,
-  // (endpoint_id, aggregate_id, event_type) (§2.10), is vsms's *sender-side*
-  // guard against creating duplicate WebhookAttempt rows in the first
-  // place. It says nothing about what a *receiver* should key on once
-  // at-least-once HTTP delivery (retries, replays — §8.5) reaches it. §4.4
-  // does, and it names `X-Sms-Event-Id`.
+  // PRIMARY dedupe key, and the documented receiver contract (§8.5): the
+  // event's `id`, `WebhookAttempt.id`, which a retry and an operator's replay
+  // both carry unchanged. Delivery is at-least-once, so a receiver needs a
+  // dedupe key, and the sealed request's nonce is not it: the nonce stops a
+  // captured request being replayed, and a retry is a NEW sealed request with
+  // a new nonce. This is NOT the same thing as `webhook_attempts`' own unique
+  // index — that index, (endpoint_id, aggregate_id, event_type) (§2.10), is
+  // vsms's *sender-side* guard against creating duplicate WebhookAttempt rows
+  // in the first place.
   private readonly seenEventIds = new Set<string>();
 
-  // SECONDARY, defensive, and explicitly NOT part of §4.4's contract: also
-  // recognise a duplicate by (aggregateId, eventType) even when the event
-  // id differs. Nothing in §4.4 says a retry reuses the same event id —
-  // if a real sender ever regenerated one per retry, keying only on
-  // `X-Sms-Event-Id` would silently reprocess it. This mirrors
-  // `webhook_attempts`' own dedupe shape (§2.10, §8.3) and is strictly
-  // stronger than the documented contract, kept as belt-and-braces on top
-  // of it rather than instead of it.
+  // SECONDARY, defensive, and explicitly NOT part of the documented contract:
+  // also recognise a duplicate by (aggregateId, eventType) even when the id
+  // differs. If a sender ever regenerated an id per retry, keying only on it
+  // would silently reprocess the event. This mirrors `webhook_attempts`' own
+  // dedupe shape (§2.10, §8.3) and is strictly stronger than the documented
+  // contract, kept as belt-and-braces on top of it rather than instead of it.
   private readonly seenTuples = new Set<string>();
   private readonly aggregates = new Map<string, AggregateState>();
 
