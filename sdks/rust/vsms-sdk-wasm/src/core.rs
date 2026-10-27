@@ -16,6 +16,7 @@ use cratestack::cose::{
     CoseEnvelope, CoseMode, CoseSigner, CoseVerifyKey, Ed25519Signer, StaticVerifierResolver,
 };
 use http::{HeaderMap, HeaderName, HeaderValue};
+use zeroize::Zeroize as _;
 
 use crate::contracts::contract_digest;
 
@@ -190,8 +191,10 @@ impl Sealer {
     /// built.
     pub fn new(key: SealerKey, server: &ServerKeys) -> Result<Self, SealError> {
         let (signer, public_key, algorithm): (Arc<dyn CoseSigner>, Vec<u8>, Algorithm) = match key {
-            SealerKey::Seed(seed) => {
+            SealerKey::Seed(mut seed) => {
                 let signer = Ed25519Signer::from_seed(&seed);
+                // The signer holds its own copy; this one is not needed again.
+                seed.zeroize();
                 let public_key = signer
                     .verify_key()
                     .ed25519_bytes()
@@ -303,7 +306,8 @@ impl Sealer {
 /// `template` with each `{parameter}` replaced by the matching entry of
 /// `params`, percent-encoded as one path segment. The count must match: a
 /// route sealed with the wrong number of parameters would bind something the
-/// URL does not say.
+/// URL does not say, and a parameter must survive a URL parser as the segment
+/// it is (so `.` and `..` are refused).
 pub(crate) fn concrete_path(template: &str, params: &[&str]) -> Result<String, SealError> {
     let mut remaining = params.iter();
     let mut path = String::with_capacity(template.len());
@@ -321,6 +325,16 @@ pub(crate) fn concrete_path(template: &str, params: &[&str]) -> Result<String, S
             if value.is_empty() {
                 return Err(SealError::Unbound(format!(
                     "a parameter of `{template}` is empty"
+                )));
+            }
+            // `.` and `..` survive percent-encoding (they are unreserved) and
+            // are then removed by any URL parser, so the request would go to a
+            // parent path while the signature binds the template with the
+            // parameter in it. Refused here, where the binding is made.
+            if matches!(*value, "." | "..") {
+                return Err(SealError::Unbound(format!(
+                    "a parameter of `{template}` is a dot segment, which a URL parser would \
+                     resolve away"
                 )));
             }
             path.push_str(&encode_path_segment(value));

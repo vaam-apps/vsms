@@ -7,7 +7,7 @@
 //! against cratestack's own server envelope (`CoseEnvelope::server`), so the
 //! SDK's suites run against a verifier that is not a copy of the SDK's sealing
 //! code. The real `EnvelopeLayer` is exercised against the same sealing path
-//! by the live test (`sdks/node/vsms-sdk-node/test/live.test.ts`) and by
+//! by the live test (`sdks/node/vsms-sdk-node/live/gateway.live.ts`) and by
 //! `vsms-sdk-rust`'s `tests/live_gateway.rs`.
 
 use std::borrow::Cow;

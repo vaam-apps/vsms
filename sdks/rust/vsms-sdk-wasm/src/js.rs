@@ -1,8 +1,11 @@
 //! The JavaScript surface: `Sealer` and `SealedCall`, over [`crate::core`].
 //!
 //! Errors cross as a plain object `{ kind, message, status? }` with `kind` one
-//! of `"unbound" | "seal" | "unsigned" | "unverified" | "invalid"`, so the
-//! TypeScript side maps them to its own error classes without parsing text.
+//! of `"unbound" | "seal" | "unsigned" | "unverified" | "unreadable" |
+//! "invalid"`, so the TypeScript side maps them to its own error classes
+//! without parsing text. `unbound` and `seal` are refusals **before anything
+//! is sent**; `unsigned`, `unverified` and `unreadable` are about an answer
+//! that already arrived, so the request *was* sent.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -12,9 +15,10 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use cratestack::cose::{CoseSigner, ExternalSigner};
 use cratestack::CratestackError;
-use js_sys::{Array, Function, Object, Promise, Reflect, Uint8Array};
+use js_sys::{Array, ArrayBuffer, Function, Object, Promise, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
+use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::core::{OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys};
 
@@ -44,18 +48,23 @@ fn open_error(error_: &OpenError) -> JsValue {
     match error_ {
         OpenError::Unsigned { status } => error("unsigned", &error_.to_string(), Some(*status)),
         OpenError::Unverified => error("unverified", &error_.to_string(), None),
-        OpenError::Other(message) => error("seal", message, None),
+        // The request went out; what came back could not be read. Never
+        // `seal`, which promises that nothing was sent.
+        OpenError::Other(message) => error("unreadable", message, None),
     }
 }
 
 /// Unpadded base64url of exactly `len` bytes, whitespace ignored. The text is
 /// never echoed: it may be a private seed.
-fn bytes_from_base64url(text: &str, what: &str, len: usize) -> Result<Vec<u8>, JsValue> {
-    URL_SAFE_NO_PAD
-        .decode(text.trim())
-        .ok()
-        .filter(|bytes| bytes.len() == len)
-        .ok_or_else(|| invalid(&format!("{what} must be {len} bytes of unpadded base64url")))
+fn bytes_from_base64url(text: &str, what: &str, len: usize) -> Result<Zeroizing<Vec<u8>>, JsValue> {
+    let wrong = || invalid(&format!("{what} must be {len} bytes of unpadded base64url"));
+    // Wiped when dropped: the bytes may be a seed, decoded or not.
+    let decoded = Zeroizing::new(URL_SAFE_NO_PAD.decode(text.trim()).map_err(|_| wrong())?);
+    if decoded.len() == len {
+        Ok(decoded)
+    } else {
+        Err(wrong())
+    }
 }
 
 pub(crate) fn key_from_base64url(text: &str, what: &str) -> Result<[u8; 32], JsValue> {
@@ -97,6 +106,40 @@ fn pairs_to_js(pairs: &[(String, String)]) -> JsValue {
 
 type Signing = Pin<Box<dyn Future<Output = Result<Vec<u8>, CratestackError>>>>;
 
+/// The most a signing callback may hand back. A raw Ed25519 or P-256 signature
+/// is 64 bytes and a DER ECDSA one at most 72; anything near this bound is not
+/// a signature, and is refused before it is copied into this module.
+const MAX_SIGNATURE_BYTES: u32 = 128;
+
+/// The bytes of `value` if it is a `Uint8Array` or an `ArrayBuffer` of a
+/// plausible signature size, and `None` for anything else.
+///
+/// A callback is the caller's code and may return anything: a number, a
+/// string, an object with a throwing getter. A `Uint8Array::new(&value)` over
+/// such a value throws a `RangeError` (or worse, tries to allocate it) from
+/// inside a future, where it is an uncaught exception: it kills a default
+/// Node process, and it leaves this module's task queue marked as running, so
+/// every later call on every sealer hangs. So the value is type-checked first
+/// (`instanceof` cannot throw through wasm-bindgen's binding) and copied
+/// through `Reflect::construct`, whose failure (a detached buffer) comes back
+/// as a `Result`. The copy is also what makes a `Uint8Array` subclass's own
+/// `length` getter irrelevant: `new Uint8Array(typedArray)` reads internal
+/// slots.
+fn signature_bytes(value: &JsValue) -> Option<Vec<u8>> {
+    if !value.is_instance_of::<Uint8Array>() && !value.is_instance_of::<ArrayBuffer>() {
+        return None;
+    }
+    let constructor: Function = Reflect::get(&js_sys::global(), &"Uint8Array".into())
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    let copy: Uint8Array = Reflect::construct(&constructor, &Array::of1(value))
+        .ok()?
+        .dyn_into()
+        .ok()?;
+    (copy.length() <= MAX_SIGNATURE_BYTES).then(|| copy.to_vec())
+}
+
 /// The future-returning callback `ExternalSigner::{ed25519, esp256}` take, over
 /// a JS `(tbs: Uint8Array) => Uint8Array | Promise<Uint8Array>`.
 fn callback(sign: Function) -> impl Fn(Vec<u8>) -> Signing {
@@ -110,7 +153,9 @@ fn callback(sign: Function) -> impl Fn(Vec<u8>) -> Signing {
             let settled = JsFuture::from(Promise::resolve(&returned))
                 .await
                 .map_err(|_| failed("the signing callback rejected"))?;
-            Ok(Uint8Array::new(&settled).to_vec())
+            signature_bytes(&settled).ok_or_else(|| {
+                failed("the signing callback must return the signature as a Uint8Array")
+            })
         })
     }
 }
@@ -150,8 +195,10 @@ impl JsSealer {
         server_current: &str,
         server_next: &str,
     ) -> Result<JsSealer, JsValue> {
-        let seed = key_from_base64url(seed_base64url, "the seed")?;
-        Self::build(SealerKey::Seed(seed), server_current, server_next)
+        let mut seed = key_from_base64url(seed_base64url, "the seed")?;
+        let key = SealerKey::Seed(seed);
+        seed.zeroize();
+        Self::build(key, server_current, server_next)
     }
 
     /// Signs through `sign`, a callback `(tbs: Uint8Array) => Uint8Array |
@@ -309,6 +356,6 @@ impl JsSealedCall {
             .open_response(status, &pairs, body.to_vec())
             .await
             .map_err(|e| open_error(&e))?;
-        String::from_utf8(payload).map_err(|_| error("seal", "the answer is not UTF-8", None))
+        String::from_utf8(payload).map_err(|_| error("unreadable", "the answer is not UTF-8", None))
     }
 }

@@ -58,6 +58,9 @@ serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
 http = "1"
 bytes = "1"
+# The seed is wiped where this crate holds a copy of it, as `vsms-sdk-rust`'s
+# `SigningKey` does. Already in the graph through the Ed25519 implementation.
+zeroize = "1"
 percent-encoding = { version = "2", optional = true }
 
 # What exists only where there is a JavaScript to bind to (`lib.rs` gates `js`

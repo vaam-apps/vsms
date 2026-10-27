@@ -178,6 +178,10 @@ fn parameters_must_fit_the_route() {
         ("/messages/{id}", &["a", "b"][..]),
         ("/$procs/sendMessage", &["a"][..]),
         ("/messages/{id}", &[""][..]),
+        // A URL parser resolves these away: the request would go to `/` while
+        // the signature binds `/messages/{id}`.
+        ("/messages/{id}", &["."][..]),
+        ("/messages/{id}", &[".."][..]),
     ] {
         let error = concrete_path(template, params).unwrap_err();
         assert!(
@@ -185,6 +189,25 @@ fn parameters_must_fit_the_route() {
             "{template} {params:?}"
         );
     }
+}
+
+#[test]
+fn a_percent_escape_in_a_parameter_is_text_and_is_encoded_not_decoded() {
+    // `%2e%2e` as a *decoded* value is the six characters it spells, so it is
+    // percent-encoded once more and is not a dot segment on the wire.
+    assert_eq!(
+        concrete_path("/messages/{id}", &["%2e%2e"]).unwrap(),
+        "/messages/%252e%252e"
+    );
+    // A dot inside a longer segment is fine.
+    assert_eq!(
+        concrete_path("/messages/{id}", &["a.b"]).unwrap(),
+        "/messages/a.b"
+    );
+    assert_eq!(
+        concrete_path("/messages/{id}", &["..x"]).unwrap(),
+        "/messages/..x"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -546,6 +569,26 @@ async fn an_answer_is_opened_once() {
     let _ = sealed.open_response(401, &[], Vec::new()).await;
     let error = sealed
         .open_response(401, &[], Vec::new())
+        .await
+        .unwrap_err();
+    assert!(matches!(error, OpenError::Other(_)), "{error:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_answer_sealed_but_sent_with_another_payload_type_is_not_a_seal_failure() {
+    // After the request went out, an answer that cannot be read is
+    // `OpenError`, which the JavaScript surface reports as `unreadable`; the
+    // pre-send `SealError` is a different type altogether, so the two cannot
+    // be confused by the one `match` that maps them.
+    let (mut sealed, mut headers, bytes) =
+        answered(&responder("vsms"), &seed_sealer(), 200, "{}").await;
+    for (name, value) in &mut headers {
+        if name.eq_ignore_ascii_case("cratestack-payload-type") {
+            *value = "text/plain".to_owned();
+        }
+    }
+    let error = sealed
+        .open_response(200, &headers, bytes)
         .await
         .unwrap_err();
     assert!(matches!(error, OpenError::Other(_)), "{error:?}");
