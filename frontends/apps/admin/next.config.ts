@@ -25,6 +25,12 @@ const config: NextConfig = {
   // per-request Content-Security-Policy (`script-src 'self' 'wasm-unsafe-eval'`
   // with a nonce) is the missing half and is called out in
   // docs/design/console-pairing.md, "What a stolen browser profile gets".
+  //
+  // Framing is the one thing a static policy settles: a page of this console
+  // inside another site's frame is a page whose key an attacker can ask to sign
+  // behind a transparent overlay. `frame-ancestors 'none'` is the modern header
+  // and `X-Frame-Options: DENY` the one an older browser reads; neither
+  // console route has a reason to be framed.
   async headers() {
     return [
       {
@@ -33,6 +39,8 @@ const config: NextConfig = {
           { key: "X-Content-Type-Options", value: "nosniff" },
           { key: "Referrer-Policy", value: "no-referrer" },
           { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
           {
             key: "Permissions-Policy",
             value: "camera=(), microphone=(), geolocation=(), payment=()",
