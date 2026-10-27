@@ -33,6 +33,19 @@ export interface WasmResponder {
 }
 
 export interface ResponderModule extends WasmModule {
+  /**
+   * A webhook delivery as the gateway's worker seals it, signed with
+   * `serverSeed`. `contractHex` replaces the delivery contract digest and
+   * `iatSeconds` pins the timestamp, to test a refusal.
+   */
+  sealDelivery(
+    serverSeed: string,
+    audience: string,
+    route: string,
+    body: string,
+    contractHex: string | undefined,
+    iatSeconds: number | undefined,
+  ): Promise<Uint8Array>;
   Responder: {
     new (serverSeed: string, clientKeys: string[], audience: string): WasmResponder;
     serverPublicKey(serverSeed: string): string;

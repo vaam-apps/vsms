@@ -77,8 +77,13 @@ mod client;
 mod error;
 mod server_keys;
 mod signer;
+mod webhook;
 
 pub use client::{SendMessageOutcome, VsmsClient, VsmsClientBuilder, AUDIENCE, MAX_RESPONSE_BYTES};
 pub use error::SdkError;
 pub use server_keys::ServerKeys;
 pub use signer::SigningKey;
+pub use webhook::{
+    webhook_contract_sha, WebhookError, WebhookEvent, WebhookOpener, WebhookOpenerBuilder,
+    WEBHOOK_CONTRACT_DOCUMENT, WEBHOOK_CONTRACT_DOMAIN, WEBHOOK_CONTRACT_SHA_HEX,
+};

@@ -69,6 +69,29 @@ never follows a redirect.
 See `examples/rust/sms-send` in the main vsms repo for a complete, runnable
 version of this against a real gateway (`just demo`).
 
+## Receiving webhooks
+
+vsms delivers an event as a sealed request signed with the gateway's own key (the
+one that signs its answers): no webhook secret, no signature header. Pin the same
+two public keys and open the body:
+
+```rust
+use vsms_sdk::{ServerKeys, WebhookOpener};
+
+let keys = ServerKeys::parse_report(&std::fs::read_to_string("server-keys.txt")?)?;
+// `audience` is the name on your WebhookEndpoint; `route` is the path of its URL.
+let opener = WebhookOpener::new(&keys, "my-receiver", "/webhooks/vsms")?;
+let event = opener.open(&raw_request_body).await?;
+println!("{} {}", event.event_type, event.id);
+```
+
+`open` returns `WebhookError::Unverified` for a forgery, another receiver's
+delivery, another route, a stale timestamp (300 s) and a replayed body, and one
+answer is all it gives: reply `401`. Dedupe on `event.id`: delivery is
+at-least-once and a retry is a new sealed request carrying the same id. The nonce
+store is per process by default; give a multi-replica receiver one it shares with
+`WebhookOpener::builder(..).with_nonce_store(..)`.
+
 ## What's vendored, and why
 
 `schema.cstack` in this directory is a plain copy of the main repo's

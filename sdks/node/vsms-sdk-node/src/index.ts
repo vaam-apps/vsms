@@ -22,3 +22,4 @@ export {
 export { routeOf } from "./route-of.js";
 export { MAX_RESPONSE_BYTES } from "./transport.js";
 export * from "./types.js";
+export { type WebhookEvent, WebhookOpener, type WebhookOpenerOptions } from "./webhook-opener.js";

@@ -25,7 +25,15 @@
 //!    A constant that is equal everywhere proves nothing if a crate stops using
 //!    it, so each SDK's `ClientEnvelope::new(_, …)` call must also pass
 //!    `AUDIENCE` itself, not a literal of its own.
-//! 2. **The wasm crate keeps using the vendored schema and nothing else.** A
+//! 2. **The webhook delivery contract (VS-8)** is not an op of any schema, so it
+//!    is a document: `sms-webhook` (which seals) and both SDK crates (which open)
+//!    each carry the same document and domain tag, whose hash every delivery
+//!    binds. A receiver that opened with another document would refuse every
+//!    delivery as the coarse `401`. The three are held equal here, the digest
+//!    literal is held equal between `sms-webhook` and the Rust SDK, and the sealed
+//!    vector `sms-webhook` writes (`tests/sealed_vector.rs`) must be a
+//!    byte-identical copy where the SDKs' tests read it.
+//! 3. **The wasm crate keeps using the vendored schema and nothing else.** A
 //!    `.cstack` file of its own, or an `include_client_schema!` over any other
 //!    path, would be the second table the construction exists to prevent; and
 //!    the wasm crate must stay a member of the `sdks/rust` workspace and be the
@@ -45,6 +53,12 @@ const WASM_DIR: &str = "sdks/rust/vsms-sdk-wasm";
 const WORKSPACE: &str = "sdks/rust/Cargo.toml";
 const BUILD_SCRIPT: &str = "sdks/node/vsms-sdk-node/scripts/build-wasm.sh";
 const VENDORED_FROM_WASM: &str = "../vsms-sdk-rust/schema.cstack";
+const WEBHOOK_SERVER: &str = "backends/crates/sms-webhook/src/lib.rs";
+const WEBHOOK_RUST_SDK: &str = "sdks/rust/vsms-sdk-rust/src/webhook.rs";
+const WEBHOOK_WASM: &str = "sdks/rust/vsms-sdk-wasm/src/webhook.rs";
+const VECTOR_SERVER: &str =
+    "backends/crates/sms-webhook/tests/fixtures/sealed_delivery_vector.json";
+const VECTOR_RUST_SDK: &str = "sdks/rust/vsms-sdk-rust/tests/fixtures/sealed_delivery_vector.json";
 
 pub fn run(root: &Path) -> Result<(), String> {
     let mut problems = Vec::new();
@@ -68,6 +82,19 @@ pub fn run(root: &Path) -> Result<(), String> {
         problems.extend(envelope_audience_problems(file, &read(root, file)?));
     }
 
+    problems.extend(webhook_contract_problems(&[
+        (WEBHOOK_SERVER, read(root, WEBHOOK_SERVER)?),
+        (WEBHOOK_RUST_SDK, read(root, WEBHOOK_RUST_SDK)?),
+        (WEBHOOK_WASM, read(root, WEBHOOK_WASM)?),
+    ]));
+    if read(root, VECTOR_SERVER)? != read(root, VECTOR_RUST_SDK)? {
+        problems.push(format!(
+            "{VECTOR_RUST_SDK} is not a byte-identical copy of {VECTOR_SERVER}: regenerate the \
+             vector (`SMS_WEBHOOK_WRITE_VECTORS=1 cargo test -p sms-webhook --test sealed_vector`) \
+             and copy it over the SDK's"
+        ));
+    }
+
     problems.extend(wasm_schema_problems(
         &read(root, WASM_CONTRACTS)?,
         &cstack_files(&root.join(WASM_DIR)),
@@ -79,8 +106,9 @@ pub fn run(root: &Path) -> Result<(), String> {
 
     if problems.is_empty() {
         println!(
-            "sdk-parity-check: OK — audience {:?} in the server and both SDKs, and the wasm crate \
-             expands the Rust SDK's vendored schema alone",
+            "sdk-parity-check: OK — audience {:?} in the server and both SDKs, one webhook delivery \
+             contract in the sealer and both openers, and the wasm crate expands the Rust SDK's \
+             vendored schema alone",
             audiences[0].1
         );
         return Ok(());
@@ -104,6 +132,65 @@ fn audience(source: &str, file: &str) -> Result<String, String> {
     re.captures(source)
         .map(|c| c[1].to_owned())
         .ok_or_else(|| format!("{file}: no `const AUDIENCE: &str = \"…\";` found"))
+}
+
+/// The text of `const <name>: <ty> = <literal>;` where `name` may carry a
+/// `WEBHOOK_` prefix: the sealer calls it `CONTRACT_DOCUMENT`, the SDKs
+/// `WEBHOOK_CONTRACT_DOCUMENT`.
+fn webhook_constant(source: &str, name: &str, literal: &str) -> Option<String> {
+    let re = Regex::new(&format!(
+        r"(?s)const (?:WEBHOOK_)?{name}: [^=]+=\s*{literal};"
+    ))
+    .expect("fixed pattern");
+    re.captures(source).map(|c| c[1].to_owned())
+}
+
+/// The webhook contract constants that must be equal in every `(file, source)`
+/// given: the document and the domain tag, and the digest's hex wherever a file
+/// spells it.
+fn webhook_contract_problems(files: &[(&str, String)]) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (name, literal) in [
+        ("CONTRACT_DOCUMENT", r##"r#"(.*?)"#"##),
+        ("CONTRACT_DOMAIN", r#"b"([^"]*)""#),
+    ] {
+        let found: Vec<(&str, Option<String>)> = files
+            .iter()
+            .map(|(file, source)| (*file, webhook_constant(source, name, literal)))
+            .collect();
+        for (file, value) in &found {
+            if value.is_none() {
+                problems.push(format!(
+                    "{file}: no `const {name}` (or `WEBHOOK_{name}`) found"
+                ));
+            }
+        }
+        let values: Vec<&String> = found.iter().filter_map(|(_, v)| v.as_ref()).collect();
+        if values.iter().any(|value| *value != values[0]) {
+            problems.push(format!(
+                "the webhook `{name}` differs between the sealer and the openers:\n{}",
+                found
+                    .iter()
+                    .map(|(file, value)| format!("    {file}: {value:?}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+    }
+    let hexes: Vec<(&str, String)> = files
+        .iter()
+        .filter_map(|(file, source)| {
+            webhook_constant(source, "CONTRACT_SHA_HEX", r#""([0-9a-f]{64})""#)
+                .map(|hex| (*file, hex))
+        })
+        .collect();
+    if hexes.len() < 2 || hexes.iter().any(|(_, hex)| *hex != hexes[0].1) {
+        problems.push(format!(
+            "the webhook contract digest (`CONTRACT_SHA_HEX`) must be spelled, equal, in the sealer \
+             and the Rust SDK: found {hexes:?}"
+        ));
+    }
+    problems
 }
 
 /// Every `*.cstack` under `dir`, so a vendored second copy is seen wherever it
@@ -311,6 +398,55 @@ mod tests {
             assert_eq!(audience(source, "f").as_deref(), Ok("vsms"), "{source}");
         }
         assert!(audience("const OTHER: &str = \"vsms\";", "f").is_err());
+    }
+
+    fn webhook_source(document: &str, domain: &str, hex: &str, prefix: &str) -> String {
+        format!(
+            "pub const {prefix}CONTRACT_DOMAIN: &[u8] = b\"{domain}\";\n\
+             pub const {prefix}CONTRACT_DOCUMENT: &str = r#\"{document}\"#;\n\
+             pub const {prefix}CONTRACT_SHA_HEX: &str =\n    \"{hex}\";\n"
+        )
+    }
+
+    #[test]
+    fn the_webhook_contract_must_be_one_document_everywhere() {
+        let hex = "7c5a6ab84270ec64eeb668cf50a031ac436433a08467cefe142e338c93132b62";
+        let files = |sdk_document: &str, wasm_domain: &str| {
+            vec![
+                ("sealer", webhook_source("{\"a\":1}", "d/v1\\0", hex, "")),
+                (
+                    "sdk",
+                    webhook_source(sdk_document, "d/v1\\0", hex, "WEBHOOK_"),
+                ),
+                // The wasm crate computes the digest and spells no hex.
+                (
+                    "wasm",
+                    webhook_source("{\"a\":1}", wasm_domain, hex, "WEBHOOK_")
+                        .lines()
+                        .filter(|line| !line.contains("SHA_HEX") && !line.contains(hex))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                ),
+            ]
+        };
+        assert_eq!(
+            webhook_contract_problems(&files("{\"a\":1}", "d/v1\\0")),
+            Vec::<String>::new()
+        );
+        // One byte of the document, in one crate.
+        assert_eq!(
+            webhook_contract_problems(&files("{\"a\":2}", "d/v1\\0")).len(),
+            1
+        );
+        // The domain tag, in one crate.
+        assert_eq!(
+            webhook_contract_problems(&files("{\"a\":1}", "d/v2\\0")).len(),
+            1
+        );
+        // A crate that stopped declaring the document is a failure, not a pass.
+        let mut missing = files("{\"a\":1}", "d/v1\\0");
+        missing[2].1 = String::new();
+        assert_ne!(webhook_contract_problems(&missing), Vec::<String>::new());
     }
 
     #[test]

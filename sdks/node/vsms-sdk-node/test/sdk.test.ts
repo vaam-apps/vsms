@@ -39,6 +39,7 @@ test("the package exports a client and its errors and no token machinery", () =>
     "MAX_RESPONSE_BYTES",
     "SdkError",
     "VsmsClient",
+    "WebhookOpener",
     "parseServerKeysReport",
     "routeOf",
   ]);

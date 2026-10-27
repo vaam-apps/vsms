@@ -2110,7 +2110,9 @@ name = "vsms-sdk-rust"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
+ "bytes",
  "clap",
  "cratestack-client",
  "getrandom 0.4.3",
@@ -2118,6 +2120,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "wiremock",
@@ -2135,6 +2138,7 @@ dependencies = [
  "js-sys",
  "percent-encoding",
  "serde",
+ "sha2",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",

@@ -104,6 +104,23 @@ const text = await opener.open(
 
 `routeOf(method, path)` is the schema's route for a concrete path, or `undefined` for anything the gateway does not seal; a pass-through asks it before opening a connection.
 
+## Receiving webhooks
+
+vsms delivers an event as a sealed request signed with the gateway's own key (the one that signs its answers): no webhook secret, no signature header. Pin the same two public keys and open the body:
+
+```ts
+import { parseServerKeysReport, WebhookOpener } from "@vaam-apps/vsms-node";
+
+const opener = new WebhookOpener({
+  serverKeys: parseServerKeysReport(readFileSync("server-keys.txt", "utf8")),
+  audience: "my-receiver", // the name on your WebhookEndpoint
+  route: "/webhooks/vsms", // the path of its URL
+});
+const event = await opener.open(rawBody); // { id, eventId, type, occurredAt, data }
+```
+
+`open` rejects with an `SdkError` of kind `unverified` for a forgery, another receiver's delivery, another route, a stale timestamp (300 s) and a replayed body, and one answer is all it gives: reply `401`. `decode` means it verified and is not the documented envelope; `backend` that the check itself failed (reply `5xx`; vsms retries). Dedupe on `event.id`: delivery is at-least-once and a retry is a new sealed request carrying the same id. The nonce memory is per process, so behind several replicas the id is your defence. `examples/node/webhook-receiver` is a complete receiver.
+
 ## Errors
 
 Every failure is an `SdkError` with a `kind`:
@@ -118,7 +135,8 @@ Every failure is an `SdkError` with a `kind`:
 | `unverified`         | The answer is sealed but does not verify under a pinned key, or does not answer this request.                                                                     |
 | `unreadable`         | The request **was sent**, and an answer arrived that could not be read. Whether the gateway acted is unknown: do not retry a write without its `Idempotency-Key`. |
 | `remote`             | A sealed, verified answer with a non-2xx status (`gatewayCode`, `fieldErrors`, `isConflict()`, ...)                                                               |
-| `decode`             | A sealed, verified 2xx answer whose body is not the expected JSON.                                                                                                |
+| `decode`             | A sealed, verified 2xx answer whose body is not the expected JSON, or a verified webhook delivery that is not the documented envelope.                            |
+| `backend`            | A webhook delivery could not be checked because the receiver's own machinery failed (answer `5xx`).                                                               |
 
 `seal` is the only kind that means "nothing was sent"; every failure after the send is `transport`, `response_too_large`, `unsigned`, `unverified` or `unreadable`.
 
