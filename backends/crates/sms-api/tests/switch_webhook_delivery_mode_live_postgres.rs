@@ -226,7 +226,8 @@ async fn sealed_to_hmac_mints_a_secret_and_frees_the_audience() {
     let secret = switched.secret.as_deref().expect("a minted secret");
     assert!(
         secret.starts_with("whsec_") && secret.len() == 70,
-        "{secret}"
+        "a minted secret is whsec_ plus 64 hex (got {} characters)",
+        secret.len()
     );
     assert_eq!(switched.audience, None);
     assert_eq!(switched.prevSecret, None);
