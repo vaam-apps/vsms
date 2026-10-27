@@ -1666,6 +1666,36 @@ mutation procedure revokeConsoleKey(args: RevokeConsoleKeyInput): ConsoleKey
   @authorize(ConsoleKey, detail, args.keyId)
   @isolation("serializable")
 
+// VS-5b: the console's composer sends through its own service key (an app
+// principal), because `sendMessage` and `previewMessage` derive the sending App
+// from an app caller. The service key must therefore be spent only for a person
+// who may send. This procedure is how the gateway says so: the person's browser
+// seals a call to it, naming the operation and the SHA-256 of the exact input it
+// is about to post, and the console's server forwards those bytes and reads the
+// sealed answer. The answer names the principal, the operation and the hash, and
+// a refusal is a non-2xx, which a list route's empty array could never be.
+//
+// Layer 1 admits a `user` holding one of the three roles `sendMessage` itself
+// admits for a human; Layer 2 (`sms:send`) is checked in the body. An app
+// principal (any client key of any app) is refused at Layer 1, which is the
+// point: the gateway answers 200 to every signer it accepts, so a 200 proves
+// nothing about who signed. The call is single-use like every sealed request
+// (the `EnvelopeNonce` table), and changes nothing.
+type AuthorizeCompositionInput {
+  operation String
+  inputSha256 String
+}
+
+type CompositionAuthorization {
+  userId String
+  role String
+  operation String
+  inputSha256 String
+}
+
+procedure authorizeComposition(args: AuthorizeCompositionInput): CompositionAuthorization
+  @allow(auth().kind == "user" && (hasRole('owner') || hasRole('admin') || hasRole('operator')))
+
 mutation procedure rotateWebhookSecret(args: EndpointInput): WebhookEndpoint
   @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
   @isolation("serializable")
