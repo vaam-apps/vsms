@@ -1,7 +1,7 @@
 {
   "name": "@vaam-apps/vsms-node",
   "version": "0.9.0",
-  "description": "Official Node.js SDK for vsms: owns the private_key_jwt credential lifecycle so integrators stop hand-rolling token acquisition.",
+  "description": "Official Node.js SDK for vsms: signs every request with your Ed25519 key (COSE_Sign1) and verifies every answer against the gateway's pinned keys, so there is no token to acquire or refresh.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -22,16 +22,19 @@
   },
   "files": [
     "dist",
+    "wasm",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "swc src -d dist --strip-leading-paths && tsc -p tsconfig.json --emitDeclarationOnly",
-    "typecheck": "tsc --noEmit",
-    "test": "node --test"
-  },
-  "dependencies": {
-    "jose": "^6.2.12"
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "build:wasm-test": "bash scripts/build-wasm.sh --responder",
+    "build:ts": "rm -rf dist && swc src -d dist --strip-leading-paths && tsc -p tsconfig.json --emitDeclarationOnly",
+    "build": "pnpm run build:wasm && pnpm run build:ts",
+    "prepack": "pnpm run build",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
+    "test": "pnpm run build:wasm-test && node --test",
+    "test:live": "node live/gateway.live.ts"
   },
   "devDependencies": {
     "@swc/cli": "^0.8.1",
@@ -40,6 +43,6 @@
     "typescript": "5.9.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.11.0"
   }
 }

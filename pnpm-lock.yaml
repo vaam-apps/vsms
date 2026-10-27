@@ -386,10 +386,6 @@ importers:
         version: 5.9.3
 
   sdks/node/vsms-sdk-node:
-    dependencies:
-      jose:
-        specifier: ^6.2.12
-        version: 6.2.12
     devDependencies:
       '@swc/cli':
         specifier: ^0.8.1

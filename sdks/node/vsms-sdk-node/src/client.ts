@@ -1,9 +1,8 @@
+import type { Agent as HttpAgent } from "node:http";
+import type { Agent as HttpsAgent } from "node:https";
 import { SdkError } from "./error.js";
-import {
-  type PrivateKeyJwtConfigOptions,
-  PrivateKeyJwtTokenStore,
-  type TokenStore,
-} from "./token.js";
+import { type IdentityOptions, resolveSealer } from "./identity.js";
+import { type CallContext, type OpenedAnswer, performSealedCall } from "./sealed-call.js";
 import type {
   Message,
   PreviewInput,
@@ -12,8 +11,10 @@ import type {
   SendMessageResult,
 } from "./types.js";
 
+/** Default timeout for every call, in milliseconds. */
+export const DEFAULT_TIMEOUT_MS = 30_000;
+
 const IDEMPOTENCY_REPLAYED_HEADER = "idempotency-replayed";
-const IDEMPOTENCY_KEY_HEADER = "idempotency-key";
 
 export interface SendMessageOptions {
   idempotencyKey?: string | undefined;
@@ -21,17 +22,23 @@ export interface SendMessageOptions {
 
 export interface SendMessageOutcome {
   result: SendMessageResult;
+  /**
+   * Whether the gateway answered from a prior call under the same
+   * `Idempotency-Key` instead of executing again. Read from a response header,
+   * which the signature does **not** cover: informational. The authoritative
+   * statement that a retry did not duplicate the message is that both answers
+   * carry the same `messageId`.
+   */
   idempotencyReplayed: boolean;
 }
 
-export interface VsmsClientOptions {
+export interface VsmsClientOptions extends IdentityOptions {
+  /** The gateway's externally reachable origin, e.g. `https://sms.example.com`. */
   baseUrl: string;
-  tokenStore: TokenStore;
-}
-
-export interface PrivateKeyJwtClientOptions extends PrivateKeyJwtConfigOptions {
-  keyPath?: string | undefined;
-  privateKeyPem?: string | undefined;
+  /** Default {@link DEFAULT_TIMEOUT_MS}. */
+  timeoutMs?: number | undefined;
+  /** An `http.Agent`/`https.Agent` for a proxy or a pool. Defaults to the global agent. */
+  agent?: HttpAgent | HttpsAgent | undefined;
 }
 
 interface CratestackErrorResponseBody {
@@ -40,46 +47,76 @@ interface CratestackErrorResponseBody {
   details?: unknown;
 }
 
+/**
+ * A vsms client. Every request is signed with the app's Ed25519 key and every
+ * answer is verified against the gateway's pinned keys, so there is nothing to
+ * acquire, cache or refresh. Build one with the key and the pinned keys:
+ *
+ * @example
+ * const client = new VsmsClient({
+ *   baseUrl: "https://sms.example.com",
+ *   keyPath: "/run/secrets/vsms-signing-key.pem",
+ *   serverKeys: parseServerKeysReport(readFileSync("server-keys.txt", "utf8")),
+ * });
+ */
 export class VsmsClient {
-  readonly #baseUrl: string;
-  readonly #tokenStore: TokenStore;
+  readonly #context: CallContext;
 
   constructor(options: VsmsClientOptions) {
-    this.#baseUrl = options.baseUrl.replace(/\/+$/, "");
-    this.#tokenStore = options.tokenStore;
+    if (typeof options.baseUrl !== "string" || options.baseUrl.length === 0) {
+      throw new SdkError("baseUrl is required", { kind: "config" });
+    }
+    const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+      throw new SdkError(`timeoutMs must be a positive integer, got ${timeoutMs}`, {
+        kind: "config",
+      });
+    }
+    this.#context = {
+      baseUrl: options.baseUrl.replace(/\/+$/, ""),
+      timeoutMs,
+      agent: options.agent,
+      sealer: resolveSealer(options),
+    };
   }
 
-  /**
-   * Convenience factory: constructs a VsmsClient using private_key_jwt authentication.
-   *
-   * Note: in this deployment, the OP issuer and API origin are the same host (sms-gateway
-   * mounts both /token and the REST router on the same listener), so baseUrl defaults to issuer.
-   */
-  static privateKeyJwt(options: PrivateKeyJwtClientOptions): VsmsClient {
-    const tokenStore = new PrivateKeyJwtTokenStore(
+  /** The registered public half of this client's key, unpadded base64url: what `sms-gateway register-client --public-key` takes. */
+  get publicKey(): string {
+    return this.#context.sealer.publicKey;
+  }
+
+  async #call(name: string, spec: Parameters<typeof performSealedCall>[1]): Promise<OpenedAnswer> {
+    const answer = await performSealedCall(this.#context, spec);
+    if (answer.status >= 200 && answer.status < 300) {
+      return answer;
+    }
+    let parsed: CratestackErrorResponseBody | undefined;
+    try {
+      parsed = JSON.parse(answer.text) as CratestackErrorResponseBody;
+    } catch {
+      // Not the standard error JSON (e.g. the idempotency layer's text/plain
+      // "in flight" message): what the gateway said is the message.
+    }
+    throw new SdkError(
+      parsed?.message ?? (answer.text || `${name} failed with status ${answer.status}`),
       {
-        issuer: options.issuer,
-        clientId: options.clientId,
-        scope: options.scope,
-        audience: options.audience,
-      },
-      {
-        keyPath: options.keyPath,
-        pemString: options.privateKeyPem,
+        kind: "remote",
+        httpStatus: answer.status,
+        gatewayCode: parsed?.code,
+        fieldErrors:
+          typeof parsed?.details === "object" && parsed.details !== null
+            ? (parsed.details as Record<string, string[]>)
+            : undefined,
       },
     );
-    return new VsmsClient({ baseUrl: options.issuer, tokenStore });
   }
 
-  get tokenStore(): TokenStore {
-    return this.#tokenStore;
-  }
-
-  #parseJsonOrThrow<T>(text: string, status: number, method: string): T {
+  #decode<T>(text: string, status: number, name: string): T {
     try {
       return JSON.parse(text) as T;
     } catch (err) {
-      throw new SdkError(`failed to parse ${method} response as JSON: ${text}`, {
+      throw new SdkError(`failed to parse ${name} response as JSON: ${text}`, {
+        kind: "decode",
         cause: err,
         httpStatus: status,
       });
@@ -87,151 +124,45 @@ export class VsmsClient {
   }
 
   /**
-   * Helper that calls an authenticated endpoint, with automatic bounded 401 retry.
-   */
-  async #fetchWithAuth(path: string, init: RequestInit): Promise<Response> {
-    const url = `${this.#baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
-
-    const makeRequest = async (): Promise<Response> => {
-      const token = await this.#tokenStore.get();
-      const headers = new Headers(init.headers);
-      headers.set("authorization", `Bearer ${token}`);
-      if (!headers.has("accept")) {
-        headers.set("accept", "application/json");
-      }
-      try {
-        return await fetch(url, {
-          ...init,
-          headers,
-        });
-      } catch (err) {
-        throw new SdkError(`request to ${url} failed: network error`, { cause: err });
-      }
-    };
-
-    let res = await makeRequest();
-    if (res.status === 401) {
-      await this.#tokenStore.invalidate();
-      res = await makeRequest();
-    }
-    return res;
-  }
-
-  /**
-   * `POST /$procs/sendMessage`. Handles token acquisition, caching, bounded 401 retry,
-   * and optional `Idempotency-Key` header with replay tracking.
+   * `POST /$procs/sendMessage`, sealed. `options.idempotencyKey`, when given, is
+   * sent as the `Idempotency-Key` header, which the signature binds: the
+   * gateway then guarantees a repeated call under the same key within its TTL
+   * never executes `sendMessage` twice. Each attempt is a freshly sealed
+   * request (a new nonce), and this method never retries one itself.
    */
   async sendMessage(
     input: SendMessageInput,
     options?: SendMessageOptions | undefined,
   ): Promise<SendMessageOutcome> {
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-      accept: "application/json",
-    };
-    if (options?.idempotencyKey) {
-      headers[IDEMPOTENCY_KEY_HEADER] = options.idempotencyKey;
-    }
-
-    const response = await this.#fetchWithAuth("/$procs/sendMessage", {
+    const answer = await this.#call("sendMessage", {
       method: "POST",
-      headers,
+      route: "/$procs/sendMessage",
       body: JSON.stringify({ args: input }),
+      idempotencyKey: options?.idempotencyKey || undefined,
     });
-
-    const text = await response.text();
-    const isReplayed = response.headers.get(IDEMPOTENCY_REPLAYED_HEADER) === "true";
-
-    if (!response.ok) {
-      let parsed: CratestackErrorResponseBody | undefined;
-      try {
-        parsed = JSON.parse(text) as CratestackErrorResponseBody;
-      } catch {
-        // Fallback for non-JSON errors (e.g. text/plain idempotency in flight message)
-      }
-
-      throw new SdkError(
-        parsed?.message ?? text ?? `sendMessage failed with status ${response.status}`,
-        {
-          httpStatus: response.status,
-          gatewayCode: parsed?.code,
-          fieldErrors:
-            typeof parsed?.details === "object" && parsed.details !== null
-              ? (parsed.details as Record<string, string[]>)
-              : undefined,
-        },
-      );
-    }
-
-    const result = this.#parseJsonOrThrow<SendMessageResult>(text, response.status, "sendMessage");
-
     return {
-      result,
-      idempotencyReplayed: isReplayed,
+      result: this.#decode<SendMessageResult>(answer.text, answer.status, "sendMessage"),
+      idempotencyReplayed: answer.headers[IDEMPOTENCY_REPLAYED_HEADER] === "true",
     };
   }
 
-  /**
-   * `POST /$procs/previewMessage`.
-   */
+  /** `POST /$procs/previewMessage`, sealed. */
   async previewMessage(input: PreviewInput): Promise<PreviewResult> {
-    const response = await this.#fetchWithAuth("/$procs/previewMessage", {
+    const answer = await this.#call("previewMessage", {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-      },
+      route: "/$procs/previewMessage",
       body: JSON.stringify({ args: input }),
     });
-
-    const text = await response.text();
-    if (!response.ok) {
-      let parsed: CratestackErrorResponseBody | undefined;
-      try {
-        parsed = JSON.parse(text) as CratestackErrorResponseBody;
-      } catch {
-        // fallback
-      }
-      throw new SdkError(
-        parsed?.message ?? text ?? `previewMessage failed with status ${response.status}`,
-        {
-          httpStatus: response.status,
-          gatewayCode: parsed?.code,
-        },
-      );
-    }
-
-    return this.#parseJsonOrThrow<PreviewResult>(text, response.status, "previewMessage");
+    return this.#decode<PreviewResult>(answer.text, answer.status, "previewMessage");
   }
 
-  /**
-   * `GET /messages/{id}`.
-   */
+  /** `GET /messages/{id}`, sealed. */
   async getMessage(id: string): Promise<Message> {
-    const response = await this.#fetchWithAuth(`/messages/${encodeURIComponent(id)}`, {
+    const answer = await this.#call(`GET /messages/${id}`, {
       method: "GET",
-      headers: {
-        accept: "application/json",
-      },
+      route: "/messages/{id}",
+      params: [id],
     });
-
-    const text = await response.text();
-    if (!response.ok) {
-      let parsed: CratestackErrorResponseBody | undefined;
-      try {
-        parsed = JSON.parse(text) as CratestackErrorResponseBody;
-      } catch {
-        // fallback
-      }
-      throw new SdkError(
-        parsed?.message ?? text ?? `GET /messages/${id} failed with status ${response.status}`,
-        {
-          httpStatus: response.status,
-          gatewayCode: parsed?.code,
-        },
-      );
-    }
-
-    return this.#parseJsonOrThrow<Message>(text, response.status, `GET /messages/${id}`);
+    return this.#decode<Message>(answer.text, answer.status, `GET /messages/${id}`);
   }
 }

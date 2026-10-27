@@ -2,10 +2,10 @@
   "name": "@vsms-examples/sms-send",
   "version": "0.1.0",
   "private": true,
-  "description": "Runnable example: authenticate to vsms with private_key_jwt and send a message over real HTTP using @vaam-apps/vsms-node.",
+  "description": "Runnable example: send a message through vsms with a signed (COSE_Sign1) request over real HTTP using @vaam-apps/vsms-node.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.11.0"
   },
   "scripts": {
     "start": "node src/index.mjs"
