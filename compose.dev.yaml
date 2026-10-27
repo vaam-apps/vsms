@@ -479,9 +479,10 @@ services:
       ORANGE_CM_CLIENT_SECRET: placeholder
       ORANGE_CM_SENDER_NUMBER: '+2370000'
       ORANGE_CM_BASE_URL: http://sms-fake-orange:8090
-      # VS-8: a webhook delivery is a sealed request signed with the gateway's
+      # VS-8: a sealed webhook delivery is a request signed with the gateway's
       # own envelope signing key, so `hooks` needs the CURRENT key file (never
-      # the `next` one, which signs nothing) and refuses to start without it.
+      # the `next` one, which signs nothing) to deliver a `sealed` endpoint (an
+      # `hmac` endpoint needs none, VS-8R; the demo seeds a sealed one).
       # The very file the gateway signs its answers with, so a receiver pins
       # one pair of public keys (`dev-keys/server-keys.txt`) for both.
       SMS_ENVELOPE_SIGNING_KEY_FILE: /run/envelope/current.pem

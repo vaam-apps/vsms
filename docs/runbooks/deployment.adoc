@@ -115,9 +115,17 @@ integrator pins the public half of *both*; print them once the stack is up with
 hand the two lines to the integrator. They are paths, not secret values, in
 `.env`-land: the files are the secret.
 
-The worker's `hooks` role seals every webhook delivery with
+The worker's `hooks` role seals every `sealed` webhook endpoint's delivery with
 `secrets/envelope-current.pem` too, so a receiver pins the same two public keys
-for the gateway's answers and for the deliveries it receives. Both containers
+for the gateway's answers and for the deliveries it receives. An endpoint's
+delivery mode is its own (`docs/integrating.md`, "Choosing a delivery mode"):
+an `hmac` endpoint is signed with its own secret and needs no key, so a
+deployment that has not moved a receiver to the seal may leave the file out. A
+`hooks` worker without it still starts and still delivers every `hmac`
+endpoint, and each attempt to a `sealed` endpoint fails with an error that names
+`--envelope-signing-key-file` (it counts toward `maxAttempts`, so mount the key
+before creating sealed endpoints, and replay the `dead` attempts if it was
+late). Both containers
 run as uid 65532, which is why the one `chown`/`chmod 0400` above serves both.
 
 === Rotating the envelope keys

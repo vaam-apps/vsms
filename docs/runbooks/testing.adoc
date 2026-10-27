@@ -40,8 +40,8 @@ This builds (or reuses) the runner image, starts a disposable Postgres 16 for it
 . Generate the TypeScript client and check its routes against the pinned server (`just client-check`)
 . Typecheck and build (`pnpm turbo run typecheck build`)
 . Test (`pnpm turbo run test`)
-. The sample Node receiver, against the real `WebhookOpener` and the gateway's own sealed vector
-. The demo app (`examples/node/demo-app`) -- typecheck and its own tests (it opens webhooks with the same SDK, so it shares nothing with the receiver)
+. The sample Node receiver, against the real `WebhookOpener` and the gateway's own sealed vector, and its cross-language HMAC signature vectors (the `hmac` delivery mode's proof, shared with `backends/crates/sms-webhook/tests/cross_language_fixtures.rs`)
+. The demo app (`examples/node/demo-app`) -- typecheck and its own tests, including its own copy of the same cross-language HMAC signature vectors (it carries a byte-for-byte copy of `signature.ts`/`cross-language-vectors.test.ts` from the step above, per that package's own README, and `verbatim-copy.test.ts` fails the moment they drift); it opens sealed webhooks with the SDK
 . The official Node SDK (`@vaam-apps/vsms-node`) -- build (its signed transport is Rust compiled to WebAssembly, so `just wasm-tools` installs `wasm-bindgen` at the version `sdks/rust/Cargo.lock` pins, in step 13), typecheck, test (against cratestack's server envelope, built as `wasm-test/`), `npm pack --dry-run`
 . Every mermaid diagram in `docs/architecture.md`/`docs/roadmap.md` parses (no browser)
 

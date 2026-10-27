@@ -139,8 +139,9 @@ existingSecrets:
   # and `envelope-next.pem`. REQUIRED: the gateway refuses to start without
   # both. The same `current` key SEALS every webhook delivery (VS-8): the worker
   # mounts that one file alone (`persistence.envelope-keys` below, `subPath`)
-  # because its `hooks` role refuses to start without it, and never gets `next`,
-  # which signs nothing. Integrators and webhook receivers pin the public halves
+  # because its `hooks` role seals `sealed` endpoints' deliveries with it (an
+  # `hmac`-only deployment could leave it out), and never gets `next`, which
+  # signs nothing. Integrators and webhook receivers pin the public halves
   # `sms-gateway server-keys` prints. Mounted as files, never read through an
   # env var, like the composer key below.
   envelopeKeys:
@@ -700,9 +701,10 @@ controllers:
             value: '{{ .Values.awsSms.endpointUrl }}'
           AWS_SMS_TIME_TO_LIVE_SECONDS:
             value: '{{ .Values.awsSms.timeToLiveSeconds }}'
-          # VS-8: the `hooks` role seals every webhook delivery with the
-          # gateway's CURRENT envelope signing key and refuses to start
-          # without it. Only that one file is mounted into this pod.
+          # VS-8: the `hooks` role seals a `sealed` endpoint's deliveries with
+          # the gateway's CURRENT envelope signing key (an `hmac` endpoint
+          # needs no key, VS-8R; without one, a sealed endpoint's attempts
+          # fail naming it). Only that one file is mounted into this pod.
           SMS_ENVELOPE_SIGNING_KEY_FILE:
             value: /run/envelope/current.pem
           RUST_LOG:

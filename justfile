@@ -859,7 +859,7 @@ ci-inner:
 		pnpm turbo run test
 	fi
 
-	step 19 22 "Sample Node receiver — the real opener against the gateway's own vector"
+	step 19 22 "Sample Node receiver — the real opener against the gateway's own vector, and the cross-language HMAC vectors"
 	( cd examples/node/webhook-receiver && node --test )
 
 	# examples/node/demo-app opens webhooks with the same SDK (VS-8), so it has
@@ -870,7 +870,7 @@ ci-inner:
 	# — without --ignore-workspace — that check resolves against the ROOT
 	# workspace lockfile, which knows nothing about this standalone package, and
 	# fails with ERR_PNPM_OUTDATED_LOCKFILE.
-	step 20 22 "Demo app — typecheck and tests"
+	step 20 22 "Demo app — typecheck and tests (its verbatim copy of the HMAC verifier included)"
 	( cd examples/node/demo-app && pnpm install --ignore-workspace --frozen-lockfile --trust-lockfile && node_modules/.bin/tsc --noEmit && node --test )
 
 	step 21 22 "Official Node SDK (@vaam-apps/vsms-node) — build, typecheck, test, pack dry-run"

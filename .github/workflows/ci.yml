@@ -787,7 +787,7 @@ jobs:
       # proof; `backends/crates/sms-webhook/tests/sealed_vector.rs` and
       # `sdks/rust/vsms-sdk-rust/tests/webhook.rs` are the Rust halves, and
       # `cargo xtask sdk-parity-check` holds the fixture copy equal.
-      - name: Sample Node receiver — the real opener against the gateway's own vector
+      - name: Sample Node receiver — the real opener against the gateway's own vector, and the cross-language HMAC vectors
         run: |
           # --trust-lockfile: the lockfile here is committed and reviewed, and
           # pnpm's 24h quarantine would otherwise refuse a freshly published
@@ -811,7 +811,7 @@ jobs:
       # package, and fails with ERR_PNPM_OUTDATED_LOCKFILE. Found on the
       # first CI run of this step; the install line above is unaffected
       # because it passes the flag.
-      - name: Demo app — typecheck and tests
+      - name: Demo app — typecheck and tests (its verbatim copy of the HMAC verifier included)
         run: |
           # --trust-lockfile: the lockfile here is committed and reviewed, and
           # pnpm's 24h quarantine would otherwise refuse a freshly published

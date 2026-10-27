@@ -70,14 +70,19 @@ seconds of extra startup time for never hitting that race instead of
 hoping not to.
 
 NOTE: `seed-demo-webhook` passes `--webhook-url`, `--webhook-audience` and
-`--webhook-endpoint-id-out` (VS-8: a delivery is sealed with the gateway's own
-key, so there is no `--webhook-secret-out` and no secret volume any more; the
-one thing it still hands `demo-app` is the endpoint's id, the binding between a
-delivery and its receiver, through the `vsms_demo_endpoint` volume). The two
+`--webhook-endpoint-id-out` (VS-8: the showcase seeds a *sealed* endpoint, so a
+delivery is signed with the gateway's own key and there is no secret volume; the
+one thing it hands `demo-app` is the endpoint's id, the binding between a
+delivery and its receiver, through the `vsms_demo_endpoint` volume). The seed
+still has `--webhook-secret-out` (VS-8R) as the alternative to
+`--webhook-audience` that makes an `hmac` endpoint and writes its secret to that
+file; the stacks do not use it, and `demo-app` takes `DEMO_WEBHOOK_MODE=hmac`
+with `DEMO_WEBHOOK_SECRET_PATH` for such an endpoint. The two
 flags exist only in a release that contains VS-8, so **showcasing a tag from
 before VS-8 fails at `seed-demo-webhook`** with `unexpected argument
 '--webhook-audience'`, and so does a worker from before it, which would
-still sign with an HMAC; use this file's default tag or a later one.
+still sign with an HMAC (an `hmac` endpoint keeps working across the upgrade;
+the showcase's endpoint is a sealed one); use this file's default tag or a later one.
 Showcasing a tag before `v0.3.0` also cannot run `demo-app` at all (see
 "Bumping the showcased version" below): no `demo-app` image was ever
 published before `v0.3.0`.
@@ -295,7 +300,7 @@ knob left at its default.
 to have different requirements between them: `seed-demo-webhook`
 (`--profile demo` -- covers the `WebhookEndpoint` half of the same
 image, `--webhook-url`/`--webhook-audience`) needs flags that exist only
-in a release containing VS-8 (the earlier `--webhook-secret-out` is gone).
+in a release containing VS-8.
 This file's current default tag has them, so the default works for both
 services without any override -- moot at `v0.2.1` regardless, since
 `--profile demo` is already unusable there for the reason above. `demo-app` is a
