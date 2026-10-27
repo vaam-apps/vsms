@@ -1,0 +1,36 @@
+-- 0011_webhook_endpoint_due_idx / up.sql
+--
+-- VS-8 follow-up (M1): the due list of ONE endpoint. A `hooks` worker without
+-- the envelope signing key claims `hmac` attempts only, and the claim reads the
+-- endpoints that deliver `hmac` first and then asks for each one's due
+-- attempts, oldest first (`backends/crates/sms-worker/src/claim.md`). The only
+-- index that could serve that is `webhook_due_idx (next_attempt_at)`, which is
+-- ordered by time across every endpoint: reading it for one endpoint walks the
+-- whole due backlog, whatever the other endpoints' modes are, because the
+-- endpoint is a filter there and not a key. Measured on PostgreSQL 16 with
+-- 200 000 due sealed attempts and five `hmac` ones, the old claim read 13 883
+-- buffers; this index brings it to a handful, whatever the sealed backlog.
+--
+-- It is partial on the same states `webhook_due_idx` covers (`pending`, and
+-- `failed` resting out a backoff), so a `delivering`, `succeeded` or `dead` row
+-- is not in it and a delivery that finishes writes one index entry less than a
+-- full index would. `webhook_due_idx` stays: the worker that holds the key
+-- claims both modes in one global oldest-first list and still reads it.
+--
+-- There is no generator output to copy: `cratestack migrate diff` emits no
+-- partial index (`@@index` has no predicate), which is also why `webhook_due_idx`
+-- and `webhook_attempts_lease_reclaim_idx` are hand-written in `0002_bootstrap`.
+-- `cargo xtask migrations-current` compares `0001_init` only and needs no entry
+-- for this file. The index is proved by
+-- `webhook_endpoint_due_idx_live_postgres.rs` (the migration) and by
+-- `hooks_live_postgres.rs` (a keyless claim never reads the sealed backlog's
+-- entries).
+--
+-- Plain `CREATE INDEX`, not `CONCURRENTLY`: `sms-migrate` applies a migration in
+-- a transaction, where `CONCURRENTLY` is refused. It holds a lock that blocks
+-- writes to `webhook_attempts` while it builds, which for a table that
+-- `@@retain(days: 30)` bounds is seconds, and `sms-migrate` runs before the
+-- workers it would stall are started.
+
+CREATE INDEX webhook_endpoint_due_idx ON webhook_attempts (endpoint_id, next_attempt_at)
+    WHERE state IN ('pending','failed');

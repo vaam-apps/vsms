@@ -97,6 +97,10 @@ async fn db() -> Cratestack {
 /// — see `attempt_state_transitions`, §2.10), so this walks each row
 /// through that one legal hop first.
 async fn clear_claimable_backlog(db: &Cratestack) {
+    // Rows `a_keyless_claim_never_reads_the_sealed_backlogs_index_entries` bulk
+    // inserts: thousands of them, past the 500-row sweep below, and left behind
+    // by a test that failed before it could delete them.
+    psql("DELETE FROM webhook_attempts WHERE aggregate_id LIKE 'bulk-%'").await;
     let sys = sys();
     let backlog = db
         .webhook_attempt()
@@ -646,13 +650,21 @@ async fn a_redirect_is_not_followed() {
 /// signs with it (R5), and this is how the test gets one.
 async fn force_column(endpoint_id: &str, column: &str, value: &str) {
     assert!(matches!(column, "secret" | "prev_secret"), "{column}");
+    psql(&format!(
+        "UPDATE webhook_endpoints SET {column} = '{value}' WHERE id = '{endpoint_id}'"
+    ))
+    .await;
+}
+
+/// Runs one statement with `psql` against the suite's database, for what the API
+/// cannot do (a bulk insert, a hand edit, a statistics read), and returns its
+/// output with no headers or alignment.
+async fn psql(sql: &str) -> String {
     let database_url = sms_test_support::database_url().await;
     let output = std::process::Command::new("psql")
         .arg(database_url)
-        .args(["-v", "ON_ERROR_STOP=1", "-q", "-c"])
-        .arg(format!(
-            "UPDATE webhook_endpoints SET {column} = '{value}' WHERE id = '{endpoint_id}'"
-        ))
+        .args(["-v", "ON_ERROR_STOP=1", "-X", "-q", "-A", "-t", "-c"])
+        .arg(sql)
         .output()
         .expect("spawning `psql`");
     assert!(
@@ -660,6 +672,7 @@ async fn force_column(endpoint_id: &str, column: &str, value: &str) {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    String::from_utf8_lossy(&output.stdout).trim().to_owned()
 }
 
 /// An `hmac` row whose `secret` and `prevSecret` are empty (a row from before the
@@ -1865,4 +1878,116 @@ async fn a_stale_delivering_lease_is_reclaimed_without_double_counting_attempts(
         reread.attempts, 1,
         "the reclaim must resume the already-counted attempt, not count a second one"
     );
+}
+
+/// Due `sealed` attempts the next test bulk-inserts: the size of the backlog the
+/// finding measured (200 000). Smaller tables let the planner prefer a sequential
+/// scan to walking `webhook_due_idx`, and the old claim would then pass.
+const BULK_BACKLOG: u32 = 200_000;
+
+/// How many entries scans have read from `index` so far, per the server's
+/// statistics. A backend hands its counters to the shared view when it goes idle
+/// for a while or exits, so a reading is only worth anything once every backend
+/// that scanned has exited: the caller closes its pool first, and this waits for
+/// the exits to land.
+async fn index_entries_read(index: &str) -> i64 {
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    psql(&format!(
+        "SELECT coalesce(max(idx_tup_read), 0) FROM pg_stat_user_indexes \
+         WHERE indexrelname = '{index}'"
+    ))
+    .await
+    .parse()
+    .expect("a count")
+}
+
+/// How many scans have used `index` so far; same reading rules as
+/// [`index_entries_read`].
+async fn index_scans(index: &str) -> i64 {
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    psql(&format!(
+        "SELECT coalesce(max(idx_scan), 0) FROM pg_stat_user_indexes \
+         WHERE indexrelname = '{index}'"
+    ))
+    .await
+    .parse()
+    .expect("a count")
+}
+
+/// M1: a keyless worker's claim costs what the `hmac` work costs, not what the
+/// sealed backlog does. Two hundred thousand due sealed attempts sit ahead of one `hmac`
+/// attempt in time. The claim used to filter by a subquery on the endpoint's mode,
+/// which Postgres cannot push into `webhook_due_idx`: it walked that index in time
+/// order and looked every row's endpoint up until it had enough `hmac` rows, so it
+/// read every sealed entry on each poll. It now reads the `hmac` endpoints first
+/// and asks `webhook_endpoint_due_idx` for each one's due attempts, and so reads no
+/// entry of `webhook_due_idx` at all. The counters are the server's own
+/// (`pg_stat_user_indexes`), read with `psql` after the claim's connections have
+/// closed.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyless_claim_never_reads_the_sealed_backlogs_index_entries() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let sealed = seed_endpoint(&db, &suffix, &app_id, "https://hooks.example.test/hook", 8).await;
+    psql(&format!(
+        "INSERT INTO webhook_attempts \
+           (id, endpoint_id, source_event_id, aggregate_id, event_type, payload, next_attempt_at) \
+         SELECT 'bulk-' || n, '{}', gen_random_uuid(), 'bulk-' || n, 'message.delivered', '{{}}', \
+                now() - interval '1 hour' \
+         FROM generate_series(1, {BULK_BACKLOG}) AS n",
+        sealed.id
+    ))
+    .await;
+    psql("ANALYZE webhook_attempts").await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let hmac = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", server.uri()),
+        8,
+        "whsec_bulk_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &hmac.id, "cmsgB", "message.delivered", "{}").await;
+
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&sms_test_support::database_url().await)
+        .await
+        .expect("connecting to Postgres");
+    let ctx = keyless(&Cratestack::builder(pool.clone()).build());
+    let due_before = index_entries_read("webhook_due_idx").await;
+    let endpoint_due_before = index_scans("webhook_endpoint_due_idx").await;
+
+    hooks::tick(&ctx, &sys(), "test-worker", &http_client())
+        .await
+        .expect("tick succeeds without a key");
+    pool.close().await;
+
+    assert_eq!(
+        reread_attempt(&db, &attempt.id).await.state,
+        AttemptState::succeeded,
+        "the hmac attempt is delivered behind a {BULK_BACKLOG}-row sealed backlog"
+    );
+    let due_read = index_entries_read("webhook_due_idx").await - due_before;
+    assert!(
+        due_read < i64::from(BULK_BACKLOG) / 10,
+        "the claim read {due_read} entries of webhook_due_idx, the sealed backlog's index"
+    );
+    assert!(
+        index_scans("webhook_endpoint_due_idx").await > endpoint_due_before,
+        "and it used the per-endpoint due list instead"
+    );
+    psql("DELETE FROM webhook_attempts WHERE aggregate_id LIKE 'bulk-%'").await;
 }

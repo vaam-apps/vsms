@@ -7,8 +7,8 @@ use chrono::{DateTime, Duration, Utc};
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use sms_api::schema::{
     AttemptState, Cratestack, Job, JobState, Message, MessageState, UpdateJobInput,
-    UpdateMessageInput, UpdateWebhookAttemptInput, WebhookAttempt, WebhookDeliveryMode, job,
-    message, webhook_attempt, webhook_endpoint,
+    UpdateMessageInput, UpdateWebhookAttemptInput, WebhookAttempt, WebhookDeliveryMode,
+    WebhookEndpoint, job, message, webhook_attempt, webhook_endpoint,
 };
 use tracing::warn;
 
@@ -586,12 +586,7 @@ async fn filter_by_endpoint_health(
 
     let healthy: HashSet<String> = endpoints
         .into_iter()
-        .filter(|endpoint| {
-            endpoint.active
-                && endpoint
-                    .circuitOpenUntil
-                    .is_none_or(|open_until| open_until <= now)
-        })
+        .filter(|endpoint| endpoint_is_claimable(endpoint, now))
         .map(|endpoint| endpoint.id)
         .collect();
 
@@ -647,12 +642,15 @@ fn endpoint_delivers(mode: WebhookDeliveryMode) -> FilterExpr {
     webhook_attempt::endpoint().deliveryMode().eq(mode)
 }
 
-/// `filter`, narrowed to what a worker serving `served` may claim.
-fn restricted_to(filter: FilterExpr, served: ServedModes) -> FilterExpr {
-    match served {
-        ServedModes::Both => filter,
-        ServedModes::HmacOnly => filter.and(endpoint_delivers(WebhookDeliveryMode::hmac)),
-    }
+/// Whether a claim may take `endpoint`'s attempts at `now`: it is active and its
+/// circuit is closed (never opened, or open until a time that has passed). The one
+/// rule [`filter_by_endpoint_health`] and the keyless worker's choice of endpoints
+/// ([`claimable_hmac_endpoints`]) share.
+fn endpoint_is_claimable(endpoint: &WebhookEndpoint, now: DateTime<Utc>) -> bool {
+    endpoint.active
+        && endpoint
+            .circuitOpenUntil
+            .is_none_or(|open_until| open_until <= now)
 }
 
 /// [`Claimable::candidates`] for [`WebhookAttempt`], for a worker serving `served`.
@@ -666,30 +664,134 @@ async fn webhook_candidates(
     let fetch_budget = budget
         .saturating_mul(CANDIDATE_OVERFETCH_FACTOR)
         .max(budget);
+    let candidates = match served {
+        ServedModes::Both => both_modes_candidates(db, sys, now, fetch_budget).await?,
+        ServedModes::HmacOnly => hmac_only_candidates(db, sys, now, fetch_budget).await?,
+    };
+    filter_by_endpoint_health(db, sys, candidates, now, budget).await
+}
 
+/// The oldest `fetch_budget` due attempts of any endpoint, then the oldest expired
+/// leases to fill what is left: `webhook_due_idx` and
+/// `webhook_attempts_lease_reclaim_idx`, each read in order and stopped by `LIMIT`.
+async fn both_modes_candidates(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    now: DateTime<Utc>,
+    fetch_budget: i64,
+) -> Result<Vec<WebhookAttempt>, CratestackError> {
     let mut ready = db
         .webhook_attempt()
         .find_many()
-        .where_expr(restricted_to(due_attempts(now), served))
+        .where_expr(due_attempts(now))
         .order_by(webhook_attempt::nextAttemptAt().asc())
         .limit(fetch_budget)
         .run(sys)
         .await?;
+    let remaining = fetch_budget - i64::try_from(ready.len()).unwrap_or(fetch_budget);
+    if remaining > 0 {
+        ready.extend(
+            db.webhook_attempt()
+                .find_many()
+                .where_expr(expired_leases(now))
+                .order_by(webhook_attempt::leaseUntil().asc())
+                .limit(remaining)
+                .run(sys)
+                .await?,
+        );
+    }
+    Ok(ready)
+}
+
+/// The same selection for a worker with no signing key, whose cost follows the
+/// `hmac` work and not the sealed backlog.
+///
+/// The obvious query, [`both_modes_candidates`] plus "and the endpoint delivers
+/// `hmac`" as a subquery on `endpointId`, is the slow one: Postgres cannot push the
+/// subquery into `webhook_due_idx`, so it reads that index in time order and looks
+/// every entry's endpoint up until it has `fetch_budget` `hmac` rows, which is the
+/// whole sealed backlog when there are few of them (200 000 due sealed attempts
+/// and five `hmac` ones: 13 883 buffers, a poll). So the endpoints come first, from
+/// the small `webhook_endpoints` table, and each one's due attempts are asked for
+/// with the endpoint as an equality, which `webhook_endpoint_due_idx
+/// (endpoint_id, next_attempt_at)` answers in order from its first entry.
+///
+/// It is one query per endpoint, deliberately and not one `endpointId IN (...)`:
+/// with a list the planner is free to read `webhook_due_idx` in time order and
+/// filter, and it does when it believes the endpoints hold a few percent of the
+/// table, which statistics over the whole table (history included) make it believe
+/// of any endpoint with a long past. An equality has no such plan to prefer: the
+/// per-endpoint index reads exactly the rows asked for, never more than the
+/// time-ordered index would. The merge of the per-endpoint lists by `nextAttemptAt`
+/// keeps the oldest-first order [`both_modes_candidates`] gives.
+///
+/// The expired leases are one `IN` query: `webhook_attempts_lease_reclaim_idx`
+/// holds `delivering` rows only, so whatever plan Postgres picks reads at most the
+/// attempts in flight, not the backlog (`claim.md` has the measurements).
+async fn hmac_only_candidates(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    now: DateTime<Utc>,
+    fetch_budget: i64,
+) -> Result<Vec<WebhookAttempt>, CratestackError> {
+    let endpoints = claimable_hmac_endpoints(db, sys, now).await?;
+    if endpoints.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut ready = Vec::new();
+    for endpoint_id in &endpoints {
+        ready.extend(
+            db.webhook_attempt()
+                .find_many()
+                .where_expr(
+                    due_attempts(now).and(webhook_attempt::endpointId().eq(endpoint_id.clone())),
+                )
+                .order_by(webhook_attempt::nextAttemptAt().asc())
+                .limit(fetch_budget)
+                .run(sys)
+                .await?,
+        );
+    }
+    // SQL puts a missing `nextAttemptAt` last; so does this.
+    ready.sort_by_key(|attempt| (attempt.nextAttemptAt.is_none(), attempt.nextAttemptAt));
+    ready.truncate(usize::try_from(fetch_budget).unwrap_or(usize::MAX));
 
     let remaining = fetch_budget - i64::try_from(ready.len()).unwrap_or(fetch_budget);
     if remaining > 0 {
-        let reclaimable = db
-            .webhook_attempt()
-            .find_many()
-            .where_expr(restricted_to(expired_leases(now), served))
-            .order_by(webhook_attempt::leaseUntil().asc())
-            .limit(remaining)
-            .run(sys)
-            .await?;
-        ready.extend(reclaimable);
+        ready.extend(
+            db.webhook_attempt()
+                .find_many()
+                .where_expr(expired_leases(now).and(webhook_attempt::endpointId().in_(endpoints)))
+                .order_by(webhook_attempt::leaseUntil().asc())
+                .limit(remaining)
+                .run(sys)
+                .await?,
+        );
     }
+    Ok(ready)
+}
 
-    filter_by_endpoint_health(db, sys, ready, now, budget).await
+/// The ids of the `hmac` endpoints a claim may take attempts of now: [`endpoint_is_claimable`]
+/// among `webhook_endpoints`, a table of a few rows per app.
+async fn claimable_hmac_endpoints(
+    db: &Cratestack,
+    sys: &CratestackContext,
+    now: DateTime<Utc>,
+) -> Result<Vec<String>, CratestackError> {
+    let endpoints = db
+        .webhook_endpoint()
+        .find_many()
+        .where_expr(FilterExpr::from(
+            webhook_endpoint::deliveryMode().eq(WebhookDeliveryMode::hmac),
+        ))
+        .run(sys)
+        .await?;
+    Ok(endpoints
+        .into_iter()
+        .filter(|endpoint| endpoint_is_claimable(endpoint, now))
+        .map(|endpoint| endpoint.id)
+        .collect())
 }
 
 /// Claim up to `budget` webhook attempts a worker serving `served` can deliver
