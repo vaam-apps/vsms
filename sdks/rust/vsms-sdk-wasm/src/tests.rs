@@ -8,7 +8,7 @@ use std::sync::Arc;
 use cratestack::cose::{CoseSigner, Ed25519Signer, ExternalSigner, P256Signer};
 
 use crate::core::{
-    concrete_path, Algorithm, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys,
+    concrete_path, Algorithm, Bound, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys,
 };
 use crate::responder::{OpenedRequest, Responder};
 
@@ -592,4 +592,92 @@ async fn an_answer_sealed_but_sent_with_another_payload_type_is_not_a_seal_failu
         .await
         .unwrap_err();
     assert!(matches!(error, OpenError::Other(_)), "{error:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_if_match_is_bound_as_sent() {
+    // A write under optimistic locking: the gateway rebuilds the binding from
+    // the `If-Match` it receives, so a client that did not bind it is refused,
+    // and so is one whose header changed after it signed.
+    let server = responder("vsms");
+    let bound = Bound {
+        idempotency_key: None,
+        if_match: Some("\"3\""),
+    };
+    let sealed = seed_sealer()
+        .seal(
+            "PATCH",
+            "/providers/{id}",
+            &["p1"],
+            Some("{}"),
+            None,
+            &bound,
+        )
+        .await
+        .unwrap();
+    assert_eq!(header(&sealed, "if-match"), Some("\"3\""));
+    let accepted = server
+        .open_request(
+            "PATCH",
+            "/providers/p1",
+            None,
+            &sealed.headers,
+            sealed.body.clone(),
+        )
+        .await;
+    assert!(accepted.is_ok());
+
+    let fresh = || async {
+        seed_sealer()
+            .seal(
+                "PATCH",
+                "/providers/{id}",
+                &["p1"],
+                Some("{}"),
+                None,
+                &bound,
+            )
+            .await
+            .unwrap()
+    };
+    let sealed = fresh().await;
+    let swapped: Vec<(String, String)> = sealed
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            let value = if name == "if-match" { "\"4\"" } else { value };
+            (name.clone(), value.to_owned())
+        })
+        .collect();
+    let refused = server
+        .open_request(
+            "PATCH",
+            "/providers/p1",
+            None,
+            &swapped,
+            sealed.body.clone(),
+        )
+        .await;
+    assert!(refused.is_err(), "a changed If-Match must not verify");
+
+    // A request sealed with no If-Match, sent with one: also refused.
+    let unbound = seed_sealer()
+        .seal_call("PATCH", "/providers/{id}", &["p1"], Some("{}"), None, None)
+        .await
+        .unwrap();
+    let mut with_header = unbound.headers.clone();
+    with_header.push(("if-match".to_owned(), "\"3\"".to_owned()));
+    let refused = server
+        .open_request(
+            "PATCH",
+            "/providers/p1",
+            None,
+            &with_header,
+            unbound.body.clone(),
+        )
+        .await;
+    assert!(
+        refused.is_err(),
+        "an If-Match nobody signed must not verify"
+    );
 }

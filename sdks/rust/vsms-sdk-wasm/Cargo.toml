@@ -38,7 +38,7 @@ crate-type = ["cdylib", "rlib"]
 # SDK's test suite runs against a verifier that is not a copy of the SDK's
 # sealing code. Off in the package that ships; `just wasm-build-test` builds it
 # into a directory the package's `files` does not list.
-responder = ["dep:percent-encoding"]
+responder = []
 
 [dependencies]
 # The same facade, version operator and features `vsms-sdk-rust` uses, minus
@@ -61,7 +61,7 @@ bytes = "1"
 # The seed is wiped where this crate holds a copy of it, as `vsms-sdk-rust`'s
 # `SigningKey` does. Already in the graph through the Ed25519 implementation.
 zeroize = "1"
-percent-encoding = { version = "2", optional = true }
+percent-encoding = "2"
 
 # What exists only where there is a JavaScript to bind to (`lib.rs` gates `js`
 # and `responder_js` the same way), so a host build links none of it.
@@ -71,9 +71,5 @@ wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 
 # Host-only: the native tests of `core.rs`, which has no `wasm-bindgen` in it.
-# `percent-encoding` is also an optional dependency above: under `cfg(test)` the
-# responder is compiled without the `responder` feature, so the tests need it
-# without it.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }
-percent-encoding = "2"

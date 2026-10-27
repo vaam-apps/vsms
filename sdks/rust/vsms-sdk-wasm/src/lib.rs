@@ -52,7 +52,7 @@ mod responder_js;
 #[cfg(test)]
 mod tests;
 
-pub use crate::contracts::{contract_digest, operations};
+pub use crate::contracts::{contract_digest, operations, route_of};
 pub use crate::core::{
-    Algorithm, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys, AUDIENCE,
+    Algorithm, Bound, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys, AUDIENCE,
 };

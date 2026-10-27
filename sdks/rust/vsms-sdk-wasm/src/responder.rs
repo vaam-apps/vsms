@@ -13,6 +13,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use crate::contracts::{contract_digest, route_of};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use bytes::Bytes;
@@ -23,9 +24,6 @@ use cratestack::{
     canonical_query, Binding, BoundHeaders, InMemoryNonceStore, PathParams, ResponseBinding,
     PAYLOAD_TYPE_HEADER,
 };
-use percent_encoding::percent_decode_str;
-
-use crate::contracts::{contract_digest, operations};
 
 const JSON: &str = "application/json";
 const COSE_SIGN1: &str = "application/cose; cose-type=\"cose-sign1\"";
@@ -106,10 +104,13 @@ impl Responder {
         let (template, params) = route_of(method, path).ok_or(())?;
         let digest = contract_digest(method, &template).map_err(|_| ())?;
         let mut idempotency_key = None;
+        let mut if_match = None;
         let mut payload_type = None;
         for (name, value) in headers {
             if name.eq_ignore_ascii_case("idempotency-key") {
                 idempotency_key = Some(value.clone());
+            } else if name.eq_ignore_ascii_case("if-match") {
+                if_match = Some(value.clone());
             } else if name.eq_ignore_ascii_case(PAYLOAD_TYPE_HEADER) {
                 payload_type = Some(value.clone());
             }
@@ -127,7 +128,7 @@ impl Responder {
             payload_media_type: Cow::Owned(payload_type.unwrap_or_else(|| JSON.to_owned())),
             bound_headers: BoundHeaders {
                 idempotency_key: idempotency_key.clone().map(Cow::Owned),
-                if_match: None,
+                if_match: if_match.map(Cow::Owned),
             },
             response: None,
         };
@@ -200,31 +201,6 @@ impl OpenedRequest {
         ];
         Ok((headers, sealed.to_vec()))
     }
-}
-
-/// The template and decoded parameters of the operation `method path` is,
-/// found by matching `path` segment by segment against each route the schema
-/// serves under `method`.
-fn route_of(method: &str, path: &str) -> Option<(String, Vec<String>)> {
-    let segments: Vec<&str> = path.split('/').collect();
-    operations()
-        .into_iter()
-        .filter(|(m, _)| *m == method)
-        .find_map(|(_, template)| {
-            let parts: Vec<&str> = template.split('/').collect();
-            if parts.len() != segments.len() {
-                return None;
-            }
-            let mut params = Vec::new();
-            for (part, segment) in parts.iter().zip(&segments) {
-                if part.starts_with('{') && part.ends_with('}') {
-                    params.push(percent_decode_str(segment).decode_utf8().ok()?.into_owned());
-                } else if part != segment {
-                    return None;
-                }
-            }
-            Some((template.to_owned(), params))
-        })
 }
 
 /// 32 bytes of unpadded base64url, for the JavaScript side's keys.

@@ -7,6 +7,8 @@
 //! SDKs cannot bind different bytes for one operation. Nothing else in this
 //! crate knows a route.
 
+use percent_encoding::percent_decode_str;
+
 use crate::core::SealError;
 
 // The macro emits the whole typed client beside the table; none of it is used
@@ -73,10 +75,97 @@ pub fn operations() -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
+/// The template and decoded parameters of the operation `method path` is,
+/// found by matching `path` (no query) segment by segment against each route
+/// the schema serves under `method`.
+///
+/// This is how a caller that holds a concrete path (the operator console's
+/// `fetch`-shaped data layer) names the route a signature binds, without
+/// parsing it back itself: the template and parameters returned here are what
+/// `Sealer.sealCall` takes, and its `target` is rebuilt from them, so a
+/// mismatch between the path asked for and the path signed is caught by
+/// comparing the two. When two templates match (a literal segment and a
+/// parameter in the same place), the one with fewer parameters wins.
+///
+/// ```
+/// # use vsms_sdk_wasm::route_of;
+/// let (template, params) = route_of("GET", "/messages/m%2F1").unwrap();
+/// assert_eq!(template, "/messages/{id}");
+/// assert_eq!(params, ["m/1"]);
+/// assert_eq!(route_of("POST", "/$procs/sendMessage").unwrap().1, Vec::<String>::new());
+/// // Nothing the schema does not serve, and no `..` that a parser would resolve.
+/// assert!(route_of("GET", "/nope").is_none());
+/// assert!(route_of("GET", "/messages/..").is_none());
+/// ```
+#[must_use]
+pub fn route_of(method: &str, path: &str) -> Option<(String, Vec<String>)> {
+    let segments: Vec<&str> = path.split('/').collect();
+    operations()
+        .into_iter()
+        .filter(|(m, _)| *m == method)
+        .filter_map(|(_, template)| {
+            let parts: Vec<&str> = template.split('/').collect();
+            if parts.len() != segments.len() {
+                return None;
+            }
+            let mut params = Vec::new();
+            for (part, segment) in parts.iter().zip(&segments) {
+                if part.starts_with('{') && part.ends_with('}') {
+                    let decoded = percent_decode_str(segment).decode_utf8().ok()?.into_owned();
+                    if decoded.is_empty() || decoded == "." || decoded == ".." {
+                        return None;
+                    }
+                    params.push(decoded);
+                } else if part != segment {
+                    return None;
+                }
+            }
+            Some((template.to_owned(), params))
+        })
+        .min_by_key(|(_, params)| params.len())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_route_without_parameters_is_found_as_itself() {
+        // No two templates collide in today's schema, so the "fewer parameters
+        // wins" rule has nothing to decide yet; it is what keeps a future literal
+        // sibling (`/messages/export`) from being read as an id.
+        let operations = operations();
+        for (method, template) in &operations {
+            if template.contains('{') {
+                continue;
+            }
+            let (found, params) = route_of(method, template).unwrap();
+            assert_eq!(&found, template);
+            assert!(params.is_empty());
+        }
+    }
+
+    #[test]
+    fn every_template_is_found_from_its_own_concrete_path() {
+        for (method, template) in operations() {
+            let concrete = template
+                .split('/')
+                .map(|part| if part.starts_with('{') { "x1" } else { part })
+                .collect::<Vec<_>>()
+                .join("/");
+            let (found, params) = route_of(method, &concrete).unwrap();
+            assert_eq!(found, template, "{method} {concrete}");
+            assert!(params.iter().all(|p| p == "x1"));
+        }
+    }
+
+    #[test]
+    fn a_dot_segment_or_an_empty_one_is_not_a_parameter() {
+        assert!(route_of("GET", "/messages/..").is_none());
+        assert!(route_of("GET", "/messages/.").is_none());
+        assert!(route_of("GET", "/messages/").is_none());
+    }
 
     #[test]
     fn the_table_holds_the_three_operations_the_node_sdk_calls() {

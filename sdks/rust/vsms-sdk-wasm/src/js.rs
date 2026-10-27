@@ -20,7 +20,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::core::{OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys};
+use crate::contracts::route_of;
+use crate::core::{Bound, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys};
 
 fn error(kind: &str, message: &str, status: Option<u16>) -> JsValue {
     let object = Object::new();
@@ -281,8 +282,14 @@ impl JsSealer {
 
     /// Seals one call. `route` is the schema's template (`/messages/{id}`),
     /// `params` its decoded parameters in order, `body` the JSON text of a
-    /// write, `query` the query string as it will be sent.
+    /// write, `query` the query string as it will be sent, `idempotencyKey` and
+    /// `ifMatch` the headers of the same names as they will be sent (a strong
+    /// ETag, quotes included).
     #[wasm_bindgen(js_name = "sealCall")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the JavaScript surface is positional, and the two bound headers are optional trailing arguments so the Node SDK's calls are unchanged"
+    )]
     pub async fn seal_call(
         &self,
         method: String,
@@ -291,22 +298,52 @@ impl JsSealer {
         body: Option<String>,
         query: Option<String>,
         idempotency_key: Option<String>,
+        if_match: Option<String>,
     ) -> Result<JsSealedCall, JsValue> {
         let params: Vec<&str> = params.iter().map(String::as_str).collect();
         let sealed = self
             .inner
-            .seal_call(
+            .seal(
                 &method,
                 &route,
                 &params,
                 body.as_deref(),
                 query.as_deref(),
-                idempotency_key.as_deref(),
+                &Bound {
+                    idempotency_key: idempotency_key.as_deref(),
+                    if_match: if_match.as_deref(),
+                },
             )
             .await
             .map_err(|e| seal_error(&e))?;
         Ok(JsSealedCall { inner: sealed })
     }
+}
+
+/// The route a concrete path is: `{ route, params }`, to be handed to
+/// `Sealer.sealCall` as given. For a caller that holds a path rather than a
+/// template (the operator console's `fetch`-shaped data layer). `path` carries
+/// no query. A path the schema does not serve is an `unbound` failure, before
+/// anything is signed.
+#[wasm_bindgen(js_name = "routeOf")]
+#[allow(
+    unreachable_pub,
+    reason = "wasm-bindgen exports it from this private module; the structs beside it are `pub` for the same reason"
+)]
+pub fn route_of_js(method: &str, path: &str) -> Result<JsValue, JsValue> {
+    let (route, params) = route_of(method, path).ok_or_else(|| {
+        error(
+            "unbound",
+            &format!("the schema serves no operation `{method} {path}`"),
+            None,
+        )
+    })?;
+    let found = Object::new();
+    // `Reflect::set` on a fresh plain object cannot fail.
+    let _ = Reflect::set(&found, &"route".into(), &route.into());
+    let params: Array = params.into_iter().map(JsValue::from).collect();
+    let _ = Reflect::set(&found, &"params".into(), &params.into());
+    Ok(found.into())
 }
 
 /// One sealed call: send `body` with `headers` to `target`, then
