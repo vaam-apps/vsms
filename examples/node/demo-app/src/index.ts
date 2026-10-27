@@ -95,6 +95,10 @@ const WEBHOOK_PORT = envInt("DEMO_WEBHOOK_PORT", 9000);
 // (`vsms-demo-seed --webhook-audience`; the compose stacks pass `demo-app`).
 // The delivery is addressed to it, and the opener refuses one that is not.
 const WEBHOOK_AUDIENCE = process.env.DEMO_WEBHOOK_AUDIENCE ?? "demo-app";
+// The id of the app the endpoint belongs to. Unset, the demo learns it from the
+// verified answer to its own `getMessage` (see the inbound half below); set, it
+// is used as given, which is how a real receiver is configured.
+const WEBHOOK_APP_ID = process.env.DEMO_WEBHOOK_APP_ID || undefined;
 // The path of `WebhookEndpoint.url` (`http://demo-app:9000/webhooks`).
 const WEBHOOK_ROUTE = "/webhooks";
 
@@ -137,7 +141,11 @@ const TERMINAL_STATES: ReadonlySet<MessageState> = new Set([
 // ---------------------------------------------------------------------------
 // Inbound half: a minimal receiver. `WebhookOpener.open` is the entire
 // security-relevant logic: the same call a real integrator's own receiver
-// makes.
+// makes. It needs the id of the app its endpoint belongs to, because the
+// gateway signs every app's deliveries with one key; a real receiver reads that
+// from its configuration. This demo learns it from the one place it can trust
+// without being told: the verified answer to its own `getMessage`, which names
+// the app the message (and so the endpoint) belongs to.
 // ---------------------------------------------------------------------------
 
 interface ReceivedWebhook {
@@ -150,7 +158,11 @@ interface ReceivedWebhook {
   dataState: string | undefined;
 }
 
-function startWebhookServer(port: number, opener: WebhookOpener, events: ReceivedWebhook[]) {
+function startWebhookServer(
+  port: number,
+  opener: Promise<WebhookOpener>,
+  events: ReceivedWebhook[],
+) {
   const app = express();
 
   // Raw bytes, not `express.json()`: the body is a COSE_Sign1 message, and
@@ -164,7 +176,7 @@ function startWebhookServer(port: number, opener: WebhookOpener, events: Receive
       let opened: WebhookEvent | undefined;
       let failure: string | undefined;
       try {
-        opened = await opener.open(rawBody);
+        opened = await (await opener).open(rawBody);
       } catch (err) {
         failure = err instanceof Error ? err.message : String(err);
       }
@@ -310,11 +322,19 @@ async function main(): Promise<number> {
   // The gateway's two public keys: the ones it seals its answers with, and
   // the very ones that sign a webhook delivery. One pin for both.
   const serverKeys = parseServerKeysReport(readFileTrimmed(SERVER_KEYS_PATH));
-  const opener = new WebhookOpener({
-    serverKeys,
-    audience: WEBHOOK_AUDIENCE,
-    route: WEBHOOK_ROUTE,
+  let learnedAppId!: (appId: string) => void;
+  const opener = new Promise<WebhookOpener>((resolve) => {
+    learnedAppId = (appId) =>
+      resolve(
+        new WebhookOpener({
+          serverKeys,
+          audience: WEBHOOK_AUDIENCE,
+          route: WEBHOOK_ROUTE,
+          appId,
+        }),
+      );
   });
+  if (WEBHOOK_APP_ID !== undefined) learnedAppId(WEBHOOK_APP_ID);
 
   const events: ReceivedWebhook[] = [];
   const server = await startWebhookServer(WEBHOOK_PORT, opener, events);
@@ -339,6 +359,18 @@ async function main(): Promise<number> {
       `[demo-app] accepted messageId=${sent.messageId} state=${sent.state} encoding=${sent.encoding} ` +
         `segments=${sent.segments} operator=${sent.operator} estimatedCostXaf=${sent.estimatedCostXaf}`,
     );
+
+    if (WEBHOOK_APP_ID === undefined) {
+      const created = await withDeadline(
+        client.getMessage(sent.messageId),
+        deadlineMs,
+        "getMessage",
+      );
+      if (typeof created.appId !== "string" || created.appId === "") {
+        throw new Error("the gateway's answer for the message names no appId");
+      }
+      learnedAppId(created.appId);
+    }
 
     const { timeline, final } = await pollUntilTerminal(
       client,

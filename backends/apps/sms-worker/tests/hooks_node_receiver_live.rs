@@ -248,7 +248,9 @@ struct NodeReceiver {
 }
 
 impl NodeReceiver {
-    async fn spawn(port: u16, audience: &str) -> Self {
+    /// `app_id` is the app the receiver believes it serves
+    /// (`WEBHOOK_RECEIVER_APP_ID`): the receiver has no mode without one.
+    async fn spawn(port: u16, audience: &str, app_id: &str) -> Self {
         let package_dir = node_receiver_dir();
         let mut command = Command::new("node");
         command
@@ -261,6 +263,7 @@ impl NodeReceiver {
             )
             .env("WEBHOOK_RECEIVER_SERVER_NEXT", public_key_b64u(&NEXT_SEED))
             .env("WEBHOOK_RECEIVER_AUDIENCE", audience)
+            .env("WEBHOOK_RECEIVER_APP_ID", app_id)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
 
@@ -424,9 +427,9 @@ async fn a_real_hooks_delivery_is_independently_opened_by_the_node_receiver() {
 
     let audience = format!("gate-receiver-{}", unique_suffix());
     let port = free_port();
-    let receiver = NodeReceiver::spawn(port, &audience).await;
-
     let app_id = seed_app(&db).await;
+    let receiver = NodeReceiver::spawn(port, &audience, &app_id).await;
+
     let endpoint = seed_endpoint(
         &db,
         &app_id,
@@ -482,9 +485,14 @@ async fn a_delivery_addressed_to_another_audience_is_refused_by_the_node_receive
     let db = db().await;
 
     let port = free_port();
-    let receiver = NodeReceiver::spawn(port, "the-audience-the-receiver-is-configured-with").await;
-
     let app_id = seed_app(&db).await;
+    let receiver = NodeReceiver::spawn(
+        port,
+        "the-audience-the-receiver-is-configured-with",
+        &app_id,
+    )
+    .await;
+
     let endpoint = seed_endpoint(
         &db,
         &app_id,
@@ -502,6 +510,61 @@ async fn a_delivery_addressed_to_another_audience_is_refused_by_the_node_receive
         result["status"].as_str(),
         Some("rejected-unverified"),
         "the receiver must refuse a delivery addressed to someone else: {result}"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let reread = reread_attempt(&db, &attempt.id).await;
+        if reread.state == schema::AttemptState::failed {
+            assert_eq!(reread.lastStatusCode, Some(401));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the refused attempt never reached failed: {:?}",
+            reread.state
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// The attack the signed `appId` closes, with a real worker and a real Node
+/// receiver. One gateway key signs every app's deliveries, so an endpoint of
+/// *another* app that names this receiver's audience (and points at it) yields a
+/// seal that passes the signature, the audience, the route, the contract, the
+/// clock and the nonce. The receiver is configured for one app and refuses it.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres, the built sms-worker binary, Node >=23.6, the \
+            built Node SDK and `pnpm install` in examples/node/webhook-receiver — see module docs"]
+async fn a_delivery_made_for_another_app_is_refused_though_it_names_the_receivers_audience() {
+    let _guard = TEST_MUTEX.lock().await;
+    let database_url = sms_test_support::database_url().await;
+    let db = db().await;
+
+    let audience = format!("gate-receiver-{}", unique_suffix());
+    let port = free_port();
+    let receivers_app = seed_app(&db).await;
+    let receiver = NodeReceiver::spawn(port, &audience, &receivers_app).await;
+
+    // The endpoint belongs to another app and names the receiver's audience.
+    let attackers_app = seed_app(&db).await;
+    let endpoint = seed_endpoint(
+        &db,
+        &attackers_app,
+        &format!("{}/webhooks/vsms", receiver.base_url),
+        &audience,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &endpoint.id, &format!("cmsg{}", unique_suffix())).await;
+
+    let worker_id = format!("hooks-node-receiver-test-{}", unique_suffix());
+    let _worker = spawn_hooks_worker(&database_url, &worker_id);
+
+    let result = wait_for_receiver_result(&receiver, Duration::from_secs(20)).await;
+    assert_eq!(
+        result["status"].as_str(),
+        Some("rejected-unverified"),
+        "the receiver must refuse a delivery made for another app: {result}"
     );
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

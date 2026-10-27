@@ -24,6 +24,7 @@
  * WEBHOOK_RECEIVER_SERVER_CURRENT=<base64url> \
  * WEBHOOK_RECEIVER_SERVER_NEXT=<base64url> \
  * WEBHOOK_RECEIVER_AUDIENCE=<audience of the endpoint> \
+ * WEBHOOK_RECEIVER_APP_ID=<id of the app the endpoint belongs to> \
  *   node src/gate-receiver.ts
  * ```
  */

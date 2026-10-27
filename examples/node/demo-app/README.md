@@ -74,17 +74,18 @@ register-client` and pin that gateway's `sms-gateway server-keys`.)
 Every value has a default matching what `compose.dev.yaml`/`compose.demo.yaml`
 pass, so nothing below is required inside those stacks:
 
-| Variable                | Default                     | What it is                                                                                                                                                                                    |
-| ----------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VSMS_BASE_URL`         | `http://sms-gateway:8080`   | The gateway's origin.                                                                                                                                                                         |
-| `VSMS_SIGNING_KEY_PATH` | `/run/demo/demo-app.pem`    | The app's Ed25519 private key (PKCS#8 PEM); its public half is what `register-client` registered.                                                                                             |
-| `VSMS_SERVER_KEYS_PATH` | `/run/demo/server-keys.txt` | The gateway's two public sealing keys, as `sms-gateway server-keys` prints them (`current:` / `next:`).                                                                                       |
-| `DEMO_WEBHOOK_AUDIENCE` | `demo-app`                  | The audience the demo's `WebhookEndpoint` was created with (`vsms-demo-seed --webhook-audience`). A delivery is addressed to it; **pass a different value to prove the opener fails closed.** |
-| `DEMO_WEBHOOK_PORT`     | `9000`                      | Port this process's own receiver listens on.                                                                                                                                                  |
-| `DEMO_TO`               | `+237677123456`             | Recipient MSISDN.                                                                                                                                                                             |
-| `DEMO_SENDER_ID`        | `VSMS`                      | Must match the `SenderId.value` `vsms-demo-seed` approved.                                                                                                                                    |
-| `DEMO_BODY`             | *(a sample OTP body)*       | Message body.                                                                                                                                                                                 |
-| `DEMO_TIMEOUT_MS`       | `90000`                     | Overall deadline — send retries, state polling, and the webhook settle period all share this one budget.                                                                                      |
+| Variable                | Default                     | What it is                                                                                                                                                                                                                                                      |
+| ----------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VSMS_BASE_URL`         | `http://sms-gateway:8080`   | The gateway's origin.                                                                                                                                                                                                                                           |
+| `VSMS_SIGNING_KEY_PATH` | `/run/demo/demo-app.pem`    | The app's Ed25519 private key (PKCS#8 PEM); its public half is what `register-client` registered.                                                                                                                                                               |
+| `VSMS_SERVER_KEYS_PATH` | `/run/demo/server-keys.txt` | The gateway's two public sealing keys, as `sms-gateway server-keys` prints them (`current:` / `next:`).                                                                                                                                                         |
+| `DEMO_WEBHOOK_AUDIENCE` | `demo-app`                  | The audience the demo's `WebhookEndpoint` was created with (`vsms-demo-seed --webhook-audience`). A delivery is addressed to it; **pass a different value to prove the opener fails closed.**                                                                   |
+| `DEMO_WEBHOOK_APP_ID`   | *(learned)*                 | The id of the app the endpoint belongs to. Unset, the demo reads it from the verified answer to its own `getMessage` (the message's `appId`); set, it is used as given, which is how a real receiver is configured. A delivery made for another app is refused. |
+| `DEMO_WEBHOOK_PORT`     | `9000`                      | Port this process's own receiver listens on.                                                                                                                                                                                                                    |
+| `DEMO_TO`               | `+237677123456`             | Recipient MSISDN.                                                                                                                                                                                                                                               |
+| `DEMO_SENDER_ID`        | `VSMS`                      | Must match the `SenderId.value` `vsms-demo-seed` approved.                                                                                                                                                                                                      |
+| `DEMO_BODY`             | *(a sample OTP body)*       | Message body.                                                                                                                                                                                                                                                   |
+| `DEMO_TIMEOUT_MS`       | `90000`                     | Overall deadline — send retries, state polling, and the webhook settle period all share this one budget.                                                                                                                                                        |
 
 ## What "wrong audience" looks like
 
@@ -94,6 +95,10 @@ send/delivery path has no idea this receiver exists) but every received
 webhook logs `[webhook] DELIVERY NOT OPENED`, the process reports zero verified
 webhooks, and exits non-zero. `WebhookOpener` fails closed rather than
 accepting whatever arrives.
+
+A delivery made for a different app than `DEMO_WEBHOOK_APP_ID` names is refused
+the same way, even though everything else about it verifies: one gateway key signs
+every app's deliveries, so the audience alone does not say whose delivery it is.
 
 ## Tests
 

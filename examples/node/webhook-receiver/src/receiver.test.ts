@@ -28,6 +28,8 @@ const VECTOR = JSON.parse(
   publicKeyHex: string;
   audience: string;
   route: string;
+  appId: string;
+  endpointId: string;
   iat: number;
   sealedHex: string;
   plaintext: string;
@@ -58,7 +60,9 @@ async function started(opener: EventOpener) {
   return { receiver, results, post, settle };
 }
 
-function realOpener(overrides: { audience?: string; nowSeconds?: number } = {}): WebhookOpener {
+function realOpener(
+  overrides: { audience?: string; appId?: string; endpointId?: string; nowSeconds?: number } = {},
+): WebhookOpener {
   return new WebhookOpener({
     serverKeys: {
       current: Buffer.from(VECTOR.publicKeyHex, "hex").toString("base64url"),
@@ -66,6 +70,8 @@ function realOpener(overrides: { audience?: string; nowSeconds?: number } = {}):
     },
     audience: overrides.audience ?? VECTOR.audience,
     route: ROUTE,
+    appId: overrides.appId ?? VECTOR.appId,
+    endpointId: overrides.endpointId,
     nowSeconds: overrides.nowSeconds ?? VECTOR.iat,
   });
 }
@@ -95,6 +101,19 @@ describe("with the real WebhookOpener and a delivery the gateway's own sealer pr
     assert.equal(await post(genuine), 401);
   });
 
+  test("a delivery made for another app is refused though everything else verifies", async () => {
+    const { results, post } = await started(realOpener({ appId: "cappsomeoneelse0000000" }));
+    assert.equal(await post(genuine), 401);
+    assert.equal(results[0]?.status, "rejected-unverified");
+  });
+
+  test("a delivery made through another endpoint is refused when the receiver pins its own", async () => {
+    const { post } = await started(realOpener({ endpointId: "cendpointsomeoneelse000" }));
+    assert.equal(await post(genuine), 401);
+    const matching = await started(realOpener({ endpointId: VECTOR.endpointId }));
+    assert.equal(await matching.post(genuine), 202);
+  });
+
   test("a delivery whose timestamp is outside the window is refused", async () => {
     const { post } = await started(realOpener({ nowSeconds: VECTOR.iat + 3600 }));
     assert.equal(await post(genuine), 401);
@@ -107,7 +126,15 @@ describe("with the real WebhookOpener and a delivery the gateway's own sealer pr
 });
 
 function event(id: string, type: string, messageId: string, occurredAt: string): WebhookEvent {
-  return { id, eventId: `source-${id}`, type, occurredAt, data: { messageId } };
+  return {
+    id,
+    eventId: `source-${id}`,
+    type,
+    occurredAt,
+    appId: "capp-example",
+    endpointId: "cendpoint-example",
+    data: { messageId },
+  };
 }
 
 /** Hands the handler the next scripted event, whatever the body. */

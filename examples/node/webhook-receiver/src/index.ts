@@ -27,7 +27,15 @@ const VECTOR = JSON.parse(
     ),
     "utf8",
   ),
-) as { publicKeyHex: string; audience: string; route: string; iat: number; sealedHex: string };
+) as {
+  publicKeyHex: string;
+  audience: string;
+  route: string;
+  appId: string;
+  endpointId: string;
+  iat: number;
+  sealedHex: string;
+};
 
 console.log("============================================================");
 console.log(" vsms reference webhook receiver (examples/node/webhook-receiver)");
@@ -57,6 +65,10 @@ const opener = new WebhookOpener({
   },
   audience: VECTOR.audience,
   route: ROUTE,
+  // The app the recorded endpoint belongs to; a real receiver reads its own
+  // from configuration (`config.ts`).
+  appId: VECTOR.appId,
+  endpointId: VECTOR.endpointId,
   nowSeconds: VECTOR.iat,
 });
 

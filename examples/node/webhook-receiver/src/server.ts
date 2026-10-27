@@ -85,8 +85,9 @@ export function createReceiver(options: ReceiverOptions): Receiver {
         const detail = err instanceof Error ? err.message : String(err);
         if (kind === "unverified") {
           options.onProcessed?.({ status: "rejected-unverified", detail });
-          // 401: one answer for a forgery, another receiver's delivery, a
-          // replay and a stale timestamp, exactly as the opener gives it.
+          // 401: one answer for a forgery, a delivery addressed to another audience
+          // or made for another app, a replay and a stale timestamp, exactly as the
+          // opener gives it.
           // §8.5 treats anything outside {2xx, 410} as retryable, and a retry
           // is sealed afresh, so a delivery that failed on the clock heals.
           res.status(401).json({ error: "unverified" });

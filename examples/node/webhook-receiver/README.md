@@ -9,8 +9,8 @@ half (authenticating and sending) is [#149](https://github.com/vymalo/vsms/issue
 Since VS-8 there is no webhook secret and no signature header. vsms's worker
 **seals** each delivery: the body is a `COSE_Sign1` message signed with the
 gateway's own envelope signing key (the key that signs its answers), bound to
-the receiver's audience, `POST`, the route, the delivery contract, a fresh nonce
-and a timestamp. A receiver pins the two public keys it already pins to open
+the receiver's audience, `POST`, the route (the whole path of the endpoint's
+URL), the delivery contract, a fresh nonce and a timestamp. A receiver pins the two public keys it already pins to open
 vsms's answers (`sms-gateway server-keys` prints them) and opens the body with
 [`@vaam-apps/vsms-node`](https://www.npmjs.com/package/@vaam-apps/vsms-node)'s
 `WebhookOpener`:
@@ -18,22 +18,34 @@ vsms's answers (`sms-gateway server-keys` prints them) and opens the body with
 ```ts
 const opener = new WebhookOpener({
   serverKeys: parseServerKeysReport(readFileSync("server-keys.txt", "utf8")),
-  audience: "my-receiver", // the audience the WebhookEndpoint was created with
-  route: "/webhooks/vsms", // the path of the endpoint's URL
+  audience: "https://hooks.example.com", // the audience the WebhookEndpoint was created with
+  route: "/webhooks/vsms", // the whole path of the endpoint's URL
+  appId: "capp00000000000000000", // the vsms app the endpoint belongs to
 });
 const event = await opener.open(rawBody); // throws SdkError kind "unverified" on anything wrong
 ```
 
-`event` is `{ id, eventId, type, occurredAt, data }` (`docs/architecture.md`
-§8.4). `id` is the dedupe key; `eventId` is the source event's id, which used to
+`config.ts` reads these from the environment: `WEBHOOK_RECEIVER_AUDIENCE`,
+**`WEBHOOK_RECEIVER_APP_ID` (required: the receiver refuses to start without it)**
+and optionally `WEBHOOK_RECEIVER_ENDPOINT_ID`. One gateway key signs every app's
+deliveries, so a signature and an audience say only that vsms sent this to your
+name; the `appId` inside the signed envelope says whose delivery it is, and the
+opener compares it with yours. Choose an audience only you can have (your origin):
+the gateway gives each name to one endpoint.
+
+`event` is `{ id, eventId, type, occurredAt, appId, endpointId, data }`
+(`docs/architecture.md` §8.4). `id` is the dedupe key; `eventId` is the source event's id, which used to
 travel in the `X-Sms-Event-Id` header and now rides inside the sealed body,
 because a header is no part of a seal. The `X-Sms-Event`, `X-Sms-Event-Id`,
 `X-Sms-Timestamp` and `X-Sms-Signature` headers are gone.
 
 What `open` refuses, with one answer (`unverified`, reply `401`) that never says
-which: a body not signed by a pinned key, another receiver's delivery (audience),
-another route, another contract, a stale timestamp (±300 s), a **replayed** body
-(the nonce is remembered) and a flipped bit. The nonce memory is per process;
+which: a body not signed by a pinned key, a delivery addressed to another audience,
+another route, another contract, a delivery made for **another app** (or another
+endpoint, when `WEBHOOK_RECEIVER_ENDPOINT_ID` is set), a stale timestamp (±300 s),
+a **replayed** body (the nonce is remembered) and a flipped bit. `open` takes the
+raw request bytes only (`express.raw`), never text a framework decoded. The nonce
+memory is per process and cannot be replaced (the check runs in WebAssembly);
 behind several replicas, dedupe on `event.id` as well, which at-least-once
 delivery asks of every receiver anyway.
 
@@ -51,8 +63,9 @@ them and a real Postgres-backed `WebhookAttempt` row claimed through the real CA
 claim loop. It runs this directory's actual code. The opener is cratestack's
 envelope compiled to WebAssembly; the worker's sealer is `sms-webhook` over the
 same cratestack crates called natively. A second case seeds the endpoint with the
-wrong audience and watches the receiver refuse it, so a regression on either side
-fails the gate in both directions.
+wrong audience and watches the receiver refuse it, and a third seeds an endpoint of
+*another app* that names the receiver's own audience and watches the receiver refuse
+that too, so a regression on either side fails the gate in both directions.
 
 ## Layout
 
