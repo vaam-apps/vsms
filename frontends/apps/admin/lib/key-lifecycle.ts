@@ -8,6 +8,7 @@
 // console say "this console was unpaired, pair it again" instead of showing a QR
 // to a person who thinks they are still signed in.
 
+import { isSkewed } from "./clock";
 import type { PairedMeta, StoredKey } from "./device-key";
 
 export type KeyStatus =
@@ -21,7 +22,13 @@ export type KeyStatus =
    *  revoked. It can never be paired again; pairing makes a new one. */
   | { kind: "ended"; meta: PairedMeta; cause: "expired" | "refused" }
   /** The gateway could not be reached, so nothing is known. */
-  | { kind: "unreachable" };
+  | { kind: "unreachable" }
+  /** This computer's clock is off by more than the gateway tolerates, so what
+   *  looks like an expired or refused key may be the clock's doing: every
+   *  signature carries the time it was made, and the gateway answers the same
+   *  unsigned 401 to a wrong clock as to a wrong key. The key is left alone. It
+   *  is only ever replaced by an explicit "pair again". */
+  | { kind: "clock"; meta: PairedMeta; skewSeconds: number };
 
 export interface StatusDeps {
   load: () => Promise<StoredKey | undefined>;
@@ -39,6 +46,9 @@ export interface StatusDeps {
   thumbprint: (stored: StoredKey) => Promise<string>;
   remember: (meta: PairedMeta) => Promise<void>;
   now: () => number;
+  /** This computer's clock minus the server's, in seconds (`measureClockSkew`),
+   *  or `undefined` when it cannot be measured. */
+  skew: () => Promise<number | undefined>;
 }
 
 function httpStatusOf(error: unknown): number | undefined {
@@ -60,6 +70,15 @@ export function daysLeft(meta: PairedMeta, now: number): number {
   return remaining <= 0 ? 0 : Math.ceil(remaining / 86_400_000);
 }
 
+/** The `clock` status, when the clock is far enough off that a refusal (or a
+ *  local expiry) says nothing about the key. */
+async function heldByClock(deps: StatusDeps, meta: PairedMeta): Promise<KeyStatus | undefined> {
+  const skewSeconds = await deps.skew().catch(() => undefined);
+  return skewSeconds !== undefined && isSkewed(skewSeconds)
+    ? { kind: "clock", meta, skewSeconds }
+    : undefined;
+}
+
 /** Reads the key's status. Never throws: whatever it cannot read is
  *  `unreachable`. */
 export async function readKeyStatus(deps: StatusDeps): Promise<KeyStatus> {
@@ -74,17 +93,30 @@ export async function readKeyStatus(deps: StatusDeps): Promise<KeyStatus> {
 
   // A key past its 30 days is finished whatever the gateway would say, and
   // asking only spends a request: the gateway treats it as no key.
+  // On a clock that is wrong, "past its 30 days" is the clock's opinion.
   if (stored.paired !== undefined && isExpired(stored.paired, deps.now())) {
-    return { kind: "ended", meta: stored.paired, cause: "expired" };
+    return (
+      (await heldByClock(deps, stored.paired)) ?? {
+        kind: "ended",
+        meta: stored.paired,
+        cause: "expired",
+      }
+    );
   }
 
   try {
     await deps.probe();
   } catch (error) {
     if (httpStatusOf(error) === 401) {
-      return stored.paired === undefined
-        ? { kind: "pending" }
-        : { kind: "ended", meta: stored.paired, cause: "refused" };
+      if (stored.paired === undefined) return { kind: "pending" };
+      // The gateway's refusal of a wrong clock is the refusal of a wrong key.
+      return (
+        (await heldByClock(deps, stored.paired)) ?? {
+          kind: "ended",
+          meta: stored.paired,
+          cause: "refused",
+        }
+      );
     }
     return { kind: "unreachable" };
   }

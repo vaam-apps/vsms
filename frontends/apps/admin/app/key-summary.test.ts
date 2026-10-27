@@ -26,5 +26,8 @@ describe("summarizeKey", () => {
     expect(summarizeKey({ kind: "none" }, NOW)).toBe("Not paired");
     expect(summarizeKey({ kind: "pending" }, NOW)).toBe("Not paired");
     expect(summarizeKey({ kind: "unreachable" }, NOW)).toBe("Gateway unreachable");
+    expect(summarizeKey({ kind: "clock", meta: meta(5), skewSeconds: 900 }, NOW)).toBe(
+      "Clock is off",
+    );
   });
 });

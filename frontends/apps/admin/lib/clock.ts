@@ -29,3 +29,19 @@ export function clockSkewSeconds(dateHeader: string | null, now: number): number
 export function isSkewed(skew: number | undefined): boolean {
   return skew !== undefined && Math.abs(skew) > CLOCK_SKEW_WARN_SECONDS;
 }
+
+/** Measures this computer's clock against the console's server, or `undefined`
+ *  when the server cannot be asked. The one reader of the figure: the pairing
+ *  page's warning and the key's status (`./key-lifecycle.ts`) must agree on it. */
+export async function measureClockSkew(
+  options: { fetch?: typeof fetch; now?: () => number } = {},
+): Promise<number | undefined> {
+  const get = options.fetch ?? ((input, init) => globalThis.fetch(input, init));
+  const now = options.now ?? Date.now;
+  try {
+    const response = await get("/api/health", { cache: "no-store", credentials: "omit" });
+    return clockSkewSeconds(response.headers.get("date"), now());
+  } catch {
+    return undefined;
+  }
+}

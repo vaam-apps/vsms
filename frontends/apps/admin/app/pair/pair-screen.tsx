@@ -10,7 +10,7 @@
 import { getConsoleKeyByThumbprint, probeKey } from "@vsms/gateway";
 import { useRouter } from "next/navigation";
 import { useEffect, useReducer } from "react";
-import { clockSkewSeconds, isSkewed } from "@/lib/clock";
+import { isSkewed, measureClockSkew } from "@/lib/clock";
 import {
   deleteDeviceKey,
   indexedDbKeyStore,
@@ -30,13 +30,17 @@ interface State {
   failure: string | undefined;
   replacing: boolean;
   skewSeconds: number | undefined;
+  /** The person asked to pair again, so the key this browser holds is replaced
+   *  whatever its status. Nothing else sets it. */
+  replaceRequested: boolean;
 }
 
 type Action =
   | { type: "screen"; screen: Screen }
   | { type: "failed"; message: string }
   | { type: "replacing" }
-  | { type: "skew"; seconds: number | undefined };
+  | { type: "skew"; seconds: number | undefined }
+  | { type: "pair-again" };
 
 function reduce(state: State, action: Action): State {
   switch (action.type) {
@@ -48,6 +52,8 @@ function reduce(state: State, action: Action): State {
       return { ...state, replacing: true };
     case "skew":
       return { ...state, skewSeconds: action.seconds };
+    case "pair-again":
+      return { ...state, replaceRequested: true, screen: { kind: "starting" }, failure: undefined };
   }
 }
 
@@ -56,25 +62,18 @@ const INITIAL: State = {
   failure: undefined,
   replacing: false,
   skewSeconds: undefined,
+  replaceRequested: false,
 };
-
-async function measureSkew(): Promise<number | undefined> {
-  try {
-    const response = await fetch("/api/health", { cache: "no-store", credentials: "omit" });
-    return clockSkewSeconds(response.headers.get("date"), Date.now());
-  } catch {
-    return undefined;
-  }
-}
 
 export function PairScreen() {
   const router = useRouter();
   const { refresh } = useKeyStatus();
   const [state, dispatch] = useReducer(reduce, INITIAL);
+  const { replaceRequested } = state;
 
   useEffect(() => {
     const abort = new AbortController();
-    void measureSkew().then((seconds) => dispatch({ type: "skew", seconds }));
+    void measureClockSkew().then((seconds) => dispatch({ type: "skew", seconds }));
 
     const status = () =>
       readKeyStatus({
@@ -87,6 +86,7 @@ export function PairScreen() {
           ),
         remember: (meta) => markPaired(meta),
         now: Date.now,
+        skew: () => measureClockSkew(),
       });
 
     runPairing(
@@ -111,9 +111,12 @@ export function PairScreen() {
       },
       (screen) => dispatch({ type: "screen", screen }),
       abort.signal,
+      { replace: replaceRequested },
     )
       .then(async (result) => {
         if (result !== "paired" || abort.signal.aborted) return;
+        // "held": the clock is wrong and the key was left alone; the screen says
+        // so and offers pairing again.
         // Learn the key's id and expiry from the gateway, then open the console.
         await status();
         // Wait for the shared status to say "paired" before leaving: the gate
@@ -133,7 +136,7 @@ export function PairScreen() {
       });
 
     return () => abort.abort();
-  }, [refresh, router]);
+  }, [refresh, router, replaceRequested]);
 
   const skewed = isSkewed(state.skewSeconds);
   return (
@@ -141,6 +144,7 @@ export function PairScreen() {
       screen={state.screen}
       failure={state.failure}
       replacing={state.replacing}
+      onPairAgain={() => dispatch({ type: "pair-again" })}
       clockSkewMinutes={
         skewed && state.skewSeconds !== undefined ? Math.round(state.skewSeconds / 60) : undefined
       }

@@ -17,6 +17,7 @@ import {
   useReducer,
   useRef,
 } from "react";
+import { measureClockSkew } from "@/lib/clock";
 import { indexedDbKeyStore, markPaired } from "@/lib/device-key";
 import { onUnauthenticated } from "@/lib/key-events";
 import { type KeyStatus, readKeyStatus, shouldRereadOnRefusal } from "@/lib/key-lifecycle";
@@ -68,6 +69,7 @@ function readStatus(): Promise<KeyStatus> {
       coseThumbprint(new Uint8Array(await crypto.subtle.exportKey("raw", stored.pair.publicKey))),
     remember: (meta) => markPaired(meta),
     now: Date.now,
+    skew: () => measureClockSkew(),
   });
 }
 

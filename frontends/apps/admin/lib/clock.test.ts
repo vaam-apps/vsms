@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLOCK_SKEW_WARN_SECONDS, clockSkewSeconds, isSkewed } from "./clock";
+import { CLOCK_SKEW_WARN_SECONDS, clockSkewSeconds, isSkewed, measureClockSkew } from "./clock";
 
 describe("clock skew", () => {
   const now = Date.parse("2026-10-27T12:00:00Z");
@@ -20,5 +20,33 @@ describe("clock skew", () => {
     expect(isSkewed(CLOCK_SKEW_WARN_SECONDS + 1)).toBe(true);
     expect(isSkewed(-(CLOCK_SKEW_WARN_SECONDS + 1))).toBe(true);
     expect(isSkewed(undefined)).toBe(false);
+  });
+});
+
+describe("measureClockSkew", () => {
+  const now = Date.parse("2026-10-27T12:00:00Z");
+
+  it("reads the Date header of the console's own server", async () => {
+    const calls: string[] = [];
+    const skew = await measureClockSkew({
+      now: () => now,
+      fetch: (async (input: RequestInfo | URL) => {
+        calls.push(String(input));
+        return new Response("{}", { headers: { date: "Tue, 27 Oct 2026 11:50:00 GMT" } });
+      }) as typeof fetch,
+    });
+
+    expect(skew).toBe(600);
+    expect(calls).toEqual(["/api/health"]);
+  });
+
+  it("is unknown when the server cannot be asked, never a throw", async () => {
+    const skew = await measureClockSkew({
+      fetch: (async () => {
+        throw new Error("offline");
+      }) as typeof fetch,
+    });
+
+    expect(skew).toBeUndefined();
   });
 });

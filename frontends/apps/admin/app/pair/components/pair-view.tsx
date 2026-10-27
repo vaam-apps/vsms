@@ -4,7 +4,7 @@
 // browser made a key it cannot export, shows it as a QR, and a vaam admin phone
 // that is already signed in vouches for it.
 
-import { InlineBanner, Spinner } from "@vaam-apps/ui";
+import { Button, InlineBanner, Spinner } from "@vaam-apps/ui";
 import { QrCode } from "@/components/qr-code";
 import type { PairScreen } from "@/lib/pair-flow";
 
@@ -16,6 +16,9 @@ export interface PairViewProps {
   failure?: string | undefined;
   /** True when the previous key of this browser ended (expired or revoked). */
   replacing?: boolean | undefined;
+  /** The person asked to throw away this browser's key and pair again. Offered
+   *  only while a wrong clock is holding the key's fate undecided. */
+  onPairAgain?: (() => void) | undefined;
 }
 
 const STEPS = [
@@ -24,7 +27,13 @@ const STEPS = [
   "Confirm with your fingerprint. This page opens the console by itself.",
 ];
 
-export function PairView({ screen, clockSkewMinutes, failure, replacing }: PairViewProps) {
+export function PairView({
+  screen,
+  clockSkewMinutes,
+  failure,
+  replacing,
+  onPairAgain,
+}: PairViewProps) {
   return (
     <main className="flex min-h-dvh items-center justify-center p-6">
       <div className="flex w-full max-w-md flex-col items-center gap-6 text-center">
@@ -51,7 +60,22 @@ export function PairView({ screen, clockSkewMinutes, failure, replacing }: PairV
         )}
         {failure !== undefined && <InlineBanner variant="danger">{failure}</InlineBanner>}
 
-        {screen.kind === "waiting" ? (
+        {screen.kind === "clock" ? (
+          <div className="flex flex-col items-center gap-3">
+            <InlineBanner variant="danger">
+              This console&rsquo;s key was not touched. The gateway refuses anything signed more
+              than five minutes off its own time, and this computer&rsquo;s clock is off by{" "}
+              {Math.round(Math.abs(screen.skewSeconds) / 60)} minutes, so the key may still be good.
+              Correct the clock and reload this page. Only pair again if you know the key is
+              finished: it is deleted when you do.
+            </InlineBanner>
+            {onPairAgain !== undefined && (
+              <Button type="button" variant="ghost" onClick={onPairAgain}>
+                Pair this console again
+              </Button>
+            )}
+          </div>
+        ) : screen.kind === "waiting" ? (
           <>
             <QrCode
               text={screen.qr.text}

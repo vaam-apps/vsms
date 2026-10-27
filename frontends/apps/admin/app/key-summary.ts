@@ -18,6 +18,8 @@ export function summarizeKey(status: KeyStatus | { kind: "checking" }, now: numb
       return "Not paired";
     case "unreachable":
       return "Gateway unreachable";
+    case "clock":
+      return "Clock is off";
     case "checking":
       return "Checking";
   }

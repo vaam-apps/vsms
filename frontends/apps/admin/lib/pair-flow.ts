@@ -2,8 +2,13 @@
 // dependencies so a test can drive it without a browser (the screen is
 // app/pair/pair-screen.tsx).
 //
-//   1. Read the key's status. Paired: nothing to do. Ended (expired or revoked):
-//      the key can never be accepted again, so it is wiped and replaced.
+//   1. Read the key's status. Paired: nothing to do. Ended (expired or revoked,
+//      on a clock that is right): the key can never be accepted again, so it is
+//      wiped and replaced. Clock (this computer's clock is wrong, so a refusal
+//      says nothing about the key): the key is left exactly as it is and the
+//      flow stops, "held". It is wiped only when the person asks to pair again
+//      (`replace`), because a key the gateway may still accept is not ours to
+//      delete on the strength of a wrong clock.
 //   2. Make or reuse this browser's non-extractable key.
 //   3. Show the QR and wait. The wait asks the gateway, with a sealed read
 //      signed by the key just made, whether the phone has vouched for it yet.
@@ -29,7 +34,9 @@ import {
 export type PairScreen =
   | { kind: "starting" }
   | { kind: "waiting"; qr: PairingQr; label: string; reachable: boolean; publicKey: string }
-  | { kind: "paired" };
+  | { kind: "paired" }
+  /** The clock is wrong: the key was not touched and nothing was started. */
+  | { kind: "clock"; skewSeconds: number };
 
 export interface PairFlowDeps {
   status: () => Promise<KeyStatus>;
@@ -54,20 +61,36 @@ function httpStatusOf(error: unknown): number | undefined {
   return undefined;
 }
 
+export interface PairOptions {
+  /** The person asked to pair again: forget the key this browser holds, whatever
+   *  its status, and make a new one. */
+  replace?: boolean | undefined;
+}
+
 /** Runs one pairing. Resolves `"paired"` when the gateway accepted the key,
- *  `"aborted"` when `signal` stopped it. */
+ *  `"aborted"` when `signal` stopped it and `"held"` when the clock is wrong
+ *  and the person has not asked to replace the key. */
 export async function runPairing(
   deps: PairFlowDeps,
   show: (screen: PairScreen) => void,
   signal: AbortSignal,
-): Promise<"paired" | "aborted"> {
+  options: PairOptions = {},
+): Promise<"paired" | "aborted" | "held"> {
   show({ kind: "starting" });
-  const first = await deps.status();
-  if (first.kind === "paired") {
-    show({ kind: "paired" });
-    return "paired";
+  if (options.replace === true) {
+    await deps.wipeKey();
+  } else {
+    const first = await deps.status();
+    if (first.kind === "paired") {
+      show({ kind: "paired" });
+      return "paired";
+    }
+    if (first.kind === "clock") {
+      show({ kind: "clock", skewSeconds: first.skewSeconds });
+      return "held";
+    }
+    if (first.kind === "ended") await deps.wipeKey();
   }
-  if (first.kind === "ended") await deps.wipeKey();
   if (signal.aborted) return "aborted";
 
   const key = await deps.ensureKey();

@@ -45,6 +45,7 @@ function deps(over: Partial<StatusDeps> = {}): StatusDeps {
     thumbprint: async () => "ab".repeat(32),
     remember: async () => undefined,
     now: () => NOW,
+    skew: async () => 0,
     ...over,
   };
 }
@@ -87,6 +88,59 @@ describe("readKeyStatus", () => {
         load: async () => stored(meta(10)),
         probe: async () => {
           throw refusal(401);
+        },
+      }),
+    );
+
+    expect(status).toMatchObject({ kind: "ended", cause: "refused" });
+  });
+
+  it("a refusal on a computer whose clock is off is the clock's, not the key's: the key is left alone", async () => {
+    const refused = async () => {
+      throw refusal(401);
+    };
+
+    for (const skew of [301, -301, 600]) {
+      const status = await readKeyStatus(
+        deps({ load: async () => stored(meta(10)), probe: refused, skew: async () => skew }),
+      );
+      expect(status, `${skew}s`).toMatchObject({ kind: "clock", skewSeconds: skew });
+      expect((status as { meta: PairedMeta }).meta.keyId).toBe("ck1");
+    }
+    // Within the warning threshold it is the key.
+    expect(
+      await readKeyStatus(
+        deps({ load: async () => stored(meta(10)), probe: refused, skew: async () => 60 }),
+      ),
+    ).toMatchObject({ kind: "ended", cause: "refused" });
+    // A skew that could not be measured is not evidence of one.
+    expect(
+      await readKeyStatus(
+        deps({ load: async () => stored(meta(10)), probe: refused, skew: async () => undefined }),
+      ),
+    ).toMatchObject({ kind: "ended", cause: "refused" });
+  });
+
+  it("a key that looks expired on a wrong clock is not called expired", async () => {
+    const probe = vi.fn();
+
+    const status = await readKeyStatus(
+      deps({ load: async () => stored(meta(-1)), probe, skew: async () => 3600 }),
+    );
+
+    expect(status).toMatchObject({ kind: "clock" });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("a skew that cannot be read never turns a read into a throw", async () => {
+    const status = await readKeyStatus(
+      deps({
+        load: async () => stored(meta(10)),
+        probe: async () => {
+          throw refusal(401);
+        },
+        skew: async () => {
+          throw new Error("offline");
         },
       }),
     );
@@ -176,7 +230,7 @@ describe("shouldRereadOnRefusal", () => {
   });
 
   it("never reads again for any other status: the pairing page's own probe is refused every two seconds, by design", () => {
-    for (const kind of ["checking", "none", "pending", "ended", "unreachable"]) {
+    for (const kind of ["checking", "none", "pending", "ended", "unreachable", "clock"]) {
       expect(shouldRereadOnRefusal(kind, false), kind).toBe(false);
     }
   });

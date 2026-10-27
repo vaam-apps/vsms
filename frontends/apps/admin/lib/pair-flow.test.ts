@@ -6,7 +6,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { loadOrCreateDeviceKey, memoryKeyStore } from "./device-key";
 import type { KeyStatus } from "./key-lifecycle";
-import { type PairFlowDeps, type PairScreen, runPairing } from "./pair-flow";
+import { type PairFlowDeps, type PairOptions, type PairScreen, runPairing } from "./pair-flow";
 import { QR_REFRESH_SECONDS } from "./pairing";
 
 const refusal = (httpStatus: number) => Object.assign(new Error("refused"), { httpStatus });
@@ -36,8 +36,8 @@ async function harness(over: Partial<PairFlowDeps> = {}) {
     advance: (seconds: number) => {
       clock += seconds;
     },
-    run: (signal = new AbortController().signal) =>
-      runPairing(deps, (screen) => shown.push(screen), signal),
+    run: (signal = new AbortController().signal, options: PairOptions = {}) =>
+      runPairing(deps, (screen) => shown.push(screen), signal, options),
   };
 }
 
@@ -95,6 +95,49 @@ describe("runPairing", () => {
     await h.run();
 
     expect(order).toEqual(["wipe", "ensure"]);
+  });
+
+  it("leaves a key alone when the clock is wrong, and says so instead of starting", async () => {
+    const h = await harness({
+      status: async () => ({
+        kind: "clock",
+        skewSeconds: 900,
+        meta: { keyId: "k", userId: "u", pairedAt: "x", expiresAt: "y" },
+      }),
+    });
+
+    expect(await h.run()).toBe("held");
+
+    expect(h.deps.wipeKey).not.toHaveBeenCalled();
+    expect(h.deps.ensureKey).not.toHaveBeenCalled();
+    expect(h.shown.at(-1)).toEqual({ kind: "clock", skewSeconds: 900 });
+  });
+
+  it("wipes the key only when the person asks to pair again, whatever its status", async () => {
+    const order: string[] = [];
+    for (const status of [
+      { kind: "paired", meta: { keyId: "k", userId: "u", pairedAt: "x", expiresAt: "y" } },
+      {
+        kind: "clock",
+        skewSeconds: 900,
+        meta: { keyId: "k", userId: "u", pairedAt: "x", expiresAt: "y" },
+      },
+    ] as KeyStatus[]) {
+      order.length = 0;
+      const h = await harness({
+        status: async () => status,
+        wipeKey: vi.fn(async () => void order.push("wipe")),
+        ensureKey: vi.fn(async () => {
+          order.push("ensure");
+          return loadOrCreateDeviceKey(memoryKeyStore());
+        }),
+        probe: async () => undefined,
+      });
+
+      expect(await h.run(new AbortController().signal, { replace: true })).toBe("paired");
+
+      expect(order, status.kind).toEqual(["wipe", "ensure"]);
+    }
   });
 
   it("redraws the QR before the gateway would call it stale", async () => {
