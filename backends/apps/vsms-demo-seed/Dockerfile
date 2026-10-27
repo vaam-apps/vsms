@@ -22,7 +22,7 @@
 FROM rust:1.98-alpine3.22 AS builder
 
 # musl-dev + build-base: `ring` (pulled in transitively through sms-api ->
-# authkestra/cratestack-sqlx) needs a C compiler and libc headers to build
+# cratestack-sqlx) needs a C compiler and libc headers to build
 # — identical package set every other Dockerfile in this workspace uses.
 # DL3018: no apk version pin, deliberately. Alpine drops a superseded package
 # revision from the 3.22 index when it ships the next one, so an exact pin

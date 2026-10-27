@@ -10,7 +10,6 @@ members = [
   # sms-webhook above for living below both.
   "backends/crates/sms-metrics",
   "backends/crates/sms-api",
-  "backends/crates/sms-auth",
   "backends/crates/sms-worker",
   "backends/crates/sms-provider",
   # Cleanup PR B: the connect-vs-read transport classification and the
@@ -30,9 +29,6 @@ members = [
   # Dev/test-only fake of AWS End User Messaging SMS and its SNS receipt
   # topic, for sms-provider-aws-sms — same discipline as sms-fake-orange.
   "backends/crates/sms-fake-aws",
-  # Dev/test-only fake upstream OpenID Provider (Keycloak stand-in) for the
-  # SSO broker's tests - same discipline as sms-fake-orange above.
-  "backends/crates/sms-fake-oidc",
   "backends/crates/sms-test-support",
   "backends/apps/sms-gateway",
   "backends/apps/sms-worker",
@@ -113,7 +109,6 @@ sms-webhook = { path = "./backends/crates/sms-webhook" }
 # apart on what a given metric is called.
 sms-metrics = { path = "./backends/crates/sms-metrics" }
 sms-api = { path = "./backends/crates/sms-api" }
-sms-auth = { path = "./backends/crates/sms-auth" }
 sms-worker = { path = "./backends/crates/sms-worker" }
 sms-provider = { path = "./backends/crates/sms-provider" }
 # Cleanup PR B: the connect-vs-read transport classifier and the
@@ -142,10 +137,6 @@ sms-test-support = { path = "./backends/crates/sms-test-support" }
 # binary that does, is itself a dev/demo tool, never referenced by a
 # production compose file (see that binary's own module doc).
 sms-fake-orange = { path = "./backends/crates/sms-fake-orange" }
-# Dev-only, same discipline: a fake upstream OpenID Provider (Keycloak
-# stand-in) that signs whatever id_token a test scripts, malformed ones
-# included. No production binary links against it.
-sms-fake-oidc = { path = "./backends/crates/sms-fake-oidc" }
 # Dev-only, same discipline: a fake of AWS End User Messaging SMS and of the
 # SNS topic its delivery events arrive through. Linked into sms-gateway only
 # behind its off-by-default `fake-aws` feature, which no release image builds.
@@ -164,63 +155,7 @@ sms-fake-aws = { path = "./backends/crates/sms-fake-aws" }
 cratestack = { package = "cratestack-pg", version = "=0.16.0", features = ["envelope", "cose"] }
 cratestack-codec-json = "=0.16.0"
 
-# OIDC provider. Pinned exactly, same reasoning as cratestack above — see
-# AGENTS.md. 0.3.2 fixed the `GrantType` serde bug that shaped early M1
-# design (#6): don't drop below it. Bumped 0.5.4 -> 0.8.0 — see AGENTS.md's
-# authkestra-0.8 section for the full audit (OpStore's `&mut self` methods,
-# ClientStore/ClientAssertionStore relocating to authkestra-engine,
-# CompositeOpStore's new 6th (DPoP) type parameter, PKCE going
-# unconditional, and AuthorizeRequest/Claims both going #[non_exhaustive]).
-#
-# `default-features = false, features = ["rustls-no-provider"]`: authkestra's
-# own reqwest 0.13 dependency otherwise defaults to `aws-lc-rs`, the only
-# path by which that crate ever entered this tree (AGENTS.md's "aws-lc-rs
-# enters this tree from authkestra alone" section — verified via
-# `cargo tree -e features -i rustls`, not assumed). `rustls-no-provider`
-# compiles neither `aws-lc-rs` nor `ring` into authkestra's own reqwest;
-# the process supplies one instead, via the explicit
-# `rustls::crypto::ring::default_provider().install_default()` call each
-# binary's `main()` makes before constructing any HTTP client — see that
-# call site's own comment for why ordering there is load-bearing, and
-# AGENTS.md for the live-TLS test that proves this path actually works
-# rather than panicking at the first outbound call. Re-verified still true
-# at 0.8.0 — the feature exists unchanged on all four crates.
-authkestra-op = { version = "=0.8.0", default-features = false, features = ["rustls-no-provider"] }
-# Underpins authkestra-op (TokenManager, Engine, the generic MemoryStore<T>
-# op.rs uses for the authorization-code/refresh-token/device-code slots
-# this deployment doesn't populate — see op.rs's own doc). Not used
-# directly by application code beyond that; pinned because the whole
-# authkestra family moves in lockstep. Same `rustls-no-provider` reasoning
-# as authkestra-op above.
-# `token` is named here because it used to arrive only through authkestra-resource
-# (whose dependency on this crate enables it); VS-3 removed that crate with the
-# JWT AuthProvider, and without the feature `Engine`'s token-manager parameter
-# is unused and the crate does not compile.
-authkestra-engine = { version = "=0.8.0", default-features = false, features = ["token", "rustls-no-provider"] }
-# Wraps authkestra-op's handler functions into axum routes for the OP
-# itself (#20). Only the `op` feature: this deployment never uses the
-# `session`/`resource` extractors this crate also offers (the signed-transport
-# AuthProvider, VS-3, reads no token at all). Same
-# `rustls-no-provider` reasoning as authkestra-op above.
-authkestra-axum = { version = "=0.8.0", default-features = false, features = ["op", "rustls-no-provider"] }
-# RSA signing keys for the OP (#20). `rsa` genuinely shares one resolved
-# copy with authkestra-op's own dependency (both are caret `0.9.x`
-# requirements — this pin's `0.9` and authkestra-engine 0.8.0's own
-# `rsa = "0.9.6"` — semver-unified by Cargo into the single `rsa 0.9.10`
-# entry in this workspace's own Cargo.lock, confirmed by grep, not
-# assumed). `rand` does not: this pin resolves to `rand 0.8.7`, while
-# authkestra-op/-engine 0.8.0 resolve to `rand 0.9.5` (their own
-# `[dependencies.rand] version = "0.9.2"`) — two real, separate copies in
-# this dependency tree, not the "same versions... doesn't grow a second
-# copy" this comment used to claim for both crates alike (true once, back
-# when authkestra was on an 0.8-compatible rand itself; stale since the
-# authkestra 0.8.0 bump moved only their pin, not this one). Moving this
-# pin to `"0.9"` to collapse the duplicate is a real, plausible follow-up —
-# not done here, since rand 0.9's own breaking `RngCore`/`CryptoRng`
-# changes need their own verification against `rsa` 0.9.10's actual trait
-# bounds before trusting `RsaPrivateKey::new(&mut OsRng, ...)` still
-# compiles unchanged, and a dependency-bump PR is not where that
-# verification belongs.
+# sms-fake-aws only: the RSA key behind its fake SNS signing identity.
 rsa = "0.9"
 rand = "0.8"
 # sms-fake-aws only: a self-signed certificate around a generated RSA key
@@ -229,67 +164,31 @@ rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"]
 # sms-fake-aws only: signs fake SNS notifications. The same `ring` rustls
 # already resolves; named directly, never a second copy.
 ring = "0.17"
-# #194: sms-auth::login's password hashing for human console logins — the
-# one place this system now stores a secret derived from user input rather
-# than generating its own key material. Argon2id (the `password-hash`
-# crate's own recommended default, and OWASP's) with the crate's built-in
-# defaults (19 MiB memory, matching the figure #22/§4.2 already cites as
-# "memory-hard work an unauthenticated caller could trigger" — deliberately
-# unchanged here since these attempts *are* authenticated-caller-triggered
-# by design, not the unauthenticated /token path that reasoning was about).
-argon2 = "0.5"
-# sms-auth's SSO broker (id_token validation) and sms-fake-oidc (signing a
-# scripted id_token) - same jsonwebtoken version authkestra-op itself requires
-# (verified against Cargo.lock: both resolve to 11.0.0 with `rust_crypto`).
-jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
-# The live OIDC-flow verification test builds a client JWK (n/e) by hand
-# from a generated RSA keypair — same base64 version already resolved
-# transitively through authkestra-op.
+# client_keys.rs / console_keys.rs / envelope.rs: base64url public keys and
+# the PKCS#8 PEM body of the server's signing key.
 base64 = "0.22"
-# backends/apps/sms-gateway's own op.rs mounts axum routes directly against
-# authkestra-axum's handler functions — same axum version cratestack-pg
-# and authkestra-axum both already resolve to (verified: Cargo.lock has
-# exactly one axum entry, 0.8.9), so this doesn't fork the tree.
 axum = "0.8"
 
-# SSO broker (sms-auth::sso): RFC 3986 URL handling for the upstream endpoints
-# and redirect URIs, and constant-time comparison for the single-use `state`.
-# Both are already in Cargo.lock transitively (url 2.5, subtle 2.6) - named
-# directly for the crate that now calls them, no second copy.
+# sms-provider-aws-sms and sms-fake-aws: RFC 3986 URL handling for the SNS
+# subscription and certificate endpoints.
 url = "2"
-subtle = "2"
 
 anyhow = "1"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
-# #168: parses `/token`'s form-urlencoded body for `client_id` in
-# `backends/apps/sms-gateway/src/token_rate_limit.rs`. Already present in Cargo.lock
-# transitively at this exact version (part of the `url` crate family, a
-# dependency of axum's own `Form` extractor, which `authkestra_axum`'s
-# token handler uses to parse `TokenRequest`) — this doesn't add a second
-# form-parsing implementation to the tree, just names the dependency
-# directly for the one crate that now calls it outside that extractor.
-# Chosen over a third-party Caddy module for the identical supply-chain
-# reason `deploy/Caddyfile`'s own #168 comment rejected one at the edge:
-# `form_urlencoded` is maintained by the same team as `url`/`idna` (Servo),
-# already this deeply embedded in the dependency tree, and does exactly
-# one well-scoped thing.
-form_urlencoded = "1"
 # rustls, not native-tls/openssl — matches every other reqwest already in
-# this dependency tree (cratestack-sqlx, authkestra-engine both resolve to
-# hyper-rustls), so this doesn't introduce a second TLS stack to build.
+# this dependency tree (cratestack-sqlx resolves to hyper-rustls too), so
+# this doesn't introduce a second TLS stack to build.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 # Named directly (not just pulled in transitively) so backends/apps/sms-gateway's and
 # backends/apps/sms-worker's own main.rs can call
 # `rustls::crypto::ring::default_provider().install_default()` before
-# constructing any HTTP client — see authkestra-op's own comment above for
-# why that call has to exist at all now that `rustls-no-provider` leaves
-# authkestra's reqwest with no baked-in crypto backend. `default-features =
+# constructing any HTTP client — see that function's own doc. `default-features =
 # false` plus `std`: only the `ring` backend is wanted, not the `aws-lc-rs`
-# feature this crate also offers (which would reintroduce the exact
-# dependency this change removes) or the `logging`/`tls12` extras this
+# feature this crate also offers (which would put a `cmake`-built C
+# dependency in the tree) or the `logging`/`tls12` extras this
 # workspace has no use for. Version matches what's already resolved
 # workspace-wide (0.23.x, verified against Cargo.lock) — this doesn't fork
 # the rustls tree, just names the one version already there.
@@ -326,9 +225,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 # #134: keys `sha2` for `Procedures`'s `msisdnHash`/`bodyHash` HMAC under a
-# server-held pepper. Already present in Cargo.lock transitively (0.12.1,
-# via authkestra's `rust_crypto` stack) — this doesn't add a second digest
-# tree, just names the dependency directly for the crate that now calls it.
+# server-held pepper.
 hmac = "0.12"
 # #41: sms-webhook's hex encode/decode for signature bytes. Already present
 # in Cargo.lock transitively (0.4.3, pulled in by several crypto-adjacent
@@ -341,13 +238,12 @@ hex = "0.4"
 # short message. cratestack-cose keeps its own verifier crate-private (it
 # verifies COSE structures, not a bare signature), so the one check is made
 # with the RustCrypto crate it is built on. 0.14 with `ecdsa` is exactly
-# cratestack-cose 0.16.0's own requirement, so Cargo.lock gains no new crate
-# (authkestra's older 0.13.2 stays separate).
+# cratestack-cose 0.16.0's own requirement, so Cargo.lock gains no new crate.
 p256 = { version = "0.14", default-features = false, features = ["ecdsa"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tokio-util = "0.7"
-# Dev-only: token_rate_limit.rs's own tests (#168) drive its middleware via
+# Dev-only: sms-api's metrics.rs tests drive its router via
 # `tower::ServiceExt::oneshot` against an in-process router, the standard
 # axum testing pattern — no real socket needed. Already present in
 # Cargo.lock transitively (0.5.3, via axum/cratestack-axum's own routing

@@ -24,9 +24,6 @@ If you are integrating an application rather than running or operating vsms, lin
 | xref:deployment.adoc[Deployment]
 | Running it for real: the compose stack, the Caddy edge, the one-shot migration job, image builds and the GHCR release path.
 
-| xref:sso.adoc[Single sign-on (Keycloak)]
-| Configuring and operating staff sign-in through the Keycloak realm: the gateway settings, the Keycloak client, groups mapper and (not obvious) the `amr` configuration that makes a second factor visible, just-in-time provisioning, the one-shot `prompt=login` retry, reading the refusal log, and what was verified against a real Keycloak.
-
 | xref:aws-sms.adoc[Sending through AWS End User Messaging SMS]
 | Using `aws_sms` as a provider, the go-live route while the Orange and MTN contracts are pending: the data-residency prerequisite (sending to AWS is a cross-border transfer), the AWS resources to create (sandbox exit, sender ID, SNS topic with `SignatureVersion` 2, configuration set, IAM user), the manual subscription confirmation, a delivery policy and dead-letter queue, the worker and gateway settings, seeding an AWS-only deployment, routing between AWS and the operator routes, and troubleshooting. Not yet run against a live AWS account.
 

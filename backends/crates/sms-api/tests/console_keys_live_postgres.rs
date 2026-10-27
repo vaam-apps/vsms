@@ -240,8 +240,7 @@ async fn assert_nothing_written(db: &Cratestack, vaam_user_id: &str, thumbprint:
     assert_eq!(keys_for_thumbprint(db, thumbprint).await.len(), 0, "no key");
 }
 
-/// An existing active user and its vaam link, as an earlier pairing (or the
-/// SSO broker) leaves them, in `role_key`.
+/// An existing active user and its vaam link, as an earlier pairing leaves them, in `role_key`.
 async fn seed_linked_user(db: &Cratestack, vaam_user_id: &str, role_key: &str) -> schema::User {
     let created = db
         .user()

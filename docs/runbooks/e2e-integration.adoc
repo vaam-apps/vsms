@@ -125,10 +125,8 @@ VS-3 sealed the gateway and this tool moved from `private_key_jwt` to signed req
 type-checks and its SDK half is covered by the SDK's own transport tests and live suite, but
 `just e2e-integration` itself needs Docker and was *not* re-run for VS-3: the evidence below
 is the pre-VS-3 (token) run, kept as the record of the scenario, not of the new transport.
-The `admin` console signs in the browser since VS-5b; the `demo-app` service in this stack
-still speaks the token protocol, so it cannot reach the sealed gateway (the Node SDK signs
-since VS-7, but `demo-app` still depends on a token-era release of it); the e2e tool does
-not use either.
+The `admin` console signs in the browser since VS-5b, and the `demo-app` service in this stack
+signs with its own key since VS-4 (`register-demo-app`); the e2e tool does not use either.
 
 == Evidence -- the `containerize-tooling` rewrite
 

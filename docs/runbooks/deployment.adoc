@@ -20,10 +20,11 @@ left saying otherwise for longer than it should have -- the same
 keeps rediscovering, found here while writing the backend-only section
 below:
 
-* *`sms-gateway provision-client` exists* (`backends/apps/sms-gateway/src/main.rs`,
-`Command::ProvisionClient`) and mints a real, HTTP-usable
-`private_key_jwt` client -- step 5 below uses it directly rather than
-hand-rolling a keypair and registering it against the schema.
+* *`sms-gateway register-client` exists* (`backends/apps/sms-gateway/src/main.rs`,
+`Command::RegisterClient`) and registers an integrator's own Ed25519 public
+key as an `AppClient` -- step 5 below uses it for the console composer's
+key. The gateway never generates, sees or stores a private key; there is no
+token to mint and no `provision-client` any more (deleted in VS-4).
 * *`sms-gateway create-app` exists* (`Command::CreateApp`, production-readiness
 audit N1) and closes what used to be a real chicken-and-egg gap: creating
 the very first `App` a real production deployment sends through --
@@ -55,7 +56,7 @@ should print v2.20+ -- `service_completed_successfully` depends-on
 conditions, used below, need it).
 * Two DNS records (A/AAAA) pointed at the VM -- one for the gateway's
 public origin, one for the admin console. A real domain, not just an
-IP: Caddy's automatic HTTPS and the OIDC issuer both need one. (Testing
+IP: Caddy's automatic HTTPS needs one. (Testing
 without public DNS: see ``deploy/Caddyfile``'s own comment for the
 `tls internal` swap -- everything else below still applies.)
 * Real Orange Cameroon `client_credentials` and a contracted sender ID.
@@ -63,8 +64,9 @@ Placeholder credentials get you through migrations and a running stack,
 but every submit attempt fails at Orange's own OAuth endpoint -- the
 same boundary xref:36-handset-gate.adoc[`36-handset-gate.adoc`] documents.
 * `openssl` on your workstation, for generating a Postgres password and
-the `SMS_HASH_PEPPER` step 1 below needs. No RSA keypair by hand any
-longer -- `sms-gateway provision-client` (step 5) mints one server-side.
+the `SMS_HASH_PEPPER` step 1 below needs, and for the Ed25519 keys (the
+envelope keys in step 1, the composer's key in step 5):
+`openssl genpkey -algorithm ed25519`.
 
 == 1. Clone and configure
 
@@ -113,10 +115,6 @@ integrator pins the public half of *both*; print them once the stack is up with
 hand the two lines to the integrator. They are paths, not secret values, in
 `.env`-land: the files are the secret.
 
-`SMS_OIDC_ISSUER` must equal `https://` + `SMS_GATEWAY_DOMAIN` exactly --
-every token this deployment issues carries it as `iss`, and a mismatch
-here is silent until the first token validation fails.
-
 `SMS_HASH_PEPPER` backs `Message.msisdnHash`/`bodyHash` (HMAC-SHA256) --
 `sms-gateway serve` validates it (minimum 32 bytes) before doing anything
 else, so a missing or too-short value fails the container at boot, not at
@@ -141,41 +139,34 @@ under a Postgres advisory lock. It never regenerates anything; the two
 time (`include_str!`), from what's committed. If it exits non-zero,
 nothing downstream is safe to start -- fix this before continuing.
 
-== 3. Bootstrap: OP signing key, orange_cm Provider/Route, console OIDC client, first operator
+== 3. Bootstrap: orange_cm Provider/Route, first operator
 
-`sms-gateway serve` calls `sms_auth::op::load_signing_keys` and
-`resolve_provider_row_id` (`backends/apps/sms-gateway/src/main.rs`)
-_before_ binding its listener, so a fresh database makes the container
-exit immediately and crash-loop under `restart: unless-stopped` if
-either an active OP signing key or an `active` `Provider` row is
-missing -- *you cannot `docker compose exec` into a container that never
-stays up.* `admin` has the equivalent gap one layer up: it starts fine,
-but nobody can log in without a registered console OIDC client and at
-least one operator account. `sms-gateway bootstrap` (production-readiness
-audit N2) closes all four in one idempotent call, chaining exactly the
-four steps `docs/runbooks/deployment.adoc` used to walk through one at a
-time -- see "What `bootstrap` does" below if you need to run, or
-understand, any one of them individually.
+`sms-gateway serve` calls `resolve_provider_row_id`
+(`backends/apps/sms-gateway/src/main.rs`) _before_ binding its listener, so a
+fresh database makes the container exit immediately and crash-loop under
+`restart: unless-stopped` if an `active` `Provider` row is missing -- *you
+cannot `docker compose exec` into a container that never stays up.* (It needs
+no signing key from the database: since VS-4 the gateway's only keys are the
+two envelope keys of step 1.) `admin` has the equivalent gap one layer up: it
+starts fine, but nobody can use it without at least one operator account.
+`sms-gateway bootstrap` (production-readiness audit N2) closes both in one
+idempotent call, chaining the two steps this runbook used to walk through one at
+a time -- see "What `bootstrap` does" below if you need to run, or understand,
+either of them individually.
 
 *R4 (`CONTRIBUTING.md`: "the admin console is optional, the backend
-must run without it") -- review round 1, blocker 1: the command below
-is for a deployment bringing up the console.* For a genuinely
-backend-only deployment, omit `--console-redirect-uri`/`--owner-email`/
-`--owner-display-name` entirely -- `bootstrap` still creates the
-signing key and the `orange_cm` `Provider`/`Route` (everything
-`sms-gateway`/`sms-worker` themselves need to start), and explicitly
-skips the console-client and owner-account steps rather than either
-attempting them with nothing to configure them from or silently doing
-nothing. Passing `--owner-email` without `--console-redirect-uri` is
-refused with a named error, not silently accepted -- an operator
-account with no console `redirect_uri` registered has nothing to sign
-into.
+must run without it") -- the command below is for a deployment bringing up the
+console.* For a genuinely backend-only deployment, omit
+`--owner-email`/`--owner-display-name` entirely -- `bootstrap` still creates the
+`orange_cm` `Provider`/`Route` (everything `sms-gateway`/`sms-worker` themselves
+need to start), and explicitly skips the owner-account step rather than either
+attempting it with nothing to configure it from or silently doing nothing.
+Passing one of the two without the other is refused with a named error.
 
 [,bash]
 ----
 docker compose --env-file .env build sms-gateway
 docker compose --env-file .env run --rm sms-gateway bootstrap \
-  --console-redirect-uri "https://console.example.com/api/auth/callback" \
   --owner-email you@example.com \
   --owner-display-name "Your Name"
 ----
@@ -185,48 +176,17 @@ docker compose --env-file .env run --rm sms-gateway bootstrap \
 service name.) `run --rm`, not `exec`, for the same reason every
 one-off command in this runbook uses it: there is no running
 `sms-gateway` service container to exec into yet. Safe to re-run against
-an already-bootstrapped deployment -- see `Command::Bootstrap`'s own doc
-comment for why re-running never rotates an already-active signing key
-(unlike every other step here, key rotation is not something a re-run
-should do silently) while every other step stays a clean no-op.
+an already-bootstrapped deployment: every step is a clean no-op the second
+time.
 
-`--console-client-id` (default `sms-console`) and `--owner-role-key`
-(default `owner`) are also available if this deployment needs either
-non-default -- see `Command::Bootstrap`'s own `--help` for the full flag
+`--owner-role-key` (default `owner`) is also available if this deployment needs
+a different role -- see `Command::Bootstrap`'s own `--help` for the full flag
 list.
 
 === What `bootstrap` does, step by step
 
-Read this if you need one of the four steps on its own -- routine key
-rotation later (`docker compose exec sms-gateway rotate-signing-key`,
-once `sms-gateway` is already up), registering a second console client,
-or debugging a partially-bootstrapped database.
-
-==== The first OP signing key
-
-`Command::Serve` calls `sms_auth::op::load_signing_keys` before binding
-the listener, so a fresh database makes the container exit immediately
-and crash-loop. `bootstrap` skips this step outright (not just
-idempotently re-running it) whenever an `active` `OauthSigningKey`
-already exists -- see this file's own AGENTS.md-corrected history: an
-earlier revision claimed `serve` instead fails "loudly on the first
-`/token` request," which was wrong; it fails at process start, before
-binding, every time. On its own:
-
-[,bash]
-----
-docker compose --env-file .env run --rm sms-gateway rotate-signing-key
-----
-
-Run this once, on a fresh database, before ever bringing `sms-gateway`
-up as a long-running service. Re-running it later rotates the key with
-an overlap window (`sms_auth::op::ROTATION_OVERLAP`) -- safe to do as
-routine key hygiene, not just a bootstrap step, but only once
-`sms-gateway` is already up (`docker compose exec` works fine against an
-already-running container). *Unlike `bootstrap` itself, this standalone
-command always rotates* -- it has no "skip if one already exists" check,
-since routine rotation is exactly what an operator running it by hand
-wants.
+Read this if you need one of the two steps on its own, or are debugging a
+partially-bootstrapped database.
 
 ==== The `orange_cm` Provider row and a catch-all Route
 
@@ -303,7 +263,7 @@ that account's role. A person paired by a vaam admin phone instead gets an
 `operator`, `developer`, `auditor`, `support` -- all seeded by
 `0002_bootstrap`. `system` is not among them and cannot be created;
 `roles_key_not_reserved_check` rejects it, because a human account
-holding it could read the OP's signing key through generated CRUD.
+holding it would pass every `hasRole('system')` policy through generated CRUD.
 
 The console authenticates upstream as the *paired person's own key*, so a
 paired `owner`/`admin`/`operator` can perform the writes that need a human
@@ -333,8 +293,8 @@ touches every 15s (see ``backends/apps/sms-worker/Dockerfile``'s own comment for
 that's a more meaningful signal than a bare "is the process running"
 check). Give both `--start-period` a few seconds before checking status.
 `sms-gateway` should now report `(healthy)` on the first attempt -- both
-the signing key and the `Provider` row from step 3's bootstrap already
-exist, so neither startup dependency is missing this time.
+the envelope keys of step 1 and the `Provider` row from step 3's bootstrap
+already exist, so neither startup dependency is missing this time.
 
 == 5. Provision the admin console's keys
 
@@ -457,8 +417,8 @@ external dependency and needs no credential: the console has no login, so there
 is nothing in front of it to exempt. `caddy` depends on both `sms-gateway` and
 `admin` being healthy before it starts routing -- see ``deploy/Caddyfile``'s own
 comment for why the gateway and admin domains have to stay two separate origins
-rather than one path-routed domain (the OIDC discovery document's URLs are only
-well-defined at an origin root).
+rather than one path-routed domain (the console keeps its paired browser key in
+IndexedDB, which the browser scopes to the console's own origin).
 
 *`deploy/Caddyfile` uses `rate_limit`, a third-party module the stock
 `caddy:2-alpine` image does not carry* -- ``deploy/docker-compose.yml``'s
@@ -475,11 +435,13 @@ something the code does not do" shape `AGENTS.md` keeps rediscovering.
 [,bash]
 ----
 curl -f https://$SMS_GATEWAY_DOMAIN/healthz
-curl -f https://$SMS_GATEWAY_DOMAIN/.well-known/openid-configuration
 curl -f https://$SMS_ADMIN_DOMAIN/api/health
 ----
 
-All three should return `200`. If you're on the `tls internal` local/demo
+Both should return `200`. Every other route of the gateway is sealed: an unsigned
+request, such as `curl -i https://$SMS_GATEWAY_DOMAIN/jobs`, is refused with a
+bare `401`, and a request for a route that does not exist (`/token`, `/login`)
+answers `404`. If you're on the `tls internal` local/demo
 path, add `-k` or trust Caddy's local CA first. This exact sequence -- all
 five containers, real health checks, a real Caddy TLS hop in front of
 both origins -- was run end to end against a throwaway config while
@@ -540,9 +502,9 @@ neither is console-specific) and nothing console-shaped at all -- not
 *Why `caddy` is gated too, not just `admin`.* `deploy/Caddyfile` is one
 file with two unconditional site blocks, `{$SMS_GATEWAY_DOMAIN}` and
 `{$SMS_ADMIN_DOMAIN}` -- see that file's own header for the reason two
-domains exist at all (an OIDC issuer's discovery document is only
-well-defined at an origin root, so path-routing one domain to both
-services isn't an option). There is no way to make only the second block
+domains exist at all (the console keeps its paired browser key in
+IndexedDB, which the browser scopes to its own origin, so path-routing one
+domain to both services isn't an option). There is no way to make only the second block
 optional without editing that file, which is a third-party-module build
 out of scope here. A backend-only compose deployment therefore has no
 bundled TLS edge for `sms-gateway` either -- front it with your own
@@ -596,9 +558,9 @@ No `admin`, no `caddy` -- and this rendered with the console's variables all
 unset, which is the property that matters (a `:?` anywhere in the file
 would have failed this same command). `postgres`, `migrate`,
 `sms-gateway`, `sms-worker` were then brought up for real
-(`docker compose up -d`, plus the one-shot `rotate-signing-key` and
-`seed-dispatch` sub-steps of step 3 above, see its own "What `bootstrap`
-does" subsection) -- both reported `healthy`.
+(`docker compose up -d`, plus the one-shot `seed-dispatch` sub-step of step 3
+above, see its own "What `bootstrap` does" subsection) -- both reported
+`healthy`.
 
 Provisioning and sending went entirely through ``sms-gateway``'s own CLI and
 the real HTTP API, never a browser. *`seed-demo-app` below is what this
@@ -639,8 +601,7 @@ sent: messageId=c0d35cb260e5732220b99bc state=accepted encoding=gsm7 segments=1 
 read back: id=c0d35cb260e5732220b99bc state=accepted providerMessageRef=None
 ----
 
-`examples/rust/sms-send` does the real `private_key_jwt` token exchange
-(RFC 7523 §3) and the real `sendMessage` call over HTTP -- the same code
+`examples/rust/sms-send` made the real `sendMessage` call over HTTP -- the same code
 path a genuine third-party backend integration uses, not an in-process
 shortcut. The message reached `delivered` a few seconds later, confirmed
 three independent ways rather than trusted off one:
@@ -667,7 +628,9 @@ host.
 *Every operator action this proof needed had a CLI subcommand -- nothing
 required a browser.* `rotate-signing-key`, `seed-dispatch`,
 `seed-demo-app` (demo-only, see above), `provision-client`: all four were
-plain `sms-gateway` subcommands at the time. The one real gap this proof
+plain `sms-gateway` subcommands at the time. (`rotate-signing-key` and
+`provision-client` were deleted with the OpenID Provider in VS-4; today the
+same proof registers its own Ed25519 key with `register-client`, see step 5.) The one real gap this proof
 found, not closed by #233 itself: *a real production deployment's first
 `App` had no CLI path.* `seed-demo-app` was explicitly demo-only by its
 own `--help` text; the only other route to `App.create` was a human
@@ -684,100 +647,48 @@ manually-bootstrapped context any more.
 separate compose project (`-p vsms156`, non-default host port `18080`,
 built from `deploy/caddy.Dockerfile` and the same `sms-gateway`/`migrate`
 images this tree produces elsewhere), not asserted from reading the
-config. Real `/token` and `+/dlr/{providerKey}+` requests, garbage
-credentials and all -- the point was to prove the edge throttles before
-``authkestra-op``'s RS256 check and Postgres ever see the excess requests,
-not to complete a real token exchange.
-
-*`/token`, per-source-IP zone* (tested at a scaled-down `events=5,
-window=20s` for a fast burst -- the shipped default is `20/1m`, same
-mechanism): the first 5 requests from one source got real application
-responses (`401 invalid_client` -- the garbage assertion was rejected by
-`sms-auth`, proving the request reached it), the 6th through 10th all got
-`429 Too Many Requests` with `Retry-After` set, straight from Caddy
-(`Server: Caddy`, no application body). Waiting out the window recovered
-it -- a request sent ~20s later got a fresh `401`, not a `429`.
-
-*Keying, verified both directions, not just claimed:*
-
-* A second, genuinely different source IP (a separate container on the
-compose network, confirmed via Caddy's own `log_key`-enabled logs to
-be a distinct `remote_ip`) sending the _same_ `client_id` got its own,
-independent budget -- unaffected by the first source's bucket already
-reading `429`. This is the literal acceptance criterion: one abusive
-caller cannot exhaust a bucket a different, legitimate caller shares a
-client_id with, because there is no such shared bucket.
-* That second source's own budget throttled identically once _it_
-sent enough requests (5 through before `429`), proving the limit isn't
-one-sided.
-* Sending `X-Forwarded-For: 1.2.3.4` and, on a separate request,
-`X-Forwarded-For: 9.9.9.9` from that same already-throttled source
-did *not* create new buckets and did *not* lift the throttle --
-both still got `429`. Confirms the key is genuinely
-`{http.request.remote.host}` (the real TCP peer Caddy accepted the
-connection from), not anything a client-supplied header can influence
--- the exact bypass this task named as a risk to check for, not assume
-away.
+config. *It once also throttled the gateway's `/token` endpoint; that endpoint,
+and with it the two `token_*` zones and `SMS_TOKEN_RATE_LIMIT_*`, were deleted
+with the OpenID Provider (VS-4).* What remains at the edge is the one
+unauthenticated route, `+/dlr/{providerKey}+`; every other route is sealed, and
+an unsigned request is refused at the envelope layer before any database work.
 
 *`+/dlr/{providerKey}+`, per-source-IP zone* (tested at a scaled-down
 `events=4, window=20s`; shipped default `100/10s`): the first 4 requests
 to `/dlr/orange_cm` got a real `400` from `sms-gateway` (malformed DLR
 payload, on purpose -- proves the request reached the app), the 5th
-onward got `429`.
+onward got `429` with `Retry-After` set, straight from Caddy (`Server: Caddy`,
+no application body). Waiting out the window recovered it.
+
+*Keying, verified both directions, not just claimed:*
+
+* A second, genuinely different source IP (a separate container on the
+compose network, confirmed via Caddy's own `log_key`-enabled logs to
+be a distinct `remote_ip`) got its own, independent budget -- unaffected by the
+first source's bucket already reading `429` -- and throttled identically once
+_it_ sent enough requests.
+* Sending `X-Forwarded-For: 1.2.3.4` and, on a separate request,
+`X-Forwarded-For: 9.9.9.9` from an already-throttled source
+did *not* create new buckets and did *not* lift the throttle --
+both still got `429`. Confirms the key is genuinely
+`{http.request.remote.host}` (the real TCP peer Caddy accepted the
+connection from), not anything a client-supplied header can influence.
 
 That burst was originally run against a composite `(IP, path)` key, and
 the run also showed a different `providerKey` from the same source
 getting its own bucket. *That composite key has since been removed*, so
-the per-path isolation it demonstrated no longer applies and the sentence
-claiming it has been struck rather than left to mislead. The reason is in
+the per-path isolation it demonstrated no longer applies. The reason is in
 ``deploy/Caddyfile``'s own comment on the zone: a composite key silently
 disables `ipv6_prefix`, because the module only masks a key that parses
 as a bare IP. Keeping IPv6 masking was judged the more valuable of the
-two, since only one provider is wired up today. The `429`-after-4 result
-above is unaffected -- it was never a property of the path component.
+two, since only one provider is wired up today.
 
 *Not verified by this burst test, and worth being explicit about:*
-the two aggregate/global zones (`token_global`, `dlr_global`) were
-confirmed to parse and load (`caddy validate`, and `log_key` showed them
-evaluating on every request) but were not driven past their own
-(120/min, 200/10s) thresholds by volume -- doing so meaningfully would
-mean sending on the order of a hundred-plus requests in this runbook's
-own verification pass, which wasn't judged worth the added noise given
-they share the exact same sliding-window mechanism already proven above,
-just with a static instead of a dynamic key (i.e. strictly simpler:
-"one bucket for everyone" rather than "one bucket per key value").
-
-*Composite `client_id` + source-IP keying on `/token`, as
-`docs/architecture.md` §4.2 asks for, is not what _this edge_ implements
--- it keys on source IP only, for a real reason checked during this work,
-not an oversight*: `client_id` on `/token` arrives only in the
-URL-encoded POST body, and every way this edge could read it out
-(Caddy's own `{http.request.body}` placeholder, explicitly documented
-"inefficient; use only for debugging"; the one third-party module that
-parses form bodies into placeholders, a single-contributor, zero-star,
-recently-created repository) was rejected as unfit for a TLS-terminating
-production edge parsing OAuth request bodies. See ``deploy/Caddyfile``'s
-own comment on the `token_per_ip`/`token_global` zones for that
-reasoning in full.
-
-*#168 closed the composite key at the _application_ layer instead* --
-not this edge, and not `sms-auth`: `backends/apps/sms-gateway/src/token_rate_limit.rs`
-is a second, defense-in-depth limiter mounted on `/token` itself
-(`backends/apps/sms-gateway/src/op.rs`, which already owns route assembly for that
-path), keyed on the real `client_id` it reads from the request body it
-already has to buffer. It buffers with a bounded 64 KiB limit and always
-reconstructs the body before the real OAuth handler runs -- a `/token`
-handler that received a consumed body would break every real exchange,
-not just an attacker's, so this was proven directly (a round-trip test
-asserting the handler sees the identical bytes it was sent) rather than
-assumed safe. Operator-tunable via `SMS_TOKEN_RATE_LIMIT_BURST`/
-`SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND` (`deploy/.env.example`), default
-10 burst / 20 per minute -- mirroring ``token_per_ip``'s own figure above,
-now attributed to a specific `client_id` instead of a shared source IP.
-The two layers stay complementary, not redundant: this edge's zones bound
-abuse by source IP before it ever reaches the application; the new layer
-bounds abuse by claimed identity, the dimension this edge structurally
-cannot reach.
+the aggregate zone (`dlr_global`) was confirmed to parse and load
+(`caddy validate`, and `log_key` showed it evaluating on every request) but was
+not driven past its own (200/10s) threshold by volume; it shares the exact same
+sliding-window mechanism already proven above, just with a static instead of a
+dynamic key.
 
 == Ordering and failure modes, summarized
 
@@ -790,15 +701,15 @@ cannot reach.
 
 | `sms-gateway`
 | `postgres` healthy, `migrate` completed
-| *will not even start* without step 3's signing key or `orange_cm` `Provider` row -- both are resolved before the listener ever binds, so either one missing crash-loops the container the same way (#148)
+| *will not even start* without the two envelope keys of step 1 or step 3's `orange_cm` `Provider` row -- both are resolved before the listener ever binds, so either one missing crash-loops the container (#148)
 
 | `sms-worker`
 | `postgres` healthy, `migrate` completed
-| starts fine with no signing key (only `sms-gateway` loads one) and fine with no `Provider`/`Route` either -- `dispatch` role specifically needs step 3's `Provider` row _and_ its catch-all `Route` (#62) to route anything, other roles don't, and none of them crash-loop on the absence of either the way `sms-gateway` does on a missing `Provider`: a `dispatch` role with nothing to route to just rejects every message it claims, silently, forever
+| starts fine with no envelope keys (only `sms-gateway` loads them) and fine with no `Provider`/`Route` either -- `dispatch` role specifically needs step 3's `Provider` row _and_ its catch-all `Route` (#62) to route anything, other roles don't, and none of them crash-loop on the absence of either the way `sms-gateway` does on a missing `Provider`: a `dispatch` role with nothing to route to just rejects every message it claims, silently, forever
 
 | `admin`
 | `sms-gateway` healthy
-| starts; token exchange fails until step 5's client is provisioned
+| starts; the composer reports it has no key until step 5's is registered, and every other screen works
 
 | `caddy`
 | `sms-gateway` and `admin` healthy
@@ -930,10 +841,10 @@ local image regardless of what had actually been pulled.
 == Kubernetes (Helm)
 
 `deploy/charts/vsms` -- the same three long-running processes as the
-compose path (`sms-gateway`, `sms-worker`, `admin`), plus the three
-one-shot steps compose's own runbook above walks through by hand (apply
-migrations, seed the `orange_cm` `Provider` row, mint the first OP signing
-key), as Helm-hook Jobs that run automatically in the right order. Built
+compose path (`sms-gateway`, `sms-worker`, `admin`), plus the one-shot
+steps compose's own runbook above walks through by hand (apply
+migrations, seed the `orange_cm` `Provider` row), as Helm-hook Jobs that run
+automatically in the right order. Built
 directly on the bjw-s *common* library chart v4 (`+^4.6.2+`), per #145.
 
 *One correction to #145's own text, found while building this, not
@@ -962,29 +873,27 @@ their own operator/subscription in front of one) supplies -- the same
 why it doesn't use `sops`.
 * *Does not create any Secret.* Every credential (`DATABASE_URL`,
 `SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `MTN_CLIENT_SECRET` when
-MTN is configured, the composer's service key PEM) is referenced by name from an `existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
+MTN is configured, the composer's service key PEM, the two envelope key PEMs) is referenced by name from an `existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
 ever writes one into a ConfigMap or a rendered manifest. See
 ``values.yaml``'s own `existingSecrets` block for the exact key each
 Secret must contain.
 
 === Ordering -- why a Helm hook, not an init container
 
-`sms-gateway serve` calls `+sms_auth::op::load_signing_keys(...)?+` and then
-`+resolve_provider_row_id(...)?+` before binding its listener (this file's
-own steps 3 and 4, above) -- a fresh database makes the container exit
-immediately on either one missing, not fail its first `/token` request or
-DLR callback (https://github.com/vymalo/vsms/issues/148[#148]: the
-`orange_cm` `Provider` row used to have no seeding path under Helm at
-all -- no window exists between the pre-install hooks completing and the
-gateway `Deployment` being created for an operator to seed anything by
-hand, unlike compose, where a human can at least `docker compose exec`
-into Postgres while the container crash-loops). The chart's
-`rotateSigningKey` and `seedDispatch` controllers are both `pre-install`
-Helm hook Jobs for exactly this reason: Helm does not create _any_ other
-release resource -- including the `sms-gateway` Deployment -- until every
-pre-install hook Job has succeeded. A post-install step or a readiness
-check on the gateway would both deadlock permanently, since the gateway
-can never become ready without these steps having already run.
+`sms-gateway serve` calls `+resolve_provider_row_id(...)?+` before binding its
+listener (this file's own steps 3 and 4, above) -- a fresh database makes the
+container exit immediately on a missing `Provider` row, not fail its first DLR
+callback (https://github.com/vymalo/vsms/issues/148[#148]: the `orange_cm`
+`Provider` row used to have no seeding path under Helm at all -- no window
+exists between the pre-install hooks completing and the gateway `Deployment`
+being created for an operator to seed anything by hand, unlike compose, where a
+human can at least `docker compose exec` into Postgres while the container
+crash-loops). The chart's `seedDispatch` controller is a `pre-install` Helm
+hook Job for exactly this reason: Helm does not create _any_ other release
+resource -- including the `sms-gateway` Deployment -- until every pre-install
+hook Job has succeeded. A post-install step or a readiness check on the gateway
+would both deadlock permanently, since the gateway can never become ready
+without this step having already run.
 
 `migrate` (weight `-20`) and `seedDispatch` (weight `-15`, renamed from
 `seedProvider` in https://github.com/vymalo/vsms/issues/62[#62] --
@@ -996,21 +905,11 @@ genuinely idempotent: `migrate` via ``backends/apps/sms-migrate``'s own
 advisory-lock-guarded `schema_migrations` tracking table, `seedDispatch`
 via ``sms-gateway seed-dispatch``'s own dedupe on both halves (`Provider`:
 `create` + catch-`23505`; `Route`: look up an existing one for the
-provider first -- see step 3 above). `rotateSigningKey` (weight `-10`,
-last in the chain) is deliberately *not* hooked to `pre-upgrade`:
-unlike the other two, it is not idempotent -- every run mints a
-brand-new signing key with an overlap window, so hooking it to every
-upgrade would rotate the key on every `helm upgrade`, silently.
-Deliberate routine rotation later is a real operator action: `kubectl
-create job --from=job/<release>-rotate-signing-key <name> -n <namespace>`
-re-runs the same Job spec on demand (the `before-hook-creation` delete
-policy leaves the most recent run's Job object around after success for
-exactly this). `seedDispatch` and `migrate` sitting at distinct weights
-either side of it (`-15` vs. `-20` and `-10`) is not a hard dependency --
-a `Provider`/`Route` pair and an OP signing key are unrelated domains --
-but it keeps all three hooks a single, strictly-ordered chain rather
-than two of them racing at a shared weight; see ``values.yaml``'s own
-comment on `seedDispatch` for the full reasoning.
+provider first -- see step 3 above). The distinct weights keep the two hooks a
+single, strictly-ordered chain rather than two of them racing at a shared
+weight; see ``values.yaml``'s own comment on `seedDispatch` for the full
+reasoning. (A third hook, `rotateSigningKey`, minted the signing key of the
+embedded OpenID Provider and went with it in VS-4.)
 
 === Installing
 
@@ -1029,7 +928,6 @@ kubectl create secret generic vsms-console-composer-key \
 
 helm install vsms deploy/charts/vsms \
   --set image.tag=<a real tag published by release.yml — see above> \
-  --set oidcIssuer=https://api.example.com \
   --set orange.clientId=... \
   --set orange.senderNumber=... \
   --set admin.serverKeys.current=... \
@@ -1047,24 +945,11 @@ public keys `sms-gateway server-keys` prints. `values.yaml`'s own `existingSecre
 block is the source of truth for the secrets: `database`, `hashPepper`, `orange`,
 and `consoleComposerKey`.
 
-Every one of `image.tag`, `oidcIssuer`, `orange.clientId`, `orange.senderNumber`,
+Every one of `image.tag`, `orange.clientId`, `orange.senderNumber`,
 the `existingSecrets.*.name` fields the gateway needs, and (with the console on)
 `admin.serverKeys.current`/`.next` is enforced with Helm's `required` function --
 an install with any of them missing fails immediately with a named field, not a
 cryptic render error or a silently-broken Pod.
-
-=== Single sign-on (optional)
-
-*The console no longer uses this (VS-5b): it has no login, and a vaam admin phone
-pairs it instead.* The gateway's own broker below stays until VS-4 removes the
-OpenID Provider with it. Staff could sign in through a Keycloak realm instead of
-a vsms password. It is off unless `sso.issuer` (Helm) / `SMS_SSO_ISSUER` (compose) is
-set; password sign-in is untouched and remains the break-glass path. Setup --
-the Keycloak client, the groups mapper, and the `amr` configuration that makes
-a second factor visible (Keycloak's `acr` does not) -- is in
-xref:sso.adoc[the SSO runbook]. For Helm, the extra values are the `sso:`
-block plus `existingSecrets.sso` for the client secret; the callback you
-register at Keycloak is `<oidcIssuer>/login/sso/callback`.
 
 === Verification actually performed for this PR
 

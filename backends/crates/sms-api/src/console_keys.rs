@@ -363,8 +363,8 @@ async fn create_user_and_link(
     let created = db
         .user()
         .create(schema::CreateUserInput {
-            // `subject` is vsms's own OP subject: the row's own id, as
-            // `provision-user` and the SSO broker write it. The id is not
+            // `subject` is vsms's own subject: the row's own id, as
+            // `provision-user` and the JIT path below write it. The id is not
             // known before the insert, so a unique placeholder is written and
             // corrected in this same transaction.
             subject: format!("pending-{}", cratestack::uuid::Uuid::new_v4()),

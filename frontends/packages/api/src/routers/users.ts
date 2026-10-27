@@ -38,9 +38,9 @@ export const usersRouter = router({
   }),
 
   /**
-   * Returns the one-time password exactly once — see
-   * `@vsms/gateway/users.ts::provisionUser`'s own doc. No rotate/reset
-   * counterpart exists; see `OPEN_QUESTIONS.md`.
+   * Makes the `User` row and no credential — see
+   * `@vsms/gateway/users.ts::provisionUser`'s own doc. The person signs in
+   * by pairing a browser key.
    */
   provision: publicProcedure.input(provisionInput).mutation(async ({ ctx, input }) => {
     try {

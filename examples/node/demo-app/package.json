@@ -16,7 +16,7 @@
     "node": ">=23.6.0"
   },
   "dependencies": {
-    "@vaam-apps/vsms-node": "^0.3.3",
+    "@vaam-apps/vsms-node": "file:../../../sdks/node/vsms-sdk-node",
     "express": "^5.3.0"
   },
   "devDependencies": {

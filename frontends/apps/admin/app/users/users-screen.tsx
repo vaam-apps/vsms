@@ -24,27 +24,22 @@
 // (#236), reusing the same `fieldErrors` → `form.setError` wiring
 // `app/page.tsx`'s composer and `apps-screen.tsx` already established.
 //
-// # Provisioning shows a password exactly once, the same discipline
-// # `apps-screen.tsx` already established for a client's private key
+// # Provisioning makes an account, not a credential
 //
-// `provisionUser`'s response is read straight from the mutation hook's own
-// `data` (component-local state, not the shared query cache), never
-// written to storage, never routed through a toast, and
-// `provisionMutation.reset()` on close clears it from memory rather than
-// leaving it retrievable. See `apps-screen.tsx`'s own module doc — the
-// mechanism is identical, applied to a password instead of a PEM. This
-// stays a `Dialog`, not a drawer, for the identical §3 reason —
-// reading a shown-once secret and confirming it's saved is a yes/no
-// interaction with no sub-navigation.
+// `provisionUser` creates the `User` row and returns its id; there is no
+// password, token or recovery code to show (VS-4). The dialog's confirmation
+// says how the person gets in: they open the console on their own device, a
+// vaam admin phone approves the pairing, or an operator runs
+// `sms-gateway pair-console-key --user <email> --public-key <k>`
+// (`docs/design/console-pairing.md`). The response is read straight from the
+// mutation hook's own `data` (component-local state) and
+// `provisionMutation.reset()` on close clears it.
 //
-// # No password rotation
+// # No sign-in recovery on this screen
 //
-// There is no "reset this user's password" action anywhere on this screen
-// — no such procedure exists. `backends/crates/sms-api/src/procedures.rs` has no
-// write path to `UserCredential` other than `provisionUser`'s own
-// once-only create, and there is no way to target an *existing* row with
-// it. A locked-out account has no self-service recovery today; see
-// `OPEN_QUESTIONS.md` for this named, not silently absent, gap.
+// A person who loses their device pairs a new browser key; there is nothing
+// of theirs to reset. A removed or expired key is replaced the same way
+// (`revokeConsoleKey`, then a fresh pairing).
 //
 // # Reserved role keys fail gracefully, not just quietly
 //

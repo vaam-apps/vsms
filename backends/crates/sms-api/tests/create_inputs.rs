@@ -23,11 +23,9 @@
 use chrono::{TimeZone, Utc};
 use cratestack::Decimal;
 use sms_api::schema::{
-    ClientAuthMethod, ClientKeyAlg, ConsoleKeyAlg, CreateAppClientInput, CreateAuditAnchorInput,
-    CreateClientAssertionInput, CreateClientKeyInput, CreateConsoleKeyInput,
-    CreateEnvelopeNonceInput, CreateJobInput, CreateMessageInput, CreateOauthClientInput,
-    CreateOauthSigningKeyInput, CreateOperatorPrefixRuleInput, Encoding, MessageClass,
-    OperatorCode,
+    ClientKeyAlg, ConsoleKeyAlg, CreateAppClientInput, CreateAuditAnchorInput,
+    CreateClientKeyInput, CreateConsoleKeyInput, CreateEnvelopeNonceInput, CreateJobInput,
+    CreateMessageInput, CreateOperatorPrefixRuleInput, Encoding, MessageClass, OperatorCode,
 };
 
 /// Every field `sendMessage` must control on the row it creates.
@@ -171,44 +169,14 @@ fn operator_prefix_correction_can_set_every_field_it_owns() {
     assert_eq!(input.prefix, "655");
 }
 
-/// Every field `provisionAppClient` must control on the client registration.
-///
-/// `tokenEndpointAuthMethod` is the one to watch. It is `NOT NULL` with no
-/// `@default` deliberately (§4.2): a `@default` would drop it from this struct,
-/// every registration would be written with whatever the default was, and a
-/// *missing* method is how authkestra spells "accepts a secret from either
-/// transport, refuses assertions" — the exact state `private_key_jwt` needs to
-/// avoid. If this field disappears from here, `private_key_jwt` is off and
-/// nothing else says so.
-#[test]
-fn provision_app_client_can_set_every_field_it_owns() {
-    let input = CreateOauthClientInput {
-        clientId: "otp-svc-v1".to_owned(),
-        appClientId: Some("apc00000000000000000001".to_owned()),
-        tokenEndpointAuthMethod: ClientAuthMethod::private_key_jwt,
-        // A real key set: §2.10's CHECK rejects `{"keys":[]}`, which is not
-        // null and still keyless.
-        jwks: Some(r#"{"keys":[{"kty":"RSA","kid":"k1","n":"…","e":"AQAB"}]}"#.to_owned()),
-        grantTypes: " client_credentials ".to_owned(),
-        scopes: " sms:send ".to_owned(),
-        redirectUris: " ".to_owned(),
-        requirePkce: false,
-    };
-
-    assert_eq!(
-        input.tokenEndpointAuthMethod,
-        ClientAuthMethod::private_key_jwt
-    );
-}
-
-/// `provisionAppClient` writes `AppClient` first, `OauthClient` second (its
+/// `provisionAppClient` writes `AppClient` first, `ClientKey` second (its
 /// `appClientId` references the row this creates) — every field it controls
 /// on the `AppClient` half.
 ///
-/// `active` has no entry here on purpose: `@default(true)` (like
-/// `OauthClient.active` above), so a freshly provisioned client is always
-/// born active and `active` is settable only on update — e.g. the
-/// deactivation path §23's PR description scopes retirement down to.
+/// `active` has no entry here on purpose: `@default(true)`, so a freshly
+/// provisioned client is always born active and `active` is settable only on
+/// update — e.g. the deactivation path §23's PR description scopes
+/// retirement down to.
 #[test]
 fn app_client_can_set_every_field_it_owns() {
     let input = CreateAppClientInput {
@@ -262,39 +230,6 @@ fn register_console_key_can_set_every_field_it_owns() {
     };
 
     assert_eq!(input.publicKey.len(), 65);
-}
-
-/// The OP's signing key, as `sms-auth` writes it on first boot.
-///
-/// `active` is `@default(true)` and so is absent here on purpose — a key is
-/// always born active, and rotation flips it through update.
-#[test]
-fn signing_key_can_set_every_field_it_owns() {
-    let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-
-    let input = CreateOauthSigningKeyInput {
-        privateKeyPem: "-----BEGIN PRIVATE KEY-----".to_owned(),
-        expiresAt: Some(now),
-    };
-
-    assert!(input.privateKeyPem.starts_with("-----BEGIN"));
-}
-
-/// Spending a `private_key_jwt` assertion's `jti`.
-///
-/// Both fields have to be settable: `jti` is the uniqueness the `23505` catch
-/// depends on, and `expiresAt` is what lets the row be reaped instead of
-/// accumulating one per token request forever.
-#[test]
-fn client_assertion_can_set_every_field_it_owns() {
-    let now = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
-
-    let input = CreateClientAssertionInput {
-        jti: "01HQ8ZK3M7T2V9WXYZ0000".to_owned(),
-        expiresAt: now,
-    };
-
-    assert_eq!(input.expiresAt, now);
 }
 
 /// Recording a signed request's `(kid, cti)` (VS-3).

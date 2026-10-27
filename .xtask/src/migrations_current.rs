@@ -63,7 +63,7 @@ const REWRITTEN_BY_LATER: [(&str, &str); 2] = [
 const ADDED_BY_LATER: [(&str, &[&str]); 4] = [
     (
         "backends/migrations/postgres/0005_sso_federation",
-        &["federated_links", "sso_transactions"],
+        &["federated_links"],
     ),
     (
         "backends/migrations/postgres/0006_client_keys",
@@ -78,6 +78,27 @@ const ADDED_BY_LATER: [(&str, &[&str]); 4] = [
         &["envelope_nonces"],
     ),
 ];
+
+/// The forward migration that drops tables an earlier, already-applied
+/// migration created (VS-4: the embedded provider's tables), and the tables it
+/// drops. The mirror image of [`ADDED_BY_LATER`]: the schema no longer has
+/// them, so the generator no longer emits them, while the frozen `0001_init`
+/// (and `0002_bootstrap`, `0005_sso_federation`) still create them. Every
+/// committed statement that names one of these tables is *removed* from
+/// `0001_init` before the comparison, and the migration must drop every table
+/// listed (`DROP TABLE <table>;` in its `up.sql`), so the list cannot name a
+/// table the migration leaves behind. Delete the entry, and regenerate
+/// `0001_init`, when the migrations are squashed.
+const DROPPED_BY_LATER: (&str, &[&str]) = (
+    "backends/migrations/postgres/0009_drop_openid_provider",
+    &[
+        "oauth_clients",
+        "oauth_signing_keys",
+        "client_assertions",
+        "user_credentials",
+        "sso_transactions",
+    ],
+);
 
 /// Removes its temp directory on drop, on every exit path — success,
 /// error-return, or an early `?` — matching the bash version's own
@@ -174,6 +195,35 @@ fn strip_added_tables(root: &Path, f: &str, fresh: &str) -> Result<String, Strin
     Ok(remaining)
 }
 
+/// Removes from the committed `0001_init`'s `f`.sql every statement about a
+/// table in [`DROPPED_BY_LATER`], after checking the migration that drops them
+/// really does (`DROP TABLE <table>;` in its `up.sql`).
+fn strip_dropped_tables(root: &Path, committed: &str) -> Result<String, String> {
+    let (dir, tables) = DROPPED_BY_LATER;
+    let carrier = root.join(dir).join("up.sql");
+    let carrier_text =
+        fs::read_to_string(&carrier).map_err(|e| format!("{}: {e}", carrier.display()))?;
+    for table in tables {
+        let drop = format!("DROP TABLE {table};");
+        if !carrier_text.lines().any(|line| line.trim() == drop) {
+            return Err(format!(
+                "migrations-current: {} does not contain `{drop}`, but DROPPED_BY_LATER says it \
+                 drops {table}",
+                carrier.display()
+            ));
+        }
+    }
+    Ok(split_added(committed, tables).0)
+}
+
+/// The committed `0001_init`'s `f`.sql, minus the dropped tables'
+/// statements ([`strip_dropped_tables`]).
+fn read_committed(root: &Path, f: &str) -> Result<String, String> {
+    let path = root.join(COMMITTED_DIR).join(format!("{f}.sql"));
+    let text = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    strip_dropped_tables(root, &text)
+}
+
 /// The statements of a migration file, without its `--` comment lines and
 /// blank lines.
 ///
@@ -260,10 +310,8 @@ pub fn run(root: &Path) -> Result<(), String> {
 
     let mut mismatches = Vec::new();
     for f in ["up", "down"] {
-        let committed_path = root.join(COMMITTED_DIR).join(format!("{f}.sql"));
         let regenerated_path = regenerated.join(format!("{f}.sql"));
-        let committed = fs::read_to_string(&committed_path)
-            .map_err(|e| format!("{}: {e}", committed_path.display()))?;
+        let committed = read_committed(root, f)?;
         let mut fresh = fs::read_to_string(&regenerated_path)
             .map_err(|e| format!("{}: {e}", regenerated_path.display()))?;
         fresh = strip_added_tables(root, f, &fresh)?;
@@ -368,6 +416,31 @@ mod tests {
         );
         assert!(!kept.contains("--   - client_keys.id"));
         assert!(kept.contains("--   - federated_links.id"));
+    }
+
+    #[test]
+    fn a_dropped_table_is_removed_from_the_committed_side_only() {
+        let committed = "-- header\n--   - oauth_clients.id\n--   - apps.id\n\n\
+                         CREATE TABLE apps (\n    id TEXT\n);\n\n\
+                         CREATE TABLE oauth_clients (\n    id TEXT\n);\n\n\
+                         CREATE UNIQUE INDEX oauth_clients_client_id_key ON oauth_clients (client_id);\n\n\
+                         ALTER TABLE apps ADD CONSTRAINT apps_x CHECK (true);";
+        let (kept, moved) = split_added(committed, DROPPED_BY_LATER.1);
+        assert_eq!(moved.len(), 2, "the table and its index: {moved:?}");
+        assert!(kept.contains("CREATE TABLE apps"));
+        assert!(kept.contains("apps_x"));
+        assert!(!kept.contains("oauth_clients"));
+    }
+
+    #[test]
+    fn the_dropping_migration_is_not_also_an_adding_one() {
+        let dropped: Vec<&str> = DROPPED_BY_LATER.1.to_vec();
+        for (_, tables) in ADDED_BY_LATER {
+            assert!(
+                tables.iter().all(|table| !dropped.contains(table)),
+                "a table cannot be both added by a later migration and dropped by one"
+            );
+        }
     }
 
     #[test]

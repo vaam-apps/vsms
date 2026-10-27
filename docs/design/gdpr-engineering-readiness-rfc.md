@@ -114,18 +114,18 @@ hash as anonymous or retire a lookup key while live enforcement records still re
 The inventory work may begin immediately. A later change must not merge until the relevant decision
 is recorded:
 
-| Decision | Blocks |
-|---|---|
-| Authentication and ordinary-content durations | Change 3 |
-| Metadata duration and clock origin | Changes 3 and 4 |
-| Retention of keyed recipient hashes | Changes 4 and 6; body hashes always follow content |
-| Consent and opt-out evidence lifecycle | Change 4 |
-| Hold authority, duration, review, and content coverage | Change 4 and destructive activation of Change 3 |
-| Webhook replay and dead-attempt retention | Changes 2 and 4 |
-| Whether subject export may include still-retained content | Change 6 |
-| Authentication-event and source-network retention | Change 7 |
-| Audit and backup-object retention | Changes 5 and 8 |
-| Maximum deletion lag and backlog alert threshold | Changes 3 and 4 |
+| Decision                                                  | Blocks                                             |
+| --------------------------------------------------------- | -------------------------------------------------- |
+| Authentication and ordinary-content durations             | Change 3                                           |
+| Metadata duration and clock origin                        | Changes 3 and 4                                    |
+| Retention of keyed recipient hashes                       | Changes 4 and 6; body hashes always follow content |
+| Consent and opt-out evidence lifecycle                    | Change 4                                           |
+| Hold authority, duration, review, and content coverage    | Change 4 and destructive activation of Change 3    |
+| Webhook replay and dead-attempt retention                 | Changes 2 and 4                                    |
+| Whether subject export may include still-retained content | Change 6                                           |
+| Authentication-event and source-network retention         | Change 7                                           |
+| Audit and backup-object retention                         | Changes 5 and 8                                    |
+| Maximum deletion lag and backlog alert threshold          | Changes 3 and 4                                    |
 
 ## Change 1: inventory and drift gate (#371)
 
@@ -155,16 +155,16 @@ the MTN aggregator contract as unverified rather than presenting its placeholder
 
 ### Expected files
 
-| File | Change |
-|---|---|
-| New machine-readable privacy inventory | Classification data under the documentation tree |
-| New privacy inventory guide | Definitions, ownership, review procedure, and legal-decision boundary |
-| `.xtask/src/privacy_inventory.rs` | New completeness and stale-entry check |
-| `.xtask/src/main.rs` | Register `privacy-inventory-check` |
-| `.xtask/Cargo.toml` | Add only the parser dependency the implementation actually needs |
-| `justfile` | Include the check in repository gates |
-| `.github/workflows/ci.yml` | Run the same xtask command in CI |
-| `docs/roadmap.md` | Record the new production-readiness dependency and current status |
+| File                                   | Change                                                                |
+| -------------------------------------- | --------------------------------------------------------------------- |
+| New machine-readable privacy inventory | Classification data under the documentation tree                      |
+| New privacy inventory guide            | Definitions, ownership, review procedure, and legal-decision boundary |
+| `.xtask/src/privacy_inventory.rs`      | New completeness and stale-entry check                                |
+| `.xtask/src/main.rs`                   | Register `privacy-inventory-check`                                    |
+| `.xtask/Cargo.toml`                    | Add only the parser dependency the implementation actually needs      |
+| `justfile`                             | Include the check in repository gates                                 |
+| `.github/workflows/ci.yml`             | Run the same xtask command in CI                                      |
+| `docs/roadmap.md`                      | Record the new production-readiness dependency and current status     |
 
 ### Acceptance evidence
 
@@ -191,24 +191,24 @@ event, attempt, request, and provider-reference IDs.
 
 ### Expected files
 
-| File | Change |
-|---|---|
-| `backends/crates/sms-privacy/Cargo.toml` | New pure crate manifest |
-| `backends/crates/sms-privacy/src/lib.rs` | Safe diagnostic types and formatting |
-| `backends/crates/sms-privacy/src/lib.md` | Boundary, threat model, and approved fields |
-| `Cargo.toml` | Register the crate and workspace dependency |
-| `backends/crates/sms-provider-http/src/submit_status.rs` | Stop retaining provider bodies |
-| `backends/crates/sms-provider-http/Cargo.toml` | Depend on the privacy boundary if needed |
-| `backends/crates/sms-worker/src/dispatch.rs` | Persist and log only sanitized provider failures |
-| `backends/crates/sms-worker/src/hooks.rs` | Sanitize endpoint and response failures |
-| `backends/crates/sms-api/src/procedures.rs` | Remove plaintext/client-reference telemetry fields |
-| `backends/crates/sms-api/src/dlr.rs` | Ensure callback diagnostics use IDs and safe status fields |
-| `schemas/vsms.cstack` | Prevent `DeliveryReceipt.rawPayload` and equivalent values from entering audit snapshots |
-| `backends/crates/sms-api/tests/errors_live_postgres.rs` | Prove stored and audited error summaries exclude provider bodies |
-| `backends/crates/sms-api/tests/dlr_ingestion_live_postgres.rs` | Prove raw callback payload is prospectively redacted from audit snapshots |
-| `.xtask/src/privacy_logging.rs` | Narrow static checks for unsafe log fields and response bodies |
-| `.xtask/src/main.rs` | Register the logging check |
-| `justfile` and `.github/workflows/ci.yml` | Run the same check locally and in CI |
+| File                                                           | Change                                                                                   |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `backends/crates/sms-privacy/Cargo.toml`                       | New pure crate manifest                                                                  |
+| `backends/crates/sms-privacy/src/lib.rs`                       | Safe diagnostic types and formatting                                                     |
+| `backends/crates/sms-privacy/src/lib.md`                       | Boundary, threat model, and approved fields                                              |
+| `Cargo.toml`                                                   | Register the crate and workspace dependency                                              |
+| `backends/crates/sms-provider-http/src/submit_status.rs`       | Stop retaining provider bodies                                                           |
+| `backends/crates/sms-provider-http/Cargo.toml`                 | Depend on the privacy boundary if needed                                                 |
+| `backends/crates/sms-worker/src/dispatch.rs`                   | Persist and log only sanitized provider failures                                         |
+| `backends/crates/sms-worker/src/hooks.rs`                      | Sanitize endpoint and response failures                                                  |
+| `backends/crates/sms-api/src/procedures.rs`                    | Remove plaintext/client-reference telemetry fields                                       |
+| `backends/crates/sms-api/src/dlr.rs`                           | Ensure callback diagnostics use IDs and safe status fields                               |
+| `schemas/vsms.cstack`                                          | Prevent `DeliveryReceipt.rawPayload` and equivalent values from entering audit snapshots |
+| `backends/crates/sms-api/tests/errors_live_postgres.rs`        | Prove stored and audited error summaries exclude provider bodies                         |
+| `backends/crates/sms-api/tests/dlr_ingestion_live_postgres.rs` | Prove raw callback payload is prospectively redacted from audit snapshots                |
+| `.xtask/src/privacy_logging.rs`                                | Narrow static checks for unsafe log fields and response bodies                           |
+| `.xtask/src/main.rs`                                           | Register the logging check                                                               |
+| `justfile` and `.github/workflows/ci.yml`                      | Run the same check locally and in CI                                                     |
 
 Exact crate placement must preserve the provider abstraction's current purity and must not introduce
 a CrateStack dependency into provider adapters.
@@ -298,25 +298,25 @@ then regenerated into `0002_bootstrap`; it must never be patched directly into g
 
 ### Expected files
 
-| File | Change |
-|---|---|
-| `schemas/vsms.cstack` | Retention class, deadlines, markers, and erasable hash shape |
-| `docs/architecture.md` | Data lifecycle, state edges, configuration, and bootstrap source |
-| `backends/migrations/postgres/0001_init/*` | Pin-matched full schema regeneration |
-| `backends/migrations/postgres/0002_bootstrap/up.sql` | Regenerated transition/default/index SQL |
-| `sdks/rust/vsms-sdk-rust/schema.cstack` | Re-vendored schema |
-| `backends/crates/sms-api/src/procedures.rs` | Derive deadlines and reject incompatible scheduling |
-| `backends/crates/sms-api/src/webhooks.rs` | Ignore retention-only maintenance updates |
-| `backends/crates/sms-worker/src/jobs/purge_content.rs` | Frequent idempotent content enforcement |
-| `backends/crates/sms-worker/src/jobs/purge_content.md` | State-by-state rationale and retained fields |
-| `backends/crates/sms-worker/src/jobs.rs` | Register the handler |
-| `backends/crates/sms-worker/src/scheduler.rs` | Schedule it at the approved cadence |
-| `backends/crates/sms-worker/src/jobs/expire_stale.rs` | Close the existing non-terminal expiry gap |
-| `backends/crates/sms-worker/tests/purge_content_live_postgres.rs` | Boundary and state coverage |
-| `backends/crates/sms-api/tests/send_message_live_postgres.rs` | Scheduling/validity rejection and stored deadlines |
-| `backends/crates/sms-metrics/src/lib.rs` | Oldest-overdue and backlog metrics |
-| `deploy/prometheus/alerts.yml` | Maximum content-deletion-lag alert |
-| New retention runbook | Operator-visible lifecycle and surviving metadata |
+| File                                                              | Change                                                           |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `schemas/vsms.cstack`                                             | Retention class, deadlines, markers, and erasable hash shape     |
+| `docs/architecture.md`                                            | Data lifecycle, state edges, configuration, and bootstrap source |
+| `backends/migrations/postgres/0001_init/*`                        | Pin-matched full schema regeneration                             |
+| `backends/migrations/postgres/0002_bootstrap/up.sql`              | Regenerated transition/default/index SQL                         |
+| `sdks/rust/vsms-sdk-rust/schema.cstack`                           | Re-vendored schema                                               |
+| `backends/crates/sms-api/src/procedures.rs`                       | Derive deadlines and reject incompatible scheduling              |
+| `backends/crates/sms-api/src/webhooks.rs`                         | Ignore retention-only maintenance updates                        |
+| `backends/crates/sms-worker/src/jobs/purge_content.rs`            | Frequent idempotent content enforcement                          |
+| `backends/crates/sms-worker/src/jobs/purge_content.md`            | State-by-state rationale and retained fields                     |
+| `backends/crates/sms-worker/src/jobs.rs`                          | Register the handler                                             |
+| `backends/crates/sms-worker/src/scheduler.rs`                     | Schedule it at the approved cadence                              |
+| `backends/crates/sms-worker/src/jobs/expire_stale.rs`             | Close the existing non-terminal expiry gap                       |
+| `backends/crates/sms-worker/tests/purge_content_live_postgres.rs` | Boundary and state coverage                                      |
+| `backends/crates/sms-api/tests/send_message_live_postgres.rs`     | Scheduling/validity rejection and stored deadlines               |
+| `backends/crates/sms-metrics/src/lib.rs`                          | Oldest-overdue and backlog metrics                               |
+| `deploy/prometheus/alerts.yml`                                    | Maximum content-deletion-lag alert                               |
+| New retention runbook                                             | Operator-visible lifecycle and surviving metadata                |
 
 ### Acceptance evidence
 
@@ -339,21 +339,21 @@ the restore path invokes the same rule definitions rather than maintaining a sec
 
 Rules cover:
 
-| Record or field | Required treatment |
-|---|---|
-| Message content | Change 3 lifecycle |
-| Message direct identifier | Replace or clear at metadata expiry unless held |
-| Recipient/body hashes | Clear or retain according to the explicit pseudonymisation decision |
-| Country/operator and provider references | Keep only for the justified metadata period |
-| Delivery receipts | Delete at expiry |
-| Terminal jobs | Enforce the declared 14-day period |
-| Terminal webhook attempts | Enforce the approved 30-day/replay period |
-| Successful webhook payload | Clear on the earlier Change 2 schedule |
-| Consent records | Apply the approved evidence period |
-| Opt-outs | Preserve suppression while minimising unnecessary plaintext |
-| Delivered event outbox | Keep bounded cleanup |
-| Poison event outbox | Preserve or quarantine under an explicit evidence policy |
-| Framework audit rows and anchors | Retire contiguous anchored ranges under the approved audit period |
+| Record or field                          | Required treatment                                                  |
+| ---------------------------------------- | ------------------------------------------------------------------- |
+| Message content                          | Change 3 lifecycle                                                  |
+| Message direct identifier                | Replace or clear at metadata expiry unless held                     |
+| Recipient/body hashes                    | Clear or retain according to the explicit pseudonymisation decision |
+| Country/operator and provider references | Keep only for the justified metadata period                         |
+| Delivery receipts                        | Delete at expiry                                                    |
+| Terminal jobs                            | Enforce the declared 14-day period                                  |
+| Terminal webhook attempts                | Enforce the approved 30-day/replay period                           |
+| Successful webhook payload               | Clear on the earlier Change 2 schedule                              |
+| Consent records                          | Apply the approved evidence period                                  |
+| Opt-outs                                 | Preserve suppression while minimising unnecessary plaintext         |
+| Delivered event outbox                   | Keep bounded cleanup                                                |
+| Poison event outbox                      | Preserve or quarantine under an explicit evidence policy            |
+| Framework audit rows and anchors         | Retire contiguous anchored ranges under the approved audit period   |
 
 ### Hold shape
 
@@ -458,39 +458,39 @@ checkpoint, and prove a deletion query cannot skip an unretired middle range.
 
 ### Expected files
 
-| File | Change |
-|---|---|
-| `schemas/vsms.cstack` | Hold model/enums, erasable fields, timestamps, policies, and procedures |
-| `docs/architecture.md` | Retention map, hold semantics, state/index source |
-| `backends/migrations/postgres/0001_init/*` | Pin-matched full regeneration |
-| `backends/migrations/postgres/0002_bootstrap/up.sql` | Regenerated defaults, checks, and indexes |
-| `sdks/rust/vsms-sdk-rust/schema.cstack` | Re-vendored schema |
-| `backends/crates/sms-retention/**` | Shared rule definitions and delegate-backed enforcement, if dependency review confirms this placement |
-| `backends/crates/sms-retention/src/control_journal.rs` | Authoritative journal protocol, projection watermark, and replay |
-| `backends/crates/sms-worker/src/jobs/purge_retention.rs` | Use the shared rules and enforce every class |
-| `backends/crates/sms-worker/src/jobs/reap_audit.rs` | Checkpoint and retire contiguous anchored audit ranges |
-| `backends/crates/sms-worker/src/jobs/reap_audit.md` | Anchor transition, R1 reasoning, and failure policy |
-| `backends/crates/sms-api/src/audit_log.rs` | Verify retained history from an external checkpoint instead of zero genesis |
-| `backends/crates/sms-api/src/procedures.rs` | Preserve checkpoint-aware operator chain status |
-| `backends/crates/sms-worker/src/jobs/purge_retention.md` | Updated rationale and scope |
-| `backends/crates/sms-worker/src/jobs.rs` | Registry updates if handlers split |
-| `backends/crates/sms-api/src/procedures.rs` | Hold procedures and permission checks |
-| `backends/crates/sms-api/src/pepper.rs` and `pepper.md` | Versioned subject-keyring and retirement rules |
-| `backends/apps/sms-gateway/src/commands/retention_hold.rs` | R4 operator command |
-| `backends/apps/sms-gateway/src/commands/rotate_subject_key.rs` | Explicit key rotation and dependency checks |
-| `backends/apps/sms-gateway/src/main.rs` | Register the command only |
-| `backends/apps/sms-gateway/Cargo.toml` | Journal/keyring adapter dependencies if required |
-| `deploy/docker-compose.yml` | Journal endpoint/credentials and versioned keyring configuration |
-| `deploy/charts/vsms/**` | Equivalent journal/keyring configuration and secret references |
-| `deploy/backup-tool/src/manifest.rs` | Record key versions and journal checkpoint required by a backup |
-| `docs/runbooks/backup-restore.adoc` | Provisioning, rotation, recovery, and key-retirement order |
-| `CONTRIBUTING.md` and `.xtask/src/raw_sqlx.rs` | Named target-lock R1 exception if advisory locking is selected |
-| `CONTRIBUTING.md` and `.xtask/src/raw_sqlx.rs` | Named framework-audit R1 exception for bounded retirement |
-| `backends/crates/sms-worker/tests/reap_audit_live_postgres.rs` | Chain checkpoint, contiguous deletion, and tamper tests |
-| `backends/crates/sms-api/tests/retention_hold_live_postgres.rs` | Scope, release, audit, and isolation tests |
-| `backends/crates/sms-worker/tests/purge_retention_live_postgres.rs` | Every class, boundary, and idempotency |
-| `.xtask/src/retention_coverage.rs` | Ensure every `@@retain` declaration has enforcement |
-| New retention runbook | Hold operation and evidence |
+| File                                                                | Change                                                                                                |
+| ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `schemas/vsms.cstack`                                               | Hold model/enums, erasable fields, timestamps, policies, and procedures                               |
+| `docs/architecture.md`                                              | Retention map, hold semantics, state/index source                                                     |
+| `backends/migrations/postgres/0001_init/*`                          | Pin-matched full regeneration                                                                         |
+| `backends/migrations/postgres/0002_bootstrap/up.sql`                | Regenerated defaults, checks, and indexes                                                             |
+| `sdks/rust/vsms-sdk-rust/schema.cstack`                             | Re-vendored schema                                                                                    |
+| `backends/crates/sms-retention/**`                                  | Shared rule definitions and delegate-backed enforcement, if dependency review confirms this placement |
+| `backends/crates/sms-retention/src/control_journal.rs`              | Authoritative journal protocol, projection watermark, and replay                                      |
+| `backends/crates/sms-worker/src/jobs/purge_retention.rs`            | Use the shared rules and enforce every class                                                          |
+| `backends/crates/sms-worker/src/jobs/reap_audit.rs`                 | Checkpoint and retire contiguous anchored audit ranges                                                |
+| `backends/crates/sms-worker/src/jobs/reap_audit.md`                 | Anchor transition, R1 reasoning, and failure policy                                                   |
+| `backends/crates/sms-api/src/audit_log.rs`                          | Verify retained history from an external checkpoint instead of zero genesis                           |
+| `backends/crates/sms-api/src/procedures.rs`                         | Preserve checkpoint-aware operator chain status                                                       |
+| `backends/crates/sms-worker/src/jobs/purge_retention.md`            | Updated rationale and scope                                                                           |
+| `backends/crates/sms-worker/src/jobs.rs`                            | Registry updates if handlers split                                                                    |
+| `backends/crates/sms-api/src/procedures.rs`                         | Hold procedures and permission checks                                                                 |
+| `backends/crates/sms-api/src/pepper.rs` and `pepper.md`             | Versioned subject-keyring and retirement rules                                                        |
+| `backends/apps/sms-gateway/src/commands/retention_hold.rs`          | R4 operator command                                                                                   |
+| `backends/apps/sms-gateway/src/commands/rotate_subject_key.rs`      | Explicit key rotation and dependency checks                                                           |
+| `backends/apps/sms-gateway/src/main.rs`                             | Register the command only                                                                             |
+| `backends/apps/sms-gateway/Cargo.toml`                              | Journal/keyring adapter dependencies if required                                                      |
+| `deploy/docker-compose.yml`                                         | Journal endpoint/credentials and versioned keyring configuration                                      |
+| `deploy/charts/vsms/**`                                             | Equivalent journal/keyring configuration and secret references                                        |
+| `deploy/backup-tool/src/manifest.rs`                                | Record key versions and journal checkpoint required by a backup                                       |
+| `docs/runbooks/backup-restore.adoc`                                 | Provisioning, rotation, recovery, and key-retirement order                                            |
+| `CONTRIBUTING.md` and `.xtask/src/raw_sqlx.rs`                      | Named target-lock R1 exception if advisory locking is selected                                        |
+| `CONTRIBUTING.md` and `.xtask/src/raw_sqlx.rs`                      | Named framework-audit R1 exception for bounded retirement                                             |
+| `backends/crates/sms-worker/tests/reap_audit_live_postgres.rs`      | Chain checkpoint, contiguous deletion, and tamper tests                                               |
+| `backends/crates/sms-api/tests/retention_hold_live_postgres.rs`     | Scope, release, audit, and isolation tests                                                            |
+| `backends/crates/sms-worker/tests/purge_retention_live_postgres.rs` | Every class, boundary, and idempotency                                                                |
+| `.xtask/src/retention_coverage.rs`                                  | Ensure every `@@retain` declaration has enforcement                                                   |
+| New retention runbook                                               | Hold operation and evidence                                                                           |
 
 ### Acceptance evidence
 
@@ -543,20 +543,20 @@ and every retained backup manifest before reporting a version removable.
 
 ### Expected files
 
-| File | Change |
-|---|---|
-| `deploy/backup-tool/Cargo.toml` | Depend on the chosen shared retention boundary |
-| `deploy/backup-tool/src/restore.rs` | Invoke reconciliation before success |
-| `deploy/backup-tool/src/drill.rs` | Seed and assert expired, recent, and held data |
-| `deploy/backup-tool/src/retention_control.rs` | Verify and replay the independent control journal |
-| `deploy/backup-tool/src/backup.rs` | Treat retention enforcement failure as unhealthy, not best-effort success |
-| `deploy/backup-tool/src/rclone.rs` | Return and classify persistent object-deletion failures |
-| `deploy/backup-tool/src/health.rs` | Report backup and journal retention lag |
-| `deploy/backup-tool/src/main.rs` | Register explicit enforce/compact commands if the scheduler cannot reuse one path |
-| `deploy/backup-tool/src/*.md` | Describe ordering and failure behavior where module docs require it |
-| `deploy/docker-compose.yml` | Stop application services, restore in isolation, and order cutover/restart |
-| `deploy/charts/vsms/**` | Enforce equivalent controller suspension and restore fencing |
-| `docs/runbooks/backup-restore.adoc` | Explain reconciliation and backup-object limits |
+| File                                          | Change                                                                            |
+| --------------------------------------------- | --------------------------------------------------------------------------------- |
+| `deploy/backup-tool/Cargo.toml`               | Depend on the chosen shared retention boundary                                    |
+| `deploy/backup-tool/src/restore.rs`           | Invoke reconciliation before success                                              |
+| `deploy/backup-tool/src/drill.rs`             | Seed and assert expired, recent, and held data                                    |
+| `deploy/backup-tool/src/retention_control.rs` | Verify and replay the independent control journal                                 |
+| `deploy/backup-tool/src/backup.rs`            | Treat retention enforcement failure as unhealthy, not best-effort success         |
+| `deploy/backup-tool/src/rclone.rs`            | Return and classify persistent object-deletion failures                           |
+| `deploy/backup-tool/src/health.rs`            | Report backup and journal retention lag                                           |
+| `deploy/backup-tool/src/main.rs`              | Register explicit enforce/compact commands if the scheduler cannot reuse one path |
+| `deploy/backup-tool/src/*.md`                 | Describe ordering and failure behavior where module docs require it               |
+| `deploy/docker-compose.yml`                   | Stop application services, restore in isolation, and order cutover/restart        |
+| `deploy/charts/vsms/**`                       | Enforce equivalent controller suspension and restore fencing                      |
+| `docs/runbooks/backup-restore.adoc`           | Explain reconciliation and backup-object limits                                   |
 
 ### Acceptance evidence
 
@@ -618,20 +618,20 @@ as multiple bounded, independently audited windows rather than one unbounded req
 
 ### Expected files
 
-| File | Change |
-|---|---|
-| `schemas/vsms.cstack` | Export invocation model, permissioned procedure, and policies |
-| `docs/architecture.md` | Export boundary and audit behavior |
-| `backends/migrations/postgres/0001_init/*` | Pin-matched full regeneration |
-| `backends/migrations/postgres/0002_bootstrap/up.sql` | Regenerated defaults/indexes if required |
-| `sdks/rust/vsms-sdk-rust/schema.cstack` | Re-vendored schema |
-| `backends/crates/sms-api/src/privacy_export.rs` | Shared allowlisted query/projection core |
-| `backends/crates/sms-api/src/privacy_export.md` | Exclusions, app boundary, and content policy |
-| `backends/crates/sms-api/src/procedures.rs` | Authorized procedure entry point |
-| `backends/apps/sms-gateway/src/commands/export_subject_data.rs` | R4 operator command and secure output |
-| `backends/apps/sms-gateway/src/main.rs` | Register the command only |
-| `backends/crates/sms-api/tests/privacy_export_live_postgres.rs` | Isolation, exclusion, and audit tests |
-| New data-subject export runbook | Product evidence versus organisational decisions |
+| File                                                            | Change                                                        |
+| --------------------------------------------------------------- | ------------------------------------------------------------- |
+| `schemas/vsms.cstack`                                           | Export invocation model, permissioned procedure, and policies |
+| `docs/architecture.md`                                          | Export boundary and audit behavior                            |
+| `backends/migrations/postgres/0001_init/*`                      | Pin-matched full regeneration                                 |
+| `backends/migrations/postgres/0002_bootstrap/up.sql`            | Regenerated defaults/indexes if required                      |
+| `sdks/rust/vsms-sdk-rust/schema.cstack`                         | Re-vendored schema                                            |
+| `backends/crates/sms-api/src/privacy_export.rs`                 | Shared allowlisted query/projection core                      |
+| `backends/crates/sms-api/src/privacy_export.md`                 | Exclusions, app boundary, and content policy                  |
+| `backends/crates/sms-api/src/procedures.rs`                     | Authorized procedure entry point                              |
+| `backends/apps/sms-gateway/src/commands/export_subject_data.rs` | R4 operator command and secure output                         |
+| `backends/apps/sms-gateway/src/main.rs`                         | Register the command only                                     |
+| `backends/crates/sms-api/tests/privacy_export_live_postgres.rs` | Isolation, exclusion, and audit tests                         |
+| New data-subject export runbook                                 | Product evidence versus organisational decisions              |
 
 ### Acceptance evidence
 
@@ -682,6 +682,13 @@ At minimum, instrument admitted human login, token issuance/refusal, assertion r
 provisioning/retirement, signing/client-key rotation, privacy exports, incident exports, and selected
 sensitive authorization denials.
 
+> **Dated note (2026-10-27, VS-4).** Human login, token issuance and assertion replay no longer
+> exist: the OpenID Provider is deleted. The events this section sizes against them become console-key
+> pairing and revocation, app-client key registration and revocation (`registerConsoleKey`,
+> `registerAppClientKey`, `revokeAppClientKey`) and the envelope layer's refusals. `/login` and
+> `/token` rate limiting is moot with the routes; the paths in the table below that name
+> `sms-auth` and `login.rs` are deleted.
+
 `/login` gains source and account-bucket rate limiting before a refusal can write an event; `/token`
 uses its existing limiters. Malformed requests rejected before an identifiable authentication attempt
 do not create one row each. The event writer has a documented bounded failure policy and metric so a
@@ -695,22 +702,22 @@ its event vocabulary can be designed earlier.
 
 ### Expected files
 
-| File | Change |
-|---|---|
-| `schemas/vsms.cstack` | Append-only security-event model and read policy |
-| `docs/architecture.md` | Safe event vocabulary and retention |
-| `backends/migrations/postgres/0001_init/*` | Pin-matched full regeneration |
-| `backends/migrations/postgres/0002_bootstrap/up.sql` | Defaults and indexes |
-| `sdks/rust/vsms-sdk-rust/schema.cstack` | Re-vendored schema |
-| `backends/crates/sms-auth/src/security_events.rs` | Typed auth-event recording boundary |
-| `backends/crates/sms-api/src/auth.rs` | Resource-server outcomes where appropriate |
-| `backends/apps/sms-gateway/src/login.rs` | Human login outcomes |
-| `backends/apps/sms-gateway/src/op.rs` | Token and assertion outcomes |
-| `backends/apps/sms-gateway/src/login_rate_limit.rs` | Bound unauthenticated login attempts before event writes |
-| `backends/apps/sms-gateway/src/commands/**` | Provisioning and rotation outcomes |
-| `backends/crates/sms-worker/src/jobs/purge_retention.rs` | Enforce security-event retention |
-| `.xtask/src/retention_coverage.rs` | Require security-event enforcement registration |
-| `backends/crates/sms-auth/tests/security_events_live_postgres.rs` | Real login/token evidence and leakage tests |
+| File                                                              | Change                                                   |
+| ----------------------------------------------------------------- | -------------------------------------------------------- |
+| `schemas/vsms.cstack`                                             | Append-only security-event model and read policy         |
+| `docs/architecture.md`                                            | Safe event vocabulary and retention                      |
+| `backends/migrations/postgres/0001_init/*`                        | Pin-matched full regeneration                            |
+| `backends/migrations/postgres/0002_bootstrap/up.sql`              | Defaults and indexes                                     |
+| `sdks/rust/vsms-sdk-rust/schema.cstack`                           | Re-vendored schema                                       |
+| `backends/crates/sms-auth/src/security_events.rs`                 | Typed auth-event recording boundary                      |
+| `backends/crates/sms-api/src/auth.rs`                             | Resource-server outcomes where appropriate               |
+| `backends/apps/sms-gateway/src/login.rs`                          | Human login outcomes                                     |
+| `backends/apps/sms-gateway/src/op.rs`                             | Token and assertion outcomes                             |
+| `backends/apps/sms-gateway/src/login_rate_limit.rs`               | Bound unauthenticated login attempts before event writes |
+| `backends/apps/sms-gateway/src/commands/**`                       | Provisioning and rotation outcomes                       |
+| `backends/crates/sms-worker/src/jobs/purge_retention.rs`          | Enforce security-event retention                         |
+| `.xtask/src/retention_coverage.rs`                                | Require security-event enforcement registration          |
+| `backends/crates/sms-auth/tests/security_events_live_postgres.rs` | Real login/token evidence and leakage tests              |
 
 The final placement must avoid duplicating event construction between `sms-auth` and the gateway.
 Both use one typed constructor vocabulary even if the persistence adapter lives at the application
@@ -754,18 +761,18 @@ export.
 
 ### Expected files
 
-| File | Change |
-|---|---|
-| `schemas/vsms.cstack` | Incident-export procedure and permission vocabulary if distinct |
-| `backends/crates/sms-api/src/privacy_export.rs` | Reuse safe projections and mandatory app scoping |
-| `backends/crates/sms-api/src/incident_export.rs` | Incident selectors and evidence assembly |
-| `backends/crates/sms-api/src/incident_export.md` | Evidence limits and Art. 33 boundary |
-| `backends/crates/sms-api/src/audit_log.rs` | Add purpose-built bounded lookup, not a global dump |
-| `backends/crates/sms-api/src/procedures.rs` | Authorized entry point |
-| `backends/apps/sms-gateway/src/commands/export_incident.rs` | R4 operator command and secure output |
-| `backends/apps/sms-gateway/src/main.rs` | Register the command only |
-| `backends/crates/sms-api/tests/incident_export_live_postgres.rs` | Cross-app and selector-bound tests |
-| New privacy-incident runbook | Product evidence mapped to organisational response |
+| File                                                             | Change                                                          |
+| ---------------------------------------------------------------- | --------------------------------------------------------------- |
+| `schemas/vsms.cstack`                                            | Incident-export procedure and permission vocabulary if distinct |
+| `backends/crates/sms-api/src/privacy_export.rs`                  | Reuse safe projections and mandatory app scoping                |
+| `backends/crates/sms-api/src/incident_export.rs`                 | Incident selectors and evidence assembly                        |
+| `backends/crates/sms-api/src/incident_export.md`                 | Evidence limits and Art. 33 boundary                            |
+| `backends/crates/sms-api/src/audit_log.rs`                       | Add purpose-built bounded lookup, not a global dump             |
+| `backends/crates/sms-api/src/procedures.rs`                      | Authorized entry point                                          |
+| `backends/apps/sms-gateway/src/commands/export_incident.rs`      | R4 operator command and secure output                           |
+| `backends/apps/sms-gateway/src/main.rs`                          | Register the command only                                       |
+| `backends/crates/sms-api/tests/incident_export_live_postgres.rs` | Cross-app and selector-bound tests                              |
+| New privacy-incident runbook                                     | Product evidence mapped to organisational response              |
 
 ### Tabletop
 
@@ -837,15 +844,15 @@ authorization, restore, or cross-app isolation.
 
 ## Issue traceability
 
-| Issue | Delivered by |
-|---|---|
-| #371 | Change 1 |
-| #375 | Change 2, with webhook-attempt deletion completed by Change 4 |
-| #372 | Change 3, relying on Change 2 for the telemetry criterion |
-| #373 | Changes 4 and 5 |
-| #374 | Change 6 |
-| #376 | Changes 7 and 8 |
-| #377 | All changes plus final test/runbook evidence |
+| Issue | Delivered by                                                  |
+| ----- | ------------------------------------------------------------- |
+| #371  | Change 1                                                      |
+| #375  | Change 2, with webhook-attempt deletion completed by Change 4 |
+| #372  | Change 3, relying on Change 2 for the telemetry criterion     |
+| #373  | Changes 4 and 5                                               |
+| #374  | Change 6                                                      |
+| #376  | Changes 7 and 8                                               |
+| #377  | All changes plus final test/runbook evidence                  |
 
 This ADR/RFC PR references these issues but closes none of them. Each issue closes only when its
 runtime control and acceptance evidence land.

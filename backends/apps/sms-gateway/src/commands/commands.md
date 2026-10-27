@@ -13,11 +13,12 @@ without touching where clap actually reads a subcommand's own "why does
 this exist" prose from.
 
 There is no `common.rs`: the one helper more than one subcommand needs —
-the `system`-role context every OP-adjacent write runs under — is
+the `system`-role context an internal write runs under — is
 `sms_api::system_context`, shared with the worker rather than duplicated
 here. Everything used by exactly one subcommand stays private to
-that subcommand's own file — `seed_dispatch::seed_dispatch_core`,
-`seed_console_client::seed_console_client_core` and
-`provision_user::create_console_user_if_absent` are the three exceptions,
+that subcommand's own file — `seed_dispatch::seed_dispatch_core` and
+`provision_user::create_console_user_if_absent` are the two exceptions,
 `pub(crate)` because `bootstrap::bootstrap_command` reuses them directly
 rather than re-deriving their logic (see `bootstrap.rs`'s own doc for why).
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

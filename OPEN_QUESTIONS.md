@@ -13,6 +13,12 @@ yet lives in GitHub Issues, not here. If the only thing standing between a
 question and its answer is someone doing the work, it is not an open
 question — it is a ticket.
 
+> **Dated note (2026-10-27, VS-4).** The OpenID Provider is deleted (`docs/architecture.md` §4.3):
+> there is no token, no `/login`, no password store (`UserCredential`) and no Keycloak broker. The
+> questions below that concern the #211 console-token design, the human login, the password hash
+> and the Keycloak single sign-on are superseded, not answered; they are kept as the record of
+> what was asked. The console is entered by pairing a browser key (`docs/design/console-pairing.md`).
+
 **Status is a dated snapshot** *(2026-08-13)*. GitHub is the tracker and is
 always more current; `docs/roadmap.md` owns sequencing; `docs/architecture.md`
 §12 owns what each milestone means. This file owns only the *unknowns*.
@@ -145,7 +151,7 @@ dependency rule. The owner decided (2026-10-19) to build it, and the three
 reasons no longer hold (`auth.verif.fyi`'s `vaam-staff` realm exists;
 `backends/crates/sms-fake-oidc` is the fake; a real Keycloak container was
 driven end to end). The decisions, each recorded with its reasoning in
-`docs/architecture.md` §4.3 and operated per `docs/runbooks/sso.adoc`:
+`docs/architecture.md` §4.3 and operated per the SSO runbook (deleted in VS-4):
 
 - **The gateway stays the console's OP.** Only "who is this human?" is
   federated; every API token is still vsms's own, so `GatewayAuth` and every

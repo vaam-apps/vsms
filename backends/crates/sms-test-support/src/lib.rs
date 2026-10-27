@@ -320,7 +320,7 @@ fn set_database_name(url: &str, db: &str) -> String {
 /// whenever the binary's own content does" and a stable name should
 /// survive a rebuild. That reasoning produced a real collision, found live
 /// by inspecting `psql -l` inside the harness container rather than by
-/// code review: `backends/crates/sms-auth/tests/live_postgres.rs` and
+/// code review: the former `backends/crates/sms-auth/tests/live_postgres.rs` and
 /// `backends/crates/sms-worker/tests/live_postgres.rs` are two genuinely different
 /// test binaries — different packages — that happen to share the same
 /// file name. Cargo's own `target/debug/deps/` directory is flat and

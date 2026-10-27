@@ -53,11 +53,12 @@ of building from source.
 - **Rust** for the gateway and the worker, on
   [CrateStack](https://cratestack.dev/): schema-first, so one `.cstack` schema
   generates the model layer, policies, audit, events and the REST surface.
-- **[Authkestra](https://github.com/marcjazz/authkestra)** as the OIDC
-  provider. Machine callers use OAuth `client_credentials` with
-  `private_key_jwt`, so there are no shared secrets anywhere in the system.
-  Humans sign in with `authorization_code` + PKCE against a local
-  Argon2id-backed user store, or through [single sign-on](runbooks/sso.adoc).
+- **A signed transport** (COSE_Sign1 envelopes, on CrateStack's envelope
+  layer). Machine callers sign every request with an Ed25519 key they
+  generated and the gateway signs its answers, so there are no tokens and no
+  shared secrets anywhere in the system. Staff use the console with a key their
+  own browser made and a vaam admin phone (or an operator on the command line)
+  vouched for: there is no password, no login and no OpenID provider.
 - **PostgreSQL 16** as the only coordination mechanism: system of record,
   claim loops via optimistic CAS on `@version`, leader election via advisory
   locks, and the state machines enforced by triggers. No broker, no Redis, no
@@ -71,7 +72,7 @@ of building from source.
 | Path                                           | What it is                                                                                  |
 | ---------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | `schemas/vsms.cstack`                          | The schema: models, enums and procedures, expanded into the server by CrateStack.           |
-| `backends/apps/sms-gateway/`                   | The API server binary, and the operator commands (`bootstrap`, `provision-client`, …).      |
+| `backends/apps/sms-gateway/`                   | The API server binary, and the operator commands (`bootstrap`, `register-client`, …).       |
 | `backends/apps/sms-worker/`                    | The role-selectable worker binary (`--roles dispatch,scheduler,jobs,...`).                  |
 | `backends/crates/`                             | The libraries: API, auth, worker, encoding, MSISDN parsing, webhooks and provider adapters. |
 | `frontends/apps/admin/`, `frontends/packages/` | The Next.js admin console and its shared TypeScript packages.                               |

@@ -15,8 +15,8 @@
 //! "an admin promotes itself, or someone else, to owner" is *not* decidable
 //! here by design — that is `sms_api::owner_grant::enforce_owner_grant_guard`'s
 //! job (a request middleware) and is proven over real HTTP in
-//! `backends/apps/sms-gateway/tests/login_flow_live_postgres.rs`
-//! (`an_admin_cannot_promote_*`), not in this data-layer file.
+//! `backends/crates/sms-api/tests/owner_grant_live_postgres.rs`
+//! (`an_admin_cannot_*`), not in this data-layer file.
 //!
 //! Every case asserts the outcome, not the error type: a policy denial on an
 //! update can surface as an error or as zero rows matched, and either is fine

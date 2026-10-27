@@ -117,7 +117,6 @@ export default defineMd3Config({
         items: [
           { text: "Runbooks", link: "/runbooks/" },
           { text: "Deployment", link: "/runbooks/deployment" },
-          { text: "Single sign-on (Keycloak)", link: "/runbooks/sso" },
           { text: "Backup and restore", link: "/runbooks/backup-restore" },
           { text: "Alerting", link: "/runbooks/alerting" },
           { text: "Running the CI gate locally", link: "/runbooks/testing" },

@@ -3,7 +3,9 @@
 **Status:** built. The operator console has no login. A browser makes a key it cannot export, a
 vaam admin phone (or, as the break-glass, an operator on the command line) vouches for it, and the
 key signs every request the console makes. The console's OpenID, session and single-sign-on
-plumbing is deleted, with no compatibility mode.
+plumbing is deleted, with no compatibility mode, and since VS-4 (2026-10-27) so is the gateway's
+side of it: the OpenID Provider, `/login`, the Keycloak broker and the password store no longer exist
+(`docs/architecture.md` §4.3).
 
 This is the console half of the signed transport (`docs/architecture.md` §4.0, `docs/integrating.md`).
 The gateway half is VS-5a (`ConsoleKey`, `registerConsoleKey`, `pair-console-key`,
@@ -185,8 +187,7 @@ than `fetch` for the same reason.
 
 The pass-through (`@vsms/gateway/bff`, `app/api/gateway/[...path]/route.ts`) is a pipe whose rules are
 pure functions with tests: a `POST` of a COSE message, one of four methods, an allow-list of request
-headers (no credential on it), no route the gateway leaves unsealed (`/dlr`, `/healthz`, `/readyz`,
-the OpenID routes, the login pages), no dot segment, 1 MiB in and 8 MiB out, no redirect followed, no
+headers (no credential on it), no route the gateway leaves unsealed (`/dlr`, `/healthz`, `/readyz`), no dot segment, 1 MiB in and 8 MiB out, no redirect followed, no
 `Set-Cookie` or `Location` back. A sealed `204` still has a body and a response cannot be a `204` and
 have one, so it travels as a `200` with `x-vsms-status`; the seal binds the status, so a header that
 lied about it would make the answer fail to open.

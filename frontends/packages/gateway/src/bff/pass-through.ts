@@ -21,8 +21,7 @@ import "server-only";
 //     table `routeOf` signs against), because the generated routes and the
 //     procedures are exactly the ones the gateway seals
 //     (`EnvelopeMode::Required`). The routes that are not (`docs/architecture.md`
-//     §4.0: delivery receipts, health, metrics, the OpenID routes and the login
-//     pages) are in no such table and so can never be named here, whatever
+//     §4.0: delivery receipts, health, metrics) are in no such table and so can never be named here, whatever
 //     they are called next. Not an open proxy to the gateway's origin.
 //   * Nothing comes back but the answer's body, its status and the headers a
 //     seal is opened with. Never a `Set-Cookie`, never a `Location`: a redirect

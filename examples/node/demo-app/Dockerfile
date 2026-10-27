@@ -6,13 +6,53 @@
 # `frontends/apps/admin/Dockerfile`'s and `backends/apps/vsms-demo-seed/Dockerfile`'s
 # own header comments) — and required by `.github/workflows/release.yml`,
 # whose `build-and-push` job hardcodes `context: .` for every matrix
-# entry rather than a per-image context. This package is still a fully
-# standalone one otherwise — own `package.json`/`pnpm-lock.yaml`, no path
-# dependency into this checkout, `--ignore-workspace` install below — the
-# repo-root context here is purely a COPY-path convenience, not a
-# dependency on anything else in the tree. Build with:
+# entry rather than a per-image context. The package keeps its own
+# `package.json`/`pnpm-lock.yaml` and installs with `--ignore-workspace`, but
+# it now depends on the Node SDK by path (`file:`), so the repo-root context
+# is also what lets the build stage below build that SDK from this checkout.
+# Build with:
 #
 #   docker build -f examples/node/demo-app/Dockerfile .
+
+# The Node SDK this evaluator signs with is built from this checkout, not
+# pulled from npm: it depends on `@vaam-apps/vsms-node` by path, and the SDK
+# seals through `sdks/rust/vsms-sdk-wasm` compiled to WebAssembly, so the build
+# stage below needs Rust with the wasm32 target. The toolchain block is the same
+# one `frontends/apps/admin/Dockerfile` carries, from the same
+# `rust:1.98-bookworm` the CI runner image is (`ci/runner/Dockerfile`).
+FROM rust:1.98-bookworm AS rust
+
+FROM node:26-bookworm-slim AS sdk
+
+# DL3008: no apt version pin, deliberately - the packages come from the
+# floating Debian bookworm suite the base image tracks, and a patch pin would
+# fail the build the day the mirror drops that exact revision (the same call
+# as ci/runner/Dockerfile's).
+# hadolint ignore=DL3008
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=rust /usr/local/rustup /usr/local/rustup
+COPY --from=rust /usr/local/cargo /usr/local/cargo
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+RUN rustup target add wasm32-unknown-unknown
+
+RUN npm install -g corepack@0.35.0 && corepack enable && corepack prepare pnpm@11.18.0 --activate
+
+WORKDIR /repo
+COPY . .
+
+RUN pnpm install --frozen-lockfile --filter @vaam-apps/vsms-node...
+
+# `wasm-bindgen`'s command-line tool at exactly the version `sdks/rust/Cargo.lock`
+# pins for the crate: the two agree on a private interface, and a mismatch
+# fails at load time naming neither.
+RUN wanted="$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/version = |"/, ""); print; exit}' sdks/rust/Cargo.lock)" \
+    && cargo install wasm-bindgen-cli --locked --version "$wanted"
+
+RUN pnpm --filter @vaam-apps/vsms-node run build
 
 FROM node:26-bookworm-slim AS runtime
 
@@ -23,6 +63,15 @@ FROM node:26-bookworm-slim AS runtime
 RUN npm install -g corepack@0.35.0 && corepack enable
 
 RUN useradd --system --uid 10002 --home-dir /nonexistent --shell /usr/sbin/nologin demoapp
+
+# The SDK sits where `package.json`'s `file:../../../sdks/node/vsms-sdk-node`
+# resolves from `/app` (three levels up from `/app` is `/`): pnpm copies a
+# directory dependency at install time, so only what the package publishes
+# (`files`: `dist`, `wasm`) is needed. The app stays at `/app`, the path
+# images.yml's assert scans.
+COPY --from=sdk /repo/sdks/node/vsms-sdk-node/package.json /sdks/node/vsms-sdk-node/package.json
+COPY --from=sdk /repo/sdks/node/vsms-sdk-node/dist /sdks/node/vsms-sdk-node/dist
+COPY --from=sdk /repo/sdks/node/vsms-sdk-node/wasm /sdks/node/vsms-sdk-node/wasm
 
 WORKDIR /app
 COPY examples/node/demo-app/package.json examples/node/demo-app/pnpm-lock.yaml ./

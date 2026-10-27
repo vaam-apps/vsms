@@ -1,6 +1,6 @@
 Seeds the one `App` + approved `SenderId` a GHCR-only showcase compose
-stack (`compose.demo.yaml`) needs before `sms-gateway provision-client`
-can run at all.
+stack (`compose.demo.yaml`) needs before `sms-gateway register-client`
+can register the demo app's and the console composer's keys at all.
 
 **This used to be `sms-gateway seed-demo-app` (`Command::SeedDemoApp`,
 `app/sms-gateway/src/main.rs`).** Moved out into its own binary, its own
@@ -32,11 +32,11 @@ Two ways to get that from outside the `sms-gateway` binary itself:
 
 - **Over the HTTP API**, the way an external integrator would. Rejected:
   `App.create`/`SenderId.create`'s own `@@allow` admit only
-  `hasRole('owner') || hasRole('admin')`, and `GatewayAuth::authenticate`
-  never mints either role for a machine (`client_credentials`) token —
-  only a real human login (#194) can, and `compose.demo.yaml`'s own
-  dependency chain runs this seeding step *before* `provision-client`,
-  let alone before any human account exists (`provision-user`, gated
+  `hasRole('owner') || hasRole('admin')`, and the signer directory
+  never gives either role to an app client's key — only a paired console
+  key can carry one, and `compose.demo.yaml`'s own dependency chain runs
+  this seeding step *before* `register-client`, let alone before any
+  human account exists (`provision-user`, gated
   behind the `console` profile and not even started in a backend-only
   run). There is no bearer token this step could present that would ever
   be let through.
@@ -79,3 +79,5 @@ uses: safe to run on every `docker compose up`. Requires the `Provider`
 row named by `--provider-key` to already exist (i.e. `sms-gateway
 seed-dispatch` has already run) — `SenderIdRegistration.providerId` is a
 real foreign key.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

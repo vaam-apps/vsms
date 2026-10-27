@@ -49,7 +49,7 @@ pub mod webhooks;
 pub mod worker_locks;
 pub mod worker_roles;
 
-pub use auth::{DEFAULT_CONSOLE_CLIENT_ID, Principal, PrincipalKind, SignedAuth, system_context};
+pub use auth::{Principal, PrincipalKind, SignedAuth, system_context};
 pub use errors::{is_illegal_transition, map_database_error};
 pub use pepper::{HashPepper, PepperError, hmac_sha256_hex};
 pub use procedures::Procedures;

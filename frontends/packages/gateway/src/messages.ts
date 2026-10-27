@@ -11,9 +11,10 @@
 // where=...`, and §2.0 separately warns that `where`/`or` are "unwired in
 // some generators." Neither claim was trusted — both were checked against
 // a real, running `sms-gateway serve` (a scratch Postgres database seeded
-// with real `App`/`Provider`/`Message` rows via `provisionAppClient`,
-// real `client_credentials` + `private_key_jwt` token exchange, then
-// `curl` with a real Bearer token). Findings, all reproduced live:
+// with real `App`/`Provider`/`Message` rows, an authenticated `curl` — at
+// the time through a token exchange that the signed transport (VS-3) and then
+// VS-4 deleted; the query grammar is unaffected). Findings, all reproduced
+// live:
 //
 // 1. **`POST /$procs/listMessagesPage` is not usable.** `procedures.rs`
 //    hard-codes it to `not_yet("listMessagesPage", "milestone 2")` —

@@ -4,23 +4,23 @@
 //
 // # Three separate write shapes, not one CRUD form
 //
-// - **Provision** (`provisionAppClient`, #23) is the only way an
-//   `AppClient` row is ever created — `AppClient.create`'s own `@@allow` is
-//   `hasRole('system')` only, so no `POST /app_clients` exists for this
-//   console to call even in principle. [`provisionClient`] below hits the
-//   procedure instead and returns `privateKeyPem` **exactly once** — see
-//   its own doc for what "show it once" actually requires from a caller.
+// - **Provision** (`provisionAppClient`, #23, reshaped by VS-4) is the only
+//   way an `AppClient` row is ever created over HTTP — `AppClient.create`'s own
+//   `@@allow` is `hasRole('system')` only, so no `POST /app_clients` exists for
+//   this console to call even in principle. [`provisionClient`] below hits the
+//   procedure instead. The caller generates the Ed25519 keypair and sends only
+//   the public half; vsms never holds a private key, so nothing secret comes
+//   back and there is nothing to show once.
 // - **Retire** is a plain `PATCH /app_clients/{id}` (`AppClient.update`'s
 //   `@@allow`: `hasRole('owner') || hasRole('admin')`), setting
-//   `active: false` and `retiredAt: <now>`. This is the **coarse fallback**
-//   AGENTS.md's own `#23` section names explicitly, not a true overlap
-//   window: there is no per-client key-history model, so retiring a client
-//   is immediate and total — the old key stops working the instant this
-//   call succeeds, there is no grace period during which both an old and a
-//   new key are simultaneously valid. A caller that wants zero-downtime
-//   rotation has to provision the *new* client first, update its own
-//   integration to use it, and only then retire the old one — this screen
-//   does not, and structurally cannot, sequence that for them.
+//   `active: false` and `retiredAt: <now>`. Retiring a *client* is immediate
+//   and total: its keys stop working the instant this call succeeds, with no
+//   grace period. (Rotating one *key* with an overlap is `registerAppClientKey`
+//   then `revokeAppClientKey`, which this screen does not expose.) A caller
+//   that wants zero-downtime client replacement has to provision the *new*
+//   client first, update its own integration to use it, and only then retire
+//   the old one — this screen does not, and structurally cannot, sequence
+//   that for them.
 // - **List/get** are ordinary `GET`s, no different in shape from
 //   `providers.ts`/`apps.ts`.
 
@@ -138,28 +138,30 @@ export async function getAppClientById(id: string): Promise<WithEtag<AppClientRe
 }
 
 export interface ProvisionClientResult {
+  /** What a signed request from this client resolves to. */
   clientId: string;
-  /** The private key PEM — present in this one response and nowhere else.
-   * Never persisted by this module, never logged, never round-tripped
-   * through a query cache: see `apps-screen.tsx`'s own doc for what the
-   * *caller* must additionally avoid (React state that survives navigation,
-   * a toast queue, anything longer-lived than the one dialog showing it). */
-  privateKeyPem: string;
+  /** The registered `ClientKey` row — the id `revokeAppClientKey` takes. */
+  keyId: string;
+  /** RFC 9679 thumbprint of the registered public key, lowercase hex: the
+   * identity of the key, computed server-side and never taken from the caller. */
+  thumbprint: string;
 }
 
-/** `POST /$procs/provisionAppClient` (#23) — generates a fresh RSA keypair
- * server-side, persists only the derived public JWK, and returns the
- * private key exactly once. See `backends/crates/sms-api/src/procedures.rs`'s own
- * `provision_client` doc for the full mechanism. */
+/** `POST /$procs/provisionAppClient` (#23, reshaped by VS-4) — makes an
+ * `AppClient` and registers the caller's Ed25519 public key (`publicKey`, the
+ * raw 32 bytes as unpadded base64url) for it, in one transaction. Nothing
+ * secret is generated or returned. See `backends/crates/sms-api/src/
+ * procedures.rs`'s own `provision_client` doc. */
 export async function provisionClient(
   appId: string,
   label: string,
   scopes: string[],
+  publicKey: string,
 ): Promise<ProvisionClientResult> {
   const url = new URL("/$procs/provisionAppClient", GATEWAY_ORIGIN).toString();
   const response = await authedRequest(url, {
     method: "POST",
-    body: JSON.stringify({ args: { appId, label, scopes } }),
+    body: JSON.stringify({ args: { appId, label, scopes, publicKey } }),
   });
   const parsed = await parseGatewayJson(response);
   if (!response.ok) {

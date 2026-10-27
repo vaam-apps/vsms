@@ -185,26 +185,4 @@ needs its own seed.
 {{- $_ := set .Values.controllers.seedDispatchAws.containers.main "args" $seed -}}
 {{- end -}}
 
-{{/*
-SSO is optional, and an unconfigured SSO must leave *no* SSO env var behind
-on the gateway - the same hazard as MTN above, for the same reason: a
-present-but-empty env var is a value to clap, not an absence (and, for the
-list-valued ones, a one-element list holding an empty string). The gateway
-does normalise blanks to "unset" itself, so this is belt and braces rather
-than the only line of defence, but the chart should not hand a process
-variables it was told nothing about.
-
-Keyed on `sso.issuer` alone: a deployment that sets it and forgets the rest
-gets the chart's own `required` messages at render time, and the gateway's
-own all-or-none error at start, rather than a silently half-configured SSO.
-Only the gateway controller: the worker and the console need none of it (the
-console learns SSO exists from the gateway's discovery document).
-*/}}
-{{- if not .Values.sso.issuer }}
-{{- $env := (index $.Values.controllers "gateway" "containers" "main" "env") }}
-{{- range $key := list "SMS_SSO_ISSUER" "SMS_SSO_CLIENT_ID" "SMS_SSO_CLIENT_SECRET" "SMS_SSO_REDIRECT_URI" "SMS_SSO_SCOPES" "SMS_SSO_REQUIRED_GROUP" "SMS_SSO_GROUPS_CLAIM" "SMS_SSO_ACCEPTED_AMR" "SMS_SSO_ACCEPTED_ACR" "SMS_SSO_JIT_ROLE" }}
-{{- $_ := unset $env $key }}
-{{- end }}
-{{- end -}}
-
 {{ include "bjw-s.common.loader.generate" . }}

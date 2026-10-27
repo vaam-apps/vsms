@@ -4,7 +4,7 @@
 //! # Why this test calls the delegate directly, not `PATCH /providers/{id}`
 //! over real HTTP
 //!
-//! `backends/crates/sms-auth/tests/rbac_layer2_live_postgres.rs` and
+//! `backends/crates/sms-api/tests/rbac_layer2_live_postgres.rs` and
 //! `backends/apps/sms-gateway/tests/m1_acceptance_gate_live_postgres.rs` both already
 //! document, independently, that no real bearer token this deployment can
 //! issue ever reaches a Layer-1 *allow* on `PATCH /providers/{id}` —

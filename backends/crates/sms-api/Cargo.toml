@@ -24,14 +24,13 @@ sms-msisdn.workspace = true
 # than reused — see `route_simulator.rs`'s own module doc for the exact
 # duplication and why it's accepted rather than factored out.
 sms-routing.workspace = true
-# provision_client (#23)'s pack() for the sentinel-delimited scopes/
-# grantTypes columns — sms-core has no internal dependencies of its own,
-# so pulling it in here doesn't risk a cycle with sms-auth (which depends
-# on both sms-api and sms-core already).
+# provision_app_client (#23)'s pack() for the sentinel-delimited scopes
+# column — sms-core has no internal dependencies of its own, so pulling it
+# in here cannot risk a cycle.
 #
 # Also rbac.rs's `require_permission` (#24, Layer 2): the same sentinel-
-# delimited membership test `AppClient.scopes`/`OauthClient.scopes` already
-# use for their DB columns, reused here for the JWT `scope` claim rather
+# delimited membership test `AppClient.scopes` already uses for its DB
+# column, reused here for the principal's `scope` rather
 # than reinvented — see sms-core's own module doc for why the sentinel form
 # matters even though `contains`/`unpack` tolerate the plain OAuth form too.
 sms-core.workspace = true
@@ -48,19 +47,10 @@ sms-metrics.workspace = true
 # adapter, the same reason sms-worker depends on this and not on
 # sms-provider-orange-cm directly.
 sms-provider.workspace = true
-# provision_client (#23) reuses TokenManager::new_asymmetric/public_jwk from
-# authkestra-engine to derive the client's public JWK, mirroring
-# sms_auth::op::rotate_signing_key's own pattern for the OP's key - sms-api
-# can't depend on sms-auth (sms-auth depends on sms-api), so the small keygen
-# snippet is duplicated here rather than shared. VS-4 deletes it with the OP.
-authkestra-engine.workspace = true
 # client_keys.rs / console_keys.rs / envelope.rs: base64url public keys and
-# the PKCS#8 PEM body of the server's signing key. Same version already
-# resolved transitively through authkestra-op.
+# the PKCS#8 PEM body of the server's signing key.
 base64.workspace = true
-# provision_client (#23)'s RSA keypair generation — same crates and version
-# sms-auth::op::rotate_signing_key uses for the OP's own signing key.
-rsa.workspace = true
+# simulateRoute's weighted tie-break draw (`rand::random`).
 rand.workspace = true
 
 # signers.rs / envelope.rs: `CoseVerifierResolver` and `NonceStore` are
@@ -104,8 +94,7 @@ reqwest.workspace = true
 # metrics.rs's own tests drive its standalone router via `oneshot`, the
 # standard axum in-process testing pattern — no real socket needed. Same
 # version already resolved transitively through axum/cratestack-axum's own
-# routing internals (see token_rate_limit.rs's own identical comment for
-# the equivalent case in backends/apps/sms-gateway).
+# routing internals.
 tower.workspace = true
 # examples/send_test_message.rs — the #36 acceptance gate's seed/send tool.
 clap.workspace = true
@@ -122,13 +111,6 @@ sms-test-support.workspace = true
 # two edges never form a cycle in the actual build graph, only in a naive
 # "which crate mentions which" reading of it.
 sms-worker.workspace = true
-# console_identity_live_postgres.rs (#52/#58): proving `provisionUser`
-# creates an account that can genuinely log in calls
-# `sms_auth::login::authenticate_user` directly, rather than re-implementing
-# password verification in this test — same "dev-only, dependency direction
-# still runs sms-auth -> sms-api, not the reverse" reasoning as
-# `sms-worker` above.
-sms-auth.workspace = true
 
 [lints]
 workspace = true

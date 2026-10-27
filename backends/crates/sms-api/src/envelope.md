@@ -69,8 +69,9 @@ outside the set and is refused with a 415 before any key is looked up.
 # What is outside the layer
 
 `/dlr/{providerKey}` (providers cannot sign and authenticate themselves),
-`/healthz`, `/readyz`, and until VS-4 the OP routes (`/token`, `/jwks.json`,
-discovery, `/login*`, `/login/sso/*`). The server merges them in after
+`/healthz` and `/readyz`. (Until VS-4 the OP routes, `/token`, `/jwks.json`,
+discovery, `/login*` and `/login/sso/*`, were here too; they are deleted and
+answer 404.) The server merges them in after
 [`crate::router::router`] has applied its layers, so none of them is wrapped.
 
 # Rotating the server key

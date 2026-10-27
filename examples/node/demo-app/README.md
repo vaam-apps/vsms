@@ -7,11 +7,13 @@ runs against the real stack those compose files bring up.
 
 It does both halves at once, against real containers, over real HTTP:
 
-1. Authenticates to `sms-gateway` with `private_key_jwt`, via
+1. Signs every request to `sms-gateway` with its own Ed25519 key and verifies
+   every answer against the gateway's two pinned keys, via
    [`@vaam-apps/vsms-node`](https://www.npmjs.com/package/@vaam-apps/vsms-node) —
-   the same published SDK an external integrator would use, reusing the
-   machine credential `provision-client` already provisions for the admin
-   console (no second `AppClient` is provisioned just for this).
+   the same SDK an external integrator would use (here built from this
+   checkout, `file:../../../sdks/node/vsms-sdk-node`). The compose stacks'
+   `register-demo-app` step registers the key's public half as the app's own
+   `AppClient`; there is no token to acquire.
 2. Sends one `otp`-class message.
 3. Starts a small Express server on `:9000` (`POST /webhooks`) and polls
    `GET /messages/{id}` until the message reaches a terminal state, printing
@@ -34,7 +36,7 @@ Normally you don't run this by hand — `just demo`/`just demo-app` does, inside
 exactly what `seed-demo-webhook` seeds).
 
 **Running this package as a bare host process only proves the outbound
-half** (`private_key_jwt` auth, `sendMessage`, polling to a terminal
+half** (the signed `sendMessage`, polling to a terminal
 state) — **not** webhook delivery. `sms-worker`'s `hooks` role runs
 *inside* the Compose network and has no route to a process listening on
 the host's own loopback; nothing in `compose.dev.yaml` maps a host port
@@ -55,36 +57,35 @@ against a `just demo` stack's outbound half from the host:
 ```bash
 cd examples/node/demo-app
 pnpm install --ignore-workspace --frozen-lockfile
-VSMS_ISSUER=http://127.0.0.1:8080 \
-VSMS_CLIENT_ID_PATH=../../../.e2e/console-client-id \
-VSMS_PRIVATE_KEY_PATH=../../../.e2e/console-client-key.pem \
+VSMS_BASE_URL=http://127.0.0.1:8080 \
+VSMS_SIGNING_KEY_PATH=../../../dev-keys/demo-app.pem \
+VSMS_SERVER_KEYS_PATH=../../../dev-keys/server-keys.txt \
 DEMO_WEBHOOK_SECRET=<any placeholder — nothing will call this receiver> \
   pnpm start
 ```
 
-(`just e2e-integration` already copies the console credential to `.e2e/` —
-reuse those paths, or point at your own `provision-client` output.)
+(`just dev-keys` mints both files, and `just demo-up` registers the key.
+Against another gateway, register your own key with `sms-gateway
+register-client` and pin that gateway's `sms-gateway server-keys`.)
 
 ## Configuration
 
 Every value has a default matching what `compose.dev.yaml`/`compose.demo.yaml`
 pass, so nothing below is required inside those stacks:
 
-| Variable | Default | What it is |
-|---|---|---|
-| `VSMS_ISSUER` | `http://sms-gateway:8080` | The OP/API origin (same host, per this deployment's own design — see `@vaam-apps/vsms-node`'s own `privateKeyJwt` doc comment). |
-| `VSMS_SCOPE` | `sms:send sms:read` | Requested token scope. |
-| `VSMS_CLIENT_ID` | *(unset)* | If set, used directly. Otherwise read from `VSMS_CLIENT_ID_PATH`. |
-| `VSMS_CLIENT_ID_PATH` | `/secrets/console-client-id` | Where `provision-client --client-id-out` wrote the client id. |
-| `VSMS_PRIVATE_KEY_PATH` | `/secrets/console-client-key.pem` | Where `provision-client --key-out` wrote the private key. |
-| `DEMO_WEBHOOK_SECRET` | *(unset)* | If set, used directly as the signing secret to verify against — **this is the override to pass a deliberately wrong value with, to prove signature verification actually fails closed.** Otherwise read from `DEMO_WEBHOOK_SECRET_PATH`. |
-| `DEMO_WEBHOOK_SECRET_PATH` | `/secrets/webhook-secret` | Where `vsms-demo-seed`'s `--webhook-secret-out` wrote the `WebhookEndpoint.secret` it created/found. |
-| `DEMO_WEBHOOK_PREV_SECRET` | *(unset)* | An optional second secret accepted alongside `DEMO_WEBHOOK_SECRET`, per §4.4's rotation-overlap design (`sms-webhook`: a receiver is handed both the current and previous secret and accepts either). `vsms-demo-seed`'s own seeded `WebhookEndpoint` always has `prevSecret: None` today, so nothing in the stack drives this — it's wired for completeness, not exercised by `just demo`. |
-| `DEMO_WEBHOOK_PORT` | `9000` | Port this process's own receiver listens on. |
-| `DEMO_TO` | `+237677123456` | Recipient MSISDN. |
-| `DEMO_SENDER_ID` | `VSMS` | Must match the `SenderId.value` `vsms-demo-seed` approved. |
-| `DEMO_BODY` | *(a sample OTP body)* | Message body. |
-| `DEMO_TIMEOUT_MS` | `90000` | Overall deadline — send retries, state polling, and the webhook settle period all share this one budget. |
+| Variable                   | Default                     | What it is                                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `VSMS_BASE_URL`            | `http://sms-gateway:8080`   | The gateway's origin.                                                                                                                                                                                                                                                                                                                                                                       |
+| `VSMS_SIGNING_KEY_PATH`    | `/run/demo/demo-app.pem`    | The app's Ed25519 private key (PKCS#8 PEM); its public half is what `register-client` registered.                                                                                                                                                                                                                                                                                           |
+| `VSMS_SERVER_KEYS_PATH`    | `/run/demo/server-keys.txt` | The gateway's two public sealing keys, as `sms-gateway server-keys` prints them (`current:` / `next:`).                                                                                                                                                                                                                                                                                     |
+| `DEMO_WEBHOOK_SECRET`      | *(unset)*                   | If set, used directly as the signing secret to verify against — **this is the override to pass a deliberately wrong value with, to prove signature verification actually fails closed.** Otherwise read from `DEMO_WEBHOOK_SECRET_PATH`.                                                                                                                                                    |
+| `DEMO_WEBHOOK_SECRET_PATH` | `/secrets/webhook-secret`   | Where `vsms-demo-seed`'s `--webhook-secret-out` wrote the `WebhookEndpoint.secret` it created/found.                                                                                                                                                                                                                                                                                        |
+| `DEMO_WEBHOOK_PREV_SECRET` | *(unset)*                   | An optional second secret accepted alongside `DEMO_WEBHOOK_SECRET`, per §4.4's rotation-overlap design (`sms-webhook`: a receiver is handed both the current and previous secret and accepts either). `vsms-demo-seed`'s own seeded `WebhookEndpoint` always has `prevSecret: None` today, so nothing in the stack drives this — it's wired for completeness, not exercised by `just demo`. |
+| `DEMO_WEBHOOK_PORT`        | `9000`                      | Port this process's own receiver listens on.                                                                                                                                                                                                                                                                                                                                                |
+| `DEMO_TO`                  | `+237677123456`             | Recipient MSISDN.                                                                                                                                                                                                                                                                                                                                                                           |
+| `DEMO_SENDER_ID`           | `VSMS`                      | Must match the `SenderId.value` `vsms-demo-seed` approved.                                                                                                                                                                                                                                                                                                                                  |
+| `DEMO_BODY`                | *(a sample OTP body)*       | Message body.                                                                                                                                                                                                                                                                                                                                                                               |
+| `DEMO_TIMEOUT_MS`          | `90000`                     | Overall deadline — send retries, state polling, and the webhook settle period all share this one budget.                                                                                                                                                                                                                                                                                    |
 
 ## What "wrong secret" looks like
 

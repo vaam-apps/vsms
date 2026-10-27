@@ -1,7 +1,7 @@
 // Where links in the existing docs point, once those docs are a website.
 //
 // The Markdown and AsciiDoc under docs/ were written to be read on GitHub,
-// so they link to each other by file (`runbooks/sso.adoc`), to the rest of
+// so they link to each other by file (`runbooks/deployment.adoc`), to the rest of
 // the repository by relative path (`../CONTRIBUTING.md`), and to headings by
 // GitHub's anchor ids. This module maps each of those onto the site without
 // editing a single source file: runbooks become their rendered pages, and

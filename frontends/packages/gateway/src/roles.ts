@@ -13,9 +13,8 @@
 // `backends/crates/sms-api/src/auth.rs`'s own `RESERVED_ROLE_KEYS` (`["system",
 // "app"]`) and a database `CHECK` constraint (`roles_key_not_reserved_check`,
 // §2.10) both refuse a `Role` row keyed either literal — `hasRole('system')`
-// matching a real human's role would hand them `OauthSigningKey.
-// privateKeyPem` and every `UserCredential.passwordHash` through generated
-// CRUD. This module's own [`isReservedRoleKey`] is a **third**, client-side
+// matching a real human's role would hand them every
+// `hasRole('system')` policy in the schema through generated CRUD. This module's own [`isReservedRoleKey`] is a **third**, client-side
 // guard: not load-bearing (the two server-side guards are what actually
 // protect this system regardless of what this file does), but it turns a
 // mistaken attempt into an immediate, friendly refusal in the create form

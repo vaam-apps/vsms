@@ -1,20 +1,18 @@
 // `GET /users`, `PATCH /users/{id}`, `DELETE /users/{id}`, and
 // `POST /$procs/provisionUser` — #58's Users screen.
 //
-// # Provisioning is a procedure, not `POST /users`, for the identical
-// # reason `provisionAppClient` isn't a plain create
+// # Provisioning is a procedure, not `POST /users`
 //
 // `User.create`'s own `@@allow` (`hasRole('owner') || hasRole('admin')`)
-// would actually admit a direct `POST /users` — but `UserCredential`
-// (holding the Argon2id password hash) is `hasRole('system')`-only on
-// every action, so a console-created `User` row with no procedure to
-// attach a credential to would be a permanently unusable account: no
-// password, no way to ever log in. `provisionUser` does both writes in one
-// transaction and returns the one-time password exactly once — see
-// `backends/crates/sms-api/src/procedures.rs::provision_console_user`'s own doc for
-// the mixed-context-write mechanism, and `schema.cstack`'s own comment on
-// `provisionUser` for why there is no rotate/reset counterpart (see
-// `OPEN_QUESTIONS.md` for that gap, named rather than silently absent).
+// would admit a direct `POST /users`, but every other path to a `User`
+// assumes `subject` is the row's own `id`, which a caller cannot know before
+// the row exists. `provisionUser` writes the row and corrects `subject` in
+// one transaction — see `backends/crates/sms-api/src/procedures.rs::
+// provision_console_user`. It makes **no credential**: since VS-4 there is no
+// password, token or recovery code, so nothing is returned once. The person
+// signs in by pairing a browser key (a vaam admin phone, or
+// `sms-gateway pair-console-key` as the break-glass), which attaches to this
+// row (`docs/design/console-pairing.md`).
 
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
@@ -125,11 +123,11 @@ export interface UpdateUserFields {
 }
 
 /** `PATCH /users/{id}` with `If-Match: etag`. `email`/`subject` are
- * deliberately not editable from this form — `email` is this account's own
- * login identity and `subject` is the OP's own `sub` claim source
- * (`sms_auth::login`'s doc: "`User.id` as `external_id`"); changing either
- * casually from an edit dialog risks locking the account's own owner out,
- * which is a bigger decision than this screen should make implicitly. */
+ * deliberately not editable from this form — `email` is how the break-glass
+ * `pair-console-key --user` finds this account and `subject` is its own `id`;
+ * changing either casually from an edit dialog risks locking the account's
+ * owner out, which is a bigger decision than this screen should make
+ * implicitly. */
 export async function updateUser(
   id: string,
   etag: string,
@@ -165,15 +163,9 @@ export interface ProvisionUserResult {
   userId: string;
   email: string;
   roleKey: string;
-  /** Shown exactly once — see this module's own doc and
-   * `backends/crates/sms-api/src/procedures.rs::provision_console_user`'s doc for
-   * why there is no way to retrieve it again short of provisioning a
-   * replacement account. Never persisted by this module beyond the one
-   * response it arrives in. */
-  password: string;
 }
 
-/** `POST /$procs/provisionUser` (#52/#58). */
+/** `POST /$procs/provisionUser` (#52/#58): makes the `User` row, no credential. */
 export async function provisionUser(
   email: string,
   displayName: string,

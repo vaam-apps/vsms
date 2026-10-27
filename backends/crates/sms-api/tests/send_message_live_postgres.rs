@@ -173,9 +173,8 @@ async fn seed_app_and_client(
 
     let client_id = format!("client-{suffix}");
     // system, not owner: AppClient has no create policy for any human
-    // role — provisionAppClient (#23) is its one intended writer, the
-    // same way SmsClientStore is the one thing that ever reads
-    // OauthClient. See the schema.cstack comment on AppClient's
+    // role — provisionAppClient (#23) is its one intended writer
+    // (and `register-client` its operator one). See the schema.cstack comment on AppClient's
     // `@@allow("create", ...)` for how this was found.
     db.app_client()
         .create(schema::CreateAppClientInput {

@@ -111,10 +111,8 @@ struct Cli {
     /// already-seeded database. `demo-app` has no other way to learn this
     /// value: `WebhookEndpoint.secret` is server-generated here, exactly
     /// the "one container's computed output, a sibling container's
-    /// input" problem `provision-client`'s own `--client-id-out` already
-    /// solves the same way. Ordinary create-or-truncate semantics, no
-    /// restrictive mode — same reasoning `--client-id-out`'s own doc
-    /// comment gives (`backends/apps/sms-gateway/src/main.rs`): not the
+    /// input" problem, solved through a shared volume. Ordinary
+    /// create-or-truncate semantics, no restrictive mode: not the
     /// half of a credential that authenticates a caller, and this whole
     /// stack is a disposable, obviously-demo deployment regardless (see
     /// `SMS_HASH_PEPPER`'s own inline compose comments).

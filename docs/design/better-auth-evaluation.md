@@ -4,6 +4,13 @@
 this document or its PR.** A console redesign is in flight across several agents and
 already owns `frontends/apps/admin/`; this document changes nothing there.
 
+> **Superseded (2026-10-27, VS-4).** The question no longer exists: the console has no login and no
+> session layer (VS-5b), and the Rust side this document scopes as fixed (`UserCredential`, the
+> Argon2id login, `authkestra-op`, `sms-auth`) was deleted by VS-4. Kept as the record of why a
+> better-auth migration was weighed and not taken; every file path below that names the OP or the
+> console's relying-party code names code that no longer exists. `docs/design/console-pairing.md`
+> is the design that replaced it.
+
 **Question asked:** should [`better-auth`](https://www.better-auth.com/) replace the
 admin console's hand-rolled session layer — the OIDC relying-party mechanics in
 `frontends/apps/admin/middleware.ts`, `frontends/apps/admin/lib/oidc.ts`, `frontends/apps/admin/lib/session.ts`, and
@@ -52,13 +59,13 @@ happens to also work as a single fixed-provider RP.
 Both were evaluated, since the task asks which plugin does this and neither is the
 obvious sole candidate:
 
-| | `genericOAuth` (core) | `@better-auth/sso` |
-|---|---|---|
-| PKCE | Opt-in, `pkce?: boolean`, **default `false`** (`generic-oauth/types.ts:95`) | Opt-in, same shape |
-| `id_token` handling | `decodeJwt()` from `jose` — **decodes the payload, does not verify the signature** (`generic-oauth/routes.ts:11,795`) | Real verification: `jwtVerify()` against a `createRemoteJWKSet()` built from `config.jwksEndpoint`, checking `audience`/`issuer` (`frontends/packages/core/src/oauth2/validate-authorization-code.ts:170-189`, called from `sso.ts:1673`) |
-| `nonce` claim | Not in the config type at all — grepped the whole plugin, zero occurrences of `nonce` | **Also absent.** `validateToken`'s own options type is `{ audience?, issuer? }` — no `nonce` parameter exists anywhere in `@better-auth/sso`'s source (grepped `frontends/packages/sso/src/**`, zero occurrences) |
-| Database of its own | Yes — links into better-auth's `user`/`account` tables via `handleOAuthUserInfo`, same as every other social provider | Yes — identical `handleOAuthUserInfo` call site (`sso.ts:1735`) |
-| Fit for "one fixed first-party OIDC provider, no hosted third-party login page" | Assumes a classic redirect-to-provider dance; nothing hosts a login form on our side of the exchange | Same — plus organization/domain-verification machinery this deployment has no use for (one issuer, one client, no multi-tenant IdP registry) |
+|                                                                                 | `genericOAuth` (core)                                                                                                 | `@better-auth/sso`                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| PKCE                                                                            | Opt-in, `pkce?: boolean`, **default `false`** (`generic-oauth/types.ts:95`)                                           | Opt-in, same shape                                                                                                                                                                                                                        |
+| `id_token` handling                                                             | `decodeJwt()` from `jose` — **decodes the payload, does not verify the signature** (`generic-oauth/routes.ts:11,795`) | Real verification: `jwtVerify()` against a `createRemoteJWKSet()` built from `config.jwksEndpoint`, checking `audience`/`issuer` (`frontends/packages/core/src/oauth2/validate-authorization-code.ts:170-189`, called from `sso.ts:1673`) |
+| `nonce` claim                                                                   | Not in the config type at all — grepped the whole plugin, zero occurrences of `nonce`                                 | **Also absent.** `validateToken`'s own options type is `{ audience?, issuer? }` — no `nonce` parameter exists anywhere in `@better-auth/sso`'s source (grepped `frontends/packages/sso/src/**`, zero occurrences)                         |
+| Database of its own                                                             | Yes — links into better-auth's `user`/`account` tables via `handleOAuthUserInfo`, same as every other social provider | Yes — identical `handleOAuthUserInfo` call site (`sso.ts:1735`)                                                                                                                                                                           |
+| Fit for "one fixed first-party OIDC provider, no hosted third-party login page" | Assumes a classic redirect-to-provider dance; nothing hosts a login form on our side of the exchange                  | Same — plus organization/domain-verification machinery this deployment has no use for (one issuer, one client, no multi-tenant IdP registry)                                                                                              |
 
 **The decisive finding is in the source, not the docs.** better-auth's own docs for
 `genericOAuth` don't mention nonce handling one way or the other, and describe issuer
@@ -94,13 +101,13 @@ candidates has a real, silent gap on exactly one of the four checks this system'
 
 ## The five must-survive properties
 
-| # | Property | better-auth (`genericOAuth`) | better-auth (`@better-auth/sso`) | Verdict |
-|---|---|---|---|---|
-| 1 | Pure relying party — no own identity provider, no own user/account/session tables, no database of its own | **Fails.** Core `betterAuth({...})` always provisions `user`/`session`/`account`/`verification` via a DB adapter; OAuth sign-in always links into `account` through `handleOAuthUserInfo`, regardless of "stateless session" mode (which only removes the *session-validation* read, not account provisioning) | **Fails**, identically — same `handleOAuthUserInfo` call site | **Reject** |
-| 2 | Runs on the Edge runtime (`frontends/apps/admin/middleware.ts`'s hard constraint) | **Fails**, per better-auth's own docs (verbatim below) | Same session-handling code path — same failure | **Reject** |
-| 3 | Full OIDC validation: S256 PKCE, constant-time `state`, `nonce` against the transaction, `id_token` signature via JWKS + `iss`/`aud`/`exp` | **Fails** on three of four — PKCE off by default, no signature verification, no `nonce` | **Fails** on one of four — no `nonce`; PKCE still opt-in, but signature/`iss`/`aud`/`exp` are real | **Reject** (genericOAuth outright; sso partial, see below) |
-| 4 | Yields the signed-in human's real access token per request, forwardable one hop downstream via `x-vsms-access-token` (`frontends/packages/gateway`'s `AsyncLocalStorage`) | Not a built-in offering either way — `frontends/apps/admin/middleware.ts` would still need to read whatever better-auth stores server-side and set the same header itself | Same | **No net gain** either way — see below |
-| 5 | R4 — doesn't make the console load-bearing for the backend; no new required env var or migration for a backend-only deployment | R4 is about the *backend* not depending on the console, so this specific rule is not directly violated — but adopting either plugin gives the console **its first database dependency ever** (`frontends/apps/admin/` has none today — checked; no `DATABASE_URL`, no adapter package, nothing) | Same | **New, unforced architectural dependency** |
+| #   | Property                                                                                                                                                                  | better-auth (`genericOAuth`)                                                                                                                                                                                                                                                                                   | better-auth (`@better-auth/sso`)                                                                   | Verdict                                                    |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| 1   | Pure relying party — no own identity provider, no own user/account/session tables, no database of its own                                                                 | **Fails.** Core `betterAuth({...})` always provisions `user`/`session`/`account`/`verification` via a DB adapter; OAuth sign-in always links into `account` through `handleOAuthUserInfo`, regardless of "stateless session" mode (which only removes the *session-validation* read, not account provisioning) | **Fails**, identically — same `handleOAuthUserInfo` call site                                      | **Reject**                                                 |
+| 2   | Runs on the Edge runtime (`frontends/apps/admin/middleware.ts`'s hard constraint)                                                                                         | **Fails**, per better-auth's own docs (verbatim below)                                                                                                                                                                                                                                                         | Same session-handling code path — same failure                                                     | **Reject**                                                 |
+| 3   | Full OIDC validation: S256 PKCE, constant-time `state`, `nonce` against the transaction, `id_token` signature via JWKS + `iss`/`aud`/`exp`                                | **Fails** on three of four — PKCE off by default, no signature verification, no `nonce`                                                                                                                                                                                                                        | **Fails** on one of four — no `nonce`; PKCE still opt-in, but signature/`iss`/`aud`/`exp` are real | **Reject** (genericOAuth outright; sso partial, see below) |
+| 4   | Yields the signed-in human's real access token per request, forwardable one hop downstream via `x-vsms-access-token` (`frontends/packages/gateway`'s `AsyncLocalStorage`) | Not a built-in offering either way — `frontends/apps/admin/middleware.ts` would still need to read whatever better-auth stores server-side and set the same header itself                                                                                                                                      | Same                                                                                               | **No net gain** either way — see below                     |
+| 5   | R4 — doesn't make the console load-bearing for the backend; no new required env var or migration for a backend-only deployment                                            | R4 is about the *backend* not depending on the console, so this specific rule is not directly violated — but adopting either plugin gives the console **its first database dependency ever** (`frontends/apps/admin/` has none today — checked; no `DATABASE_URL`, no adapter package, nothing)                | Same                                                                                               | **New, unforced architectural dependency**                 |
 
 **On property 3, being precise rather than just failing both wholesale:** `genericOAuth`
 fails PKCE (off by default — would need `pkce: true` set explicitly, which is at least
@@ -161,15 +168,15 @@ it doesn't treat OAuth-issued tokens as the source of truth for its own session.
 
 ## Line counts — what would actually be deleted
 
-| File | Lines | What it does |
-|---|---|---|
-| `frontends/apps/admin/middleware.ts` | 256 | Session decrypt, refresh-ahead-of-expiry, txn-cookie minting on `GET /login`, header injection/stripping (`x-vsms-actor`/`x-vsms-role`/`x-vsms-access-token`) |
-| `frontends/apps/admin/lib/oidc.ts` | 210 | PKCE pair generation, state/nonce generation, constant-time `verifyState`/`verifyNonce`, JWE encrypt/decrypt for both cookies |
-| `frontends/apps/admin/lib/session.ts` | 77 | Node-runtime cookie read/write wrappers around `oidc.ts` for the route handlers |
-| `frontends/apps/admin/app/api/auth/login/route.ts` | 80 | Reads the txn cookie, calls `sms-gateway`'s own `POST /login` (password + PKCE/state/nonce in one call), redirects |
-| `frontends/apps/admin/app/api/auth/callback/route.ts` | 140 | State check, `/token` exchange, `id_token` verify (JWKS/iss/aud/exp), nonce check, session cookie write |
-| `frontends/apps/admin/app/api/auth/logout/route.ts` | 20 | Clears the session cookie |
-| **Total** | **783** | |
+| File                                                  | Lines   | What it does                                                                                                                                                  |
+| ----------------------------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `frontends/apps/admin/middleware.ts`                  | 256     | Session decrypt, refresh-ahead-of-expiry, txn-cookie minting on `GET /login`, header injection/stripping (`x-vsms-actor`/`x-vsms-role`/`x-vsms-access-token`) |
+| `frontends/apps/admin/lib/oidc.ts`                    | 210     | PKCE pair generation, state/nonce generation, constant-time `verifyState`/`verifyNonce`, JWE encrypt/decrypt for both cookies                                 |
+| `frontends/apps/admin/lib/session.ts`                 | 77      | Node-runtime cookie read/write wrappers around `oidc.ts` for the route handlers                                                                               |
+| `frontends/apps/admin/app/api/auth/login/route.ts`    | 80      | Reads the txn cookie, calls `sms-gateway`'s own `POST /login` (password + PKCE/state/nonce in one call), redirects                                            |
+| `frontends/apps/admin/app/api/auth/callback/route.ts` | 140     | State check, `/token` exchange, `id_token` verify (JWKS/iss/aud/exp), nonce check, session cookie write                                                       |
+| `frontends/apps/admin/app/api/auth/logout/route.ts`   | 20      | Clears the session cookie                                                                                                                                     |
+| **Total**                                             | **783** |                                                                                                                                                               |
 
 **What better-auth would add back, not remove for free:**
 

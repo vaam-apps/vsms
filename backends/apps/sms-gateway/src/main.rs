@@ -3,10 +3,6 @@
 mod commands;
 mod dlr;
 mod health;
-mod login;
-mod op;
-mod sso;
-mod token_rate_limit;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -34,57 +30,27 @@ enum Command {
     Serve(Box<commands::serve::ServeArgs>),
     /// Print the generated route table and exit. Needs no database.
     Routes,
-    /// Generate a new RSA signing key, activate it, and keep the previous
-    /// one publishing in JWKS for `sms_auth::op::ROTATION_OVERLAP` — an
-    /// operator action, not a generated-CRUD route (`OauthSigningKey`'s own
-    /// schema comment: this is the key that signs every token the OP
-    /// issues, and it must never be reachable except as `hasRole('system')`
-    /// already restricts it to).
-    RotateSigningKey(commands::rotate_signing_key::RotateSigningKeyArgs),
-    /// Mint a real, HTTP-usable `private_key_jwt` client through the real
-    /// `provisionAppClient` procedure — an operator action, not a
-    /// generated-CRUD route, for the identical reason `RotateSigningKey`
-    /// above is one: `provisionAppClient`'s own `@allow` in
-    /// `schema.cstack` is `hasRole('owner') || hasRole('admin')`, and
-    /// the only way to be an `owner` or `admin` over HTTP is a console
-    /// key paired to a person (VS-3), which a fresh deployment has none of.
-    /// So nothing an operator has at bootstrap can call it over HTTP; this subcommand calls `Procedures::provision_app_client`
-    /// directly, under a hand-built `owner`/`admin` context, the same way
-    /// `backends/apps/sms-gateway/tests/m1_acceptance_gate_live_postgres.rs` already
-    /// does for its own acceptance gate. See #137.
-    ///
-    /// `ProvisionClientResult` returns `privateKeyPem` exactly once and it
-    /// is never stored anywhere in this system (#23/#111) — this command
-    /// writes it straight to `--key-out` with `0600` permissions and
-    /// refuses to overwrite an existing file, and it is never logged or
-    /// printed alongside anything else.
-    ProvisionClient(commands::provision_client::ProvisionClientArgs),
-    /// Registers an Ed25519 public key for an `App`'s signing client - the
-    /// signed-transport replacement for `provision-client` (VS-2). The caller
-    /// generates the keypair and hands over only the public half; vsms never
-    /// sees a private key, so nothing is returned once and nothing can be
-    /// lost. Creates the app's signing client (`appc_<slug>`) the first time,
-    /// then attaches the key.
+    /// Registers an Ed25519 public key for an `App`'s signing client (VS-2),
+    /// the only way a machine caller gets in. The caller generates the keypair
+    /// and hands over only the public half; vsms never sees a private key, so
+    /// nothing is returned once and nothing can be lost. Creates the app's
+    /// signing client (`appc_<slug>`) the first time, then attaches the key.
     ///
     /// Idempotent on the key's RFC 9679 thumbprint: running it twice with the
     /// same key leaves one `ClientKey` and exits 0. A key that was revoked, or
     /// that belongs to another client, is refused rather than reinstated or
     /// moved. It goes through the real `registerAppClientKey` entry point, so
     /// `@allow` is enforced here exactly as it is over HTTP (an operator
-    /// action rather than a generated-CRUD route for the same reason
-    /// `provision-client` is: no token this deployment issues carries
-    /// `owner`/`admin`).
-    ///
-    /// **Nothing verifies the key yet.** The envelope layer that reads
-    /// `ClientKey` is VS-3; `provision-client` and the token server are
-    /// unchanged until VS-4.
+    /// action rather than a generated-CRUD route: a fresh deployment has no
+    /// console key paired to an `owner`/`admin` yet, so nothing could call it
+    /// over HTTP).
     RegisterClient(commands::register_client::RegisterClientArgs),
     /// Break-glass: registers a console public key (P-256, from a browser's
     /// `WebCrypto`) for an **existing, active** user, so that person can sign
     /// in to the console without a phone pairing (signed transport, VS-5a).
     /// Run it inside the cluster; it is the operator action behind "owner
-    /// ruling Q2: break-glass is CLI key enrolment", and replaces the
-    /// password login's role as the way back in.
+    /// ruling Q2: break-glass is CLI key enrolment", and the only way in when
+    /// no vaam admin phone is available.
     ///
     /// No proof of possession is asked for: whoever can run this against the
     /// database already holds more authority than a pairing grants, the same
@@ -96,14 +62,12 @@ enum Command {
     /// Idempotent on the key's RFC 9679 thumbprint: running it twice with the
     /// same key and user leaves one `ConsoleKey` and exits 0. A key that is
     /// revoked, expired or another user's is refused, never reinstated or
-    /// moved. **Nothing verifies the key yet** - VS-3 wires it into the
-    /// envelope layer.
+    /// moved.
     PairConsoleKey(commands::pair_console_key::PairConsoleKeyArgs),
     /// Seed (or reactivate) the `Provider` row `resolve_provider_row_id`
     /// (this file) resolves at startup, **and** a catch-all `Route`
     /// pointing at it — an operator action, not a generated-CRUD route,
-    /// for the same reason `RotateSigningKey`/`ProvisionClient` above are
-    /// one: `Provider`'s own `@allow` in `schema.cstack` admits only
+    /// for the same reason `RegisterClient` above is one: `Provider`'s own `@allow` in `schema.cstack` admits only
     /// `hasRole('owner') || hasRole('admin')` on create (`Route`'s is
     /// identical), and the only way to be either over HTTP is a console key
     /// paired to a person (VS-3), which a fresh deployment has none of.
@@ -178,81 +142,43 @@ enum Command {
     /// `@unique` index, the same shape every other seed/provision command
     /// in this file uses.
     CreateApp(commands::create_app::CreateAppArgs),
-    /// own `@allow` in `schema.cstack` is `hasRole('system')` only, and
-    /// no signer is ever given that role (`SignedAuth` never produces it). Public client (`token_endpoint_auth_method = none`): the
-    /// console is a first-party BFF whose `redirect_uri` and mandatory
-    /// PKCE are the protection, and no column in this schema could hold a
-    /// shared secret it would need one for (§2.2, the same reasoning
-    /// `private_key_jwt` service accounts already rely on).
+    /// Creates a `User` row - the account a person's console key is later
+    /// paired to. An operator action, not a generated-CRUD route: `User`'s own
+    /// `@allow` in `schema.cstack` admits `hasRole('owner') || hasRole('admin')`
+    /// on create, and a fresh deployment has no console key paired to either
+    /// yet, so the very first account is necessarily made this way.
     ///
-    /// Idempotent: a `23505` on `clientId`'s `@unique` index (this
-    /// row already existing from an earlier run) is treated as success,
-    /// matching `SeedProvider`'s own convention — safe to run on every
-    /// deploy.
-    SeedConsoleClient(commands::seed_console_client::SeedConsoleClientArgs),
-    /// Creates a `User` + `UserCredential` for #194's human login flow —
-    /// an operator action, not a generated-CRUD route, for the identical
-    /// reason `ProvisionClient` above is one: `User`'s own `@allow` in
-    /// `schema.cstack` admits `hasRole('owner') || hasRole('admin')` on
-    /// create, and no real token this deployment issues can ever carry
-    /// either (the same gap this whole ticket exists to close — a human
-    /// has to be able to log in before one can provision another human,
-    /// so the very first account is necessarily bootstrapped this way).
-    ///
-    /// Generates a random password, hashes it with the real
-    /// `sms_core::password::hash_password` (Argon2id — never a weaker
-    /// scheme just because this is a CLI tool; #52/#58 moved this function
-    /// out of `sms-auth::login`, where it lived when this comment was
-    /// first written, down to `sms-core` so the console's own
-    /// `provisionUser` procedure could call the identical logic), and
-    /// prints the plaintext
-    /// exactly once — the same "returned once, never stored, never
-    /// logged" discipline `ProvisionClient`'s own `privateKeyPem` already
-    /// follows, applied here because there is no operator-supplied
-    /// `--password` flag: a CLI argument would land in shell history and
-    /// the process list, exactly the exposure `write_private_key_pem`'s
-    /// own `--key-out` file exists to avoid for the client-provisioning
-    /// case.
+    /// Makes **no credential**. Since VS-4 there is no password, token or
+    /// recovery code in this system for a command to generate or print: the
+    /// person signs in by pairing a browser key, through a vaam admin phone or
+    /// with `pair-console-key` (the break-glass), which attaches to the user
+    /// this command made. Idempotent on the email.
     ProvisionUser(commands::provision_user::ProvisionUserArgs),
     /// Chains the idempotent steps a fresh deployment needs before
-    /// `sms-gateway serve` can ever bind its listener, in the order
+    /// `sms-gateway serve` can do anything useful, in the order
     /// `docs/runbooks/deployment.adoc`'s step 3 documents both as one
     /// combined call and, in its own "What `bootstrap` does" subsection,
-    /// one sub-step at a time: an OP signing key, the `orange_cm` `Provider` + catch-all
-    /// `Route`, the `sms-console` `OauthClient`, and the first operator
-    /// account. Deliberately does **not** include `create-app` — a real
-    /// production `App`'s quota/allowlist is a business decision this
-    /// command can't make for an operator (see that variant's own doc);
-    /// this only closes the gap that stops `sms-gateway`/`admin` from
-    /// ever starting at all.
+    /// one sub-step at a time: the `orange_cm` `Provider` + catch-all
+    /// `Route`, and the first operator account. Deliberately does **not**
+    /// include `create-app` — a real production `App`'s quota/allowlist is a
+    /// business decision this command can't make for an operator (see that
+    /// variant's own doc).
     ///
     /// R4 (`CONTRIBUTING.md`: "the admin console is optional, the
-    /// backend must run without it") — found in review, not by
-    /// inspection: the first cut required `--console-redirect-uri`/
-    /// `--owner-email`/`--owner-display-name` unconditionally, which
-    /// made this command unusable for a genuinely backend-only
-    /// deployment (no console, no operator account, ever). All three
-    /// are optional now: omitting `--console-redirect-uri` skips both
-    /// the console-client step and the owner-account step outright
-    /// (there is no `OauthClient` for a human to log into without a
-    /// real `redirect_uri`, and no reason to provision an owner with
-    /// nothing to sign into) — see `bootstrap_command`'s own doc for
-    /// the exact validation and skip logic.
+    /// backend must run without it"): `--owner-email` and
+    /// `--owner-display-name` are optional, both or neither. Omitting them
+    /// skips the owner-account step, for a genuinely backend-only
+    /// deployment (no console, no operator account, ever).
     ///
     /// Every step reuses the exact function the equivalent standalone
     /// subcommand calls — this is a thinner wrapper chaining them over
     /// one shared connection pool, not a second copy of any of their
     /// logic. Safe to run again against an already-bootstrapped
-    /// deployment: signing-key rotation is skipped outright (not just
-    /// idempotent — an unconditional rotation here would silently
-    /// invalidate every token signed under the previous key's overlap
-    /// window sooner than an operator asked for) whenever an `active`
-    /// `OauthSigningKey` already exists, `seed-dispatch`'s own two halves
-    /// are already idempotent, `seed-console-client`'s is a `23505`
-    /// catch, and `provision-user`'s duplicate-email case is reported and
-    /// skipped rather than failing the whole chain.
+    /// deployment: `seed-dispatch`'s own two halves are already
+    /// idempotent, and `provision-user`'s duplicate-email case is reported
+    /// and skipped rather than failing the whole chain.
     ///
-    /// `--skip-seed-dispatch` skips step 2 (the hardcoded `orange_cm`
+    /// `--skip-seed-dispatch` skips step 1 (the hardcoded `orange_cm`
     /// `Provider` + catch-all `Route`, priority 0, weight 1). Use it when
     /// the deployment will not send through Orange — an AWS-only go-live,
     /// say — and run `seed-dispatch` yourself for the provider you will
@@ -327,23 +253,15 @@ enum Command {
 
 /// Installs `ring` as the process-wide default `rustls` `CryptoProvider`.
 ///
-/// Load-bearing, not defensive: `authkestra-op`/`-engine`/`-resource`/`-axum`
-/// are pinned with `default-features = false, features =
-/// ["rustls-no-provider"]` (Cargo.toml's own comment on those pins), which
-/// drops `aws-lc-rs` out of the dependency graph entirely — that crate's
-/// `cmake`/pkg-config build requirement is exactly what made a musl build
-/// impractical before. But it also means authkestra's own `reqwest` client
-/// carries no crypto backend baked in at all; the first TLS handshake it
-/// attempts panics unless *something* has already called
-/// `CryptoProvider::install_default()` for the whole process. `reqwest`
-/// 0.12 elsewhere in this binary's dependency tree (via `sms-api`,
-/// `sms-provider-orange-cm`) still resolves `ring` through its own
-/// `rustls-tls` feature and would install it lazily on first use — but
-/// relying on *some other* client happening to be built first is exactly
-/// the "unverified runtime path" AGENTS.md warned off; this makes the
-/// order explicit and unconditional instead. `ring`, not `aws-lc-rs`, to
-/// match every other TLS consumer already in this tree (AGENTS.md: "the
-/// whole cratestack family selects ring").
+/// Names the provider once, before any HTTP client exists, so no TLS client
+/// in this process depends on which one happens to be built first. Every
+/// client here (`reqwest` with `rustls-tls` in the provider adapters,
+/// cratestack's own) is built on `ring`, and `aws-lc-rs` is not in the
+/// dependency graph at all (`cargo tree -i aws-lc-rs` finds nothing) — its
+/// `cmake`/pkg-config build requirement is what made a musl build
+/// impractical. The embedded `OpenID` Provider's `authkestra` stack, whose
+/// `rustls-no-provider` clients genuinely panicked without this call, was
+/// deleted in VS-4; the call stays because it is cheap and explicit.
 ///
 /// `.ok()`, not `.expect(...)`: the only failure mode is a provider already
 /// installed (impossible this early, since this is the first line of
@@ -365,15 +283,11 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                // `sms_auth` joined the default with the SSO broker: its
-                // discovery, issuer-mismatch and invalid-client errors are
-                // the operator's only signal that the IdP side is broken,
-                // and under the old default they were silently dropped.
-                // `sms_provider_aws_sms` for the same reason: the SNS
+                // `sms_provider_aws_sms`: the SNS
                 // subscription-confirmation command (with its token) and the
                 // SignatureVersion-1 / unsubscribe errors are logged there.
                 .unwrap_or_else(|_| {
-                    "sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info".into()
+                    "sms_gateway=info,sms_api=info,sms_provider_aws_sms=info,cratestack=info".into()
                 }),
         )
         .init();
@@ -382,14 +296,6 @@ async fn main() -> Result<()> {
         Command::Routes => commands::routes::run(),
 
         Command::Serve(args) => commands::serve::serve_command(*args).await,
-
-        Command::RotateSigningKey(args) => {
-            commands::rotate_signing_key::rotate_signing_key_command(args.database_url).await
-        }
-
-        Command::ProvisionClient(args) => {
-            commands::provision_client::provision_client_command(args).await
-        }
 
         Command::RegisterClient(args) => {
             commands::register_client::register_client_command(args).await
@@ -402,10 +308,6 @@ async fn main() -> Result<()> {
         Command::SeedDispatch(args) => commands::seed_dispatch::seed_dispatch_command(args).await,
 
         Command::CreateApp(args) => commands::create_app::create_app_command(args).await,
-
-        Command::SeedConsoleClient(args) => {
-            commands::seed_console_client::seed_console_client_command(args).await
-        }
 
         Command::ProvisionUser(args) => {
             commands::provision_user::provision_user_command(args).await

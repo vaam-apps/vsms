@@ -76,12 +76,13 @@ is understanding each individual step, not just running one command;
 see `docs/runbooks/deployment.adoc`'s own step 3 for the one-liner once
 you already know what it's doing.
 
-Two one-time steps before either binary will start. First, an OP signing key -- `sms-gateway serve` refuses to start without one:
+Two one-time steps before either binary will start. First, the gateway's two Ed25519 envelope keys (VS-3) -- `sms-gateway serve` signs every answer with them and refuses to start without both. They are the only keys it needs; there is no token signing key (the OpenID Provider that had one was deleted in VS-4). Dev keys, kept out of git:
 
 [,bash]
 ----
-DATABASE_URL=postgres://localhost/vsms_check \
-    cargo run -p sms-gateway -- rotate-signing-key
+mkdir -p dev-keys
+openssl genpkey -algorithm ed25519 -out dev-keys/envelope-current.pem
+openssl genpkey -algorithm ed25519 -out dev-keys/envelope-next.pem
 ----
 
 Second, `sms-gateway serve` also refuses to start until an `active` `Provider` row keyed `orange_cm` exists, *and*, since https://github.com/vymalo/vsms/issues/62[#62]'s routing rules engine, ``sms-worker``'s `dispatch` role needs at least one enabled `Route` pointing at it or it refuses every message with no matching route (a deliberate cutover from routing's old "any active provider" placeholder -- `sms-gateway serve` itself still only checks for the `Provider` row at startup, so a deployment missing only the `Route` half starts and reports healthy, then rejects everything it's asked to send). No admin console exists yet to create either by hand, so run something that seeds both _before_ starting either binary, not after. Two options: `send_test_message` below also creates both as a side effect (along with the `App`/`AppClient`/`SenderId` fixtures this walkthrough's message needs anyway), or, if you only want the `Provider`/`Route` pair and nothing else, `sms-gateway seed-dispatch` (#148, renamed from `seed-provider` and extended to also seed the `Route` in #62) does exactly that -- idempotent on both halves, no message/fixtures attached:
@@ -117,7 +118,8 @@ Now, in separate terminals:
 ----
 # terminal 1 — the API server
 DATABASE_URL=postgres://localhost/vsms_check \
-SMS_OIDC_ISSUER=http://127.0.0.1:8080 \
+SMS_ENVELOPE_SIGNING_KEY_FILE=dev-keys/envelope-current.pem \
+SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE=dev-keys/envelope-next.pem \
 SMS_HASH_PEPPER="$SMS_HASH_PEPPER" \
 ORANGE_CM_CLIENT_ID=placeholder \
 ORANGE_CM_CLIENT_SECRET=placeholder \
@@ -246,7 +248,7 @@ DATABASE_URL=postgres://localhost/vsms_dev ./target/debug/sms-gateway provision-
   --email you@example.com --display-name "Your Name" --role-key owner
 ----
 
-`--role-key` accepts any of §5.2's six built-in roles, all seeded by `0002_bootstrap`. (`provision-user` still prints a generated password once; the console never asks for it.)
+`--role-key` accepts any of §5.2's six built-in roles, all seeded by `0002_bootstrap`. (`provision-user` creates the account only: it holds no credential and prints none.)
 
 [,bash]
 ----
