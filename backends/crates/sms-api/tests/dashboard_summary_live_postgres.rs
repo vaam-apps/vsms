@@ -226,7 +226,7 @@ async fn seed_endpoint(db: &Cratestack, app_id: &str) -> schema::WebhookEndpoint
             deliveryMode: schema::WebhookDeliveryMode::hmac,
             audience: None,
             eventTypes: " message.delivered ".to_owned(),
-            secret: Some(format!("test-secret-{}", unique_suffix())),
+            secret: Some(format!("test-secret-0123456789abcdef-{}", unique_suffix())),
             prevSecret: None,
             secretRotatedAt: None,
             maskRecipient: true,

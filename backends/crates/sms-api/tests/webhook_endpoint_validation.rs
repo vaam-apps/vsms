@@ -15,6 +15,9 @@
 //!   `delivery_route` (a host is ASCII, a port is 1..=65535), never wider;
 //!   `every_url_the_pattern_accepts_can_be_sealed` holds that over a generated
 //!   corpus, with `delivery_route` as the oracle.
+//! - **A secret written through the API is at least 32 characters**, current or
+//!   rotated in; `prevSecret`, which only ever receives an earlier `secret`, has
+//!   no bound.
 //! - **The audience is never `vsms`.** That is the name the gateway's own routes
 //!   answer to. The migration adds the same refusal as a CHECK
 //!   (`sealed_webhooks_migration_live_postgres.rs` proves the database says no
@@ -227,7 +230,7 @@ fn an_audience_is_never_the_name_the_gateways_own_routes_answer_to() {
 }
 
 #[test]
-fn an_update_is_held_to_the_audience_rules() {
+fn an_update_is_held_to_the_audience_rules_and_the_secret_bound() {
     let validate = |input: UpdateWebhookEndpointInput| {
         <UpdateWebhookEndpointInput as UpdateModelInput<WebhookEndpoint>>::validate(&input).is_ok()
     };
@@ -247,6 +250,56 @@ fn an_update_is_held_to_the_audience_rules() {
     // with a query string saves as it was.
     assert!(validate(UpdateWebhookEndpointInput {
         url: Some("https://api.vaam.store/webhooks/vsms?token=1".to_owned()),
+        ..update()
+    }));
+}
+
+/// A secret the API takes is at least 32 characters, whichever way it arrives;
+/// a rotation can still move any earlier secret into `prevSecret`; and a
+/// `null` clears either, as a switch to `sealed` must.
+#[test]
+fn a_secret_is_at_least_32_characters_and_a_previous_one_has_no_bound() {
+    let create_ok = |secret: Option<&str>| {
+        let input = CreateWebhookEndpointInput {
+            secret: secret.map(str::to_owned),
+            ..hmac_create("https://api.vaam.store/webhooks/vsms")
+        };
+        <CreateWebhookEndpointInput as CreateModelInput<WebhookEndpoint>>::validate(&input).is_ok()
+    };
+    assert!(create_ok(Some(SECRET)));
+    assert!(create_ok(Some(&"s".repeat(32))));
+    assert!(!create_ok(Some(&"s".repeat(31))));
+    assert!(!create_ok(Some("")));
+    assert!(
+        create_ok(None),
+        "absent is a CHECK's business, not this bound's"
+    );
+
+    let validate = |input: UpdateWebhookEndpointInput| {
+        <UpdateWebhookEndpointInput as UpdateModelInput<WebhookEndpoint>>::validate(&input).is_ok()
+    };
+    let update = || UpdateWebhookEndpointInput::default();
+    assert!(validate(UpdateWebhookEndpointInput {
+        secret: Some(Some(SECRET.to_owned())),
+        ..update()
+    }));
+    assert!(!validate(UpdateWebhookEndpointInput {
+        secret: Some(Some("short".to_owned())),
+        ..update()
+    }));
+    assert!(!validate(UpdateWebhookEndpointInput {
+        secret: Some(Some(String::new())),
+        ..update()
+    }));
+    assert!(validate(UpdateWebhookEndpointInput {
+        secret: Some(None),
+        prevSecret: Some(None),
+        ..update()
+    }));
+    // The previous secret is whatever `secret` was, short or not.
+    assert!(validate(UpdateWebhookEndpointInput {
+        secret: Some(Some(SECRET.to_owned())),
+        prevSecret: Some(Some("an-older-and-shorter-secret".to_owned())),
         ..update()
     }));
 }

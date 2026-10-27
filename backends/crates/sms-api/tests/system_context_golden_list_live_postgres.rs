@@ -923,7 +923,7 @@ async fn seed_and_verify_webhook_endpoint(
             deliveryMode: schema::WebhookDeliveryMode::hmac,
             audience: None,
             eventTypes: " message.delivered ".to_owned(),
-            secret: Some(format!("sys-golden-secret-{suffix}")),
+            secret: Some(format!("sys-golden-secret-0123456789abcdef-{suffix}")),
             prevSecret: None,
             secretRotatedAt: None,
             maskRecipient: true,

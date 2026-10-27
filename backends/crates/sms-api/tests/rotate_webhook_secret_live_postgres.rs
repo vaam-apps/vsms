@@ -225,7 +225,7 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let app_id = seed_app(&db).await;
-    let endpoint = seed_endpoint(&db, &app_id, "generation-zero-secret").await;
+    let endpoint = seed_endpoint(&db, &app_id, "generation-zero-secret-0123456789abcdef").await;
     let procedures = Procedures::new(test_pepper());
 
     let args = || rotate_webhook_secret::Args {
@@ -244,7 +244,10 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
     })
     .await
     .expect("first rotation");
-    assert_eq!(first.prevSecret.as_deref(), Some("generation-zero-secret"));
+    assert_eq!(
+        first.prevSecret.as_deref(),
+        Some("generation-zero-secret-0123456789abcdef")
+    );
 
     let second_args = args();
     let second =
@@ -266,7 +269,7 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
     );
     assert_ne!(
         second.secret.as_deref(),
-        Some("generation-zero-secret"),
+        Some("generation-zero-secret-0123456789abcdef"),
         "the original secret must not resurface"
     );
 }

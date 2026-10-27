@@ -124,7 +124,7 @@ async fn seed_endpoint(
             deliveryMode: schema::WebhookDeliveryMode::hmac,
             audience: None,
             eventTypes: event_types.to_owned(),
-            secret: Some(format!("test-secret-{}", unique_suffix())),
+            secret: Some(format!("test-secret-0123456789abcdef-{}", unique_suffix())),
             prevSecret: None,
             secretRotatedAt: None,
             maskRecipient: false,

@@ -202,7 +202,7 @@ enum Mode {
 }
 
 /// The secret an `hmac` endpoint of this race is signed with.
-const HMAC_SECRET: &str = "whsec_two_workers_race";
+const HMAC_SECRET: &str = "whsec_two_workers_race_0123456789abcdef0123456789abcdef";
 
 async fn seed_endpoint(
     db: &Cratestack,

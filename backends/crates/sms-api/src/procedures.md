@@ -6,7 +6,8 @@ drift further).
 
 `previewMessage`, `sendMessage`, `provisionAppClient`, (#41)
 `rotateWebhookSecret` (an `hmac` endpoint only: a `sealed` one has no secret
-and is refused, VS-8R), (#43) `replayWebhookAttempt`, (#56) `requeueJob`,
+and is refused, VS-8R), `switchWebhookDeliveryMode` (VS-8R: a validated move
+between `sealed` and `hmac`), (#43) `replayWebhookAttempt`, (#56) `requeueJob`,
 (#57) `workerLocks`, and (#50) `listMessageReceipts` are implemented.
 `cancelMessage` and `enqueueJob` touch the job queue or a mutation this
 milestone doesn't build yet; each returns a clearly-labelled error

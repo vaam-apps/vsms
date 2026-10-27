@@ -308,7 +308,10 @@ async fn seed_many_endpoints(db: &Cratestack, app_id: &str, count: usize) {
                 deliveryMode: sms_api::schema::WebhookDeliveryMode::hmac,
                 audience: None,
                 eventTypes: " message.delivered ".to_owned(),
-                secret: Some(format!("whsec_kill_mid_drain_{}_{i}", unique_suffix())),
+                secret: Some(format!(
+                    "whsec_kill_mid_drain_0123456789abcdef_{}_{i}",
+                    unique_suffix()
+                )),
                 prevSecret: None,
                 secretRotatedAt: None,
                 maskRecipient: false,

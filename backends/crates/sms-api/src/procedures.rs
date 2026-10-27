@@ -1068,6 +1068,78 @@ impl Procedures {
         .await
     }
 
+    /// VS-8R: change an endpoint's delivery mode, validated, in one serializable
+    /// transaction.
+    ///
+    /// A raw `PATCH` of `deliveryMode` has to move four columns in step, and one
+    /// left out breaks a CHECK of `0010_sealed_webhooks`, which the generated
+    /// routes answer with a database error (`500`). This answers `422` with the
+    /// reason instead, and does the bookkeeping itself ([`plan_mode_switch`]):
+    ///
+    /// - **to `hmac`** it mints the secret server-side (`whsec_` and 64 hex
+    ///   characters, in the returned row as a create's response carries it, for
+    ///   the receiver to be given) and frees the audience, which `hmac` has none
+    ///   of. An `audience` in the request is refused.
+    /// - **to `sealed`** it requires an `audience` (valid as the column holds
+    ///   it: 1 to 255 characters, never `vsms`, unique: a taken one is `409`)
+    ///   and a URL a delivery can be sealed for, and clears `secret`,
+    ///   `prevSecret` and `secretRotatedAt`.
+    ///
+    /// Switching to the mode the endpoint is in is `422` too: there is nothing
+    /// to switch, and `rotateWebhookSecret` or a `PATCH` of the audience is what
+    /// the caller wants.
+    ///
+    /// Same shape as [`Self::rotate_secret`]: `webhook:manage` (Layer 2) first,
+    /// the row read and written as `sys`, its version carried as `if_match`.
+    async fn switch_mode(
+        &self,
+        db: &schema::IsolatedCratestack,
+        ctx: &CratestackContext,
+        args: schema::SwitchWebhookDeliveryModeInput,
+    ) -> Result<schema::WebhookEndpoint, CratestackError> {
+        require_permission(ctx, "webhook:manage")?;
+
+        let sys = Self::sys();
+        let schema::SwitchWebhookDeliveryModeInput {
+            endpointId: endpoint_id,
+            mode,
+            audience,
+        } = args;
+
+        db.transaction(async |tx| {
+            let sys = &sys;
+            let endpoint = db
+                .webhook_endpoint()
+                .find_many()
+                .where_expr(FilterExpr::from(
+                    webhook_endpoint::id().eq(endpoint_id.clone()),
+                ))
+                .limit(1)
+                .run_in_tx(tx, sys)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    CratestackError::NotFound(format!("no WebhookEndpoint with id {endpoint_id}"))
+                })?;
+
+            let change = plan_mode_switch(&endpoint, mode, audience.as_deref())?;
+
+            let updated = db
+                .webhook_endpoint()
+                .update(endpoint_id.clone())
+                .set(change)
+                .if_match(endpoint.version)
+                .run_in_tx(tx, sys)
+                .await
+                .map_err(map_database_error)?
+                .value;
+
+            Ok(updated)
+        })
+        .await
+    }
+
     /// #43: re-fire a stuck `WebhookAttempt` from the admin surface — an
     /// operator's explicit "I fixed the receiving end, try again" action.
     /// See §8.5's own "Implementation, #43" note in the design doc for the
@@ -1942,6 +2014,74 @@ impl Procedures {
 /// [`schema::OptOut`] flattened onto the console's own bespoke wire type —
 /// see `schema.cstack`'s own comment on `OptOutSummary` for why this isn't
 /// the raw model.
+/// What a switch of `endpoint` to `mode` writes, or why it is refused (`422`).
+/// Pure, so the rules are tested without a database; the CHECKs of
+/// `0010_sealed_webhooks` stay the backstop for every other writer.
+fn plan_mode_switch(
+    endpoint: &schema::WebhookEndpoint,
+    mode: schema::WebhookDeliveryMode,
+    audience: Option<&str>,
+) -> Result<schema::UpdateWebhookEndpointInput, CratestackError> {
+    let refuse = |message: String| Err(CratestackError::Validation(message));
+    if endpoint.deliveryMode == mode {
+        return refuse(format!(
+            "webhook endpoint {} is already {}: there is nothing to switch",
+            endpoint.id,
+            mode_name(mode)
+        ));
+    }
+    match mode {
+        schema::WebhookDeliveryMode::hmac => {
+            if audience.is_some() {
+                return refuse("an hmac endpoint has no audience: leave it out".to_owned());
+            }
+            Ok(schema::UpdateWebhookEndpointInput {
+                deliveryMode: Some(schema::WebhookDeliveryMode::hmac),
+                audience: Some(None),
+                secret: Some(Some(sms_webhook::generate_secret())),
+                prevSecret: Some(None),
+                secretRotatedAt: Some(None),
+                ..Default::default()
+            })
+        }
+        schema::WebhookDeliveryMode::sealed => {
+            let Some(audience) = audience.filter(|audience| !audience.is_empty()) else {
+                return refuse(
+                    "a sealed endpoint needs an audience: the name its receiver answers to"
+                        .to_owned(),
+                );
+            };
+            if !sms_webhook::url_can_be_sealed(&endpoint.url) {
+                // The URL is not echoed: it may carry credentials.
+                let reason = match sms_webhook::delivery_route(&endpoint.url) {
+                    Err(sms_webhook::SealError::Url(reason)) => reason,
+                    _ => "its host or port is not written in the form a sealed endpoint takes",
+                };
+                return refuse(format!(
+                    "webhook endpoint {}'s URL cannot carry a sealed delivery ({reason}): \
+                     change the URL first",
+                    endpoint.id
+                ));
+            }
+            Ok(schema::UpdateWebhookEndpointInput {
+                deliveryMode: Some(schema::WebhookDeliveryMode::sealed),
+                audience: Some(Some(audience.to_owned())),
+                secret: Some(None),
+                prevSecret: Some(None),
+                secretRotatedAt: Some(None),
+                ..Default::default()
+            })
+        }
+    }
+}
+
+const fn mode_name(mode: schema::WebhookDeliveryMode) -> &'static str {
+    match mode {
+        schema::WebhookDeliveryMode::sealed => "sealed",
+        schema::WebhookDeliveryMode::hmac => "hmac",
+    }
+}
+
 fn to_opt_out_summary(row: schema::OptOut) -> schema::OptOutSummary {
     schema::OptOutSummary {
         id: row.id,
@@ -2163,6 +2303,20 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         self.rotate_secret(db, ctx, args.args)
     }
 
+    fn switch_webhook_delivery_mode(
+        &self,
+        db: &schema::IsolatedCratestack,
+        ctx: &CratestackContext,
+        args: schema::procedures::switch_webhook_delivery_mode::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::switch_webhook_delivery_mode::Authorized,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::switch_webhook_delivery_mode::Output, CratestackError>,
+    > + Send {
+        self.switch_mode(db, ctx, args.args)
+    }
+
     fn replay_webhook_attempt(
         &self,
         db: &schema::IsolatedCratestack,
@@ -2322,6 +2476,139 @@ impl schema::procedures::ProcedureRegistry for Procedures {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    fn endpoint(mode: schema::WebhookDeliveryMode, url: &str) -> schema::WebhookEndpoint {
+        let hmac = mode == schema::WebhookDeliveryMode::hmac;
+        schema::WebhookEndpoint {
+            createdAt: Utc::now(),
+            updatedAt: Utc::now(),
+            id: "cendpoint0000000000000".to_owned(),
+            appId: "capp00000000000000000".to_owned(),
+            url: url.to_owned(),
+            deliveryMode: mode,
+            audience: (!hmac).then(|| "vaam".to_owned()),
+            eventTypes: " message.delivered ".to_owned(),
+            secret: hmac.then(|| "a-secret-that-is-at-least-32-chars-long".to_owned()),
+            prevSecret: None,
+            secretRotatedAt: None,
+            maskRecipient: true,
+            active: true,
+            maxAttempts: 8,
+            circuitOpenUntil: None,
+            consecutiveFailures: 0,
+            version: 3,
+        }
+    }
+
+    fn refusal(result: Result<schema::UpdateWebhookEndpointInput, CratestackError>) -> String {
+        match result {
+            Err(CratestackError::Validation(message)) => message,
+            other => panic!("expected a 422, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_switch_to_hmac_mints_a_secret_and_frees_the_audience() {
+        let sealed = endpoint(
+            schema::WebhookDeliveryMode::sealed,
+            "https://h.example.test/webhooks/vsms",
+        );
+        let change = plan_mode_switch(&sealed, schema::WebhookDeliveryMode::hmac, None).unwrap();
+        assert_eq!(change.deliveryMode, Some(schema::WebhookDeliveryMode::hmac));
+        assert_eq!(change.audience, Some(None));
+        let secret = change.secret.clone().flatten().expect("a minted secret");
+        assert!(secret.starts_with("whsec_") && secret.len() == 70);
+        assert_eq!(change.prevSecret, Some(None));
+        assert_eq!(change.secretRotatedAt, Some(None));
+        // Two switches mint two secrets.
+        let again = plan_mode_switch(&sealed, schema::WebhookDeliveryMode::hmac, None).unwrap();
+        assert_ne!(again.secret, change.secret);
+    }
+
+    #[test]
+    fn a_switch_to_hmac_refuses_an_audience() {
+        let sealed = endpoint(
+            schema::WebhookDeliveryMode::sealed,
+            "https://h.example.test/x",
+        );
+        let message = refusal(plan_mode_switch(
+            &sealed,
+            schema::WebhookDeliveryMode::hmac,
+            Some("squatted"),
+        ));
+        assert!(message.contains("no audience"), "{message}");
+    }
+
+    #[test]
+    fn a_switch_to_sealed_names_the_audience_and_clears_every_secret_column() {
+        let hmac = endpoint(
+            schema::WebhookDeliveryMode::hmac,
+            "https://h.example.test/webhooks/vsms",
+        );
+        let change =
+            plan_mode_switch(&hmac, schema::WebhookDeliveryMode::sealed, Some("vaam")).unwrap();
+        assert_eq!(
+            change.deliveryMode,
+            Some(schema::WebhookDeliveryMode::sealed)
+        );
+        assert_eq!(change.audience, Some(Some("vaam".to_owned())));
+        assert_eq!(change.secret, Some(None));
+        assert_eq!(change.prevSecret, Some(None));
+        assert_eq!(change.secretRotatedAt, Some(None));
+    }
+
+    #[test]
+    fn a_switch_to_sealed_needs_an_audience() {
+        let hmac = endpoint(
+            schema::WebhookDeliveryMode::hmac,
+            "https://h.example.test/x",
+        );
+        for audience in [None, Some("")] {
+            let message = refusal(plan_mode_switch(
+                &hmac,
+                schema::WebhookDeliveryMode::sealed,
+                audience,
+            ));
+            assert!(message.contains("needs an audience"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_switch_to_sealed_refuses_a_url_a_delivery_cannot_be_sealed_for_without_echoing_it() {
+        for (url, reason) in [
+            (
+                "https://u:hunter2@h.example.test/hook",
+                "it carries credentials",
+            ),
+            (
+                "https://h.example.test/hook?token=hunter2",
+                "it carries a query",
+            ),
+            // Sealable for `delivery_route`, but not written the way the CHECK takes it.
+            ("https://exämple.test/hook", "not written in the form"),
+        ] {
+            let hmac = endpoint(schema::WebhookDeliveryMode::hmac, url);
+            let message = refusal(plan_mode_switch(
+                &hmac,
+                schema::WebhookDeliveryMode::sealed,
+                Some("vaam"),
+            ));
+            assert!(message.contains(reason), "{url}: {message}");
+            assert!(!message.contains("hunter2"), "the URL leaked: {message}");
+        }
+    }
+
+    #[test]
+    fn a_switch_to_the_mode_it_is_in_is_refused() {
+        for mode in [
+            schema::WebhookDeliveryMode::sealed,
+            schema::WebhookDeliveryMode::hmac,
+        ] {
+            let same = endpoint(mode, "https://h.example.test/x");
+            let message = refusal(plan_mode_switch(&same, mode, Some("vaam")));
+            assert!(message.contains("already"), "{message}");
+        }
+    }
 
     fn preview(body: &str, to: Option<&str>) -> Result<schema::PreviewResult, CratestackError> {
         Procedures::preview(&schema::PreviewInput {

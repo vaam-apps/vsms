@@ -724,7 +724,7 @@ async fn a_real_hmac_delivery_is_independently_verified_by_the_node_receiver() {
     let database_url = sms_test_support::database_url().await;
     let db = db().await;
 
-    let secret = format!("whsec_gate_{}", unique_suffix());
+    let secret = format!("whsec_gate_0123456789abcdef0123456789_{}", unique_suffix());
     let port = free_port();
     let app_id = seed_app(&db).await;
     let endpoint = seed_hmac_endpoint(&db, &app_id, &receiver_url(port), &secret, None).await;
@@ -761,8 +761,8 @@ async fn an_hmac_delivery_in_a_rotation_window_verifies_at_a_receiver_holding_on
     let database_url = sms_test_support::database_url().await;
     let db = db().await;
 
-    let old = format!("whsec_old_{}", unique_suffix());
-    let new = format!("whsec_new_{}", unique_suffix());
+    let old = format!("whsec_old_0123456789abcdef0123456789_{}", unique_suffix());
+    let new = format!("whsec_new_0123456789abcdef0123456789_{}", unique_suffix());
     let port = free_port();
     let app_id = seed_app(&db).await;
     let endpoint = seed_hmac_endpoint(&db, &app_id, &receiver_url(port), &new, Some(&old)).await;
@@ -797,11 +797,19 @@ async fn an_hmac_delivery_signed_with_another_secret_is_refused_by_the_node_rece
         &db,
         &app_id,
         &receiver_url(port),
-        &format!("whsec_endpoint_{}", unique_suffix()),
+        &format!(
+            "whsec_endpoint_0123456789abcdef0123456789_{}",
+            unique_suffix()
+        ),
         None,
     )
     .await;
-    let receiver = NodeReceiver::spawn_hmac(port, "whsec_some_other_secret", None).await;
+    let receiver = NodeReceiver::spawn_hmac(
+        port,
+        "whsec_some_other_secret_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
     let attempt = seed_attempt(&db, &endpoint.id, &format!("cmsg{}", unique_suffix())).await;
 
     let worker_id = format!("hooks-node-receiver-test-{}", unique_suffix());

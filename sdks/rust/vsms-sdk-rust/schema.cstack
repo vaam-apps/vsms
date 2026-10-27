@@ -1088,13 +1088,20 @@ model WebhookEndpoint {
   // CHECK in 0010: `@db_enforce` does nothing for a `@regex`).
   audience String? @unique @length(min: 1, max: 255) @db_enforce @regex("^(?:vsms.+|(?:[^v]|v[^s]|vs[^m]|vsm[^s]).*|v|vs|vsm)$")
   eventTypes String
-  // The `hmac` mode's signing secret (`whsec_` and 64 hex characters), the one
-  // `X-Sms-Signature` is keyed by, and the one a rotation moves to `prevSecret`
-  // for an overlap window. Present exactly when the mode is `hmac` and absent
-  // for `sealed` (CHECKs in 0010). `@sensitive` redacts it from audit snapshots
-  // (and only from those: the API still returns it, to the three roles that can
-  // write this model).
-  secret String? @sensitive
+  // The `hmac` mode's signing secret, the one `X-Sms-Signature` is keyed by, and
+  // the one a rotation moves to `prevSecret` for an overlap window. Present
+  // exactly when the mode is `hmac` and absent for `sealed` (CHECKs in 0010).
+  // A secret written through the API is at least 32 characters (`@length`): an
+  // empty or short one would sign with a key anyone can guess. It is no format
+  // beyond that: the console, `rotateWebhookSecret` and
+  // `switchWebhookDeliveryMode` mint `whsec_` and 64 hex characters, and a caller
+  // that supplies its own on create is free to. Not a CHECK, so a secret an app
+  // set before this bound existed keeps working and keeps rotating.
+  // `@sensitive` redacts it from audit snapshots (and only from those: the API
+  // still returns it, to the three roles that can write this model).
+  secret String? @sensitive @length(min: 32)
+  // Only ever a previous `secret`, which may predate the bound on it, so a
+  // rotation must be able to move a short one here: no `@length`.
   prevSecret String? @sensitive
   secretRotatedAt DateTime?
   maskRecipient Boolean
@@ -1476,6 +1483,14 @@ type EndpointInput {
   endpointId Cuid
 }
 
+// VS-8R: `audience` is required (and valid as `WebhookEndpoint.audience` is)
+// when `mode` is `sealed`, and refused when it is `hmac`.
+type SwitchWebhookDeliveryModeInput {
+  endpointId Cuid
+  mode WebhookDeliveryMode
+  audience String?
+}
+
 type ReplayWebhookAttemptInput {
   attemptId Cuid
 }
@@ -1573,6 +1588,16 @@ procedure authorizeComposition(args: AuthorizeCompositionInput): CompositionAuth
 // VS-8R: rotate an `hmac` endpoint's signing secret with an overlap window.
 // A `sealed` endpoint has no secret and is refused (422).
 mutation procedure rotateWebhookSecret(args: EndpointInput): WebhookEndpoint
+  @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
+  @isolation("serializable")
+
+// VS-8R: change an endpoint's delivery mode, validated, answering 422 where a
+// raw PATCH of the mode would break one of 0010's CHECKs and be answered with a
+// database error (500). To `hmac` it mints the secret server-side and returns it
+// in the row, as a create's response does, and frees the audience. To `sealed` it
+// requires an audience, a URL its deliveries can be sealed for, and clears every
+// secret column. Same policy, permission and isolation as rotateWebhookSecret.
+mutation procedure switchWebhookDeliveryMode(args: SwitchWebhookDeliveryModeInput): WebhookEndpoint
   @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
   @isolation("serializable")
 
