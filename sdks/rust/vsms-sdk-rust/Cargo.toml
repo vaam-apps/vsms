@@ -99,7 +99,7 @@ zeroize = "1"
 [dev-dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 # A local stand-in for the gateway in tests/transport.rs: proves what the SDK
 # puts on the wire (a sealed request, never a bearer) and what it does with an
 # unsigned refusal (surfaces it after exactly one attempt) without a live

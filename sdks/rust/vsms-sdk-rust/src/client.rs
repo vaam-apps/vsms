@@ -34,11 +34,43 @@ pub const AUDIENCE: &str = "vsms";
 /// The only payload type the gateway seals, in both directions.
 const PAYLOAD_TYPE: &str = "application/json";
 
+/// The most of an answer's body `send_message` reads, in bytes. A sealed answer
+/// is a COSE message around a small JSON document; eight mebibytes is far above
+/// the largest honest one and far below what a hostile or broken peer could
+/// otherwise make this process hold. The Node SDK has the same bound
+/// (`MAX_RESPONSE_BYTES` in `@vaam-apps/vsms-node`).
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Response header the idempotency layer appends to a replayed response.
 /// Headers are not part of the seal, so this one is a hint: see
 /// [`SendMessageOutcome::idempotency_replayed`].
 const IDEMPOTENCY_REPLAYED_HEADER: &str = "idempotency-replayed";
 const SEND_MESSAGE_ROUTE: &str = "/$procs/sendMessage";
+
+/// Reads a response body, stopping at [`MAX_RESPONSE_BYTES`].
+///
+/// Refuses on the declared `Content-Length` first (nothing is read), then
+/// counts what actually arrives, because the declaration can be absent
+/// (chunked) or false.
+async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, SdkError> {
+    let too_large = || SdkError::ResponseTooLarge {
+        limit: MAX_RESPONSE_BYTES,
+    };
+    if response
+        .content_length()
+        .is_some_and(|declared| declared > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(ClientError::from)? {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
 
 /// Installs a `ring`-backed `rustls::crypto::CryptoProvider` if the process
 /// doesn't already have one, mirroring `cratestack-client-rust`'s own
@@ -170,13 +202,13 @@ impl VsmsClient {
         }
         let status = response.status();
         let headers = response.headers().clone();
-        let bytes = response.bytes().await.map_err(ClientError::from)?;
+        let bytes = read_bounded(response).await?;
 
         // An unsigned answer, or one that fails verification, is an error
         // whatever its status: nothing in its body is read.
         let opened = sealed
             .pending
-            .open(status.as_u16(), &headers, bytes)
+            .open(status.as_u16(), &headers, bytes.into())
             .await?;
         let replayed = headers
             .get(IDEMPOTENCY_REPLAYED_HEADER)
