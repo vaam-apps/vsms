@@ -261,6 +261,21 @@ jobs:
       - name: Enable corepack (pins pnpm)
         run: corepack enable
 
+      # The package's signed transport is `sdks/rust/vsms-sdk-wasm` compiled to
+      # WebAssembly, and `files` ships the result (`wasm/`), so publishing needs
+      # the same toolchain the build does: Rust with the wasm32 target, and
+      # `wasm-bindgen` at exactly the version sdks/rust/Cargo.lock pins (`just
+      # wasm-tools` reads it from there). No cache, for the reason above: a
+      # cache another run could have written would be an input to the artifact.
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # `stable` branch head, 2026-10-16
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: just
+      - name: Install the wasm toolchain (wasm-bindgen at the lockfile's version)
+        run: just wasm-tools
+
       - name: Install dependencies
         working-directory: sdks/node/vsms-sdk-node
         run: pnpm install --frozen-lockfile
