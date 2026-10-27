@@ -332,7 +332,9 @@ dev-keys:
 	test -f dev-keys/envelope-current.pem || openssl genpkey -algorithm ed25519 -out dev-keys/envelope-current.pem
 	test -f dev-keys/envelope-next.pem || openssl genpkey -algorithm ed25519 -out dev-keys/envelope-next.pem
 	test -f dev-keys/console-composer.pem || openssl genpkey -algorithm ed25519 -out dev-keys/console-composer.pem
-	chmod 0644 dev-keys/envelope-current.pem dev-keys/envelope-next.pem dev-keys/console-composer.pem
+	test -f dev-keys/demo-app.pem || openssl genpkey -algorithm ed25519 -out dev-keys/demo-app.pem
+	chmod 0644 dev-keys/envelope-current.pem dev-keys/envelope-next.pem dev-keys/console-composer.pem dev-keys/demo-app.pem
+	{ printf 'current: '; just _dev-public-key dev-keys/envelope-current.pem; printf '\nnext: '; just _dev-public-key dev-keys/envelope-next.pem; printf '\n'; } > dev-keys/server-keys.txt
 
 # The public half of the dev composer key (`dev-keys/console-composer.pem`), as
 # `sms-gateway register-client --public-key` takes it: the raw 32 bytes, base64url
@@ -340,11 +342,21 @@ dev-keys:
 # `just demo-up` exports this; the private half is the console's, mounted into the
 # `admin` container, and is never an argument to anything.
 dev-composer-public-key: dev-keys
-	@openssl pkey -in dev-keys/console-composer.pem -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n'
+	@just _dev-public-key dev-keys/console-composer.pem
 
-# Bring up the full demo chain — scratch Postgres, both migrations, an OP
-# signing key, an `App`+`Provider`+`Route`+`SenderId`, a machine client,
-# the console composer's service key, a human operator account, sms-fake-orange,
+# The public half of the dev demo app's key (`dev-keys/demo-app.pem`), read from
+# `VSMS_DEMO_APP_PUBLIC_KEY` by the compose stacks' `register-demo-app` step.
+dev-demo-app-public-key: dev-keys
+	@just _dev-public-key dev-keys/demo-app.pem
+
+# The raw 32-byte public half of an Ed25519 PEM, base64url without padding: the
+# form `register-client --public-key` takes and `server-keys` prints.
+_dev-public-key pem:
+	@openssl pkey -in {{pem}} -pubout -outform DER | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n'
+
+# Bring up the full demo chain — scratch Postgres, the migrations,
+# an `App`+`Provider`+`Route`+`SenderId`, the demo app's service key,
+# the console composer's service key, an operator's user row, sms-fake-orange,
 # sms-gateway, sms-worker (dispatch,scheduler,jobs), and the admin console
 # — as containers, built from this checkout's own source
 # (`compose.dev.yaml`; see that file's own header for the full design and
@@ -352,11 +364,10 @@ dev-composer-public-key: dev-keys
 # impersonates Orange Cameroon's API and sends no real SMS. See
 # docs/runbooks/local-development.adoc for what this brings up and why.
 #
-# `down -v` first, every time — not just on request: `provision-client`
-# (inside `compose.dev.yaml`) refuses to overwrite an existing private
-# key, so a second `up` against the same named volumes would otherwise
-# fail loudly on that step rather than silently reusing stale credentials.
-# This is the compose-native equivalent of `scripts/demo.sh`'s own former
+# `down -v` first, every time — not just on request: the seed and register
+# steps (inside `compose.dev.yaml`) run once against an empty database, so a
+# second `up` against the same named volumes would otherwise start from the
+# last run's rows. This is the compose-native equivalent of `scripts/demo.sh`'s own former
 # "reset the database on every up" behaviour — a full volume wipe rather
 # than a targeted `DROP DATABASE`/`CREATE DATABASE`.
 #
@@ -386,8 +397,8 @@ dev-composer-public-key: dev-keys
 # so below.
 #
 # Eight loop entries, not every `--profile console` service: the
-# rest (`provision-client`, `provision-user`, `register-composer`,
-# `seed-dispatch`, `seed-dispatch-aws`, `seed-signing-key`, plus
+# rest (`provision-user`, `register-composer`, `register-demo-app`,
+# `seed-dispatch`, `seed-dispatch-aws`, plus
 # non-building services) either
 # share `sms-gateway`'s own explicit `image: vsms-dev/sms-gateway:local`
 # tag (building `sms-gateway` once already produces the image every one
@@ -402,11 +413,10 @@ dev-composer-public-key: dev-keys
 # a matching entry here — re-derive it with the `config --format json`
 # query above if a build ever silently skips a service's own image.
 #
-# `down -v` first, every time — not just on request: `provision-client`
-# (inside `compose.dev.yaml`) refuses to overwrite an existing private
-# key, so a second `up` against the same named volumes would otherwise
-# fail loudly on that step rather than silently reusing stale credentials.
-# This is the compose-native equivalent of `scripts/demo.sh`'s own former
+# `down -v` first, every time — not just on request: the seed and register
+# steps (inside `compose.dev.yaml`) run once against an empty database, so a
+# second `up` against the same named volumes would otherwise start from the
+# last run's rows. This is the compose-native equivalent of `scripts/demo.sh`'s own former
 # "reset the database on every up" behaviour — a full volume wipe rather
 # than a targeted `DROP DATABASE`/`CREATE DATABASE`. Note `down -v` wipes
 # named *volumes* only, not the BuildKit cache — a cache already warmed
@@ -435,17 +445,12 @@ dev-composer-public-key: dev-keys
 #    not better: two independent CLI processes against the same project,
 #    started moments apart, do not share one atomic view of "has this
 #    one-shot dependency already run" — reproduced live, not assumed:
-#    the second `up -d demo-app` call (demo-app depends on
-#    `secrets-fix-perms`, which depends on `provision-client`) caused
-#    Compose to recreate and RE-RUN `provision-client` a second time,
-#    even though the first `up` call had already run it to a clean
-#    success moments earlier. `provision-client` refuses to overwrite an
-#    existing private key (by design — see that command's own doc), so
-#    the second run's own log shows the bizarre-looking shape of a
-#    genuine success (a real `provisioned client:`/`private key written
-#    to:` — a SECOND, real `AppClient` row, a real side effect) followed
-#    immediately by `Error: ... already exists — refusing to overwrite`,
-#    and the whole recipe failed on a completely different line.
+#    the second `up -d demo-app` call caused Compose to recreate and
+#    RE-RUN a one-shot dependency a second time (at the time
+#    `provision-client`, since deleted; `register-demo-app` is the same
+#    shape), even though the first `up` call had already run it to a clean
+#    success moments earlier, and the whole recipe failed on a
+#    completely different line.
 #
 # The actual fix needs neither trick: `depends_on: condition:
 # service_healthy`/`service_completed_successfully` (already correct,
@@ -456,8 +461,8 @@ dev-composer-public-key: dev-keys
 # line (`docker compose wait demo-app`) already blocks for real
 # completion and hands back demo-app's own real exit code. One plain
 # `up -d`, one Compose invocation, the same dependency graph deciding
-# everything exactly as it already did for migrate/seed-signing-key/
-# seed-dispatch/provision-client/etc. — no race between two CLI
+# everything exactly as it already did for migrate/seed-dispatch/
+# register-demo-app/etc. — no race between two CLI
 # processes, and no service whose "Exited" state `--wait` could
 # misread as a failure.
 #
@@ -470,7 +475,7 @@ dev-composer-public-key: dev-keys
 # backend-only `up -d` (no profiles at all) must not seed a
 # `WebhookEndpoint` pointed at a container that will never exist. See
 # `compose.dev.yaml`'s own `demo-app`/`seed-demo-webhook`/
-# `secrets-fix-perms` comments for the full mechanism; `docker compose
+# `register-demo-app` comments for the full mechanism; `docker compose
 # --profile demo config --services` (no `console`) lists `demo-app` and
 # not `admin`, confirming the split holds on its own, not just combined.
 #
@@ -485,7 +490,7 @@ demo-up: dev-keys
 	for svc in sms-gateway migrate seed-demo-app sms-fake-orange sms-fake-aws sms-worker admin demo-app; do \
 		COMPOSE_BAKE=false docker compose -f compose.dev.yaml --profile console --profile demo build "$svc"; \
 	done
-	VSMS_COMPOSER_PUBLIC_KEY="$(just dev-composer-public-key)" docker compose -f compose.dev.yaml --profile console --profile demo up -d
+	VSMS_COMPOSER_PUBLIC_KEY="$(just dev-composer-public-key)" VSMS_DEMO_APP_PUBLIC_KEY="$(just dev-demo-app-public-key)" docker compose -f compose.dev.yaml --profile console --profile demo up -d
 
 # `; demo_exit=$?; ... ; exit $demo_exit`, not `&&`/separate recipe
 # lines: `just` aborts a recipe the moment any line exits non-zero,
@@ -514,17 +519,12 @@ demo-up: dev-keys
 #    not better: two independent CLI processes against the same project,
 #    started moments apart, do not share one atomic view of "has this
 #    one-shot dependency already run" — reproduced live, not assumed:
-#    the second `up -d demo-app` call (demo-app depends on
-#    `secrets-fix-perms`, which depends on `provision-client`) caused
-#    Compose to recreate and RE-RUN `provision-client` a second time,
-#    even though the first `up` call had already run it to a clean
-#    success moments earlier. `provision-client` refuses to overwrite an
-#    existing private key (by design — see that command's own doc), so
-#    the second run's own log shows the bizarre-looking shape of a
-#    genuine success (a real `provisioned client:`/`private key written
-#    to:` — a SECOND, real `AppClient` row, a real side effect) followed
-#    immediately by `Error: ... already exists — refusing to overwrite`,
-#    and the whole recipe failed on a completely different line.
+#    the second `up -d demo-app` call caused Compose to recreate and
+#    RE-RUN a one-shot dependency a second time (at the time
+#    `provision-client`, since deleted; `register-demo-app` is the same
+#    shape), even though the first `up` call had already run it to a clean
+#    success moments earlier, and the whole recipe failed on a
+#    completely different line.
 #
 # The actual fix needs neither trick: `depends_on: condition:
 # service_healthy`/`service_completed_successfully` (already correct,
@@ -535,8 +535,8 @@ demo-up: dev-keys
 # line (`docker compose wait demo-app`) already blocks for real
 # completion and hands back demo-app's own real exit code. One plain
 # `up -d`, one Compose invocation, the same dependency graph deciding
-# everything exactly as it already did for migrate/seed-signing-key/
-# seed-dispatch/provision-client/etc. — no race between two CLI
+# everything exactly as it already did for migrate/seed-dispatch/
+# register-demo-app/etc. — no race between two CLI
 # processes, and no service whose "Exited" state `--wait` could
 # misread as a failure.
 #
@@ -552,7 +552,7 @@ demo: demo-up
 	exit $demo_exit
 
 # Stop everything `just demo`/`demo-up` started and remove its volumes
-# (scratch Postgres data, provisioned secrets) — by exact Compose project
+# (scratch Postgres data, the webhook secret) — by exact Compose project
 # name (`vsms-dev`) only, never touching `compose.yml`'s own `vsms`
 # project or anything unrelated on the machine.
 demo-down:
@@ -561,12 +561,6 @@ demo-down:
 # What's currently running from `just demo`.
 demo-status:
 	docker compose -f compose.dev.yaml --profile console --profile demo ps
-
-# The generated password `just demo` provisioned for `demo@vsms.local` —
-# printed once, to `provision-user`'s own container log, never stored
-# anywhere (see backends/apps/sms-gateway/src/main.rs's own `ProvisionUser` doc).
-demo-login:
-	docker compose -f compose.dev.yaml logs provision-user
 
 # Re-run `demo-app` (`examples/node/demo-app`) against an ALREADY-RUNNING
 # `just demo` stack, without tearing anything else down — the fast loop

@@ -109,11 +109,6 @@ services:
     cpus: 1.0
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-vsms}:${POSTGRES_PASSWORD:?}@postgres:5432/${POSTGRES_DB:-vsms}
-      # The externally reachable https origin Caddy fronts this service
-      # at — never the in-container listen address. Every token this OP
-      # mints carries this as `iss`; get it wrong and every token this
-      # deployment issues validates against the wrong issuer.
-      SMS_OIDC_ISSUER: ${SMS_OIDC_ISSUER:?set to the public https origin, e.g. https://api.example.com}
       # Pass-through (a bare `NAME:` with no value), not `${NAME:?}` and
       # not `${NAME:-}`: Orange is one of three providers now, and an
       # AWS-only (or MTN-only) deployment must leave these *absent* from the
@@ -151,20 +146,9 @@ services:
       SMS_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_RATE_LIMIT_REFILL_PER_SECOND:-2.0}
       # #163: the coarser, ConnectInfo-peer-keyed RateLimitLayer on top of
       # the per-principal one above — see sms_api::router's own doc for
-      # why it closes the forged-sub bypass and why its budget is wider.
+      # why it bounds a flood of forged requests and why its budget is wider.
       SMS_SOURCE_RATE_LIMIT_BURST: ${SMS_SOURCE_RATE_LIMIT_BURST:-1200}
       SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND:-10.0}
-      # #168: the /token client_id-keyed defence-in-depth limiter — see
-      # backends/apps/sms-gateway/src/token_rate_limit.rs's own module doc for why
-      # this exists alongside, not instead of, deploy/Caddyfile's edge
-      # zones.
-      SMS_TOKEN_RATE_LIMIT_BURST: ${SMS_TOKEN_RATE_LIMIT_BURST:-10}
-      SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND: ${SMS_TOKEN_RATE_LIMIT_REFILL_PER_SECOND:-0.3333333333333333}
-      # The OIDC client id `bootstrap`/`seed-console-client` register for
-      # the console's human login. `serve` itself no longer reads it (VS-3
-      # removed the bearer-token audience check it fed); it is passed here
-      # because `bootstrap` runs from this same service definition.
-      SMS_CONSOLE_OIDC_CLIENT_ID: ${SMS_CONSOLE_OIDC_CLIENT_ID:-sms-console}
       # VS-3: the signed transport's two Ed25519 server keys (PKCS#8 PEM,
       # `openssl genpkey -algorithm ed25519`), mounted below. REQUIRED: the
       # gateway refuses to start without both, and refuses the same key
@@ -173,23 +157,7 @@ services:
       # once and keep them out of git (docs/runbooks/deployment.adoc).
       SMS_ENVELOPE_SIGNING_KEY_FILE: /run/envelope/current.pem
       SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE: /run/envelope/next.pem
-      # Single sign-on through the staff Keycloak realm (docs/runbooks/sso.adoc).
-      # Optional, and active exactly when SMS_SSO_ISSUER is set - there is no
-      # other switch. Blank means unset to the gateway (it normalises blank
-      # values itself, unlike the MTN block above), so passing these through
-      # empty is safe; a half-filled block, or one with both
-      # SMS_SSO_ACCEPTED_AMR and SMS_SSO_ACCEPTED_ACR empty, refuses to start.
-      SMS_SSO_ISSUER: ${SMS_SSO_ISSUER:-}
-      SMS_SSO_CLIENT_ID: ${SMS_SSO_CLIENT_ID:-}
-      SMS_SSO_CLIENT_SECRET: ${SMS_SSO_CLIENT_SECRET:-}
-      SMS_SSO_REDIRECT_URI: ${SMS_SSO_REDIRECT_URI:-}
-      SMS_SSO_SCOPES: ${SMS_SSO_SCOPES:-}
-      SMS_SSO_REQUIRED_GROUP: ${SMS_SSO_REQUIRED_GROUP:-}
-      SMS_SSO_GROUPS_CLAIM: ${SMS_SSO_GROUPS_CLAIM:-}
-      SMS_SSO_ACCEPTED_AMR: ${SMS_SSO_ACCEPTED_AMR:-}
-      SMS_SSO_ACCEPTED_ACR: ${SMS_SSO_ACCEPTED_ACR:-}
-      SMS_SSO_JIT_ROLE: ${SMS_SSO_JIT_ROLE:-}
-      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,sms_auth=info,sms_provider_aws_sms=info,cratestack=info}
+      RUST_LOG: ${SMS_GATEWAY_LOG:-sms_gateway=info,sms_api=info,sms_provider_aws_sms=info,cratestack=info}
     depends_on:
       postgres:
         condition: service_healthy
@@ -240,19 +208,14 @@ services:
       timeout: 3s
       retries: 3
       start_period: 10s
-    # sms-gateway needs an active OP signing key to start AT ALL — found
-    # live (#139): `Command::Serve` in backends/apps/sms-gateway/src/main.rs
-    # loads signing keys before binding the listener, so a fresh database
-    # makes this container crash-loop, not just fail its first /token
-    # request. Run once, on a fresh database, BEFORE the first `up` of
-    # this service — `run --rm`, not `exec`, since there's no running
-    # container to exec into yet:
-    #   docker compose run --rm sms-gateway rotate-signing-key
+    # sms-gateway needs a `Provider` row for every provider it is configured
+    # with to start AT ALL — there is no signing key of an OpenID Provider to
+    # seed any more (VS-4 deleted it; the only keys the process holds are the
+    # two envelope keys mounted above).
     #
-    # Same trap, same fix, for the `orange_cm` Provider row (#148):
-    # `resolve_provider_row_id` also runs before the listener binds, so a
-    # database with no Provider row crash-loops this container exactly
-    # like a missing signing key does. `seed-dispatch` (renamed from
+    # The `orange_cm` Provider row (#148): `resolve_provider_row_id` runs
+    # before the listener binds, so a database with no Provider row
+    # crash-loops this container. `seed-dispatch` (renamed from
     # `seed-provider` in #62, which also made it seed a catch-all Route —
     # a Provider row alone routes nothing since #62's routing engine
     # landed) is idempotent on both halves, so it's safe to run again
@@ -275,9 +238,8 @@ services:
     # provider the worker holds no credentials for.
     #
     # Production-readiness audit (N2): `docker compose run --rm sms-gateway
-    # bootstrap --console-redirect-uri ... --owner-email ... --owner-display-name ...`
-    # chains both steps above plus seed-console-client and provision-user
-    # in one idempotent call — see `Command::Bootstrap`'s own doc comment
+    # bootstrap --owner-email ... --owner-display-name ...`
+    # chains `seed-dispatch` and `provision-user` in one idempotent call — see `Command::Bootstrap`'s own doc comment
     # (`backends/apps/sms-gateway/src/main.rs`) and
     # `docs/runbooks/deployment.adoc`'s step 3 for both the combined form
     # and each individual step spelled out.

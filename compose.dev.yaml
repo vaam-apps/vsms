@@ -1,7 +1,7 @@
 # The from-source developer stack — everything `scripts/demo.sh` used to
-# assemble by hand (a scratch Postgres, both migrations, an OP signing key,
-# an `App` + `Provider` + `Route` + `SenderId`, a machine client, the
-# console composer's service key, a human operator account, `sms-fake-orange`,
+# assemble by hand (a scratch Postgres, the migrations,
+# an `App` + `Provider` + `Route` + `SenderId`, the demo app's service key, the
+# console composer's service key, an operator's user row, `sms-fake-orange`,
 # `sms-gateway`, `sms-worker`, and the admin console), now as one
 # declarative compose file instead of a 300-line bash script driving
 # `docker run`/backgrounded host processes/`pnpm exec next dev` by hand.
@@ -34,17 +34,14 @@
 #
 # Backend-only (R4 — CONTRIBUTING.md: "the admin console is optional, the
 # backend must run without it"): omit `--profile console`. Every service
-# the console needs (`admin`, `register-composer`, `provision-user`, and
-# the permission-fix step between `provision-client` and `admin`) carries
-# `profiles: [console]` and is skipped outright. `sms-gateway`/`sms-worker`
-# come up healthy either way, and `provision-client` (a real, HTTP-usable
-# machine credential) is not gated behind the profile — same reasoning
-# `compose.demo.yaml` already documents for the identical service.
+# the console needs (`admin`, `register-composer` and `provision-user`)
+# carries `profiles: [console]` and is skipped outright. `sms-gateway` and
+# `sms-worker` come up healthy either way. A backend-only stack holds no
+# client key: register your own with `sms-gateway register-client`, as an
+# integrator would (docs/runbooks/local-development.adoc).
 #
-# `down -v` (not a bare `down`), same reason as `compose.demo.yaml`:
-# `provision-client` refuses to overwrite an existing private key, so a
-# second `up` against the same named volumes fails loudly rather than
-# silently reusing stale credentials.
+# `down -v` (not a bare `down`) is the documented reset: it drops the named
+# volumes, so every `up` after it starts from an empty database.
 #
 # Why not include `compose.yml` (`docker compose -f compose.yml -f
 # compose.dev.yaml`) rather than duplicating its `postgres` service:
@@ -121,46 +118,10 @@ services:
         condition: service_healthy
     restart: 'no'
 
-  # sms-gateway refuses to bind its listener without an active OP signing
-  # key (AGENTS.md's own M1 section) — this has to complete before
-  # sms-gateway is ever started, not just before it's expected to serve
-  # traffic. Same reasoning `compose.demo.yaml`'s `seed-signing-key`
-  # documents.
-  seed-signing-key:
-    build:
-      context: .
-      dockerfile: backends/apps/sms-gateway/Dockerfile
-      args:
-        # See the `sms-gateway` service below: this stack's gateway trusts
-        # `sms-fake-aws`'s receipt-signing certificate. Every service that
-        # shares the `vsms-dev/sms-gateway:local` tag passes the same value,
-        # so whichever one Compose builds, the image is the same.
-        CARGO_FEATURES: fake-aws
-    # Every `sms-gateway`-image service in this file shares this exact
-    # `image:` tag, not just the same `build:` block — found live, not
-    # assumed: with each service building its own separately-named image
-    # (Compose's default when a tag isn't given explicitly), two builds
-    # from byte-identical `context`+`dockerfile` intermittently produced
-    # *different* tagged images on this machine (one stale, missing a
-    # subcommand the source genuinely had), because each service's image
-    # name is otherwise derived independently and nothing forces them to
-    # converge. Naming them identically makes "build the gateway image"
-    # a single, unambiguous operation every one of these seven services
-    # shares, and a `docker compose build` rebuild of any one of them
-    # updates what all seven actually run.
-    image: vsms-dev/sms-gateway:local
-    command: ['rotate-signing-key']
-    environment:
-      DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
-    depends_on:
-      migrate:
-        condition: service_completed_successfully
-    restart: 'no'
-
   # A `Provider` + a catch-all `Route` — sms-gateway also refuses to bind
   # without the former, and `sms-worker`'s `dispatch` role routes nothing
-  # without the latter (#62). Chained onto `seed-signing-key`, not just
-  # `migrate` — `compose.demo.yaml`'s own comment on this exact service has
+  # without the latter (#62). Every seed/register step against this fresh
+  # database chains sequentially from `migrate` — `compose.demo.yaml`'s own comment on this exact service has
   # the full mechanism (a genuinely fresh database's first concurrent touch
   # from two separate connections can race Postgres's own `pg_type`
   # catalog), reproduced here rather than re-derived independently.
@@ -179,7 +140,7 @@ services:
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
     depends_on:
-      seed-signing-key:
+      migrate:
         condition: service_completed_successfully
     restart: 'no'
 
@@ -224,8 +185,7 @@ services:
   # service pulls pre-built from GHCR. This file builds it from source
   # instead, like every other service here. Every flag defaults to what
   # the old `sms-gateway seed-demo-app` command used (`--app-slug
-  # vsms-demo` in particular, matching `provision-client`'s own
-  # `--app-slug` below), so no `command:` override is needed — only
+  # vsms-demo` in particular, which `register-client --app` below names), so no `command:` override is needed — only
   # `DATABASE_URL`. Deliberately unconditional (never gated behind a
   # profile, and never passes `--webhook-url`) — R4: a backend-only
   # deployment needs the `App`/`SenderId` `sendMessage` requires, but
@@ -260,8 +220,7 @@ services:
   # instead. `--webhook-secret-out` is what lets `demo-app` (`--profile
   # demo` too) read the freshly-generated `WebhookEndpoint.secret` — the
   # identical "one container's computed output, a sibling's input"
-  # problem `provision-client`'s own `--client-id-out` already solves
-  # the same way.
+  # problem, solved through the shared `vsms_dev_secrets` volume.
   seed-demo-webhook:
     build:
       context: .
@@ -283,8 +242,8 @@ services:
         condition: service_completed_successfully
     restart: 'no'
 
-  # `chmod 0777` on a fresh named volume before `provision-client` (which
-  # runs as uid 0, see below) ever writes to it. Same reasoning
+  # `chmod 0777` on a fresh named volume before `seed-demo-webhook` (a
+  # non-root image) writes the webhook secret to it. Same reasoning
   # `compose.demo.yaml`'s own `secrets-init` documents.
   secrets-init:
     image: busybox:1.36
@@ -292,86 +251,6 @@ services:
     volumes:
       - vsms_dev_secrets:/secrets
     restart: 'no'
-
-  # The backend-only demo credential (R4 — never gated behind
-  # `--profile console`). `--app-slug vsms-demo` matches `SeedDemoApp`'s
-  # own default, so this container never has to learn an id computed by a
-  # sibling container.
-  provision-client:
-    build:
-      context: .
-      dockerfile: backends/apps/sms-gateway/Dockerfile
-      args:
-        # See the `sms-gateway` service below: this stack's gateway trusts
-        # `sms-fake-aws`'s receipt-signing certificate. Every service that
-        # shares the `vsms-dev/sms-gateway:local` tag passes the same value,
-        # so whichever one Compose builds, the image is the same.
-        CARGO_FEATURES: fake-aws
-    image: vsms-dev/sms-gateway:local
-    user: '0:0'
-    command:
-      - provision-client
-      - --app-slug
-      - vsms-demo
-      - --label
-      - demo console (compose.dev.yaml)
-      - --scope
-      - sms:send
-      - --scope
-      - sms:read
-      - --scope
-      - job:read
-      - --scope
-      - job:enqueue
-      - --scope
-      - worker:read
-      - --scope
-      - provider:read
-      - --scope
-      - route:read
-      - --scope
-      - dashboard:read
-      - --key-out
-      - /secrets/console-client-key.pem
-      - --client-id-out
-      - /secrets/console-client-id
-    environment:
-      DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
-      # #134: real secret material in production, min 32 bytes, validated
-      # before anything else runs. An obviously-demo value — see
-      # `sms-gateway`'s own environment block below for the one place it's
-      # actually load-bearing.
-      SMS_HASH_PEPPER: vsms-dev-hash-pepper-DO-NOT-USE-IN-PRODUCTION-1234567890
-    volumes:
-      - vsms_dev_secrets:/secrets
-    depends_on:
-      seed-demo-app:
-        condition: service_completed_successfully
-      secrets-init:
-        condition: service_completed_successfully
-    restart: 'no'
-
-  # Makes the key/id `provision-client` wrote (owned by uid 0) readable by
-  # `admin`'s AND `demo-app`'s own non-root uids — same trade
-  # `compose.demo.yaml` documents at length on its own identically-named
-  # service. `--client-id-out`'s output has no restrictive mode to begin
-  # with, only the PEM does. `profiles: [console, demo]` — Compose starts
-  # a service the moment ANY one of its own profiles is active (verified
-  # directly: `docker compose --profile demo config --services` lists
-  # this service, and so does `--profile console`), so this stays skipped
-  # on a genuinely backend-only `up -d` (no profiles at all) while
-  # running for either `admin` (`console`) or `demo-app` (`demo`) alone,
-  # not just when both are requested together.
-  secrets-fix-perms:
-    image: busybox:1.36
-    command: ['sh', '-c', 'chmod 0644 /secrets/console-client-key.pem /secrets/console-client-id']
-    volumes:
-      - vsms_dev_secrets:/secrets
-    depends_on:
-      provision-client:
-        condition: service_completed_successfully
-    restart: 'no'
-    profiles: [console, demo]
 
   # The composer's own service key (VS-5b): the console sends through an
   # Ed25519 `AppClient` key of its own, registered with `register-client` (the
@@ -406,15 +285,53 @@ services:
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
     depends_on:
-      provision-client:
+      seed-demo-app:
         condition: service_completed_successfully
     restart: 'no'
     profiles: [console]
 
-  # The human account to actually sign in with. `provision-user` prints a
-  # random password exactly once, to this container's own log:
-  #
-  #   docker compose -f compose.dev.yaml logs provision-user
+  # The demo app's own service key, registered the way an integrator's is: the
+  # private half is `dev-keys/demo-app.pem` (mounted into `demo-app`), only the
+  # public half is an argument here, from `VSMS_DEMO_APP_PUBLIC_KEY`, which
+  # `just demo-up` sets. `demo-app` signs as its own `AppClient` with the two
+  # scopes it uses. `profiles: [demo]`: a stack without `demo-app` registers no
+  # key for it.
+  register-demo-app:
+    build:
+      context: .
+      dockerfile: backends/apps/sms-gateway/Dockerfile
+      args:
+        # See the `sms-gateway` service below: this stack's gateway trusts
+        # `sms-fake-aws`'s receipt-signing certificate. Every service that
+        # shares the `vsms-dev/sms-gateway:local` tag passes the same value,
+        # so whichever one Compose builds, the image is the same.
+        CARGO_FEATURES: fake-aws
+    image: vsms-dev/sms-gateway:local
+    command:
+      - register-client
+      - --app
+      - vsms-demo
+      - --client-name
+      - demo-app
+      - --label
+      - demo app (compose.dev.yaml)
+      - --scope
+      - sms:send
+      - --scope
+      - sms:read
+      - --public-key
+      - ${VSMS_DEMO_APP_PUBLIC_KEY:-}
+    environment:
+      DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
+    depends_on:
+      seed-demo-app:
+        condition: service_completed_successfully
+    restart: 'no'
+    profiles: [demo]
+
+  # The operator's `User` row. It holds no credential and prints none: the
+  # console has no login, so a browser's key is paired to this account with
+  # `pair-console-key` (docs/runbooks/local-development.adoc).
   provision-user:
     build:
       context: .
@@ -499,30 +416,6 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
-      # Internal DNS, not the host-published port below. Every token this
-      # OP mints carries this as `iss`, and `admin`'s own server-side code
-      # (`admin/app/api/auth/callback/route.ts`) makes real HTTP calls
-      # against `SMS_AUTH_ISSUER` — `/login`, `/jwks.json`, `/token` — so
-      # that value has to be an address reachable *from inside admin's own
-      # container*, which `http://127.0.0.1:...` structurally is not (that
-      # would be admin's own loopback, not this container's).
-      #
-      # Consequence, stated explicitly rather than discovered live: a
-      # HOST-native tool authenticating against the published port below
-      # (`http://127.0.0.1:${VSMS_DEMO_GATEWAY_PORT}`) cannot reuse this
-      # same string for both "the address I connect to" and "the audience
-      # I sign into my client assertion" the way a single `--issuer` flag
-      # (`examples/rust/sms-send`'s own CLI shape) assumes — the exact
-      # tension `docs/runbooks/showcase.adoc` already documents for
-      # `compose.demo.yaml`'s identical `SMS_OIDC_ISSUER` choice. This
-      # file's own `ci/e2e-integration` tool is written to decouple the
-      # two (`vsms-sdk-rust`'s `VsmsClient::private_key_jwt(base_url, ..)`
-      # takes the connect address and the assertion's `PrivateKeyJwtConfig
-      # .issuer` separately) precisely so it can be pointed at this stack;
-      # `examples/rust/sms-send` as shipped cannot, and this is not a bug
-      # in that example — it is designed to be a real integrator's own
-      # copy, not a container-network-aware verification tool.
-      SMS_OIDC_ISSUER: http://sms-gateway:8080
       # No real Orange account exists for this stack — every submit goes
       # to sms-fake-orange instead.
       ORANGE_CM_CLIENT_ID: placeholder
@@ -536,7 +429,6 @@ services:
       AWS_SMS_EVENTS_TOPIC_ARN: arn:aws:sns:eu-west-1:000000000000:vsms-sms-events
       AWS_SMS_FAKE_SNS_CERT_BASE: http://sms-fake-aws:8095/
       SMS_HASH_PEPPER: vsms-dev-hash-pepper-DO-NOT-USE-IN-PRODUCTION-1234567890
-      SMS_CONSOLE_OIDC_CLIENT_ID: sms-console
       # VS-3: every request is a COSE_Sign1 envelope and every response is
       # signed back, so the gateway will not boot without its two Ed25519
       # signing keys. They are DEV keys, minted by `just dev-keys` (which
@@ -551,8 +443,6 @@ services:
       postgres:
         condition: service_healthy
       migrate:
-        condition: service_completed_successfully
-      seed-signing-key:
         condition: service_completed_successfully
       seed-dispatch:
         condition: service_completed_successfully
@@ -569,9 +459,8 @@ services:
       retries: 3
       start_period: 10s
     ports:
-      # Host access for `curl`, `examples/rust/sms-send` pointed at a
-      # single-issuer flow that doesn't need the split above (reads,
-      # `GET /healthz`), and this file's own `ci/e2e-integration` tool.
+      # Host access for `curl` (`GET /healthz`), `examples/rust/sms-send` and
+      # this file's own `ci/e2e-integration` tool.
       - '127.0.0.1:${VSMS_DEMO_GATEWAY_PORT:-8080}:8080'
 
   sms-worker:
@@ -700,11 +589,9 @@ services:
   # --profile demo` together; `--profile demo` alone (no console) is
   # itself a legitimate, documented way to run this proof — see
   # `docs/runbooks/showcase.adoc`'s own "The demo app" section. It still
-  # needs `secrets-fix-perms`'s output (the console-client PEM,
-  # `0600`/root-owned until that step loosens it) to read the credential
-  # it reuses from `provision-client` — that service is `profiles:
-  # [console, demo]` for exactly this reason, so it runs for either
-  # profile alone.
+  # needs its own service key (`register-demo-app`, which is
+  # `profiles: [demo]` for exactly this reason, so it runs for either profile
+  # alone).
   #
   # `restart: 'no'` — explicit, matching this file's own convention for
   # every other one-shot step, even though it's also Compose's default
@@ -720,14 +607,17 @@ services:
     profiles: [demo]
     restart: 'no'
     environment:
-      VSMS_ISSUER: http://sms-gateway:8080
-      VSMS_CLIENT_ID_PATH: /secrets/console-client-id
-      VSMS_PRIVATE_KEY_PATH: /secrets/console-client-key.pem
-      VSMS_SCOPE: sms:send sms:read
+      VSMS_BASE_URL: http://sms-gateway:8080
+      VSMS_SIGNING_KEY_PATH: /run/demo/demo-app.pem
+      VSMS_SERVER_KEYS_PATH: /run/demo/server-keys.txt
       DEMO_WEBHOOK_SECRET_PATH: /secrets/webhook-secret
       DEMO_WEBHOOK_PORT: '9000'
     volumes:
       - vsms_dev_secrets:/secrets:ro
+      # The demo app's DEV signing key and the gateway's two public sealing
+      # keys, both minted by `just dev-keys` into the git-ignored `dev-keys/`.
+      - ./dev-keys/demo-app.pem:/run/demo/demo-app.pem:ro
+      - ./dev-keys/server-keys.txt:/run/demo/server-keys.txt:ro
     depends_on:
       sms-gateway:
         condition: service_healthy
@@ -735,7 +625,7 @@ services:
         condition: service_started
       seed-demo-webhook:
         condition: service_completed_successfully
-      secrets-fix-perms:
+      register-demo-app:
         condition: service_completed_successfully
 
 volumes:
