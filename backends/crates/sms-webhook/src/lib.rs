@@ -146,10 +146,16 @@ pub fn delivery_route(url: &str) -> Result<String, SealError> {
 /// `sms-api`'s `webhook_endpoint_validation.rs` asserts. An `hmac` endpoint is
 /// held to none of it.
 ///
-/// It is deliberately **narrower** than [`delivery_route`], never wider: a host
-/// is ASCII (an IDN is written in its punycode form) and a port is 1 to 65535.
-/// `sms-api`'s `every_url_the_pattern_accepts_can_be_sealed` holds that over a
-/// generated corpus, with [`delivery_route`] as the oracle.
+/// It is deliberately **narrower** than [`delivery_route`] in the text it reads: a
+/// host is ASCII (an IDN is written in its punycode form) and a port is 1 to 65535.
+/// It is a pattern, not a parser, so it is wider where only a parser can tell
+/// (`[:]`, `1.2.3.999` and `x.0` match it and do not parse). What holds is that the
+/// pattern **together with `@uri`** (the `Url::parse` every write through the API
+/// passes) never accepts what [`delivery_route`] refuses: `sms-api`'s
+/// `every_url_the_pattern_accepts_can_be_sealed` holds that over a generated
+/// corpus, with [`delivery_route`] as the oracle. The console's TypeScript copy
+/// (`webhook-rules.ts`) is held to this constant and to
+/// `tests/fixtures/sealable_url_cases.json`.
 pub const SEALABLE_URL_PATTERN: &str = r"^[Hh][Tt][Tt][Pp][Ss]?://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::(?:6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(?:/[A-Za-z0-9._~!$&'()*+,;=:@/-]*)?$";
 
 static SEALABLE_URL: LazyLock<Regex> = LazyLock::new(|| {

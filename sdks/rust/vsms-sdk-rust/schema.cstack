@@ -1063,8 +1063,10 @@ model WebhookEndpoint {
   // OR url ~ <pattern>`), not an attribute here: an attribute would hold `hmac`
   // endpoints to it too. The pattern is `sms_webhook::SEALABLE_URL_PATTERN`, which
   // the migration must contain verbatim; it is deliberately narrower than what
-  // `sms_webhook::delivery_route` accepts (an IDN host is written in its punycode
-  // form), never wider, and sms-webhook's tests hold that. The
+  // `sms_webhook::delivery_route` reads as text (an IDN host is written in its
+  // punycode form), and wider where only a parser can tell (`[:]`, `1.2.3.999`),
+  // so it is the pattern together with `@uri` that never accepts what
+  // `delivery_route` refuses, and sms-webhook's tests hold that. The
   // `switchWebhookDeliveryMode` procedure answers 422 before the database is
   // asked.
   url String @uri

@@ -12,7 +12,11 @@
 //!   mode-switching procedure refuses it first. An **`hmac`** endpoint binds no
 //!   route and keeps any URL (`url` is a plain `@uri`), a query string included.
 //!   The CHECK's pattern is `sms_webhook::SEALABLE_URL_PATTERN`: narrower than
-//!   `delivery_route` (a host is ASCII, a port is 1..=65535), never wider;
+//!   `delivery_route` in the text it reads (a host is ASCII, a port is
+//!   1..=65535) and wider where only a parser can tell (`[:]`, `1.2.3.999`,
+//!   `x.0`). What holds is that the pattern **together with `@uri`** (the
+//!   `Url::parse` the generated input's `validate()` runs on every write through
+//!   the API) never accepts what `delivery_route` refuses;
 //!   `every_url_the_pattern_accepts_can_be_sealed` holds that over a generated
 //!   corpus, with `delivery_route` as the oracle.
 //! - **A secret written through the API is at least 32 characters**, current or
@@ -66,6 +70,11 @@ fn hmac_create(url: &str) -> CreateWebhookEndpointInput {
 fn accepts_hmac_url(url: &str) -> bool {
     <CreateWebhookEndpointInput as CreateModelInput<WebhookEndpoint>>::validate(&hmac_create(url))
         .is_ok()
+}
+
+/// Whether the generated create input's `@uri` (`url::Url::parse`) takes `url`.
+fn accepts_uri(url: &str) -> bool {
+    accepts_hmac_url(url)
 }
 
 fn accepts_audience(audience: &str) -> bool {
@@ -150,7 +159,11 @@ fn an_hmac_endpoint_keeps_a_url_a_sealed_one_could_not_have() {
 }
 
 /// Every combination of the pieces a URL is made of, good and bad: whenever the
-/// pattern would let a sealed endpoint keep one, the worker can seal for it.
+/// pattern **and** `@uri` (the generated input's `validate()`) would let a sealed
+/// endpoint keep one, the worker can seal for it. The pattern alone is not enough:
+/// it is a pattern, not a parser, and lets `[:]`, `1.2.3.999` and `x.0` through,
+/// which `Url::parse` refuses; the corpus holds those and the test below proves
+/// they are the ones `@uri` is for.
 #[test]
 fn every_url_the_pattern_accepts_can_be_sealed() {
     let schemes = ["https://", "http://", "HTTP://", "ftp://", "ws://", ""];
@@ -160,6 +173,11 @@ fn every_url_the_pattern_accepts_can_be_sealed() {
         "a-b.example.co",
         "127.0.0.1",
         "[::1]",
+        "[:]",
+        "[1:2]",
+        "1.2.3.999",
+        "x.0",
+        "example.0",
         "-bad.example",
         "bad-.example",
         "ex ample.com",
@@ -175,6 +193,8 @@ fn every_url_the_pattern_accepts_can_be_sealed() {
     ];
     let tails = ["", "?", "?x=1", "#", "#f", "?x#f"];
     let mut accepted = 0_usize;
+    let mut accepted_by_both = 0_usize;
+    let mut parse_only_refusals = 0_usize;
     let mut total = 0_usize;
     for scheme in schemes {
         for user in userinfo {
@@ -184,14 +204,25 @@ fn every_url_the_pattern_accepts_can_be_sealed() {
                         for tail in tails {
                             let url = format!("{scheme}{user}{host}{port}{path}{tail}");
                             total += 1;
-                            if url_can_be_sealed(&url) {
-                                accepted += 1;
+                            if !url_can_be_sealed(&url) {
+                                continue;
+                            }
+                            accepted += 1;
+                            if accepts_uri(&url) {
+                                accepted_by_both += 1;
                                 assert!(
                                     delivery_route(&url).is_ok(),
-                                    "the pattern accepts {url:?} but delivery_route refuses it: \
-                                     {:?}",
+                                    "the pattern and @uri accept {url:?} but delivery_route \
+                                     refuses it: {:?}",
                                     delivery_route(&url)
                                 );
+                            } else if delivery_route(&url).is_ok() {
+                                panic!(
+                                    "@uri refuses {url:?}, which the pattern accepts and \
+                                     delivery_route can seal: the two parsers disagree"
+                                );
+                            } else {
+                                parse_only_refusals += 1;
                             }
                         }
                     }
@@ -203,6 +234,31 @@ fn every_url_the_pattern_accepts_can_be_sealed() {
     assert!(total > 100_000, "{total}");
     assert!(accepted > 100, "only {accepted} of {total} accepted");
     assert!(accepted < total / 2, "{accepted} of {total} accepted");
+    // ... and it holds the shapes only a parser refuses, so the assertion above
+    // is about the pattern together with @uri and not the pattern alone.
+    assert!(accepted_by_both > 100, "{accepted_by_both}");
+    assert!(
+        parse_only_refusals > 100,
+        "the corpus must contain URLs the pattern accepts and @uri refuses: {parse_only_refusals}"
+    );
+}
+
+/// The shapes the pattern lets through and `@uri` refuses, named: this is why the
+/// schema keeps `@uri` on a sealed `url`, and why the console asks the parser too.
+#[test]
+fn the_pattern_alone_accepts_what_a_parser_refuses() {
+    for url in [
+        "https://[:]/hook",
+        "https://[1:2]/hook",
+        "https://1.2.3.999/hook",
+        "https://999.999.999.999/hook",
+        "https://x.0/hook",
+        "https://example.0/hook",
+    ] {
+        assert!(url_can_be_sealed(url), "{url}: the pattern is not a parser");
+        assert!(!accepts_uri(url), "{url}: @uri refuses it");
+        assert!(delivery_route(url).is_err(), "{url}: so does the worker");
+    }
 }
 
 #[test]

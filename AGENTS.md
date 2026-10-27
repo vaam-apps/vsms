@@ -4554,6 +4554,14 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   `Retryable` again. A keyless `hooks` `warn`s the count of due sealed attempts every five minutes (`SealedBacklogWatch`, a
   `COUNT(*)` through `aggregate()`), naming `--envelope-signing-key-file`, besides the start-up line. (C, F3) The runbook, the chart,
   the compose file and `hooks.md` say so.
+  (D, F5) The console's sealed branch checked only the route rule (`receiverRoute`), so it accepted an internationalised host as
+  typed, an underscore host and port 0, which the database's CHECK then refused with a 500 the form never explained. The pattern
+  is ported to `webhook-rules.ts` (`SEALABLE_URL_PATTERN`, `urlCanBeSealed`), and pinned two ways: the vitest reads the Rust
+  constant out of `sms-webhook/src/lib.rs` and fails on any difference, and both languages read one corpus,
+  `sms-webhook/tests/fixtures/sealable_url_cases.json`, with a Rust test beside it. (F7) "Never wider" was wrong: the pattern is
+  not a parser and accepts `[:]`, `1.2.3.999` and `x.0`, which `Url::parse` refuses. What holds is that the pattern **together
+  with `@uri`** never accepts what `delivery_route` refuses; the wording in `lib.rs`, `lib.md`, the schema and `architecture.md` is
+  fixed, and the generated corpus holds those hosts and asserts exactly that.
 - **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,
   and a signature cannot survive that. Its nonce memory is per process and cannot be replaced (the check runs in WebAssembly),
   unlike the Rust SDK's `with_nonce_store`; the README says so.

@@ -4,6 +4,9 @@ import {
   GATEWAY_AUDIENCE,
   GATEWAY_AUDIENCE_MESSAGE,
   receiverRoute,
+  SEALABLE_URL_PATTERN,
+  urlCanBeSealed,
+  urlMatchesSealablePattern,
   urlRefusal,
 } from "./webhook-rules";
 
@@ -20,6 +23,68 @@ const table = JSON.parse(
     "utf8",
   ),
 ) as { cases: Array<{ url: string; route: string | null }> };
+
+const sealable = JSON.parse(
+  readFileSync(
+    new URL(
+      "../../../../backends/crates/sms-webhook/tests/fixtures/sealable_url_cases.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+) as { cases: Array<{ url: string; pattern: boolean; sealable: boolean; why: string }> };
+
+describe("SEALABLE_URL_PATTERN", () => {
+  it("is the Rust constant, character for character", () => {
+    // The Rust constant is the one the migration, the schema and sms-api's tests
+    // are held to; reading it from its source is what keeps this copy from
+    // becoming a second rule that merely looks like it.
+    const source = readFileSync(
+      new URL("../../../../backends/crates/sms-webhook/src/lib.rs", import.meta.url),
+      "utf8",
+    );
+    const found = /pub const SEALABLE_URL_PATTERN: &str = r"([^"]+)";/.exec(source);
+    expect(found, "the Rust constant is a raw string literal on one line").not.toBeNull();
+    expect(SEALABLE_URL_PATTERN).toBe(found?.[1]);
+  });
+
+  it("gives every URL in the shared corpus the answer the Rust pattern gives it", () => {
+    expect(sealable.cases.length).toBeGreaterThan(40);
+    for (const { url, pattern, why } of sealable.cases) {
+      expect(urlMatchesSealablePattern(url), `${url}: ${why}`).toBe(pattern);
+    }
+  });
+
+  it("and the pattern with the route gives the recorded sealability", () => {
+    for (const { url, sealable: expected, why } of sealable.cases) {
+      expect(urlCanBeSealed(url), `${url}: ${why}`).toBe(expected);
+      expect(urlRefusal(url) === null, url).toBe(expected);
+    }
+  });
+
+  it("refuses what URL parsing would quietly accept: an IDN as typed, an underscore host, port 0", () => {
+    for (const url of [
+      "https://bücher.example/hook",
+      "https://my_host.example/hook",
+      "https://example.com:0/hook",
+    ]) {
+      // `new URL` takes each (the first as punycode), so only the pattern refuses them.
+      expect(() => new URL(url), url).not.toThrow();
+      expect(receiverRoute(url), url).not.toBeNull();
+      expect(urlMatchesSealablePattern(url), url).toBe(false);
+      expect(urlRefusal(url), url).not.toBeNull();
+    }
+    expect(urlCanBeSealed("https://xn--bcher-kva.example/hook")).toBe(true);
+  });
+
+  it("is not the whole rule: the shapes it lets through and URL parsing refuses are refused too", () => {
+    for (const url of ["https://[:]/hook", "https://1.2.3.999/hook", "https://x.0/hook"]) {
+      expect(urlMatchesSealablePattern(url), url).toBe(true);
+      expect(receiverRoute(url), url).toBeNull();
+      expect(urlCanBeSealed(url), url).toBe(false);
+    }
+  });
+});
 
 describe("receiverRoute", () => {
   it("gives every URL in the shared table the route sms-webhook gives it", () => {

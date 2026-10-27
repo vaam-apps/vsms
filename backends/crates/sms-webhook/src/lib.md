@@ -87,8 +87,10 @@ receiver sees in the URL.
 That is a rule about a `sealed` endpoint's URL, and only one: an `hmac` delivery
 binds no route and keeps any URL it was registered with, a query string
 included. A sealed endpoint's URL is held to [`SEALABLE_URL_PATTERN`] (a CHECK in
-`0010_sealed_webhooks`), which is narrower than [`delivery_route`] and never
-wider (an ASCII host, a port of 1 to 65535); [`url_can_be_sealed`] runs it.
+`0010_sealed_webhooks`), which is narrower than [`delivery_route`] in the text it
+reads (an ASCII host, a port of 1 to 65535) and wider in what only a parser sees
+(`[:]`, `1.2.3.999`, `x.0`): together with `@uri` it never accepts what
+[`delivery_route`] refuses. [`url_can_be_sealed`] runs it.
 
 The envelope JSON is `{id, eventId, type, occurredAt, appId, endpointId, data}`.
 `id` is `WebhookAttempt.id`, the dedupe key §8.5 already names; `eventId` is

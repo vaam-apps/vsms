@@ -3,7 +3,7 @@
 // The gateway enforces both again on write (a CHECK on `url` for a `sealed`
 // endpoint alone, `@regex` and a CHECK on `audience`, a unique index on it), so
 // these are the early, friendly half of the same rules, never the only one.
-// The route rule is a `sealed` endpoint's: an `hmac` delivery binds no route and
+// The URL rules are a `sealed` endpoint's: an `hmac` delivery binds no route and
 // keeps whatever URL it was registered with.
 
 /**
@@ -17,6 +17,33 @@ export const GATEWAY_AUDIENCE = "vsms";
 export const GATEWAY_AUDIENCE_MESSAGE = `"${GATEWAY_AUDIENCE}" is the gateway's own name: choose one that is yours (your origin works)`;
 
 /**
+ * The URLs the database lets a `sealed` endpoint hold, written once more here.
+ * It is `sms_webhook::SEALABLE_URL_PATTERN` character for character: migration
+ * `0010_sealed_webhooks` carries it as the CHECK
+ * `webhook_endpoints_url_sealable_for_sealed_check`, and the Rust constant is
+ * what that migration, the schema and `sms-api`'s tests are held to.
+ * `webhook-rules.test.ts` reads the Rust constant out of
+ * `backends/crates/sms-webhook/src/lib.rs` and fails if this literal differs, and
+ * runs `sms-webhook`'s `tests/fixtures/sealable_url_cases.json` (which the Rust
+ * test reads too) through it, so it cannot drift from either. Never edit it here
+ * alone.
+ *
+ * It matches the text as typed, and is narrower than `new URL()` on purpose: an
+ * internationalised host is written in punycode (`bücher.example` is refused,
+ * `xn--bcher-kva.example` is not), a host has no underscore, and a port is 1 to
+ * 65535. It is also wider than URL parsing in places (an IPv6 literal of `[:]`,
+ * `1.2.3.999`, `x.0`), which is why [`urlCanBeSealed`] asks both.
+ */
+export const SEALABLE_URL_PATTERN = String.raw`^[Hh][Tt][Tt][Pp][Ss]?://(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\])(?::(?:6553[0-5]|655[0-2][0-9]|65[0-4][0-9]{2}|6[0-4][0-9]{3}|[1-5][0-9]{4}|[1-9][0-9]{0,3}))?(?:/[A-Za-z0-9._~!$&'()*+,;=:@/-]*)?$`;
+
+const SEALABLE_URL = new RegExp(SEALABLE_URL_PATTERN);
+
+/** Whether `url`, as typed, is one the database lets a `sealed` endpoint hold. */
+export function urlMatchesSealablePattern(url: string): boolean {
+  return SEALABLE_URL.test(url);
+}
+
+/**
  * The route a delivery to `url` binds: its path, or `null` when the URL cannot
  * carry a sealed delivery. The same rule as `sms_webhook::delivery_route`
  * (http(s), no credentials, no query, no fragment, a path with no `{`, `}` or
@@ -28,9 +55,9 @@ export const GATEWAY_AUDIENCE_MESSAGE = `"${GATEWAY_AUDIENCE}" is the gateway's 
  * It differs from `new URL()` in one place on purpose: `?` and `#` are looked
  * for in the text, because the parsed `search` and `hash` of `https://h/a?` and
  * `https://h/a#` are empty (the URL API drops a bare marker) while the Rust
- * parser still sees a query and a fragment. (The gateway is stricter on one
- * more point and says so when the form is submitted: a host is stored in its
- * ASCII, punycode, form.)
+ * parser still sees a query and a fragment. It is the route rule alone: the
+ * text the database accepts is [`SEALABLE_URL_PATTERN`], and [`urlCanBeSealed`]
+ * asks both.
  */
 export function receiverRoute(url: string): string | null {
   if (url.includes("?") || url.includes("#")) return null;
@@ -46,9 +73,20 @@ export function receiverRoute(url: string): string | null {
   return parsed.pathname;
 }
 
-/** Why `url` cannot be a webhook endpoint's, or `null` when it can. */
+/**
+ * Whether a `sealed` endpoint may be registered at `url`: the database's pattern
+ * ([`SEALABLE_URL_PATTERN`]) **and** a route the worker can bind
+ * ([`receiverRoute`]). Neither implies the other: the pattern is stricter about
+ * the text (ASCII host, port range) and the route about what the URL parses to
+ * (`[:]`, `1.2.3.999` and `x.0` match the pattern and do not parse).
+ */
+export function urlCanBeSealed(url: string): boolean {
+  return urlMatchesSealablePattern(url) && receiverRoute(url) !== null;
+}
+
+/** Why `url` cannot be a `sealed` webhook endpoint's, or `null` when it can. */
 export function urlRefusal(url: string): string | null {
-  return receiverRoute(url) === null
-    ? "Must be an http(s) URL with no credentials, query, fragment or {}% in its path: a delivery binds the path as its route"
-    : null;
+  return urlCanBeSealed(url)
+    ? null
+    : "Must be an http(s) URL with an ASCII host (write an internationalised name in punycode), a port from 1 to 65535 and no credentials, query, fragment or {}% in its path: a delivery binds the path as its route";
 }
