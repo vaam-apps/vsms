@@ -4453,13 +4453,16 @@ by a cratestack `EnvelopeLayer` (`Required`) on the receiver. Hard cutover: no d
   button, the Rust SDK's and the examples' `signature.ts` verifiers, `cross_language_vectors.json`, `DEMO_WEBHOOK_SECRET` /
   `DEMO_WEBHOOK_PREV_SECRET` and the compose, Helm and `vsms-demo-seed` plumbing for them.
 - **Migration:** `0010_sealed_webhooks` is forward-only (its `down.sql` raises: a secret must not come back). It adds
-  `audience text NOT NULL` (existing rows get the URL's origin as a starting value, which an operator then sets to the receiver's
-  real audience; until then a delivery is refused and retried, not lost), then drops the three columns. `.xtask/src/migrations_current.rs` gained `COLUMNS_CHANGED_BY_LATER`, beside `ADDED_BY_LATER` and `DROPPED_BY_LATER`,
+  `audience text NOT NULL UNIQUE`, never `vsms` (existing rows get the URL's origin, lower-cased and without credentials, as a
+  starting value, a later row at the same origin told apart by `#<id>`; an operator then sets the receiver's real audience; until
+  then a delivery is refused and retried, not lost), then drops the three columns. `secret`/`prevSecret` were never `@sensitive`,
+  so `cratestack_audit` still holds every old secret in plaintext under the anchored chain: receivers must delete their HMAC
+  verification at cutover (the migration's header says so). `.xtask/src/migrations_current.rs` gained `COLUMNS_CHANGED_BY_LATER`, beside `ADDED_BY_LATER` and `DROPPED_BY_LATER`,
   so `0001_init` still compares against the generator.
 - **The key** is the gateway's current envelope key: `sms-worker --roles hooks` takes `--envelope-signing-key-file` and fails
   closed without it (other roles need nothing). A receiver pins what it pins to open vsms's answers (`sms-gateway server-keys`).
 - **The contract** has no schema op to hash, so `sms-webhook` declares a document and binds
-  `SHA-256("vsms/webhook-delivery/v1\0" || document)`, a literal pinned by tests. `cargo xtask sdk-parity-check` holds the
+  `SHA-256("vsms/webhook-delivery/v2\0" || document)` (`c61394a5…0423`), a literal pinned by tests. `cargo xtask sdk-parity-check` holds the
   sealer's, the Rust SDK's and the wasm crate's copies equal.
 - **A retry is a new sealed request** (fresh nonce, current timestamp); `id` is the dedupe key, the nonce only stops a replay.
   Redirects are not followed. The receiver's sealed answer is not opened and is proof of nothing.
@@ -4467,6 +4470,29 @@ by a cratestack `EnvelopeLayer` (`Required`) on the receiver. Hard cutover: no d
   axum router; `sms-webhook/tests/sealed_delivery.rs` and the worker's live suites drive it. `sealed_vector.rs` writes a
   deterministic delivery that the Rust SDK, the wasm crate and the Node SDK each open (`tests/fixtures/sealed_delivery_vector.json`;
   the SDK copy is held equal).
+- **Review round 1 (tenant isolation).** One gateway key signs every app's deliveries, and the audience was the only per-receiver
+  binding, free text anyone with `webhook:manage` could pick: a second endpoint naming a victim's audience at a URL of the
+  attacker's collected seals that the victim's receiver would open (the nonce store had never seen them, the `id` differed). The
+  per-endpoint HMAC used to isolate endpoints; nothing replaced it. Fixed twice over. The signed envelope is now
+  `{id, eventId, type, occurredAt, appId, endpointId, data}` and the contract is v2 (v1 never left this branch); every opener
+  (Rust SDK, wasm crate, Node SDK) takes a **required** app id and an optional endpoint id and answers a mismatch with the same
+  coarse `Unverified` as a forged seal; a receiver behind its own `EnvelopeLayer` compares `appId` in its handler
+  (`sealed_delivery.rs` proves the layer alone cannot). And `WebhookEndpoint.audience` is `@unique` (the index is in 0010) and never
+  `vsms` (a `@regex` at the API, a hand-written CHECK in 0010, since `@db_enforce` does nothing for a regex).
+  `migrations-current` now requires the generator's `webhook_endpoints_audience_*` statements verbatim in 0010, refuses a
+  statement under that name the schema does not ask for, compares the added column's type and nullability with the generator's
+  `CREATE TABLE` line, and lists the one hand-written constraint by name.
+- **A URL the seal cannot bind is refused on write**, not at delivery (where it burned eight attempts and tripped the breaker):
+  `WebhookEndpoint.url` carries a `@regex` narrower than `sms_webhook::delivery_route`, never wider
+  (`sms-api/tests/webhook_endpoint_validation.rs` holds that over a generated corpus of 126 720 URLs with `delivery_route` as the oracle), and the
+  console's `receiverRoute` is held to the same table as the Rust function (`delivery_route_cases.json`, read by both). The
+  console's JavaScript twin used to read `new URL("https://h/a?").search`, which is empty where Rust's `query()` is `Some("")`;
+  it looks for a literal `?` or `#` now.
+- **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,
+  and a signature cannot survive that. Its nonce memory is per process and cannot be replaced (the check runs in WebAssembly),
+  unlike the Rust SDK's `with_nonce_store`; the README says so.
+- **The worker holds the key that signs every vsms answer** (`docs/architecture.md` §4.4 states the trade-off). The Helm chart
+  mounts it with `subPath`, which never sees an edited Secret: rotation restarts the worker with the gateway.
 - **A recorded vector cannot show a replay refused**: `InMemoryNonceStore` expires an entry against the real clock, and a vector
   is opened with a pinned one. Replay is proved with deliveries sealed afresh (the Node SDK's and the Rust SDK's webhook tests).
 - **Not verified here:** the Helm chart against a cluster (it had no envelope-key configuration at all, which this adds), the

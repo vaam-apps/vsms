@@ -146,21 +146,34 @@ the integration guide.
 vsms delivers an event as a sealed request signed with the gateway's own key,
 the one that signs its answers: there is no webhook secret and no signature
 header. Both SDKs open a delivery against the same two pinned public keys, for
-the audience and route of your endpoint, and return the typed event (`id`,
-`eventId`, `type`, `occurredAt`, `data`):
+the audience, route and app of your endpoint, and return the typed event (`id`,
+`eventId`, `type`, `occurredAt`, `appId`, `endpointId`, `data`). The app id is
+required: one gateway key signs every app's deliveries, so a signature and an
+audience alone do not say a delivery was made for you, and a delivery made for
+another app (or, if you give one, another endpoint) is refused like a forgery:
 
 ```ts
-const opener = new WebhookOpener({ serverKeys, audience: "my-receiver", route: "/webhooks/vsms" });
-const event = await opener.open(rawBody); // SdkError kind "unverified" on anything wrong: reply 401
+const opener = new WebhookOpener({
+  serverKeys,
+  audience: "https://hooks.example.com", // an audience only you can have
+  route: "/webhooks/vsms", // the whole path of the endpoint's URL
+  appId: "capp00000000000000000", // your App's id
+});
+const event = await opener.open(rawBody); // rawBody: the request's bytes. SdkError kind "unverified" on anything wrong: reply 401
 ```
 
 ```rust
-let opener = WebhookOpener::new(&server_keys, "my-receiver", "/webhooks/vsms")?;
+let opener = WebhookOpener::new(
+    &server_keys,
+    "https://hooks.example.com",
+    "/webhooks/vsms",
+    "capp00000000000000000", // your App's id
+)?;
 let event = opener.open(&body).await?; // WebhookError::Unverified on anything wrong: reply 401
 ```
 
-A forgery, another receiver's delivery, a replay and a stale timestamp are one
-answer. The nonce memory is per process; behind several replicas pass the Rust
+A forgery, a delivery addressed to another audience or made for another app, a
+replay and a stale timestamp are one answer. The nonce memory is per process; behind several replicas pass the Rust
 opener a shared `NonceStore` and dedupe on `event.id` either way. The wasm crate
 and the Rust SDK hold the same delivery contract
 (`cargo xtask sdk-parity-check`) and both open a delivery the gateway's own

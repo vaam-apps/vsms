@@ -115,6 +115,34 @@ integrator pins the public half of *both*; print them once the stack is up with
 hand the two lines to the integrator. They are paths, not secret values, in
 `.env`-land: the files are the secret.
 
+The worker's `hooks` role seals every webhook delivery with
+`secrets/envelope-current.pem` too, so a receiver pins the same two public keys
+for the gateway's answers and for the deliveries it receives. Both containers
+run as uid 65532, which is why the one `chown`/`chmod 0400` above serves both.
+
+=== Rotating the envelope keys
+
+Both processes read their key once, at start-up, so a rotation is a restart:
+
+. Ship every client and every webhook receiver that pins the new `next` public
+  key (`docker compose run --rm sms-gateway server-keys` after the swap prints
+  it; an integrator pins *both* halves, so this step is what makes the
+  rotation a non-event for them).
+. Promote it: move `secrets/envelope-next.pem` over
+  `secrets/envelope-current.pem`, mint a new `envelope-next.pem`, keep the
+  `chown`/`chmod` above.
+. **Restart the gateway and the worker together** (`docker compose up -d
+  --force-recreate sms-gateway sms-worker`). A worker left running keeps
+  sealing deliveries with the old key; receivers that still pin it accept them,
+  but the moment the old key is retired from their pins every delivery from that
+  worker is refused. On Kubernetes the same step is `kubectl rollout restart` of
+  *both* deployments: the chart mounts the worker's key with `subPath`, and a
+  `subPath` Secret mount never sees an edited Secret, so the worker will not
+  pick the new key up on its own the way a directory mount eventually would.
+. Retire the old public key from the receivers' pins once no delivery sealed
+  with it can still be retried (a retry is sealed afresh, so after the restart
+  nothing is).
+
 `SMS_HASH_PEPPER` backs `Message.msisdnHash`/`bodyHash` (HMAC-SHA256) --
 `sms-gateway serve` validates it (minimum 32 bytes) before doing anything
 else, so a missing or too-short value fails the container at boot, not at

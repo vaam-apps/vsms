@@ -27,7 +27,7 @@ sequenceDiagram
     R->>H: the plain JSON envelope + VerifiedSigner
     H-->>R: 2xx
     R-->>W: 2xx, sealed under the receiver's own key
-    Note over W: a 2xx is delivered; the body is not read
+    Note over W: a 2xx is delivered, the body is not read
 ```
 
 ```mermaid
@@ -45,27 +45,51 @@ stateDiagram-v2
 [`Sealer::seal`] calls cratestack's `ClientEnvelope::seal_call`. The seal binds,
 and the receiver rebuilds from its own configuration:
 
-| Bound value     | A delivery's value                                              | Where the receiver gets it                         |
-| --------------- | --------------------------------------------------------------- | -------------------------------------------------- |
-| audience        | `WebhookEndpoint.audience`, chosen when the endpoint is created | the name its `EnvelopeLayer` is built with         |
-| method          | `POST` ([`METHOD`])                                             | the route it mounts                                |
-| route           | the **path** of `WebhookEndpoint.url` ([`delivery_route`])      | the template axum matched (`/webhooks/vsms`)       |
-| path parameters | none                                                            | the route has none                                 |
-| query           | none (a URL with a query is refused)                            | none                                               |
-| contract digest | [`CONTRACT_SHA`], from the document in [`CONTRACT_DOCUMENT`]    | its `AcceptedContracts` row for `POST <route>`     |
-| payload type    | `application/json` ([`PAYLOAD_TYPE`]), and it asks for the same | `payload_media_types(["application/json"], [...])` |
-| nonce, `iat`    | a fresh 16-byte `cti` and the worker's clock, **per attempt**   | the layer's nonce store and its 300 s skew         |
+| Bound value     | A delivery's value                                               | Where the receiver gets it                         |
+| --------------- | ---------------------------------------------------------------- | -------------------------------------------------- |
+| audience        | `WebhookEndpoint.audience`, chosen when the endpoint is created  | the name its `EnvelopeLayer` is built with         |
+| method          | `POST` ([`METHOD`])                                              | the route it mounts                                |
+| route           | the **whole path** of `WebhookEndpoint.url` ([`delivery_route`]) | the template axum matched (`/webhooks/vsms`)       |
+| path parameters | none                                                             | the route has none                                 |
+| query           | none (a URL with a query is refused)                             | none                                               |
+| contract digest | [`CONTRACT_SHA`], from the document in [`CONTRACT_DOCUMENT`]     | its `AcceptedContracts` row for `POST <route>`     |
+| payload type    | `application/json` ([`PAYLOAD_TYPE`]), and it asks for the same  | `payload_media_types(["application/json"], [...])` |
+| nonce, `iat`    | a fresh 16-byte `cti` and the worker's clock, **per attempt**    | the layer's nonce store and its 300 s skew         |
 
 The `kid` in the message is the thumbprint prefix of vsms's public key; the
 receiver's resolver maps it to the key it pinned.
 
-The envelope JSON is `{id, eventId, type, occurredAt, data}`. `id` is
-`WebhookAttempt.id`, the dedupe key §8.5 already names; `eventId` is
+**The route is the whole path, not a suffix of it.** The seal binds exactly the
+path of the endpoint's URL, and the receiver's router must match exactly that
+path: an endpoint at `https://api.example.com/webhooks/vsms` is a delivery to
+`/webhooks/vsms`, and the receiver mounts `/webhooks/vsms`. A gateway or ingress
+may rewrite the host or the scheme, but never the path: one that strips a prefix
+(`/api/webhooks/vsms` in, `/webhooks/vsms` out) makes the receiver's router see a
+route the seal was not made for, and every delivery is a `401`. Put the path the
+receiver sees in the URL.
+
+The envelope JSON is `{id, eventId, type, occurredAt, appId, endpointId, data}`.
+`id` is `WebhookAttempt.id`, the dedupe key §8.5 already names; `eventId` is
 `WebhookAttempt.sourceEventId`, which used to travel only in the
 `X-Sms-Event-Id` header and so was signed by the HMAC. Headers are not part of a
 seal, so the id moved into the signed body. The `X-Sms-Event`, `X-Sms-Event-Id`,
 `X-Sms-Timestamp` and `X-Sms-Signature` headers are gone: nothing outside the
 sealed body is meant to be believed.
+
+`appId` (`WebhookEndpoint.appId`) and `endpointId` (`WebhookEndpoint.id`) are
+there for a reason the audience cannot cover. **One gateway key signs every app's
+deliveries**, so a signature and an audience say only that vsms sent this to the
+name `vaam`. The audience is a name chosen by whoever creates the endpoint. The
+gateway hands each name to one endpoint and refuses `vsms`, but that is a
+registry of names, not proof of who should hold one: anyone with
+`webhook:manage` can create an endpoint, for any app, at a URL of their own and
+named for a receiver they do not control. Its deliveries are validly signed by
+the gateway, addressed to that name, and open at any receiver that answers to
+the name until they are 300 s old. `appId` and `endpointId` are inside the signed
+body, so the receiver reads who a delivery was made for from something the
+gateway signed, and an opener that compares them refuses it. Both are `cuid`s
+the gateway generated; a receiver learns its own from the console's endpoint
+screen when the endpoint is created.
 
 # What a receiver configures
 
@@ -76,17 +100,39 @@ Everything below is public; none of it is a secret.
    `CoseVerifyKey::ed25519`). Pinning both makes a rotation of vsms's key a
    non-event.
 2. **The audience.** Any non-empty name the receiver picks, set once on the
-   `WebhookEndpoint` and in `EnvelopeLayer::builder(.., audience, ..)`. It must
-   differ from the audience the receiver seals its *own* requests to vsms for
-   (`vsms`); a name used in both directions gives up the reflection protection.
+   `WebhookEndpoint` and in `EnvelopeLayer::builder(.., audience, ..)`. **Choose
+   one nobody else can have: your own origin (`https://hooks.example.com`) is the
+   natural choice.** The gateway hands each name to one endpoint and the second
+   to ask is refused, so a generic name (`webhooks`, `prod`) is a name someone
+   else may already hold, or may take before you. It must not be `vsms` (the name
+   the gateway's own routes answer to; a name used in both directions gives up the
+   reflection protection), which the gateway refuses on write.
 3. **The route.** One literal `POST` route, e.g. `/webhooks/vsms`, and the
-   endpoint URL ends in that path. A tiny `BindingResolver` names it.
+   endpoint URL's path is exactly that path (see above: nothing may rewrite
+   it). A tiny `BindingResolver` names it.
 4. **The contract.** The row `("POST /webhooks/vsms", &[CONTRACT_SHA])` in the
    `AcceptedContracts` table, with [`CONTRACT_SHA_HEX`]
-   `7c5a6ab84270ec64eeb668cf50a031ac436433a08467cefe142e338c93132b62`. Derive it
-   as `SHA-256("vsms/webhook-delivery/v1\0" || CONTRACT_DOCUMENT)`.
+   `c61394a50e9f02ece411674fb3f398ae323e685b7a14f9c7b85538aa33a30423`. Derive it
+   as `SHA-256("vsms/webhook-delivery/v2\0" || CONTRACT_DOCUMENT)`.
 5. **The mode.** `EnvelopeMode::Required`, JSON payloads only, a nonce store
    shared by every replica (the in-memory one is per process).
+6. **The app, in the handler.** **A receiver behind an `EnvelopeLayer` must check
+   `appId` itself**: the layer opens the seal and hands the handler the plain
+   envelope, but it has no notion of an app, and a delivery made for another
+   app's endpoint that names your audience passes everything the layer checks
+   (`tests/sealed_delivery.rs`,
+   `the_layer_cannot_tell_another_apps_delivery_but_the_signed_body_can`). Read
+   `appId` from the envelope, compare it with your own app's id, and answer `401`
+   on any difference, before acting on `type` or `data`. Compare `endpointId` too
+   when you know yours. The SDKs' `WebhookOpener` does this and cannot be built
+   without the app id; a handler written by hand needs this check, before it reads anything else:
+
+```text
+let envelope: serde_json::Value = serde_json::from_slice(&body)?;
+if envelope["appId"] != MY_APP_ID || envelope["endpointId"] != MY_ENDPOINT_ID {
+    return StatusCode::UNAUTHORIZED;
+}
+```
 
 ```text
 struct WebhookRoutes;
@@ -109,8 +155,10 @@ let layer = EnvelopeLayer::builder(envelope, "vaam", ACCEPTED)
 ```
 
 `tests/sealed_delivery.rs` is this snippet running: a real `EnvelopeLayer`
-accepts a delivery and refuses another audience, another route, a tampered body,
-a replay, an unpinned key, a stale `iat` and an undeclared contract.
+accepts a delivery and refuses another audience, another route, a tampered body
+(an `appId` rewritten in the sealed bytes included), a replay, an unpinned key, a
+stale `iat` and an undeclared contract. It also shows what the layer alone cannot
+refuse, which is step 6.
 
 # Retries and replay
 

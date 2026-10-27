@@ -173,9 +173,9 @@ Rate limiting runs at two points on the API: a per-principal bucket on the API (
 
 ## 7. Receiving webhooks
 
-Delivery is push, not poll. An operator registers a `WebhookEndpoint` for your `App` in the admin console — **you cannot create one yourself**: it requires an `owner`/`admin`/`developer` human role. Ask for one; the fields that matter to you are the URL, the **audience** (a name you choose for your receiver), the event types, and whether the recipient MSISDN is masked.
+Delivery is push, not poll. An operator registers a `WebhookEndpoint` for your `App` in the admin console — **you cannot create one yourself**: it requires an `owner`/`admin`/`developer` human role. Ask for one; the fields that matter to you are the URL, the **audience** (a name you choose for your receiver), the event types, and whether the recipient MSISDN is masked. Choose an audience **only you can have**: your own origin (`https://hooks.example.com`) is the natural one. The gateway gives each name to one endpoint, so a generic name may be taken, and the operator creating your endpoint cannot be asked to guess. It cannot be `vsms`. The URL must be one a delivery can be sealed for: `http` or `https`, no credentials, no query, no fragment, no `{`, `}` or `%` in the path, and an ASCII host (an internationalised name is written in punycode).
 
-**A delivery is a sealed request, not a signed one.** The body is a `COSE_Sign1` message signed with the gateway's own key — the one that signs its answers — so there is no webhook secret to store, no signature header to check and nothing to rotate. You pin the two public keys you already pin for the SDK (`sms-gateway server-keys`) and open the body.
+**A delivery is a sealed request, not a signed one.** The body is a `COSE_Sign1` message signed with the gateway's own key — the one that signs its answers — so there is no webhook secret to store, no signature header to check and nothing to rotate. You pin the two public keys you already pin for the SDK (`sms-gateway server-keys`) and open the body. **One key signs every app's deliveries**, so the signature and the audience tell you only that vsms sent this to your name; the envelope also carries the `appId` and `endpointId` it was made for, inside the signed body, and you compare them with your own (obligation 1).
 
 Events (`type` in the envelope):
 
@@ -191,6 +191,8 @@ The envelope (inside the sealed body):
   "eventId": "7d1c3f0e-2b9a-4c5e-9a61-0f3b8e2d4a17",
   "type": "message.delivered",
   "occurredAt": "2026-07-28T14:03:11Z",
+  "appId": "c9c1eb3d4e5f60718293a4b5c",
+  "endpointId": "cd7e0f1a2b3c4d5e6f7a8b9c0",
   "data": {
     "messageId": "c4f2a1b3d4e5f60718293a4b5",
     "appId": "c9c1eb3d4e5f60718293a4b5c",
@@ -205,15 +207,15 @@ The envelope (inside the sealed body):
 }
 ```
 
-`id` is the dedupe key. `eventId` is the id of the event that produced it. The `X-Sms-*` headers of the HMAC scheme are no longer sent: a header is no part of a seal, so nothing outside the sealed body is meant to be believed.
+`id` is the dedupe key. `eventId` is the id of the event that produced it. `appId` is your `App`'s id and `endpointId` your endpoint's: both are shown on the endpoint's screen in the console. The `X-Sms-*` headers of the HMAC scheme are no longer sent: a header is no part of a seal, so nothing outside the sealed body is meant to be believed.
 
 Three obligations on a correct receiver:
 
-1. **Open the body.** With the Node SDK, `new WebhookOpener({ serverKeys, audience, route }).open(rawBody)`; with the Rust SDK, `WebhookOpener::new(&server_keys, audience, route)?.open(&body).await`. `audience` is the name on your endpoint and `route` is the path of its URL (one literal route, such as `/webhooks/vsms`, with no query). Anything that does not open — a forgery, another receiver's delivery, a replayed body, a timestamp more than 300 seconds off — is **one** answer: reply `401`. Behind several replicas, give the Rust opener a nonce store they share (the default is per process), or lean on obligation 2.
+1. **Open the body.** With the Node SDK, `new WebhookOpener({ serverKeys, audience, route, appId }).open(rawBody)` (`rawBody` is the request's bytes, a `Buffer`; not text a framework decoded); with the Rust SDK, `WebhookOpener::new(&server_keys, audience, route, app_id)?.open(&body).await`. `audience` is the name on your endpoint, `route` is the **whole path** of its URL (one literal route, such as `/webhooks/vsms`, with no query; nothing in front of you may rewrite it: an ingress that strips a prefix makes every delivery a `401`), and `app_id` is your `App`'s id. There is no opener without an `app_id`: it is what refuses a delivery made for someone else's endpoint that happens to name your audience. Add `endpointId` (Node) or `.endpoint_id(..)` (Rust builder) when you want to pin the endpoint too. Anything that does not open — a forgery, a body sealed by a key you did not pin, a delivery made for another app or endpoint, a replayed body, a timestamp more than 300 seconds off — is **one** answer: reply `401`. A body addressed to a different audience or route does not verify at all, for the same answer. Behind several replicas, give the Rust opener a nonce store they share (the default is per process; the Node opener's cannot be replaced), or lean on obligation 2.
 2. **Dedupe on `id`.** Delivery is at-least-once. A retry, and an operator's replay, arrive as a *new* sealed request (new nonce, new timestamp) with the same `id`; the nonce stops a captured request being replayed, it is not your dedupe key. You will eventually see a duplicate.
 3. **Ack fast, process after.** Return 2xx immediately; slow handlers trip the endpoint's circuit breaker and get retried. vsms judges a delivery by the status alone and never opens your answer.
 
-If you run your own cratestack `EnvelopeLayer` instead of an SDK, declare the route as `POST <path>` with the contract digest `7c5a6ab84270ec64eeb668cf50a031ac436433a08467cefe142e338c93132b62`, `application/json` payloads, your audience, and the two pinned keys; `backends/crates/sms-webhook/src/lib.md` has the exact snippet and `backends/crates/sms-webhook/tests/sealed_delivery.rs` runs it.
+If you run your own cratestack `EnvelopeLayer` instead of an SDK, declare the route as `POST <path>` with the contract digest `c61394a50e9f02ece411674fb3f398ae323e685b7a14f9c7b85538aa33a30423`, `application/json` payloads, your audience, and the two pinned keys, and **check `appId` in your handler** (the layer cannot: it opens the seal and knows nothing of apps); `backends/crates/sms-webhook/src/lib.md` has the exact snippet and `backends/crates/sms-webhook/tests/sealed_delivery.rs` runs it.
 
 [`examples/node/webhook-receiver`](../examples/node/webhook-receiver) is a complete, correct implementation of all three. Its opener is checked in CI against a delivery the gateway's own sealer produced, in two languages, and against a live `sms-worker` in a separate process.
 

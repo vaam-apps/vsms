@@ -69,13 +69,16 @@ _genuinely fresh_ database's catalog concurrently can race Postgres's own
 seconds of extra startup time for never hitting that race instead of
 hoping not to.
 
-NOTE: `seed-demo-webhook`'s `--webhook-url`/`--webhook-secret-out` flags
-need a tag that includes them -- they land in `v0.3.0` and every tag
-since, this file's current default (`v0.3.1`), so no override is needed
-at the default. Showcasing a tag before `v0.3.0` hits this gap directly
-(see "Bumping the showcased version" below) and, separately, cannot run
-`demo-app` at all: no `demo-app` image was ever published before
-`v0.3.0`.
+NOTE: `seed-demo-webhook` passes `--webhook-url` and `--webhook-audience`
+(VS-8: a delivery is sealed with the gateway's own key, so there is no
+`--webhook-secret-out` and no secret volume any more). `--webhook-audience`
+exists only in a release that contains VS-8, so **showcasing a tag from before
+VS-8 fails at `seed-demo-webhook`** with `unexpected argument
+'--webhook-audience'`, and so does a worker from before it, which would
+still sign with an HMAC; use this file's default tag or a later one.
+Showcasing a tag before `v0.3.0` also cannot run `demo-app` at all (see
+"Bumping the showcased version" below): no `demo-app` image was ever
+published before `v0.3.0`.
 
 Watch it settle:
 
@@ -289,11 +292,11 @@ knob left at its default.
 `VSMS_DEMO_IMAGE_TAG` is one variable shared by two services, and used
 to have different requirements between them: `seed-demo-webhook`
 (`--profile demo` -- covers the `WebhookEndpoint` half of the same
-image, `--webhook-url`/`--webhook-secret-out`) needs flags that did not
-exist in `v0.2.1`. They land in `v0.3.0` and every tag since, this
-file's current default tag, so the default now works for both services
-without any override -- moot at `v0.2.1` regardless, since `--profile
-demo` is already unusable there for the reason above. `demo-app` is a
+image, `--webhook-url`/`--webhook-audience`) needs flags that exist only
+in a release containing VS-8 (the earlier `--webhook-secret-out` is gone).
+This file's current default tag has them, so the default works for both
+services without any override -- moot at `v0.2.1` regardless, since
+`--profile demo` is already unusable there for the reason above. `demo-app` is a
 THIRD non-production image, published at
 `ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms/demo-app` since `v0.3.0`
 (confirmed live with `docker manifest inspect`) -- it now follows the

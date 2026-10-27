@@ -296,8 +296,11 @@ services:
       # `hooks` reads no key at all.
       SMS_ENVELOPE_SIGNING_KEY_FILE: /run/envelope/current.pem
       RUST_LOG: ${SMS_WORKER_LOG:-sms_worker=info,sms_worker_bin=info}
-    # Read-only, mode 0400 and owned by the worker's uid, like the gateway's
-    # copy of the same file (see the comment on its volumes).
+    # Read-only, mode 0400 and owned by uid 65532, like the gateway's copy of
+    # the same file (see the comment on its volumes): 65532 is the distroless
+    # `nonroot` user both images run as, so one `chown` serves both. Read once
+    # at start-up, so a rotation restarts the worker together with the gateway
+    # (docs/runbooks/deployment.adoc, "Rotating the envelope keys").
     volumes:
       - ./secrets/envelope-current.pem:/run/envelope/current.pem:ro
     depends_on:
