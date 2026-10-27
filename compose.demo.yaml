@@ -272,6 +272,12 @@ services:
       - http://demo-app:9000/webhooks
       - --webhook-audience
       - demo-app
+      - --webhook-endpoint-id-out
+      - /run/demo-endpoint/webhook-endpoint-id
+    volumes:
+      # The endpoint's id, which the gateway mints at creation and `demo-app`'s
+      # opener is built with (the binding between a delivery and its receiver).
+      - vsms_demo_endpoint:/run/demo-endpoint
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
     depends_on:
@@ -639,6 +645,9 @@ services:
       # keys, both minted by `just dev-keys` into the git-ignored `dev-keys/`.
       - ./dev-keys/demo-app.pem:/run/demo/demo-app.pem:ro
       - ./dev-keys/server-keys.txt:/run/demo/server-keys.txt:ro
+      # The id of the demo's `WebhookEndpoint`, written by `seed-demo-webhook`
+      # (which `depends_on` below completes first): `DEMO_WEBHOOK_ENDPOINT_ID_PATH`.
+      - vsms_demo_endpoint:/run/demo-endpoint:ro
     depends_on:
       sms-gateway:
         condition: service_healthy
@@ -651,3 +660,4 @@ services:
 
 volumes:
   vsms_demo_pgdata:
+  vsms_demo_endpoint:

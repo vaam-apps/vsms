@@ -69,11 +69,13 @@ _genuinely fresh_ database's catalog concurrently can race Postgres's own
 seconds of extra startup time for never hitting that race instead of
 hoping not to.
 
-NOTE: `seed-demo-webhook` passes `--webhook-url` and `--webhook-audience`
-(VS-8: a delivery is sealed with the gateway's own key, so there is no
-`--webhook-secret-out` and no secret volume any more). `--webhook-audience`
-exists only in a release that contains VS-8, so **showcasing a tag from before
-VS-8 fails at `seed-demo-webhook`** with `unexpected argument
+NOTE: `seed-demo-webhook` passes `--webhook-url`, `--webhook-audience` and
+`--webhook-endpoint-id-out` (VS-8: a delivery is sealed with the gateway's own
+key, so there is no `--webhook-secret-out` and no secret volume any more; the
+one thing it still hands `demo-app` is the endpoint's id, the binding between a
+delivery and its receiver, through the `vsms_demo_endpoint` volume). The two
+flags exist only in a release that contains VS-8, so **showcasing a tag from
+before VS-8 fails at `seed-demo-webhook`** with `unexpected argument
 '--webhook-audience'`, and so does a worker from before it, which would
 still sign with an HMAC; use this file's default tag or a later one.
 Showcasing a tag before `v0.3.0` also cannot run `demo-app` at all (see

@@ -114,6 +114,15 @@ struct Cli {
     /// nobody chose.
     #[arg(long)]
     webhook_audience: Option<String>,
+
+    /// Where to write the id of the `WebhookEndpoint` this call created or
+    /// found. A receiver serves exactly one endpoint and its opener is built
+    /// with that endpoint's id, which the gateway mints, so the demo's receiver
+    /// (`demo-app`) cannot be configured until the row exists: the compose
+    /// stacks share the file through a volume. Refused without `--webhook-url`,
+    /// so a stray flag never looks like it did something.
+    #[arg(long)]
+    webhook_endpoint_id_out: Option<std::path::PathBuf>,
 }
 
 /// `create` the `App` row, or resolve the id of the one that already
@@ -289,7 +298,7 @@ async fn ensure_demo_webhook_endpoint(
     audience: &str,
     max_attempts: i64,
     mask_recipient: bool,
-) -> Result<()> {
+) -> Result<String> {
     let existing = db
         .webhook_endpoint()
         .find_many()
@@ -310,7 +319,7 @@ async fn ensure_demo_webhook_endpoint(
                 row.audience
             );
         }
-        return Ok(());
+        return Ok(row.id);
     }
 
     let event_types =
@@ -340,6 +349,32 @@ async fn ensure_demo_webhook_endpoint(
         created.id
     );
 
+    Ok(created.id)
+}
+
+/// `--webhook-endpoint-id-out` without `--webhook-url` would look like it did
+/// something: no endpoint exists to write the id of.
+fn refuse_endpoint_id_out_without_url(
+    out: Option<&std::path::Path>,
+    url: Option<&str>,
+) -> Result<()> {
+    if out.is_some() && url.is_none() {
+        bail!(
+            "--webhook-endpoint-id-out was given but --webhook-url was not — no WebhookEndpoint \
+             would exist to write the id of. Pass --webhook-url (and --webhook-audience) too, or \
+             drop --webhook-endpoint-id-out."
+        );
+    }
+    Ok(())
+}
+
+/// Writes the endpoint's id where `--webhook-endpoint-id-out` says, if it does.
+fn write_endpoint_id(out: Option<&std::path::Path>, endpoint_id: &str) -> Result<()> {
+    if let Some(path) = out {
+        std::fs::write(path, endpoint_id)
+            .with_context(|| format!("writing the endpoint id to {}", path.display()))?;
+        println!("wrote the endpoint id to {}", path.display());
+    }
     Ok(())
 }
 
@@ -365,6 +400,7 @@ async fn main() -> Result<()> {
         webhook_max_attempts,
         webhook_mask_recipient,
         webhook_audience,
+        webhook_endpoint_id_out,
     } = Cli::parse();
 
     if role != "owner" && role != "admin" {
@@ -423,9 +459,10 @@ async fn main() -> Result<()> {
     // attempt forever. `--webhook-audience` with no `--webhook-url` is
     // a caller error, not a silent no-op — it would otherwise look like
     // it did something.
+    refuse_endpoint_id_out_without_url(webhook_endpoint_id_out.as_deref(), webhook_url.as_deref())?;
     match (&webhook_url, &webhook_audience) {
         (Some(url), Some(audience)) => {
-            ensure_demo_webhook_endpoint(
+            let endpoint_id = ensure_demo_webhook_endpoint(
                 &db,
                 &ctx,
                 &app_id,
@@ -435,6 +472,7 @@ async fn main() -> Result<()> {
                 webhook_mask_recipient,
             )
             .await?;
+            write_endpoint_id(webhook_endpoint_id_out.as_deref(), &endpoint_id)?;
 
             println!(
                 "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?}, audience={audience:?})"

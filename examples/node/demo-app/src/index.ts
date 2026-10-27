@@ -99,6 +99,12 @@ const WEBHOOK_AUDIENCE = process.env.DEMO_WEBHOOK_AUDIENCE ?? "demo-app";
 // verified answer to its own `getMessage` (see the inbound half below); set, it
 // is used as given, which is how a real receiver is configured.
 const WEBHOOK_APP_ID = process.env.DEMO_WEBHOOK_APP_ID || undefined;
+// The id of the endpoint itself: the binding, required. A receiver serves
+// exactly one endpoint and learns its id when the endpoint is created;
+// `vsms-demo-seed --webhook-endpoint-id-out` writes it to the file the compose
+// stacks share with this container. `DEMO_WEBHOOK_ENDPOINT_ID` wins over it.
+const WEBHOOK_ENDPOINT_ID_PATH =
+  process.env.DEMO_WEBHOOK_ENDPOINT_ID_PATH ?? "/run/demo-endpoint/webhook-endpoint-id";
 // The path of `WebhookEndpoint.url` (`http://demo-app:9000/webhooks`).
 const WEBHOOK_ROUTE = "/webhooks";
 
@@ -141,11 +147,13 @@ const TERMINAL_STATES: ReadonlySet<MessageState> = new Set([
 // ---------------------------------------------------------------------------
 // Inbound half: a minimal receiver. `WebhookOpener.open` is the entire
 // security-relevant logic: the same call a real integrator's own receiver
-// makes. It needs the id of the app its endpoint belongs to, because the
-// gateway signs every app's deliveries with one key; a real receiver reads that
-// from its configuration. This demo learns it from the one place it can trust
-// without being told: the verified answer to its own `getMessage`, which names
-// the app the message (and so the endpoint) belongs to.
+// makes. It needs the id of its endpoint (the binding) and of the app the
+// endpoint belongs to, because the gateway signs every app's deliveries with
+// one key; a real receiver reads both from its configuration. This demo reads
+// the endpoint id from its configuration too (`webhookEndpointId`), and learns
+// the app id from the one place it can trust without being told: the verified
+// answer to its own `getMessage`, which names the app the message (and so the
+// endpoint) belongs to.
 // ---------------------------------------------------------------------------
 
 interface ReceivedWebhook {
@@ -216,6 +224,27 @@ function startWebhookServer(
       resolve(server);
     });
   });
+}
+
+/** The endpoint this receiver serves: the environment, else the file the seed wrote. */
+function webhookEndpointId(): string {
+  const fromEnv = process.env.DEMO_WEBHOOK_ENDPOINT_ID?.trim();
+  if (fromEnv) return fromEnv;
+  let fromFile = "";
+  try {
+    fromFile = readFileTrimmed(WEBHOOK_ENDPOINT_ID_PATH);
+  } catch {
+    // reported below, with the one message for both ways of not having it
+  }
+  if (fromFile === "") {
+    throw new Error(
+      "the endpoint id is required: set DEMO_WEBHOOK_ENDPOINT_ID, or point " +
+        `DEMO_WEBHOOK_ENDPOINT_ID_PATH (now ${WEBHOOK_ENDPOINT_ID_PATH}) at a file holding it ` +
+        "(`vsms-demo-seed --webhook-endpoint-id-out` writes one). A receiver serves exactly one " +
+        "endpoint; there is no mode that accepts a delivery without knowing which",
+    );
+  }
+  return fromFile;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,8 +351,11 @@ async function main(): Promise<number> {
   // The gateway's two public keys: the ones it seals its answers with, and
   // the very ones that sign a webhook delivery. One pin for both.
   const serverKeys = parseServerKeysReport(readFileTrimmed(SERVER_KEYS_PATH));
+  const endpointId = webhookEndpointId();
   let learnedAppId!: (appId: string) => void;
-  const opener = new Promise<WebhookOpener>((resolve) => {
+  let failedToLearnAppId!: (reason: unknown) => void;
+  const opener = new Promise<WebhookOpener>((resolve, reject) => {
+    failedToLearnAppId = reject;
     learnedAppId = (appId) =>
       resolve(
         new WebhookOpener({
@@ -331,9 +363,13 @@ async function main(): Promise<number> {
           audience: WEBHOOK_AUDIENCE,
           route: WEBHOOK_ROUTE,
           appId,
+          endpointId,
         }),
       );
   });
+  // Each request reads the rejection itself and answers `401`; this only keeps
+  // a rejection nobody has awaited yet from being an unhandled one.
+  opener.catch(() => {});
   if (WEBHOOK_APP_ID !== undefined) learnedAppId(WEBHOOK_APP_ID);
 
   const events: ReceivedWebhook[] = [];
@@ -434,6 +470,10 @@ async function main(): Promise<number> {
       console.error(`[demo-app] FAILURE: messageId=${sent.messageId} — ${reasons.join("; ")}`);
     }
   } catch (err) {
+    // Whatever stopped the run, a webhook request still waiting on the opener
+    // (the app id never learned) is failed rather than left hanging, so the
+    // server below can close. A no-op when the opener already resolved.
+    failedToLearnAppId(err);
     if (err instanceof SdkError) {
       console.error(
         `[demo-app] FAILURE: SdkError: ${err.message} (httpStatus=${err.httpStatus ?? "n/a"})`,

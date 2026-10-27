@@ -44,6 +44,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-musl \
     cargo build --release --locked -p vsms-demo-seed \
     && cp target/release/vsms-demo-seed /tmp/vsms-demo-seed
 
+RUN mkdir /demo-endpoint
+
 # --- runtime -------------------------------------------------------------
 # distroless `static`/`nonroot` — same reasoning as every other runtime
 # image in this workspace: no shell, no package manager, a real
@@ -60,6 +62,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=cargo-registry-musl \
 FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 
 COPY --from=builder /tmp/vsms-demo-seed /usr/local/bin/vsms-demo-seed
+
+# The directory `--webhook-endpoint-id-out` writes into, shared with `demo-app`
+# by a named volume in the compose stacks. The image owns it (a new named volume
+# takes its mount point's owner from the image), so the nonroot user can write
+# and `demo-app` reads it through a read-only mount. A distroless image has no
+# `mkdir`, hence the copy.
+COPY --from=builder --chown=65532:65532 /demo-endpoint /run/demo-endpoint
 
 # One-shot, no listener, no HEALTHCHECK — same shape as app/sms-migrate's
 # own runtime stage: this binary seeds a handful of rows and exits, and
