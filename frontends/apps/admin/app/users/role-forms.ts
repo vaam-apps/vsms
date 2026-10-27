@@ -17,10 +17,10 @@ import { z } from "zod";
 //
 // R6's own carve-out test (`AGENTS.md`, the `TXN_TTL_SECONDS` example)
 // applies directly: is a wrong value here *inconvenient* or *unsafe*? A
-// `Role` keyed literally `system` would let a human read
-// `OauthSigningKey.privateKeyPem` (the key that signs every token this
-// system issues) and every `UserCredential.passwordHash` through
-// generated CRUD — `backends/crates/sms-api/src/auth.rs`'s own doc names this
+// `Role` keyed literally `system` would let a human pass
+// every `hasRole('system')` policy in the schema (the key and nonce tables,
+// the signer directory's reads) through generated CRUD —
+// `backends/crates/sms-api/src/auth.rs`'s own doc names this
 // exact escalation. That is unsafe, not inconvenient, so this constant is
 // not `@vsms/env` material regardless of how trivial it looks.
 //

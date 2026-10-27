@@ -14,8 +14,8 @@
 // hasRole('admin') || hasRole('developer') || hasRole('system')` — a real
 // GET by any of those three human roles genuinely returns the live
 // plaintext `secret`/`prevSecret` columns, every time, not once at creation
-// the way (say) `provisionAppClient`'s private key or `provision-user`'s
-// generated password are. There is no server-side mechanism this console
+// the way a freshly generated secret is shown at creation. There is no
+// server-side mechanism this console
 // could add to make it a true one-time secret without changing
 // `WebhookEndpoint`'s own schema (storing a hash instead, which would break
 // `sms_webhook::verify`'s own "try every candidate secret" design — it needs
@@ -29,8 +29,8 @@
 // # Create needs a caller-supplied secret — `WebhookEndpoint.secret` has no
 // `@default`
 //
-// Unlike `OauthSigningKey`/`AppClient`, nothing generates this endpoint's
-// initial secret server-side — `createWebhookEndpoint` below does it here,
+// Unlike a client key (whose private half the caller makes), nothing
+// generates this endpoint's initial secret server-side — `createWebhookEndpoint` below does it here,
 // with `crypto.randomBytes(32)`, in the exact wire format
 // `sms_webhook::generate_secret()` produces (`whsec_<64 lowercase hex
 // chars>`, verified against that function's own doc: 32 bytes of secure
@@ -38,8 +38,7 @@
 // generates a secret rather than sending one the operator typed — the
 // created row's `secret` is the same value this function already has, so
 // `webhooks-screen.tsx`'s create dialog can show a "copy it now" banner
-// exactly once, the same UX beat `provision-user`'s printed-once password
-// has, even though (per the section above) the value is not actually gone
+// exactly once, even though (per the section above) the value is not actually gone
 // from the API afterward — it is simply the *newest*, least-likely-to-need-
 // re-copying moment to show it.
 //
@@ -263,8 +262,7 @@ export interface CreatedWebhookEndpoint {
 }
 
 /** `POST /webhook_endpoints`. Generates the initial secret here — see
- * module doc for why nothing server-side does it for this model the way
- * `provisionAppClient` does for a signing key. */
+ * module doc for why nothing server-side does it for this model. */
 export async function createWebhookEndpoint(
   fields: CreateWebhookEndpointFields,
 ): Promise<CreatedWebhookEndpoint> {

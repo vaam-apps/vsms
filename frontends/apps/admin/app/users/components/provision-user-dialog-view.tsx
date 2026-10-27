@@ -1,6 +1,6 @@
-// Dumb view: the "provision a console account" dialog. Shows the returned
-// one-time password exactly once — see `apps-screen.tsx`'s own module doc
-// for the identical discipline applied there to a private key.
+// Dumb view: the "provision a console account" dialog. It makes the account
+// and nothing to sign in with — there is no password (VS-4); the person pairs
+// a browser key, which the confirmation below explains.
 
 import {
   Button,
@@ -20,7 +20,6 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  toast,
 } from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import { ErrorBanner } from "@/components/error-banner";
@@ -30,7 +29,6 @@ import type { ProvisionUserValues } from "../user-forms";
 export interface ProvisionedUser {
   email: string;
   roleKey: string;
-  password: string;
 }
 
 export function ProvisionUserDialogView({
@@ -60,8 +58,8 @@ export function ProvisionUserDialogView({
         <DialogHeader>
           <DialogTitle>Provision a console account</DialogTitle>
           <DialogDescription>
-            The one-time password is shown exactly once — copy it now, or the account has to be
-            deactivated and provisioned again under a different email.
+            Creates the account only. It has no password: the person signs in by pairing their
+            browser, approved on a vaam admin phone or enrolled on the command line.
           </DialogDescription>
         </DialogHeader>
 
@@ -123,30 +121,12 @@ export function ProvisionUserDialogView({
             <InlineBanner variant="neutral">
               {result.email} — role <Code>{result.roleKey}</Code>
             </InlineBanner>
-            <FormField label="One-time password — save this now" htmlFor="provisioned-password">
-              <div className="flex items-center gap-2">
-                <Input
-                  id="provisioned-password"
-                  readOnly
-                  className="font-mono"
-                  value={result.password}
-                />
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => {
-                    void navigator.clipboard.writeText(result.password);
-                    toast({ title: "Password copied", variant: "success" });
-                  }}
-                >
-                  Copy
-                </Button>
-              </div>
-              <p className="text-caption text-subtle-foreground">
-                Share this over a channel the recipient controls, not this screen&apos;s own log.
-              </p>
-            </FormField>
+            <p className="text-caption text-subtle-foreground">
+              Next, the person opens this console on their own device, which shows a pairing code
+              for a vaam admin phone to approve. Without a phone, an operator pairs their key on the
+              command line:
+            </p>
+            <Code>{`sms-gateway pair-console-key --user ${result.email} --public-key <the k of the pairing code>`}</Code>
           </div>
         )}
 
@@ -162,7 +142,7 @@ export function ProvisionUserDialogView({
             </>
           ) : (
             <Button type="button" onClick={onDone}>
-              I&apos;ve saved this password — close
+              Close
             </Button>
           )}
         </DialogActions>

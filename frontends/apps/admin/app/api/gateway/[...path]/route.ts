@@ -9,7 +9,7 @@
 //
 // What it will carry is what the schema serves: `routeOf` is the table the
 // browser's signature is bound against, so a path the gateway does not seal
-// (health, metrics, the OpenID and login routes, delivery receipts) is not in it
+// (health, metrics, delivery receipts) is not in it
 // and cannot be reached through here.
 
 import { routeOf } from "@vaam-apps/vsms-node";

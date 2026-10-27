@@ -1,5 +1,5 @@
 /**
- * Every OAuth scope this deployment's server actually enforces.
+ * Every scope this deployment's server actually enforces.
  *
  * # How this list was derived, and why that matters
  *

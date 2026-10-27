@@ -3,16 +3,7 @@
 // the live-verified reason (a nested Headless UI `Dialog` inside an
 // already-open `MoreDetailDrawer` self-dismisses the whole drawer).
 
-import {
-  Button,
-  ChipSelect,
-  Code,
-  FormField,
-  groupLabelId,
-  Input,
-  Textarea,
-  toast,
-} from "@vaam-apps/ui";
+import { Button, ChipSelect, Code, FormField, groupLabelId, Input, Textarea } from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
 import { ErrorBanner } from "@/components/error-banner";
 import type { ProvisionClientValues } from "../app-forms";
@@ -20,7 +11,7 @@ import { KNOWN_SCOPES, parseScopes, SCOPE_DESCRIPTIONS, serializeScopes } from "
 
 export interface ProvisionedClientKey {
   clientId: string;
-  privateKeyPem: string;
+  thumbprint: string;
 }
 
 export function ProvisionClientPanelView({
@@ -53,8 +44,8 @@ export function ProvisionClientPanelView({
           Provision a service-account client
         </h4>
         <p className="mt-1 text-caption text-muted-foreground">
-          The private key is shown exactly once. It is never stored anywhere by this console or by
-          sms-api — copy it now, or the client has to be retired and re-provisioned.
+          The client signs every request with an Ed25519 key you generate. Only the public half is
+          sent here; the private half never reaches the gateway, so there is nothing to copy back.
         </p>
       </div>
 
@@ -105,6 +96,29 @@ export function ProvisionClientPanelView({
               )}
             />
           </FormField>
+          <FormField
+            label="Public key (Ed25519, base64url)"
+            htmlFor="client-public-key"
+            error={form.formState.errors.publicKey?.message}
+          >
+            <Textarea
+              id="client-public-key"
+              rows={2}
+              className="font-mono text-caption"
+              placeholder="43 characters, e.g. 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
+              aria-invalid={form.formState.errors.publicKey != null}
+              {...form.register("publicKey")}
+            />
+            <p className="text-caption text-subtle-foreground">
+              Make the key with <Code>openssl genpkey -algorithm ed25519 -out key.pem</Code>, then
+              print its public half with{" "}
+              <Code>
+                openssl pkey -in key.pem -pubout -outform DER | tail -c 32 | base64 | tr
+                &apos;+/&apos; &apos;-_&apos; | tr -d &apos;=\n&apos;
+              </Code>
+              .
+            </p>
+          </FormField>
           {isError && <ErrorBanner>{errorMessage}</ErrorBanner>}
 
           <div className="flex items-center justify-end gap-2">
@@ -123,34 +137,12 @@ export function ProvisionClientPanelView({
           <div className="rounded-sm border border-edge bg-surface-1 px-3 py-2 text-caption text-muted-foreground">
             Client id: <Code>{result.clientId}</Code>
           </div>
-          <FormField
-            label="Private key (PKCS#8 PEM) — save this now"
-            htmlFor="provisioned-private-key"
-          >
-            <Textarea
-              id="provisioned-private-key"
-              readOnly
-              rows={10}
-              className="font-mono text-caption"
-              value={result.privateKeyPem}
-            />
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  void navigator.clipboard.writeText(result.privateKeyPem);
-                  toast({ title: "Private key copied", variant: "success" });
-                }}
-              >
-                Copy key
-              </Button>
-            </div>
-          </FormField>
+          <div className="rounded-sm border border-edge bg-surface-1 px-3 py-2 text-caption text-muted-foreground">
+            Key thumbprint: <Code>{result.thumbprint}</Code>
+          </div>
           <div className="flex justify-end">
             <Button type="button" onClick={onDone}>
-              I&apos;ve saved this key — close
+              Close
             </Button>
           </div>
         </div>

@@ -13,8 +13,8 @@
 // (`hasRole('owner')`/`hasRole('admin')` only, no `auth().kind == "app"`
 // clause) admits no app principal at all.
 //
-// `ipAllowlist` is sentinel-packed the same way `AppClient.scopes`/
-// `OauthClient.grantTypes` are (`sms_core::pack`'s convention: a leading and
+// `ipAllowlist` is sentinel-packed the same way `AppClient.scopes` is
+// (`sms_core::pack`'s convention: a leading and
 // trailing separator, `" "` for empty) — confirmed by every Rust seed
 // fixture in this tree writing `ipAllowlist: " "` for "no restriction",
 // never `""`. This module's own [`packIpAllowlist`]/[`unpackIpAllowlist`]

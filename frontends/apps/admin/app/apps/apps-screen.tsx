@@ -34,36 +34,31 @@
 // schemas (read, not guessed); the server remains the actual source of
 // truth for anything this client-side copy gets wrong or falls behind on.
 //
-// # "Show secret once" — what this screen actually does about it
+// # Provisioning registers a public key, and returns nothing secret
 //
-// `provisionAppClient` returns `privateKeyPem` in exactly one response.
-// [`ProvisionClientPanel`] renders it from the mutation's own `data` (a
-// `useMutation` hook's result lives in that hook's component-local React
-// state, not TanStack Query's shared cache — nothing else in this app can
-// read it back), never writes it into `localStorage`/`sessionStorage`,
-// never routes it through a toast (`toast()` calls here are for outcomes
-// only — "client provisioned", never the key itself), and calling
-// `provisionMutation.reset()` on close clears the hook's own held `data`
-// immediately rather than leaving it retrievable by, say, a browser
-// back/forward cache restoring the component. The panel requires an
-// explicit "I've saved this key — close" click (not a bare "Close") so
-// dismissing it isn't a single careless click. **Not a centered `Dialog`,
-// though §3's own rule would otherwise put a show-once secret there** — a
-// real, framework-level finding overrides that here: `packages/ui`'s
-// `drawer.tsx` never disables Radix's underlying focus trap regardless of
-// `dimmed` (its own doc says so explicitly), so a second, independently-
-// portaled Headless UI `Dialog` nested inside this screen's already-open
-// `MoreDetailDrawer` was verified live, in a real browser, to self-dismiss
-// the whole drawer within about half a second — no user interaction
-// beyond the initial trigger click required. `ProvisionClientPanel`
-// therefore renders inline, inside the drawer's own content, never a
-// second portal — see `./components/provision-client-panel-view.tsx` for
-// the markup and `AppClientsPanelView` for how the two compose.
+// `provisionAppClient` takes the public half of an Ed25519 key the operator
+// generated (VS-4) and returns the new client's id, its key's id and the key's
+// thumbprint. The private half never reaches the gateway, so there is no
+// "show it once" step: nothing to copy, nothing to lose. [`ProvisionClientPanel`]
+// renders the result from the mutation's own `data` (a `useMutation` hook's
+// component-local state) and `provisionMutation.reset()` on close clears it.
+// **Not a centered `Dialog`**, though §3's own rule would otherwise put a
+// confirmation there — a real, framework-level finding overrides that here:
+// `packages/ui`'s `drawer.tsx` never disables Radix's underlying focus trap
+// regardless of `dimmed` (its own doc says so explicitly), so a second,
+// independently-portaled Headless UI `Dialog` nested inside this screen's
+// already-open `MoreDetailDrawer` was verified live, in a real browser, to
+// self-dismiss the whole drawer within about half a second — no user
+// interaction beyond the initial trigger click required.
+// `ProvisionClientPanel` therefore renders inline, inside the drawer's own
+// content, never a second portal — see
+// `./components/provision-client-panel-view.tsx` for the markup and
+// `AppClientsPanelView` for how the two compose.
 //
 // # Retire — the coarse fallback, stated on screen, not just in a comment
 //
-// There is no per-client key-history model, so retiring is immediate and
-// total: the moment it succeeds, the old key stops authenticating. See
+// Retiring a client is immediate and total: the moment it succeeds, its keys
+// stop authenticating. See
 // `@vsms/gateway/app-clients.ts`'s own module doc for the full reasoning
 // and what a caller wanting zero-downtime rotation has to do instead
 // (provision the replacement first, migrate the integration, retire the
@@ -136,7 +131,7 @@ function ProvisionClientPanel({
   const utils = trpc.useUtils();
   const form = useForm<ProvisionClientValues>({
     resolver: zodResolver(provisionClientSchema),
-    defaultValues: { label: "", scopes: "sms:send sms:read" },
+    defaultValues: { label: "", scopes: "sms:send sms:read", publicKey: "" },
   });
   const provisionMutation = trpc.appClients.provision.useMutation({
     onSuccess: () => {
@@ -146,7 +141,7 @@ function ProvisionClientPanel({
       const fieldErrors = error.data?.fieldErrors;
       if (fieldErrors == null) return;
       for (const [field, messages] of Object.entries(fieldErrors)) {
-        if (field === "label" || field === "scopes") {
+        if (field === "label" || field === "scopes" || field === "publicKey") {
           const msg = messages[0];
           if (msg != null) form.setError(field, { type: "server", message: msg });
         }
@@ -155,8 +150,8 @@ function ProvisionClientPanel({
   });
 
   function closeAndClear() {
-    // Clears the mutation hook's own held `data` (the private key) — see
-    // this screen's own module doc.
+    // Clears the mutation hook's own held `data` — see this screen's own
+    // module doc.
     provisionMutation.reset();
     form.reset();
     onOpenChange(false);
@@ -167,6 +162,7 @@ function ProvisionClientPanel({
       appId,
       label: values.label,
       scopes: values.scopes.split(/\s+/).filter((s) => s.length > 0),
+      publicKey: values.publicKey,
     });
   }
 

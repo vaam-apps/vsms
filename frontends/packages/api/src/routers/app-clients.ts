@@ -10,6 +10,10 @@ const provisionInput = z.object({
   appId: z.string().min(1),
   label: z.string().min(1).max(64),
   scopes: z.array(z.string().min(1)).min(1, "at least one scope is required"),
+  // The raw 32-byte Ed25519 public key, unpadded base64url: 43 characters.
+  publicKey: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{43}$/, "the 32-byte public key, base64url, no padding"),
 });
 
 const retireInput = z.object({ id: z.string().min(1), etag: z.string().min(1) });
@@ -33,15 +37,18 @@ export const appClientsRouter = router({
     }),
 
   /**
-   * Returns the private key PEM exactly once — see
-   * `@vsms/gateway/app-clients.ts::provisionClient`'s own doc. This
-   * procedure does nothing further with it; the caller (the composer
-   * dialog) is responsible for never round-tripping it through anything
-   * longer-lived than the one response.
+   * Makes the client and registers the caller's public key — see
+   * `@vsms/gateway/app-clients.ts::provisionClient`'s own doc. Nothing secret
+   * is returned: the private half never reached the gateway.
    */
   provision: publicProcedure.input(provisionInput).mutation(async ({ ctx, input }) => {
     try {
-      return await ctx.gateway.provisionClient(input.appId, input.label, input.scopes);
+      return await ctx.gateway.provisionClient(
+        input.appId,
+        input.label,
+        input.scopes,
+        input.publicKey,
+      );
     } catch (error) {
       rethrowGatewayError(error);
     }

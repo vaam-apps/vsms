@@ -42,6 +42,13 @@ export type AppEditValues = z.infer<typeof appEditSchema>;
 export const provisionClientSchema = z.object({
   label: z.string().trim().min(1, "Required").max(64, "At most 64 characters"),
   scopes: z.string().trim().min(1, "At least one scope is required"),
+  // The raw 32-byte Ed25519 public key, unpadded base64url: 43 characters.
+  // Mirrors `packages/api/src/routers/app-clients.ts`; the gateway checks it is
+  // a real point encoding.
+  publicKey: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_-]{43}$/, "The 32-byte public key, base64url, no padding (43 characters)"),
 });
 export type ProvisionClientValues = z.infer<typeof provisionClientSchema>;
 
