@@ -59,8 +59,8 @@ other 400:
 | 2 000 000           | after                        | 4 + 4 + 4 (+ 1)                   | 0.10 + 0.05 + 0.03 ms |
 
 The after rows do not move with the backlog; the endpoints count is what grows
-them, linearly: one index probe each, per poll, per keyless replica. The commit that added the index carries the raw
-`EXPLAIN` output.
+them, linearly: one index probe each, per poll, per keyless replica. The message of the commit that added the index
+carries the figures.
 
 **Why one query per endpoint and not `endpoint_id IN (...)`**, which looks the
 same and is the obvious design: with a list the planner may read `webhook_due_idx`

@@ -29,7 +29,7 @@ use sms_api::schema::{
 use sms_test_support::webhook_receiver::WebhookReceiver;
 use sms_webhook::{CONTRACT_SHA, Sealer};
 use sms_worker::WorkerContext;
-use sms_worker::claim::{ServedModes, claim_webhook_attempts};
+use sms_worker::claim::{ServedModes, claim_webhook_attempts, count_sealed_attempts_waiting};
 use sms_worker::hooks;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -2086,4 +2086,75 @@ async fn a_switch_to_sealed_after_a_keyless_claim_is_left_for_a_keyed_worker_wit
     let delivered = reread_attempt(&db, &attempt.id).await;
     assert_eq!(delivered.state, AttemptState::succeeded, "{delivered:?}");
     assert_eq!(delivered.attempts, 1, "resumed, not counted twice");
+}
+
+/// N1: the warning counts the sealed attempts that wait for a worker that holds
+/// the key. A deactivated endpoint's wait for nothing: no worker claims them, with
+/// the key or without, so counting them would warn about an unmounted key for as
+/// long as the rows exist. A circuit-open endpoint's are counted: the circuit is a
+/// pause that ends by itself (`circuitOpenUntil`), after which they are exactly
+/// what a keyless worker cannot take, and a filter over a relation cannot compare
+/// the optional timestamp in SQL anyway.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_deactivated_endpoints_attempts_do_not_count_as_waiting_for_the_key() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, "https://hooks.example.test/hook", 8).await;
+    for n in 0..3 {
+        seed_attempt(
+            &db,
+            &endpoint.id,
+            &format!("cmsgN{n}"),
+            "message.delivered",
+            "{}",
+        )
+        .await;
+    }
+    let waiting = || async {
+        count_sealed_attempts_waiting(&db, &sys(), Utc::now())
+            .await
+            .expect("counting")
+    };
+    let update = |input: UpdateWebhookEndpointInput| {
+        let db = db.clone();
+        let id = endpoint.id.clone();
+        async move {
+            let version = reread_endpoint(&db, &id).await.version;
+            db.webhook_endpoint()
+                .update(id)
+                .set(input)
+                .if_match(version)
+                .run(&sys())
+                .await
+                .expect("updating the endpoint");
+        }
+    };
+
+    assert_eq!(waiting().await, 3, "an active endpoint's due attempts wait");
+
+    update(UpdateWebhookEndpointInput {
+        active: Some(false),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        waiting().await,
+        0,
+        "a deactivated endpoint's are not waiting"
+    );
+
+    update(UpdateWebhookEndpointInput {
+        active: Some(true),
+        circuitOpenUntil: Some(Some(Utc::now() + Duration::minutes(10))),
+        ..Default::default()
+    })
+    .await;
+    assert_eq!(
+        waiting().await,
+        3,
+        "an open circuit is a pause: the rows still wait for the key"
+    );
 }

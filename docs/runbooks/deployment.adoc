@@ -123,12 +123,18 @@ an `hmac` endpoint is signed with its own secret and needs no key, so a
 deployment that has not moved a receiver to the seal may leave the file out. A
 `hooks` worker without it still starts and still delivers every `hmac`
 endpoint, and **claims no `sealed` endpoint's attempt at all**: those stay
-`pending` (or `failed`, resting out a backoff), untouched and uncounted toward
-`maxAttempts`, for a worker that holds the key, which delivers them as soon as it
-runs, so a late key loses nothing. Because the rows just wait, the keyless
-worker says so: every five minutes it logs a `warn` with the number of due sealed
-attempts it cannot serve, naming `--envelope-signing-key-file`, and it logs one
-at start. Treat either line as an unmounted key. Both containers
+`pending` (or `failed`, resting out a backoff), untouched and without spending an
+attempt of `maxAttempts`, for a worker that holds the key, which delivers them as
+soon as it runs, so a late key loses nothing. Because the rows just wait, the
+keyless worker says so: every five minutes it logs a `warn` with the number of
+due sealed attempts it cannot serve, naming `--envelope-signing-key-file`, and it
+logs one at start. Treat either line as an unmounted key. The number counts the
+attempts of **active** endpoints only: a deactivated endpoint's attempts are
+claimed by no worker, with the key or without it, so they say nothing about the
+key and a deployment whose only sealed endpoint is switched off does not warn
+for ever. An endpoint whose circuit is open is still counted: that is a pause
+which ends by itself (`circuitOpenUntil`, 15 minutes), after which its attempts
+are exactly what a keyless worker cannot take. Both containers
 run as uid 65532, which is why the one `chown`/`chmod 0400` above serves both.
 
 === Rotating the envelope keys

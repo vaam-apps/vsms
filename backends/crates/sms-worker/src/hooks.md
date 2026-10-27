@@ -102,9 +102,13 @@ still reach the sealer) is an ordinary [`Outcome::Retryable`] like any other
 failed delivery: counted, backed off, able to open the breaker and to go `dead`.
 
 Rows that wait silently are the cost, so [`SealedBacklogWatch`] pays it: a keyless
-`run` counts the due sealed attempts (a `COUNT(*)`, due or abandoned by a crashed
-worker) every five minutes and, if there are any, logs a `warn` with the number
-and `--envelope-signing-key-file`. `backends/apps/sms-worker` logs one at start.
+`run` counts the due sealed attempts of **active** endpoints (a `COUNT(*)`, due
+or abandoned by a crashed worker) every five minutes and, if there are any, logs
+a `warn` with the number and `--envelope-signing-key-file`. A deactivated
+endpoint's attempts are claimed by no worker, key or not, so they are not
+waiting for one; an endpoint whose circuit is open is counted, because the
+circuit is a pause that ends by itself. `backends/apps/sms-worker` logs one at
+start.
 
 # Redirects
 

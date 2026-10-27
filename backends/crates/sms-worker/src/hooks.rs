@@ -148,8 +148,8 @@ pub const SEALED_BACKLOG_WARNING_EVERY: StdDuration = StdDuration::from_mins(5);
 /// A worker without the envelope signing key claims no `sealed` attempt
 /// ([`ServedModes::HmacOnly`]), so those attempts stay `pending` and nothing in
 /// the claim loop says so. This is what does: every
-/// [`SEALED_BACKLOG_WARNING_EVERY`] it counts the sealed attempts that are due and
-/// `warn`s with the number and the flag to mount. Without it, a deployment that
+/// [`SEALED_BACKLOG_WARNING_EVERY`] it counts the due sealed attempts of active
+/// endpoints (a deactivated endpoint's wait for no worker) and `warn`s with the number and the flag to mount. Without it, a deployment that
 /// forgot the key would see sealed deliveries wait forever and no log line.
 pub struct SealedBacklogWatch {
     every: Throttle,

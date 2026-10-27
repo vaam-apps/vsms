@@ -653,6 +653,14 @@ fn endpoint_is_claimable(endpoint: &WebhookEndpoint, now: DateTime<Utc>) -> bool
             .is_none_or(|open_until| open_until <= now)
 }
 
+/// The attempts of an active endpoint, as a correlated subquery on `endpointId`.
+/// Half of [`endpoint_is_claimable`], for the count that cannot load rows: the
+/// other half, the circuit, compares an optional timestamp, which a filter over a
+/// relation does not offer (`is_null` is all it has for an optional field).
+fn endpoint_is_active() -> FilterExpr {
+    webhook_attempt::endpoint().active().eq(true)
+}
+
 /// [`Claimable::candidates`] for [`WebhookAttempt`], for a worker serving `served`.
 async fn webhook_candidates(
     db: &Cratestack,
@@ -814,9 +822,18 @@ pub async fn claim_webhook_attempts(
 }
 
 /// How many `sealed` attempts are waiting for a worker that holds the signing key:
-/// due, or abandoned by a crashed worker, whose endpoint delivers `sealed`. A
-/// worker without the key counts them to say so ([`ServedModes::HmacOnly`] never
-/// claims one), with a `COUNT(*)` rather than the rows, which carry payloads.
+/// due, or abandoned by a crashed worker, whose endpoint delivers `sealed` and is
+/// **active**. A worker without the key counts them to say so
+/// ([`ServedModes::HmacOnly`] never claims one), with a `COUNT(*)` rather than the
+/// rows, which carry payloads.
+///
+/// A deactivated endpoint's attempts are left out: no worker claims them, with the
+/// key or without it, so they say nothing about the key, and counting them made a
+/// deployment with one deactivated sealed endpoint warn for as long as its rows
+/// exist. An endpoint whose circuit is open is counted: the circuit is a pause
+/// that ends by itself, after which its attempts are exactly what a keyless worker
+/// cannot take. (It is also what a filter over a relation cannot say: it offers
+/// `is_null` for an optional timestamp and no comparison.)
 ///
 /// # Errors
 ///
@@ -832,7 +849,8 @@ pub async fn count_sealed_attempts_waiting(
         .where_expr(
             due_attempts(now)
                 .or(expired_leases(now))
-                .and(endpoint_delivers(WebhookDeliveryMode::sealed)),
+                .and(endpoint_delivers(WebhookDeliveryMode::sealed))
+                .and(endpoint_is_active()),
         )
         .run(sys)
         .await

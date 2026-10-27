@@ -433,8 +433,8 @@ fn webhook_sealer(cli: &Cli, roles: &[Role]) -> Result<Option<sms_webhook::Seale
         warn!(
             "hooks runs without --envelope-signing-key-file (SMS_ENVELOPE_SIGNING_KEY_FILE): \
              `hmac` webhook endpoints are delivered, and this worker claims no `sealed` \
-             endpoint's attempt (they wait, uncounted, for a worker that holds the gateway's \
-             PKCS#8 PEM Ed25519 signing key)"
+             endpoint's attempt (they wait without spending an attempt, for a worker that \
+             holds the gateway's PKCS#8 PEM Ed25519 signing key)"
         );
         return Ok(None);
     };
