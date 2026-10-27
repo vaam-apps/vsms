@@ -62,6 +62,7 @@ import {
 import type { Request, Response } from "express";
 import express from "express";
 import { decide } from "./decision.ts";
+import { verifySignature } from "./signature.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration — every value has a default matching what
@@ -86,12 +87,34 @@ function readFileTrimmed(path: string): string {
   return readFileSync(path, "utf8").trim();
 }
 
+/** `DEMO_WEBHOOK_MODE`: `sealed` (default) or `hmac`; anything else refuses to start. */
+function webhookMode(): "sealed" | "hmac" {
+  const mode = process.env.DEMO_WEBHOOK_MODE;
+  if (mode === undefined || mode === "" || mode === "sealed") return "sealed";
+  if (mode === "hmac") return "hmac";
+  throw new Error(`DEMO_WEBHOOK_MODE must be "sealed" or "hmac", not ${JSON.stringify(mode)}`);
+}
+
 const BASE_URL = (process.env.VSMS_BASE_URL ?? "http://sms-gateway:8080").replace(/\/+$/, "");
 const SIGNING_KEY_PATH = process.env.VSMS_SIGNING_KEY_PATH ?? "/run/demo/demo-app.pem";
 const SERVER_KEYS_PATH = process.env.VSMS_SERVER_KEYS_PATH ?? "/run/demo/server-keys.txt";
 
 const WEBHOOK_PORT = envInt("DEMO_WEBHOOK_PORT", 9000);
-// The audience the demo's `WebhookEndpoint` was created with
+// How the demo's `WebhookEndpoint` is delivered to (`WebhookEndpoint.deliveryMode`,
+// chosen when `vsms-demo-seed` created it): `sealed` (the default, and what the
+// compose stacks seed) or `hmac`, the legacy `X-Sms-Signature` scheme, for which
+// `signature.ts` (copied verbatim from `examples/node/webhook-receiver`, see
+// `verbatim-copy.test.ts`) is exactly the code a real integrator's receiver would
+// run. A receiver serves one endpoint and so has one mode.
+const WEBHOOK_MODE = webhookMode();
+// `hmac` only: the endpoint's signing secret, from `vsms-demo-seed
+// --webhook-secret-out`'s file, or `DEMO_WEBHOOK_SECRET`. Also the previous one
+// while a rotation's overlap window is open, per §4.4: a receiver is handed both
+// and accepts if either verifies (nothing in the seeded stack rotates, so it is
+// there for completeness).
+const WEBHOOK_SECRET_PATH = process.env.DEMO_WEBHOOK_SECRET_PATH ?? "/secrets/webhook-secret";
+const WEBHOOK_PREV_SECRET = process.env.DEMO_WEBHOOK_PREV_SECRET;
+// `sealed` only: the audience the demo's `WebhookEndpoint` was created with
 // (`vsms-demo-seed --webhook-audience`; the compose stacks pass `demo-app`).
 // The delivery is addressed to it, and the opener refuses one that is not.
 const WEBHOOK_AUDIENCE = process.env.DEMO_WEBHOOK_AUDIENCE ?? "demo-app";
@@ -166,25 +189,70 @@ interface ReceivedWebhook {
   dataState: string | undefined;
 }
 
-function startWebhookServer(
-  port: number,
-  opener: Promise<WebhookOpener>,
-  events: ReceivedWebhook[],
-) {
+/** What the demo reads off a delivery once it is verified, in either mode. */
+interface OpenedDelivery {
+  type: string;
+  /** The dedupe key: `WebhookAttempt.id` (sealed) or the signed `X-Sms-Event-Id` (hmac). */
+  id: string;
+  data: unknown;
+}
+
+/** Verifies one delivery in the endpoint's mode and returns it, or throws why not. */
+type OpenDelivery = (req: Request, rawBody: Buffer) => Promise<OpenedDelivery>;
+
+/** `sealed`: `WebhookOpener.open` is the entire security-relevant logic. */
+function openSealed(opener: Promise<WebhookOpener>): OpenDelivery {
+  return async (_req, rawBody) => {
+    const opened: WebhookEvent = await (await opener).open(rawBody);
+    return { type: opened.type, id: opened.id, data: opened.data };
+  };
+}
+
+/**
+ * `hmac`: `signature.ts`'s `verifySignature` is the entire security-relevant
+ * logic, over the exact bytes and the three headers it signs.
+ */
+function openHmac(secrets: readonly string[]): OpenDelivery {
+  return async (req, rawBody) => {
+    const eventId = req.header("x-sms-event-id");
+    const result = verifySignature({
+      rawBody,
+      timestamp: req.header("x-sms-timestamp"),
+      eventId,
+      signatureHeader: req.header("x-sms-signature"),
+      secrets,
+    });
+    if (!result.ok || eventId === undefined) {
+      throw new Error(result.ok ? "missing X-Sms-Event-Id" : result.reason);
+    }
+    let data: unknown;
+    try {
+      data = (JSON.parse(rawBody.toString("utf8")) as { data?: unknown }).data;
+    } catch {
+      // Verified, but not JSON: still a delivery the signature vouches for.
+    }
+    return { type: req.header("x-sms-event") ?? "unknown", id: eventId, data };
+  };
+}
+
+function startWebhookServer(port: number, open: OpenDelivery, events: ReceivedWebhook[]) {
   const app = express();
 
-  // Raw bytes, not `express.json()`: the body is a COSE_Sign1 message, and
-  // the opener verifies exactly the bytes vsms sent.
+  // Raw bytes, not `express.json()`: a sealed body is a COSE_Sign1 message and
+  // an hmac one is signed byte for byte, so either way verification is over the
+  // exact bytes vsms sent (a JSON parse-then-reserialize round trip is not
+  // guaranteed to reproduce them; `hooks.rs`'s own module doc makes the
+  // identical point about signing vs. sending).
   app.post(
     WEBHOOK_ROUTE,
     express.raw({ type: () => true, limit: "1mb" }),
     async (req: Request, res: Response) => {
       const rawBody = req.body instanceof Buffer ? req.body : Buffer.alloc(0);
 
-      let opened: WebhookEvent | undefined;
+      let opened: OpenedDelivery | undefined;
       let failure: string | undefined;
       try {
-        opened = await (await opener).open(rawBody);
+        opened = await open(req, rawBody);
       } catch (err) {
         failure = err instanceof Error ? err.message : String(err);
       }
@@ -351,29 +419,37 @@ async function main(): Promise<number> {
   // The gateway's two public keys: the ones it seals its answers with, and
   // the very ones that sign a webhook delivery. One pin for both.
   const serverKeys = parseServerKeysReport(readFileTrimmed(SERVER_KEYS_PATH));
-  const endpointId = webhookEndpointId();
-  let learnedAppId!: (appId: string) => void;
-  let failedToLearnAppId!: (reason: unknown) => void;
-  const opener = new Promise<WebhookOpener>((resolve, reject) => {
-    failedToLearnAppId = reject;
-    learnedAppId = (appId) =>
-      resolve(
-        new WebhookOpener({
-          serverKeys,
-          audience: WEBHOOK_AUDIENCE,
-          route: WEBHOOK_ROUTE,
-          appId,
-          endpointId,
-        }),
-      );
-  });
-  // Each request reads the rejection itself and answers `401`; this only keeps
-  // a rejection nobody has awaited yet from being an unhandled one.
-  opener.catch(() => {});
-  if (WEBHOOK_APP_ID !== undefined) learnedAppId(WEBHOOK_APP_ID);
+  let learnedAppId: (appId: string) => void = () => {};
+  let failedToLearnAppId: (reason: unknown) => void = () => {};
+  let open: OpenDelivery;
+  if (WEBHOOK_MODE === "hmac") {
+    const secret = process.env.DEMO_WEBHOOK_SECRET ?? readFileTrimmed(WEBHOOK_SECRET_PATH);
+    const secrets = [secret, WEBHOOK_PREV_SECRET].filter((s): s is string => Boolean(s));
+    open = openHmac(secrets);
+  } else {
+    const endpointId = webhookEndpointId();
+    const opener = new Promise<WebhookOpener>((resolve, reject) => {
+      failedToLearnAppId = reject;
+      learnedAppId = (appId) =>
+        resolve(
+          new WebhookOpener({
+            serverKeys,
+            audience: WEBHOOK_AUDIENCE,
+            route: WEBHOOK_ROUTE,
+            appId,
+            endpointId,
+          }),
+        );
+    });
+    // Each request reads the rejection itself and answers `401`; this only keeps
+    // a rejection nobody has awaited yet from being an unhandled one.
+    opener.catch(() => {});
+    if (WEBHOOK_APP_ID !== undefined) learnedAppId(WEBHOOK_APP_ID);
+    open = openSealed(opener);
+  }
 
   const events: ReceivedWebhook[] = [];
-  const server = await startWebhookServer(WEBHOOK_PORT, opener, events);
+  const server = await startWebhookServer(WEBHOOK_PORT, open, events);
 
   const deadlineMs = Date.now() + OVERALL_TIMEOUT_MS;
 
@@ -396,7 +472,7 @@ async function main(): Promise<number> {
         `segments=${sent.segments} operator=${sent.operator} estimatedCostXaf=${sent.estimatedCostXaf}`,
     );
 
-    if (WEBHOOK_APP_ID === undefined) {
+    if (WEBHOOK_MODE === "sealed" && WEBHOOK_APP_ID === undefined) {
       const created = await withDeadline(
         client.getMessage(sent.messageId),
         deadlineMs,

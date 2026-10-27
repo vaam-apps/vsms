@@ -21,6 +21,11 @@ sms-api.workspace = true
 # `ensure_demo_webhook_endpoint` packs the event types with `sms_core::pack`,
 # the one packing every other column of this shape uses.
 sms-core.workspace = true
+# The `hmac` secret this command generates (`--webhook-secret-out`) has to be
+# produced the same way `rotateWebhookSecret` produces one in production
+# (`whsec_<64 hex>`, #41) - never a second, hand-rolled random-string generator
+# that could drift from that shape.
+sms-webhook.workspace = true
 
 anyhow.workspace = true
 clap = { workspace = true, features = ["derive", "env"] }

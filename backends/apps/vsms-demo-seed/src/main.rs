@@ -103,17 +103,30 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     webhook_mask_recipient: bool,
 
-    /// VS-8: the audience a delivery to `--webhook-url` binds — the name the
-    /// receiver's `EnvelopeLayer` is built with (`demo-app` opens deliveries
-    /// as `DEMO_WEBHOOK_AUDIENCE`, defaulting to this same value). There is no
-    /// secret to hand the receiver any more: it pins the gateway's public keys
-    /// (`sms-gateway server-keys`) and checks the audience, and neither is
-    /// something this command generates. Required alongside `--webhook-url`,
-    /// and refused without it, so a stray flag never looks like it did
-    /// something; no default, because a default would be a receiver identity
-    /// nobody chose.
-    #[arg(long)]
+    /// VS-8: the audience a `sealed` delivery to `--webhook-url` binds — the
+    /// name the receiver's `EnvelopeLayer` is built with (`demo-app` opens
+    /// deliveries as `DEMO_WEBHOOK_AUDIENCE`, defaulting to this same value).
+    /// Passing it makes the endpoint `sealed`, the recommended mode and the
+    /// one the compose stacks seed: there is no secret to hand the receiver,
+    /// which pins the gateway's public keys (`sms-gateway server-keys`) and
+    /// checks the audience. Exactly one of this and `--webhook-secret-out` is
+    /// required alongside `--webhook-url`, and either is refused without it, so
+    /// a stray flag never looks like it did something; no default, because a
+    /// default would be a receiver identity nobody chose.
+    #[arg(long, conflicts_with = "webhook_secret_out")]
     webhook_audience: Option<String>,
+
+    /// Where to write the signing secret of an `hmac` endpoint (VS-8R) — the
+    /// legacy mode, for a receiver that still verifies `X-Sms-Signature`.
+    /// Passing it makes the endpoint `hmac`: the secret is freshly generated
+    /// (`sms_webhook::generate_secret()`) on first run, or the existing row's
+    /// own `secret` on every rerun against an already-seeded database, and
+    /// written only here, never printed (stdout is a container log, which is
+    /// where a signing secret must not end up). `demo-app` has no other way to
+    /// learn it. Ordinary create-or-truncate semantics, no restrictive mode: this
+    /// whole stack is a disposable, obviously-demo deployment.
+    #[arg(long, conflicts_with = "webhook_audience")]
+    webhook_secret_out: Option<std::path::PathBuf>,
 
     /// Where to write the id of the `WebhookEndpoint` this call created or
     /// found. A receiver serves exactly one endpoint and its opener is built
@@ -279,6 +292,56 @@ async fn ensure_demo_sender_id(
     Ok(())
 }
 
+/// How the demo endpoint is delivered to, chosen by which of `--webhook-audience`
+/// and `--webhook-secret-out` was passed ([`delivery_plan`]).
+#[derive(Debug, PartialEq, Eq)]
+enum Delivery<'a> {
+    /// A sealed delivery to this audience.
+    Sealed { audience: &'a str },
+    /// An HMAC-signed delivery; the secret goes to this file.
+    Hmac { secret_out: &'a std::path::Path },
+}
+
+/// What the webhook flags ask for, or why they are wrong. Pure so the rules are
+/// tested without a database: exactly one of the two mode flags goes with
+/// `--webhook-url`, and neither goes without it.
+fn delivery_plan<'a>(
+    url: Option<&'a str>,
+    audience: Option<&'a str>,
+    secret_out: Option<&'a std::path::Path>,
+) -> Result<Option<(&'a str, Delivery<'a>)>> {
+    match (url, audience, secret_out) {
+        (Some(url), Some(audience), None) => Ok(Some((url, Delivery::Sealed { audience }))),
+        (Some(url), None, Some(secret_out)) => Ok(Some((url, Delivery::Hmac { secret_out }))),
+        (Some(_), Some(_), Some(_)) => bail!(
+            "--webhook-audience and --webhook-secret-out were both given — an endpoint is sealed \
+             (an audience) or hmac (a secret), not both. Pass one."
+        ),
+        (Some(_), None, None) => bail!(
+            "--webhook-url was given without --webhook-audience or --webhook-secret-out — the \
+             endpoint must say how its deliveries are authenticated. Pass --webhook-audience \
+             <name> (sealed, recommended: the name the receiver's EnvelopeLayer is built with) \
+             or --webhook-secret-out <path> (hmac: where the receiver reads the signing secret)."
+        ),
+        (None, Some(_), _) => bail!(
+            "--webhook-audience was given but --webhook-url was not — nothing would ever use it. \
+             Pass --webhook-url too, or drop --webhook-audience."
+        ),
+        (None, None, Some(_)) => bail!(
+            "--webhook-secret-out was given but --webhook-url was not — nothing would ever be \
+             written to it. Pass --webhook-url too, or drop --webhook-secret-out."
+        ),
+        (None, None, None) => Ok(None),
+    }
+}
+
+/// The endpoint this call created or found, and the secret its receiver needs
+/// (`hmac` only).
+struct DemoEndpoint {
+    id: String,
+    secret: Option<String>,
+}
+
 /// Ensure a `WebhookEndpoint` pointed at the demo app's own receiver exists.
 /// `WebhookEndpoint` carries no unique constraint on `(appId, url)` (unlike
 /// `App.slug`), so idempotency here is read-then-create, the same
@@ -287,18 +350,22 @@ async fn ensure_demo_sender_id(
 /// only ever runs from one container in one sequential compose dependency
 /// chain, never concurrently with itself.
 ///
-/// A row that already exists keeps the mode and the audience it was created with; a rerun
-/// with a different `--webhook-audience` says so instead of silently editing an
-/// endpoint an operator may have changed in the console.
+/// A row that already exists keeps the mode, audience and secret it was created
+/// with; a rerun that asks for something else says so instead of silently
+/// editing an endpoint an operator may have changed in the console. For an
+/// `hmac` endpoint that means the row's own `secret` is the one written back,
+/// so `demo-app` and the database never disagree about which value is current,
+/// even across a restart that skips re-creation. An existing `sealed` row
+/// asked for as `hmac` has no secret to write, and that is an error.
 async fn ensure_demo_webhook_endpoint(
     db: &Cratestack,
     ctx: &cratestack::CratestackContext,
     app_id: &str,
     url: &str,
-    audience: &str,
+    delivery: &Delivery<'_>,
     max_attempts: i64,
     mask_recipient: bool,
-) -> Result<String> {
+) -> Result<DemoEndpoint> {
     let existing = db
         .webhook_endpoint()
         .find_many()
@@ -313,14 +380,31 @@ async fn ensure_demo_webhook_endpoint(
 
     if let Some(row) = existing.into_iter().next() {
         println!("reusing existing WebhookEndpoint {} (url={url:?})", row.id);
-        if row.audience.as_deref() != Some(audience) {
+        let asked = match delivery {
+            Delivery::Sealed { audience } => {
+                row.deliveryMode == WebhookDeliveryMode::sealed
+                    && row.audience.as_deref() == Some(*audience)
+            }
+            Delivery::Hmac { .. } => row.deliveryMode == WebhookDeliveryMode::hmac,
+        };
+        if !asked {
             println!(
-                "note: it keeps its delivery mode ({:?}) and audience ({:?}), not the sealed \
-                 {audience:?} passed now",
+                "note: it keeps its delivery mode ({:?}) and audience ({:?}), not what was \
+                 passed now",
                 row.deliveryMode, row.audience
             );
         }
-        return Ok(row.id);
+        if matches!(delivery, Delivery::Hmac { .. }) && row.secret.is_none() {
+            bail!(
+                "the existing WebhookEndpoint {} is sealed and has no secret to write to \
+                 --webhook-secret-out; delete it, or switch it to hmac in the console",
+                row.id
+            );
+        }
+        return Ok(DemoEndpoint {
+            id: row.id,
+            secret: row.secret,
+        });
     }
 
     let event_types =
@@ -330,17 +414,27 @@ async fn ensure_demo_webhook_endpoint(
                  space-free array, should never fail to pack"
             )
         })?;
+    let (delivery_mode, audience, secret) = match delivery {
+        Delivery::Sealed { audience } => (
+            WebhookDeliveryMode::sealed,
+            Some((*audience).to_owned()),
+            None,
+        ),
+        Delivery::Hmac { .. } => (
+            WebhookDeliveryMode::hmac,
+            None,
+            Some(sms_webhook::generate_secret()),
+        ),
+    };
 
     let created = db
         .webhook_endpoint()
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: url.to_owned(),
-            // The showcase receiver (`examples/node/demo-app`) opens sealed
-            // deliveries: the mode the demo exists to show.
-            deliveryMode: WebhookDeliveryMode::sealed,
-            audience: Some(audience.to_owned()),
-            secret: None,
+            deliveryMode: delivery_mode,
+            audience,
+            secret,
             prevSecret: None,
             secretRotatedAt: None,
             eventTypes: event_types,
@@ -352,11 +446,14 @@ async fn ensure_demo_webhook_endpoint(
         .await
         .context("creating the WebhookEndpoint row")?;
     println!(
-        "created WebhookEndpoint {} (url={url:?}, audience={audience:?})",
-        created.id
+        "created WebhookEndpoint {} (url={url:?}, mode={:?})",
+        created.id, created.deliveryMode
     );
 
-    Ok(created.id)
+    Ok(DemoEndpoint {
+        id: created.id,
+        secret: created.secret,
+    })
 }
 
 /// `--webhook-endpoint-id-out` without `--webhook-url` would look like it did
@@ -407,6 +504,7 @@ async fn main() -> Result<()> {
         webhook_max_attempts,
         webhook_mask_recipient,
         webhook_audience,
+        webhook_secret_out,
         webhook_endpoint_id_out,
     } = Cli::parse();
 
@@ -467,38 +565,40 @@ async fn main() -> Result<()> {
     // a caller error, not a silent no-op — it would otherwise look like
     // it did something.
     refuse_endpoint_id_out_without_url(webhook_endpoint_id_out.as_deref(), webhook_url.as_deref())?;
-    match (&webhook_url, &webhook_audience) {
-        (Some(url), Some(audience)) => {
-            let endpoint_id = ensure_demo_webhook_endpoint(
+    match delivery_plan(
+        webhook_url.as_deref(),
+        webhook_audience.as_deref(),
+        webhook_secret_out.as_deref(),
+    )? {
+        Some((url, delivery)) => {
+            let endpoint = ensure_demo_webhook_endpoint(
                 &db,
                 &ctx,
                 &app_id,
                 url,
-                audience,
+                &delivery,
                 webhook_max_attempts,
                 webhook_mask_recipient,
             )
             .await?;
-            write_endpoint_id(webhook_endpoint_id_out.as_deref(), &endpoint_id)?;
+            write_endpoint_id(webhook_endpoint_id_out.as_deref(), &endpoint.id)?;
+
+            // The secret is never printed: stdout is a container log, and a
+            // log is exactly where a signing secret must not end up (CodeQL
+            // flagged the pre-sealed fallback as cleartext logging).
+            // `--webhook-secret-out` is the only way to receive it.
+            if let (Delivery::Hmac { secret_out }, Some(secret)) = (&delivery, &endpoint.secret) {
+                std::fs::write(secret_out, secret).with_context(|| {
+                    format!("writing the webhook secret to {}", secret_out.display())
+                })?;
+                println!("webhook secret written to: {}", secret_out.display());
+            }
 
             println!(
-                "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?}, audience={audience:?})"
+                "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?}, delivery={delivery:?})"
             );
         }
-        (Some(_), None) => {
-            bail!(
-                "--webhook-url was given without --webhook-audience — a delivery is sealed for \
-                 one recipient and the endpoint must say which. Pass --webhook-audience <name>, \
-                 the name the receiver's EnvelopeLayer is built with."
-            );
-        }
-        (None, Some(_)) => {
-            bail!(
-                "--webhook-audience was given but --webhook-url was not — nothing would ever \
-                 use it. Pass --webhook-url too, or drop --webhook-audience."
-            );
-        }
-        (None, None) => {
+        None => {
             println!(
                 "demo App/SenderId fixtures ready (slug={slug:?}, sender={sender_id:?}); no \
                  --webhook-url given, so no WebhookEndpoint was seeded"
@@ -507,4 +607,67 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Delivery, delivery_plan};
+    use std::path::Path;
+
+    #[test]
+    fn an_audience_makes_the_endpoint_sealed_and_a_secret_file_makes_it_hmac() {
+        let sealed = delivery_plan(
+            Some("http://demo-app:9000/webhooks"),
+            Some("demo-app"),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            sealed,
+            (
+                "http://demo-app:9000/webhooks",
+                Delivery::Sealed {
+                    audience: "demo-app"
+                }
+            )
+        );
+        let hmac = delivery_plan(
+            Some("http://demo-app:9000/webhooks"),
+            None,
+            Some(Path::new("/secrets/webhook-secret")),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            hmac,
+            (
+                "http://demo-app:9000/webhooks",
+                Delivery::Hmac {
+                    secret_out: Path::new("/secrets/webhook-secret")
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn no_url_means_no_endpoint_and_a_stray_mode_flag_is_an_error() {
+        assert_eq!(delivery_plan(None, None, None).unwrap(), None);
+        assert!(delivery_plan(None, Some("demo-app"), None).is_err());
+        assert!(delivery_plan(None, None, Some(Path::new("/s"))).is_err());
+    }
+
+    #[test]
+    fn a_url_needs_exactly_one_way_of_authenticating_deliveries() {
+        let url = Some("http://demo-app:9000/webhooks");
+        let none = delivery_plan(url, None, None).unwrap_err().to_string();
+        assert!(
+            none.contains("--webhook-audience") && none.contains("--webhook-secret-out"),
+            "{none}"
+        );
+        let both = delivery_plan(url, Some("demo-app"), Some(Path::new("/s")))
+            .unwrap_err()
+            .to_string();
+        assert!(both.contains("not both"), "{both}");
+    }
 }
