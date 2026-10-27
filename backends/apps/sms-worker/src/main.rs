@@ -405,17 +405,6 @@ fn aws_sms_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
     }
 }
 
-/// Build the [`sms_worker::ProviderRegistry`] this process holds
-/// credentials for, keyed by each adapter's own [`SmsProvider::key`] — #62:
-/// `dispatch::resolve_provider` looks a routed message's provider up by
-/// exactly this string, matching `Provider.key` in the database. Empty
-/// when `dispatch` isn't among `--roles` (nothing in any other role ever
-/// reads this registry) — the startup check right after this call is what
-/// makes "dispatch requires real credentials" an actual guarantee, not
-/// just a hope. Two entries as of the MTN wiring (`"orange_cm"`,
-/// `"mtn_cm"`) — either, both, or neither may be configured; a third
-/// real adapter is a third `.insert(...)` here, not a redesign of this
-/// function's shape.
 /// The sealer `hooks` delivers with, built from `--envelope-signing-key-file`.
 ///
 /// Fails closed (VS-8): `hooks` without the key is a refusal to start, never a
@@ -447,6 +436,17 @@ fn webhook_sealer(cli: &Cli, roles: &[Role]) -> Result<Option<sms_webhook::Seale
     Ok(Some(sealer))
 }
 
+/// Build the [`sms_worker::ProviderRegistry`] this process holds
+/// credentials for, keyed by each adapter's own [`SmsProvider::key`] — #62:
+/// `dispatch::resolve_provider` looks a routed message's provider up by
+/// exactly this string, matching `Provider.key` in the database. Empty
+/// when `dispatch` isn't among `--roles` (nothing in any other role ever
+/// reads this registry) — the startup check right after this call is what
+/// makes "dispatch requires real credentials" an actual guarantee, not
+/// just a hope. Two entries as of the MTN wiring (`"orange_cm"`,
+/// `"mtn_cm"`) — either, both, or neither may be configured; a third
+/// real adapter is a third `.insert(...)` here, not a redesign of this
+/// function's shape.
 fn build_provider_registry(cli: &Cli) -> Result<HashMap<String, Arc<dyn SmsProvider>>> {
     let mut providers: HashMap<String, Arc<dyn SmsProvider>> = HashMap::new();
     if let Some(orange) = orange_provider(cli)? {
