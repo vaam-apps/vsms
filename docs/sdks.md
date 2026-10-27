@@ -1,14 +1,15 @@
 # SDKs
 
 vsms ships two official SDKs, built from this repository and published with
-every release. Both exist for the same reason: they own the
-`private_key_jwt` credential lifecycle (signing the client assertion,
-exchanging it at `POST /token`, caching the access token and refreshing it on
-a `401`), so your code calls `send_message` / `sendMessage` and never touches
-a JWT.
+every release. Both exist for the same reason: vsms has no tokens, so there
+is no credential lifecycle to hand-roll. A request is a COSE_Sign1 message
+signed with your Ed25519 key and bound to its route, the audience and a fresh
+nonce; the answer is one signed by the gateway's key, which you pin. Your code
+calls `send_message` / `sendMessage` and never touches a JWT.
 
-You still need a client credential first: an operator runs
-`sms-gateway provision-client` and hands you a client id and a private key.
+You still need a key registered first: you make an Ed25519 key, an operator
+runs `sms-gateway register-client` with its public half and gives you the
+gateway's two public keys (`sms-gateway server-keys`).
 [Integrating with vsms](integrating.md#1-get-a-credential) covers that step,
 and everything the SDKs send on your behalf.
 
@@ -17,22 +18,33 @@ and everything the SDKs send on your behalf.
 | Rust     | [`vsms-sdk-rust`](https://crates.io/crates/vsms-sdk-rust) on crates.io       | [`sdks/rust/vsms-sdk-rust`](../sdks/rust/vsms-sdk-rust) |
 | Node.js  | [`@vaam-apps/vsms-node`](https://www.npmjs.com/package/@vaam-apps/vsms-node) | [`sdks/node/vsms-sdk-node`](../sdks/node/vsms-sdk-node) |
 
+The two do not implement the envelope twice. The Node package carries
+[`sdks/rust/vsms-sdk-wasm`](../sdks/rust/vsms-sdk-wasm), the same cratestack
+`ClientEnvelope` the Rust SDK seals through, compiled to WebAssembly, and
+`cargo xtask sdk-parity-check` holds the two to one audience and one operation
+table (the wasm crate expands the Rust SDK's vendored schema).
+
+Neither SDK retries a request, follows a redirect or believes an answer that is
+not sealed: a retry is a new request with a new nonce, which is the caller's
+decision, and a redirect would re-send the signed body to a host the signature
+was not addressed to. A refused signature is one coarse unsigned `401` that
+says nothing about which check failed (`SdkError::is_unauthorized` /
+`SdkError.isUnauthorized()`); look at the registration of the key and at the
+clock.
+
 ## Rust
 
 The crate is `vsms-sdk-rust`; its library is imported as `vsms_sdk`.
 
 ```rust
-use vsms_sdk::{PrivateKeyJwtConfig, VsmsClient};
+use vsms_sdk::{ServerKeys, SigningKey, VsmsClient};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = PrivateKeyJwtConfig::from_key_path(
-        "http://127.0.0.1:8080",
-        "the client id provision-client printed",
-        "/path/to/console-client-key.pem",
-        "sms:send sms:read",
-    )?;
-    let client = VsmsClient::private_key_jwt("http://127.0.0.1:8080", config)?;
+    let key = SigningKey::from_pem_file("/path/to/vsms-signing-key.pem")?;
+    // `sms-gateway server-keys`' output: public, so plain configuration.
+    let server_keys = ServerKeys::parse_report(&std::fs::read_to_string("server-keys.txt")?)?;
+    let client = VsmsClient::signed("http://127.0.0.1:8080", key, server_keys)?;
 
     let outcome = client
         .send_message(
@@ -60,8 +72,8 @@ async fn main() -> anyhow::Result<()> {
 ```
 
 The models, inputs and procedure stubs are generated from the vsms schema by
-CrateStack's `include_client_schema!`; the auth layer and the bounded
-refresh-on-`401` are hand-written. A complete, runnable version is
+CrateStack's `include_client_schema!`; the sealing of `send_message` is
+hand-written. A complete, runnable version is
 [`examples/rust/sms-send`](../examples/rust/sms-send), which runs against the
 gateway `just demo` starts.
 
@@ -74,14 +86,14 @@ pnpm add @vaam-apps/vsms-node
 ```
 
 ```typescript
-import { VsmsClient } from "@vaam-apps/vsms-node";
+import { readFileSync } from "node:fs";
+import { parseServerKeysReport, VsmsClient } from "@vaam-apps/vsms-node";
 
-// Initialize client with private key on disk or PEM string
-const client = VsmsClient.privateKeyJwt({
-  issuer: "http://127.0.0.1:8080",
-  clientId: "your-client-id",
-  keyPath: "/path/to/client-key.pem",
-  // scope defaults to "sms:send sms:read"
+// Your key on disk (PKCS#8 PEM), and the gateway's two pinned public keys.
+const client = new VsmsClient({
+  baseUrl: "http://127.0.0.1:8080",
+  keyPath: "/path/to/vsms-signing-key.pem",
+  serverKeys: parseServerKeysReport(readFileSync("server-keys.txt", "utf8")),
 });
 
 // Send an SMS
@@ -105,13 +117,15 @@ const message = await client.getMessage(outcome.result.messageId);
 console.log("Status:", message.state);
 ```
 
-Besides signing and caching, the client de-duplicates concurrent token
-requests, renews the token and retries once if it is invalidated mid-flight,
-and reports whether a send was replayed under its `Idempotency-Key`
-(`idempotencyReplayed`).
-[`examples/node/sms-send-example`](../examples/node/sms-send-example) and the
-demo's evaluator, [`examples/node/demo-app`](../examples/node/demo-app), both
-use it.
+The key can also be a `crypto.KeyObject`, the 32-byte seed, or a `signer`
+callback for a key this process cannot read (a KMS); an answer sealed under
+the pinned `next` key is trusted, so a rotation is not a flag day. Every
+failure is an `SdkError` with a `kind` (`config`, `seal`, `transport`,
+`unsigned`, `unverified`, `remote`, ...), and the client reports whether a send
+was replayed under its `Idempotency-Key` (`idempotencyReplayed`); see the
+[package README](../sdks/node/vsms-sdk-node/README.md).
+[`examples/node/sms-send-example`](../examples/node/sms-send-example) is the
+runnable version.
 
 ## `Idempotency-Key` and `clientRef` are different things
 
@@ -120,17 +134,19 @@ header. It protects against **not knowing whether a request landed** (a
 timeout, a dropped connection) by replaying the first response on a retry,
 never sending twice. `clientRef` in the message input is a separate,
 database-level dedupe scoped to your `App`, for **deliberately** sending the
-same logical message twice. Both can come back as a `409`; in Rust,
-`SdkError::is_idempotency_in_flight` and `SdkError::is_conflict` tell them
-apart. See [Idempotency](integrating.md#5-idempotency-idempotency-key-vs-clientref)
-in the integration guide.
+same logical message twice. Both can come back as a `409`;
+`SdkError::is_idempotency_in_flight` and `SdkError::is_conflict` (Rust),
+`isIdempotencyInFlight()` and `isConflict()` (Node) tell them apart. See
+[Idempotency](integrating.md#5-idempotency-idempotency-key-vs-clientref) in
+the integration guide.
 
 ## Any other language
 
-There is no SDK to wait for: the exchange is four HTTP calls, listed under
-[Any language — raw HTTP](integrating.md#any-language--raw-http). To receive
-webhooks, [`examples/node/webhook-receiver`](../examples/node/webhook-receiver)
-is a reference receiver that verifies the signature scheme.
+There is no SDK to wait for, but there is no shortcut either: a request is a
+COSE_Sign1 envelope, which [Other languages](integrating.md#other-languages)
+says how to build. To receive webhooks,
+[`examples/node/webhook-receiver`](../examples/node/webhook-receiver) is a
+reference receiver that verifies the signature scheme.
 
 Publishing both packages is automated; the
 [SDK release runbook](runbooks/releasing-sdks.adoc) covers the registries,

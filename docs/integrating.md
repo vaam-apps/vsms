@@ -13,6 +13,7 @@ Make your key, then give the operator its public half:
 ```bash
 openssl genpkey -algorithm ed25519 -out vsms-signing-key.pem
 cargo run -p sms-send -- --print-public-key --signing-key-path vsms-signing-key.pem   # examples/rust/sms-send
+# or, from Node: node src/index.mjs --print-public-key --signing-key-path vsms-signing-key.pem   # examples/node/sms-send-example
 ```
 
 The operator registers it for your `App` and gives you the gateway's two public keys:
@@ -48,11 +49,33 @@ let outcome = client.send_message(SendMessageInput {
 
 Runnable: [`examples/rust/sms-send`](../examples/rust/sms-send).
 
-### Node and other languages
+### Node - the SDK
 
-The Node example ([`examples/node/sms-send-example`](../examples/node/sms-send-example/src/index.mjs)) and the console's gateway package still speak the removed token protocol; they cannot reach a gateway until they sign (VS-5b and VS-7). There is no compatibility mode to fall back on.
+[`@vaam-apps/vsms-node`](../sdks/node/vsms-sdk-node/README.md) does the same from Node 22.11 or newer. The signing is the Rust one, compiled to WebAssembly and shipped inside the package, so the two SDKs cannot bind different bytes.
 
-To integrate from another language today, implement the signed transport directly: a COSE_Sign1 envelope (Ed25519, `application/json` payloads only) bound to the method, route, audience `vsms`, a fresh nonce and the issued-at time, and verification of the answer against the pinned server keys. The wire contract is cratestack's signed transport (its ADR 0006); [`backends/crates/sms-api/src/envelope.md`](../backends/crates/sms-api/src/envelope.md) says what vsms adds to it. `sms-gateway routes` prints the full route table and needs no database.
+```typescript
+import { readFileSync } from "node:fs";
+import { parseServerKeysReport, VsmsClient } from "@vaam-apps/vsms-node";
+
+const client = new VsmsClient({
+  baseUrl: "http://127.0.0.1:8080",
+  keyPath: "./vsms-signing-key.pem",
+  serverKeys: parseServerKeysReport(readFileSync("server-keys.txt", "utf8")),
+});
+
+const outcome = await client.sendMessage(
+  { to: "+237677123456", body: "Your code is 4471", senderId: "VYMALO" },
+  { idempotencyKey: "retry-safe-key-1" },
+);
+```
+
+Runnable: [`examples/node/sms-send-example`](../examples/node/sms-send-example/src/index.mjs). A failure is an `SdkError` whose `kind` says which part failed; `isUnauthorized()` is the gateway's coarse unsigned `401`. The SDK sends each request once, follows no redirect and reads at most 8 MiB of answer.
+
+### Other languages
+
+The operator console's own gateway package still speaks the removed token protocol until it signs (VS-5b), and `examples/node/demo-app` still depends on an older, token-era release of the Node SDK. There is no compatibility mode to fall back on.
+
+To integrate from another language today, implement the signed transport directly: a COSE_Sign1 envelope (Ed25519, `application/json` payloads only) bound to the method, route, audience `vsms`, the called operation's contract digest, a fresh nonce and the issued-at time, and verification of the answer against the pinned server keys. The wire contract is cratestack's signed transport (its ADR 0006); [`backends/crates/sms-api/src/envelope.md`](../backends/crates/sms-api/src/envelope.md) says what vsms adds to it. `sms-gateway routes` prints the full route table and needs no database.
 
 ## 3. Request and response
 

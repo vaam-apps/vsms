@@ -69,13 +69,21 @@ cargo publish --dry-run
 
 === 2. Node.js SDK (`@vaam-apps/vsms-node`)
 
+The package's signed transport is `sdks/rust/vsms-sdk-wasm` compiled to
+WebAssembly and shipped inside it (`wasm/`), so the build needs Rust with the
+`wasm32-unknown-unknown` target and the `wasm-bindgen` command-line tool at
+exactly the version `sdks/rust/Cargo.lock` pins: `just wasm-tools` installs both
+(`release.yml`'s `publish-node-sdk` job runs the same recipe).
+
 [,bash]
 ----
+cargo xtask sdk-parity-check
+just wasm-tools
 cd sdks/node/vsms-sdk-node
 pnpm install
 pnpm run build
 pnpm run typecheck
-node --test
+pnpm run test
 pnpm pack --dry-run
 pnpm publish --dry-run --no-git-checks
 ----
