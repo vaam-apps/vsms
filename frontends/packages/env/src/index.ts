@@ -1,5 +1,6 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
+import { gatewayUrlProblem } from "./gateway-url";
 import { TUNING, withTuningCoerced } from "./tuning";
 
 /** 32 bytes as unpadded base64url: 43 characters of the URL-safe alphabet. */
@@ -20,6 +21,7 @@ const KEY_32_BASE64URL = /^[A-Za-z0-9_-]{43}$/;
 //   * the composer's service key, the one private key the server holds.
 const created = createEnv({
   server: {
+    // The gateway's ORIGIN: no path (`./gateway-url.ts` says why).
     SMS_API_URL: z.string().url(),
     SMS_API_CLIENT_CERT_PATH: z.string().optional(),
     SMS_API_CLIENT_KEY_PATH: z.string().optional(),
@@ -132,6 +134,9 @@ if (!skipValidation) {
         "both of the gateway's keys (`sms-gateway server-keys`); with one, a rotation is a flag day",
     );
   }
+
+  const urlProblem = gatewayUrlProblem(env.SMS_API_URL);
+  if (urlProblem !== undefined) throw new Error(urlProblem);
 
   const apiUrl = new URL(env.SMS_API_URL);
   const isHttps = apiUrl.protocol === "https:";

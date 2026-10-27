@@ -36,6 +36,14 @@ async function listen(
 }
 
 describe("createUpstream", () => {
+  it("refuses a gateway URL with a path prefix, which every request path would replace", () => {
+    for (const url of ["http://gw:8080/vsms", "https://edge.example.com/api/"]) {
+      expect(() => createUpstream({ url }), url).toThrow(/no path/);
+    }
+    expect(() => createUpstream({ url: "http://gw:8080" })).not.toThrow();
+    expect(() => createUpstream({ url: "http://gw:8080/" })).not.toThrow();
+  });
+
   it("sends a GET with the sealed message as its body, under the real method and only the given headers", async () => {
     let seen:
       | {

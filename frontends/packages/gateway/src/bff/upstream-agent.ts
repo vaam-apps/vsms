@@ -57,6 +57,15 @@ export function agentFor(address: GatewayAddress): http.Agent | https.Agent {
 export function createUpstream(address: GatewayAddress): Upstream {
   let agent: http.Agent | https.Agent | undefined;
   const base = new URL(address.url);
+  // `new URL("/x", base)` replaces the base's path, so a prefix would be dropped
+  // and every sealed request sent to the origin's root. `@vsms/env` refuses
+  // such a URL at boot; this holds when its validation is skipped.
+  if (base.pathname !== "/") {
+    throw new Error(
+      `the gateway URL must be an origin with no path (got ${base.pathname}): every request ` +
+        "path replaces it, so a prefix would be dropped",
+    );
+  }
   const timeoutMs = address.timeoutMs ?? 30_000;
 
   return (request) => {
