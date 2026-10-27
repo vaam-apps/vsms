@@ -133,6 +133,11 @@ async fn provision(
     .await
 }
 
+/// The ids of `clients`, so an assertion that none exist prints the ones that do.
+fn client_ids(clients: &[schema::AppClient]) -> Vec<String> {
+    clients.iter().map(|client| client.id.clone()).collect()
+}
+
 async fn clients_labelled(db: &Cratestack, label: &str) -> Vec<schema::AppClient> {
     db.app_client()
         .find_many()
@@ -258,7 +263,10 @@ async fn refusals_create_no_client() {
         matches!(refused, Err(CratestackError::Validation(_))),
         "{refused:?}"
     );
-    assert!(clients_labelled(&db, &label).await.is_empty());
+    assert_eq!(
+        client_ids(&clients_labelled(&db, &label).await),
+        Vec::<String>::new()
+    );
 
     // The console:pair scope is the operator's, never an HTTP caller's.
     let label = format!("pair-{}", unique_suffix());
@@ -276,7 +284,10 @@ async fn refusals_create_no_client() {
         matches!(refused, Err(CratestackError::Forbidden(_))),
         "{refused:?}"
     );
-    assert!(clients_labelled(&db, &label).await.is_empty());
+    assert_eq!(
+        client_ids(&clients_labelled(&db, &label).await),
+        Vec::<String>::new()
+    );
 
     // An app that does not exist, and one that is inactive.
     let label = format!("no-app-{}", unique_suffix());
@@ -310,7 +321,10 @@ async fn refusals_create_no_client() {
         matches!(refused, Err(CratestackError::Validation(_))),
         "{refused:?}"
     );
-    assert!(clients_labelled(&db, &label).await.is_empty());
+    assert_eq!(
+        client_ids(&clients_labelled(&db, &label).await),
+        Vec::<String>::new()
+    );
 }
 
 /// A public key is one identity: provisioning a second client with a key
