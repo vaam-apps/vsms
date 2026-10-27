@@ -28,9 +28,11 @@
 --
 -- Plain `CREATE INDEX`, not `CONCURRENTLY`: `sms-migrate` applies a migration in
 -- a transaction, where `CONCURRENTLY` is refused. It holds a lock that blocks
--- writes to `webhook_attempts` while it builds, which for a table that
--- `@@retain(days: 30)` bounds is seconds, and `sms-migrate` runs before the
--- workers it would stall are started.
+-- writes to `webhook_attempts` while it builds, and `sms-migrate` runs before
+-- the workers it would stall are started. The table is not small by contract:
+-- `WebhookAttempt` declares `@@retain(days: 30)`, but `purge_retention` deletes
+-- messages and delivery receipts only, so nothing purges attempts yet and the
+-- build takes as long as the table's history. Check its size before deploying.
 
 CREATE INDEX webhook_endpoint_due_idx ON webhook_attempts (endpoint_id, next_attempt_at)
     WHERE state IN ('pending','failed');
