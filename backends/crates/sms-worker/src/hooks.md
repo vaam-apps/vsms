@@ -29,7 +29,10 @@ builds the envelope at delivery time ([`build_envelope`]): `id` from
 created — see `webhooks.rs`'s own doc for why the envelope's `id` can't
 be anything else), `eventId` from `sourceEventId` (it used to ride only in the
 `X-Sms-Event-Id` header, which the HMAC signed; headers are no part of a seal,
-so the id is in the sealed body now), `type` from `eventType`, `data` from `payload` parsed
+so the id is in the sealed body now), `appId` and `endpointId` from the endpoint
+the attempt belongs to (every app's deliveries are signed by the one gateway
+key, so a receiver tells a delivery made *for it* from one merely addressed to
+its audience by these two, which the seal covers), `type` from `eventType`, `data` from `payload` parsed
 back into a JSON value (never re-wrapped as a string — nesting an
 already-JSON string inside a JSON string is exactly the kind of "close
 but not the contract" bug a receiver's own parser would silently choke

@@ -420,6 +420,10 @@ async fn a_successful_delivery_reaches_succeeded_and_a_real_envelope_layer_opens
     assert_eq!(envelope["eventId"], attempt.sourceEventId.to_string());
     assert_eq!(envelope["type"], "message.delivered");
     assert!(envelope["occurredAt"].is_string());
+    // The two values a receiver compares with its own to know the delivery was
+    // made for it, not merely addressed to its audience: signed with the rest.
+    assert_eq!(envelope["appId"], endpoint.appId);
+    assert_eq!(envelope["endpointId"], endpoint.id);
     assert_eq!(envelope["data"]["messageId"], "cmsg000000000000000000");
 
     // A clean delivery must not touch the endpoint's failure bookkeeping.

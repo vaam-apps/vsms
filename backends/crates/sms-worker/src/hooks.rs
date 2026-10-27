@@ -232,7 +232,7 @@ async fn deliver_one(
     };
 
     let now = Utc::now();
-    let body = match build_envelope(&attempt, now) {
+    let body = match build_envelope(&attempt, &endpoint, now) {
         Ok(body) => body,
         Err(error) => {
             write_outcome(
@@ -308,10 +308,13 @@ async fn send(
     }
 }
 
-/// The §8.4 envelope — `{id, eventId, type, occurredAt, data}` — built from the
-/// stored row at delivery time. This module's own doc covers `id`/`type`;
-/// documented here is `occurredAt`, the one field that is a genuine,
-/// tracked approximation rather than a faithful reconstruction.
+/// The §8.4 envelope — `{id, eventId, type, occurredAt, appId, endpointId,
+/// data}` — built from the stored rows at delivery time. This module's own doc
+/// covers `id`/`type`; `appId` and `endpointId` are the endpoint's own, in the
+/// signed body so a receiver can tell a delivery made *for it* from one merely
+/// addressed to its audience (`sms-webhook`'s `lib.md`, "What a receiver
+/// configures"). Documented here is `occurredAt`, the one field that is a
+/// genuine, tracked approximation rather than a faithful reconstruction.
 ///
 /// `WebhookAttempt` carries no creation timestamp — no `@use(Timestamps)`
 /// on the model — and the framework's own `ModelEvent::occurred_at` (the
@@ -327,6 +330,7 @@ async fn send(
 /// to a model #38 owns, not something this function can fix alone.
 fn build_envelope(
     attempt: &WebhookAttempt,
+    endpoint: &WebhookEndpoint,
     now: DateTime<Utc>,
 ) -> Result<String, serde_json::Error> {
     let data: serde_json::Value = serde_json::from_str(&attempt.payload)?;
@@ -335,6 +339,8 @@ fn build_envelope(
         "eventId": attempt.sourceEventId,
         "type": attempt.eventType,
         "occurredAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "appId": endpoint.appId,
+        "endpointId": endpoint.id,
         "data": data,
     });
     Ok(envelope.to_string())
@@ -682,6 +688,7 @@ fn log_write_failure(attempt_id: &str, attempted_state: AttemptState, error: &Cr
 mod tests {
     use super::{BACKOFF_SCHEDULE, backoff_for, build_envelope};
     use chrono::{Duration, TimeZone, Utc};
+    use sms_api::schema::WebhookEndpoint;
 
     #[test]
     fn the_first_attempt_backs_off_by_the_schedules_first_entry() {
@@ -725,6 +732,24 @@ mod tests {
         }
     }
 
+    fn fixture_endpoint() -> WebhookEndpoint {
+        WebhookEndpoint {
+            createdAt: Utc::now(),
+            updatedAt: Utc::now(),
+            id: "cendpoint0000000000000".to_owned(),
+            appId: "capp00000000000000000".to_owned(),
+            url: "https://api.vaam.store/webhooks/vsms".to_owned(),
+            audience: "vaam".to_owned(),
+            eventTypes: " message.delivered ".to_owned(),
+            maskRecipient: true,
+            active: true,
+            maxAttempts: 8,
+            circuitOpenUntil: None,
+            consecutiveFailures: 0,
+            version: 0,
+        }
+    }
+
     /// The envelope's `data` is the *parsed* payload embedded as a nested
     /// JSON object, never a second string encoding of it — a receiver
     /// parsing `data` as an object would see a JSON string in its place if
@@ -734,12 +759,16 @@ mod tests {
     fn the_envelope_wraps_the_payload_as_a_nested_object_not_a_re_encoded_string() {
         let attempt = fixture_attempt();
         let now = Utc.with_ymd_and_hms(2026, 7, 28, 14, 3, 11).unwrap();
-        let body = build_envelope(&attempt, now).expect("valid JSON payload parses");
+        let body =
+            build_envelope(&attempt, &fixture_endpoint(), now).expect("valid JSON payload parses");
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
 
         assert_eq!(parsed["id"], "cattempt00000000000000");
         assert_eq!(parsed["type"], "message.delivered");
         assert_eq!(parsed["occurredAt"], "2026-07-28T14:03:11Z");
+        // The two values a receiver checks to know the delivery is for it.
+        assert_eq!(parsed["appId"], "capp00000000000000000");
+        assert_eq!(parsed["endpointId"], "cendpoint0000000000000");
         assert!(parsed["data"].is_object(), "data must be a nested object");
         assert_eq!(parsed["data"]["messageId"], "cmsg000000000000000000");
     }
@@ -752,7 +781,7 @@ mod tests {
     fn a_masked_to_field_in_the_payload_survives_into_the_envelope_unchanged() {
         let attempt = fixture_attempt();
         let now = Utc::now();
-        let body = build_envelope(&attempt, now).unwrap();
+        let body = build_envelope(&attempt, &fixture_endpoint(), now).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["data"]["to"], "+2376****89");
     }
@@ -761,6 +790,6 @@ mod tests {
     fn a_malformed_payload_is_a_typed_error_not_a_panic() {
         let mut attempt = fixture_attempt();
         attempt.payload = "not json".to_owned();
-        assert!(build_envelope(&attempt, Utc::now()).is_err());
+        assert!(build_envelope(&attempt, &fixture_endpoint(), Utc::now()).is_err());
     }
 }

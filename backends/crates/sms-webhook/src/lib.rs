@@ -15,17 +15,19 @@ pub const PAYLOAD_TYPE: &str = "application/json";
 
 /// Domain-separation tag of [`contract_sha`], so a webhook digest can never be
 /// mistaken for an op-contract digest (`cratestack/op-contract/v1`).
-pub const CONTRACT_DOMAIN: &[u8] = b"vsms/webhook-delivery/v1\0";
+pub const CONTRACT_DOMAIN: &[u8] = b"vsms/webhook-delivery/v2\0";
 
 /// The declared shape of a delivery: what [`CONTRACT_SHA`] hashes. It names the
 /// method, the payload type and the fields of the envelope `hooks` builds
-/// (`{id, eventId, type, occurredAt, data}`), and says the answer's body is
-/// not read. Add a field, or change a type, and the digest moves: that is the
-/// moment the version in [`CONTRACT_DOMAIN`] moves too.
+/// (`{id, eventId, type, occurredAt, appId, endpointId, data}`), and says the
+/// answer's body is not read. Add a field, or change a type, and the digest
+/// moves: that is the moment the version in [`CONTRACT_DOMAIN`] moves too (v2
+/// added `appId` and `endpointId`, the two values a receiver checks to know a
+/// delivery was made for it and not merely addressed to its audience).
 ///
 /// The route is not part of it: a receiver chooses its own path, and the seal
 /// binds the route separately.
-pub const CONTRACT_DOCUMENT: &str = r#"{"contract":"vsms.webhook.delivery","version":1,"method":"POST","request":{"payload_type":"application/json","body":{"id":"string","eventId":"uuid","type":"string","occurredAt":"rfc3339-utc-seconds","data":"object"}},"response":{"payload_type":"application/json","body":"not read"}}"#;
+pub const CONTRACT_DOCUMENT: &str = r#"{"contract":"vsms.webhook.delivery","version":2,"method":"POST","request":{"payload_type":"application/json","body":{"id":"string","eventId":"uuid","type":"string","occurredAt":"rfc3339-utc-seconds","appId":"string","endpointId":"string","data":"object"}},"response":{"payload_type":"application/json","body":"not read"}}"#;
 
 /// The digest every delivery binds: `SHA-256(CONTRACT_DOMAIN || CONTRACT_DOCUMENT)`.
 ///
@@ -34,13 +36,13 @@ pub const CONTRACT_DOCUMENT: &str = r#"{"contract":"vsms.webhook.delivery","vers
 /// document, and the crate's tests hold the two together (the digest was first
 /// computed with Python's `hashlib`, not with this crate).
 pub const CONTRACT_SHA: [u8; 32] = [
-    0x7c, 0x5a, 0x6a, 0xb8, 0x42, 0x70, 0xec, 0x64, 0xee, 0xb6, 0x68, 0xcf, 0x50, 0xa0, 0x31, 0xac,
-    0x43, 0x64, 0x33, 0xa0, 0x84, 0x67, 0xce, 0xfe, 0x14, 0x2e, 0x33, 0x8c, 0x93, 0x13, 0x2b, 0x62,
+    0xc6, 0x13, 0x94, 0xa5, 0x0e, 0x9f, 0x02, 0xec, 0xe4, 0x11, 0x67, 0x4f, 0xb3, 0xf3, 0x98, 0xae,
+    0x32, 0x3e, 0x68, 0x5b, 0x7a, 0x14, 0xf9, 0xc7, 0xb8, 0x55, 0x38, 0xaa, 0x33, 0xa3, 0x04, 0x23,
 ];
 
 /// [`CONTRACT_SHA`] as lowercase hex, the form docs and configuration carry.
 pub const CONTRACT_SHA_HEX: &str =
-    "7c5a6ab84270ec64eeb668cf50a031ac436433a08467cefe142e338c93132b62";
+    "c61394a50e9f02ece411674fb3f398ae323e685b7a14f9c7b85538aa33a30423";
 
 /// The digest of [`CONTRACT_DOCUMENT`] under [`CONTRACT_DOMAIN`].
 ///
@@ -75,9 +77,11 @@ pub enum SealError {
 /// The route a delivery to `url` binds: its path.
 ///
 /// A sealed request binds the route template the receiver's router matched,
-/// not the raw URL (a gateway may rewrite the host or the scheme). A webhook
-/// receiver mounts one literal route, so the template *is* the path, and the
-/// worker derives it from the endpoint's URL rather than asking for it twice.
+/// not the raw URL (a gateway may rewrite the host or the scheme, but never the
+/// path: an ingress that strips a prefix makes every delivery a `401`). A
+/// webhook receiver mounts one literal route, so the template *is* the whole
+/// path, and the worker derives it from the endpoint's URL rather than asking
+/// for it twice.
 ///
 /// ```
 /// use sms_webhook::delivery_route;
@@ -89,6 +93,9 @@ pub enum SealError {
 /// // A path with a parameter, a query or credentials is not one literal route.
 /// assert!(delivery_route("https://example.com/hooks/{tenant}").is_err());
 /// assert!(delivery_route("https://example.com/hooks?x=1").is_err());
+/// // An empty query or fragment is still one: `?` and `#` themselves are refused.
+/// assert!(delivery_route("https://example.com/hooks?").is_err());
+/// assert!(delivery_route("https://example.com/hooks#").is_err());
 /// assert!(delivery_route("https://user:pw@example.com/hooks").is_err());
 /// assert!(delivery_route("ftp://example.com/hooks").is_err());
 /// ```
@@ -267,11 +274,29 @@ mod tests {
     fn the_document_is_valid_json_naming_the_envelope_fields() {
         let doc: serde_json::Value = serde_json::from_str(CONTRACT_DOCUMENT).unwrap();
         let body = &doc["request"]["body"];
-        for field in ["id", "eventId", "type", "occurredAt", "data"] {
+        for field in [
+            "id",
+            "eventId",
+            "type",
+            "occurredAt",
+            "appId",
+            "endpointId",
+            "data",
+        ] {
             assert!(body.get(field).is_some(), "{field}");
         }
         assert_eq!(doc["method"], METHOD);
         assert_eq!(doc["request"]["payload_type"], PAYLOAD_TYPE);
+    }
+
+    #[test]
+    fn the_domain_tag_and_the_document_carry_the_same_version() {
+        let doc: serde_json::Value = serde_json::from_str(CONTRACT_DOCUMENT).unwrap();
+        let version = doc["version"].as_u64().unwrap();
+        assert_eq!(
+            CONTRACT_DOMAIN,
+            format!("vsms/webhook-delivery/v{version}\0").as_bytes()
+        );
     }
 
     #[test]
@@ -283,6 +308,9 @@ mod tests {
             "https://h/a%2Fb",
             "https://h/a?b",
             "https://h/a#b",
+            // An empty query or fragment is still one.
+            "https://h/a?",
+            "https://h/a#",
             "https://u@h/a",
             "file:///etc",
             "not a url",

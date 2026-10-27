@@ -33,7 +33,11 @@ const IAT: i64 = 1_793_000_000;
 const AUDIENCE: &str = "vaam";
 const URL: &str = "https://api.vaam.store/webhooks/vsms";
 const ROUTE: &str = "/webhooks/vsms";
-const BODY: &str = r#"{"id":"cattempt00000000000000","eventId":"11111111-1111-4111-8111-111111111111","type":"message.delivered","occurredAt":"2026-10-27T10:00:00Z","data":{"messageId":"cmsg000000000000000000","to":"+2376****89","state":"delivered"}}"#;
+/// Inside the signed body: what an opener compares with the app (and endpoint)
+/// it was built for.
+const APP_ID: &str = "capp00000000000000000";
+const ENDPOINT_ID: &str = "cendpoint0000000000000";
+const BODY: &str = r#"{"id":"cattempt00000000000000","eventId":"11111111-1111-4111-8111-111111111111","type":"message.delivered","occurredAt":"2026-10-27T10:00:00Z","appId":"capp00000000000000000","endpointId":"cendpoint0000000000000","data":{"messageId":"cmsg000000000000000000","to":"+2376****89","state":"delivered"}}"#;
 
 fn fixture_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sealed_delivery_vector.json")
@@ -71,6 +75,8 @@ async fn sealed_vector() -> Value {
         "audience": AUDIENCE,
         "url": URL,
         "route": ROUTE,
+        "appId": APP_ID,
+        "endpointId": ENDPOINT_ID,
         "iat": IAT,
         "ctiHex": hex(&CTI),
         "contractSha256": CONTRACT_SHA_HEX,
@@ -78,6 +84,16 @@ async fn sealed_vector() -> Value {
         "sealedHex": hex(&delivery.body),
         "headers": delivery.headers.iter().map(|(name, value)| json!([name, value])).collect::<Vec<_>>(),
     })
+}
+
+#[tokio::test]
+async fn the_vector_names_the_app_and_endpoint_the_body_carries() {
+    let vector = sealed_vector().await;
+    let body: Value = serde_json::from_str(BODY).unwrap();
+    assert_eq!(body["appId"], APP_ID);
+    assert_eq!(body["endpointId"], ENDPOINT_ID);
+    assert_eq!(vector["appId"], body["appId"]);
+    assert_eq!(vector["endpointId"], body["endpointId"]);
 }
 
 #[tokio::test]

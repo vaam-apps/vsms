@@ -14,7 +14,10 @@ use sms_webhook::{CONTRACT_SHA, SealedDelivery, Sealer};
 const ROUTE: &str = "/webhooks/vsms";
 const OTHER_ROUTE: &str = "/webhooks/other";
 const AUDIENCE: &str = "vaam";
-const BODY: &str = r#"{"id":"a","eventId":"11111111-1111-4111-8111-111111111111","type":"message.delivered","occurredAt":"2026-10-27T10:00:00Z","data":{"state":"delivered"}}"#;
+const BODY: &str = r#"{"id":"a","eventId":"11111111-1111-4111-8111-111111111111","type":"message.delivered","occurredAt":"2026-10-27T10:00:00Z","appId":"capp00000000000000000","endpointId":"cendpoint0000000000000","data":{"state":"delivered"}}"#;
+/// What the gateway seals for an endpoint of *another* app that names the same
+/// audience: everything but the app id is alike.
+const OTHER_APP_BODY: &str = r#"{"id":"a","eventId":"11111111-1111-4111-8111-111111111111","type":"message.delivered","occurredAt":"2026-10-27T10:00:00Z","appId":"cappother000000000000","endpointId":"cendpoint0000000000000","data":{"state":"delivered"}}"#;
 
 fn vsms_key() -> Ed25519Signer {
     Ed25519Signer::from_seed(&[11; 32])
@@ -69,6 +72,62 @@ async fn a_delivery_is_accepted_and_the_handler_sees_the_plain_envelope() {
 async fn a_delivery_for_another_audience_is_refused() {
     let receiver = receiver(&vsms_key(), AUDIENCE, CONTRACT_SHA);
     let delivery = seal("someone-else", ROUTE).await;
+    let verdict = receiver
+        .deliver(ROUTE, &delivery.headers, &delivery.body)
+        .await;
+    assert_eq!(verdict.status, 401);
+    assert_eq!(receiver.bodies(), Vec::<String>::new());
+}
+
+/// The limit of what a receiver's `EnvelopeLayer` can know, and why `lib.md`
+/// tells it to check `appId` in its handler. The gateway has one key for every
+/// app, and a seal binds the audience, not the app: a delivery made for another
+/// app's endpoint that names this receiver's audience passes every check the
+/// layer has. The app id is in the *signed* body, so the handler can read it.
+#[tokio::test]
+async fn the_layer_cannot_tell_another_apps_delivery_but_the_signed_body_can() {
+    let receiver = receiver(&vsms_key(), AUDIENCE, CONTRACT_SHA);
+    let delivery = Sealer::new(vsms_key())
+        .unwrap()
+        .seal(
+            AUDIENCE,
+            &format!("https://evil.example{ROUTE}"),
+            OTHER_APP_BODY.as_bytes(),
+        )
+        .await
+        .unwrap();
+    let verdict = receiver
+        .deliver(ROUTE, &delivery.headers, &delivery.body)
+        .await;
+    assert_eq!(verdict.status, 200, "the layer alone accepts it");
+    let seen = receiver.bodies();
+    assert_eq!(seen.len(), 1);
+    let envelope: serde_json::Value = serde_json::from_str(&seen[0]).unwrap();
+    assert_ne!(
+        envelope["appId"], "capp00000000000000000",
+        "so the handler's own comparison with its app id is what refuses it"
+    );
+}
+
+#[tokio::test]
+async fn an_app_id_rewritten_in_the_sealed_bytes_fails_the_seal() {
+    let receiver = receiver(&vsms_key(), AUDIENCE, CONTRACT_SHA);
+    let mut delivery = Sealer::new(vsms_key())
+        .unwrap()
+        .seal(
+            AUDIENCE,
+            &format!("https://h{ROUTE}"),
+            OTHER_APP_BODY.as_bytes(),
+        )
+        .await
+        .unwrap();
+    let from = b"cappother000000000000";
+    let at = delivery
+        .body
+        .windows(from.len())
+        .position(|window| window == from)
+        .expect("the app id is in the signed bytes");
+    delivery.body[at..at + from.len()].copy_from_slice(b"capp00000000000000000");
     let verdict = receiver
         .deliver(ROUTE, &delivery.headers, &delivery.body)
         .await;
