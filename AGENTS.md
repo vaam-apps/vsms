@@ -4482,6 +4482,20 @@ by a cratestack `EnvelopeLayer` (`Required`) on the receiver. Hard cutover: no d
   `migrations-current` now requires the generator's `webhook_endpoints_audience_*` statements verbatim in 0010, refuses a
   statement under that name the schema does not ask for, compares the added column's type and nullability with the generator's
   `CREATE TABLE` line, and lists the one hand-written constraint by name.
+- **Review round 2 (the endpoint id is the binding).** Round 1's app id did not close the hole alone: `WebhookEndpoint` create and
+  update are allowed for the global roles with a free `appId`, so a holder of `webhook:manage` can register an endpoint **under
+  the victim's app id**, and its deliveries pass the app check; only the unique audience stopped it, and that name is free after
+  0010's backfill and before the operator sets it, after the victim's endpoint is deleted or renamed, before it exists, and while
+  squatted. `endpointId` is the one signed value the attacker cannot choose, so it is **required** now: the Rust opener
+  (`WebhookOpener::new(keys, audience, route, app_id, endpoint_id)`, no builder method), the wasm `forServerKeys(.., appId,
+  endpointId: &str, ..)` and the Node `WebhookOpenerOptions.endpointId` all refuse an empty one at construction, answer a
+  mismatch with `Unverified` and a body with no `endpointId` as `Malformed`/`decode`. The wasm opener reads the two ids as a typed
+  struct, so a key named twice is refused as it is by the Rust event (it used to take the last). The sample receiver needs
+  `WEBHOOK_RECEIVER_ENDPOINT_ID`; the demo reads the id from `DEMO_WEBHOOK_ENDPOINT_ID` or a file `vsms-demo-seed
+  --webhook-endpoint-id-out` writes into the `vsms_{dev,demo}_endpoint` volume (the id is minted by the gateway, so the compose
+  stacks cannot know it up front). The audience stays unique as defence in depth, not as the binding. 0010's backfill regex reads
+  userinfo to the last `@` of the authority (`https://u:p@ss@host/x` is `https://host`, not `https://ss@host`). The key-rotation
+  runbook no longer asks for the newly minted `next` to be distributed before it exists.
 - **A URL the seal cannot bind is refused on write**, not at delivery (where it burned eight attempts and tripped the breaker):
   `WebhookEndpoint.url` carries a `@regex` narrower than `sms_webhook::delivery_route`, never wider
   (`sms-api/tests/webhook_endpoint_validation.rs` holds that over a generated corpus of 126 720 URLs with `delivery_route` as the oracle), and the

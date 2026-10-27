@@ -109,6 +109,41 @@ async fn the_layer_cannot_tell_another_apps_delivery_but_the_signed_body_can() {
     );
 }
 
+/// The same limit one level down, and why `lib.md` tells a handler to compare
+/// `endpointId` as well as `appId`. A global role may create an endpoint under
+/// any app, so a second endpoint of the receiver's *own* app that names its
+/// audience carries the right `appId`: only the endpoint id, which the gateway
+/// mints, says it is not the receiver's.
+#[tokio::test]
+async fn the_layer_cannot_tell_another_endpoint_of_the_same_app_but_the_endpoint_id_can() {
+    let receiver = receiver(&vsms_key(), AUDIENCE, CONTRACT_SHA);
+    let body = BODY.replace("cendpoint0000000000000", "cendpointother00000000");
+    let delivery = Sealer::new(vsms_key())
+        .unwrap()
+        .seal(
+            AUDIENCE,
+            &format!("https://evil.example{ROUTE}"),
+            body.as_bytes(),
+        )
+        .await
+        .unwrap();
+    let verdict = receiver
+        .deliver(ROUTE, &delivery.headers, &delivery.body)
+        .await;
+    assert_eq!(verdict.status, 200, "the layer alone accepts it");
+    let seen = receiver.bodies();
+    assert_eq!(seen.len(), 1);
+    let envelope: serde_json::Value = serde_json::from_str(&seen[0]).unwrap();
+    assert_eq!(
+        envelope["appId"], "capp00000000000000000",
+        "the app id matches, so a comparison of it alone would accept the delivery"
+    );
+    assert_ne!(
+        envelope["endpointId"], "cendpoint0000000000000",
+        "so the handler's comparison with its endpoint id is what refuses it"
+    );
+}
+
 #[tokio::test]
 async fn an_app_id_rewritten_in_the_sealed_bytes_fails_the_seal() {
     let receiver = receiver(&vsms_key(), AUDIENCE, CONTRACT_SHA);

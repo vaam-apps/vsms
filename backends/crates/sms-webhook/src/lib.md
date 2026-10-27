@@ -116,16 +116,24 @@ Everything below is public; none of it is a secret.
    as `SHA-256("vsms/webhook-delivery/v2\0" || CONTRACT_DOCUMENT)`.
 5. **The mode.** `EnvelopeMode::Required`, JSON payloads only, a nonce store
    shared by every replica (the in-memory one is per process).
-6. **The app, in the handler.** **A receiver behind an `EnvelopeLayer` must check
-   `appId` itself**: the layer opens the seal and hands the handler the plain
-   envelope, but it has no notion of an app, and a delivery made for another
-   app's endpoint that names your audience passes everything the layer checks
-   (`tests/sealed_delivery.rs`,
-   `the_layer_cannot_tell_another_apps_delivery_but_the_signed_body_can`). Read
-   `appId` from the envelope, compare it with your own app's id, and answer `401`
-   on any difference, before acting on `type` or `data`. Compare `endpointId` too
-   when you know yours. The SDKs' `WebhookOpener` does this and cannot be built
-   without the app id; a handler written by hand needs this check, before it reads anything else:
+6. **The endpoint and the app, in the handler.** **A receiver behind an
+   `EnvelopeLayer` must check `endpointId` and `appId` itself**: the layer opens
+   the seal and hands the handler the plain envelope, but it has no notion of an
+   endpoint or an app, and a delivery made for someone else's endpoint that names
+   your audience passes everything the layer checks (`tests/sealed_delivery.rs`,
+   `the_layer_cannot_tell_another_apps_delivery_but_the_signed_body_can` and
+   `the_layer_cannot_tell_another_endpoint_of_the_same_app_but_the_endpoint_id_can`).
+   **`endpointId` is the binding**: a receiver serves exactly one endpoint, learns
+   its id when the endpoint is created (the console shows it) and refuses any
+   other, because it is the one signed value no one but the gateway chooses. A
+   global role may create an endpoint under *any* app id, so `appId` alone does not
+   bind; compare it too, to catch an endpoint registered under another app. The
+   unique audience (step 2) is defence in depth, not the binding: the name is free
+   before your endpoint carries it, after it is deleted or renamed, and while
+   someone squats it. Read both from the envelope, compare them with your own, and
+   answer `401` on any difference, before acting on `type` or `data`. The SDKs'
+   `WebhookOpener` does this and cannot be built without both ids; a handler
+   written by hand needs this check, before it reads anything else:
 
 ```text
 let envelope: serde_json::Value = serde_json::from_slice(&body)?;

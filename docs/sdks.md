@@ -148,9 +148,13 @@ the one that signs its answers: there is no webhook secret and no signature
 header. Both SDKs open a delivery against the same two pinned public keys, for
 the audience, route and app of your endpoint, and return the typed event (`id`,
 `eventId`, `type`, `occurredAt`, `appId`, `endpointId`, `data`). The app id is
-required: one gateway key signs every app's deliveries, so a signature and an
-audience alone do not say a delivery was made for you, and a delivery made for
-another app (or, if you give one, another endpoint) is refused like a forgery:
+required, and so is the endpoint id: one gateway key signs every app's
+deliveries, so a signature and an audience alone do not say a delivery was made
+for you. The endpoint id is the binding (a receiver serves exactly one
+endpoint, whose id it learns when the endpoint is created, and no one but the
+gateway chooses it); the app id additionally catches an endpoint registered
+under another app. A delivery made through another endpoint or for another app
+is refused like a forgery:
 
 ```ts
 const opener = new WebhookOpener({
@@ -158,6 +162,7 @@ const opener = new WebhookOpener({
   audience: "https://hooks.example.com", // an audience only you can have
   route: "/webhooks/vsms", // the whole path of the endpoint's URL
   appId: "capp00000000000000000", // your App's id
+  endpointId: "cendpoint0000000000000", // your WebhookEndpoint's id
 });
 const event = await opener.open(rawBody); // rawBody: the request's bytes. SdkError kind "unverified" on anything wrong: reply 401
 ```
@@ -167,13 +172,14 @@ let opener = WebhookOpener::new(
     &server_keys,
     "https://hooks.example.com",
     "/webhooks/vsms",
-    "capp00000000000000000", // your App's id
+    "capp00000000000000000",  // your App's id
+    "cendpoint0000000000000", // your WebhookEndpoint's id
 )?;
 let event = opener.open(&body).await?; // WebhookError::Unverified on anything wrong: reply 401
 ```
 
-A forgery, a delivery addressed to another audience or made for another app, a
-replay and a stale timestamp are one answer. The nonce memory is per process; behind several replicas pass the Rust
+A forgery, a delivery addressed to another audience or made through another
+endpoint or for another app, a replay and a stale timestamp are one answer. The nonce memory is per process; behind several replicas pass the Rust
 opener a shared `NonceStore` and dedupe on `event.id` either way. The wasm crate
 and the Rust SDK hold the same delivery contract
 (`cargo xtask sdk-parity-check`) and both open a delivery the gateway's own
