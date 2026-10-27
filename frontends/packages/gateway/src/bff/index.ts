@@ -5,7 +5,7 @@ import "server-only";
 
 export type { ComposerClient, ComposerOpener, ComposerOptions } from "./composer";
 export { createComposer } from "./composer";
-export type { Upstream, UpstreamAnswer, UpstreamRequest } from "./pass-through";
+export type { RouteTable, Upstream, UpstreamAnswer, UpstreamRequest } from "./pass-through";
 export {
   COSE_SIGN1,
   createPassThrough,

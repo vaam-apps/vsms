@@ -10,12 +10,42 @@ import {
   createPassThrough,
   FORWARDED_REQUEST_HEADERS,
   MAX_REQUEST_BYTES,
+  type RouteTable,
   type Upstream,
   upstreamTarget,
 } from "./pass-through";
 
-function pipe(upstream: Upstream) {
-  return createPassThrough({ mount: "/api/gateway", upstream });
+// A few operations of the schema, standing in for the table the console passes
+// (the Node SDK's `routeOf`). The real table is held to the real paths by
+// `frontends/apps/admin/lib/pass-through-routes.test.ts`; what is held HERE is
+// that the pipe asks it, with the real method and the raw path, and carries
+// nothing it does not name.
+const OPERATIONS = [
+  "GET /apps",
+  "GET /apps/{id}",
+  "PATCH /apps/{id}",
+  "DELETE /apps/{id}",
+  "GET /messages",
+  "GET /messages/{id}",
+  "GET /console_keys",
+  "GET /sender_ids",
+  "POST /$procs/sendMessage",
+];
+
+const serves: RouteTable = (method, path) =>
+  OPERATIONS.some((operation) => {
+    const [m, template = ""] = operation.split(" ");
+    const parts = template.split("/");
+    const segments = path.split("/");
+    return (
+      m === method &&
+      parts.length === segments.length &&
+      parts.every((part, i) => (part.startsWith("{") && segments[i] !== "") || part === segments[i])
+    );
+  });
+
+function pipe(upstream: Upstream, table: RouteTable = serves) {
+  return createPassThrough({ mount: "/api/gateway", upstream, serves: table });
 }
 
 function request(
@@ -109,6 +139,8 @@ describe("what is carried upstream", () => {
 
     for (const path of [
       "/healthz",
+      "/Healthz",
+      "/HEALTHZ",
       "/readyz",
       "/metrics",
       "/token",
@@ -129,15 +161,51 @@ describe("what is carried upstream", () => {
     expect(upstream).not.toHaveBeenCalled();
   });
 
+  it("asks the schema's table, with the real method and the raw path and no query", async () => {
+    const table = vi.fn<RouteTable>(() => true);
+
+    await pipe(
+      answered(),
+      table,
+    )(request("/messages/m%2F1?fields=id", { headers: { "x-vsms-method": "PATCH" } }));
+
+    expect(table).toHaveBeenCalledExactlyOnceWith("PATCH", "/messages/m%2F1");
+  });
+
+  it("carries a route only under a method the schema serves it under", async () => {
+    const upstream = answered();
+    const p = pipe(upstream);
+
+    expect(
+      (await p(request("/messages/m1", { headers: { "x-vsms-method": "DELETE" } }))).status,
+    ).toBe(404);
+    expect((await p(request("/sender_ids", { headers: { "x-vsms-method": "POST" } }))).status).toBe(
+      404,
+    );
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
+  it("carries nothing the table does not name, whatever the path is called", async () => {
+    const upstream = answered();
+    const nothing = pipe(upstream, () => false);
+
+    for (const path of ["/apps", "/messages/m1", "/$procs/sendMessage", "/some_new_route"]) {
+      expect((await nothing(request(path))).status, path).toBe(404);
+    }
+    expect(upstream).not.toHaveBeenCalled();
+  });
+
   it("reaches the sealed routes, procedures and encoded ids included", async () => {
-    for (const [path, target] of [
-      ["/$procs/sendMessage", "/$procs/sendMessage"],
-      ["/messages/m%2F1", "/messages/m%2F1"],
-      ["/console_keys?thumbprint=ab&limit=1", "/console_keys?thumbprint=ab&limit=1"],
-      ["/sender_ids", "/sender_ids"],
+    for (const [method, path, target] of [
+      ["POST", "/$procs/sendMessage", "/$procs/sendMessage"],
+      ["GET", "/messages/m%2F1", "/messages/m%2F1"],
+      ["GET", "/console_keys?thumbprint=ab&limit=1", "/console_keys?thumbprint=ab&limit=1"],
+      ["GET", "/sender_ids", "/sender_ids"],
     ] as const) {
       const upstream = answered();
-      const response = await pipe(upstream)(request(path));
+      const response = await pipe(upstream)(
+        request(path, { headers: { "x-vsms-method": method } }),
+      );
       expect(response.status, path).toBe(200);
       expect((upstream as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].target).toBe(target);
     }
@@ -216,6 +284,5 @@ describe("upstreamTarget", () => {
     expect(upstreamTarget("/messages/a%2Fb")).toBe("/messages/a%2Fb");
     expect(upstreamTarget("/messages/a%5Cb")).toBeUndefined();
     expect(upstreamTarget("healthz")).toBeUndefined();
-    expect(upstreamTarget("/Healthz")).toBeUndefined();
   });
 });

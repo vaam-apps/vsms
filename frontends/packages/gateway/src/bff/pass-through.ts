@@ -16,11 +16,14 @@ import "server-only";
 //     `Cookie` and everything else a browser or a proxy might add stay behind,
 //     because the day this pipe forwarded one is the day it could be made to
 //     carry a credential that is not the key's.
-//   * Only a route the gateway seals is reachable. The generated routes and the
-//     procedures are sealed (`EnvelopeMode::Required`); the routes below are the
-//     ones that are not (`docs/architecture.md` §4.0) and are none of the
-//     console's business: delivery receipts, health, the OpenID routes and the
-//     login pages. Not an open proxy to the gateway's origin.
+//   * Only a route the schema serves is reachable, and that is an allow-list:
+//     the method and path must be an operation of the schema (`serves`, the
+//     table `routeOf` signs against), because the generated routes and the
+//     procedures are exactly the ones the gateway seals
+//     (`EnvelopeMode::Required`). The routes that are not (`docs/architecture.md`
+//     §4.0: delivery receipts, health, metrics, the OpenID routes and the login
+//     pages) are in no such table and so can never be named here, whatever
+//     they are called next. Not an open proxy to the gateway's origin.
 //   * Nothing comes back but the answer's body, its status and the headers a
 //     seal is opened with. Never a `Set-Cookie`, never a `Location`: a redirect
 //     must not be followed with a signed body.
@@ -60,34 +63,19 @@ export const MAX_REQUEST_BYTES = 1024 * 1024;
 /** The most an answer may carry. */
 export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
-/** First path segments that are not sealed routes of the gateway, or are none of
- *  the console's business. */
-const UNREACHABLE_ROOTS: ReadonlySet<string> = new Set([
-  "dlr",
-  "healthz",
-  "readyz",
-  "metrics",
-  "token",
-  "jwks.json",
-  ".well-known",
-  "login",
-  "logout",
-  "authorize",
-  "userinfo",
-  "oauth",
-  "oidc",
-]);
-
 /** A path segment of a route the gateway serves: no dots-only segment, no
  *  separators, nothing that a URL parser could resolve away. */
 const SEGMENT = /^[A-Za-z0-9$_.~%-]+$/;
 
 /** The path and query the pass-through will open on the gateway, or `undefined`
- *  for anything else. `rest` is what follows the mount (`/messages/m1?x=1`).
+ *  for a path that is not shaped like one a schema route can be (more than
+ *  three segments, a character a route has none of, a dot segment a URL parser
+ *  would resolve away). Whether the route exists is not decided here: that is
+ *  the schema's table (`RouteTable`). `rest` is what follows the mount
+ *  (`/messages/m1?x=1`).
  *
  *  ```ts ignore
  *  upstreamTarget("/messages/m1?fields=id"); // "/messages/m1?fields=id"
- *  upstreamTarget("/healthz"); // undefined
  *  upstreamTarget("/messages/../token"); // undefined
  *  ```
  */
@@ -109,11 +97,15 @@ export function upstreamTarget(rest: string): string | undefined {
     // has one; a dot segment or a backslash is what a parser would resolve away.
     if (/^\.+$/.test(decoded) || decoded.includes("\\")) return undefined;
   }
-  const root = segments[0] ?? "";
-  if (UNREACHABLE_ROOTS.has(root.toLowerCase())) return undefined;
   const query = queryParts.join("?");
   return query === "" ? path : `${path}?${query}`;
 }
+
+/** Whether the schema serves `method` at `path` (no query, percent-encoding as
+ *  received): the table the sealer signs against, which holds every route the
+ *  gateway seals and none it does not. In the console it is the Node SDK's
+ *  `routeOf`, over the wasm module's `OP_CONTRACTS`. */
+export type RouteTable = (method: string, path: string) => boolean;
 
 /** Exactly the allow-listed headers of `from`, nothing else. */
 export function pick(from: Headers, allowed: readonly string[]): [string, string][] {
@@ -186,8 +178,10 @@ export async function readBounded(
 export function createPassThrough(options: {
   mount: string;
   upstream: Upstream;
+  /** The operations of the schema; anything else is a 404. */
+  serves: RouteTable;
 }): (request: Request) => Promise<Response> {
-  const { mount, upstream } = options;
+  const { mount, upstream, serves } = options;
   return async (request) => {
     if (request.method !== "POST") return refuse(405, "Only a sealed POST is carried.");
     const url = new URL(request.url);
@@ -203,6 +197,7 @@ export function createPassThrough(options: {
 
     const target = upstreamTarget(`${url.pathname.slice(mount.length)}${url.search}`);
     if (target === undefined) return refuse(404, "Not a gateway route.");
+    if (!serves(method, target.split("?")[0] ?? "")) return refuse(404, "Not a gateway route.");
 
     const body = await readBounded(request, MAX_REQUEST_BYTES);
     if (body === undefined) return refuse(413, "The sealed message is too large.");
