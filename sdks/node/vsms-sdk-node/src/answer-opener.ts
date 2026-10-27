@@ -10,7 +10,7 @@
  * (cratestack's envelope, through the same wasm module), not a copy of it.
  */
 import { SdkError } from "./error.js";
-import { toKeyBase64url, type ServerKeysOption } from "./identity.js";
+import { type ServerKeysOption, toKeyBase64url } from "./identity.js";
 import { answerFailure } from "./sealed-call.js";
 import { type HeaderPairs, isWasmFailure, loadWasm, type WasmOpener } from "./wasm.js";
 
@@ -53,10 +53,10 @@ export class AnswerOpener {
       this.#opener = loadWasm().Opener.forServerKeys(current, next);
     } catch (err) {
       if (err instanceof SdkError) throw err;
-      throw new SdkError(
-        isWasmFailure(err) ? err.message : "the server keys could not be used",
-        { kind: "config", cause: err },
-      );
+      throw new SdkError(isWasmFailure(err) ? err.message : "the server keys could not be used", {
+        kind: "config",
+        cause: err,
+      });
     }
   }
 

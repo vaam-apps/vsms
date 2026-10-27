@@ -19,6 +19,6 @@ export {
   parseServerKeysReport,
   type ServerKeysOption,
 } from "./identity.js";
+export { routeOf } from "./route-of.js";
 export { MAX_RESPONSE_BYTES } from "./transport.js";
 export * from "./types.js";
-export { routeOf } from "./route-of.js";

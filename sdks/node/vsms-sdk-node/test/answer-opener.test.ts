@@ -22,7 +22,7 @@ async function forwarded(options: { answerSeed?: "server" | "stranger" } = {}) {
     "POST",
     "/$procs/authorizeComposition",
     [],
-    '{"args":{"operation":"send","inputSha256":"' + "0".repeat(64) + '"}}',
+    `{"args":{"operation":"send","inputSha256":"${"0".repeat(64)}"}}`,
     undefined,
     undefined,
   );

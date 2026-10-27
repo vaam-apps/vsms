@@ -88,6 +88,22 @@ Give exactly one of:
 
 Only Ed25519 is an app client's key. A P-256 key is a *console* key, which a browser holds as a non-extractable WebCrypto key; the sealing module supports it for the operator console (`Sealer.fromEsp256Callback`), but this client does not offer it.
 
+## Forwarding someone else's sealed request
+
+A server that only carries another party's sealed request (the operator console forwards a browser's) holds no signing key and no sealed call to open the answer with, and must still not take a `200` from a socket for the gateway's word. `AnswerOpener` verifies the answer to the bytes that were forwarded, under the same two pinned keys:
+
+```ts
+import { AnswerOpener } from "@vaam-apps/vsms-node";
+
+const opener = new AnswerOpener({ serverKeys });
+const text = await opener.open(
+  { method: "POST", target: "/$procs/authorizeComposition", body: forwardedBytes },
+  { status, headers, body },
+); // the JSON text, or an SdkError of kind `unsigned` / `unverified` / `unreadable`
+```
+
+`routeOf(method, path)` is the schema's route for a concrete path, or `undefined` for anything the gateway does not seal; a pass-through asks it before opening a connection.
+
 ## Errors
 
 Every failure is an `SdkError` with a `kind`:
