@@ -1,5 +1,12 @@
 #![doc = include_str!("lib.md")]
 
+pub mod hmac_v1;
+
+pub use hmac_v1::{
+    HEADER_EVENT, HEADER_EVENT_ID, HEADER_SIGNATURE, HEADER_TIMESTAMP, SIGNATURE_VERSION,
+    canonical_string, generate_secret, is_timestamp_fresh, sign_header, sign_v1, verify,
+};
+
 use cratestack::client_rust::{ClientEnvelope, ClientError, RouteRef, SealCall};
 use cratestack::cose::{CoseEnvelope, CoseMode, CoseRole, Ed25519Signer, StaticVerifierResolver};
 use sha2::{Digest, Sha256};

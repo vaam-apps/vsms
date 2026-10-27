@@ -9,9 +9,14 @@ authors.workspace = true
 publish.workspace = true
 
 [package.metadata]
-description = "Outbound webhooks as sealed requests (VS-8): the delivery contract, the route rule and the COSE_Sign1 sealer - pure, no schema coupling"
+description = "Outbound webhook delivery in its two modes - a sealed request (VS-8: the delivery contract, the route rule and the COSE_Sign1 sealer) or the legacy HMAC signature (#41) - pure, no schema coupling"
 
 [dependencies]
+# The `hmac` delivery mode (`hmac_v1`): the signature, its verification and the
+# secret's generation.
+hex.workspace = true
+hmac.workspace = true
+rand.workspace = true
 # `cratestack::client_rust::ClientEnvelope::seal_call` builds the one binding a
 # receiver's `EnvelopeLayer` rebuilds (audience, method, route, contract
 # digest, payload type), and `cratestack::cose` holds the Ed25519 signer. The
@@ -26,6 +31,9 @@ thiserror.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+# tests/cross_language_fixtures.rs reads tests/fixtures/cross_language_vectors.json
+# - the same fixture examples/node/webhook-receiver's own test reads - and
+# needs nothing beyond a generic JSON value, so no serde derive is pulled in.
 # tests/sealed_delivery.rs puts a real `EnvelopeLayer` (Required) in front of an
 # axum router - the layer vaam runs on `/webhooks/vsms` - and posts the
 # sealer's output to it. The receiver lives in sms-test-support so the worker's

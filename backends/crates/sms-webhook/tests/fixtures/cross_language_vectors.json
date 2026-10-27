@@ -1,0 +1,66 @@
+{
+  "$comment": "Cross-language regression fixture for #41's canonical webhook signature (docs/architecture.md §4.4). This file is the shared source of truth two independent implementations are each checked against: backends/crates/sms-webhook (Rust, the real sender-side implementation — see ../cross_language_fixtures.rs) and examples/node/webhook-receiver/src/signature.ts (TypeScript, an independent from-scratch reproduction of the same spec, written before #41 landed — see its own test/cross-language-vectors.test.ts). Every `signatureHeader` value below was computed independently of both, with a third implementation (`openssl dgst -sha256 -hmac`), so agreement across all three is real evidence the algorithm is unambiguous, not just that two copies of the same bug agree with each other. Do not regenerate this file from either language's own code — if you need a new vector, compute it with openssl (or another independent tool) the same way the existing ones were, and say so in the PR.",
+  "canonicalStringShape": "v1\\n{timestamp}\\n{eventId}\\n{sha256_hex(body)}",
+  "vectors": [
+    {
+      "name": "signed-with-current-secret",
+      "secrets": ["current-secret-abc123", "previous-secret-xyz789"],
+      "timestampUnix": 1712345678,
+      "eventId": "8f14e45f-ceea-467e-b331-5a8b7a1b2ec7",
+      "bodyUtf8": "{\"id\":\"8f14e45f-ceea-467e-b331-5a8b7a1b2ec7\",\"type\":\"message.delivered\",\"occurredAt\":\"2024-04-05T12:34:38Z\",\"data\":{\"messageId\":\"c8f2a1d4example000000001\",\"appId\":\"demo-app\",\"clientRef\":\"demo-clientref\",\"state\":\"delivered\"}}",
+      "signatureHeader": "v1=b50f8e05aa6b6d85d72b8f5925e62901c34b3714db3a9d95686b07381a09202e",
+      "expectVerifies": true,
+      "note": "the ordinary case — signed with the endpoint's current secret, outside any rotation window"
+    },
+    {
+      "name": "signed-with-prev-secret-during-rotation",
+      "secrets": ["current-secret-abc123", "previous-secret-xyz789"],
+      "timestampUnix": 1712345678,
+      "eventId": "8f14e45f-ceea-467e-b331-5a8b7a1b2ec7",
+      "bodyUtf8": "{\"id\":\"8f14e45f-ceea-467e-b331-5a8b7a1b2ec7\",\"type\":\"message.delivered\",\"occurredAt\":\"2024-04-05T12:34:38Z\",\"data\":{\"messageId\":\"c8f2a1d4example000000001\",\"appId\":\"demo-app\",\"clientRef\":\"demo-clientref\",\"state\":\"delivered\"}}",
+      "signatureHeader": "v1=27947a48c9e826681eabcb6e729d273a5b9ef991fc35dc91b94c26c77c579de1",
+      "expectVerifies": true,
+      "note": "§4.4's overlap window: a receiver holding both secrets accepts a value signed with only the older one"
+    },
+    {
+      "name": "header-carries-both-values-oldest-last",
+      "secrets": ["current-secret-abc123", "previous-secret-xyz789"],
+      "timestampUnix": 1712345678,
+      "eventId": "8f14e45f-ceea-467e-b331-5a8b7a1b2ec7",
+      "bodyUtf8": "{\"id\":\"8f14e45f-ceea-467e-b331-5a8b7a1b2ec7\",\"type\":\"message.delivered\",\"occurredAt\":\"2024-04-05T12:34:38Z\",\"data\":{\"messageId\":\"c8f2a1d4example000000001\",\"appId\":\"demo-app\",\"clientRef\":\"demo-clientref\",\"state\":\"delivered\"}}",
+      "signatureHeader": "v1=b50f8e05aa6b6d85d72b8f5925e62901c34b3714db3a9d95686b07381a09202e,v1=27947a48c9e826681eabcb6e729d273a5b9ef991fc35dc91b94c26c77c579de1",
+      "expectVerifies": true,
+      "note": "the exact wire shape §4.4 documents during rotation: 'v1=<hex>,v1=<hex during rotation>', current first, oldest last"
+    },
+    {
+      "name": "tampered-body-fails",
+      "secrets": ["current-secret-abc123", "previous-secret-xyz789"],
+      "timestampUnix": 1712345678,
+      "eventId": "8f14e45f-ceea-467e-b331-5a8b7a1b2ec7",
+      "bodyUtf8": "{\"id\":\"8f14e45f-ceea-467e-b331-5a8b7a1b2ec7\",\"type\":\"message.delivered\",\"occurredAt\":\"2024-04-05T12:34:38Z\",\"data\":{\"messageId\":\"c8f2a1d4example000000001\",\"appId\":\"demo-app\",\"clientRef\":\"demo-clientref\",\"state\":\"cancelled\"}}",
+      "signatureHeader": "v1=b50f8e05aa6b6d85d72b8f5925e62901c34b3714db3a9d95686b07381a09202e",
+      "expectVerifies": false,
+      "note": "same signature as the first vector, but the body's `state` was changed from delivered to cancelled after signing — sha256(body) no longer matches"
+    },
+    {
+      "name": "wrong-secret-fails",
+      "secrets": ["a-secret-this-endpoint-never-had"],
+      "timestampUnix": 1712345678,
+      "eventId": "8f14e45f-ceea-467e-b331-5a8b7a1b2ec7",
+      "bodyUtf8": "{\"id\":\"8f14e45f-ceea-467e-b331-5a8b7a1b2ec7\",\"type\":\"message.delivered\",\"occurredAt\":\"2024-04-05T12:34:38Z\",\"data\":{\"messageId\":\"c8f2a1d4example000000001\",\"appId\":\"demo-app\",\"clientRef\":\"demo-clientref\",\"state\":\"delivered\"}}",
+      "signatureHeader": "v1=b50f8e05aa6b6d85d72b8f5925e62901c34b3714db3a9d95686b07381a09202e",
+      "expectVerifies": false,
+      "note": "neither candidate secret produced this signature"
+    },
+    {
+      "name": "malformed-signature-header-fails",
+      "secrets": ["current-secret-abc123"],
+      "timestampUnix": 1712345678,
+      "eventId": "8f14e45f-ceea-467e-b331-5a8b7a1b2ec7",
+      "bodyUtf8": "{\"id\":\"8f14e45f-ceea-467e-b331-5a8b7a1b2ec7\",\"type\":\"message.delivered\",\"occurredAt\":\"2024-04-05T12:34:38Z\",\"data\":{\"messageId\":\"c8f2a1d4example000000001\",\"appId\":\"demo-app\",\"clientRef\":\"demo-clientref\",\"state\":\"delivered\"}}",
+      "signatureHeader": "not-a-real-signature-header",
+      "expectVerifies": false,
+      "note": "no recognisable v1= entry at all — must reject, not panic or error"
+    }
+  ]
+}

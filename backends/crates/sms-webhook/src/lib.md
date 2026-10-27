@@ -1,17 +1,33 @@
-Outbound webhooks as sealed requests (VS-8): the delivery contract, the route
-rule and the sealer. Pure and schema-free; `backends/crates/sms-worker`'s
-`hooks` role is the caller.
+Outbound webhook delivery in its two modes. An endpoint's `deliveryMode` says
+which: `sealed` (VS-8, recommended) or `hmac` (the original scheme, #41). Both
+are always available; a deployment will later be able to switch `hmac` off
+(VSA-1). Pure and schema-free; `backends/crates/sms-worker`'s `hooks` role is
+the caller.
 
-A delivery used to be an HMAC-SHA256 over a canonical string, keyed by a
-per-endpoint shared secret (`WebhookEndpoint.secret`, `prevSecret`,
-`X-Sms-Signature`). That is a shared secret, and this system has none: every
-request to vaam, vpay or vsms is a `COSE_Sign1` envelope from a registered key
-(owner's ruling, "keypairs everywhere"). So a delivery is now a **sealed
-request**, the same envelope the gateway's own routes open, signed with vsms's
-envelope signing key. The receiver pins vsms's public keys, the ones it already
-pins to open vsms's answers (`sms-gateway server-keys`), and verifies with a
-cratestack `EnvelopeLayer`. There is no per-endpoint secret, no rotation
-overlap and no `prevSecret`.
+| Mode     | What authenticates a delivery                                              | Per-endpoint secret | Receiver verifies with                          | Lives in      |
+| -------- | -------------------------------------------------------------------------- | ------------------- | ----------------------------------------------- | ------------- |
+| `sealed` | a `COSE_Sign1` request under vsms's envelope signing key, bound to an audience | none                | vsms's public keys (`sms-gateway server-keys`)  | this page     |
+| `hmac`   | `X-Sms-Signature`, HMAC-SHA256 under the endpoint's own `secret`           | `secret`, `prevSecret` | the shared secret                            | [`hmac_v1`]   |
+
+**Choosing.** Use `sealed` for a receiver that can run a cratestack
+`EnvelopeLayer` (or the SDKs' `WebhookOpener`): it holds nothing secret, a
+leaked database or backup cannot forge a delivery, and there is no rotation to
+get wrong. Use `hmac` for a receiver that already verifies `X-Sms-Signature`
+and has not moved yet: nothing about its deliveries changed. The same
+envelope JSON is sent either way, with one difference in what carries it
+("What an hmac delivery carries", below).
+
+The rest of this page is the `sealed` mode. vsms serves other apps besides
+vaam; the ruling that every request to vaam, vpay or vsms is a `COSE_Sign1`
+envelope from a registered key ("keypairs everywhere") is vaam's, and `sealed`
+is how a deployment that follows it receives webhooks. A shared secret is what
+`sealed` removes, and what `hmac` keeps, on purpose, for everyone else.
+
+A `sealed` delivery is a **sealed request**, the same envelope the gateway's own
+routes open, signed with vsms's envelope signing key. The receiver pins vsms's
+public keys, the ones it already pins to open vsms's answers
+(`sms-gateway server-keys`), and verifies with a cratestack `EnvelopeLayer`.
+There is no per-endpoint secret, no rotation overlap and no `prevSecret`.
 
 ```mermaid
 sequenceDiagram
@@ -189,7 +205,33 @@ receiver's HTTP server saying it accepted the request, authenticated by TLS to
 the endpoint's host, exactly as before. An unsigned 2xx is accepted on the same
 terms, and never read.
 
+# What an hmac delivery carries
+
+The `hmac` mode is the scheme every receiver that predates VS-8 verifies, and it
+is **byte-compatible with it**: nothing about an `hmac` endpoint's deliveries
+changed when `sealed` was added. [`hmac_v1`] has the canonical string, the
+rotation overlap and the constant-time comparison; in short, `hooks` POSTs the
+four-field envelope as JSON with the four headers
+
+```text
+X-Sms-Event:      message.delivered
+X-Sms-Event-Id:   <WebhookAttempt.sourceEventId>
+X-Sms-Timestamp:  <unix seconds>
+X-Sms-Signature:  v1=<hex>[,v1=<hex>]   (current secret first, prevSecret second)
+```
+
+and the body `{id, type, occurredAt, data}`. The `sealed` envelope above carries
+three more fields, `eventId`, `appId` and `endpointId`: an HMAC receiver reads the
+event id from the header it signs, and has no audience for `appId` and
+`endpointId` to disambiguate, because it holds its endpoint's own secret and
+nobody else does. The two bodies are therefore **not** interchangeable, and an
+endpoint's mode is what picks which one `hooks` builds.
+
 # Public API
+
+The `hmac` mode's functions are re-exported from [`hmac_v1`]: `sign_v1`,
+`sign_header`, `verify`, `canonical_string`, `is_timestamp_fresh`,
+`generate_secret`, the four `HEADER_*` names and `SIGNATURE_VERSION`.
 
 ```text
 METHOD, PAYLOAD_TYPE, CONTRACT_DOMAIN, CONTRACT_DOCUMENT, CONTRACT_SHA, CONTRACT_SHA_HEX
