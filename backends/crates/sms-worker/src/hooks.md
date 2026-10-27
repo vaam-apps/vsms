@@ -90,3 +90,5 @@ by which a plaintext MSISDN could re-enter the outbound body even by
 accident. `hooks_live_postgres.rs`'s `mask_recipient_payload_is_forwarded_
 verbatim_never_reconstructed` test proves this against a real HTTP
 capture, not just by reading this paragraph.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

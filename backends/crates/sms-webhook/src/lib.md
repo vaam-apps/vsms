@@ -143,3 +143,5 @@ Sealer::new(signer: Ed25519Signer) -> Result<Sealer, SealError>
 Sealer::from_envelope(cose: CoseEnvelope) -> Result<Sealer, SealError>
 Sealer::seal(&self, audience: &str, url: &str, body: &[u8]) -> Result<SealedDelivery, SealError>
 ```
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

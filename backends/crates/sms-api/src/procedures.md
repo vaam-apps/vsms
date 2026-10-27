@@ -32,3 +32,5 @@ in different processes, with no span context to inherit it through. See
 `docs/runbooks/alerting.adoc`'s "Correlating a message end to end" section
 for why `Message.id` is the join key and not a `traceparent`, and for a
 worked example query across all three log lines.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

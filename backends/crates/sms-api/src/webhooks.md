@@ -105,3 +105,5 @@ creating). Building the final signed envelope — `id` from the
 from its `createdAt` — is naturally the `hooks` role's job (#40) at
 the moment it actually POSTs, alongside sealing (VS-8), not this
 module's.
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
