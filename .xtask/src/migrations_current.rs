@@ -490,7 +490,7 @@ fn strip_column_statements(root: &Path, f: &str, fresh: &str) -> Result<String, 
         }
     }
     for name in HAND_WRITTEN_COLUMN_CONSTRAINTS {
-        if !text.contains(*name) {
+        if !declares(&text, name) {
             return Err(format!(
                 "migrations-current: {} does not contain the hand-written constraint {name}, \
                  which HAND_WRITTEN_COLUMN_CONSTRAINTS lists",
@@ -543,6 +543,14 @@ fn executable_sql(text: &str) -> String {
         .filter(|line| !line.trim_start().is_empty() && !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Whether `sql` has a statement that mentions `name`. A comment that names it
+/// does not count: the header of `0010` describes every hand-written
+/// constraint by name, so a check that read the comments too would stay green
+/// with the constraint itself deleted (found by deleting one).
+fn declares(sql: &str, name: &str) -> bool {
+    executable_sql(sql).contains(name)
 }
 
 /// Compares `up.sql` and `down.sql`, committed against regenerated, after
@@ -869,6 +877,17 @@ mod tests {
         assert!(
             column_definitions("CREATE TABLE t (\n    id TEXT\n);", "t", &["audience"]).is_err()
         );
+    }
+
+    #[test]
+    fn a_constraint_named_only_in_a_comment_is_not_declared() {
+        let name = "webhook_endpoints_audience_not_vsms_check";
+        let commented = format!("-- {name} refuses vsms\nSELECT 1;\n");
+        assert!(!declares(&commented, name));
+        let declared = format!(
+            "-- {name} refuses vsms\nALTER TABLE t ADD CONSTRAINT {name} CHECK (a <> 'vsms');\n"
+        );
+        assert!(declares(&declared, name));
     }
 
     #[test]
