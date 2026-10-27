@@ -4,10 +4,28 @@ A minimal Express receiver showing what a *correct* handler of vsms delivery
 webhooks looks like — the inbound half of a vsms integration. The outbound
 half (authenticating and sending) is [#149](https://github.com/vymalo/vsms/issues/149).
 
-## A delivery is a sealed request
+## Two delivery modes
 
-Since VS-8 there is no webhook secret and no signature header. vsms's worker
-**seals** each delivery: the body is a `COSE_Sign1` message signed with the
+A `WebhookEndpoint` is delivered to in one of two modes (`deliveryMode`), and this
+receiver serves exactly one, named by `WEBHOOK_RECEIVER_MODE`:
+
+- **`sealed`** (the default, and the recommended one): a request signed with the
+  gateway's own key, opened with the Node SDK's `WebhookOpener`. Nothing secret
+  is configured. Most of this file describes it.
+- **`hmac`**: the original `X-Sms-Signature` scheme, signed with a secret shared
+  with the endpoint, for a receiver that has not moved to the seal yet. It is a
+  legacy mode that a deployment will later be able to switch off. `src/signature.ts`
+  verifies it, `src/hmac-opener.ts` fits it to the same handler, and
+  [its section below](#hmac-mode) says how to configure it.
+
+Everything else (the fast ack, the off-path work, dedupe on the event's `id`, the
+out-of-order tolerance, the `400`/`401`/`500` mapping) is the same for both: the
+mode only decides how a delivery is checked.
+
+## A sealed delivery is a sealed request
+
+For a `sealed` endpoint there is no webhook secret and no signature header. vsms's
+worker **seals** each delivery: the body is a `COSE_Sign1` message signed with the
 gateway's own envelope signing key (the key that signs its answers), bound to
 the receiver's audience, `POST`, the route (the whole path of the endpoint's
 URL), the delivery contract, a fresh nonce and a timestamp. A receiver pins the two public keys it already pins to open
@@ -43,8 +61,8 @@ squats it. Choose an audience only you can have (your origin).
 `event` is `{ id, eventId, type, occurredAt, appId, endpointId, data }`
 (`docs/architecture.md` §8.4). `id` is the dedupe key; `eventId` is the source event's id, which used to
 travel in the `X-Sms-Event-Id` header and now rides inside the sealed body,
-because a header is no part of a seal. The `X-Sms-Event`, `X-Sms-Event-Id`,
-`X-Sms-Timestamp` and `X-Sms-Signature` headers are gone.
+because a header is no part of a seal. A sealed delivery sends none of the
+`X-Sms-*` headers.
 
 What `open` refuses, with one answer (`unverified`, reply `401`) that never says
 which: a body not signed by a pinned key, a delivery addressed to another audience,
@@ -74,14 +92,20 @@ wrong audience and watches the receiver refuse it, a third seeds an endpoint of
 *another app* that names the receiver's own audience and watches the receiver refuse
 that too, and a fourth seeds a *second endpoint of the receiver's own app* and
 watches the receiver refuse its delivery, so a regression on either side fails
-the gate in both directions.
+the gate in both directions. Three more run the `hmac` mode the same way: a
+delivery signed with the endpoint's secret is verified, one inside a rotation
+window verifies at a receiver that holds only the old secret, and a receiver
+holding another secret refuses it.
 
 ## Layout
 
 ```text
 src/
-  index.ts          entry point: starts the receiver and opens the committed gateway vector and a tampered copy
-  config.ts         builds the opener from the environment: pinned keys, audience, the one route
+  index.ts          entry point: a sealed receiver (the committed gateway vector, and a tampered copy) and an hmac one (signed locally, rotation window and a forgery)
+  config.ts         builds the opener from the environment, for the mode WEBHOOK_RECEIVER_MODE names: pinned keys, audience, ids (sealed) or the secret (hmac)
+  hmac-opener.ts    the hmac mode's opener: signature.ts fitted to the same seam as the SDK's WebhookOpener
+  signature.ts      the hmac mode's verifier: a from-scratch transcription of the scheme (see its own doc comment)
+  cross-language-vectors.test.ts  proves signature.ts against fixture signatures backends/crates/sms-webhook computed with openssl, not with either language
   server.ts         the Express app: raw-body capture, WebhookOpener, fast ack, off-path processing
   receiver.test.ts  the receiver against the real opener and the vector, and against a stub opener for dedupe and ordering
   store.ts          in-memory idempotency (primary: the event id; secondary: aggregateId+eventType) + out-of-order-tolerant state tracking
@@ -138,9 +162,34 @@ Everything is public; none of it is a secret.
 | `WEBHOOK_RECEIVER_SERVER_CURRENT`, `..._SERVER_NEXT` | ... or the same two keys, unpadded base64url.                                                                    |
 | `WEBHOOK_RECEIVER_AUDIENCE`                          | The audience the `WebhookEndpoint` was created with (default `webhook-receiver-example`).                        |
 | the endpoint URL's path                              | Must be `/webhooks/vsms`: the delivery's route is the path of `WebhookEndpoint.url`, with no query or `{param}`. |
+| `WEBHOOK_RECEIVER_MODE`                              | `sealed` (default) or `hmac`; anything else refuses to start.                                                    |
 
 A receiver that cannot name the gateway's keys refuses to start: there is no
 mode that skips them.
+
+## hmac mode
+
+For an endpoint whose `deliveryMode` is `hmac`, run with `WEBHOOK_RECEIVER_MODE=hmac`
+and:
+
+| Setting                        | What it is                                                                                                                            |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `WEBHOOK_RECEIVER_SECRET`      | The endpoint's `secret`. **A secret**: read it from where you keep secrets. Required.                                                 |
+| `WEBHOOK_RECEIVER_PREV_SECRET` | The endpoint's `prevSecret`, set only while a rotation's overlap window is open, so a delivery signed with either verifies. Optional. |
+
+The scheme is unchanged since before sealed mode existed: four headers
+(`X-Sms-Event`, `X-Sms-Event-Id`, `X-Sms-Timestamp`, `X-Sms-Signature`), the
+four-field body `{id, type, occurredAt, data}`, and HMAC-SHA256 over
+`v1\n{timestamp}\n{eventId}\n{sha256(body)}` with the **raw bytes** in the hash.
+`signature.ts` is the verifier; its doc comment is the long story of how it was
+confirmed (three independent implementations, one of them `openssl`), and
+`cross-language-vectors.test.ts` is that proof, run on every push.
+
+The dedupe key is the signed `X-Sms-Event-Id` (`HmacOpener` reports it as the
+event's `id`). Two things this mode does not have, because the scheme cannot: no
+app or endpoint to compare (the secret is the endpoint's own), and no freshness
+window (`signature.ts` explains why dedupe is what stops a replay being acted on
+twice). A receiver that can run the opener should prefer `sealed`.
 
 ## `src/gate-receiver.ts` — the `#44` live gate
 
@@ -149,7 +198,8 @@ test-only diagnostic route (`GET /__test__/results`) so a driving test can
 observe what it did over HTTP rather than scraping stdout. Point a real
 `sms-worker --roles hooks` process at it (a `WebhookEndpoint.url` of
 `http://<host>:<port>/webhooks/vsms` and the matching audience, the worker holding
-the gateway's signing key) and it opens a real, live delivery.
+the gateway's signing key; or an `hmac` endpoint, with this process started in hmac
+mode with the endpoint's secret) and it opens a real, live delivery.
 
 ## What this does and doesn't prove
 

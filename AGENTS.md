@@ -4441,26 +4441,40 @@ cutover, nothing kept beside it. `docs/architecture.md` §4.2 and §4.3 are the 
   Helm chart against a cluster, a real Keycloak-free production roll-out. `docs/runbooks/deployment.adoc` is edited, not
   re-run.
 
-## Webhooks are sealed requests (VS-8) — landed 2026-10-27
+## Webhooks are sealed or HMAC, per endpoint (VS-8, VS-8R) — landed 2026-10-27
 
-The last HMAC in the system is gone. A delivery is a `COSE_Sign1` request signed with the gateway's own envelope key and opened
-by a cratestack `EnvelopeLayer` (`Required`) on the receiver. Hard cutover: no dual mode, nothing kept beside it.
-`docs/architecture.md` §4.4 is the current account (key, audience, route, contract digest, retries, the answer);
-`backends/crates/sms-webhook/src/lib.md` is the receiver's configuration, with a snippet.
+An endpoint's `deliveryMode` is `sealed` or `hmac`, and both are always available. `sealed` (recommended) is a `COSE_Sign1` request
+signed with the gateway's own envelope key and opened by a cratestack `EnvelopeLayer` (`Required`) on the receiver; `hmac` is the
+original `X-Sms-Signature` HMAC-SHA256 under the endpoint's own secret. **vsms serves other apps besides vaam** (owner's ruling R5,
+2026-10-27: auth methods are deployment configuration, `auth.methods` in YAML, VSC-1/VSA-1, and the default keeps every legacy
+method), so VS-8 as first drafted, which dropped the secret columns for good, was re-scoped before it merged (VS-8R) into this: the
+HMAC stays, sealed is added beside it, and the config gate that can switch `hmac` off is a later ticket (VSA-1), so for now nothing does.
+`docs/architecture.md` §4.4 is the current account (the two modes side by side, key, audience, route, contract digest, retries, the
+answer); `docs/integrating.md` "Choosing a delivery mode" is the receiver's; `backends/crates/sms-webhook/src/lib.md` is the sealed
+receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
 
-- **Deleted:** `X-Sms-Signature` and the three other `X-Sms-*` headers, the HMAC (`sign`, `verify`, `generate_secret`), the
-  `WebhookEndpoint` columns `secret`, `prev_secret` and `secret_rotated_at`, the `rotateWebhookSecret` procedure and its console
-  button, the Rust SDK's and the examples' `signature.ts` verifiers, `cross_language_vectors.json`, `DEMO_WEBHOOK_SECRET` /
-  `DEMO_WEBHOOK_PREV_SECRET` and the compose, Helm and `vsms-demo-seed` plumbing for them.
-- **Migration:** `0010_sealed_webhooks` is forward-only (its `down.sql` raises: a secret must not come back). It adds
-  `audience text NOT NULL UNIQUE`, never `vsms` (existing rows get the URL's origin, lower-cased and without credentials, as a
-  starting value, a later row at the same origin told apart by `#<id>`; an operator then sets the receiver's real audience; until
-  then a delivery is refused and retried, not lost), then drops the three columns. `secret`/`prevSecret` were never `@sensitive`,
-  so `cratestack_audit` still holds every old secret in plaintext under the anchored chain: receivers must delete their HMAC
-  verification at cutover (the migration's header says so). `.xtask/src/migrations_current.rs` gained `COLUMNS_CHANGED_BY_LATER`, beside `ADDED_BY_LATER` and `DROPPED_BY_LATER`,
-  so `0001_init` still compares against the generator.
-- **The key** is the gateway's current envelope key: `sms-worker --roles hooks` takes `--envelope-signing-key-file` and fails
-  closed without it (other roles need nothing). A receiver pins what it pins to open vsms's answers (`sms-gateway server-keys`).
+- **Both modes live in `sms-webhook`.** The sealer and the v2 contract are the crate root; the original HMAC (`sign_header`,
+  `verify`, `generate_secret`, the four `X-Sms-*` header names, `tests/cross_language_fixtures.rs` and its `openssl`-computed
+  vectors) is the `hmac_v1` module, restored byte for byte and re-exported flat. The hooks role picks per row: `sealed` seals,
+  `hmac` signs with the current secret and, while a rotation is open, the previous one second. An `hmac` body is still the four-field
+  `{id, type, occurredAt, data}` its receivers verify; a sealed body is `{id, eventId, type, occurredAt, appId, endpointId, data}`.
+- **Migration `0010_sealed_webhooks` is reversible and drops nothing.** It keeps `secret` (now nullable), `prev_secret` and
+  `secret_rotated_at`, adds `delivery_mode text NOT NULL` (existing rows become `hmac`, secrets intact) and `audience text` (nullable,
+  unique, never `vsms`; **no backfill**: an `hmac` row needs none and a guessed one would squat a name). Four CHECKs hold the modes
+  apart: `sealed` needs an audience and holds no secret, `hmac` needs a secret. `down.sql` refuses only while a `sealed` endpoint
+  exists (it has no secret to go back to). `secret`/`prevSecret` are `@sensitive` now, so the audit snapshots redact them, but
+  `cratestack_audit` still holds every older secret in plaintext under the anchored chain: rotate each `hmac` endpoint's secret
+  once after the deploy (`rotateWebhookSecret`). `.xtask/src/migrations_current.rs` gained `COLUMNS_CHANGED_BY_LATER` (added and
+  relaxed columns), beside `ADDED_BY_LATER` and `DROPPED_BY_LATER`, so `0001_init` still compares against the generator.
+- **The create route takes the secret as given**, so an `hmac` create supplies the first one (the console generates it in the browser;
+  `rotateWebhookSecret` mints later ones server-side). A mode and its columns disagreeing is a CHECK violation, which the generated
+  routes answer as a database error (the framework does not map `23514`); the console's router checks first (a discriminated union,
+  strict members), the delegate tests assert the SQLSTATE and constraint name. A mode switch is one `PATCH` with explicit `null`s
+  (`webhook_endpoint_validation.rs` pins the double-option wire shape).
+- **The key** is the gateway's current envelope key: `sms-worker --roles hooks` takes `--envelope-signing-key-file`. **It is needed
+  only for `sealed` endpoints** (VS-8R): `hooks` starts without it, warns, delivers every `hmac` endpoint, and fails a sealed
+  endpoint's attempt with an error that names the flag (a claim counts the attempt, so mount it before creating sealed endpoints).
+  A receiver pins what it pins to open vsms's answers (`sms-gateway server-keys`).
 - **The contract** has no schema op to hash, so `sms-webhook` declares a document and binds
   `SHA-256("vsms/webhook-delivery/v2\0" || document)` (`c61394a5…0423`), a literal pinned by tests. `cargo xtask sdk-parity-check` holds the
   sealer's, the Rust SDK's and the wasm crate's copies equal.
@@ -4479,13 +4493,13 @@ by a cratestack `EnvelopeLayer` (`Required`) on the receiver. Hard cutover: no d
   coarse `Unverified` as a forged seal; a receiver behind its own `EnvelopeLayer` compares `appId` in its handler
   (`sealed_delivery.rs` proves the layer alone cannot). And `WebhookEndpoint.audience` is `@unique` (the index is in 0010) and never
   `vsms` (a `@regex` at the API, a hand-written CHECK in 0010, since `@db_enforce` does nothing for a regex).
-  `migrations-current` now requires the generator's `webhook_endpoints_audience_*` statements verbatim in 0010, refuses a
-  statement under that name the schema does not ask for, compares the added column's type and nullability with the generator's
-  `CREATE TABLE` line, and lists the one hand-written constraint by name.
+  `migrations-current` now requires the generator's `webhook_endpoints_audience_*` and `webhook_endpoints_delivery_mode_*`
+  statements verbatim in 0010, refuses a statement under those names the schema does not ask for, compares the added columns'
+  type and nullability with the generator's `CREATE TABLE` lines, applies the migration's `DROP NOT NULL` on `secret` to the
+  committed `0001_init` before comparing, and lists the four hand-written constraints by name.
 - **Review round 2 (the endpoint id is the binding).** Round 1's app id did not close the hole alone: `WebhookEndpoint` create and
   update are allowed for the global roles with a free `appId`, so a holder of `webhook:manage` can register an endpoint **under
-  the victim's app id**, and its deliveries pass the app check; only the unique audience stopped it, and that name is free after
-  0010's backfill and before the operator sets it, after the victim's endpoint is deleted or renamed, before it exists, and while
+  the victim's app id**, and its deliveries pass the app check; only the unique audience stopped it, and that name is free before the operator sets it, after the victim's endpoint is deleted or renamed, before it exists, and while
   squatted. `endpointId` is the one signed value the attacker cannot choose, so it is **required** now: the Rust opener
   (`WebhookOpener::new(keys, audience, route, app_id, endpoint_id)`, no builder method), the wasm `forServerKeys(.., appId,
   endpointId: &str, ..)` and the Node `WebhookOpenerOptions.endpointId` all refuse an empty one at construction, answer a
@@ -4493,9 +4507,9 @@ by a cratestack `EnvelopeLayer` (`Required`) on the receiver. Hard cutover: no d
   struct, so a key named twice is refused as it is by the Rust event (it used to take the last). The sample receiver needs
   `WEBHOOK_RECEIVER_ENDPOINT_ID`; the demo reads the id from `DEMO_WEBHOOK_ENDPOINT_ID` or a file `vsms-demo-seed
   --webhook-endpoint-id-out` writes into the `vsms_{dev,demo}_endpoint` volume (the id is minted by the gateway, so the compose
-  stacks cannot know it up front). The audience stays unique as defence in depth, not as the binding. 0010's backfill regex reads
-  userinfo to the last `@` of the authority (`https://u:p@ss@host/x` is `https://host`, not `https://ss@host`). The key-rotation
-  runbook no longer asks for the newly minted `next` to be distributed before it exists.
+  stacks cannot know it up front). The audience stays unique as defence in depth, not as the binding. (An origin backfill of the audience that this round also repaired is gone with VS-8R's re-scope: no
+  row is given a guessed audience.) The key-rotation runbook no longer asks for the newly minted `next` to be distributed before
+  it exists.
 - **A URL the seal cannot bind is refused on write**, not at delivery (where it burned eight attempts and tripped the breaker):
   `WebhookEndpoint.url` carries a `@regex` narrower than `sms_webhook::delivery_route`, never wider
   (`sms-api/tests/webhook_endpoint_validation.rs` holds that over a generated corpus of 126 720 URLs with `delivery_route` as the oracle), and the

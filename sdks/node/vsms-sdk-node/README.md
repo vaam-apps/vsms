@@ -106,7 +106,7 @@ const text = await opener.open(
 
 ## Receiving webhooks
 
-vsms delivers an event as a sealed request signed with the gateway's own key (the one that signs its answers): no webhook secret, no signature header. Pin the same two public keys and open the body:
+vsms delivers an event to a sealed endpoint as a sealed request signed with the gateway's own key (the one that signs its answers): no webhook secret, no signature header. (An endpoint can also be set to the original `hmac` mode, `X-Sms-Signature` under a shared secret, for a receiver that has not moved; `WebhookOpener` opens sealed deliveries only, and an `hmac` receiver verifies the signature itself, `docs/integrating.md` "Choosing a delivery mode".) Pin the same two public keys and open the body:
 
 ```ts
 import { parseServerKeysReport, WebhookOpener } from "@vaam-apps/vsms-node";

@@ -4,10 +4,10 @@ are always available; a deployment will later be able to switch `hmac` off
 (VSA-1). Pure and schema-free; `backends/crates/sms-worker`'s `hooks` role is
 the caller.
 
-| Mode     | What authenticates a delivery                                              | Per-endpoint secret | Receiver verifies with                          | Lives in      |
-| -------- | -------------------------------------------------------------------------- | ------------------- | ----------------------------------------------- | ------------- |
-| `sealed` | a `COSE_Sign1` request under vsms's envelope signing key, bound to an audience | none                | vsms's public keys (`sms-gateway server-keys`)  | this page     |
-| `hmac`   | `X-Sms-Signature`, HMAC-SHA256 under the endpoint's own `secret`           | `secret`, `prevSecret` | the shared secret                            | [`hmac_v1`]   |
+| Mode     | What authenticates a delivery                                                  | Per-endpoint secret    | Receiver verifies with                         | Lives in    |
+| -------- | ------------------------------------------------------------------------------ | ---------------------- | ---------------------------------------------- | ----------- |
+| `sealed` | a `COSE_Sign1` request under vsms's envelope signing key, bound to an audience | none                   | vsms's public keys (`sms-gateway server-keys`) | this page   |
+| `hmac`   | `X-Sms-Signature`, HMAC-SHA256 under the endpoint's own `secret`               | `secret`, `prevSecret` | the shared secret                              | [`hmac_v1`] |
 
 **Choosing.** Use `sealed` for a receiver that can run a cratestack
 `EnvelopeLayer` (or the SDKs' `WebhookOpener`): it holds nothing secret, a

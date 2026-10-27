@@ -6,7 +6,7 @@ titleTemplate: A2P SMS gateway
 hero:
   name: vsms
   text: An A2P SMS gateway
-  tagline: Cameroon-first and extensible. OTP and notification delivery over Orange and MTN, with signed webhooks, no shared secrets, and PostgreSQL as the only coordination mechanism.
+  tagline: Cameroon-first and extensible. OTP and notification delivery over Orange and MTN, with signed webhooks, no shared secrets on the API, and PostgreSQL as the only coordination mechanism.
   image:
     src: /logo.svg
     alt: vsms
@@ -27,7 +27,7 @@ features:
     link: /integrating
     linkText: Integrating with vsms
   - title: No shared secrets
-    details: Every request is a COSE_Sign1 message signed with a key the caller generated, and every answer is signed back. Staff use the console with a key their own browser made, paired by a vaam admin phone. There are no tokens to acquire or refresh, and the Rust and Node SDKs do the signing for you.
+    details: Every request is a COSE_Sign1 message signed with a key the caller generated, and every answer is signed back. Staff use the console with a key their own browser made, paired by a vaam admin phone. There are no tokens to acquire or refresh, and the Rust and Node SDKs do the signing for you. Webhooks are sealed the same way; an endpoint can still be set to the original HMAC mode, for receivers that have not moved.
     link: /sdks
     linkText: SDKs
   - title: PostgreSQL is the only coordinator

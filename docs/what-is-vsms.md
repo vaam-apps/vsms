@@ -56,7 +56,9 @@ of building from source.
 - **A signed transport** (COSE_Sign1 envelopes, on CrateStack's envelope
   layer). Machine callers sign every request with an Ed25519 key they
   generated and the gateway signs its answers, so there are no tokens and no
-  shared secrets anywhere in the system. Staff use the console with a key their
+  shared secrets on the API. (A webhook endpoint is sealed the same way, or set to
+  the original HMAC mode for a receiver that has not moved, which does hold a
+  per-endpoint secret.) Staff use the console with a key their
   own browser made and a vaam admin phone (or an operator on the command line)
   vouched for: there is no password, no login and no OpenID provider.
 - **PostgreSQL 16** as the only coordination mechanism: system of record,

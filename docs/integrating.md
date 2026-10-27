@@ -173,17 +173,42 @@ Rate limiting runs at two points on the API: a per-principal bucket on the API (
 
 ## 7. Receiving webhooks
 
-Delivery is push, not poll. An operator registers a `WebhookEndpoint` for your `App` in the admin console — **you cannot create one yourself**: it requires an `owner`/`admin`/`developer` human role. Ask for one; the fields that matter to you are the URL, the **audience** (a name you choose for your receiver), the event types, and whether the recipient MSISDN is masked. Choose an audience **only you can have**: your own origin (`https://hooks.example.com`) is the natural one. The gateway gives each name to one endpoint, so a generic name may be taken, and the operator creating your endpoint cannot be asked to guess. It cannot be `vsms`. The URL must be one a delivery can be sealed for: `http` or `https`, no credentials, no query, no fragment, no `{`, `}` or `%` in the path, and an ASCII host (an internationalised name is written in punycode).
+Delivery is push, not poll. An operator registers a `WebhookEndpoint` for your `App` in the admin console — **you cannot create one yourself**: it requires an `owner`/`admin`/`developer` human role. Ask for one; the fields that matter to you are the URL, **how deliveries are authenticated** (the delivery mode, below), the event types, and whether the recipient MSISDN is masked. The URL must be one a delivery can be sealed for: `http` or `https`, no credentials, no query, no fragment, no `{`, `}` or `%` in the path, and an ASCII host (an internationalised name is written in punycode).
 
-**A delivery is a sealed request, not a signed one.** The body is a `COSE_Sign1` message signed with the gateway's own key — the one that signs its answers — so there is no webhook secret to store, no signature header to check and nothing to rotate. You pin the two public keys you already pin for the SDK (`sms-gateway server-keys`) and open the body. **One key signs every app's deliveries**, so the signature and the audience tell you only that vsms sent this to your name; the envelope also carries the `endpointId` and `appId` it was made for, inside the signed body, and you compare them with your own (obligation 1). The `endpointId` is the binding: a receiver serves exactly one endpoint.
+### Events
 
-Events (`type` in the envelope):
+The events a delivery carries, in either mode (`type` in the envelope):
 
 `message.accepted` · `message.submitted` · `message.delivered` · `message.failed` · `message.expired` · `message.uncertain` · `message.cancelled`
 
 **There is no `message.undelivered`, `message.queued`, `message.routed`, or `message.rejected` event.** If you need to know about a `rejected` message, read it back over REST — a webhook will never tell you.
 
-The envelope (inside the sealed body):
+### Choosing a delivery mode
+
+An endpoint is delivered to in one of two modes, chosen when it is created. Both are always available.
+
+|                                 | `sealed` (recommended)                                                                      | `hmac` (legacy)                                                               |
+| ------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| How a delivery is authenticated | A request signed with the gateway's own key                                                 | `X-Sms-Signature`, HMAC-SHA256 under a secret shared with you                 |
+| What you hold                   | The gateway's two **public** keys, an audience, your endpoint id and app id: nothing secret | The endpoint's secret (and the previous one during a rotation)                |
+| What you run                    | The Rust or Node SDK's `WebhookOpener`, or a cratestack `EnvelopeLayer`                     | Your own HMAC check (the scheme is below; no SDK ships one)                   |
+| Rotation                        | None of your own: the gateway key's rotation is the one every receiver already follows      | `rotateWebhookSecret`; the old secret keeps verifying until the next rotation |
+| Existing endpoints              | New ones                                                                                    | **Every endpoint that existed before the sealed mode is `hmac`, unchanged**   |
+
+**Use `sealed` for anything new**, and for any receiver that can run an opener: you hold nothing secret, so a leaked database or backup cannot forge a delivery to you. Keep `hmac` for a receiver that already verifies `X-Sms-Signature` and has not moved yet; `hmac` is a legacy mode that a deployment will later be able to switch off, so plan the move. Moving an endpoint is one `PATCH /webhook_endpoints/{id}` with the endpoint's `If-Match`, sent by an operator:
+
+- `hmac` to `sealed`: `{"deliveryMode": "sealed", "audience": "<your audience>", "secret": null, "prevSecret": null, "secretRotatedAt": null}`. The audience is required, and the three secret columns must be cleared in the same request (a `sealed` endpoint holds no secret).
+- `sealed` to `hmac`: `{"deliveryMode": "hmac", "secret": "whsec_<64 hex characters>"}`. The secret is required; the audience may stay.
+
+A request that leaves one half out is refused and changes nothing. Creating an endpoint takes the same fields: `deliveryMode` is required, a `sealed` one names its `audience` and an `hmac` one carries its `secret` (generate it with 32 random bytes, hex, behind `whsec_`; `rotateWebhookSecret` mints every later one). An `hmac` endpoint's secret is returned to the operator roles that can write the endpoint, and is redacted from the audit history.
+
+### Sealed mode
+
+Choose an audience **only you can have**: your own origin (`https://hooks.example.com`) is the natural one. The gateway gives each name to one endpoint, so a generic name may be taken, and the operator creating your endpoint cannot be asked to guess. It cannot be `vsms`.
+
+**A sealed delivery is a sealed request, not a signed one.** The body is a `COSE_Sign1` message signed with the gateway's own key — the one that signs its answers — so there is no webhook secret to store, no signature header to check and nothing to rotate. You pin the two public keys you already pin for the SDK (`sms-gateway server-keys`) and open the body. **One key signs every app's deliveries**, so the signature and the audience tell you only that vsms sent this to your name; the envelope also carries the `endpointId` and `appId` it was made for, inside the signed body, and you compare them with your own (obligation 1). The `endpointId` is the binding: a receiver serves exactly one endpoint.
+
+The envelope of a sealed delivery (inside the sealed body):
 
 ```json
 {
@@ -207,7 +232,7 @@ The envelope (inside the sealed body):
 }
 ```
 
-`id` is the dedupe key. `eventId` is the id of the event that produced it. `endpointId` is your endpoint's id and `appId` your `App`'s: both are shown on the endpoint's screen in the console, and the endpoint id is also in the answer when the endpoint is created. The `X-Sms-*` headers of the HMAC scheme are no longer sent: a header is no part of a seal, so nothing outside the sealed body is meant to be believed.
+`id` is the dedupe key. `eventId` is the id of the event that produced it. `endpointId` is your endpoint's id and `appId` your `App`'s: both are shown on the endpoint's screen in the console, and the endpoint id is also in the answer when the endpoint is created. A sealed delivery sends none of the `X-Sms-*` headers of the HMAC scheme: a header is no part of a seal, so nothing outside the sealed body is meant to be believed.
 
 Three obligations on a correct receiver:
 
@@ -217,7 +242,26 @@ Three obligations on a correct receiver:
 
 If you run your own cratestack `EnvelopeLayer` instead of an SDK, declare the route as `POST <path>` with the contract digest `c61394a50e9f02ece411674fb3f398ae323e685b7a14f9c7b85538aa33a30423`, `application/json` payloads, your audience, and the two pinned keys, and **check `appId` in your handler** (the layer cannot: it opens the seal and knows nothing of apps); `backends/crates/sms-webhook/src/lib.md` has the exact snippet and `backends/crates/sms-webhook/tests/sealed_delivery.rs` runs it.
 
-[`examples/node/webhook-receiver`](../examples/node/webhook-receiver) is a complete, correct implementation of all three. Its opener is checked in CI against a delivery the gateway's own sealer produced, in two languages, and against a live `sms-worker` in a separate process.
+[`examples/node/webhook-receiver`](../examples/node/webhook-receiver) is a complete, correct implementation of all three for a sealed endpoint. Its opener is checked in CI against a delivery the gateway's own sealer produced, in two languages, and against a live `sms-worker` in a separate process.
+
+### HMAC mode
+
+An `hmac` endpoint's deliveries are what they have always been. The body is the four-field envelope (`id`, `type`, `occurredAt`, `data`: no `eventId`, `appId` or `endpointId`), and four headers carry the rest:
+
+```text
+X-Sms-Event:      message.delivered
+X-Sms-Event-Id:   c8f2a1...            (the dedupe key, signed)
+X-Sms-Timestamp:  1753699200
+X-Sms-Signature:  v1=<hex>[,v1=<hex>]  (the second value only during a rotation)
+```
+
+Three obligations on a correct `hmac` receiver:
+
+1. **Verify the signature.** HMAC-SHA256 over `v1\n{timestamp}\n{eventId}\n{sha256(body)}`, with the **raw request bytes** in the hash and the endpoint's secret as the key, compared in constant time. During a rotation window `X-Sms-Signature` carries **two** `v1=` values, current secret first: accept if *either* verifies against *any* secret you hold. There is no freshness window in the scheme (the timestamp is signed, so a tampered one fails, but a captured request verifies at any later time); dedupe is what stops a replay being acted on twice.
+2. **Dedupe on `X-Sms-Event-Id`.** Delivery is at-least-once. You will eventually see a duplicate.
+3. **Ack fast, process after.** Return 2xx immediately; slow handlers trip the endpoint's circuit breaker and get retried.
+
+The Rust and Node SDKs open sealed deliveries only. [`examples/node/webhook-receiver`](../examples/node/webhook-receiver) serves either mode (`WEBHOOK_RECEIVER_MODE=hmac`), and its `src/signature.ts` is a from-scratch verifier whose results are cross-checked in CI against the Rust implementation and against `openssl` (`backends/crates/sms-webhook/tests/fixtures/cross_language_vectors.json`), three independent implementations agreeing, not one asserting.
 
 ## 8. Testing failure, not just success
 

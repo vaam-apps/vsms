@@ -143,8 +143,14 @@ the integration guide.
 
 ## Receiving webhooks
 
-vsms delivers an event as a sealed request signed with the gateway's own key,
-the one that signs its answers: there is no webhook secret and no signature
+An endpoint is delivered to in one of two modes, `sealed` (recommended) or
+`hmac` (the original `X-Sms-Signature` scheme, kept for receivers that have not
+moved; [Receiving webhooks](integrating.md#7-receiving-webhooks) says how to
+choose). **Both SDKs open sealed deliveries only; neither ships an HMAC
+verifier**, and an `hmac` receiver verifies the signature itself (the scheme is
+in the integration guide, and `examples/node/webhook-receiver/src/signature.ts`
+is a reference). A sealed delivery is a request signed with the gateway's own
+key, the one that signs its answers: there is no webhook secret and no signature
 header. Both SDKs open a delivery against the same two pinned public keys, for
 the audience, route and app of your endpoint, and return the typed event (`id`,
 `eventId`, `type`, `occurredAt`, `appId`, `endpointId`, `data`). The app id is
@@ -189,10 +195,10 @@ sealer wrote (`backends/crates/sms-webhook/tests/sealed_vector.rs`).
 
 There is no SDK to wait for, but there is no shortcut either: a request is a
 COSE_Sign1 envelope, which [Other languages](integrating.md#other-languages)
-says how to build. To receive webhooks, both SDKs open a delivery
-(`WebhookOpener`, below), and
+says how to build. To receive webhooks, both SDKs open a sealed delivery
+(`WebhookOpener`, above), and
 [`examples/node/webhook-receiver`](../examples/node/webhook-receiver) is a
-reference receiver built on it.
+reference receiver for either delivery mode.
 
 Publishing both packages is automated; the
 [SDK release runbook](runbooks/releasing-sdks.adoc) covers the registries,

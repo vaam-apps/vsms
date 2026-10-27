@@ -1,6 +1,7 @@
 `Role::Hooks`'s real body — #40. Claims due `WebhookAttempt` rows via
-[`crate::claim::claim_batch`], seals and POSTs them with `sms-webhook`
-(VS-8; an HMAC signature until then, #41), and drives `pending`/`failed -> delivering -> succeeded|failed|dead`
+[`crate::claim::claim_batch`], delivers each in its endpoint's mode with
+`sms-webhook` (`sealed`: a `COSE_Sign1` request, VS-8; `hmac`: the original
+`X-Sms-Signature`, #41, kept by VS-8R), and drives `pending`/`failed -> delivering -> succeeded|failed|dead`
 per §8.5. `claim.rs`'s own `impl Claimable for WebhookAttempt` owns the
 claim half (endpoint-health filtering, the crash-reclaim same-state
 write); this module owns everything after a row reaches `delivering`.
@@ -49,6 +50,28 @@ module's own doc warns about: `serde_json::Value`'s map type does not
 preserve key order or exact whitespace, so a second serialization is not
 guaranteed to produce byte-identical output to the first.
 
+# The mode is the endpoint's, per row (VS-8R)
+
+`WebhookEndpoint.deliveryMode` picks how one attempt is built, and nothing else
+about the loop differs: the claim, the status handling (2xx delivered, 410
+deactivates, anything else retries with the §8.5 backoff and counts toward the
+breaker), `write_outcome`, the redirect policy and the 10 s timeout are one path
+for both.
+
+|                                                         | `sealed`                                                                   | `hmac`                                                                                                  |
+| ------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Body ([`build_envelope`])                               | `{id, eventId, type, occurredAt, appId, endpointId, data}`                 | `{id, type, occurredAt, data}`, byte for byte what its receivers verify today                           |
+| Authentication                                          | `Sealer::seal(audience, url, body)`, fresh per attempt                     | `sign_header([secret, prevSecret?], timestamp, eventId, body)`, the current secret first                |
+| Headers                                                 | the seal's `Content-Type` and `Cratestack-*`                               | `X-Sms-Event`, `X-Sms-Event-Id`, `X-Sms-Timestamp`, `X-Sms-Signature`, `Content-Type: application/json` |
+| Needs                                                   | `WorkerContext::webhook_sealer` (the envelope signing key) and an audience | the endpoint's `secret`                                                                                 |
+| Fails as a retryable endpoint failure, never sent, when | no sealer, no audience, a URL or audience the seal refuses                 | the row has no secret (the CHECK makes it impossible)                                                   |
+
+A worker with no signing key still starts and still delivers every `hmac`
+endpoint; a `sealed` endpoint's attempt fails with a message that names
+`--envelope-signing-key-file` (the claim has already counted the attempt, so the
+key belongs in place before sealed endpoints are created, and `replayWebhookAttempt`
+recovers the `dead` ones after).
+
 # Sealing, per attempt (VS-8)
 
 ```mermaid
@@ -72,8 +95,8 @@ what a receiver sees. The endpoint's `audience` is what the seal binds as the
 recipient; the route is the path of its `url` (`sms_webhook::delivery_route`).
 A delivery that cannot be sealed never reaches the network and is an ordinary
 retryable failure. The signing key is `WorkerContext::webhook_sealer`, loaded
-from `--envelope-signing-key-file`; with none, the role refuses to start and
-`tick` claims nothing. The receiver's answer is judged by status alone and
+from `--envelope-signing-key-file`; with none, a `sealed` endpoint's attempt
+fails (above) and `hmac` endpoints are unaffected. The receiver's answer is judged by status alone and
 never opened (`sms-webhook`'s `lib.md`, "The answer"). Redirects are not
 followed.
 
