@@ -262,6 +262,9 @@ stateDiagram-v2
     none --> pending: key made, QR shown
     pending --> paired: gateway answers 200
     paired --> ended: expired (30 days) or revoked
+    paired --> clock: refused or expired while the clock is wrong
+    clock --> paired: the clock is corrected
+    clock --> none: the person chose "pair again"
     paired --> none: unpaired here
     paired --> none: revoked here
     ended --> none: wiped
@@ -270,22 +273,26 @@ stateDiagram-v2
 
 `lib/key-lifecycle.ts` joins IndexedDB, the gateway and the clock: *none* (no key), *pending* (a key
 the gateway has not accepted), *paired*, *ended* (accepted once, refused now, or past its 30 days on
-the clock alone), *unreachable* (the gateway could not be reached, which must never read as "not
-paired" and send a person with a good key to make a new one).
+the clock alone, on a clock that is right), *clock* (a refusal or a local expiry while this computer's
+clock is off by more than the warning threshold, so it may be the clock's doing and not the key's; the key
+is left alone), *unreachable* (the gateway could not be reached, which must never read as "not paired" and
+send a person with a good key to make a new one).
 
 - **Show it.** `/console` ("This console", under Admin) shows who the key speaks as, its RFC 9679
   thumbprint (`lib/thumbprint.ts`, SHA-256 of the key's CBOR map, **not** of the raw point), when it
   was paired and when it expires, with a warning in the last seven days. The account block shows
   "Paired, 12 days left" everywhere. A console that is not paired shows the pairing page.
-- **Re-pair after expiry.** A key is never extended. When it ends the page says so and `/pair` wipes it
-  and makes a fresh one.
+- **Re-pair after expiry.** A key is never extended. When it ends (on a clock that is right) the page
+  says so and `/pair` wipes it and makes a fresh one. A key held by a wrong clock is never wiped
+  automatically: the gate and `/pair` say the clock is off and offer "Pair this console again", and only
+  that action deletes the key.
 - **Revoke** calls `revokeConsoleKey` on the user's own key, then forgets it: the gateway stops
   accepting it everywhere. **Unpair** only wipes the IndexedDB key; the gateway's row stays until it
   expires or is revoked elsewhere, which the confirmation says. Both ask inline first.
 - **Clock.** Every sealed request carries its signing time and the gateway refuses one more than five
   minutes off its own clock. A laptop with a wrong clock looks "unpaired" (the same unsigned 401), so
-  the pairing page measures its clock against the console server's `Date` header and says so past two
-  minutes.
+  the console measures its clock against the server's `Date` header (`lib/clock.ts`), the pairing page
+  says so past two minutes, and the key's status reads a refusal on such a clock as `clock`, not `ended`.
 
 ## What a stolen browser profile gets
 
@@ -327,14 +334,16 @@ line, `backends/crates/sms-api/src/pair_scope.md`).
 
 ## How it was verified
 
-- **Rust** (`sdks/rust/vsms-sdk-wasm`): 38 native tests and 2 doctests against cratestack's own server
-  envelope, including `routeOf` for every route of the schema and the `If-Match` binding; `clippy
+- **Rust** (`sdks/rust/vsms-sdk-wasm`): 49 native tests and 2 doctests against cratestack's own server
+  envelope, including `routeOf` for every route of the schema (and its literal-before-parameter order), the
+  `If-Match` binding and the opener of an answer to bytes it did not seal; `clippy
   -D warnings` for the host and for `wasm32-unknown-unknown`, with and without `responder`.
 - **Console** (`frontends/apps/admin`, `pnpm test`, which first builds `.sealer-test/`, the browser
   module with the server half compiled in): the key is non-extractable and stays so through IndexedDB
   (`fake-indexeddb`); the QR verifies under its tag; the thumbprint is RFC 9679's; every outbound call
   is sealed and credential-free; an unsealed, forged, mismatched or unpinned answer is refused; the
-  composer is gated by the proof (the gateway's named person, this operation, this message); the status machine, the pairing flow and the clock check.
+  composer is gated by the proof (the gateway's named person, this operation, this message); the status machine, the
+  pairing flow and the clock check.
 - **Gateway package** (`@vsms/gateway`): the pass-through's rules, the upstream transport against a real
   local HTTP server (a `GET` with a body, a redirect not followed, the size cap, the timeout), and the
   sealing `fetch`'s own logic.
@@ -352,7 +361,9 @@ line, `backends/crates/sms-api/src/pair_scope.md`).
     `cratestack::cose` agree; the row's expiry is `paired_at + 30 days`; the Apps screen showed the App the gateway
     sealed;
   - the composer's preview went browser, proof, console, real gateway (proof verified), SDK with the service key, real
-    `previewMessage`, `200`; `send` was refused by the gateway's own rule (`sender id "ACME" has no approved provider
+    `previewMessage`, `200` (this run used the first design's proof, a sealed read; the proof is `authorizeComposition`
+    now, held by `authorize_composition_live_postgres.rs` and the console's composer tests, and was not driven through a
+    browser again); `send` was refused by the gateway's own rule (`sender id "ACME" has no approved provider
     registration`), relayed with its `422` and `VALIDATION_ERROR` intact, and a proof used twice was refused the second
     time. A delivered send needs the registration steps of `just demo`, which this run did not do;
   - Revoke called the real `revokeConsoleKey` (`revoked_at` set) and sent the console back to `/pair` with a fresh key;

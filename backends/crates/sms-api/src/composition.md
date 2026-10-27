@@ -45,3 +45,5 @@ operation and the hash are echoed so the console compares what the gateway
 authorized with what it is about to send, and a proof sealed for one message
 cannot send another. Single use is the envelope's: its nonce is recorded in
 `EnvelopeNonce` and a second presentation is refused before this runs.
+
+<!-- markdownlint-disable-file MD041 -->
