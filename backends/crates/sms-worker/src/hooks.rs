@@ -143,7 +143,7 @@ pub fn build_http_client() -> HttpClients {
 
 /// How often a worker without the envelope signing key repeats what it cannot
 /// serve. A backlog that grows by the second is still one line per interval.
-pub const SEALED_BACKLOG_WARNING_EVERY: StdDuration = StdDuration::from_secs(5 * 60);
+pub const SEALED_BACKLOG_WARNING_EVERY: StdDuration = StdDuration::from_mins(5);
 
 /// A worker without the envelope signing key claims no `sealed` attempt
 /// ([`ServedModes::HmacOnly`]), so those attempts stay `pending` and nothing in
@@ -506,7 +506,7 @@ fn hmac_request(
 
 /// How often one `hmac` endpoint's empty-key warning repeats. A busy endpoint
 /// would otherwise log it once per event.
-const EMPTY_KEY_WARNING_EVERY: StdDuration = StdDuration::from_secs(10 * 60);
+const EMPTY_KEY_WARNING_EVERY: StdDuration = StdDuration::from_mins(10);
 
 /// Which endpoints have said so recently ([`warn_empty_hmac_keys`]).
 static EMPTY_KEY_WARNINGS: LazyLock<Throttle> =

@@ -644,7 +644,7 @@ fn expired_leases(now: DateTime<Utc>) -> FilterExpr {
 /// `endpointId` the delegate renders itself (the endpoint's own read policy
 /// applies inside it, as for any relation filter).
 fn endpoint_delivers(mode: WebhookDeliveryMode) -> FilterExpr {
-    FilterExpr::from(webhook_attempt::endpoint().deliveryMode().eq(mode))
+    webhook_attempt::endpoint().deliveryMode().eq(mode)
 }
 
 /// `filter`, narrowed to what a worker serving `served` may claim.

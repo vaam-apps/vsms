@@ -586,13 +586,14 @@ fn strip_comments(text: &str) -> String {
                 i = copy_quoted(&chars, i, '\'', backslash_escapes, &mut out);
             }
             ['"', ..] => i = copy_quoted(&chars, i, '"', false, &mut out),
-            ['$', ..] => match dollar_tag(&chars, i) {
-                Some(tag) => i = copy_dollar_quoted(&chars, i, &tag, &mut out),
-                None => {
+            ['$', ..] => {
+                if let Some(tag) = dollar_tag(&chars, i) {
+                    i = copy_dollar_quoted(&chars, i, &tag, &mut out);
+                } else {
                     out.push('$');
                     i += 1;
                 }
-            },
+            }
             [c, ..] => {
                 out.push(*c);
                 i += 1;
