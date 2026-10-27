@@ -3,12 +3,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
-// Two independent sets of pure unit tests live under `frontends/apps/admin/` now, and
+// Two independent sets of tests live under `frontends/apps/admin/` now, and
 // neither needs the escape hatches `frontends/packages/gateway/vitest.config.ts`
-// carries:
+// carries (apart from the `server-only` alias below):
 //
-//   - `lib/oidc.ts` (#194) is pure — no `@vsms/env` import at module
-//     scope, no `server-only` guard.
+//   - `lib/**` (the key's lifecycle, the pairing flow, the composer's route
+//     against the real sealing module) imports no `@vsms/env` at module scope.
 //   - `app/messages/[id]/timeline.ts` (#50) needs `@vaam-apps/ui`'s
 //     `StateTransition`, but only ever as `import type`, which Vitest's
 //     esbuild transform erases entirely — so no React or Next runtime is

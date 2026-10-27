@@ -9,30 +9,22 @@
 // `Provider` carries no `appId` — it's a system-wide resource, the same
 // shape `Job`/`WorkerLockInfo` already have (`jobs.ts`/`workers.ts`'s own
 // module docs). `schema.cstack`'s `Provider.read` `@@allow` gained
-// `auth().kind == "app"` in this same PR specifically so the console's own
-// machine credential can list/read it — before that, only a human role
-// (`owner`/`admin`/`operator`/`auditor`) could, and none of those exist yet
-// (#97/#98's scope cut). `router::PROVIDER_ROUTE_READ_ROUTES` gates
+// `auth().kind == "app"` in this same PR so an app client could list/read it —
+// before that, only a human role (`owner`/`admin`/`operator`/`auditor`) could. `router::PROVIDER_ROUTE_READ_ROUTES` gates
 // `GET /providers`/`GET /providers/{id}` on a `provider:read` scope at
 // Layer 2 — the real perimeter, same shape `job:read`/`worker:read`
 // already established.
 //
-// # `updateProvider` — reachable today, as of #211
+// # `updateProvider` — made as the signed-in person
 //
-// `Provider.update`'s own `@@allow` is `hasRole('owner') ||
-// hasRole('admin') || hasRole('operator')` — no `auth().kind == "app"` at
-// all. #194 (human login) landed and `GatewayAuth` genuinely resolves a
-// real `hasRole(...)`-meaningful context for a human token; #211 closed the
-// remaining gap this paragraph used to describe — every function in this
-// file now goes through `resolveUpstreamAccessToken()`
-// (`./request-credential.ts`), which forwards the signed-in human's own
-// session token (`frontends/apps/admin/lib/oidc.ts::Session.accessToken`) for an ordinary
-// admin-console request, rather than this console's own separate
-// `SMS_CONSOLE_CLIENT_ID` machine credential (`kind: "app"`, `role: "app"`
-// always — still used elsewhere, deliberately, see `token.ts`'s own doc).
-// `updateProvider` was built and tested (`rest.test.ts`) against a fake
-// upstream before this landed; #211's own PR description carries the live
-// proof against a real gateway with a real signed-in `owner`.
+// `Provider.update`'s own `@@allow` is `hasRole('owner') || hasRole('admin') ||
+// hasRole('operator')` — no `auth().kind == "app"` at all. The call is an
+// ordinary `PATCH` through `gatewayFetch` (`./upstream.ts`): in the console the
+// paired person's own browser key signs it, the gateway resolves that key to the
+// person and their role (`SignedAuth`), and the policy decides, so a role
+// without the permission gets the gateway's 403 and nothing is hidden behind a
+// shared credential. `updateProvider` is tested (`rest.test.ts`) against a fake
+// upstream.
 //
 // `GET /providers` on a non-`@@paged` model returns a bare JSON array, not
 // `{ items, totalCount, pageInfo }` — confirmed by reading
@@ -118,9 +110,9 @@ function providersUrl(path: string, query: Record<string, string | number | unde
   return url.toString();
 }
 
-/** `GET` with a Bearer token, retrying once on an unexpected 401 — same
- * shape as `jobs.ts`'s own `authedRequest`, duplicated for the same
- * "independently-replaceable seam" reason that module's doc gives. */
+/** `GET` through `gatewayFetch` — same shape as `jobs.ts`'s own
+ * `authedRequest`, duplicated for the same "independently-replaceable seam"
+ * reason that module's doc gives. */
 async function authedGet(url: string): Promise<Response> {
   return gatewayFetch(url, {
     method: "GET",

@@ -6,13 +6,12 @@
 // `App` is `@@paged`, unlike `Provider`/`Route` — the response envelope is
 // `{ items, totalCount, pageInfo }`, the same shape `jobs.ts`/`messages.ts`
 // already document at length, not the bare array `providers.ts` sees for a
-// non-paged model. Every call here goes through `resolveUpstreamAccessToken`
-// (`./request-credential.ts`), so an ordinary console request reaches
-// `sms-api` as the signed-in human, not this console's own machine
-// credential — `App.update`/`App.delete`'s own `@@allow` (`hasRole('owner')`/
-// `hasRole('admin')` only, no `auth().kind == "app"` clause) has never been
-// reachable by the machine credential at all, so write screens here only
-// became meaningful once #211 landed.
+// non-paged model. Every call here goes through `gatewayFetch` (`./upstream.ts`),
+// which in the console is the sealing fetch: the request reaches `sms-api`
+// signed by the paired person's own browser key, so it is made as that person
+// and their role decides — `App.update`/`App.delete`'s own `@@allow`
+// (`hasRole('owner')`/`hasRole('admin')` only, no `auth().kind == "app"`
+// clause) admits no app principal at all.
 //
 // `ipAllowlist` is sentinel-packed the same way `AppClient.scopes`/
 // `OauthClient.grantTypes` are (`sms_core::pack`'s convention: a leading and

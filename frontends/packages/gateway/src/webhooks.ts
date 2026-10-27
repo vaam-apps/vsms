@@ -55,13 +55,13 @@
 // port, matching `sms_core::pack`/`unpack` byte-for-byte rather than
 // guessing a shape that merely looks plausible.
 //
-// # Writes are real, and reachable, as of #211 — same shape `providers.ts`/
+// # Writes are made as the signed-in person — same shape `providers.ts`/
 // `senders.ts` already document
 //
 // `WebhookEndpoint.create`/`.update`/`.delete` admit no `auth().kind ==
 // "app"` clause — `owner`/`admin`/`developer` (create/update) or
-// `owner`/`admin` (delete) only. Every write here resolves its Bearer token
-// via `resolveUpstreamAccessToken()`, gated further at Layer 2 by
+// `owner`/`admin` (delete) only. Every write here goes through `gatewayFetch`
+// (`./upstream.ts`), signed by the paired person's own key, and is gated further at Layer 2 by
 // `router::SENDER_AND_WEBHOOK_WRITE_ROUTES` (`webhook:manage`, granted to
 // `owner`/`admin`/`developer` per §5.2's seeded roles). `rotateWebhookSecret`/
 // `replayWebhookAttempt` (procedures, not REST) carry their own

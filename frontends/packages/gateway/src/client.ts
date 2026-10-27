@@ -6,9 +6,9 @@
 // upstream `Decimal` fix ships (cratestack#456, merged, release pending)
 // — at which point this file's two functions get replaced by calls into
 // the generated client, and every other file in this package
-// (`token.ts`, `dispatcher.ts`, `errors.ts`) stays as-is. `@vsms/gateway`
+// (`upstream.ts`, `sealing-fetch.ts`, `errors.ts`) stays as-is. `@vsms/gateway`
 // exists specifically so that swap touches this one package: nothing
-// outside `@vsms/gateway` imports `undici` or knows the routes are
+// outside `@vsms/gateway` knows the routes are
 // `POST /$procs/...` rather than whatever shape the generated client
 // prefers. `frontends/packages/api/src/routers/compose.ts` only ever imports
 // `previewMessage`/`sendMessage` by name from here.

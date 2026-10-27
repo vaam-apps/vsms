@@ -1,12 +1,11 @@
 "use client";
 
 // The Apps screen (#52): apps, their service-account clients, quota, and
-// the ipAllowlist/transliterateToGsm7 toggles — plus #211's own real
-// reads-and-writes-as-you proof case, the same shape `providers-screen.tsx`
-// already established. `App.update`/`App.delete`'s own `@@allow`
+// the ipAllowlist/transliterateToGsm7 toggles. Reads and writes are made as
+// the signed-in person (the paired browser key signs them), the same shape
+// `providers-screen.tsx` established: `App.update`/`App.delete`'s own `@@allow`
 // (`owner`/`admin` only, `App.delete` `owner`-only) admits no
-// `auth().kind == "app"` clause, so this screen's writes only became
-// reachable once #211 forwarded the signed-in human's own session token.
+// `auth().kind == "app"` clause.
 //
 // # Console redesign (Phase 2, Admin group) — what changed and why
 //

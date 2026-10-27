@@ -37,13 +37,11 @@ export interface OperatorDeliveryStats {
 export interface DashboardSummary {
   generatedAt: string;
   /** Absent when the caller isn't scoped to one app (a real human or
-   * system context). Before #211, this call always ran as the console's
-   * own machine credential, so `appId` was always present in practice.
-   * #211 forwards the signed-in human's own session token instead — and
+   * system context). The call is made as the paired person, and
    * `Message`/`WebhookAttempt`'s own `@@allow` (`schema.cstack`) admits
    * `auth().kind == "user"` unconditionally, unscoped by `appId` — so for
-   * any signed-in human, regardless of role, this is now genuinely
-   * `undefined` in practice: the numbers below cover every app, not one.
+   * any signed-in human, regardless of role, this is `undefined` in
+   * practice: the numbers below cover every app, not one.
    * See `dashboard-screen.tsx`'s own "Why the scope banner" section. */
   appId?: string | undefined;
   /** Current count of `Message` rows in `{accepted, queued, routed}` — a

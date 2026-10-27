@@ -37,15 +37,14 @@
 // neutral fallback for anything else — the same "free-form, not
 // type-system-enforced" treatment `jobs.ts`'s own `kind` field gets.
 //
-// # Writes are real, and reachable, as of #211
+// # Writes are made as the signed-in person
 //
 // `SenderId.create`/`.update` and `SenderIdRegistration.create`/`.update`
 // (`schema.cstack`) are each `hasRole('owner') || hasRole('admin') ||
 // hasRole('operator')` — no `auth().kind == "app"` clause, so (like
-// `providers.ts`'s own `updateProvider`) these were never reachable by this
-// console's machine credential and need a real human principal. Every
-// function below resolves its Bearer token via `resolveUpstreamAccessToken()`
-// (`./request-credential.ts`), the signed-in operator's own session token —
+// `providers.ts`'s own `updateProvider`) these admit no app principal and need a
+// real human one. Every function below goes through `gatewayFetch`
+// (`./upstream.ts`), so the paired operator's own browser key signs the call —
 // gated further at Layer 2 by `router::SENDER_AND_WEBHOOK_WRITE_ROUTES`
 // (`sender:manage`, granted to `owner`/`admin`/`operator` per §5.2's
 // seeded roles), matching the shape `providers.ts`'s own doc records for

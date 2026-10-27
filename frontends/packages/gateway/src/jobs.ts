@@ -131,8 +131,7 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
   return url.toString();
 }
 
-/** `GET`/`POST` with a Bearer token, retrying once on an unexpected 401 —
- * the same shape `client.ts`'s `callProcedure` and `messages.ts`'s
+/** `GET`/`POST` through `gatewayFetch` — the same shape `client.ts`'s `callProcedure` and `messages.ts`'s
  * `getJson` each already carry, duplicated a third time rather than
  * shared: all three are independently-replaceable halves of the same
  * temporary seam (T3), and none is large enough that sharing saves more

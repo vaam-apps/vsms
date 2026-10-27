@@ -10,13 +10,11 @@
 // (`create`/`update`/`delete`) stay `hasRole('owner') || hasRole('admin')`
 // only — untouched by this PR.
 //
-// # Writes are reachable today, as of #211
+// # Writes are made as the signed-in person
 //
-// Every function below goes through `resolveUpstreamAccessToken()`
-// (`./request-credential.ts`), which forwards the signed-in human's own
-// session token rather than this console's own separate
-// `SMS_CONSOLE_CLIENT_ID` machine credential — see `providers.ts`'s own
-// `updateProvider` doc for the full mechanism (identical here). A write
+// Every function below goes through `gatewayFetch` (`./upstream.ts`): in the
+// console the paired person's own browser key signs the request — see
+// `providers.ts`'s own `updateProvider` doc for the mechanism (identical here). A write
 // succeeds for a session whose role is `owner`/`admin`, and 403s for
 // anyone else — a real permission denial, not a blanket unreachability.
 // `routes-screen.tsx` states this on screen.

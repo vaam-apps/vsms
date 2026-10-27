@@ -53,10 +53,9 @@
 # would let an attacker who merely knows a legitimate client_id exhaust
 # it and deny that real client service. This edge cannot key on client_id
 # at all, for a real, checked-not-assumed reason: `client_id` on `/token`
-# arrives only in the `application/x-www-form-urlencoded` POST body (see
-# `frontends/packages/gateway/src/token.ts`'s and `examples/rust/sms-send`'s own
-# request construction — no header, no query string, no Basic auth carries
-# it under `private_key_jwt`), and every way this edge could read a
+# arrives only in the `application/x-www-form-urlencoded` POST body (no
+# header, no query string, no Basic auth carries it under
+# `private_key_jwt`), and every way this edge could read a
 # specific form field out of that body was checked and rejected:
 #   - Core Caddy's own `{http.request.body}` placeholder exists, but
 #     `modules/caddyhttp/app.go` documents it "⚠️ inefficient; use only
@@ -172,9 +171,8 @@
 
 	rate_limit {
 		# Per-IP budget on /token. Sized against real caller behaviour,
-		# not a round number: `frontends/packages/gateway/src/token.ts` and
-		# `examples/rust/sms-send` both cache the access token until
-		# `exp - 60s` off a 15-minute default TTL, i.e. one legitimate
+		# not a round number: a client that caches the access token until
+		# `exp - 60s` off a 15-minute default TTL makes one legitimate
 		# `/token` call roughly every 14 minutes per running client
 		# process under steady state. 20 events/minute is >20x that
 		# steady-state rate — generous enough that a fleet restart (every

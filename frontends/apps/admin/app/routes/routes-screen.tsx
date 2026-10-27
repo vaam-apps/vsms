@@ -1,13 +1,13 @@
 "use client";
 
 // The Routes screen (#54): list, plus create/edit/delete — every write real,
-// tested code, and (as of #211) real against a real gateway for a
-// signed-in `owner`/`admin` — `Route.create`/`update`/`delete`'s own
-// `@@allow` is narrower than `Provider.update`'s (`hasRole('owner') ||
-// hasRole('admin')` only, no `operator`), so this screen's writes need one
-// of those two roles specifically. See `providers-screen.tsx`'s own module
-// `frontends/packages/gateway/src/request-credential.ts`) — identical here, just a
-// narrower Layer 1 gate. A denial surfaces verbatim in whichever drawer's
+// tested code, made as the signed-in person: the paired browser key signs it
+// (`frontends/packages/gateway/src/sealing-fetch.ts`). `Route.create`/`update`/
+// `delete`'s own `@@allow` is narrower than `Provider.update`'s
+// (`hasRole('owner') || hasRole('admin')` only, no `operator`), so this
+// screen's writes need one of those two roles specifically. See
+// `providers-screen.tsx`'s own module doc — identical here, just a narrower
+// Layer 1 gate. A denial surfaces verbatim in whichever drawer's
 // own error banner triggered it — never swallowed.
 //
 // # The zero-routes state gets its own, unmissable banner
