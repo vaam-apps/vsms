@@ -310,7 +310,7 @@ Seventeen router files, ~1,124 lines total, every one a thin
 `publicProcedure.input(zodSchema).query/mutation(async ({ ctx, input }) =>
 { try { return await ctx.gateway.xxx(input); } catch (e) {
 rethrowGatewayError(e); } })`. `trpc.ts` (42 lines) wires tRPC + `superjson`
-+ an `errorFormatter` that threads `GatewayError.fieldErrors` through to the
+- an `errorFormatter` that threads `GatewayError.fieldErrors` through to the
 browser for `react-hook-form`'s `setError` — already built and already
 correctly wired, waiting for `sms-api` to actually populate `details` on a
 `422` (pinned `cratestack-pg` doesn't yet). This package already *is* "use a
