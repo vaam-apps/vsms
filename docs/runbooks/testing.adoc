@@ -34,16 +34,15 @@ This builds (or reuses) the runner image, starts a disposable Postgres 16 for it
 . `0001_init` matches `cratestack migrate diff`
 . `0002_bootstrap` matches the design doc
 . Apply migrations for real (`cargo run -p sms-migrate`) to a **fresh, per-run scratch database** created on the `postgres` service and dropped again afterward (even on failure -- see that step's own comment in `justfile` for why it can't just reuse the persistent database the rest of the gate shares: that database survives across runs by design, so reapplying migrations against it a second time is a silent no-op, "already applied -- skipping" for all three, which would let a genuinely broken `0001_init` pass `just ci` while still failing CI's own fresh-container `migrations` job), then `ci/test-state-machine.sql`'s assertions against that same scratch database
-. Install the sample Node webhook receiver's own dependencies (needed by one of the live suites below)
+. Build the Node SDK (`pnpm install --frozen-lockfile`, `just wasm-tools`, its build) and install the sample Node webhook receiver's dependencies, which copy the built SDK in (needed by one of the live suites below)
 . Every live-Postgres suite (`cargo test --workspace --no-fail-fast -- --ignored`) -- by far the slowest single step
-. `pnpm install --frozen-lockfile`
 . `pnpm biome ci .`
 . Generate the TypeScript client and check its routes against the pinned server (`just client-check`)
 . Typecheck and build (`pnpm turbo run typecheck build`)
 . Test (`pnpm turbo run test`)
-. The sample Node receiver's cross-language HMAC signature vectors
-. The demo app (`examples/node/demo-app`) -- typecheck, plus its own copy of the same cross-language HMAC signature vectors (it carries a byte-for-byte copy of `signature.ts`/`cross-language-vectors.test.ts` from the step above, per that package's own README)
-. The official Node SDK (`@vaam-apps/vsms-node`) -- build (its signed transport is Rust compiled to WebAssembly, so `just wasm-tools` installs `wasm-bindgen` at the version `sdks/rust/Cargo.lock` pins, in step 15), typecheck, test (against cratestack's server envelope, built as `wasm-test/`), `npm pack --dry-run`
+. The sample Node receiver, against the real `WebhookOpener` and the gateway's own sealed vector
+. The demo app (`examples/node/demo-app`) -- typecheck and its own tests (it opens webhooks with the same SDK, so it shares nothing with the receiver)
+. The official Node SDK (`@vaam-apps/vsms-node`) -- build (its signed transport is Rust compiled to WebAssembly, so `just wasm-tools` installs `wasm-bindgen` at the version `sdks/rust/Cargo.lock` pins, in step 13), typecheck, test (against cratestack's server envelope, built as `wasm-test/`), `npm pack --dry-run`
 . Every mermaid diagram in `docs/architecture.md`/`docs/roadmap.md` parses (no browser)
 
 A failing step stops the gate there (`set -euo pipefail`), with a `=== STEP n/22: ... ===` banner printed before each one so the log says exactly where it got to.

@@ -141,13 +141,39 @@ same logical message twice. Both can come back as a `409`;
 [Idempotency](integrating.md#5-idempotency-idempotency-key-vs-clientref) in
 the integration guide.
 
+## Receiving webhooks
+
+vsms delivers an event as a sealed request signed with the gateway's own key,
+the one that signs its answers: there is no webhook secret and no signature
+header. Both SDKs open a delivery against the same two pinned public keys, for
+the audience and route of your endpoint, and return the typed event (`id`,
+`eventId`, `type`, `occurredAt`, `data`):
+
+```ts
+const opener = new WebhookOpener({ serverKeys, audience: "my-receiver", route: "/webhooks/vsms" });
+const event = await opener.open(rawBody); // SdkError kind "unverified" on anything wrong: reply 401
+```
+
+```rust
+let opener = WebhookOpener::new(&server_keys, "my-receiver", "/webhooks/vsms")?;
+let event = opener.open(&body).await?; // WebhookError::Unverified on anything wrong: reply 401
+```
+
+A forgery, another receiver's delivery, a replay and a stale timestamp are one
+answer. The nonce memory is per process; behind several replicas pass the Rust
+opener a shared `NonceStore` and dedupe on `event.id` either way. The wasm crate
+and the Rust SDK hold the same delivery contract
+(`cargo xtask sdk-parity-check`) and both open a delivery the gateway's own
+sealer wrote (`backends/crates/sms-webhook/tests/sealed_vector.rs`).
+
 ## Any other language
 
 There is no SDK to wait for, but there is no shortcut either: a request is a
 COSE_Sign1 envelope, which [Other languages](integrating.md#other-languages)
-says how to build. To receive webhooks,
+says how to build. To receive webhooks, both SDKs open a delivery
+(`WebhookOpener`, below), and
 [`examples/node/webhook-receiver`](../examples/node/webhook-receiver) is a
-reference receiver that verifies the signature scheme.
+reference receiver built on it.
 
 Publishing both packages is automated; the
 [SDK release runbook](runbooks/releasing-sdks.adoc) covers the registries,

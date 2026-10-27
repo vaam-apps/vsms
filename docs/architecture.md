@@ -732,10 +732,8 @@ model WebhookEndpoint {
   appId Cuid
   app App @relation(fields: [appId], references: [id])
   url String @uri
+  audience String @length(min: 1, max: 255)
   eventTypes String
-  secret String
-  prevSecret String?
-  secretRotatedAt DateTime?
   maskRecipient Boolean
   active Boolean @default(true)
   maxAttempts Int
@@ -797,9 +795,11 @@ Two fields exist purely for correctness under the framework's delivery semantics
 
 The model is `WebhookAttempt`, not `WebhookDelivery`, solely because `pluralize()` would have produced `webhook_deliverys` and there is no `@@map`.
 
-**`WebhookEndpoint` is readable by humans only** — the `appId == auth().appId` clause is gone. That's a direct consequence of R3: `secret` and `prevSecret` must be writable by `rotateWebhookSecret`, so they can't be `@server_only`, so they'd be returned to any principal that can read the model. Rather than hand an app an endpoint object with a live signing secret in it, endpoints are configured by your developers in the admin console and apps never read them over the API. Apps still see their own `WebhookAttempt` rows, because that policy reaches `appId` through a relation traversal that never materialises the endpoint row.
+**`WebhookEndpoint` is readable by humans only** — the `appId == auth().appId` clause is gone. Endpoints are configured by your developers in the admin console and apps never read them over the API (an app's own `WebhookAttempt` rows are still readable, because that policy reaches `appId` through a relation traversal that never materialises the endpoint row). Until VS-8 there was a stronger reason: the row carried a live HMAC `secret` and `prevSecret`, which had to be writable by `rotateWebhookSecret` and so could not be `@server_only`. They are gone (§4.4): the row now carries an `audience`, a name, not a credential.
 
-**#187: `read` is scoped to `owner`/`admin`/`developer` (plus `system`), not every human role.** The clause above used to be `auth().kind == "user"` — any authenticated human, including `auditor`/`operator`/`support`, none of which hold any webhook permission (§5.2's own table). `@sensitive` never mitigated this: it redacts audit snapshots only and adds no serde attribute, so the field is still returned by the API either way. Narrowed to match who can already write, on the reasoning that an auditor's oversight need is served by seeing *that* a secret exists, was rotated, and when — every other field on this model, still fully readable — not by seeing the secret's own value: a signing secret is a credential, not a record. This is a reversible product call, not a forced one; the named alternative was deciding secrets shouldn't live on a model humans read at all. Latent as of this writing either way: `GatewayAuth` never mints a human-role token today (§4's own M1 scope cut, #97/#98), so nothing can currently reach this clause from either side.
+**`audience` (VS-8)** is the receiver's identity: the name the receiver's envelope layer is built with and the audience every delivery's seal binds (cratestack ADR 0006 §4). It is required, 1 to 255 characters, and has **no default**: a default would silently mean "any receiver", and a seal binds exactly one recipient. It is set when the endpoint is created and editable like `url`.
+
+**#187: `read` is scoped to `owner`/`admin`/`developer` (plus `system`), not every human role.** The clause used to be `auth().kind == "user"` — any authenticated human, including `auditor`/`operator`/`support`, none of which hold any webhook permission (§5.2's own table). It was narrowed while the row carried a live signing secret that `@sensitive` never hid (it redacts audit snapshots only). The secret is gone (VS-8) but the narrowing stays: an auditor's oversight need is served by the delivery log (`WebhookAttempt`), not by an endpoint's configuration.
 
 ### 2.8 RBAC tables
 
@@ -943,10 +943,6 @@ mutation procedure enqueueJob(args: EnqueueJobInput): Job
 
 mutation procedure provisionAppClient(args: ProvisionClientInput): ProvisionClientResult
   @allow(hasRole('owner') || hasRole('admin'))
-  @isolation("serializable")
-
-mutation procedure rotateWebhookSecret(args: EndpointInput): WebhookEndpoint
-  @allow(hasRole('owner') || hasRole('admin') || hasRole('developer'))
   @isolation("serializable")
 
 // #43: re-fire a stuck WebhookAttempt from the admin surface. See §8.5's
@@ -1757,24 +1753,39 @@ For the record, since earlier revisions of this section described all of it:
 - The commands `rotate-signing-key`, `provision-client` (which generated an RSA key server-side for `private_key_jwt`) and `seed-console-client`, and the password half of `provision-user` and `bootstrap`.
 - The Argon2id password code (`sms_core::password`).
 
-### 4.4 Outbound webhook signing
+### 4.4 Outbound webhooks are sealed requests (VS-8)
 
-The one place symmetric secrets remain, because here you're the sender and your customers verify:
+A delivery is the same envelope as every other request in this system: a `COSE_Sign1` message from a registered key, opened by a cratestack `EnvelopeLayer`. There is no shared secret, no `X-Sms-Signature` and no rotation overlap (owner's ruling: *"keypairs everywhere"*). Until VS-8 this was "the one place symmetric secrets remain, because here you're the sender": an HMAC-SHA256 over `v1\n{timestamp}\n{eventId}\n{sha256(body)}` keyed by `WebhookEndpoint.secret`/`prevSecret`. That scheme, those columns, the `rotateWebhookSecret` procedure and the verifiers in both SDKs are deleted (forward migration `0010_sealed_webhooks`).
 
-```text
-POST /your/webhook
-X-Sms-Event:     message.delivered
-X-Sms-Event-Id:  c8f2a1...
-X-Sms-Timestamp: 1753699200
-X-Sms-Signature: v1=<hex>,v1=<hex during rotation>
-
-signing string = v1 \n {timestamp} \n {eventId} \n {sha256(body)}
-key = WebhookEndpoint.secret
+```mermaid
+sequenceDiagram
+    participant H as sms-worker hooks
+    participant S as Sealer (sms-webhook)
+    participant R as Receiver (EnvelopeLayer, Required)
+    H->>H: claim attempt, fetch endpoint (audience, url), build the envelope JSON
+    H->>S: seal(audience, url, envelope)
+    S-->>H: COSE_Sign1 (fresh nonce, iat = now), signed with the gateway's current envelope key
+    H->>R: POST url, application/cose (no redirect followed)
+    R->>R: key, audience, POST, route, contract digest, payload type, iat, nonce
+    R-->>H: 2xx (sealed under the receiver's key; not read)
+    H->>H: attempt succeeded
 ```
 
-Two `v1=` values during rotation, oldest last; receivers accept if any verifies, which makes rotation a non-event for them. `rotateWebhookSecret` moves `secret` → `prevSecret`, generates a new one, stamps `secretRotatedAt`; a job clears `prevSecret` after 24 hours.
+**The key.** The gateway's own envelope signing key (`--envelope-signing-key-file`, §4.0), not a new one. A receiver therefore pins what it already pins to open vsms's answers: the `{current, next}` public keys `sms-gateway server-keys` prints, and a rotation of vsms's key is the same three steps for both. A separate webhook key would buy rotation independence nobody has asked for, and cost every receiver a second pin and every operator a second keypair. The price of the shared key is that the *worker* now holds the private half: `sms-worker --envelope-signing-key-file` (or `SMS_ENVELOPE_SIGNING_KEY_FILE`) is **required when `hooks` is one of `--roles`**, the process refuses to start without it, and `hooks::tick` claims nothing while it has none (a claim would spend an endpoint's `maxAttempts` on a delivery that cannot be made). Only `current` is read; a worker without `hooks` reads no key and a `dispatch`-only node holds none. The file is loaded exactly as the gateway's are: a path, mode `0400`, never in the database. The gateway's key never signs a *request* to the gateway (its `ClientKey` directory has no row for it), so sharing it across the two uses opens no cross-protocol replay: every seal also binds the audience, the route and a contract digest, and the two uses share none of the three.
 
-Send `X-Sms-Event-Id` and mean it — delivery is at-least-once and receivers need a dedupe key.
+**The audience.** `WebhookEndpoint.audience` (§2.7), chosen when the endpoint is created. It must not be the audience the receiver uses for its own requests *to* vsms (`vsms`).
+
+**The route.** The path of `WebhookEndpoint.url`, bound as the route template (`sms_webhook::delivery_route`): a receiver mounts one literal `POST` route, and the URL ends in it. A URL with a query, credentials, a fragment, or a `{`, `}` or `%` in its path cannot be a sealed route; the worker records "delivery not sealed" as the attempt's error and backs off, and never sends it. Redirects are not followed: a `307` would re-send sealed bytes to a host they were not made for, and is an ordinary failed attempt.
+
+**The contract.** There is no schema op for a webhook, so the delivery declares its own: `CONTRACT_DOCUMENT` in `sms-webhook` names the method, the payload type and the envelope's fields, and the digest every delivery binds is `SHA-256("vsms/webhook-delivery/v1\0" || document)` = `7c5a6ab84270ec64eeb668cf50a031ac436433a08467cefe142e338c93132b62`. A receiver declares it for its route (`("POST /webhooks/vsms", &[CONTRACT_SHA])`). A change to the envelope moves the digest and the version in the domain tag. `cargo xtask sdk-parity-check` holds the document equal across `sms-webhook`, the Rust SDK and the wasm crate.
+
+**What a receiver configures** (all public; none of it is a secret): the gateway's pinned keys, its audience, its route, the digest above, `EnvelopeMode::Required`, `application/json` payloads, and a nonce store its replicas share. `sms-webhook`'s `lib.md` has the snippet; `sms-webhook/tests/sealed_delivery.rs` runs it against a real `EnvelopeLayer`. The Rust SDK's `WebhookOpener` and the Node SDK's `WebhookOpener` do the same without the layer.
+
+**Retries re-seal.** A retry is a new sealed request: `Sealer::seal` runs again on every attempt, so the nonce is fresh and the timestamp current. A delivery whose backoff outlasts the receiver's 300 s skew (the schedule runs to 24 h) still opens; a re-sent body would have been refused as stale. The nonce stops a *captured* request being replayed; it is not the dedupe key. The envelope's `id` (`WebhookAttempt.id`) is, and it is the same across retries and across an operator's replay (§8.5).
+
+**The envelope.** `{id, eventId, type, occurredAt, data}`. `eventId` is `WebhookAttempt.sourceEventId`, which used to travel in the `X-Sms-Event-Id` header and was signed by the HMAC; a header is no part of a seal, so it is in the body now. The four `X-Sms-*` headers are no longer sent.
+
+**The answer.** Delivered means 2xx, as before (410 deactivates, anything else retries). If the receiver is a cratestack layer its answer is a message sealed under the receiver's own key. **vsms does not open it and treats it as proof of nothing**: opening would need the receiver's public keys pinned per endpoint, which is another credential store, another console field and another rotation story, for a property nothing here rests on. A 2xx is the receiver's HTTP server accepting the request, authenticated by TLS to the endpoint's host, exactly the trust the HMAC scheme had (it never authenticated answers either). An unsigned 2xx is accepted on the same terms. Authenticating the receiver's answer is the natural follow-up if a deployment ever needs delivery receipts that survive a hostile network; it would add a pinned-keys column to the endpoint.
 
 ### 4.5 Idempotency
 
@@ -1866,8 +1877,8 @@ What CrateStack does **not** give you: signed audit chains, immutable storage, H
 
 - Provider credentials: age/sops-encrypted files, or Vault. `Provider.credentialRef` holds only the pointer.
 - App clients and console users hold no secret at the gateway: only their *public* keys are stored (`ClientKey`, `ConsoleKey`). The private halves stay with the caller or in the browser's non-extractable key store.
-- MSISDN hash pepper, webhook secrets: encrypted store, loaded at boot, never plaintext in the database.
-- Envelope signing keys: two Ed25519 PKCS#8 PEM files (`--envelope-signing-key-file`, `--envelope-next-signing-key-file`), mounted `0400`, never in the database. Rotate by promoting `next` (§4.0).
+- MSISDN hash pepper: encrypted store, loaded at boot, never plaintext in the database. There are no webhook secrets (§4.4).
+- Envelope signing keys: two Ed25519 PKCS#8 PEM files (`--envelope-signing-key-file`, `--envelope-next-signing-key-file`), mounted `0400`, never in the database. Rotate by promoting `next` (§4.0). The worker's `hooks` role loads the `current` one too, to seal webhook deliveries (§4.4).
 - No secret ever appears in an API response. `@server_only` enforces that mechanically.
 
 ---
@@ -1965,7 +1976,7 @@ Roles and scopes resolve per request, through the 60-second standing cache, so a
 
 ### 5.4 Server keys
 
-Answers are signed with the gateway's current Ed25519 key and verified by clients against the two public keys they pin, `current` and `next` (§4.0, `sms-gateway server-keys`). There is no JWKS endpoint, no `kid` selection to get wrong and no algorithm negotiation: the algorithm is fixed per signer kind (Ed25519 for apps and for the server, ESP256 for consoles).
+Answers are signed with the gateway's current Ed25519 key and verified by clients against the two public keys they pin, `current` and `next` (§4.0, `sms-gateway server-keys`). There is no JWKS endpoint, no `kid` selection to get wrong and no algorithm negotiation: the algorithm is fixed per signer kind (Ed25519 for apps and for the server, ESP256 for consoles). The same key seals webhook deliveries (§4.4), so a receiver pins the same pair.
 
 ---
 
@@ -2423,7 +2434,7 @@ Job kinds, all enqueued by the `scheduler` role with a `dedupeKey`:
 | `reap_outbox`       | 1 h     | Delete delivered `cratestack_event_outbox` rows >24h; alarm on high-`attempts` rows                                                                                                                                                                                                          |
 | `reconcile_clients` | 1 h     | OP client rows with no matching `AppClient` → orphan alert                                                                                                                                                                                                                                   |
 | `purge_retention`   | daily   | **#67, done.** Terminal `Message` rows past 90 days: null `body`/`clientRef`/`idempotencyKey`/`stateReason`, overwrite `msisdn` with a placeholder (kept `NOT NULL`), stamp `purgedAt`. `msisdnHash` survives — see §10. Delete `DeliveryReceipt` rows past their own `receivedAt` + 90 days |
-| `cleanup_secrets`   | 1 h     | Clear `prevSecret` past 24h; deactivate `AppClient` past `retiredAt`                                                                                                                                                                                                                         |
+| `cleanup_secrets`   | 1 h     | Deactivate `AppClient` past `retiredAt` (the `prevSecret` half went with the secret, VS-8)                                                                                                                                                                                                   |
 | `anchor_audit`      | daily   | Merkle root of the day's audit rows → append-only store                                                                                                                                                                                                                                      |
 | `verify_backup`     | daily   | Restore last night's dump into a scratch database and count rows                                                                                                                                                                                                                             |
 
@@ -2610,9 +2621,9 @@ stateDiagram-v2
 
 **Candidate selection excludes both an inactive endpoint and an endpoint whose circuit is currently open**, application-side (`backends/crates/sms-worker/src/claim.rs`'s `Claimable for WebhookAttempt::candidates`) rather than as a join in the claim query itself — `WebhookEndpoint` has no `@version`, so `WebhookAttempt.leaseUntil`/`attempts` are what the CAS claim actually contends on; endpoint health is a coarser, best-effort filter applied to the candidate list before leases are taken. This is exactly "rows are still created as `pending`, so nothing is lost — they're just not attempted": a filtered-out row is simply not selected this tick, and is reconsidered the next time a healthy endpoint's candidates are queried.
 
-**The signed request body is the full `{id, type, occurredAt, data}` envelope §8.4 shows, built at delivery time from the stored `WebhookAttempt` row — `data` is `payload` (already masked per `maskRecipient` at insert time by #38, §2.7), `id` is `WebhookAttempt.id` (the only value that has existed since the row was created — see §2.7's own note on why the outer `id` can't be anything else), `type` is `eventType`.** `occurredAt` is a documented approximation, not the original event's timestamp: `WebhookAttempt` carries no creation timestamp (no `@use(Timestamps)`), and the framework's own `ModelEvent::occurred_at` is read and discarded by #38's subscriber before the row exists to store it on. `hooks` therefore stamps `occurredAt` with the time of *this delivery attempt* — accurate for a first attempt seconds after the event, increasingly approximate under retries, and wrong by up to the full backoff schedule's span (up to 24h) for an attempt that only succeeds on its last try. Closing this properly needs `WebhookAttempt` to gain a stored event timestamp (a real schema decision touching a model #38 owns, not a mechanical follow-on) or #38's subscriber to start threading `ModelEvent::occurred_at` through to a new column — flagged here as a real, tracked gap, not silently accepted.
+**The sealed request body is the full `{id, eventId, type, occurredAt, data}` envelope §8.4 shows (plus `eventId`, §4.4), built at delivery time from the stored `WebhookAttempt` row — `data` is `payload` (already masked per `maskRecipient` at insert time by #38, §2.7), `id` is `WebhookAttempt.id` (the only value that has existed since the row was created — see §2.7's own note on why the outer `id` can't be anything else), `eventId` is `sourceEventId`, `type` is `eventType`.** `occurredAt` is a documented approximation, not the original event's timestamp: `WebhookAttempt` carries no creation timestamp (no `@use(Timestamps)`), and the framework's own `ModelEvent::occurred_at` is read and discarded by #38's subscriber before the row exists to store it on. `hooks` therefore stamps `occurredAt` with the time of *this delivery attempt* — accurate for a first attempt seconds after the event, increasingly approximate under retries, and wrong by up to the full backoff schedule's span (up to 24h) for an attempt that only succeeds on its last try. Closing this properly needs `WebhookAttempt` to gain a stored event timestamp (a real schema decision touching a model #38 owns, not a mechanical follow-on) or #38's subscriber to start threading `ModelEvent::occurred_at` through to a new column — flagged here as a real, tracked gap, not silently accepted.
 
-Signing (`sms_webhook::sign_header`) always covers the exact bytes sent as the request body — the envelope is serialized once and that same `String`'s bytes are both what's HMAC'd and what `reqwest` sends, never two independent serializations of the same logical value (which is exactly the "signing something other than what you send" bug class #41's own module doc warns about).
+Sealing (`sms_webhook::Sealer::seal`) always covers the exact bytes sent as the request body — the envelope is serialized once and that same `String`'s bytes are what goes inside the `COSE_Sign1` message, which is what `reqwest` sends, never two independent serializations of the same logical value (the "signing something other than what you send" bug class #41's module doc warned about, which the seal makes structurally impossible: the sealed bytes *are* the request body).
 
 **Implementation, #43 (`replayWebhookAttempt`, `backends/crates/sms-api/src/procedures.rs`), landed against the above:**
 
@@ -2620,13 +2631,13 @@ The design question this story has to resolve before writing any code: given `we
 
 **Two new edges, `failed -> pending` and `dead -> pending` (§2.10) — and, deliberately, no `succeeded -> pending`.** A `failed` attempt would eventually retry on its own once its backoff elapses; replay's value there is forcing that retry *now*, on an operator's schedule rather than the backoff schedule's. A `dead` attempt never retries on its own at all — replay is the only way back for it. Both land the row in the same place: `pending`, with `attempts` reset to `0` (a fresh counter, per this section's own prose above) and `lastStatusCode`/`lastError`/`leaseOwner`/`leaseUntil` cleared. `succeeded -> pending` is not added: a receiver that already got this event and (most likely) already acted on it is a materially different, riskier thing to re-fire than one that never got through, and this story is scoped to the latter — "re-fire a failed delivery," not "re-send a delivered one." Both the procedure and the transition table enforce this the same way twice over: `replayWebhookAttempt` only ever proposes `failed -> pending` or `dead -> pending`, and even if it proposed anything else, no other edge exists for Postgres to accept — attempting to replay a `pending`, `delivering`, or `succeeded` row is a `409 Conflict` (SQLSTATE `SM001`, mapped by `backends/crates/sms-api/src/errors.rs::map_database_error` — the first procedure in this codebase to actually call it; every earlier write path either cannot reach an illegal edge or, like `cancelMessage`, isn't implemented yet).
 
-**What a receiver sees on a replayed request: the same envelope `id`, a new `timestamp`, and therefore a new signature.** §4.4's canonical string is `HMAC-SHA256("v1\n{timestamp}\n{eventId}\n{sha256_hex(body)}")` — `timestamp` is always "now" at send time (`hooks.rs`'s own `send`), so it necessarily differs between the original delivery attempt(s) and the replay; the signature differs too, as a direct consequence, not a bug. The dedupe burden this puts on the receiver is exactly what §8.5's opening line already asks of it — deduplicate on the envelope's `id`, not on the signature or the timestamp. A receiver that dedupes correctly (by `id`) treats a replay as the redelivery it is; a receiver that dedupes on `(timestamp, signature)` instead would wrongly treat every retry *and* every replay as a distinct event, which is a pre-existing receiver-side bug this story does not introduce or need to accommodate.
+**What a receiver sees on a replayed request: the same envelope `id` and `eventId`, in a new sealed request** — a new nonce and a new timestamp, as for every retry (§4.4). The dedupe burden this puts on the receiver is exactly what §8.5's opening line already asks of it — deduplicate on the envelope's `id`, not on the nonce, the timestamp or the bytes. A receiver that dedupes correctly (by `id`) treats a replay as the redelivery it is; one that dedupes on the sealed bytes would wrongly treat every retry *and* every replay as a distinct event.
 
 **Circuit breaker: replay clears it, not just the one attempt.** An operator invoking replay is, by definition, asserting "I fixed the receiving end" — exactly the condition the breaker exists to wait for, and the case named explicitly in this story's own brief as the one where a stale breaker must not silently swallow the operator's action. Rather than teach `claim.rs`'s candidate filter a one-off "except this specific attempt" bypass (touching the shared claim path #40 and #44 both depend on, for one procedure's benefit), `replayWebhookAttempt` resets the *endpoint's* `consecutiveFailures` to `0` and clears `circuitOpenUntil` in the same transaction, whenever either is currently set — the same reset `hooks.rs::reset_endpoint_failures` already performs on an ordinary successful delivery, just performed eagerly on the operator's word rather than waiting for proof. This unblocks every other `pending`/`failed` attempt against that endpoint too, not only the one replayed — deliberate: if the endpoint is fixed, every message stuck behind its breaker should get another chance, not just the one an operator happened to click on. It does **not** touch `WebhookEndpoint.active` — an endpoint deactivated by a 410 Gone stays deactivated, and replaying an attempt against it lands the row in `pending` where it sits, uninspected by `claim.rs`'s health filter, until an operator separately reactivates the endpoint (the existing `PATCH /webhook_endpoints/{id}` route). Reactivation is a distinct, more consequential decision than "retry this one delivery," and conflating the two would mean a replay click silently reviving an endpoint nobody asked to revive.
 
-**Who may replay.** Same three human roles that manage the endpoint itself (`owner`/`admin`/`developer`, §5.2), matching `rotateWebhookSecret`'s own `@allow`. On top of that, `replayWebhookAttempt` calls `require_permission(ctx, "webhook:manage")` (Layer 2, §5.1) before doing anything else. `webhook:manage` is `developer`'s own permission per §5.2's table; `owner`/`admin` hold it implicitly as part of "everything"/"all". As with `PATCH /providers/{id}` (#24), this deployment's `GatewayAuth` never issues a real token carrying anything but `role: "app"`/`"system"` — no human-login path exists yet — so Layer 1 alone already closes this procedure to every token this deployment can currently issue; Layer 2 is real and tested, but defense in depth rather than the thing actually stopping a live request, until a role-bearing token exists.
+**Who may replay.** Same three human roles that manage the endpoint itself (`owner`/`admin`/`developer`, §5.2). On top of that, `replayWebhookAttempt` calls `require_permission(ctx, "webhook:manage")` (Layer 2, §5.1) before doing anything else. `webhook:manage` is `developer`'s own permission per §5.2's table; `owner`/`admin` hold it implicitly as part of "everything"/"all". As with `PATCH /providers/{id}` (#24), this deployment's `GatewayAuth` never issues a real token carrying anything but `role: "app"`/`"system"` — no human-login path exists yet — so Layer 1 alone already closes this procedure to every token this deployment can currently issue; Layer 2 is real and tested, but defense in depth rather than the thing actually stopping a live request, until a role-bearing token exists.
 
-**#193: `rotateWebhookSecret` gained the identical `require_permission(ctx, "webhook:manage")` gate.** This paragraph originally flagged that `rotateWebhookSecret` had no equivalent call as out of scope for the replay story to fix — rotation is the *more* sensitive of the two operations (it changes the credential every future delivery is signed with and starts the `prevSecret` overlap clock), so leaving it the less-gated one read as an asymmetry rather than a decision. Closed, not left open: both procedures now enforce the same Layer 2 permission, and both are equally latent for the same reason as this section's own last sentence.
+**#193 (historical):** `rotateWebhookSecret` once carried the identical `require_permission(ctx, "webhook:manage")` gate; the procedure itself was deleted by VS-8 (§4.4), and `replayWebhookAttempt` keeps its own.
 
 **Scope boundary.** This is the API-side capability only — a permission-gated procedure and the state-machine edges it needs. The admin console's own webhooks screen (#55, milestone 4) is not built here; a minimal API surface is all this story owns.
 

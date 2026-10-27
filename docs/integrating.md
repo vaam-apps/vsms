@@ -173,7 +173,9 @@ Rate limiting runs at two points on the API: a per-principal bucket on the API (
 
 ## 7. Receiving webhooks
 
-Delivery is push, not poll. An operator registers a `WebhookEndpoint` for your `App` — **you cannot create one yourself**: it requires an `owner`/`admin`/`developer` human role, and no admin-console screen exists for it yet, so today this is an operator action against the database. Ask for one; the fields that matter to you are the URL, the event types, and whether the recipient MSISDN is masked.
+Delivery is push, not poll. An operator registers a `WebhookEndpoint` for your `App` in the admin console — **you cannot create one yourself**: it requires an `owner`/`admin`/`developer` human role. Ask for one; the fields that matter to you are the URL, the **audience** (a name you choose for your receiver), the event types, and whether the recipient MSISDN is masked.
+
+**A delivery is a sealed request, not a signed one.** The body is a `COSE_Sign1` message signed with the gateway's own key — the one that signs its answers — so there is no webhook secret to store, no signature header to check and nothing to rotate. You pin the two public keys you already pin for the SDK (`sms-gateway server-keys`) and open the body.
 
 Events (`type` in the envelope):
 
@@ -181,11 +183,12 @@ Events (`type` in the envelope):
 
 **There is no `message.undelivered`, `message.queued`, `message.routed`, or `message.rejected` event.** If you need to know about a `rejected` message, read it back over REST — a webhook will never tell you.
 
-The envelope:
+The envelope (inside the sealed body):
 
 ```json
 {
   "id": "c8f2a1b3d4e5f60718293a4b5",
+  "eventId": "7d1c3f0e-2b9a-4c5e-9a61-0f3b8e2d4a17",
   "type": "message.delivered",
   "occurredAt": "2026-07-28T14:03:11Z",
   "data": {
@@ -202,15 +205,17 @@ The envelope:
 }
 ```
 
-Headers: `X-Sms-Event`, `X-Sms-Event-Id`, `X-Sms-Timestamp`, `X-Sms-Signature`.
+`id` is the dedupe key. `eventId` is the id of the event that produced it. The `X-Sms-*` headers of the HMAC scheme are no longer sent: a header is no part of a seal, so nothing outside the sealed body is meant to be believed.
 
 Three obligations on a correct receiver:
 
-1. **Verify the signature.** HMAC-SHA256 over `v1\n{timestamp}\n{eventId}\n{sha256(body)}`, keyed by your endpoint secret. During a rotation window `X-Sms-Signature` carries **two** `v1=` values — accept if *either* verifies.
-2. **Dedupe on `X-Sms-Event-Id`.** Delivery is at-least-once. You will eventually see a duplicate.
-3. **Ack fast, process after.** Return 2xx immediately; slow handlers trip the endpoint's circuit breaker and get retried.
+1. **Open the body.** With the Node SDK, `new WebhookOpener({ serverKeys, audience, route }).open(rawBody)`; with the Rust SDK, `WebhookOpener::new(&server_keys, audience, route)?.open(&body).await`. `audience` is the name on your endpoint and `route` is the path of its URL (one literal route, such as `/webhooks/vsms`, with no query). Anything that does not open — a forgery, another receiver's delivery, a replayed body, a timestamp more than 300 seconds off — is **one** answer: reply `401`. Behind several replicas, give the Rust opener a nonce store they share (the default is per process), or lean on obligation 2.
+2. **Dedupe on `id`.** Delivery is at-least-once. A retry, and an operator's replay, arrive as a *new* sealed request (new nonce, new timestamp) with the same `id`; the nonce stops a captured request being replayed, it is not your dedupe key. You will eventually see a duplicate.
+3. **Ack fast, process after.** Return 2xx immediately; slow handlers trip the endpoint's circuit breaker and get retried. vsms judges a delivery by the status alone and never opens your answer.
 
-[`examples/node/webhook-receiver`](../examples/node/webhook-receiver) is a complete, correct implementation of all three, and its signature verification is cross-checked in CI against the Rust implementation and against `openssl` — three independent implementations agreeing, not one asserting.
+If you run your own cratestack `EnvelopeLayer` instead of an SDK, declare the route as `POST <path>` with the contract digest `7c5a6ab84270ec64eeb668cf50a031ac436433a08467cefe142e338c93132b62`, `application/json` payloads, your audience, and the two pinned keys; `backends/crates/sms-webhook/src/lib.md` has the exact snippet and `backends/crates/sms-webhook/tests/sealed_delivery.rs` runs it.
+
+[`examples/node/webhook-receiver`](../examples/node/webhook-receiver) is a complete, correct implementation of all three. Its opener is checked in CI against a delivery the gateway's own sealer produced, in two languages, and against a live `sms-worker` in a separate process.
 
 ## 8. Testing failure, not just success
 

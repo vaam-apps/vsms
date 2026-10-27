@@ -4441,6 +4441,37 @@ cutover, nothing kept beside it. `docs/architecture.md` §4.2 and §4.3 are the 
   Helm chart against a cluster, a real Keycloak-free production roll-out. `docs/runbooks/deployment.adoc` is edited, not
   re-run.
 
+## Webhooks are sealed requests (VS-8) — landed 2026-10-27
+
+The last HMAC in the system is gone. A delivery is a `COSE_Sign1` request signed with the gateway's own envelope key and opened
+by a cratestack `EnvelopeLayer` (`Required`) on the receiver. Hard cutover: no dual mode, nothing kept beside it.
+`docs/architecture.md` §4.4 is the current account (key, audience, route, contract digest, retries, the answer);
+`backends/crates/sms-webhook/src/lib.md` is the receiver's configuration, with a snippet.
+
+- **Deleted:** `X-Sms-Signature` and the three other `X-Sms-*` headers, the HMAC (`sign`, `verify`, `generate_secret`), the
+  `WebhookEndpoint` columns `secret`, `prev_secret` and `secret_rotated_at`, the `rotateWebhookSecret` procedure and its console
+  button, the Rust SDK's and the examples' `signature.ts` verifiers, `cross_language_vectors.json`, `DEMO_WEBHOOK_SECRET` /
+  `DEMO_WEBHOOK_PREV_SECRET` and the compose, Helm and `vsms-demo-seed` plumbing for them.
+- **Migration:** `0010_sealed_webhooks` is forward-only (its `down.sql` raises: a secret must not come back). It adds
+  `audience text NOT NULL` (existing rows get the URL's origin as a starting value, which an operator then sets to the receiver's
+  real audience; until then a delivery is refused and retried, not lost), then drops the three columns. `.xtask/src/migrations_current.rs` gained `COLUMNS_CHANGED_BY_LATER`, beside `ADDED_BY_LATER` and `DROPPED_BY_LATER`,
+  so `0001_init` still compares against the generator.
+- **The key** is the gateway's current envelope key: `sms-worker --roles hooks` takes `--envelope-signing-key-file` and fails
+  closed without it (other roles need nothing). A receiver pins what it pins to open vsms's answers (`sms-gateway server-keys`).
+- **The contract** has no schema op to hash, so `sms-webhook` declares a document and binds
+  `SHA-256("vsms/webhook-delivery/v1\0" || document)`, a literal pinned by tests. `cargo xtask sdk-parity-check` holds the
+  sealer's, the Rust SDK's and the wasm crate's copies equal.
+- **A retry is a new sealed request** (fresh nonce, current timestamp); `id` is the dedupe key, the nonce only stops a replay.
+  Redirects are not followed. The receiver's sealed answer is not opened and is proof of nothing.
+- **Proof against the real layer.** `sms_test_support::webhook_receiver` puts cratestack's own `EnvelopeLayer` in front of an
+  axum router; `sms-webhook/tests/sealed_delivery.rs` and the worker's live suites drive it. `sealed_vector.rs` writes a
+  deterministic delivery that the Rust SDK, the wasm crate and the Node SDK each open (`tests/fixtures/sealed_delivery_vector.json`;
+  the SDK copy is held equal).
+- **A recorded vector cannot show a replay refused**: `InMemoryNonceStore` expires an entry against the real clock, and a vector
+  is opened with a pinned one. Replay is proved with deliveries sealed afresh (the Node SDK's and the Rust SDK's webhook tests).
+- **Not verified here:** the Helm chart against a cluster (it had no envelope-key configuration at all, which this adds), the
+  demo-app image build, and a delivery to vaam's real `/webhooks/vsms` (VA-5 builds that receiver).
+
 ## Open questions blocking later milestones
 
 1. **Hosting location.** Law No. 2024/017 requires prior authorisation for *all* cross-border personal-data transfers, and "legitimate interest" is not a lawful basis. Cameroon-hosted is the safe default. Needs an answer before production.

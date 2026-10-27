@@ -113,7 +113,7 @@ Exit code `0` means exactly that: `delivered` *and* at least one signature-verif
 just demo-app
 ----
 
-To see signature verification genuinely fail closed rather than trust it: run `demo-app` with a deliberately wrong `DEMO_WEBHOOK_SECRET` (its own README has the exact override). The message still reaches `delivered` -- sending has no idea this receiver exists -- but every received webhook logs `[webhook] SIGNATURE VERIFICATION FAILED` and the process exits non-zero.
+To see the sealed-webhook check genuinely fail closed rather than trust it: run `demo-app` with a deliberately wrong `DEMO_WEBHOOK_AUDIENCE` (its own README has the exact override). The message still reaches `delivered` -- sending has no idea this receiver exists -- but every received webhook is refused as unverified and the process exits non-zero.
 
 == Why there is no carrier
 
