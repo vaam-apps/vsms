@@ -173,7 +173,7 @@ Rate limiting runs at two points on the API: a per-principal bucket on the API (
 
 ## 7. Receiving webhooks
 
-Delivery is push, not poll. An operator registers a `WebhookEndpoint` for your `App` in the admin console — **you cannot create one yourself**: it requires an `owner`/`admin`/`developer` human role. Ask for one; the fields that matter to you are the URL, **how deliveries are authenticated** (the delivery mode, below), the event types, and whether the recipient MSISDN is masked. The URL must be one a delivery can be sealed for: `http` or `https`, no credentials, no query, no fragment, no `{`, `}` or `%` in the path, and an ASCII host (an internationalised name is written in punycode).
+Delivery is push, not poll. An operator registers a `WebhookEndpoint` for your `App` in the admin console — **you cannot create one yourself**: it requires an `owner`/`admin`/`developer` human role. Ask for one; the fields that matter to you are the URL, **how deliveries are authenticated** (the delivery mode, below), the event types, and whether the recipient MSISDN is masked. An `hmac` endpoint's URL is any URL. A **`sealed`** endpoint's URL must be one a delivery can be sealed for, because the seal binds its path as the route: `http` or `https`, no credentials, no query, no fragment, no `{`, `}` or `%` in the path, and an ASCII host (an internationalised name is written in punycode).
 
 ### Events
 
@@ -195,12 +195,12 @@ An endpoint is delivered to in one of two modes, chosen when it is created. Both
 | Rotation                        | None of your own: the gateway key's rotation is the one every receiver already follows      | `rotateWebhookSecret`; the old secret keeps verifying until the next rotation |
 | Existing endpoints              | New ones                                                                                    | **Every endpoint that existed before the sealed mode is `hmac`, unchanged**   |
 
-**Use `sealed` for anything new**, and for any receiver that can run an opener: you hold nothing secret, so a leaked database or backup cannot forge a delivery to you. Keep `hmac` for a receiver that already verifies `X-Sms-Signature` and has not moved yet; `hmac` is a legacy mode that a deployment will later be able to switch off, so plan the move. Moving an endpoint is one `PATCH /webhook_endpoints/{id}` with the endpoint's `If-Match`, sent by an operator:
+**Use `sealed` for anything new**, and for any receiver that can run an opener: you hold nothing secret, so a leaked database or backup cannot forge a delivery to you. Keep `hmac` for a receiver that already verifies `X-Sms-Signature` and has not moved yet; `hmac` is a legacy mode that a deployment will later be able to switch off, so plan the move. Moving an endpoint is the `switchWebhookDeliveryMode` procedure, called by an operator (`owner`, `admin` or `developer`, with `webhook:manage`): `POST /$procs/switchWebhookDeliveryMode` with `{"args": {"endpointId": "<id>", "mode": "sealed" | "hmac", "audience": "<your audience>"}}`. It validates first, answers `422` with the reason where a raw `PATCH` would be refused by the database (as a `500`), and does the bookkeeping:
 
-- `hmac` to `sealed`: `{"deliveryMode": "sealed", "audience": "<your audience>", "secret": null, "prevSecret": null, "secretRotatedAt": null}`. The audience is required, and the three secret columns must be cleared in the same request (a `sealed` endpoint holds no secret).
-- `sealed` to `hmac`: `{"deliveryMode": "hmac", "secret": "whsec_<64 hex characters>"}`. The secret is required; the audience may stay.
+- to `sealed`: `audience` is required (and must be free: a taken one is `409`), the endpoint's URL must be one a delivery can be sealed for (an `hmac` endpoint registered with a query string cannot move until its URL changes), and the secret, previous secret and rotation stamp are cleared.
+- to `hmac`: send no `audience` (it is refused and the endpoint's own is released); a new secret is minted server-side and returned in the answer, and your receiver must be given it, because a sealed endpoint held none to reuse.
 
-A request that leaves one half out is refused and changes nothing. Creating an endpoint takes the same fields: `deliveryMode` is required, a `sealed` one names its `audience` and an `hmac` one carries its `secret` (generate it with 32 random bytes, hex, behind `whsec_`; `rotateWebhookSecret` mints every later one). An `hmac` endpoint's secret is returned to the operator roles that can write the endpoint, and is redacted from the audit history.
+Switching to the mode the endpoint is already in is refused. Creating an endpoint takes the same fields: `deliveryMode` is required, a `sealed` one names its `audience` and an `hmac` one carries its `secret` (at least 32 characters; the console generates `whsec_` and 64 random hex characters, and so should a client; `rotateWebhookSecret` and `switchWebhookDeliveryMode` mint every later one). An `hmac` endpoint's secret is returned to the operator roles that can write the endpoint, and is redacted from the audit history. (A raw `PATCH` of `deliveryMode` is still accepted by the generated route for an operator who moves every column in step, with the endpoint's `If-Match`; one that does not breaks a CHECK of the database and is answered `500`, not `422`. Use the procedure.)
 
 ### Sealed mode
 
@@ -254,6 +254,8 @@ X-Sms-Event-Id:   c8f2a1...            (the dedupe key, signed)
 X-Sms-Timestamp:  1753699200
 X-Sms-Signature:  v1=<hex>[,v1=<hex>]  (the second value only during a rotation)
 ```
+
+**Redirects.** An `hmac` delivery follows redirects as it always has (up to ten, a `307` or `308` re-sending the signed body), so a receiver behind a redirect keeps working; the signed body and signature travel to wherever the redirect points, so keep the redirects of a receiver you register under your control. A `sealed` delivery never follows one: a redirect is a failed attempt, and the URL is fixed on the endpoint.
 
 Three obligations on a correct `hmac` receiver:
 

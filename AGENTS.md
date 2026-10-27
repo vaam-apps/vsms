@@ -4455,7 +4455,7 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
 
 - **Both modes live in `sms-webhook`.** The sealer and the v2 contract are the crate root; the original HMAC (`sign_header`,
   `verify`, `generate_secret`, the four `X-Sms-*` header names, `tests/cross_language_fixtures.rs` and its `openssl`-computed
-  vectors) is the `hmac_v1` module, restored byte for byte and re-exported flat. The hooks role picks per row: `sealed` seals,
+  vectors) is the `hmac_v1` module, restored and re-exported flat (see Review round 3 for the three places it is not the pre-sealed worker). The hooks role picks per row: `sealed` seals,
   `hmac` signs with the current secret and, while a rotation is open, the previous one second. An `hmac` body is still the four-field
   `{id, type, occurredAt, data}` its receivers verify; a sealed body is `{id, eventId, type, occurredAt, appId, endpointId, data}`.
 - **Migration `0010_sealed_webhooks` is reversible and drops nothing.** It keeps `secret` (now nullable), `prev_secret` and
@@ -4468,8 +4468,8 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   relaxed columns), beside `ADDED_BY_LATER` and `DROPPED_BY_LATER`, so `0001_init` still compares against the generator.
 - **The create route takes the secret as given**, so an `hmac` create supplies the first one (the console generates it in the browser;
   `rotateWebhookSecret` mints later ones server-side). A mode and its columns disagreeing is a CHECK violation, which the generated
-  routes answer as a database error (the framework does not map `23514`); the console's router checks first (a discriminated union,
-  strict members), the delegate tests assert the SQLSTATE and constraint name. A mode switch is one `PATCH` with explicit `null`s
+  routes answer as a database error (500; the generated routes do not pass through `map_database_error`); the console's router checks
+  first (a discriminated union, strict members), the delegate tests assert the SQLSTATE and constraint name. A raw mode switch is one `PATCH` with explicit `null`s
   (`webhook_endpoint_validation.rs` pins the double-option wire shape).
 - **The key** is the gateway's current envelope key: `sms-worker --roles hooks` takes `--envelope-signing-key-file`. **It is needed
   only for `sealed` endpoints** (VS-8R): `hooks` starts without it, warns, delivers every `hmac` endpoint, and fails a sealed
@@ -4510,12 +4510,34 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   stacks cannot know it up front). The audience stays unique as defence in depth, not as the binding. (An origin backfill of the audience that this round also repaired is gone with VS-8R's re-scope: no
   row is given a guessed audience.) The key-rotation runbook no longer asks for the newly minted `next` to be distributed before
   it exists.
-- **A URL the seal cannot bind is refused on write**, not at delivery (where it burned eight attempts and tripped the breaker):
-  `WebhookEndpoint.url` carries a `@regex` narrower than `sms_webhook::delivery_route`, never wider
-  (`sms-api/tests/webhook_endpoint_validation.rs` holds that over a generated corpus of 126 720 URLs with `delivery_route` as the oracle), and the
+- **A URL the seal cannot bind is refused on write for a `sealed` endpoint**, not at delivery (where it burned eight attempts and
+  tripped the breaker): a CHECK on `sealed` rows (`webhook_endpoints_url_sealable_for_sealed_check`, review round 3 replaced the
+  `@regex` that held `hmac` endpoints to it too) carries `sms_webhook::SEALABLE_URL_PATTERN`, narrower than `delivery_route`, never wider
+  (`sms-api/tests/webhook_endpoint_validation.rs` holds that over a generated corpus of 139 392 URLs with `delivery_route` as the oracle), and the
   console's `receiverRoute` is held to the same table as the Rust function (`delivery_route_cases.json`, read by both). The
   console's JavaScript twin used to read `new URL("https://h/a?").search`, which is empty where Rust's `query()` is `Some("")`;
   it looks for a literal `?` or `#` now.
+- **Review round 3 (R5 means HMAC survives unchanged).** Ten findings, one theme: the first re-scope still changed HMAC for the apps that
+  rely on it. (1) The sealable-URL rule had been a `@regex` on `url`, so an `hmac` endpoint with a `?token=` query, a `%` in the path,
+  credentials or an underscored host was refused on create and could not even be edited in the console (`submitUpdate` always sends
+  `url`). `url` is a plain `@uri` again; the rule is the hand-written CHECK above, on `sealed` rows only, listed in
+  `HAND_WRITTEN_COLUMN_CONSTRAINTS`, with its pattern a Rust constant (`SEALABLE_URL_PATTERN`) that a test asserts the migration contains
+  verbatim; the console's domain schemas and the router apply it to `sealed` alone, and the router reads the row's mode on an update
+  that carries a `url` or an `audience`. The pattern is written for both regex engines (`(?i:` is not valid Postgres). (2) `hooks`
+  gave both modes `Policy::none()`; the pre-sealed worker used reqwest's default (ten hops, a `307`/`308` re-sending the body), so
+  `HttpClients` now holds one client per mode: `sealed` follows none, `hmac` follows as it did. (3) A delivery that sent nothing (no
+  signing key, an empty `hmac` secret) went through `Retryable`, opening the endpoint's breaker and burning `maxAttempts`, against
+  `write_outcome`'s own invariant; `Outcome::NotSent` logs `error!`, retries after a minute, hands the claim's increment back and
+  never touches the breaker. (4) `migrations-current` checked generated statements with `text.contains` on the raw file, so a
+  commented-out statement passed; it compares executable SQL now (`carries`). (5) `0010/down.sql` is one transaction. (6) A raw
+  `PATCH` of the mode answered a CHECK with a 500, which no layer maps for generated routes; `switchWebhookDeliveryMode` validates,
+  answers 422, mints the `hmac` secret, requires the `sealed` audience, and `map_database_error` maps `23514` on `webhook_endpoints_*`
+  CHECKs to 422 for procedures. (7) `secret` is `@length(min: 32)` on input (not `prevSecret`, which only receives an earlier
+  `secret`, and not a CHECK, so older secrets keep rotating); the doc no longer claims a format nothing enforced. (8) The router
+  refuses an `audience` on an `hmac` row's update. (10) Two small HMAC improvements are deliberate: an empty `secret` sends nothing
+  rather than signing with an empty key, and an empty `prevSecret` is left out of `X-Sms-Signature`. CodeQL's three
+  cleartext-logging alerts were fixed alongside: no test message or `println!` prints a secret, and the demo seed writes its secret
+  file mode 0600.
 - **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,
   and a signature cannot survive that. Its nonce memory is per process and cannot be replaced (the check runs in WebAssembly),
   unlike the Rust SDK's `with_nonce_store`; the README says so.
