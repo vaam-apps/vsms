@@ -3232,7 +3232,6 @@ dependencies = [
  "sms-provider",
  "sms-routing",
  "sms-test-support",
- "sms-webhook",
  "sms-worker",
  "thiserror",
  "tokio",
@@ -3474,6 +3473,7 @@ version = "0.9.0"
 name = "sms-test-support"
 version = "0.9.0"
 dependencies = [
+ "axum",
  "base64 0.22.1",
  "bytes",
  "cratestack-pg",
@@ -3481,17 +3481,20 @@ dependencies = [
  "rustls",
  "serde_json",
  "tokio",
+ "tower",
 ]
 
 [[package]]
 name = "sms-webhook"
 version = "0.9.0"
 dependencies = [
- "hex",
- "hmac 0.12.1",
- "rand 0.8.7",
+ "cratestack-pg",
  "serde_json",
  "sha2 0.10.9",
+ "sms-test-support",
+ "thiserror",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -3537,6 +3540,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "clap",
  "cratestack-pg",
@@ -4206,7 +4210,6 @@ dependencies = [
  "dotenvy",
  "sms-api",
  "sms-core",
- "sms-webhook",
  "tokio",
  "tracing",
  "tracing-subscriber",

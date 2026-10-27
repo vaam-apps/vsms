@@ -11,6 +11,7 @@ use sms_api::schema::{
     AttemptState, UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, WebhookAttempt,
     WebhookEndpoint, webhook_endpoint,
 };
+use sms_webhook::Sealer;
 use tracing::{error, warn};
 
 use crate::WorkerContext;
@@ -84,17 +85,25 @@ fn sys(worker: &str) -> CratestackContext {
 /// none, so building one explicitly is what actually enforces the "10s per
 /// attempt" contract rather than merely documenting it.
 ///
+/// It follows no redirect (VS-8): a delivery is sealed for one audience and one
+/// route, and a `307`/`308` would re-send those bytes, recipient and message
+/// body included, to a host the seal was never made for. A redirect is a
+/// non-2xx answer like any other: it retries, and an operator fixes the URL.
+///
 /// # Panics
 ///
 /// Never in practice: the only way `ClientBuilder::build` fails is a TLS
-/// backend misconfiguration, and this builder sets only a timeout — same
+/// backend misconfiguration, and this builder sets only a timeout and a
+/// redirect policy — same
 /// reasoning `OrangeCmProvider::new`'s identical `.expect(...)` already
 /// relies on.
-fn build_http_client() -> reqwest::Client {
+#[must_use]
+pub fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
-        .expect("reqwest client builder with only a timeout set never fails")
+        .expect("reqwest client builder with a timeout and a redirect policy never fails")
 }
 
 /// Never returns on its own, matching [`crate::run`]'s contract for every
@@ -121,15 +130,31 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 /// crash-reclaim), so there is no "was this actually a fresh claim, or just
 /// a routing hop" filter to apply before delivering, the way `dispatch`
 /// filters out `queued` and `jobs` filters out `pending`.
+///
+/// **Fails closed before it claims anything** when the process holds no
+/// sealer: a claim increments `attempts`, so claiming a row this process cannot
+/// deliver would spend the endpoint's `maxAttempts` on nothing.
+/// `backends/apps/sms-worker` refuses to start `hooks` without the signing key,
+/// so this is the second line, not the first.
+///
+/// # Errors
+///
+/// [`CratestackError::Internal`] when `ctx` has no sealer; otherwise whatever
+/// the claim returns.
 pub async fn tick(
     ctx: &WorkerContext,
     sys: &CratestackContext,
     worker: &str,
     http: &reqwest::Client,
 ) -> Result<(), CratestackError> {
+    let Some(sealer) = ctx.webhook_sealer.as_ref() else {
+        return Err(CratestackError::Internal(
+            "the hooks role has no webhook sealer: it holds no envelope signing key".to_owned(),
+        ));
+    };
     let claimed = claim_batch::<WebhookAttempt>(&ctx.db, sys, worker, BUDGET).await?;
     for attempt in claimed {
-        deliver_one(ctx, sys, http, attempt).await;
+        deliver_one(ctx, sys, http, sealer, attempt).await;
     }
     Ok(())
 }
@@ -176,6 +201,7 @@ async fn deliver_one(
     ctx: &WorkerContext,
     sys: &CratestackContext,
     http: &reqwest::Client,
+    sealer: &Sealer,
     attempt: WebhookAttempt,
 ) {
     // The FK `wha_endpoint_fk ... ON DELETE CASCADE` (§2.10) means a
@@ -224,42 +250,47 @@ async fn deliver_one(
         }
     };
 
-    let outcome = send(http, &endpoint, &attempt, &body, now).await;
+    let outcome = send(http, sealer, &endpoint, &body).await;
     write_outcome(ctx, sys, &attempt, &endpoint, outcome, now).await;
 }
 
-/// The actual signed HTTP POST. Split from [`deliver_one`] so the
-/// request-building/signing logic is directly unit-testable without a
-/// database — [`build_envelope`] and the header values below are pure
-/// functions of their inputs.
+/// The actual sealed HTTP POST. Split from [`deliver_one`] so the
+/// request-building logic is directly unit-testable without a database —
+/// [`build_envelope`] is a pure function of its inputs.
+///
+/// **Every call seals afresh.** A retry is a new request with a new nonce and a
+/// new timestamp, never the first attempt's bytes sent again: a delivery whose
+/// backoff outlasts the receiver's 300 s skew (the schedule runs to 24 h) would
+/// otherwise be refused as stale, and a re-sent nonce is refused as a replay.
+/// The `id` and `eventId` inside the body are what stay the same.
+///
+/// A delivery that cannot be sealed (an audience or URL the seal refuses, a
+/// signer that fails) never reaches the network, and is an endpoint failure
+/// like any other: it backs off and counts toward the circuit breaker.
 async fn send(
     http: &reqwest::Client,
+    sealer: &Sealer,
     endpoint: &WebhookEndpoint,
-    attempt: &WebhookAttempt,
     body: &str,
-    now: DateTime<Utc>,
 ) -> Outcome {
-    let timestamp = now.timestamp();
-    let event_id = attempt.sourceEventId.to_string();
-    // Current secret first, `prevSecret` second — "oldest last" per §4.4;
-    // `sign_header` reuses the canonical string across both rather than
-    // recomputing it. `verify`'s own contract doesn't care about this
-    // order, but `sign_header`'s caller-facing convention does.
-    let secrets: Vec<&str> = std::iter::once(endpoint.secret.as_str())
-        .chain(endpoint.prevSecret.as_deref())
-        .collect();
-    let signature = sms_webhook::sign_header(&secrets, timestamp, &event_id, body.as_bytes());
+    let delivery = match sealer
+        .seal(&endpoint.audience, &endpoint.url, body.as_bytes())
+        .await
+    {
+        Ok(delivery) => delivery,
+        Err(error) => {
+            return Outcome::Retryable {
+                status: None,
+                message: format!("delivery not sealed: {error}"),
+            };
+        }
+    };
 
-    let result = http
-        .post(&endpoint.url)
-        .header(sms_webhook::HEADER_EVENT, &attempt.eventType)
-        .header(sms_webhook::HEADER_EVENT_ID, &event_id)
-        .header(sms_webhook::HEADER_TIMESTAMP, timestamp.to_string())
-        .header(sms_webhook::HEADER_SIGNATURE, signature)
-        .header(reqwest::header::CONTENT_TYPE, "application/json")
-        .body(body.to_owned())
-        .send()
-        .await;
+    let mut request = http.post(&endpoint.url).body(delivery.body);
+    for (name, value) in &delivery.headers {
+        request = request.header(name, value);
+    }
+    let result = request.send().await;
 
     match result {
         Ok(response) if response.status().is_success() => Outcome::Success {
@@ -277,7 +308,7 @@ async fn send(
     }
 }
 
-/// The §8.4 envelope — `{id, type, occurredAt, data}` — built from the
+/// The §8.4 envelope — `{id, eventId, type, occurredAt, data}` — built from the
 /// stored row at delivery time. This module's own doc covers `id`/`type`;
 /// documented here is `occurredAt`, the one field that is a genuine,
 /// tracked approximation rather than a faithful reconstruction.
@@ -301,6 +332,7 @@ fn build_envelope(
     let data: serde_json::Value = serde_json::from_str(&attempt.payload)?;
     let envelope = serde_json::json!({
         "id": attempt.id,
+        "eventId": attempt.sourceEventId,
         "type": attempt.eventType,
         "occurredAt": now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "data": data,

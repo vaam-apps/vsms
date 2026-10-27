@@ -40,9 +40,9 @@ sms-msisdn.workspace = true
 # fetches Route/Provider rows, converts the schema's own enums onto this
 # crate's mirrored ones, and applies the resulting Decision.
 sms-routing.workspace = true
-# hooks.rs's real dependency: sign_header, generate_secret's sibling
-# constants (header names), and the canonical-string contract #41 already
-# proved cross-language. This crate never reimplements signing.
+# hooks.rs's real dependency: the Sealer that turns a delivery into a sealed
+# request (VS-8) and the route rule it binds. This crate never builds an
+# envelope of its own.
 sms-webhook.workspace = true
 # #70/#71: the four worker-side gauges (singleton lease held, dispatch
 # in-flight submits, drain's oldest-undelivered age, reap_outbox's poison

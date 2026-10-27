@@ -306,9 +306,7 @@ async fn seed_many_endpoints(db: &Cratestack, app_id: &str, count: usize) {
                     unique_suffix()
                 ),
                 eventTypes: " message.delivered ".to_owned(),
-                secret: format!("whsec_kill_mid_drain_{}_{i}", unique_suffix()),
-                prevSecret: None,
-                secretRotatedAt: None,
+                audience: "test-receiver".to_owned(),
                 maskRecipient: false,
                 maxAttempts: 8,
                 circuitOpenUntil: None,

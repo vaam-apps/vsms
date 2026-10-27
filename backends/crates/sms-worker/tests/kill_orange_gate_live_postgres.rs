@@ -610,6 +610,7 @@ async fn build_gate_harness(
             (fixture.orange_key.clone(), orange_provider),
             (fixture.mtn_key.clone(), mtn_provider),
         ])),
+        webhook_sealer: None,
     };
     GateHarness { ctx, mtn_server }
 }

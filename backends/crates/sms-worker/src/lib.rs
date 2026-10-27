@@ -47,6 +47,12 @@ pub struct WorkerContext {
     /// resolves the one a routed message needs by `Provider.key`; see
     /// [`ProviderRegistry`]'s own doc.
     pub providers: ProviderRegistry,
+    /// Seals the `hooks` role's deliveries under vsms's envelope signing key
+    /// (VS-8). `Some` exactly when this process was given the key
+    /// (`--envelope-signing-key-file`); `backends/apps/sms-worker` refuses to
+    /// start `hooks` without it, and [`hooks::tick`] claims nothing when it is
+    /// absent. No other role reads it, so a `dispatch`-only node needs no key.
+    pub webhook_sealer: Option<sms_webhook::Sealer>,
 }
 
 /// A role `sms-worker` can run. §7.1's table, verbatim.
@@ -418,6 +424,7 @@ mod tests {
         WorkerContext {
             db: sms_api::schema::Cratestack::builder(pool).build(),
             providers: Arc::new(providers),
+            webhook_sealer: None,
         }
     }
 

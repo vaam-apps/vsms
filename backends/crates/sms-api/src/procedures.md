@@ -1,11 +1,13 @@
-The procedures the schema declares — eleven as of #50, not the seven
+The procedures the schema declares (`rotateWebhookSecret` was deleted by VS-8: a
+webhook delivery is sealed under vsms's own key, so no endpoint has a secret
+to rotate) — eleven as of #50, not the seven
 this doc comment used to claim (stale since #56/#57 added `requeueJob`/
 `workerLocks` without correcting it; found while adding an eleventh,
 `listMessageReceipts`, and fixed in the same edit rather than left to
 drift further).
 
-`previewMessage`, `sendMessage`, `provisionAppClient`, (#41)
-`rotateWebhookSecret`, (#43) `replayWebhookAttempt`, (#56) `requeueJob`,
+`previewMessage`, `sendMessage`, `provisionAppClient`, (#43)
+`replayWebhookAttempt`, (#56) `requeueJob`,
 (#57) `workerLocks`, and (#50) `listMessageReceipts` are implemented.
 `cancelMessage` and `enqueueJob` touch the job queue or a mutation this
 milestone doesn't build yet; each returns a clearly-labelled error

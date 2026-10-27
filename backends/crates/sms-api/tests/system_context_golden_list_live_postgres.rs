@@ -64,7 +64,8 @@
 //! one different from those seven is that it never shipped broken: it was
 //! caught **twice, independently, on the same day, before merge**, by two
 //! changes that each needed a system-context read of this model —
-//! `rotateWebhookSecret` (#41, `backends/crates/sms-api/src/procedures.rs`) and
+//! the `hooks` role's endpoint reads and writes (`backends/crates/sms-worker/src/hooks.rs`;
+//! `rotateWebhookSecret` (#41) was the other until VS-8 deleted it) and
 //! #38's `Message.created`/`Message.updated` subscribers
 //! (`backends/crates/sms-api/src/webhooks.rs`).
 //!
@@ -226,8 +227,8 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// - `OptOut` — `Procedures::ensure_not_opted_out`.
 /// - `WebhookEndpoint` — two internal system-context readers, found
 ///   independently: `Procedures::rotate_secret` (`rotateWebhookSecret`,
-///   #41) reads the endpoint and writes its fresh
-///   `secret`/`prevSecret`/`secretRotatedAt` under `sys`; and #38's
+///   #41, deleted by VS-8) read the endpoint and wrote its secrets under
+///   `sys`, and the `hooks` role still writes its failure counters; and #38's
 ///   subscribers (`backends/crates/sms-api/src/webhooks.rs`,
 ///   `enqueue_message_webhook_attempts`) resolve which endpoints
 ///   subscribe to a derived event type, also under `sys`.
@@ -906,10 +907,10 @@ async fn seed_and_verify_opt_out(
     seeded
 }
 
-/// #41: `rotateWebhookSecret` reads and updates a `WebhookEndpoint` under
-/// `sys` — the first internal system-context reader this model has ever
-/// had, and the reason its `read`/`update` `@@allow` clauses gained
-/// `hasRole('system')` in the same change that added this function.
+/// #41: `rotateWebhookSecret` (deleted by VS-8; `hooks` and #38's subscribers
+/// still read and update a `WebhookEndpoint` under `sys`) was the first
+/// internal system-context reader this model ever had, and the reason its
+/// `read`/`update` `@@allow` clauses gained `hasRole('system')`.
 async fn seed_and_verify_webhook_endpoint(
     db: &Cratestack,
     suffix: &str,
@@ -921,9 +922,7 @@ async fn seed_and_verify_webhook_endpoint(
             appId: app_id.to_owned(),
             url: format!("https://example.test/webhooks/{suffix}"),
             eventTypes: " message.delivered ".to_owned(),
-            secret: format!("sys-golden-secret-{suffix}"),
-            prevSecret: None,
-            secretRotatedAt: None,
+            audience: "test-receiver".to_owned(),
             maskRecipient: true,
             maxAttempts: 8,
             circuitOpenUntil: None,

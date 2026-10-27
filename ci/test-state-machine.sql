@@ -87,8 +87,8 @@ END $$;
 
 -- webhook dedupe index must reject the second identical (endpoint, aggregate, type)
 -- #59: webhook_endpoints.version is now NOT NULL with no SQL DEFAULT.
-INSERT INTO webhook_endpoints (app_id, url, event_types, secret, mask_recipient, max_attempts, version)
-SELECT id, 'https://example.test/hook', ' message.delivered ', 's', true, 8, 0 FROM apps WHERE slug='probe';
+INSERT INTO webhook_endpoints (app_id, url, event_types, audience, mask_recipient, max_attempts, version)
+SELECT id, 'https://example.test/hook', ' message.delivered ', 'probe-receiver', true, 8, 0 FROM apps WHERE slug='probe';
 INSERT INTO webhook_attempts (endpoint_id, source_event_id, aggregate_id, event_type, payload)
 SELECT e.id, gen_random_uuid(), m.id, 'message.delivered', '{}' FROM webhook_endpoints e, messages m;
 DO $$ BEGIN

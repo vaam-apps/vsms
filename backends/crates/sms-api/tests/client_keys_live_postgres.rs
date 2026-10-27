@@ -27,7 +27,7 @@ use sms_api::schema::{
 use sms_api::{HashPepper, Procedures};
 
 /// #102: one live test at a time per binary - see
-/// `rotate_webhook_secret_live_postgres.rs`'s identical mutex.
+/// `replay_webhook_attempt_live_postgres.rs`'s identical mutex.
 static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
 

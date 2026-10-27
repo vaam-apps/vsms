@@ -1,8 +1,7 @@
 //! `replayWebhookAttempt` (#43) against a real, fully migrated Postgres —
 //! the actual `ProcedureRegistry` trait method, not a crate-private helper
-//! called directly, the same discipline `rotate_webhook_secret_live_postgres.rs`
-//! and `send_message_live_postgres.rs` both document in their own module
-//! docs.
+//! called directly, the same discipline `send_message_live_postgres.rs`
+//! documents in its own module doc.
 //!
 //! Calling the trait method directly (rather than over real HTTP) bypasses
 //! Layer 1 (`@allow`/`@authorize`) entirely — those are enforced by the
@@ -137,15 +136,13 @@ async fn seed_app(db: &Cratestack, suffix: &str) -> String {
         .id
 }
 
-async fn seed_endpoint(db: &Cratestack, suffix: &str, app_id: &str) -> schema::WebhookEndpoint {
+async fn seed_endpoint(db: &Cratestack, app_id: &str) -> schema::WebhookEndpoint {
     db.webhook_endpoint()
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: "https://example.test/webhooks/vsms".to_owned(),
             eventTypes: " message.delivered ".to_owned(),
-            secret: format!("whsec_test_{suffix}"),
-            prevSecret: None,
-            secretRotatedAt: None,
+            audience: "test-receiver".to_owned(),
             maskRecipient: true,
             maxAttempts: 8,
             circuitOpenUntil: None,
@@ -235,7 +232,7 @@ async fn replaying_a_dead_attempt_resets_it_to_pending_with_a_fresh_counter() {
     let db = db().await;
     let suffix = unique_suffix();
     let app_id = seed_app(&db, &suffix).await;
-    let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
+    let endpoint = seed_endpoint(&db, &app_id).await;
     let seeded = seed_attempt_in_state(
         &db,
         &endpoint.id,
@@ -298,7 +295,7 @@ async fn replaying_a_failed_attempt_resets_it_to_pending() {
     let db = db().await;
     let suffix = unique_suffix();
     let app_id = seed_app(&db, &suffix).await;
-    let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
+    let endpoint = seed_endpoint(&db, &app_id).await;
     let seeded = seed_attempt_in_state(
         &db,
         &endpoint.id,
@@ -341,7 +338,7 @@ async fn replay_also_clears_the_endpoints_open_circuit_breaker() {
     let db = db().await;
     let suffix = unique_suffix();
     let app_id = seed_app(&db, &suffix).await;
-    let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
+    let endpoint = seed_endpoint(&db, &app_id).await;
 
     db.webhook_endpoint()
         .update(endpoint.id.clone())
@@ -415,7 +412,7 @@ async fn replaying_a_non_replayable_attempt_is_a_conflict_not_a_crash() {
     let db = db().await;
     let suffix = unique_suffix();
     let app_id = seed_app(&db, &suffix).await;
-    let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
+    let endpoint = seed_endpoint(&db, &app_id).await;
     let procedures = Procedures::new(test_pepper());
 
     for (label, state) in [
@@ -545,7 +542,7 @@ async fn replay_denies_a_caller_with_no_webhook_manage_permission() {
     let db = db().await;
     let suffix = unique_suffix();
     let app_id = seed_app(&db, &suffix).await;
-    let endpoint = seed_endpoint(&db, &suffix, &app_id).await;
+    let endpoint = seed_endpoint(&db, &app_id).await;
     let attempt = seed_attempt_in_state(
         &db,
         &endpoint.id,

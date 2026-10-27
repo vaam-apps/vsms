@@ -627,6 +627,7 @@ async fn build_harness(policy: FaultPolicy, token_policy: TokenPolicy) -> Harnes
             provider_key,
             submit_provider,
         )])),
+        webhook_sealer: None,
     };
 
     Harness {

@@ -1,6 +1,6 @@
 `Role::Hooks`'s real body — #40. Claims due `WebhookAttempt` rows via
-[`crate::claim::claim_batch`], signs and POSTs them with `sms-webhook`
-(#41), and drives `pending`/`failed -> delivering -> succeeded|failed|dead`
+[`crate::claim::claim_batch`], seals and POSTs them with `sms-webhook`
+(VS-8; an HMAC signature until then, #41), and drives `pending`/`failed -> delivering -> succeeded|failed|dead`
 per §8.5. `claim.rs`'s own `impl Claimable for WebhookAttempt` owns the
 claim half (endpoint-health filtering, the crash-reclaim same-state
 write); this module owns everything after a row reaches `delivering`.
@@ -27,23 +27,52 @@ the §8.4 `data` object *only* — not the outer envelope. This module
 builds the envelope at delivery time ([`build_envelope`]): `id` from
 `WebhookAttempt.id` (the only value that has existed since the row was
 created — see `webhooks.rs`'s own doc for why the envelope's `id` can't
-be anything else), `type` from `eventType`, `data` from `payload` parsed
+be anything else), `eventId` from `sourceEventId` (it used to ride only in the
+`X-Sms-Event-Id` header, which the HMAC signed; headers are no part of a seal,
+so the id is in the sealed body now), `type` from `eventType`, `data` from `payload` parsed
 back into a JSON value (never re-wrapped as a string — nesting an
 already-JSON string inside a JSON string is exactly the kind of "close
 but not the contract" bug a receiver's own parser would silently choke
 on), and `occurredAt` — see [`build_envelope`]'s own doc for why this is
 a documented approximation, not the original event's timestamp.
 
-**What gets signed is exactly what gets sent — never a second, later
+**What gets sealed is exactly what gets sent — never a second, later
 re-serialization of the same logical value.** [`build_envelope`] returns
-one `String`; its bytes are both what [`sms_webhook::sign_header`] HMACs
-and what `reqwest` puts on the wire as the request body. Signing
+one `String`; its bytes are what [`sms_webhook::Sealer::seal`] puts inside the
+`COSE_Sign1` message, which is what `reqwest` puts on the wire. Sealing
 anything else — the parsed `serde_json::Value` re-serialized a second
 time by a different call site, say — would be the exact silent bug this
-module's own doc (and #41's) warns about: `serde_json::Value`'s map type
-does not preserve key order or exact whitespace, so a second
-serialization is not guaranteed to produce byte-identical output to the
-first, even for logically identical JSON.
+module's own doc warns about: `serde_json::Value`'s map type does not
+preserve key order or exact whitespace, so a second serialization is not
+guaranteed to produce byte-identical output to the first.
+
+# Sealing, per attempt (VS-8)
+
+```mermaid
+sequenceDiagram
+    participant C as claim_batch
+    participant H as hooks::deliver_one
+    participant S as Sealer
+    participant R as Receiver
+    C->>H: attempt (delivering, attempts = n)
+    H->>H: fetch the endpoint (audience, url), build the envelope
+    H->>S: seal(audience, url, envelope)
+    S-->>H: COSE_Sign1 with a fresh cti and iat
+    H->>R: POST url, sealed bytes, no redirect followed
+    R-->>H: status
+    H->>H: write_outcome (succeeded / failed + backoff / dead / 410)
+```
+
+A retry runs this whole path again: **every attempt is sealed afresh**, so a
+retry after the receiver's 300 s skew still opens and a re-sent nonce is never
+what a receiver sees. The endpoint's `audience` is what the seal binds as the
+recipient; the route is the path of its `url` (`sms_webhook::delivery_route`).
+A delivery that cannot be sealed never reaches the network and is an ordinary
+retryable failure. The signing key is `WorkerContext::webhook_sealer`, loaded
+from `--envelope-signing-key-file`; with none, the role refuses to start and
+`tick` claims nothing. The receiver's answer is judged by status alone and
+never opened (`sms-webhook`'s `lib.md`, "The answer"). Redirects are not
+followed.
 
 # `maskRecipient` — enforced upstream, not re-derived here
 

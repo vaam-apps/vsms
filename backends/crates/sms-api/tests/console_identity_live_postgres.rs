@@ -64,7 +64,7 @@ fn owner() -> CratestackContext {
 
 /// A test-constructed context, unlike a real issued token, carries no
 /// `perms` claim unless one is added by hand — see
-/// `rotate_webhook_secret_live_postgres.rs`'s own
+/// `replay_webhook_attempt_live_postgres.rs`'s own
 /// `owner_with_webhook_manage` for the precedent this mirrors.
 fn owner_with_user_manage() -> CratestackContext {
     let mut ctx = owner();
@@ -426,7 +426,7 @@ async fn a_support_role_caller_can_record_an_opt_out_the_bare_model_policy_would
     assert_eq!(recorded.source, schema::OptOutSource::inbound_stop);
 }
 
-/// Layer 2, proven the same way `rotate_webhook_secret_live_postgres.rs`
+/// Layer 2, proven the same way `replay_webhook_attempt_live_postgres.rs`
 /// proves its own `webhook:manage` gate: a caller whose *role* Layer 1
 /// would admit, but who carries no `perms` claim at all, must still be
 /// denied by `require_permission`.

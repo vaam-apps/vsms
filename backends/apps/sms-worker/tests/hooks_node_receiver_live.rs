@@ -1,40 +1,34 @@
-//! `#44`'s first gate assertion: "a sample Node receiver verifies the
-//! signature with an independent implementation" — proved against the
-//! *live delivery path*, not a fixture.
+//! `#44`'s first gate assertion: "a sample Node receiver opens the delivery
+//! with an independent implementation" — proved against the *live delivery
+//! path*, not a fixture.
 //!
-//! `backends/crates/sms-webhook/tests/cross_language_fixtures.rs` and
-//! `examples/node/webhook-receiver/src/cross-language-vectors.test.ts`
-//! already proved the *algorithm* matches, against signatures a third tool
-//! (`openssl dgst -sha256 -hmac`) computed — see `backends/crates/sms-webhook/src/
-//! lib.rs`'s own module doc. That is not sufficient for this gate: it
-//! proves the canonical string and the HMAC match, not that what the real
-//! `hooks` role (#40) actually signs is what it actually sends, over a real
-//! socket, with the real four headers, to a receiver that never saw this
-//! crate's code. The interesting failure this test can catch and a fixture
-//! test structurally cannot: a mismatch between what's signed and what's
-//! on the wire (a header renamed, a body re-serialised between signing and
-//! sending, a masking regression), or a header this repo's own docs and the
-//! Node receiver's own `README.md` flagged as an *unconfirmed assumption*
-//! (`X-Sms-Event-Id` really is `WebhookAttempt.sourceEventId`; `data.messageId`
-//! really is what the receiver should key on) turning out to be wrong once a
-//! real sender exists.
+//! `backends/crates/sms-webhook/tests/sealed_vector.rs` already proves the
+//! sealer's bytes open in the SDKs (`sdks/rust/vsms-sdk-rust/tests/webhook.rs`,
+//! `sdks/node/vsms-sdk-node/test/webhook.test.ts`), and
+//! `sms-webhook/tests/sealed_delivery.rs` that a real cratestack
+//! `EnvelopeLayer` accepts them. That is not sufficient for this gate: it
+//! proves the seal, not that what the real `hooks` role actually sends is that
+//! seal, over a real socket, to a receiver that never saw this crate's code.
+//! The interesting failure this test can catch and a fixture test structurally
+//! cannot: a mismatch between what the worker seals and what is on the wire
+//! (a body re-serialised after sealing, a route the endpoint URL does not
+//! yield, an audience the row does not carry, a signing key the worker loaded
+//! differently from the one the receiver pinned).
 //!
 //! # What's real here, and what isn't
 //!
 //! Real: a genuinely separate `sms-worker --roles hooks` OS process
-//! (`CARGO_BIN_EXE_sms-worker`), a genuinely separate `node
-//! src/gate-receiver.ts` OS process, a real loopback TCP connection between
-//! them, a real Postgres-backed `WebhookAttempt` row claimed through the
-//! real CAS claim loop (`backends/crates/sms-worker/src/claim.rs`), and the actual
-//! `examples/node/webhook-receiver` code — not a copy, not a reimplementation
-//! — verifying it. Not real: the `WebhookAttempt` row itself is seeded
-//! directly (`db.webhook_attempt().create(...)`, the same convention
-//! `hooks_live_postgres.rs` already uses) rather than produced by a real
-//! `Message` transition through #38's subscribers — that path is already
-//! covered end to end by `backends/crates/sms-api/tests/webhooks_live_postgres.rs`,
-//! and re-deriving it here would only add a second, slower way to seed the
-//! same row `hooks` actually claims, without exercising anything new about
-//! *this* assertion (signing/sending/receiving).
+//! (`CARGO_BIN_EXE_sms-worker`) holding its signing key from a file, a
+//! genuinely separate `node src/gate-receiver.ts` OS process pinning only the
+//! *public* keys, a real loopback TCP connection between them, a real
+//! Postgres-backed `WebhookAttempt` row claimed through the real CAS claim loop
+//! (`backends/crates/sms-worker/src/claim.rs`), and the actual
+//! `examples/node/webhook-receiver` code, opening the delivery with
+//! `@vaam-apps/vsms-node`'s `WebhookOpener` (cratestack's envelope compiled to
+//! WebAssembly). Not real: the `WebhookAttempt` row itself is seeded directly
+//! (the same convention `hooks_live_postgres.rs` uses) rather than produced by
+//! a `Message` transition; that path is covered by
+//! `backends/crates/sms-api/tests/webhooks_live_postgres.rs`.
 //!
 //! # Prerequisites this test cannot check for you
 //!
@@ -43,35 +37,31 @@
 //!   whatever the last build produced; a stale or missing binary is a
 //!   confusing failure otherwise (same caveat `kill9_reclaim_live.rs`
 //!   documents).
-//! - `pnpm install` inside `examples/node/webhook-receiver` (or from
-//!   `examples/`, its pnpm workspace root) — Node's native TypeScript
-//!   support needs no build step, but `express` still has to be resolvable
-//!   from `node_modules`.
-//! - Node ≥23.6 on `PATH` as `node` (this repo's own `.nvmrc` pins 26,
-//!   which qualifies) — native TS support unflagged, per the receiver's own
+//! - The Node SDK built (`pnpm --filter @vaam-apps/vsms-node run build`, which
+//!   needs `just wasm-tools`) and `pnpm install --ignore-workspace
+//!   --frozen-lockfile` inside `examples/node/webhook-receiver`, which copies
+//!   the built SDK in.
+//! - Node ≥23.6 on `PATH` as `node` (this repo's own `.nvmrc` pins 26, which
+//!   qualifies) — native TS support unflagged, per the receiver's own
 //!   `package.json` `engines` field.
 //!
 //! ```bash
 //! cargo build -p sms-worker-bin
-//! (cd examples && pnpm install)
+//! pnpm --filter @vaam-apps/vsms-node run build
+//! (cd examples/node/webhook-receiver && pnpm install --ignore-workspace --frozen-lockfile)
 //! cargo test -p sms-worker-bin --test hooks_node_receiver_live -- --ignored --nocapture
 //! ```
 //!
-//! # The deliberate-break evidence this gate asks for
+//! # The deliberate-break evidence, kept as a test
 //!
-//! Confirmed by hand, not merely reasoned about (see this PR's own
-//! description for the full transcript): seeding the `WebhookEndpoint`
-//! with a secret that does **not** match the receiver's own
-//! `WEBHOOK_RECEIVER_SECRET` reproduces exactly the failure this test
-//! exists to catch — the receiver's independent `verifySignature`
-//! genuinely rejects the request (`401`, logged `rejected-signature` on
-//! the Node side), `hooks.rs` treats that as `Outcome::Retryable` and
-//! backs off rather than reaching `succeeded`, and this test's own
-//! `wait_for_receiver_result` deadline expires with a clear panic message
-//! naming what never arrived. Restoring the matching secret makes it pass
-//! again. That is the one inversion available without touching production
-//! signing/verification code — the two implementations either agree or
-//! they don't, and this is what "don't" looks like end to end.
+//! The second test seeds the endpoint with an audience the receiver was not
+//! configured with. The receiver's independent `WebhookOpener` refuses the
+//! genuine delivery (`401`, logged `rejected-unverified` on the Node side),
+//! `hooks.rs` treats that as retryable and backs off rather than reaching
+//! `succeeded`, and the test asserts both observations. It is the one inversion
+//! available without touching production sealing or opening code: the two
+//! implementations either agree about the audience or they don't, and this is
+//! what "don't" looks like end to end — permanently, not a transcript.
 
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener as StdTcpListener;
@@ -116,6 +106,13 @@ fn unique_suffix() -> String {
     format!("{:06x}", (u64::from(nanos).wrapping_add(n)) % 0x0100_0000)
 }
 
+/// Same reasoning as every other live suite's copy of this mutex: the spawned
+/// worker's claim loop is deliberately global (it must see every endpoint's
+/// rows), so two tests that each start a real worker would steal each other's
+/// attempts, and both seed through the same trigger-heavy tables at once.
+static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 async fn db() -> Cratestack {
     let url = sms_test_support::database_url().await;
     let pool = PgPoolOptions::new()
@@ -152,23 +149,21 @@ async fn seed_app(db: &Cratestack) -> String {
         .id
 }
 
-/// `secret` is a parameter, not derived — the deliberate-break evidence
-/// this module doc describes is "seed a mismatched secret," which needs a
-/// call site that can do exactly that.
+/// `audience` is a parameter, not derived — the deliberate-break test seeds
+/// one the receiver was not configured with, which needs a call site that can
+/// do exactly that.
 async fn seed_endpoint(
     db: &Cratestack,
     app_id: &str,
     url: &str,
-    secret: &str,
+    audience: &str,
 ) -> schema::WebhookEndpoint {
     db.webhook_endpoint()
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: url.to_owned(),
+            audience: audience.to_owned(),
             eventTypes: " message.delivered ".to_owned(),
-            secret: secret.to_owned(),
-            prevSecret: None,
-            secretRotatedAt: None,
             maskRecipient: true,
             maxAttempts: 8,
             circuitOpenUntil: None,
@@ -221,23 +216,51 @@ async fn seed_attempt(
         .expect("seeding the webhook attempt")
 }
 
+/// vsms's two envelope signing seeds for this run: `CURRENT` signs deliveries,
+/// `NEXT` is only pinned. The receiver is given their *public* halves.
+const CURRENT_SEED: [u8; 32] = [0x71; 32];
+const NEXT_SEED: [u8; 32] = [0x72; 32];
+
+fn public_key_b64u(seed: &[u8; 32]) -> String {
+    use base64::Engine as _;
+    let key = cratestack::cose::Ed25519Signer::from_seed(seed)
+        .verify_key()
+        .ed25519_bytes()
+        .expect("an Ed25519 key");
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key)
+}
+
+/// The PEM file the worker loads (`--envelope-signing-key-file`).
+fn write_signing_key() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("hooks-node-receiver-key-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("creating the key directory");
+    let path = dir.join("envelope-current.pem");
+    std::fs::write(&path, sms_api::envelope::pem_of_seed(&CURRENT_SEED)).expect("writing the key");
+    path
+}
+
 /// A real, spawned `node src/gate-receiver.ts` process — the actual
 /// `examples/node/webhook-receiver` code, not a stand-in.
 struct NodeReceiver {
     child: Child,
     base_url: String,
-    secret: String,
+    audience: String,
 }
 
 impl NodeReceiver {
-    async fn spawn(port: u16, secret: &str) -> Self {
+    async fn spawn(port: u16, audience: &str) -> Self {
         let package_dir = node_receiver_dir();
         let mut command = Command::new("node");
         command
             .current_dir(&package_dir)
             .arg("src/gate-receiver.ts")
             .env("WEBHOOK_RECEIVER_PORT", port.to_string())
-            .env("WEBHOOK_RECEIVER_SECRET", secret)
+            .env(
+                "WEBHOOK_RECEIVER_SERVER_CURRENT",
+                public_key_b64u(&CURRENT_SEED),
+            )
+            .env("WEBHOOK_RECEIVER_SERVER_NEXT", public_key_b64u(&NEXT_SEED))
+            .env("WEBHOOK_RECEIVER_AUDIENCE", audience)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
 
@@ -250,8 +273,8 @@ impl NodeReceiver {
         });
 
         // Echo the child's stdout to this test's own — `--nocapture` then
-        // shows both processes interleaved, which is what made the
-        // deliberate-break run (this module doc's own evidence) legible.
+        // shows both processes interleaved, which is what makes a failing
+        // run legible.
         if let Some(stdout) = child.stdout.take() {
             std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -265,7 +288,7 @@ impl NodeReceiver {
         Self {
             child,
             base_url,
-            secret: secret.to_owned(),
+            audience: audience.to_owned(),
         }
     }
 
@@ -306,7 +329,8 @@ async fn wait_until_ready(base_url: &str, child: &mut Child) {
         if let Ok(Some(status)) = child.try_wait() {
             panic!(
                 "node src/gate-receiver.ts exited before becoming ready: {status:?} — check \
-                 that `pnpm install` has been run in examples/node/webhook-receiver"
+                 that the Node SDK is built and `pnpm install --ignore-workspace \
+                 --frozen-lockfile` has been run in examples/node/webhook-receiver"
             );
         }
         if let Ok(response) = reqwest::get(format!("{base_url}/healthz")).await
@@ -339,6 +363,8 @@ fn spawn_hooks_worker(database_url: &str, worker_id: &str) -> KillOnDrop {
         .args(["--roles", "hooks"])
         .args(["--database-url", database_url])
         .args(["--worker-id", worker_id])
+        .arg("--envelope-signing-key-file")
+        .arg(write_signing_key())
         // Ephemeral metrics port: the default is a fixed 127.0.0.1:9091 and
         // `cargo test` runs test binaries in parallel, so two suites that each
         // spawn a worker contend for it and the loser dies at startup before
@@ -365,31 +391,47 @@ async fn wait_for_receiver_result(receiver: &NodeReceiver, timeout: Duration) ->
         assert!(
             tokio::time::Instant::now() < deadline,
             "the node gate-receiver never recorded any processed result within {timeout:?} \
-             (secret used: {}); either the hooks role never reached it, or the signature was \
-             rejected before ever reaching the point this test can observe",
-            receiver.secret
+             (audience configured: {}); either the hooks role never reached it, or the \
+             delivery was refused before reaching the point this test can observe",
+            receiver.audience
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
 
+async fn reread_attempt(db: &Cratestack, id: &str) -> schema::WebhookAttempt {
+    db.webhook_attempt()
+        .find_many()
+        .where_expr(cratestack::FilterExpr::from(
+            schema::webhook_attempt::id().eq(id.to_owned()),
+        ))
+        .limit(1)
+        .run(&sys())
+        .await
+        .expect("re-reading the attempt")
+        .into_iter()
+        .next()
+        .expect("the seeded attempt still exists")
+}
+
 #[tokio::test]
-#[ignore = "needs a live, fully migrated Postgres, the built sms-worker binary, Node >=23.6, and \
-            `pnpm install` in examples/node/webhook-receiver — see module docs"]
-async fn a_real_hooks_delivery_is_independently_verified_by_the_node_receiver() {
+#[ignore = "needs a live, fully migrated Postgres, the built sms-worker binary, Node >=23.6, the \
+            built Node SDK and `pnpm install` in examples/node/webhook-receiver — see module docs"]
+async fn a_real_hooks_delivery_is_independently_opened_by_the_node_receiver() {
+    let _guard = TEST_MUTEX.lock().await;
     let database_url = sms_test_support::database_url().await;
     let db = db().await;
 
-    let secret = format!("whsec_gate_test_{}", unique_suffix());
+    let audience = format!("gate-receiver-{}", unique_suffix());
     let port = free_port();
-    let receiver = NodeReceiver::spawn(port, &secret).await;
+    let receiver = NodeReceiver::spawn(port, &audience).await;
 
     let app_id = seed_app(&db).await;
     let endpoint = seed_endpoint(
         &db,
         &app_id,
         &format!("{}/webhooks/vsms", receiver.base_url),
-        &secret,
+        &audience,
     )
     .await;
     let aggregate_id = format!("cmsg{}", unique_suffix());
@@ -401,8 +443,8 @@ async fn a_real_hooks_delivery_is_independently_verified_by_the_node_receiver() 
     // The independent verification this gate exists to prove: not "the
     // attempt reached `succeeded` in our own database" (that's provable
     // without a receiver at all — see hooks_live_postgres.rs) but "a
-    // second, from-scratch implementation of §4.4, running as its own OS
-    // process, computed the same signature and accepted the request."
+    // second implementation of the open, running as its own OS process with
+    // only vsms's public keys, accepted the request."
     let result = wait_for_receiver_result(&receiver, Duration::from_secs(20)).await;
     assert_eq!(
         result["status"].as_str(),
@@ -412,7 +454,7 @@ async fn a_real_hooks_delivery_is_independently_verified_by_the_node_receiver() 
     assert_eq!(
         result["eventType"].as_str(),
         Some("message.delivered"),
-        "the receiver's own X-Sms-Event / envelope.type reading: {result}"
+        "the receiver's own reading of the opened envelope's type: {result}"
     );
     assert_eq!(
         result["aggregateId"].as_str(),
@@ -423,19 +465,57 @@ async fn a_real_hooks_delivery_is_independently_verified_by_the_node_receiver() 
     // Corroborate from this system's own side too — not the gate's main
     // claim, but confirms the two observations (Node's HTTP-level verdict,
     // this database's own state) agree.
-    let reread = db
-        .webhook_attempt()
-        .find_many()
-        .where_expr(cratestack::FilterExpr::from(
-            schema::webhook_attempt::id().eq(attempt.id.clone()),
-        ))
-        .limit(1)
-        .run(&sys())
-        .await
-        .expect("re-reading the attempt")
-        .into_iter()
-        .next()
-        .expect("the seeded attempt still exists");
+    let reread = reread_attempt(&db, &attempt.id).await;
     assert_eq!(reread.state, schema::AttemptState::succeeded);
     assert_eq!(reread.lastStatusCode, Some(202));
+}
+
+/// The deliberate break, kept: the endpoint says the receiver is called
+/// something it is not configured as, so the genuine delivery is refused by the
+/// receiver's independent opener and the worker treats it as a failed attempt.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres, the built sms-worker binary, Node >=23.6, the \
+            built Node SDK and `pnpm install` in examples/node/webhook-receiver — see module docs"]
+async fn a_delivery_addressed_to_another_audience_is_refused_by_the_node_receiver() {
+    let _guard = TEST_MUTEX.lock().await;
+    let database_url = sms_test_support::database_url().await;
+    let db = db().await;
+
+    let port = free_port();
+    let receiver = NodeReceiver::spawn(port, "the-audience-the-receiver-is-configured-with").await;
+
+    let app_id = seed_app(&db).await;
+    let endpoint = seed_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/webhooks/vsms", receiver.base_url),
+        "an-audience-the-receiver-does-not-answer-to",
+    )
+    .await;
+    let attempt = seed_attempt(&db, &endpoint.id, &format!("cmsg{}", unique_suffix())).await;
+
+    let worker_id = format!("hooks-node-receiver-test-{}", unique_suffix());
+    let _worker = spawn_hooks_worker(&database_url, &worker_id);
+
+    let result = wait_for_receiver_result(&receiver, Duration::from_secs(20)).await;
+    assert_eq!(
+        result["status"].as_str(),
+        Some("rejected-unverified"),
+        "the receiver must refuse a delivery addressed to someone else: {result}"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let reread = reread_attempt(&db, &attempt.id).await;
+        if reread.state == schema::AttemptState::failed {
+            assert_eq!(reread.lastStatusCode, Some(401));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the refused attempt never reached failed: {:?}",
+            reread.state
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
 }

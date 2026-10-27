@@ -20,6 +20,8 @@ use sms_api::schema::{
     self, AttemptState, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput,
     UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, webhook_attempt,
 };
+use sms_test_support::webhook_receiver::WebhookReceiver;
+use sms_webhook::{CONTRACT_SHA, Sealer};
 use sms_worker::WorkerContext;
 use sms_worker::hooks;
 use wiremock::matchers::{method, path};
@@ -188,10 +190,8 @@ async fn seed_endpoint(
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: url.to_owned(),
+            audience: format!("hooks-test-{suffix}"),
             eventTypes: " message.delivered ".to_owned(),
-            secret: format!("whsec_test_{suffix}"),
-            prevSecret: None,
-            secretRotatedAt: None,
             maskRecipient: true,
             maxAttempts: max_attempts,
             circuitOpenUntil: None,
@@ -296,24 +296,52 @@ fn worker_context(db: Cratestack) -> WorkerContext {
             "unused".to_owned(),
             std::sync::Arc::new(NeverCalled) as std::sync::Arc<dyn sms_provider::SmsProvider>,
         )])),
+        webhook_sealer: Some(Sealer::new(vsms_signer()).expect("a sealer")),
     }
 }
 
-fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .expect("reqwest client builder with only a timeout set never fails")
+/// vsms's envelope signing key, as the worker would load it from its file.
+fn vsms_signer() -> cratestack::cose::Ed25519Signer {
+    cratestack::cose::Ed25519Signer::from_seed(&[0x42; 32])
 }
 
-/// Happy path end to end: claim, sign, POST, `-> succeeded`. Verifies the
-/// signature against `sms_webhook::verify` — the same function a real
-/// receiver would call — and the envelope shape §8.4 documents, against the
-/// actual bytes wiremock received, not a reconstruction of what should have
-/// been sent.
+/// What a receiver pins: the public half of [`vsms_signer`].
+fn vsms_public_key() -> [u8; 32] {
+    vsms_signer()
+        .verify_key()
+        .ed25519_bytes()
+        .expect("an Ed25519 key")
+}
+
+/// The headers `wiremock` recorded, as the `(name, value)` pairs a receiver sees.
+fn wire_headers(request: &wiremock::Request) -> Vec<(String, String)> {
+    request
+        .headers
+        .iter()
+        .map(|(name, value)| (name.as_str().to_owned(), value.to_str().unwrap().to_owned()))
+        .collect()
+}
+
+/// A receiver the way vaam configures it: a real `EnvelopeLayer`, pinned to
+/// vsms's key, answering for `audience` on `/hook`.
+fn receiver_for(audience: &str) -> WebhookReceiver {
+    WebhookReceiver::new(&[vsms_public_key()], audience, &["/hook"], CONTRACT_SHA)
+}
+
+/// The client the worker itself builds: a test that built its own would prove
+/// nothing about the redirect policy production runs with.
+fn http_client() -> reqwest::Client {
+    hooks::build_http_client()
+}
+
+/// Happy path end to end: claim, seal, POST, `-> succeeded`. The bytes
+/// `wiremock` recorded are handed to a real `EnvelopeLayer` (`Required`)
+/// configured with vsms's public key and the endpoint's audience — what vaam
+/// runs on `/webhooks/vsms` — and the envelope its handler sees is the one
+/// §8.4 documents, with the event id inside the sealed body.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn a_successful_delivery_reaches_succeeded_with_a_verifiable_signature_and_envelope() {
+async fn a_successful_delivery_reaches_succeeded_and_a_real_envelope_layer_opens_it() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
     let suffix = unique_suffix();
@@ -360,51 +388,36 @@ async fn a_successful_delivery_reaches_succeeded_with_a_verifiable_signature_and
         .expect("request recording is on by default");
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
+    let headers = wire_headers(request);
 
-    let event_id = request
-        .headers
-        .get("x-sms-event-id")
-        .expect("event id header present")
-        .to_str()
-        .unwrap();
-    let timestamp: i64 = request
-        .headers
-        .get("x-sms-timestamp")
-        .expect("timestamp header present")
-        .to_str()
-        .unwrap()
-        .parse()
-        .expect("timestamp is a decimal integer");
-    let signature = request
-        .headers
-        .get("x-sms-signature")
-        .expect("signature header present")
-        .to_str()
-        .unwrap();
-    assert_eq!(
-        request
-            .headers
-            .get("x-sms-event")
-            .unwrap()
-            .to_str()
-            .unwrap(),
-        "message.delivered"
-    );
-
+    // No HMAC scheme is left on the wire: not the signature, not the timestamp,
+    // and not the unauthenticated event headers the seal made redundant.
+    for (name, _) in &headers {
+        assert!(
+            !name.starts_with("x-sms") && !name.contains("signature"),
+            "unexpected header {name}"
+        );
+    }
     assert!(
-        sms_webhook::verify(
-            &[&endpoint.secret],
-            timestamp,
-            event_id,
-            &request.body,
-            signature
-        ),
-        "the signature over the exact bytes wiremock received must verify against the \
-         endpoint's own secret"
+        headers
+            .iter()
+            .any(|(name, value)| name == "content-type" && value.starts_with("application/cose")),
+        "{headers:?}"
     );
 
-    let envelope: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    let receiver = receiver_for(&endpoint.audience);
+    let verdict = receiver.deliver("/hook", &headers, &request.body).await;
+    assert_eq!(
+        verdict.status, 200,
+        "a real EnvelopeLayer pinned to vsms's key and the endpoint's audience must accept \
+         exactly the bytes the worker sent"
+    );
+
+    let bodies = receiver.bodies();
+    assert_eq!(bodies.len(), 1);
+    let envelope: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
     assert_eq!(envelope["id"], attempt.id);
+    assert_eq!(envelope["eventId"], attempt.sourceEventId.to_string());
     assert_eq!(envelope["type"], "message.delivered");
     assert!(envelope["occurredAt"].is_string());
     assert_eq!(envelope["data"]["messageId"], "cmsg000000000000000000");
@@ -413,6 +426,257 @@ async fn a_successful_delivery_reaches_succeeded_with_a_verifiable_signature_and
     let endpoint_after = reread_endpoint(&db, &endpoint.id).await;
     assert_eq!(endpoint_after.consecutiveFailures, 0);
     assert!(endpoint_after.circuitOpenUntil.is_none());
+}
+
+/// The worker's actual bytes, offered to receivers that are wrong in one way
+/// each: another audience, a flipped bit, a second delivery of the same bytes.
+/// Each is refused by the real layer, so none of the guards in `sms-webhook`'s
+/// own suite is a property of a test fixture the worker does not produce.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn what_the_worker_sent_is_refused_by_a_wrong_audience_a_tampering_and_a_replay() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
+    seed_attempt(&db, &endpoint.id, "cmsgA", "message.delivered", "{}").await;
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds");
+    let requests = server.received_requests().await.expect("recording is on");
+    assert_eq!(requests.len(), 1);
+    let headers = wire_headers(&requests[0]);
+    let body = requests[0].body.clone();
+
+    // Another receiver's audience.
+    let elsewhere = receiver_for("some-other-service");
+    assert_eq!(
+        elsewhere.deliver("/hook", &headers, &body).await.status,
+        401
+    );
+    assert_eq!(elsewhere.bodies(), Vec::<String>::new());
+
+    // One flipped bit.
+    let mut tampered = body.clone();
+    let last = tampered.len() - 1;
+    tampered[last] ^= 0x01;
+    let receiver = receiver_for(&endpoint.audience);
+    assert_eq!(
+        receiver.deliver("/hook", &headers, &tampered).await.status,
+        401
+    );
+
+    // The genuine bytes open once, and only once.
+    assert_eq!(receiver.deliver("/hook", &headers, &body).await.status, 200);
+    assert_eq!(receiver.deliver("/hook", &headers, &body).await.status, 401);
+    assert_eq!(receiver.bodies().len(), 1);
+}
+
+/// A retry is a **new** sealed request: a fresh nonce and timestamp over the
+/// same `id` and `eventId`. Both attempts open under one receiver (a re-sent
+/// nonce would be refused as a replay), and the first one's bytes are not the
+/// second's.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_retry_is_sealed_afresh_with_the_same_event_id() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(503))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgR", "message.delivered", "{}").await;
+
+    let ctx = worker_context(db.clone());
+    let http = http_client();
+    hooks::tick(&ctx, &sys(), "test-worker", &http)
+        .await
+        .expect("first tick");
+    assert_eq!(
+        reread_attempt(&db, &attempt.id).await.state,
+        AttemptState::failed
+    );
+    // The first backoff entry is 1 s.
+    tokio::time::sleep(std::time::Duration::from_millis(1_300)).await;
+    hooks::tick(&ctx, &sys(), "test-worker", &http)
+        .await
+        .expect("second tick");
+    assert_eq!(
+        reread_attempt(&db, &attempt.id).await.state,
+        AttemptState::succeeded
+    );
+
+    let requests = server.received_requests().await.expect("recording is on");
+    assert_eq!(requests.len(), 2);
+    assert_ne!(
+        requests[0].body, requests[1].body,
+        "a retry must not resend the first bytes"
+    );
+
+    let receiver = receiver_for(&endpoint.audience);
+    for request in &requests {
+        assert_eq!(
+            receiver
+                .deliver("/hook", &wire_headers(request), &request.body)
+                .await
+                .status,
+            200
+        );
+    }
+    let bodies = receiver.bodies();
+    let ids: Vec<serde_json::Value> = bodies
+        .iter()
+        .map(|body| serde_json::from_str::<serde_json::Value>(body).unwrap())
+        .collect();
+    assert_eq!(ids[0]["id"], ids[1]["id"]);
+    assert_eq!(ids[0]["eventId"], ids[1]["eventId"]);
+}
+
+/// A redirect is a refusal, not a hop: the sealed bytes (recipient and text
+/// included) are never re-sent to a host the seal was not made for.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_redirect_is_not_followed() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(307).insert_header("location", "/elsewhere"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/elsewhere"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgT", "message.delivered", "{}").await;
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds");
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(reread.state, AttemptState::failed);
+    assert_eq!(reread.lastStatusCode, Some(307));
+}
+
+/// A URL the seal cannot bind (here a query string) never reaches the network;
+/// it is an ordinary endpoint failure with its reason recorded.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_endpoint_url_that_cannot_be_sealed_is_never_sent_and_says_why() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let endpoint = seed_endpoint(
+        &db,
+        &suffix,
+        &app_id,
+        &format!("{}/hook?tenant=1", server.uri()),
+        8,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgU", "message.delivered", "{}").await;
+
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds");
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(reread.state, AttemptState::failed);
+    assert!(
+        reread
+            .lastError
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not sealed"),
+        "{:?}",
+        reread.lastError
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+/// Fail closed: a process with no signing key claims nothing. A claim would
+/// have counted an attempt against an endpoint for a delivery that cannot be
+/// made.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_worker_without_a_signing_key_claims_nothing() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgK", "message.delivered", "{}").await;
+
+    let ctx = WorkerContext {
+        webhook_sealer: None,
+        ..worker_context(db.clone())
+    };
+    let error = hooks::tick(&ctx, &sys(), "test-worker", &http_client())
+        .await
+        .expect_err("no key, no tick");
+    assert!(error.to_string().contains("no webhook sealer"), "{error}");
+
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(reread.state, AttemptState::pending);
+    assert_eq!(reread.attempts, 0);
 }
 
 /// A retryable failure (500) lands in `failed` with a scheduled retry, and
@@ -659,17 +923,24 @@ async fn a_masked_recipient_reaches_the_endpoint_unchanged_never_reconstructed()
 
     let requests = server.received_requests().await.expect("recording is on");
     assert_eq!(requests.len(), 1);
-    let envelope: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    // The body on the wire is a sealed message, so the value is read where a
+    // receiver reads it: from the envelope a real `EnvelopeLayer` hands its handler.
+    let receiver = receiver_for(&endpoint.audience);
+    let verdict = receiver
+        .deliver("/hook", &wire_headers(&requests[0]), &requests[0].body)
+        .await;
+    assert_eq!(verdict.status, 200, "{verdict:?}");
+    let opened = receiver.bodies().remove(0);
+    let envelope: serde_json::Value = serde_json::from_str(&opened).unwrap();
     assert_eq!(
         envelope["data"]["to"], "+2376****89",
         "the masked value must reach the endpoint byte-for-byte, not a reconstructed real MSISDN"
     );
-    // The full request body must contain no plausible unmasked E.164
+    // The envelope the receiver opened must contain no plausible unmasked E.164
     // Cameroon mobile number for this fixture's own MSISDN — a coarse but
     // real second check that nothing else in the pipeline re-derived one.
-    let body_text = String::from_utf8_lossy(&requests[0].body);
     assert!(
-        !body_text.contains("+237677900000"),
+        !opened.contains("+237677900000"),
         "an unmasked MSISDN must never appear anywhere in the delivered body"
     );
 }

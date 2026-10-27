@@ -1,7 +1,5 @@
 #![doc = include_str!("main.md")]
 
-use std::path::PathBuf;
-
 use anyhow::{Context, Result, bail};
 use clap::Parser;
 use cratestack::FilterExpr;
@@ -105,19 +103,17 @@ struct Cli {
     #[arg(long, default_value_t = false)]
     webhook_mask_recipient: bool,
 
-    /// Where to write the signing secret this command ends up using —
-    /// freshly generated (`sms_webhook::generate_secret()`) on first run,
-    /// or the existing row's own `secret` on every rerun against an
-    /// already-seeded database. `demo-app` has no other way to learn this
-    /// value: `WebhookEndpoint.secret` is server-generated here, exactly
-    /// the "one container's computed output, a sibling container's
-    /// input" problem, solved through a shared volume. Ordinary
-    /// create-or-truncate semantics, no restrictive mode: not the
-    /// half of a credential that authenticates a caller, and this whole
-    /// stack is a disposable, obviously-demo deployment regardless (see
-    /// `SMS_HASH_PEPPER`'s own inline compose comments).
+    /// VS-8: the audience a delivery to `--webhook-url` binds — the name the
+    /// receiver's `EnvelopeLayer` is built with (`demo-app` opens deliveries
+    /// as `DEMO_WEBHOOK_AUDIENCE`, defaulting to this same value). There is no
+    /// secret to hand the receiver any more: it pins the gateway's public keys
+    /// (`sms-gateway server-keys`) and checks the audience, and neither is
+    /// something this command generates. Required alongside `--webhook-url`,
+    /// and refused without it, so a stray flag never looks like it did
+    /// something; no default, because a default would be a receiver identity
+    /// nobody chose.
     #[arg(long)]
-    webhook_secret_out: Option<PathBuf>,
+    webhook_audience: Option<String>,
 }
 
 /// `create` the `App` row, or resolve the id of the one that already
@@ -274,31 +270,26 @@ async fn ensure_demo_sender_id(
     Ok(())
 }
 
-/// Ensure a `WebhookEndpoint` pointed at the demo app's own receiver
-/// exists, and return the signing secret it currently uses — freshly
-/// generated on the row this call creates, or read straight back off an
-/// already-existing row on a rerun. `WebhookEndpoint` carries no unique
-/// constraint on `(appId, url)` (unlike `App.slug`), so idempotency here
-/// is read-then-create, the same accepted-TOCTOU-window shape
-/// `ensure_demo_sender_id`'s own approved-registration check already
-/// uses — safe for the same reason: this only ever runs from one
-/// container in one sequential compose dependency chain, never
-/// concurrently with itself.
+/// Ensure a `WebhookEndpoint` pointed at the demo app's own receiver exists.
+/// `WebhookEndpoint` carries no unique constraint on `(appId, url)` (unlike
+/// `App.slug`), so idempotency here is read-then-create, the same
+/// accepted-TOCTOU-window shape `ensure_demo_sender_id`'s own
+/// approved-registration check already uses — safe for the same reason: this
+/// only ever runs from one container in one sequential compose dependency
+/// chain, never concurrently with itself.
 ///
-/// Deliberately does NOT try to keep an existing row's `secret` in sync
-/// with a caller-supplied `--webhook-secret-out` value from a *previous*
-/// run that used a different generated secret — the row's own `secret`
-/// is always the one written back to `webhook_secret_out`, so `demo-app`
-/// and the database never disagree about which value is current, even
-/// across a restart that skips re-creation.
+/// A row that already exists keeps the audience it was created with; a rerun
+/// with a different `--webhook-audience` says so instead of silently editing an
+/// endpoint an operator may have changed in the console.
 async fn ensure_demo_webhook_endpoint(
     db: &Cratestack,
     ctx: &cratestack::CratestackContext,
     app_id: &str,
     url: &str,
+    audience: &str,
     max_attempts: i64,
     mask_recipient: bool,
-) -> Result<String> {
+) -> Result<()> {
     let existing = db
         .webhook_endpoint()
         .find_many()
@@ -313,7 +304,13 @@ async fn ensure_demo_webhook_endpoint(
 
     if let Some(row) = existing.into_iter().next() {
         println!("reusing existing WebhookEndpoint {} (url={url:?})", row.id);
-        return Ok(row.secret);
+        if row.audience != audience {
+            println!(
+                "note: it keeps its audience {:?}, not the {audience:?} passed now",
+                row.audience
+            );
+        }
+        return Ok(());
     }
 
     let event_types =
@@ -323,17 +320,14 @@ async fn ensure_demo_webhook_endpoint(
                  space-free array, should never fail to pack"
             )
         })?;
-    let secret = sms_webhook::generate_secret();
 
     let created = db
         .webhook_endpoint()
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: url.to_owned(),
+            audience: audience.to_owned(),
             eventTypes: event_types,
-            secret: secret.clone(),
-            prevSecret: None,
-            secretRotatedAt: None,
             maskRecipient: mask_recipient,
             maxAttempts: max_attempts,
             circuitOpenUntil: None,
@@ -341,9 +335,12 @@ async fn ensure_demo_webhook_endpoint(
         .run(ctx)
         .await
         .context("creating the WebhookEndpoint row")?;
-    println!("created WebhookEndpoint {} (url={url:?})", created.id);
+    println!(
+        "created WebhookEndpoint {} (url={url:?}, audience={audience:?})",
+        created.id
+    );
 
-    Ok(created.secret)
+    Ok(())
 }
 
 #[tokio::main]
@@ -367,7 +364,7 @@ async fn main() -> Result<()> {
         webhook_url,
         webhook_max_attempts,
         webhook_mask_recipient,
-        webhook_secret_out,
+        webhook_audience,
     } = Cli::parse();
 
     if role != "owner" && role != "admin" {
@@ -423,44 +420,37 @@ async fn main() -> Result<()> {
     // at a default that only resolves inside a stack that also runs
     // `demo-app` — R4 (CONTRIBUTING.md): a backend-only deployment must
     // not silently get an endpoint that will error on every delivery
-    // attempt forever. `--webhook-secret-out` with no `--webhook-url` is
+    // attempt forever. `--webhook-audience` with no `--webhook-url` is
     // a caller error, not a silent no-op — it would otherwise look like
     // it did something.
-    match (&webhook_url, &webhook_secret_out) {
-        (Some(url), _) => {
-            let webhook_secret = ensure_demo_webhook_endpoint(
+    match (&webhook_url, &webhook_audience) {
+        (Some(url), Some(audience)) => {
+            ensure_demo_webhook_endpoint(
                 &db,
                 &ctx,
                 &app_id,
                 url,
+                audience,
                 webhook_max_attempts,
                 webhook_mask_recipient,
             )
             .await?;
 
-            // The secret is never printed: stdout is a container log, and a
-            // log is exactly where a signing secret must not end up
-            // (CodeQL flagged the previous fallback as cleartext logging).
-            // `--webhook-secret-out` is the only way to receive it.
-            let Some(path) = &webhook_secret_out else {
-                bail!(
-                    "--webhook-url was given without --webhook-secret-out — the webhook secret \
-                     is only ever written to a file, never printed. Pass --webhook-secret-out \
-                     <path> (a path the receiver container can read)."
-                );
-            };
-            std::fs::write(path, &webhook_secret)
-                .with_context(|| format!("writing the webhook secret to {}", path.display()))?;
-            println!("webhook secret written to: {}", path.display());
-
             println!(
-                "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?})"
+                "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?}, audience={audience:?})"
+            );
+        }
+        (Some(_), None) => {
+            bail!(
+                "--webhook-url was given without --webhook-audience — a delivery is sealed for \
+                 one recipient and the endpoint must say which. Pass --webhook-audience <name>, \
+                 the name the receiver's EnvelopeLayer is built with."
             );
         }
         (None, Some(_)) => {
             bail!(
-                "--webhook-secret-out was given but --webhook-url was not — nothing would ever \
-                 be written to it. Pass --webhook-url too, or drop --webhook-secret-out."
+                "--webhook-audience was given but --webhook-url was not — nothing would ever \
+                 use it. Pass --webhook-url too, or drop --webhook-audience."
             );
         }
         (None, None) => {

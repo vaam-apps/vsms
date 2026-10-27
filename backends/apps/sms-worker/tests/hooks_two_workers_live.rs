@@ -89,8 +89,34 @@ use sms_api::schema::{
     self, AttemptState, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput,
     webhook_attempt,
 };
+use sms_test_support::webhook_receiver::WebhookReceiver;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// The seed of vsms's envelope signing key for this run: written to a PEM file
+/// the two spawned workers read (`--envelope-signing-key-file`), and pinned,
+/// as a public key, by the receiver that opens what they sent.
+const VSMS_KEY_SEED: [u8; 32] = [0x44; 32];
+
+/// What the endpoint is told its receiver is called.
+const AUDIENCE: &str = "two-workers-receiver";
+
+/// The PEM file the workers load, written fresh for this process.
+fn write_signing_key() -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("hooks-two-workers-key-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("creating the key directory");
+    let path = dir.join("envelope-current.pem");
+    std::fs::write(&path, sms_api::envelope::pem_of_seed(&VSMS_KEY_SEED)).expect("writing the key");
+    path
+}
+
+/// vsms's public key, the half a receiver pins.
+fn vsms_public_key() -> [u8; 32] {
+    cratestack::cose::Ed25519Signer::from_seed(&VSMS_KEY_SEED)
+        .verify_key()
+        .ed25519_bytes()
+        .expect("an Ed25519 key")
+}
 
 /// How many independent `WebhookAttempt` rows the two workers race over.
 /// More than one worker's own `BUDGET` (20, `hooks.rs`) so a single poll
@@ -165,9 +191,7 @@ async fn seed_endpoint(db: &Cratestack, app_id: &str, mock_url: &str) -> schema:
             appId: app_id.to_owned(),
             url: format!("{mock_url}/webhooks/vsms"),
             eventTypes: " message.delivered ".to_owned(),
-            secret: format!("whsec_two_workers_{}", unique_suffix()),
-            prevSecret: None,
-            secretRotatedAt: None,
+            audience: AUDIENCE.to_owned(),
             maskRecipient: false,
             maxAttempts: 8,
             circuitOpenUntil: None,
@@ -272,13 +296,19 @@ impl Drop for KillOnDrop {
 /// race and no shared global to contend over. This is the same class of
 /// defect as the shared test database `sms-test-support` already solves per
 /// test binary; the metrics port was the global nobody had noticed.
-fn spawn_hooks_worker(database_url: &str, worker_id: &str) -> KillOnDrop {
+fn spawn_hooks_worker(
+    database_url: &str,
+    worker_id: &str,
+    signing_key: &std::path::Path,
+) -> KillOnDrop {
     let bin = env!("CARGO_BIN_EXE_sms-worker");
     let child = Command::new(bin)
         .args(["--roles", "hooks"])
         .args(["--database-url", database_url])
         .args(["--worker-id", worker_id])
         .args(["--metrics-listen", "127.0.0.1:0"])
+        .arg("--envelope-signing-key-file")
+        .arg(signing_key)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()
@@ -352,8 +382,9 @@ async fn two_real_hooks_workers_never_double_deliver_the_same_attempt() {
     let seeded = seed_attempts(&db, &endpoint.id, ROW_COUNT).await;
     let ids: Vec<String> = seeded.iter().map(|a| a.id.clone()).collect();
 
-    let worker_1 = spawn_hooks_worker(&database_url, "hooks-two-workers-test-1");
-    let worker_2 = spawn_hooks_worker(&database_url, "hooks-two-workers-test-2");
+    let signing_key = write_signing_key();
+    let worker_1 = spawn_hooks_worker(&database_url, "hooks-two-workers-test-1", &signing_key);
+    let worker_2 = spawn_hooks_worker(&database_url, "hooks-two-workers-test-2", &signing_key);
 
     let final_attempts = wait_until_all_terminal(&db, &ids, Duration::from_secs(30)).await;
 
@@ -424,21 +455,40 @@ async fn two_real_hooks_workers_never_double_deliver_the_same_attempt() {
     // Per-event granularity: not just the right *total*, but exactly one
     // request per distinct event id (a total that happened to add up right
     // while some events got zero and others got two would be exactly the
-    // failure this per-event check exists to catch).
-    let mut requests_per_event: HashMap<String, u32> = HashMap::new();
+    // failure this per-event check exists to catch). The event id is inside the
+    // sealed body now, so each request is opened by a real `EnvelopeLayer`
+    // pinned to vsms's key first: which also proves both racing processes seal
+    // with the one key, and that no two deliveries shared a nonce.
+    let receiver = WebhookReceiver::new(
+        &[vsms_public_key()],
+        AUDIENCE,
+        &["/webhooks/vsms"],
+        sms_webhook::CONTRACT_SHA,
+    );
     for request in &requests {
-        let event_id = request
+        let headers: Vec<(String, String)> = request
             .headers
-            .get(sms_webhook::HEADER_EVENT_ID)
-            .and_then(|value| value.to_str().ok())
-            .expect("every real hooks delivery sets X-Sms-Event-Id")
+            .iter()
+            .map(|(name, value)| (name.as_str().to_owned(), value.to_str().unwrap().to_owned()))
+            .collect();
+        let verdict = receiver
+            .deliver("/webhooks/vsms", &headers, &request.body)
+            .await;
+        assert_eq!(verdict.status, 200, "a delivery the real layer refused");
+    }
+    let mut requests_per_event: HashMap<String, u32> = HashMap::new();
+    for body in receiver.bodies() {
+        let envelope: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let event_id = envelope["eventId"]
+            .as_str()
+            .expect("every real hooks delivery carries its eventId in the sealed body")
             .to_owned();
         *requests_per_event.entry(event_id).or_insert(0) += 1;
     }
     assert_eq!(
         requests_per_event.len(),
         ROW_COUNT,
-        "expected {ROW_COUNT} distinct X-Sms-Event-Id values across all received requests, got \
+        "expected {ROW_COUNT} distinct eventId values across all received requests, got \
          {}: {requests_per_event:?}",
         requests_per_event.len()
     );

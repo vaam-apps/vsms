@@ -152,7 +152,7 @@ where
 /// (`delivered`/`failed`/`expired`/`cancelled` — every one but `rejected`)
 /// map to a catalogued event per [`message_event_type`]. Without this
 /// guard, purging a 90-day-old message would enqueue — and `hooks` would
-/// then sign and POST — a live webhook to the customer's endpoint
+/// then seal and POST — a live webhook to the customer's endpoint
 /// carrying the placeholder `to: "purged-msisdn"` and a `clientRef` that
 /// is already `None`, reporting on a message the endpoint was already
 /// told about three months earlier. `webhook_attempts_dedupe`

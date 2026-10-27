@@ -584,7 +584,7 @@ async fn webhook_write_route_denies_a_client_with_no_scope_at_all() {
             "appId": "does-not-matter-layer2-runs-first",
             "url": "https://example.test/hooks",
             "eventTypes": " message.delivered ",
-            "secret": format!("whsec_test_{}", unique_suffix()),
+            "audience": format!("test-receiver-{}", unique_suffix()),
             "maskRecipient": true,
             "maxAttempts": 8,
         }))

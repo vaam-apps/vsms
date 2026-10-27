@@ -82,6 +82,15 @@ struct Cli {
     #[arg(long, env = "SMS_WORKER_ID")]
     worker_id: Option<String>,
 
+    /// PKCS#8 PEM Ed25519 private key that seals every webhook delivery —
+    /// the same file `sms-gateway serve` signs its answers with
+    /// (`--envelope-signing-key-file`), so a receiver pins one pair of public
+    /// keys for both (VS-8). Required when `hooks` is one of `--roles`, and
+    /// read by no other role. A path, not a secret: the file is the secret and
+    /// must be mounted `0400`; it never goes in the database.
+    #[arg(long, env = "SMS_ENVELOPE_SIGNING_KEY_FILE")]
+    envelope_signing_key_file: Option<std::path::PathBuf>,
+
     /// `OAuth2` `client_credentials` client id for Orange Cameroon's SMS
     /// API — required only when `dispatch` is one of `--roles`, since it's
     /// the only role that submits through a provider today (#33).
@@ -407,6 +416,37 @@ fn aws_sms_provider(cli: &Cli) -> Result<Option<Arc<dyn SmsProvider>>> {
 /// `"mtn_cm"`) — either, both, or neither may be configured; a third
 /// real adapter is a third `.insert(...)` here, not a redesign of this
 /// function's shape.
+/// The sealer `hooks` delivers with, built from `--envelope-signing-key-file`.
+///
+/// Fails closed (VS-8): `hooks` without the key is a refusal to start, never a
+/// worker that claims deliveries it cannot seal. A process that does not run
+/// `hooks` ignores the flag entirely, so a `dispatch`-only node needs no key
+/// and holds none.
+///
+/// # Errors
+///
+/// `hooks` in `roles` with no `--envelope-signing-key-file`, a file that cannot
+/// be read, or one that is not a PKCS#8 Ed25519 private key. The text names
+/// the flag and the path, never the content.
+fn webhook_sealer(cli: &Cli, roles: &[Role]) -> Result<Option<sms_webhook::Sealer>> {
+    if !roles.contains(&Role::Hooks) {
+        return Ok(None);
+    }
+    let Some(path) = cli.envelope_signing_key_file.as_ref() else {
+        bail!(
+            "--roles includes hooks, which seals every webhook delivery with vsms's envelope \
+             signing key: pass --envelope-signing-key-file (or SMS_ENVELOPE_SIGNING_KEY_FILE), \
+             the same PKCS#8 PEM Ed25519 file `sms-gateway serve` signs its answers with"
+        );
+    };
+    let pem = std::fs::read(path)
+        .with_context(|| format!("reading --envelope-signing-key-file {}", path.display()))?;
+    let signer = sms_api::envelope::signer_from_pem(&pem)
+        .with_context(|| format!("the envelope signing key {}", path.display()))?;
+    let sealer = sms_webhook::Sealer::new(signer).context("building the webhook sealer")?;
+    Ok(Some(sealer))
+}
+
 fn build_provider_registry(cli: &Cli) -> Result<HashMap<String, Arc<dyn SmsProvider>>> {
     let mut providers: HashMap<String, Arc<dyn SmsProvider>> = HashMap::new();
     if let Some(orange) = orange_provider(cli)? {
@@ -513,6 +553,8 @@ async fn main() -> Result<()> {
         );
     }
 
+    let webhook_sealer = webhook_sealer(&cli, &roles)?;
+
     let pool = cratestack::sqlx::postgres::PgPoolOptions::new()
         .max_connections(cli.db_max_connections)
         .connect(&cli.database_url)
@@ -521,6 +563,7 @@ async fn main() -> Result<()> {
     let ctx = WorkerContext {
         db: sms_api::schema::Cratestack::builder(pool).build(),
         providers: Arc::new(providers),
+        webhook_sealer,
     };
 
     // Unconditional — not gated on `drain` being one of `--roles`. Every
@@ -756,7 +799,7 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, build_provider_registry, parse_roles};
+    use super::{Cli, build_provider_registry, parse_roles, webhook_sealer};
     use sms_worker::Role;
 
     /// Every field explicitly, not `Default` (there is none) — a minimal,
@@ -769,6 +812,7 @@ mod tests {
             metrics_listen: String::new(),
             db_max_connections: 10,
             worker_id: None,
+            envelope_signing_key_file: None,
             orange_client_id: None,
             orange_client_secret: None,
             orange_sender_number: None,
@@ -805,6 +849,66 @@ mod tests {
             aws_sms_cost_per_segment_xaf: Some(rust_decimal::Decimal::new(30, 0)),
             ..base_cli()
         }
+    }
+
+    fn key_file(tag: &str, contents: &[u8]) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("sms-worker-key-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("current.pem");
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    /// VS-8, fail closed: a `hooks` worker with no signing key refuses to start,
+    /// rather than claiming deliveries it cannot seal.
+    #[test]
+    fn hooks_without_the_signing_key_refuses_to_start() {
+        let error = webhook_sealer(&base_cli(), &[Role::Hooks, Role::Jobs])
+            .expect_err("hooks needs the envelope signing key");
+        let text = format!("{error:#}");
+        assert!(text.contains("--envelope-signing-key-file"), "{text}");
+    }
+
+    /// A node that does not run `hooks` needs no key and loads none, even when
+    /// a path is configured: the private key is held only where it is used.
+    #[test]
+    fn a_node_without_hooks_loads_no_key() {
+        let cli = Cli {
+            envelope_signing_key_file: Some(std::path::PathBuf::from("/does/not/exist.pem")),
+            ..base_cli()
+        };
+        assert!(webhook_sealer(&cli, &[Role::Dispatch]).unwrap().is_none());
+    }
+
+    #[test]
+    fn hooks_with_a_valid_key_builds_a_sealer() {
+        let path = key_file("ok", &sms_api::envelope::pem_of_seed(&[5; 32]));
+        let cli = Cli {
+            envelope_signing_key_file: Some(path),
+            ..base_cli()
+        };
+        assert!(webhook_sealer(&cli, &[Role::Hooks]).unwrap().is_some());
+    }
+
+    #[test]
+    fn hooks_with_an_unreadable_or_foreign_key_names_the_path_and_not_the_content() {
+        let missing = Cli {
+            envelope_signing_key_file: Some(std::path::PathBuf::from("/does/not/exist.pem")),
+            ..base_cli()
+        };
+        let text = format!(
+            "{:#}",
+            webhook_sealer(&missing, &[Role::Hooks]).unwrap_err()
+        );
+        assert!(text.contains("/does/not/exist.pem"), "{text}");
+
+        let junk = Cli {
+            envelope_signing_key_file: Some(key_file("junk", b"super-secret-looking-junk")),
+            ..base_cli()
+        };
+        let text = format!("{:#}", webhook_sealer(&junk, &[Role::Hooks]).unwrap_err());
+        assert!(text.contains("current.pem"), "{text}");
+        assert!(!text.contains("super-secret-looking-junk"), "{text}");
     }
 
     /// The go-live shape: AWS alone, no Orange or MTN contract yet.

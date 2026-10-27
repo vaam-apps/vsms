@@ -103,5 +103,5 @@ this subscriber runs (it's the row this subscriber is in the middle of
 creating). Building the final signed envelope — `id` from the
 `WebhookAttempt` row, `type` from its `eventType` column, `occurredAt`
 from its `createdAt` — is naturally the `hooks` role's job (#40) at
-the moment it actually POSTs, alongside signing (#41), not this
+the moment it actually POSTs, alongside sealing (VS-8), not this
 module's.

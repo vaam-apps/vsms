@@ -100,6 +100,26 @@ const DROPPED_BY_LATER: (&str, &[&str]) = (
     ],
 );
 
+/// A forward migration that changes the columns of a table `0001_init` already
+/// creates (VS-8: `webhook_endpoints` gained `audience` and lost its three
+/// secret columns). The statement-level lists above cannot express it: the
+/// generator emits the whole `CREATE TABLE` anew, and the applied one differs
+/// by exactly these columns. `(directory, table, added, dropped)`.
+///
+/// Every column definition of `dropped` is removed from the committed
+/// `0001_init`, every one of `added` from the generator's output, and the
+/// migration's `up.sql` must carry `ALTER TABLE <table> ADD COLUMN <column>`
+/// for each added column and `ALTER TABLE <table> DROP COLUMN <column>;` for
+/// each dropped one, so the lists cannot name a column the migration leaves
+/// alone. Delete the entry, and regenerate `0001_init`, when the migrations are
+/// squashed.
+const COLUMNS_CHANGED_BY_LATER: (&str, &str, &[&str], &[&str]) = (
+    "backends/migrations/postgres/0010_sealed_webhooks",
+    "webhook_endpoints",
+    &["audience"],
+    &["secret", "prev_secret", "secret_rotated_at"],
+);
+
 /// Removes its temp directory on drop, on every exit path — success,
 /// error-return, or an early `?` — matching the bash version's own
 /// `trap 'rm -rf "$out"' EXIT`.
@@ -216,6 +236,61 @@ fn strip_dropped_tables(root: &Path, committed: &str) -> Result<String, String> 
     Ok(split_added(committed, tables).0)
 }
 
+/// `sql` without the definition lines of `columns` inside the table's
+/// `CREATE TABLE <table> (` block. A column definition is a line whose first word is the column's
+/// name; the table's closing `);` ends the block.
+fn without_columns(sql: &str, table: &str, columns: &[&str]) -> String {
+    let opening = format!("CREATE TABLE {table} (");
+    let mut inside = false;
+    let mut kept = Vec::new();
+    for line in sql.lines() {
+        let trimmed = line.trim();
+        if trimmed == opening {
+            inside = true;
+        } else if inside && trimmed == ");" {
+            inside = false;
+        } else if inside
+            && trimmed
+                .split_whitespace()
+                .next()
+                .is_some_and(|word| columns.contains(&word))
+        {
+            continue;
+        }
+        kept.push(line);
+    }
+    kept.join("\n")
+}
+
+/// Checks that [`COLUMNS_CHANGED_BY_LATER`]'s migration adds and drops exactly
+/// the columns it lists.
+fn check_column_carrier(root: &Path) -> Result<(), String> {
+    let (dir, table, added, dropped) = COLUMNS_CHANGED_BY_LATER;
+    let carrier = root.join(dir).join("up.sql");
+    let text = fs::read_to_string(&carrier).map_err(|e| format!("{}: {e}", carrier.display()))?;
+    for column in added {
+        let wanted = format!("ALTER TABLE {table} ADD COLUMN {column} ");
+        if !text.lines().any(|line| line.trim().starts_with(&wanted)) {
+            return Err(format!(
+                "migrations-current: {} does not contain `{wanted}...`, but \
+                 COLUMNS_CHANGED_BY_LATER says it adds {table}.{column}",
+                carrier.display()
+            ));
+        }
+    }
+    for column in dropped {
+        let wanted = format!("ALTER TABLE {table} DROP COLUMN {column};");
+        if !text.lines().any(|line| line.trim() == wanted) {
+            return Err(format!(
+                "migrations-current: {} does not contain `{wanted}`, but \
+                 COLUMNS_CHANGED_BY_LATER says it drops {table}.{column}",
+                carrier.display()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// The committed `0001_init`'s `f`.sql, minus the dropped tables'
 /// statements ([`strip_dropped_tables`]).
 fn read_committed(root: &Path, f: &str) -> Result<String, String> {
@@ -240,6 +315,45 @@ fn executable_sql(text: &str) -> String {
         .filter(|line| !line.trim_start().is_empty() && !line.trim_start().starts_with("--"))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Compares `up.sql` and `down.sql`, committed against regenerated, after
+/// taking out everything a later migration owns (added tables, the columns
+/// `COLUMNS_CHANGED_BY_LATER` names, statements rewritten afterwards).
+fn compare_up_and_down(
+    root: &Path,
+    regenerated: &Path,
+    mismatches: &mut Vec<(&'static str, Vec<String>)>,
+) -> Result<(), String> {
+    for f in ["up", "down"] {
+        let regenerated_path = regenerated.join(format!("{f}.sql"));
+        let committed = read_committed(root, f)?;
+        let mut fresh = fs::read_to_string(&regenerated_path)
+            .map_err(|e| format!("{}: {e}", regenerated_path.display()))?;
+        fresh = strip_added_tables(root, f, &fresh)?;
+        let mut committed = committed;
+        if f == "up" {
+            check_column_carrier(root)?;
+            let (_, table, added, dropped) = COLUMNS_CHANGED_BY_LATER;
+            committed = without_columns(&committed, table, dropped);
+            fresh = without_columns(&fresh, table, added);
+            let later =
+                fs::read_to_string(root.join(LATER_UP)).map_err(|e| format!("{LATER_UP}: {e}"))?;
+            for (current, applied) in REWRITTEN_BY_LATER {
+                if !later.contains(current) {
+                    return Err(format!(
+                        "migrations-current: {LATER_UP} no longer contains the statement the \
+                         generator emits now:\n  {current}"
+                    ));
+                }
+                fresh = fresh.replace(current, applied);
+            }
+        }
+        if executable_sql(&committed) != executable_sql(&fresh) {
+            mismatches.push((f, crate::diff::line_diff(&committed, &fresh)));
+        }
+    }
+    Ok(())
 }
 
 pub fn run(root: &Path) -> Result<(), String> {
@@ -309,29 +423,7 @@ pub fn run(root: &Path) -> Result<(), String> {
         || root.join(COMMITTED_DIR).join("up.pre.sql").is_file();
 
     let mut mismatches = Vec::new();
-    for f in ["up", "down"] {
-        let regenerated_path = regenerated.join(format!("{f}.sql"));
-        let committed = read_committed(root, f)?;
-        let mut fresh = fs::read_to_string(&regenerated_path)
-            .map_err(|e| format!("{}: {e}", regenerated_path.display()))?;
-        fresh = strip_added_tables(root, f, &fresh)?;
-        if f == "up" {
-            let later =
-                fs::read_to_string(root.join(LATER_UP)).map_err(|e| format!("{LATER_UP}: {e}"))?;
-            for (current, applied) in REWRITTEN_BY_LATER {
-                if !later.contains(current) {
-                    return Err(format!(
-                        "migrations-current: {LATER_UP} no longer contains the statement the \
-                         generator emits now:\n  {current}"
-                    ));
-                }
-                fresh = fresh.replace(current, applied);
-            }
-        }
-        if executable_sql(&committed) != executable_sql(&fresh) {
-            mismatches.push((f, crate::diff::line_diff(&committed, &fresh)));
-        }
-    }
+    compare_up_and_down(root, &regenerated, &mut mismatches)?;
     if up_pre_relevant {
         let committed_path = root.join(COMMITTED_DIR).join("up.pre.sql");
         let regenerated_path = regenerated.join("up.pre.sql");
@@ -451,6 +543,32 @@ mod tests {
         unique.dedup();
         assert_eq!(dirs.len(), unique.len());
         assert!(ADDED_BY_LATER.iter().all(|(_, tables)| !tables.is_empty()));
+    }
+
+    #[test]
+    fn a_column_change_is_removed_from_the_side_that_lacks_it_only() {
+        let applied = "CREATE TABLE t (\n    id TEXT NOT NULL,\n    secret TEXT NOT NULL,\n    \
+                       prev_secret TEXT,\n    PRIMARY KEY (id)\n);\n";
+        let fresh = "CREATE TABLE t (\n    id TEXT NOT NULL,\n    audience TEXT NOT NULL,\n    \
+                     PRIMARY KEY (id)\n);\n";
+        let a = without_columns(applied, "t", &["secret", "prev_secret"]);
+        let b = without_columns(fresh, "t", &["audience"]);
+        assert_eq!(executable_sql(&a), executable_sql(&b));
+        // Another table's column of the same name is not touched.
+        let other = "CREATE TABLE u (\n    secret TEXT\n);\n";
+        assert!(without_columns(other, "t", &["secret"]).contains("secret"));
+        // A column the list does not name still differs.
+        let drifted = "CREATE TABLE t (\n    id TEXT NOT NULL,\n    audience TEXT NOT NULL,\n    \
+                       extra TEXT,\n    PRIMARY KEY (id)\n);\n";
+        let c = without_columns(drifted, "t", &["audience"]);
+        assert_ne!(executable_sql(&a), executable_sql(&c));
+    }
+
+    #[test]
+    fn the_column_migration_is_not_one_of_the_table_migrations() {
+        let dir = COLUMNS_CHANGED_BY_LATER.0;
+        assert_ne!(dir, DROPPED_BY_LATER.0);
+        assert!(ADDED_BY_LATER.iter().all(|(added, _)| *added != dir));
     }
 
     #[test]

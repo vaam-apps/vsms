@@ -158,6 +158,32 @@ impl ServerKeys {
     }
 }
 
+/// The signer in one PKCS#8 PEM Ed25519 private key: what the worker's `hooks`
+/// role seals webhook deliveries with (VS-8). It is the same file the gateway
+/// signs its answers with (`--envelope-signing-key-file`), so a receiver pins one
+/// pair of public keys for both. Only the current key signs; the worker has no
+/// use for `next`.
+///
+/// ```
+/// use sms_api::envelope::{signer_from_pem, ServerKeys};
+///
+/// let current = b"-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIBYj+/M+/6TszBaUcA1r2ZWEbwRFmRk5gIV5gaAPtaOL\n-----END PRIVATE KEY-----\n";
+/// let next = b"-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIAgoX/+nAaZjmWgdPspG+4tKf1bYd7suk6ztD4wAKxOP\n-----END PRIVATE KEY-----\n";
+/// let signer = signer_from_pem(current).unwrap();
+/// // The public half is what `sms-gateway server-keys` prints as `current`.
+/// let keys = ServerKeys::from_pems(current, next).unwrap();
+/// assert_eq!(signer.verify_key().ed25519_bytes().unwrap(), keys.public_keys().0);
+/// assert!(signer_from_pem(b"not a pem").is_err());
+/// ```
+///
+/// # Errors
+///
+/// [`ServerKeyError`] for a document that is not a PKCS#8 Ed25519 private key.
+pub fn signer_from_pem(pem: &[u8]) -> Result<Ed25519Signer, ServerKeyError> {
+    let seed = seed_from_pem(pem, "the envelope signing key")?;
+    Ok(Ed25519Signer::from_seed(&seed))
+}
+
 /// A PKCS#8 PEM for a raw Ed25519 seed: the inverse of [`seed_from_pem`].
 #[must_use]
 pub fn pem_of_seed(seed: &[u8; 32]) -> Vec<u8> {
