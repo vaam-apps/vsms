@@ -29,6 +29,7 @@ use sms_api::schema::{
 use sms_test_support::webhook_receiver::WebhookReceiver;
 use sms_webhook::{CONTRACT_SHA, Sealer};
 use sms_worker::WorkerContext;
+use sms_worker::claim::{ServedModes, claim_webhook_attempts};
 use sms_worker::hooks;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1990,4 +1991,99 @@ async fn a_keyless_claim_never_reads_the_sealed_backlogs_index_entries() {
         "and it used the per-endpoint due list instead"
     );
     psql("DELETE FROM webhook_attempts WHERE aggregate_id LIKE 'bulk-%'").await;
+}
+
+/// L1: an operator switches an endpoint `hmac` to `sealed` while a keyless worker
+/// holds one of its attempts. The worker can no longer send it, and must not
+/// pretend it tried: the attempt was counted at the claim and `maxAttempts` is 1,
+/// so a failure written here would go `dead` without a byte sent, and feed the
+/// endpoint's breaker. It leaves the row `delivering`, as for an endpoint that
+/// vanished; the lease expires, a keyless reclaim skips it (the endpoint is sealed
+/// now) and a worker with the key takes it, resuming the attempt already counted.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_switch_to_sealed_after_a_keyless_claim_is_left_for_a_keyed_worker_without_spending_an_attempt()
+ {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let (logs, _guard_logs) = capture_logs();
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", server.uri()),
+        1,
+        "whsec_switch_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgL1", "message.delivered", "{}").await;
+
+    let keyless = keyless(&db);
+    let claimed = claim_webhook_attempts(&db, &sys(), "keyless-worker", 20, ServedModes::HmacOnly)
+        .await
+        .expect("the keyless claim");
+    assert_eq!(claimed.len(), 1, "the hmac attempt is claimed: {claimed:?}");
+    let held = &claimed[0];
+    assert_eq!((held.state, held.attempts), (AttemptState::delivering, 1));
+
+    psql(&format!(
+        "UPDATE webhook_endpoints SET delivery_mode = 'sealed', audience = 'aud-{suffix}', \
+         secret = NULL, prev_secret = NULL, secret_rotated_at = NULL WHERE id = '{}'",
+        endpoint.id
+    ))
+    .await;
+    hooks::deliver_claimed(&keyless, &sys(), &http_client(), claimed.clone()).await;
+
+    let after = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(after.state, AttemptState::delivering, "{after:?}");
+    assert_eq!(after.attempts, 1, "nothing was counted");
+    assert_eq!(after.version, held.version, "and nothing was written");
+    assert_eq!(after.lastError, None);
+    let endpoint_after = reread_endpoint(&db, &endpoint.id).await;
+    assert_eq!(
+        endpoint_after.consecutiveFailures, 0,
+        "the breaker is untouched"
+    );
+    assert_eq!(endpoint_after.circuitOpenUntil, None);
+    assert!(server.received_requests().await.unwrap().is_empty());
+    let text = logs.text();
+    assert!(text.contains(&attempt.id), "{text}");
+    assert!(text.contains("--envelope-signing-key-file"), "{text}");
+
+    // The lease runs out. A keyless worker reclaims nothing: the endpoint is sealed.
+    psql(&format!(
+        "UPDATE webhook_attempts SET lease_until = now() - interval '5 seconds' WHERE id = '{}'",
+        attempt.id
+    ))
+    .await;
+    hooks::tick(&keyless, &sys(), "keyless-worker", &http_client())
+        .await
+        .expect("a keyless tick");
+    assert_eq!(
+        reread_attempt(&db, &attempt.id).await.version,
+        after.version
+    );
+
+    // A worker with the key delivers it once, and the attempt was counted once.
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "keyed-worker",
+        &http_client(),
+    )
+    .await
+    .expect("a keyed tick");
+    let delivered = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(delivered.state, AttemptState::succeeded, "{delivered:?}");
+    assert_eq!(delivered.attempts, 1, "resumed, not counted twice");
 }

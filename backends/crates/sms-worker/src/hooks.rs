@@ -239,7 +239,9 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 /// `ctx.webhook_sealer`. A process without the signing key therefore claims
 /// `hmac` attempts only ([`ServedModes::HmacOnly`]); it never takes a `sealed`
 /// one, so nothing about one is written until a worker that holds the key
-/// does, and [`SealedBacklogWatch`] says that they are waiting.
+/// does, and [`SealedBacklogWatch`] says that they are waiting. An endpoint
+/// switched to `sealed` after the claim leaves its attempt `delivering` for
+/// a worker that has the key, without a failure written (`deliver_one`).
 /// `backends/apps/sms-worker` says so at start when `hooks` runs without a key.
 ///
 /// # Errors
@@ -257,10 +259,23 @@ pub async fn tick(
         ServedModes::HmacOnly
     };
     let claimed = claim_webhook_attempts(&ctx.db, sys, worker, BUDGET, served).await?;
+    deliver_claimed(ctx, sys, http, claimed).await;
+    Ok(())
+}
+
+/// Deliver attempts a claim already returned, each by its endpoint's own mode:
+/// the second half of [`tick`]. `pub` as the seam between its two halves, so a
+/// live test can change the world between the claim and the delivery (switch an
+/// endpoint's mode) the way an operator can while a worker holds a row.
+pub async fn deliver_claimed(
+    ctx: &WorkerContext,
+    sys: &CratestackContext,
+    http: &HttpClients,
+    claimed: Vec<WebhookAttempt>,
+) {
     for attempt in claimed {
         deliver_one(ctx, sys, http, ctx.webhook_sealer.as_ref(), attempt).await;
     }
-    Ok(())
 }
 
 /// The four shapes a delivery attempt resolves to, before each is
@@ -336,6 +351,24 @@ async fn deliver_one(
         }
     };
 
+    // Claimed as `hmac`, sealed by the time it is read: an operator switched the
+    // endpoint (`switchWebhookDeliveryMode`) while this worker held the row, which
+    // the claim cannot see. This worker cannot send it, and a failure written here
+    // would be a lie: the attempt was counted at the claim, so it would burn
+    // `maxAttempts` (`dead` for a `maxAttempts` of 1) and feed the breaker for a
+    // request never made. Leave it `delivering`, as for a missing endpoint above:
+    // the lease expires, a keyless reclaim skips it (the claim reads the mode
+    // afresh) and a worker that holds the key resumes the attempt without a second count.
+    if cannot_serve(&endpoint, sealer) {
+        warn!(
+            attempt_id = %attempt.id, endpoint_id = %endpoint.id,
+            "claimed attempt's endpoint was switched to sealed after the claim and this worker \
+             holds no envelope signing key (--envelope-signing-key-file); leaving delivering \
+             for a worker that has it"
+        );
+        return;
+    }
+
     let now = Utc::now();
     let body = match build_envelope(&attempt, &endpoint, now) {
         Ok(body) => body,
@@ -357,6 +390,13 @@ async fn deliver_one(
 
     let outcome = send(http, sealer, &endpoint, &attempt, &body, now).await;
     write_outcome(ctx, sys, &attempt, &endpoint, outcome, now).await;
+}
+
+/// Whether `endpoint` is one this worker cannot deliver: it is `sealed` and there
+/// is no `sealer`. The claim never hands such a row over ([`ServedModes`]) except
+/// when the mode changed after it, which [`deliver_one`] handles.
+fn cannot_serve(endpoint: &WebhookEndpoint, sealer: Option<&Sealer>) -> bool {
+    endpoint.deliveryMode == WebhookDeliveryMode::sealed && sealer.is_none()
 }
 
 /// The actual HTTP POST, in the endpoint's own delivery mode. Split from
@@ -414,15 +454,21 @@ async fn send(
 /// otherwise be refused as stale, and a re-sent nonce is refused as a replay.
 /// The `id` and `eventId` inside the body are what stay the same.
 ///
-/// A delivery that cannot be sealed (no signing key in this process, no
-/// audience on the row, an audience or URL the seal refuses, a signer that
-/// fails) never reaches the network, and is an ordinary [`Outcome::Retryable`]:
-/// counted, backed off, able to trip the breaker and able to go `dead`, like any
-/// other failure. None of them is expected. A worker without the key never
-/// claims a sealed attempt ([`crate::claim::ServedModes`]), and the database
-/// refuses a sealed row whose audience or URL cannot be sealed, so what is left
-/// is a signer that fails, which is as much the delivery's failure as a
-/// connection that does.
+/// A delivery that cannot be sealed (no audience on the row, an audience or URL
+/// the seal refuses, a signer that fails) never reaches the network, and is an
+/// ordinary [`Outcome::Retryable`]: counted, backed off, able to trip the breaker
+/// and able to go `dead`, like any other failure. None of them is expected.
+/// "No signing key in this process" is not one of them: a worker without the key
+/// never claims a sealed attempt ([`crate::claim::ServedModes`]), and one whose
+/// endpoint was switched to `sealed` after the claim is stopped before it gets
+/// here (`cannot_serve`, in `deliver_one`), so that case is left to a worker that
+/// has the key rather than failed. The audience and the URL are held by the
+/// database for a row written through the API: the CHECKs are a pattern, and it is
+/// the pattern **together with `@uri`**, which every write through the API passes,
+/// that never accepts what the seal refuses. A row written with `psql` can still
+/// reach the seal with a URL it refuses, which is an ordinary failure here. What
+/// is left besides is a signer that fails, which is as much the delivery's
+/// failure as a connection that does.
 async fn sealed_request(
     http: &reqwest::Client,
     sealer: Option<&Sealer>,
@@ -1406,10 +1452,12 @@ mod tests {
         assert!(message.contains("rotateWebhookSecret"), "{message}");
     }
 
-    /// A sealed attempt that reaches a worker with no signing key (the claim does
-    /// not let one, [`crate::claim::ServedModes`]) is an ordinary failure that names
-    /// the flag: nothing is built, and `write_outcome` counts it, backs it off and
-    /// feeds the breaker like any other.
+    /// `send` itself, handed a sealed endpoint and no signer, is an ordinary
+    /// failure that names the flag: nothing is built. `deliver_one` never gets that
+    /// far (`cannot_serve` stops a sealed endpoint at a worker with no key before
+    /// the attempt is counted against it, and the claim does not hand one over,
+    /// [`crate::claim::ServedModes`]), so this is the second line of defence for a
+    /// caller that skips both, not a path a worker takes.
     #[tokio::test]
     async fn a_sealed_endpoint_without_a_signing_key_is_an_ordinary_failure_naming_the_flag() {
         let http = build_http_client();
@@ -1434,8 +1482,9 @@ mod tests {
 
     /// A sealed row whose URL the seal cannot bind never reaches the network and
     /// is an ordinary failure of the delivery: counted, backed off and able to go
-    /// `dead`. The database no longer lets a sealed row hold such a URL, so this is
-    /// the worker's second line of defence for a row it cannot trust, tested
+    /// `dead`. A write through the API cannot leave such a URL (the CHECK's pattern
+    /// together with `@uri` refuses it), but a row written with `psql` can, so this
+    /// is the worker's second line of defence for a row it cannot trust, tested
     /// without one.
     #[tokio::test]
     async fn a_sealed_endpoint_whose_url_cannot_be_sealed_is_an_ordinary_failure() {
