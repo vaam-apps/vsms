@@ -1767,7 +1767,7 @@ sequenceDiagram
     S-->>H: COSE_Sign1 (fresh nonce, iat = now), signed with the gateway's current envelope key
     H->>R: POST url, application/cose (no redirect followed)
     R->>R: key, audience, POST, route, contract digest, payload type, iat, nonce
-    R-->>H: 2xx (sealed under the receiver's key; not read)
+    R-->>H: 2xx (sealed under the receiver's key, never read)
     H->>H: attempt succeeded
 ```
 
