@@ -29,6 +29,7 @@ mod pin_copies;
 mod r6_ui_layers;
 mod raw_sqlx;
 mod release_versions;
+mod sdk_parity;
 mod sdk_schema;
 mod secret_env_args;
 mod workflow_paths;
@@ -63,6 +64,7 @@ fn main() -> ExitCode {
             })
         }
         "bootstrap-sql-check" => bootstrap_sql::check(&root),
+        "sdk-parity-check" => sdk_parity::run(&root),
         "sdk-schema-check" => sdk_schema::check(&root),
         "sdk-schema-vendor" => sdk_schema::vendor(&root),
         "cratestack-pin" => cratestack_pin::read_pin(&root).map(|v| println!("{v}")),
@@ -100,6 +102,7 @@ fn help_text() -> &'static str {
      bootstrap-sql <out>   regenerate 0002_bootstrap/up.sql from docs/architecture.md §2.10\n  \
      bootstrap-sql-check   fail if 0002_bootstrap/up.sql has drifted from the design doc\n  \
      sdk-schema-check      fail if the vendored SDK schema has drifted\n  \
+     sdk-parity-check      fail if the Rust and Node SDKs would bind different bytes (audience, one operation table)\n  \
      sdk-schema-vendor     refresh the vendored SDK schema copy\n  \
      cratestack-pin         print the pinned cratestack version from Cargo.toml\n  \
      cratestack-pin-check   every other copy of that pin (codec-json, the two client manifests, ci/runner/Dockerfile) matches it\n  \

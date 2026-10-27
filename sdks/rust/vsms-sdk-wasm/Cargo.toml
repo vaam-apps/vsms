@@ -1,0 +1,76 @@
+[package]
+name = "vsms-sdk-wasm"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.98.0"
+license = "MIT"
+description = "The signed-transport half of the vsms SDK, compiled to WebAssembly for the Node.js SDK (sealCall / openResponse) and the operator console's browser signer"
+# Shipped inside `@vaam-apps/vsms-node`'s npm package as a `.wasm` file, never
+# to crates.io, and so it carries no release-please version line: its version
+# is not a thing anyone installs.
+publish = false
+
+# `wasm-bindgen`'s macros expand to `unsafe` (the exported `extern "C"` shims).
+# This crate's own source contains none, and `unsafe_code = "deny"` keeps it
+# that way for everything written by hand; the generated shims carry their own
+# `#[allow]`.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "warn"
+dbg_macro = "deny"
+print_stdout = "warn"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The server half of the transport, for the Node SDK's own tests only: it opens
+# a sealed request and seals an answer, which is what the gateway does, so the
+# SDK's test suite runs against a verifier that is not a copy of the SDK's
+# sealing code. Off in the package that ships; `just wasm-build-test` builds it
+# into a directory the package's `files` does not list.
+responder = ["dep:percent-encoding"]
+
+[dependencies]
+# The same facade, version operator and features `vsms-sdk-rust` uses, minus
+# nothing: `include_client_schema!` here expands the vendored schema once more
+# so the per-operation contract digests a signature binds are the ones the
+# generated Rust client binds, by construction and not by a second table kept
+# in step. `=` rather than `~`: this crate publishes nothing, so there is no
+# consumer graph for an exact pin to veto (`cargo xtask cratestack-pin-check`
+# holds it to the workspace pin).
+cratestack = { package = "cratestack-client", version = "=0.16.0", default-features = false, features = [
+  "codec-json",
+  "decimal-rust-decimal",
+  "cose",
+] }
+# The generated structs derive through bare `serde::` paths.
+serde = { version = "1", features = ["derive"] }
+base64 = "0.22"
+http = "1"
+bytes = "1"
+percent-encoding = { version = "2", optional = true }
+
+# What exists only where there is a JavaScript to bind to (`lib.rs` gates `js`
+# and `responder_js` the same way), so a host build links none of it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+
+# Host-only: the native tests of `core.rs`, which has no `wasm-bindgen` in it.
+# `percent-encoding` is also an optional dependency above: under `cfg(test)` the
+# responder is compiled without the `responder` feature, so the tests need it
+# without it.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt"] }
+percent-encoding = "2"

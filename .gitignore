@@ -8,6 +8,12 @@
 /deploy/backup-tool/target
 /ci/e2e-integration/target
 sdks/node/*/dist/
+# The Node SDK's sealing module: `sdks/rust/vsms-sdk-wasm` built to WebAssembly
+# by `scripts/build-wasm.sh`. `wasm/` ships in the npm package; `wasm-test/` is
+# the same crate with its `responder` feature on, for the tests, and is not
+# listed in `files`.
+sdks/node/*/wasm/
+sdks/node/*/wasm-test/
 **/*.rs.bk
 # Cargo.lock is committed. This workspace ships binaries (sms-api, sms-worker)
 # against a pre-1.0 framework pinned to =0.4.16; a floating lock file would

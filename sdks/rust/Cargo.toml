@@ -6,4 +6,12 @@
 # `exclude` entry and this directory's crate for why it exists.
 [workspace]
 resolver = "3"
-members = ["vsms-sdk-rust"]
+#
+# `vsms-sdk-wasm` (VS-7) is the Node SDK's sealing module: the same cratestack
+# envelope the published SDK seals through, compiled to WebAssembly and shipped
+# inside `@vaam-apps/vsms-node`. It lives in this workspace, not the Node
+# package's directory, because it expands the schema `vsms-sdk-rust` vendors
+# (one operation table, `cargo xtask sdk-parity-check`) and shares this
+# `Cargo.lock`, which is where `wasm-bindgen`'s version is pinned. It publishes
+# nothing (`publish = false`).
+members = ["vsms-sdk-rust", "vsms-sdk-wasm"]
