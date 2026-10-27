@@ -199,7 +199,7 @@ async fn rotating_moves_the_current_secret_to_prev_and_mints_a_fresh_one() {
     );
     assert!(
         secret.starts_with("whsec_"),
-        "generate_secret's documented shape — got {secret:?}"
+        "generate_secret's documented shape: a whsec_ prefix"
     );
     assert_eq!(rotated.deliveryMode, schema::WebhookDeliveryMode::hmac);
     assert_eq!(

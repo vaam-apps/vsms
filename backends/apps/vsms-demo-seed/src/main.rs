@@ -298,8 +298,39 @@ async fn ensure_demo_sender_id(
 enum Delivery<'a> {
     /// A sealed delivery to this audience.
     Sealed { audience: &'a str },
-    /// An HMAC-signed delivery; the secret goes to this file.
-    Hmac { secret_out: &'a std::path::Path },
+    /// An HMAC-signed delivery; the secret goes to the file at this path.
+    Hmac { secret_path: &'a std::path::Path },
+}
+
+impl Delivery<'_> {
+    /// The mode's name, the only thing about a delivery that is printed.
+    const fn mode(&self) -> &'static str {
+        match self {
+            Self::Sealed { .. } => "sealed",
+            Self::Hmac { .. } => "hmac",
+        }
+    }
+}
+
+/// Writes the webhook secret to `path`, readable by its owner alone. The mode
+/// is set at creation (no window where the file is world-readable) and again
+/// afterwards, for a file that already existed with another one.
+fn write_secret_file(path: &std::path::Path, secret: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)?.write_all(secret.as_bytes())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 /// What the webhook flags ask for, or why they are wrong. Pure so the rules are
@@ -308,11 +339,11 @@ enum Delivery<'a> {
 fn delivery_plan<'a>(
     url: Option<&'a str>,
     audience: Option<&'a str>,
-    secret_out: Option<&'a std::path::Path>,
+    secret_path: Option<&'a std::path::Path>,
 ) -> Result<Option<(&'a str, Delivery<'a>)>> {
-    match (url, audience, secret_out) {
+    match (url, audience, secret_path) {
         (Some(url), Some(audience), None) => Ok(Some((url, Delivery::Sealed { audience }))),
-        (Some(url), None, Some(secret_out)) => Ok(Some((url, Delivery::Hmac { secret_out }))),
+        (Some(url), None, Some(secret_path)) => Ok(Some((url, Delivery::Hmac { secret_path }))),
         (Some(_), Some(_), Some(_)) => bail!(
             "--webhook-audience and --webhook-secret-out were both given — an endpoint is sealed \
              (an audience) or hmac (a secret), not both. Pass one."
@@ -587,15 +618,16 @@ async fn main() -> Result<()> {
             // log is exactly where a signing secret must not end up (CodeQL
             // flagged the pre-sealed fallback as cleartext logging).
             // `--webhook-secret-out` is the only way to receive it.
-            if let (Delivery::Hmac { secret_out }, Some(secret)) = (&delivery, &endpoint.secret) {
-                std::fs::write(secret_out, secret).with_context(|| {
-                    format!("writing the webhook secret to {}", secret_out.display())
+            if let (Delivery::Hmac { secret_path }, Some(secret)) = (&delivery, &endpoint.secret) {
+                write_secret_file(secret_path, secret).with_context(|| {
+                    format!("writing the webhook secret to {}", secret_path.display())
                 })?;
-                println!("webhook secret written to: {}", secret_out.display());
+                println!("webhook secret written to: {}", secret_path.display());
             }
 
             println!(
-                "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?}, delivery={delivery:?})"
+                "demo App/SenderId/WebhookEndpoint fixtures ready (slug={slug:?}, sender={sender_id:?}, webhook={url:?}, delivery={})",
+                delivery.mode()
             );
         }
         None => {
@@ -644,10 +676,38 @@ mod tests {
             (
                 "http://demo-app:9000/webhooks",
                 Delivery::Hmac {
-                    secret_out: Path::new("/secrets/webhook-secret")
+                    secret_path: Path::new("/secrets/webhook-secret")
                 }
             )
         );
+    }
+
+    #[test]
+    fn a_delivery_prints_as_its_mode_alone() {
+        let hmac = Delivery::Hmac {
+            secret_path: Path::new("/secrets/webhook-secret"),
+        };
+        assert_eq!(hmac.mode(), "hmac");
+        assert_eq!(Delivery::Sealed { audience: "a" }.mode(), "sealed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_secret_file_is_readable_by_its_owner_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("vsms-demo-seed-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("webhook-secret");
+        // A file that already exists with a wider mode is narrowed, not trusted.
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        super::write_secret_file(&path, "the-new-value").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "the-new-value");
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

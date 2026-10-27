@@ -942,10 +942,13 @@ async fn an_hmac_delivery_in_a_rotation_window_verifies_under_either_secret() {
         .unwrap();
     let values: Vec<&str> = signature.split(',').collect();
     assert_eq!(values.len(), 2, "{signature}");
-    for secret in ["whsec_new_generation", "whsec_old_generation"] {
+    for (generation, secret) in [
+        ("the new generation", "whsec_new_generation"),
+        ("the old generation", "whsec_old_generation"),
+    ] {
         assert!(
             sms_webhook::verify(&[secret], timestamp, event_id, &request.body, signature),
-            "{secret} must verify the delivery"
+            "{generation}'s secret must verify the delivery"
         );
     }
     // Current first: the first value is the new secret's alone.
