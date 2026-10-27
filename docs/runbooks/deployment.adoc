@@ -406,6 +406,15 @@ docker compose --env-file .env run --rm sms-gateway server-keys
 A console deployed without the composer key serves every other screen; only the
 composer reports that it has no key.
 
+The composer spends this key only for a person the gateway names. Before each
+send or preview the browser seals a call to `authorizeComposition` with the
+person's own key, and the gateway answers it only for a signed-in `owner`,
+`admin` or `operator` holding `sms:send`; the console's server opens that answer
+under the two public keys above, and goes on only if it names a person, that
+operation and the hash of the message about to be sent. An `auditor`, a `support`
+or `developer` user, a role that lost `sms:send`, and any app client's key are
+refused (a `403` the composer shows), however they were paired.
+
 === Pairing the console
 
 A person's console key is made by their own browser the first time they open the
