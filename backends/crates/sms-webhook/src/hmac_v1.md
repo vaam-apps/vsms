@@ -60,7 +60,10 @@ is the value that follows `v1=` in `X-Sms-Signature`. See [`sign_v1`].
 # Rotation
 
 `X-Sms-Signature` may carry two `v1=` values — current secret first,
-`WebhookEndpoint.prevSecret` second, "oldest last" per §4.4. A receiver
+`WebhookEndpoint.prevSecret` second, "oldest last" per §4.4. (The `hooks`
+role passes [`sign_header`] only non-empty secrets: an empty `prevSecret` is left
+out of the header instead of being signed with, and an empty `secret` sends
+nothing at all, where the pre-sealed worker signed with an empty key.) A receiver
 should accept if *any* presented value verifies against *any* secret it
 holds; [`verify`] implements exactly that (every presented value
 against every candidate secret, first match wins — order of

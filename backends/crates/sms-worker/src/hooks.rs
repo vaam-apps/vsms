@@ -38,6 +38,14 @@ const BUDGET: i64 = 20;
 /// connection that hangs forever is worse than one that fails fast).
 const REQUEST_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
+/// How long an attempt that **sent nothing** ([`Outcome::NotSent`]) waits before
+/// the next poll offers it again. It is a constant, not the backoff schedule: a
+/// misconfigured worker or row does not get better with age, the attempt is not
+/// counted ([`write_not_sent`]) so there is no attempt number to walk the
+/// schedule by, and the fix (mount a key, rotate a secret) should take effect
+/// within a minute of being made.
+const NOT_SENT_RETRY: Duration = Duration::minutes(1);
+
 /// §8.5, verbatim: "20 consecutive failures sets `circuitOpenUntil`" for
 /// 15 minutes. See `breaker.md` for why this and `dispatch::PROVIDER_
 /// BREAKER` each declare their own `BreakerPolicy` rather than sharing a
@@ -81,29 +89,62 @@ fn sys(worker: &str) -> CratestackContext {
     system_context(format!("sms-worker:hooks:{worker}"))
 }
 
-/// A client with §8.5's own 10s timeout — `reqwest::Client::new()` sets
-/// none, so building one explicitly is what actually enforces the "10s per
-/// attempt" contract rather than merely documenting it.
+/// The HTTP clients `hooks` delivers with: one per delivery mode, because the
+/// two modes keep different promises about redirects.
 ///
-/// It follows no redirect (VS-8): a delivery is sealed for one audience and one
-/// route, and a `307`/`308` would re-send those bytes, recipient and message
-/// body included, to a host the seal was never made for. A redirect is a
-/// non-2xx answer like any other: it retries, and an operator fixes the URL.
+/// - **`sealed` follows none (VS-8).** A delivery is sealed for one audience and
+///   one route, and a `307`/`308` would re-send those bytes, recipient and
+///   message body included, to a host the seal was never made for. A redirect is
+///   a non-2xx answer like any other: it retries, and an operator fixes the URL.
+/// - **`hmac` keeps reqwest's default policy**, as it had before sealed mode
+///   existed: up to ten redirects, a `307`/`308` re-sending the body. Other apps'
+///   receivers sit behind redirects today (a bare host to `www`, `http` to
+///   `https`), and the owner's ruling (R5) is that the HMAC scheme survives
+///   unchanged for them. The caveat is the usual one: a redirect is followed to
+///   wherever the receiver's own server sends it, the signed body and
+///   `X-Sms-Signature` with it, so whoever controls an `hmac` receiver's
+///   redirects controls where its deliveries go. That is a trust the endpoint's
+///   registrant already extends by choosing the URL.
+///
+/// Both carry §8.5's 10 s timeout: `reqwest::Client::new()` sets none, so
+/// building one explicitly is what enforces "10s per attempt" rather than
+/// merely documenting it. A redirect chain shares that one timeout.
+pub struct HttpClients {
+    sealed: reqwest::Client,
+    hmac: reqwest::Client,
+}
+
+impl HttpClients {
+    /// The client an endpoint in `mode` delivers with.
+    fn for_mode(&self, mode: WebhookDeliveryMode) -> &reqwest::Client {
+        match mode {
+            WebhookDeliveryMode::sealed => &self.sealed,
+            WebhookDeliveryMode::hmac => &self.hmac,
+        }
+    }
+}
+
+/// Builds the clients `hooks` delivers with ([`HttpClients`]).
 ///
 /// # Panics
 ///
 /// Never in practice: the only way `ClientBuilder::build` fails is a TLS
-/// backend misconfiguration, and this builder sets only a timeout and a
+/// backend misconfiguration, and these builders set only a timeout and a
 /// redirect policy — same
 /// reasoning `OrangeCmProvider::new`'s identical `.expect(...)` already
 /// relies on.
 #[must_use]
-pub fn build_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("reqwest client builder with a timeout and a redirect policy never fails")
+pub fn build_http_client() -> HttpClients {
+    let builder = || reqwest::Client::builder().timeout(REQUEST_TIMEOUT);
+    HttpClients {
+        sealed: builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("reqwest client builder with a timeout and a redirect policy never fails"),
+        hmac: builder()
+            .build()
+            .expect("reqwest client builder with a timeout never fails"),
+    }
 }
 
 /// Never returns on its own, matching [`crate::run`]'s contract for every
@@ -134,9 +175,10 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 /// Each claimed row is delivered by its endpoint's own `deliveryMode`
 /// ([`send`]): `hmac` needs nothing but the endpoint's secret, `sealed` needs
 /// `ctx.webhook_sealer`. A process without the signing key therefore still
-/// delivers every `hmac` endpoint, and fails a `sealed` one's attempt as an
-/// ordinary retryable failure that names the missing key (a claim has already
-/// counted it, and the row recovers by replay once the key is mounted).
+/// delivers every `hmac` endpoint, and a `sealed` one's attempt is
+/// [`Outcome::NotSent`]: logged at `error` naming the missing key, uncounted,
+/// off the endpoint's breaker, and offered again a minute later, so it goes out
+/// by itself once the key is mounted.
 /// `backends/apps/sms-worker` says so at start when `hooks` runs without a key.
 ///
 /// # Errors
@@ -146,7 +188,7 @@ pub async fn tick(
     ctx: &WorkerContext,
     sys: &CratestackContext,
     worker: &str,
-    http: &reqwest::Client,
+    http: &HttpClients,
 ) -> Result<(), CratestackError> {
     let claimed = claim_batch::<WebhookAttempt>(&ctx.db, sys, worker, BUDGET).await?;
     for attempt in claimed {
@@ -155,7 +197,7 @@ pub async fn tick(
     Ok(())
 }
 
-/// The four shapes a delivery attempt resolves to, before each is
+/// The five shapes a delivery attempt resolves to, before each is
 /// translated into a `WebhookAttempt`/`WebhookEndpoint` write by
 /// [`write_outcome`]. Kept distinct from [`AttemptState`] itself because
 /// `Retryable` still branches on `maxAttempts` before it knows whether the
@@ -186,6 +228,16 @@ enum Outcome {
     /// reaching the same `dead` outcome anyway, more slowly and with the
     /// same endpoint-blaming bug on every attempt in between.
     MalformedPayload { message: String },
+    /// Nothing was sent, because this worker or this row is misconfigured: a
+    /// `sealed` attempt on a worker with no envelope signing key, or an `hmac`
+    /// row with no secret. Like [`Outcome::MalformedPayload`] it says nothing
+    /// about the endpoint, so it never touches its breaker; unlike it, the cause
+    /// is fixable and the next attempt can succeed, so it is not `dead` either.
+    /// It also does not count toward `maxAttempts` ([`write_not_sent`] hands the
+    /// claim's increment back): an operator who mounts the key an hour late
+    /// must not find eight events already dead. `message` names the fix and is
+    /// logged at `error` on every attempt.
+    NotSent { message: String },
 }
 
 /// Deliver one already-`delivering` attempt and write back whichever
@@ -196,7 +248,7 @@ enum Outcome {
 async fn deliver_one(
     ctx: &WorkerContext,
     sys: &CratestackContext,
-    http: &reqwest::Client,
+    http: &HttpClients,
     sealer: Option<&Sealer>,
     attempt: WebhookAttempt,
 ) {
@@ -257,18 +309,20 @@ async fn deliver_one(
 /// A `sealed` endpoint's request is [`sealed_request`], an `hmac` endpoint's
 /// [`hmac_request`]; the status handling after the send is one function for
 /// both, so a `410` deactivates and a `5xx` retries whichever way the bytes were
-/// authenticated. Neither follows a redirect ([`build_http_client`]).
+/// authenticated. A `sealed` request follows no redirect and an `hmac` one
+/// follows reqwest's default ([`HttpClients`]).
 async fn send(
-    http: &reqwest::Client,
+    http: &HttpClients,
     sealer: Option<&Sealer>,
     endpoint: &WebhookEndpoint,
     attempt: &WebhookAttempt,
     body: &str,
     now: DateTime<Utc>,
 ) -> Outcome {
+    let client = http.for_mode(endpoint.deliveryMode);
     let request = match endpoint.deliveryMode {
-        WebhookDeliveryMode::sealed => sealed_request(http, sealer, endpoint, body).await,
-        WebhookDeliveryMode::hmac => hmac_request(http, endpoint, attempt, body, now),
+        WebhookDeliveryMode::sealed => sealed_request(client, sealer, endpoint, body).await,
+        WebhookDeliveryMode::hmac => hmac_request(client, endpoint, attempt, body, now),
     };
     let request = match request {
         Ok(request) => request,
@@ -302,22 +356,19 @@ async fn send(
 ///
 /// A delivery that cannot be sealed (no signing key in this process, no
 /// audience on the row, an audience or URL the seal refuses, a signer that
-/// fails) never reaches the network, and is an endpoint failure like any other:
-/// it backs off and counts toward the circuit breaker.
+/// fails) never reaches the network, and is [`Outcome::NotSent`]: the endpoint
+/// did nothing, so its breaker and the attempt's budget are left alone.
 async fn sealed_request(
     http: &reqwest::Client,
     sealer: Option<&Sealer>,
     endpoint: &WebhookEndpoint,
     body: &str,
 ) -> Result<reqwest::RequestBuilder, Outcome> {
-    let not_sealed = |message: String| Outcome::Retryable {
-        status: None,
-        message,
-    };
+    let not_sealed = |message: String| Outcome::NotSent { message };
     let Some(sealer) = sealer else {
         return Err(not_sealed(
-            "delivery not sealed: this worker holds no envelope signing key \
-             (--envelope-signing-key-file)"
+            "delivery not sealed: this worker holds no envelope signing key. Start it with \
+             --envelope-signing-key-file (the gateway's key), or switch the endpoint to hmac"
                 .to_owned(),
         ));
     };
@@ -343,8 +394,14 @@ async fn sealed_request(
 ///
 /// There is no signer to hold and nothing to fail but a row with no secret,
 /// which the CHECK `webhook_endpoints_delivery_mode_hmac_needs_secret_check`
-/// makes impossible: it is an endpoint failure here rather than a request signed
-/// with an empty key, because a signature anyone can compute is worse than none.
+/// makes impossible for `NULL` and nothing makes impossible for `""` (the API
+/// now refuses a secret under 32 characters, but a row from before that bound
+/// can hold one). Either is [`Outcome::NotSent`] here rather than a request
+/// signed with an empty key, because a signature anyone can compute is worse
+/// than none. (Before this, an empty secret signed the delivery with an empty
+/// key; that is the one behaviour change to the HMAC scheme.) An empty
+/// `prevSecret` is left out of the signature rather than signed with: a
+/// receiver gains nothing from a second value anyone could compute either.
 fn hmac_request(
     http: &reqwest::Client,
     endpoint: &WebhookEndpoint,
@@ -357,9 +414,10 @@ fn hmac_request(
         .as_deref()
         .filter(|secret| !secret.is_empty())
     else {
-        return Err(Outcome::Retryable {
-            status: None,
-            message: "delivery not signed: this hmac endpoint has no secret".to_owned(),
+        return Err(Outcome::NotSent {
+            message: "delivery not signed: this hmac endpoint has no secret. Rotate it \
+                      (rotateWebhookSecret) to mint one"
+                .to_owned(),
         });
     };
     let timestamp = now.timestamp();
@@ -469,8 +527,9 @@ async fn fetch_endpoint(
 /// endpoint at all is the load-bearing decision in this function:
 /// `Success`/`Gone`/`Retryable` all
 /// reflect something the endpoint actually did (or failed to do), so all
-/// three update its bookkeeping; `MalformedPayload` reflects nothing about
-/// the endpoint — no request was ever sent to it — and must not. Errors
+/// three update its bookkeeping; `MalformedPayload` and `NotSent` reflect
+/// nothing about the endpoint — no request was ever sent to it — and must not
+/// touch it. Errors
 /// from either write are logged, not propagated, matching every other
 /// outcome-writer in this crate.
 async fn write_outcome(
@@ -518,6 +577,20 @@ async fn write_outcome(
                 write_failed_retry(ctx, sys, attempt, status, message, now).await;
             }
             record_endpoint_failure(ctx, sys, endpoint, now).await;
+        }
+        Outcome::NotSent { message } => {
+            // Loud on purpose, and on every attempt: this is an operator's to
+            // fix (a key to mount, a secret to mint), not routine traffic, and
+            // nothing else will say so while the attempt quietly waits. The
+            // endpoint's breaker is not touched (it did nothing wrong) and
+            // the attempt is handed its budget back (`write_not_sent`).
+            error!(
+                attempt_id = %attempt.id, endpoint_id = %endpoint.id,
+                delivery_mode = ?endpoint.deliveryMode, message,
+                "webhook delivery not sent: a misconfiguration, not the endpoint; \
+                 rescheduled without counting the attempt or touching the circuit breaker"
+            );
+            write_not_sent(ctx, sys, attempt, message, now).await;
         }
         Outcome::MalformedPayload { message } => {
             // Loud on purpose — this is our own bug (#38's subscriber wrote
@@ -575,6 +648,46 @@ async fn write_succeeded(
         log_write_failure(
             &attempt.id,
             AttemptState::succeeded,
+            &map_database_error(error),
+        );
+    }
+}
+
+/// `delivering -> failed` for an attempt that sent nothing ([`Outcome::NotSent`]):
+/// `nextAttemptAt` is [`NOT_SENT_RETRY`] away and `attempts` goes back to what
+/// it was before the claim counted this one, so a misconfiguration spends none
+/// of the endpoint's `maxAttempts` however long it lasts. `lastStatusCode` is
+/// cleared (there was no answer) and `lastError` names the fix, where an
+/// operator looking at the delivery log will find it.
+async fn write_not_sent(
+    ctx: &WorkerContext,
+    sys: &CratestackContext,
+    attempt: &WebhookAttempt,
+    message: String,
+    now: DateTime<Utc>,
+) {
+    if let Err(error) = ctx
+        .db
+        .webhook_attempt()
+        .update(attempt.id.clone())
+        .set(UpdateWebhookAttemptInput {
+            state: Some(AttemptState::failed),
+            attempts: Some((attempt.attempts - 1).max(0)),
+            lastStatusCode: Some(None),
+            lastError: Some(Some(message)),
+            lastAttemptAt: Some(Some(now)),
+            nextAttemptAt: Some(Some(now + NOT_SENT_RETRY)),
+            leaseOwner: Some(None),
+            leaseUntil: Some(None),
+            ..Default::default()
+        })
+        .if_match(attempt.version)
+        .run(sys)
+        .await
+    {
+        log_write_failure(
+            &attempt.id,
+            AttemptState::failed,
             &map_database_error(error),
         );
     }
@@ -776,7 +889,9 @@ fn log_write_failure(attempt_id: &str, attempted_state: AttemptState, error: &Cr
 
 #[cfg(test)]
 mod tests {
-    use super::{BACKOFF_SCHEDULE, backoff_for, build_envelope, build_http_client, hmac_request};
+    use super::{
+        BACKOFF_SCHEDULE, Sealer, backoff_for, build_envelope, build_http_client, hmac_request,
+    };
     use chrono::{Duration, TimeZone, Utc};
     use sms_api::schema::{WebhookDeliveryMode, WebhookEndpoint};
 
@@ -949,7 +1064,7 @@ mod tests {
     /// previous one second while an overlap window is open.
     #[test]
     fn an_hmac_request_is_signed_with_the_current_secret_and_the_previous_one() {
-        let http = build_http_client();
+        let http = build_http_client().hmac;
         let now = Utc.with_ymd_and_hms(2026, 7, 28, 14, 3, 11).unwrap();
         let attempt = fixture_attempt();
         let mut endpoint = hmac_endpoint();
@@ -1014,7 +1129,7 @@ mod tests {
     /// delivery, never a request signed with an empty key.
     #[test]
     fn an_hmac_endpoint_without_a_secret_sends_nothing() {
-        let http = build_http_client();
+        let http = build_http_client().hmac;
         let attempt = fixture_attempt();
         for secret in [None, Some(String::new())] {
             let endpoint = WebhookEndpoint {
@@ -1023,9 +1138,63 @@ mod tests {
             };
             let outcome = hmac_request(&http, &endpoint, &attempt, "{}", Utc::now());
             assert!(
-                matches!(outcome, Err(super::Outcome::Retryable { status: None, .. })),
+                matches!(outcome, Err(super::Outcome::NotSent { .. })),
                 "an hmac endpoint with no secret must not produce a request"
             );
         }
+    }
+
+    /// An empty `prevSecret` (a rotation that wrote one, or a row edited by hand)
+    /// is not a second key: it is left out of the signature.
+    #[test]
+    fn an_empty_previous_secret_is_left_out_of_the_signature() {
+        let http = build_http_client().hmac;
+        let now = Utc.with_ymd_and_hms(2026, 7, 28, 14, 3, 11).unwrap();
+        let attempt = fixture_attempt();
+        let endpoint = WebhookEndpoint {
+            prevSecret: Some(String::new()),
+            ..hmac_endpoint()
+        };
+        let request = hmac_request(&http, &endpoint, &attempt, "{}", now)
+            .ok()
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(
+            header(&request, "x-sms-signature").matches("v1=").count(),
+            1
+        );
+    }
+
+    /// A sealed attempt on a worker with no signing key sends nothing, and says
+    /// how to fix it: not a retryable failure of the endpoint.
+    #[tokio::test]
+    async fn a_sealed_endpoint_without_a_signing_key_sends_nothing_and_names_the_flag() {
+        let http = build_http_client().sealed;
+        let outcome = super::sealed_request(&http, None, &fixture_endpoint(), "{}").await;
+        let Err(super::Outcome::NotSent { message }) = outcome else {
+            panic!("a sealed request needs a signer: expected NotSent and nothing built");
+        };
+        assert!(message.contains("--envelope-signing-key-file"), "{message}");
+    }
+
+    /// A sealed row whose URL the seal cannot bind never reaches the network and
+    /// is the row's misconfiguration, not the endpoint's failure. The database no
+    /// longer lets a sealed row hold one, so this is the worker's second line of
+    /// defence for a row it cannot trust, tested without one.
+    #[tokio::test]
+    async fn a_sealed_endpoint_whose_url_cannot_be_sealed_sends_nothing() {
+        let http = build_http_client().sealed;
+        let sealer =
+            Sealer::new(cratestack::cose::Ed25519Signer::from_seed(&[0x42; 32])).expect("a sealer");
+        let endpoint = WebhookEndpoint {
+            url: "https://h.example.test/hook?tenant=1".to_owned(),
+            ..fixture_endpoint()
+        };
+        let outcome = super::sealed_request(&http, Some(&sealer), &endpoint, "{}").await;
+        let Err(super::Outcome::NotSent { message }) = outcome else {
+            panic!("a URL with a query cannot be sealed for: expected NotSent");
+        };
+        assert!(message.contains("not sealed"), "{message}");
     }
 }

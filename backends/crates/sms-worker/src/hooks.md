@@ -55,22 +55,55 @@ guaranteed to produce byte-identical output to the first.
 `WebhookEndpoint.deliveryMode` picks how one attempt is built, and nothing else
 about the loop differs: the claim, the status handling (2xx delivered, 410
 deactivates, anything else retries with the §8.5 backoff and counts toward the
-breaker), `write_outcome`, the redirect policy and the 10 s timeout are one path
-for both.
+breaker), `write_outcome` and the 10 s timeout are one path for both. The redirect
+policy is the one thing that is not: `sealed` follows none, `hmac` keeps reqwest's
+default (`HttpClients`).
 
-|                                                         | `sealed`                                                                   | `hmac`                                                                                                  |
-| ------------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Body ([`build_envelope`])                               | `{id, eventId, type, occurredAt, appId, endpointId, data}`                 | `{id, type, occurredAt, data}`, byte for byte what its receivers verify today                           |
-| Authentication                                          | `Sealer::seal(audience, url, body)`, fresh per attempt                     | `sign_header([secret, prevSecret?], timestamp, eventId, body)`, the current secret first                |
-| Headers                                                 | the seal's `Content-Type` and `Cratestack-*`                               | `X-Sms-Event`, `X-Sms-Event-Id`, `X-Sms-Timestamp`, `X-Sms-Signature`, `Content-Type: application/json` |
-| Needs                                                   | `WorkerContext::webhook_sealer` (the envelope signing key) and an audience | the endpoint's `secret`                                                                                 |
-| Fails as a retryable endpoint failure, never sent, when | no sealer, no audience, a URL or audience the seal refuses                 | the row has no secret (the CHECK makes it impossible)                                                   |
+|                                                   | `sealed`                                                                   | `hmac`                                                                                                  |
+| ------------------------------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Body ([`build_envelope`])                         | `{id, eventId, type, occurredAt, appId, endpointId, data}`                 | `{id, type, occurredAt, data}`, what its receivers verify today                                         |
+| Authentication                                    | `Sealer::seal(audience, url, body)`, fresh per attempt                     | `sign_header([secret, prevSecret?], timestamp, eventId, body)`, the current secret first                |
+| Headers                                           | the seal's `Content-Type` and `Cratestack-*`                               | `X-Sms-Event`, `X-Sms-Event-Id`, `X-Sms-Timestamp`, `X-Sms-Signature`, `Content-Type: application/json` |
+| Needs                                             | `WorkerContext::webhook_sealer` (the envelope signing key) and an audience | the endpoint's `secret`                                                                                 |
+| Is *not sent* ([`Outcome::NotSent`]), below, when | no sealer, no audience, a URL or audience the seal refuses                 | the row's secret is empty (a CHECK refuses `NULL` only)                                                 |
 
 A worker with no signing key still starts and still delivers every `hmac`
-endpoint; a `sealed` endpoint's attempt fails with a message that names
-`--envelope-signing-key-file` (the claim has already counted the attempt, so the
-key belongs in place before sealed endpoints are created, and `replayWebhookAttempt`
-recovers the `dead` ones after).
+endpoint; a `sealed` endpoint's attempt is not sent, with a message that names
+`--envelope-signing-key-file`.
+
+# An attempt that sent nothing is not the endpoint's failure ([`Outcome::NotSent`])
+
+A misconfiguration that stops a request being built (a `sealed` attempt on a
+worker with no signing key, a row the seal refuses, an `hmac` row with an empty
+secret) says nothing about the endpoint, so it must not be charged to it, and
+`write_outcome`'s rule is that only an arm that reflects something the endpoint
+did touches its breaker. `NotSent` therefore:
+
+- logs at `error` on **every** attempt, naming the fix (the flag to mount, the
+  secret to rotate), because nothing else says so while the attempt waits;
+- writes `delivering -> failed` with `nextAttemptAt` a fixed minute away
+  (`NOT_SENT_RETRY`), not the backoff schedule: there is no attempt number to
+  walk it by, since
+- **it hands the claim's `attempts` increment back**, so a misconfiguration
+  spends none of `maxAttempts` however long it lasts, and mounting a key an hour
+  late finds every event still waiting rather than `dead`;
+- never calls `record_endpoint_failure`: `consecutiveFailures` and
+  `circuitOpenUntil` stay as they were.
+
+Contrast `Retryable` (the endpoint answered badly or not at all: counted,
+backed off, fed to the breaker) and `MalformedPayload` (our own bug: straight to
+`dead`).
+
+# Redirects
+
+`build_http_client` builds an `HttpClients` pair. The `sealed` client follows
+none: a `307` would re-send bytes sealed for one audience to another host, and is
+an ordinary failed attempt. The `hmac` client keeps reqwest's default policy
+(up to ten hops, a `307`/`308` re-sending the signed body), exactly as the
+pre-sealed worker did, because other apps' receivers sit behind redirects and the
+HMAC scheme is kept unchanged for them. The SSRF-shaped caveat is the old one:
+whoever controls an `hmac` receiver's redirects controls where its deliveries
+go. Both carry the same 10 s timeout. `hooks_live_postgres.rs` proves each.
 
 # Sealing, per attempt (VS-8)
 
@@ -93,12 +126,12 @@ A retry runs this whole path again: **every attempt is sealed afresh**, so a
 retry after the receiver's 300 s skew still opens and a re-sent nonce is never
 what a receiver sees. The endpoint's `audience` is what the seal binds as the
 recipient; the route is the path of its `url` (`sms_webhook::delivery_route`).
-A delivery that cannot be sealed never reaches the network and is an ordinary
-retryable failure. The signing key is `WorkerContext::webhook_sealer`, loaded
+A delivery that cannot be sealed never reaches the network and is
+[`Outcome::NotSent`]. The signing key is `WorkerContext::webhook_sealer`, loaded
 from `--envelope-signing-key-file`; with none, a `sealed` endpoint's attempt
 fails (above) and `hmac` endpoints are unaffected. The receiver's answer is judged by status alone and
-never opened (`sms-webhook`'s `lib.md`, "The answer"). Redirects are not
-followed.
+never opened (`sms-webhook`'s `lib.md`, "The answer"). A sealed delivery follows
+no redirect.
 
 # `maskRecipient` — enforced upstream, not re-derived here
 

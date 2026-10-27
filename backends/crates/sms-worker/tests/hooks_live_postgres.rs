@@ -369,7 +369,7 @@ fn receiver_for(audience: &str) -> WebhookReceiver {
 
 /// The client the worker itself builds: a test that built its own would prove
 /// nothing about the redirect policy production runs with.
-fn http_client() -> reqwest::Client {
+fn http_client() -> hooks::HttpClients {
     hooks::build_http_client()
 }
 
@@ -640,17 +640,17 @@ async fn a_redirect_is_not_followed() {
     assert_eq!(reread.lastStatusCode, Some(307));
 }
 
-/// Writes `url` onto an endpoint behind the API's back, with `psql`. The API
-/// refuses a URL the seal cannot bind (`WebhookEndpoint.url`'s `@regex`), so a row
-/// like this exists only from before that rule, or from a hand edit; the worker
-/// still refuses to send for it, and this is how the test gets one.
-async fn force_url(endpoint_id: &str, url: &str) {
+/// Writes `secret` onto an endpoint behind the API's back, with `psql`. The API
+/// refuses a secret under 32 characters, so an empty one exists only from before
+/// that bound, or from a hand edit; the worker still refuses to sign with it, and
+/// this is how the test gets one.
+async fn force_secret(endpoint_id: &str, secret: &str) {
     let database_url = sms_test_support::database_url().await;
     let output = std::process::Command::new("psql")
         .arg(database_url)
         .args(["-v", "ON_ERROR_STOP=1", "-q", "-c"])
         .arg(format!(
-            "UPDATE webhook_endpoints SET url = '{url}' WHERE id = '{endpoint_id}'"
+            "UPDATE webhook_endpoints SET secret = '{secret}' WHERE id = '{endpoint_id}'"
         ))
         .output()
         .expect("spawning `psql`");
@@ -661,13 +661,39 @@ async fn force_url(endpoint_id: &str, url: &str) {
     );
 }
 
-/// A URL the seal cannot bind (here a query string) never reaches the network;
-/// it is an ordinary endpoint failure with its reason recorded. The API no longer
-/// lets one be stored, so the row is written around it (`force_url`): the worker's
-/// refusal is the second line of defence for a row older than the rule.
+/// What a misconfiguration that **sent nothing** must and must not do, for any
+/// mode: the attempt is `failed` and waits about a minute, its `attempts` is
+/// what it was before the claim counted it, `lastError` names the fix, no
+/// request reached the receiver, and the endpoint's breaker is untouched.
+async fn assert_not_sent(
+    db: &Cratestack,
+    attempt_id: &str,
+    endpoint_id: &str,
+    fix_names: &str,
+) -> schema::WebhookAttempt {
+    let reread = reread_attempt(db, attempt_id).await;
+    assert_eq!(reread.state, AttemptState::failed, "{reread:?}");
+    assert_eq!(reread.attempts, 0, "a not-sent attempt is not counted");
+    assert_eq!(reread.lastStatusCode, None);
+    let error = reread.lastError.clone().unwrap_or_default();
+    assert!(error.contains(fix_names), "{error}");
+    let wait = reread.nextAttemptAt.expect("rescheduled") - Utc::now();
+    assert!(
+        wait > Duration::seconds(50) && wait <= Duration::seconds(60),
+        "about a minute, not the backoff schedule: {wait}"
+    );
+    let endpoint = reread_endpoint(db, endpoint_id).await;
+    assert_eq!(endpoint.consecutiveFailures, 0, "the breaker is not fed");
+    assert_eq!(endpoint.circuitOpenUntil, None);
+    reread
+}
+
+/// An `hmac` row with an empty secret (the CHECK stops a missing one) signs
+/// nothing and sends nothing, and that is the operator's to fix, not the
+/// endpoint's fault: no breaker, no attempt spent, even at `maxAttempts` 1.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn an_endpoint_url_that_cannot_be_sealed_is_never_sent_and_says_why() {
+async fn an_hmac_endpoint_with_an_empty_secret_sends_nothing_and_is_not_held_against_it() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
     let suffix = unique_suffix();
@@ -679,9 +705,17 @@ async fn an_endpoint_url_that_cannot_be_sealed_is_never_sent_and_says_why() {
         .expect(0)
         .mount(&server)
         .await;
-    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
-    force_url(&endpoint.id, &format!("{}/hook?tenant=1", server.uri())).await;
-    let attempt = seed_attempt(&db, &endpoint.id, "cmsgU", "message.delivered", "{}").await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", server.uri()),
+        1,
+        "whsec_to_be_emptied_0123456789abcdef0123456789",
+        None,
+    )
+    .await;
+    force_secret(&endpoint.id, "").await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgE", "message.delivered", "{}").await;
 
     hooks::tick(
         &worker_context(db.clone()),
@@ -691,17 +725,7 @@ async fn an_endpoint_url_that_cannot_be_sealed_is_never_sent_and_says_why() {
     )
     .await
     .expect("tick succeeds");
-    let reread = reread_attempt(&db, &attempt.id).await;
-    assert_eq!(reread.state, AttemptState::failed);
-    assert!(
-        reread
-            .lastError
-            .as_deref()
-            .unwrap_or_default()
-            .contains("not sealed"),
-        "{:?}",
-        reread.lastError
-    );
+    assert_not_sent(&db, &attempt.id, &endpoint.id, "rotateWebhookSecret").await;
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
@@ -727,7 +751,7 @@ async fn a_worker_without_a_signing_key_still_delivers_an_hmac_endpoint() {
         &app_id,
         &format!("{}/hook", server.uri()),
         8,
-        "whsec_nokey",
+        "whsec_nokey_0123456789abcdef0123456789abcdef",
         None,
     )
     .await;
@@ -744,12 +768,14 @@ async fn a_worker_without_a_signing_key_still_delivers_an_hmac_endpoint() {
     assert_eq!(reread.state, AttemptState::succeeded);
 }
 
-/// ... and fails a `sealed` endpoint's attempt, without a request, with a
-/// message that names the flag that is missing. It is an ordinary retryable
-/// failure (it backs off and counts), not a worker that goes down.
+/// ... and sends nothing for a `sealed` endpoint, with a message that names the
+/// flag that is missing. It is the operator's to fix, not the endpoint's fault:
+/// the attempt waits a minute without being counted (even at `maxAttempts` 1, so
+/// it cannot go `dead`), the endpoint's breaker is untouched, and once the key
+/// is mounted the same attempt is delivered by the next poll, as the first one.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn a_worker_without_a_signing_key_fails_a_sealed_endpoint_and_names_the_key() {
+async fn a_worker_without_a_signing_key_sends_nothing_for_a_sealed_endpoint_and_names_the_key() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
     let suffix = unique_suffix();
@@ -757,25 +783,62 @@ async fn a_worker_without_a_signing_key_fails_a_sealed_endpoint_and_names_the_ke
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+        .and(path("/hook"))
         .respond_with(ResponseTemplate::new(200))
-        .expect(0)
+        .expect(1)
         .mount(&server)
         .await;
-    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 8).await;
+    let endpoint = seed_endpoint(&db, &suffix, &app_id, &format!("{}/hook", server.uri()), 1).await;
     let attempt = seed_attempt(&db, &endpoint.id, "cmsgK", "message.delivered", "{}").await;
 
-    let ctx = WorkerContext {
+    let keyless = WorkerContext {
         webhook_sealer: None,
         ..worker_context(db.clone())
     };
-    hooks::tick(&ctx, &sys(), "test-worker", &http_client())
+    hooks::tick(&keyless, &sys(), "test-worker", &http_client())
         .await
         .expect("tick succeeds");
-    let reread = reread_attempt(&db, &attempt.id).await;
-    assert_eq!(reread.state, AttemptState::failed);
-    let error = reread.lastError.unwrap_or_default();
-    assert!(error.contains("--envelope-signing-key-file"), "{error}");
+    let waiting = assert_not_sent(
+        &db,
+        &attempt.id,
+        &endpoint.id,
+        "--envelope-signing-key-file",
+    )
+    .await;
     assert!(server.received_requests().await.unwrap().is_empty());
+
+    // Not due for a minute: another poll leaves it alone.
+    hooks::tick(&keyless, &sys(), "test-worker", &http_client())
+        .await
+        .expect("tick succeeds");
+    assert_eq!(
+        reread_attempt(&db, &attempt.id).await.version,
+        waiting.version
+    );
+
+    // The key is mounted (and the minute has passed): it goes out, as the
+    // attempt it always was, counted once.
+    db.webhook_attempt()
+        .update(attempt.id.clone())
+        .set(UpdateWebhookAttemptInput {
+            nextAttemptAt: Some(Some(Utc::now() - Duration::seconds(1))),
+            ..Default::default()
+        })
+        .if_match(waiting.version)
+        .run(&sys())
+        .await
+        .expect("making the retry due");
+    hooks::tick(
+        &worker_context(db.clone()),
+        &sys(),
+        "test-worker",
+        &http_client(),
+    )
+    .await
+    .expect("tick succeeds with the key");
+    let delivered = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(delivered.state, AttemptState::succeeded);
+    assert_eq!(delivered.attempts, 1);
 }
 
 /// Happy path for an `hmac` endpoint (#41, unchanged): claim, sign, POST,
@@ -804,7 +867,7 @@ async fn a_successful_hmac_delivery_is_signed_and_keeps_the_four_field_body() {
         &app_id,
         &format!("{}/hook", server.uri()),
         8,
-        "whsec_hmac_delivery",
+        "whsec_hmac_delivery_0123456789abcdef0123456789abcdef",
         None,
     )
     .await;
@@ -854,7 +917,7 @@ async fn a_successful_hmac_delivery_is_signed_and_keeps_the_four_field_body() {
         .expect("a decimal integer");
     assert!(
         sms_webhook::verify(
-            &["whsec_hmac_delivery"],
+            &["whsec_hmac_delivery_0123456789abcdef0123456789abcdef"],
             timestamp,
             &header("x-sms-event-id"),
             &request.body,
@@ -916,8 +979,8 @@ async fn an_hmac_delivery_in_a_rotation_window_verifies_under_either_secret() {
         &app_id,
         &format!("{}/hook", server.uri()),
         8,
-        "whsec_new_generation",
-        Some("whsec_old_generation"),
+        "whsec_new_generation_0123456789abcdef0123456789abcdef",
+        Some("whsec_old_generation_0123456789abcdef0123456789abcdef"),
     )
     .await;
     seed_attempt(&db, &endpoint.id, "cmsgR", "message.delivered", "{}").await;
@@ -943,8 +1006,14 @@ async fn an_hmac_delivery_in_a_rotation_window_verifies_under_either_secret() {
     let values: Vec<&str> = signature.split(',').collect();
     assert_eq!(values.len(), 2, "{signature}");
     for (generation, secret) in [
-        ("the new generation", "whsec_new_generation"),
-        ("the old generation", "whsec_old_generation"),
+        (
+            "the new generation",
+            "whsec_new_generation_0123456789abcdef0123456789abcdef",
+        ),
+        (
+            "the old generation",
+            "whsec_old_generation_0123456789abcdef0123456789abcdef",
+        ),
     ] {
         assert!(
             sms_webhook::verify(&[secret], timestamp, event_id, &request.body, signature),
@@ -953,14 +1022,14 @@ async fn an_hmac_delivery_in_a_rotation_window_verifies_under_either_secret() {
     }
     // Current first: the first value is the new secret's alone.
     assert!(sms_webhook::verify(
-        &["whsec_new_generation"],
+        &["whsec_new_generation_0123456789abcdef0123456789abcdef"],
         timestamp,
         event_id,
         &request.body,
         values[0],
     ));
     assert!(sms_webhook::verify(
-        &["whsec_old_generation"],
+        &["whsec_old_generation_0123456789abcdef0123456789abcdef"],
         timestamp,
         event_id,
         &request.body,
@@ -993,7 +1062,7 @@ async fn a_410_deactivates_an_hmac_endpoint_and_a_500_backs_it_off() {
         &app_id,
         &format!("{}/hook", gone.uri()),
         8,
-        "whsec_a",
+        "whsec_a_0123456789abcdef0123456789abcdef",
         None,
     )
     .await;
@@ -1002,7 +1071,7 @@ async fn a_410_deactivates_an_hmac_endpoint_and_a_500_backs_it_off() {
         &app_id,
         &format!("{}/hook", failing.uri()),
         8,
-        "whsec_b",
+        "whsec_b_0123456789abcdef0123456789abcdef",
         None,
     )
     .await;
@@ -1043,12 +1112,14 @@ async fn a_410_deactivates_an_hmac_endpoint_and_a_500_backs_it_off() {
     );
 }
 
-/// A redirect is a refusal for an `hmac` endpoint too: the signed request
-/// (recipient and text in its body) is never re-sent to a host the endpoint did
-/// not name.
+/// An `hmac` delivery follows redirects as it always did (R5: the scheme is
+/// unchanged for the apps that rely on it, and a receiver behind a `308` keeps
+/// working): the redirected request carries the same signed body and the same
+/// signature headers, and the answer of the final host decides the attempt. A
+/// `sealed` delivery follows none (`a_redirect_is_not_followed`).
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn an_hmac_redirect_is_not_followed() {
+async fn an_hmac_redirect_is_followed_and_resends_the_signed_body() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
     let suffix = unique_suffix();
@@ -1057,22 +1128,23 @@ async fn an_hmac_redirect_is_not_followed() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/hook"))
-        .respond_with(ResponseTemplate::new(307).insert_header("location", "/elsewhere"))
+        .respond_with(ResponseTemplate::new(308).insert_header("location", "/moved"))
         .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
-        .and(path("/elsewhere"))
+        .and(path("/moved"))
         .respond_with(ResponseTemplate::new(200))
-        .expect(0)
+        .expect(1)
         .mount(&server)
         .await;
+    let secret = "whsec_redirected_0123456789abcdef0123456789";
     let endpoint = seed_hmac_endpoint(
         &db,
         &app_id,
         &format!("{}/hook", server.uri()),
         8,
-        "whsec_r",
+        secret,
         None,
     )
     .await;
@@ -1087,8 +1159,26 @@ async fn an_hmac_redirect_is_not_followed() {
     .await
     .expect("tick succeeds");
     let reread = reread_attempt(&db, &attempt.id).await;
-    assert_eq!(reread.state, AttemptState::failed);
-    assert_eq!(reread.lastStatusCode, Some(307));
+    assert_eq!(reread.state, AttemptState::succeeded);
+    assert_eq!(reread.lastStatusCode, Some(200));
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "the original and the redirected one");
+    let (first, second) = (&requests[0], &requests[1]);
+    assert_eq!(first.url.path(), "/hook");
+    assert_eq!(second.url.path(), "/moved");
+    assert_eq!(first.body, second.body, "a 308 re-sends the same body");
+    let signature = second.headers["x-sms-signature"].to_str().unwrap();
+    let event_id = second.headers["x-sms-event-id"].to_str().unwrap();
+    let timestamp: i64 = second.headers["x-sms-timestamp"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(
+        sms_webhook::verify(&[secret], timestamp, event_id, &second.body, signature),
+        "the redirected request still verifies"
+    );
 }
 
 /// A retryable failure (500) lands in `failed` with a scheduled retry, and
