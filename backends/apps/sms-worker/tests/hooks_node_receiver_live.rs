@@ -123,6 +123,12 @@ async fn db() -> Cratestack {
     Cratestack::builder(pool).build()
 }
 
+/// Where the receiver on `port` will answer. The endpoint row is seeded before
+/// the receiver starts, because the receiver is configured with the row's id.
+fn receiver_url(port: u16) -> String {
+    format!("http://127.0.0.1:{port}/webhooks/vsms")
+}
+
 fn free_port() -> u16 {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("binding an ephemeral port");
     listener
@@ -248,9 +254,10 @@ struct NodeReceiver {
 }
 
 impl NodeReceiver {
-    /// `app_id` is the app the receiver believes it serves
-    /// (`WEBHOOK_RECEIVER_APP_ID`): the receiver has no mode without one.
-    async fn spawn(port: u16, audience: &str, app_id: &str) -> Self {
+    /// `app_id` and `endpoint_id` are the app and the endpoint the receiver
+    /// believes it serves (`WEBHOOK_RECEIVER_APP_ID`,
+    /// `WEBHOOK_RECEIVER_ENDPOINT_ID`): the receiver has no mode without them.
+    async fn spawn(port: u16, audience: &str, app_id: &str, endpoint_id: &str) -> Self {
         let package_dir = node_receiver_dir();
         let mut command = Command::new("node");
         command
@@ -264,6 +271,7 @@ impl NodeReceiver {
             .env("WEBHOOK_RECEIVER_SERVER_NEXT", public_key_b64u(&NEXT_SEED))
             .env("WEBHOOK_RECEIVER_AUDIENCE", audience)
             .env("WEBHOOK_RECEIVER_APP_ID", app_id)
+            .env("WEBHOOK_RECEIVER_ENDPOINT_ID", endpoint_id)
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
 
@@ -428,15 +436,8 @@ async fn a_real_hooks_delivery_is_independently_opened_by_the_node_receiver() {
     let audience = format!("gate-receiver-{}", unique_suffix());
     let port = free_port();
     let app_id = seed_app(&db).await;
-    let receiver = NodeReceiver::spawn(port, &audience, &app_id).await;
-
-    let endpoint = seed_endpoint(
-        &db,
-        &app_id,
-        &format!("{}/webhooks/vsms", receiver.base_url),
-        &audience,
-    )
-    .await;
+    let endpoint = seed_endpoint(&db, &app_id, &receiver_url(port), &audience).await;
+    let receiver = NodeReceiver::spawn(port, &audience, &app_id, &endpoint.id).await;
     let aggregate_id = format!("cmsg{}", unique_suffix());
     let attempt = seed_attempt(&db, &endpoint.id, &aggregate_id).await;
 
@@ -486,18 +487,18 @@ async fn a_delivery_addressed_to_another_audience_is_refused_by_the_node_receive
 
     let port = free_port();
     let app_id = seed_app(&db).await;
+    let endpoint = seed_endpoint(
+        &db,
+        &app_id,
+        &receiver_url(port),
+        "an-audience-the-receiver-does-not-answer-to",
+    )
+    .await;
     let receiver = NodeReceiver::spawn(
         port,
         "the-audience-the-receiver-is-configured-with",
         &app_id,
-    )
-    .await;
-
-    let endpoint = seed_endpoint(
-        &db,
-        &app_id,
-        &format!("{}/webhooks/vsms", receiver.base_url),
-        "an-audience-the-receiver-does-not-answer-to",
+        &endpoint.id,
     )
     .await;
     let attempt = seed_attempt(&db, &endpoint.id, &format!("cmsg{}", unique_suffix())).await;
@@ -544,17 +545,19 @@ async fn a_delivery_made_for_another_app_is_refused_though_it_names_the_receiver
     let audience = format!("gate-receiver-{}", unique_suffix());
     let port = free_port();
     let receivers_app = seed_app(&db).await;
-    let receiver = NodeReceiver::spawn(port, &audience, &receivers_app).await;
+    // The receiver's own endpoint, still waiting for its audience to be set.
+    let own = seed_endpoint(
+        &db,
+        &receivers_app,
+        &receiver_url(port),
+        &format!("not-yet-set-{}", unique_suffix()),
+    )
+    .await;
+    let receiver = NodeReceiver::spawn(port, &audience, &receivers_app, &own.id).await;
 
     // The endpoint belongs to another app and names the receiver's audience.
     let attackers_app = seed_app(&db).await;
-    let endpoint = seed_endpoint(
-        &db,
-        &attackers_app,
-        &format!("{}/webhooks/vsms", receiver.base_url),
-        &audience,
-    )
-    .await;
+    let endpoint = seed_endpoint(&db, &attackers_app, &receiver_url(port), &audience).await;
     let attempt = seed_attempt(&db, &endpoint.id, &format!("cmsg{}", unique_suffix())).await;
 
     let worker_id = format!("hooks-node-receiver-test-{}", unique_suffix());
@@ -565,6 +568,70 @@ async fn a_delivery_made_for_another_app_is_refused_though_it_names_the_receiver
         result["status"].as_str(),
         Some("rejected-unverified"),
         "the receiver must refuse a delivery made for another app: {result}"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let reread = reread_attempt(&db, &attempt.id).await;
+        if reread.state == schema::AttemptState::failed {
+            assert_eq!(reread.lastStatusCode, Some(401));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the refused attempt never reached failed: {:?}",
+            reread.state
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// The attack the signed `endpointId` closes, with a real worker and a real Node
+/// receiver. `WebhookEndpoint` create is allowed for a global role with a free
+/// `appId`, so an endpoint can be registered under the receiver's own app and
+/// named with the receiver's audience whenever that name is free (the receiver's
+/// own endpoint does not carry it yet, or no longer). Its deliveries carry the
+/// right app id and the right audience: the signature, the audience, the route,
+/// the contract, the clock, the nonce and the app id all pass. Only the endpoint
+/// id, the one signed value no one but the gateway chooses, tells it from the
+/// receiver's own endpoint, and the receiver refuses it.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres, the built sms-worker binary, Node >=23.6, the \
+            built Node SDK and `pnpm install` in examples/node/webhook-receiver — see module docs"]
+async fn a_delivery_from_a_second_endpoint_of_the_receivers_own_app_is_refused() {
+    let _guard = TEST_MUTEX.lock().await;
+    let database_url = sms_test_support::database_url().await;
+    let db = db().await;
+
+    let audience = format!("gate-receiver-{}", unique_suffix());
+    let port = free_port();
+    let app_id = seed_app(&db).await;
+    // The receiver's own endpoint, whose audience the operator has not set yet,
+    // so the name the receiver answers to is free.
+    let own = seed_endpoint(
+        &db,
+        &app_id,
+        &receiver_url(port),
+        &format!("not-yet-set-{}", unique_suffix()),
+    )
+    .await;
+    let receiver = NodeReceiver::spawn(port, &audience, &app_id, &own.id).await;
+
+    // A second endpoint of the same app takes the free name and points at the
+    // receiver.
+    let squatter = seed_endpoint(&db, &app_id, &receiver_url(port), &audience).await;
+    assert_ne!(squatter.id, own.id);
+    assert_eq!(squatter.appId, own.appId);
+    let attempt = seed_attempt(&db, &squatter.id, &format!("cmsg{}", unique_suffix())).await;
+
+    let worker_id = format!("hooks-node-receiver-test-{}", unique_suffix());
+    let _worker = spawn_hooks_worker(&database_url, &worker_id);
+
+    let result = wait_for_receiver_result(&receiver, Duration::from_secs(20)).await;
+    assert_eq!(
+        result["status"].as_str(),
+        Some("rejected-unverified"),
+        "the receiver must refuse another endpoint's delivery though the app and audience match: {result}"
     );
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

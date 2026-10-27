@@ -21,17 +21,24 @@ const opener = new WebhookOpener({
   audience: "https://hooks.example.com", // the audience the WebhookEndpoint was created with
   route: "/webhooks/vsms", // the whole path of the endpoint's URL
   appId: "capp00000000000000000", // the vsms app the endpoint belongs to
+  endpointId: "cend00000000000000000", // the endpoint itself: the console shows it when it is created
 });
 const event = await opener.open(rawBody); // throws SdkError kind "unverified" on anything wrong
 ```
 
 `config.ts` reads these from the environment: `WEBHOOK_RECEIVER_AUDIENCE`,
-**`WEBHOOK_RECEIVER_APP_ID` (required: the receiver refuses to start without it)**
-and optionally `WEBHOOK_RECEIVER_ENDPOINT_ID`. One gateway key signs every app's
+**`WEBHOOK_RECEIVER_ENDPOINT_ID` and `WEBHOOK_RECEIVER_APP_ID` (both required: the
+receiver refuses to start without either)**. One gateway key signs every app's
 deliveries, so a signature and an audience say only that vsms sent this to your
-name; the `appId` inside the signed envelope says whose delivery it is, and the
-opener compares it with yours. Choose an audience only you can have (your origin):
-the gateway gives each name to one endpoint.
+name. **The `endpointId` is the binding**: a receiver serves exactly one
+endpoint, learns its id when the endpoint is created (the console's panel shows
+it) and the opener compares it with the `endpointId` inside the signed envelope,
+the one signed value no one but the gateway chooses. Anyone who may create
+endpoints can register one under your app id, so `appId` alone is not enough; it
+additionally catches an endpoint registered under another app. The audience being
+unique to one endpoint is defence in depth, not the binding: the name is free
+before your endpoint exists, after it is deleted or renamed, and while someone
+squats it. Choose an audience only you can have (your origin).
 
 `event` is `{ id, eventId, type, occurredAt, appId, endpointId, data }`
 (`docs/architecture.md` §8.4). `id` is the dedupe key; `eventId` is the source event's id, which used to
@@ -41,8 +48,8 @@ because a header is no part of a seal. The `X-Sms-Event`, `X-Sms-Event-Id`,
 
 What `open` refuses, with one answer (`unverified`, reply `401`) that never says
 which: a body not signed by a pinned key, a delivery addressed to another audience,
-another route, another contract, a delivery made for **another app** (or another
-endpoint, when `WEBHOOK_RECEIVER_ENDPOINT_ID` is set), a stale timestamp (±300 s),
+another route, another contract, a delivery made through **another endpoint**
+(of your app or not), a delivery made for **another app**, a stale timestamp (±300 s),
 a **replayed** body (the nonce is remembered) and a flipped bit. `open` takes the
 raw request bytes only (`express.raw`), never text a framework decoded. The nonce
 memory is per process and cannot be replaced (the check runs in WebAssembly);
@@ -63,9 +70,11 @@ them and a real Postgres-backed `WebhookAttempt` row claimed through the real CA
 claim loop. It runs this directory's actual code. The opener is cratestack's
 envelope compiled to WebAssembly; the worker's sealer is `sms-webhook` over the
 same cratestack crates called natively. A second case seeds the endpoint with the
-wrong audience and watches the receiver refuse it, and a third seeds an endpoint of
+wrong audience and watches the receiver refuse it, a third seeds an endpoint of
 *another app* that names the receiver's own audience and watches the receiver refuse
-that too, so a regression on either side fails the gate in both directions.
+that too, and a fourth seeds a *second endpoint of the receiver's own app* and
+watches the receiver refuse its delivery, so a regression on either side fails
+the gate in both directions.
 
 ## Layout
 

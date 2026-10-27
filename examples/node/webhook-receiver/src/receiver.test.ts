@@ -71,7 +71,7 @@ function realOpener(
     audience: overrides.audience ?? VECTOR.audience,
     route: ROUTE,
     appId: overrides.appId ?? VECTOR.appId,
-    endpointId: overrides.endpointId,
+    endpointId: overrides.endpointId ?? VECTOR.endpointId,
     nowSeconds: overrides.nowSeconds ?? VECTOR.iat,
   });
 }
@@ -107,9 +107,10 @@ describe("with the real WebhookOpener and a delivery the gateway's own sealer pr
     assert.equal(results[0]?.status, "rejected-unverified");
   });
 
-  test("a delivery made through another endpoint is refused when the receiver pins its own", async () => {
-    const { post } = await started(realOpener({ endpointId: "cendpointsomeoneelse000" }));
+  test("a delivery made through another endpoint is refused though the app and the audience match", async () => {
+    const { results, post } = await started(realOpener({ endpointId: "cendpointsomeoneelse000" }));
     assert.equal(await post(genuine), 401);
+    assert.equal(results[0]?.status, "rejected-unverified");
     const matching = await started(realOpener({ endpointId: VECTOR.endpointId }));
     assert.equal(await matching.post(genuine), 202);
   });
