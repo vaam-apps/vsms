@@ -65,7 +65,7 @@ default (`HttpClients`).
 | Authentication                                    | `Sealer::seal(audience, url, body)`, fresh per attempt                     | `sign_header([secret, prevSecret?], timestamp, eventId, body)`, the current secret first                |
 | Headers                                           | the seal's `Content-Type` and `Cratestack-*`                               | `X-Sms-Event`, `X-Sms-Event-Id`, `X-Sms-Timestamp`, `X-Sms-Signature`, `Content-Type: application/json` |
 | Needs                                             | `WorkerContext::webhook_sealer` (the envelope signing key) and an audience | the endpoint's `secret`                                                                                 |
-| Is *not sent* ([`Outcome::NotSent`]), below, when | no sealer, no audience, a URL or audience the seal refuses                 | the row's secret is empty (a CHECK refuses `NULL` only)                                                 |
+| Is *not sent* ([`Outcome::NotSent`]), below, when | no sealer, no audience, a URL or audience the seal refuses                 | never: a row with no secret (a CHECK makes it impossible) is an ordinary failure; an empty one is signed |
 
 A worker with no signing key still starts and still delivers every `hmac`
 endpoint; a `sealed` endpoint's attempt is not sent, with a message that names
@@ -74,13 +74,11 @@ endpoint; a `sealed` endpoint's attempt is not sent, with a message that names
 # An attempt that sent nothing is not the endpoint's failure ([`Outcome::NotSent`])
 
 A misconfiguration that stops a request being built (a `sealed` attempt on a
-worker with no signing key, a row the seal refuses, an `hmac` row with an empty
-secret) says nothing about the endpoint, so it must not be charged to it, and
+worker with no signing key, a row the seal refuses) says nothing about the endpoint, so it must not be charged to it, and
 `write_outcome`'s rule is that only an arm that reflects something the endpoint
 did touches its breaker. `NotSent` therefore:
 
-- logs at `error` on **every** attempt, naming the fix (the flag to mount, the
-  secret to rotate), because nothing else says so while the attempt waits;
+- logs at `error` on **every** attempt, naming the fix (the flag to mount), because nothing else says so while the attempt waits;
 - writes `delivering -> failed` with `nextAttemptAt` a fixed minute away
   (`NOT_SENT_RETRY`), not the backoff schedule: there is no attempt number to
   walk it by, since

@@ -163,6 +163,36 @@ the first `sendMessage` call. Generate it once and keep it: rotating later
 does not retroactively rehash rows already written under the old value --
 see ``backends/crates/sms-api/src/pepper.rs``'s own module doc.
 
+=== Before deploying: hmac endpoints with an empty or short key
+
+An `hmac` delivery is byte-identical to what it was before the sealed mode
+existed (owner's ruling R5: vsms serves apps beyond vaam), including for an
+endpoint whose secret is empty, which is signed with the empty key and an empty
+`prevSecret` a second `v1=` value. A signature under an empty key is one anyone
+can compute, so before the deploy count the endpoints that have one, against the
+database the migration is about to run on (it prints counts and ids, never a
+secret):
+
+[,bash]
+----
+psql "$DATABASE_URL" -c "
+  SELECT count(*) FILTER (WHERE secret = '')                       AS empty_secret,
+         count(*) FILTER (WHERE length(secret) BETWEEN 1 AND 31)   AS short_secret,
+         count(*) FILTER (WHERE prev_secret = '')                  AS empty_prev_secret
+    FROM webhook_endpoints"
+----
+
+Add `WHERE delivery_mode = 'hmac'` once migration `0010_sealed_webhooks` has
+run (before it, every row is an `hmac` endpoint and the column does not exist;
+after it, a `sealed` endpoint holds no secret and so counts for nothing). To
+see which, select `id, app_id` with the same predicates. After the deploy the
+worker names each such endpoint in a `warn` line (at most every ten minutes per
+endpoint) that reads "signs with an empty key". The fix is
+`rotateWebhookSecret` on each, twice when the secret itself is empty (the first
+rotation moves the empty secret into `prevSecret`), and handing the new secret to
+that endpoint's receiver; a short, non-empty secret signs correctly and is only
+weak, so rotate those at leisure.
+
 == 2. Build and bring up Postgres + migrations first
 
 [,bash]

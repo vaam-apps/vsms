@@ -1,6 +1,7 @@
 #![doc = include_str!("hooks.md")]
 
-use std::time::Duration as StdDuration;
+use std::sync::LazyLock;
+use std::time::{Duration as StdDuration, Instant};
 
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
@@ -17,6 +18,7 @@ use tracing::{error, warn};
 use crate::WorkerContext;
 use crate::breaker::{self, BreakerPolicy};
 use crate::claim::claim_batch;
+use crate::throttle::Throttle;
 
 /// How often this loop polls for claimable attempts. Same order of
 /// magnitude as `dispatch`/`jobs`'s own poll intervals — `hooks` is
@@ -322,7 +324,10 @@ async fn send(
     let client = http.for_mode(endpoint.deliveryMode);
     let request = match endpoint.deliveryMode {
         WebhookDeliveryMode::sealed => sealed_request(client, sealer, endpoint, body).await,
-        WebhookDeliveryMode::hmac => hmac_request(client, endpoint, attempt, body, now),
+        WebhookDeliveryMode::hmac => {
+            warn_empty_hmac_keys(endpoint, &EMPTY_KEY_WARNINGS, Instant::now());
+            hmac_request(client, endpoint, attempt, body, now)
+        }
     };
     let request = match request {
         Ok(request) => request,
@@ -392,16 +397,18 @@ async fn sealed_request(
 /// the endpoint's `secret` and, while a rotation's overlap window is open, by its
 /// `prevSecret` too (current first, "oldest last" per §4.4).
 ///
-/// There is no signer to hold and nothing to fail but a row with no secret,
-/// which the CHECK `webhook_endpoints_delivery_mode_hmac_needs_secret_check`
-/// makes impossible for `NULL` and nothing makes impossible for `""` (the API
-/// now refuses a secret under 32 characters, but a row from before that bound
-/// can hold one). Either is [`Outcome::NotSent`] here rather than a request
-/// signed with an empty key, because a signature anyone can compute is worse
-/// than none. (Before this, an empty secret signed the delivery with an empty
-/// key; that is the one behaviour change to the HMAC scheme.) An empty
-/// `prevSecret` is left out of the signature rather than signed with: a
-/// receiver gains nothing from a second value anyone could compute either.
+/// **Byte-identical to `29f93c4` for every row that has a `secret`**, including
+/// an empty one (owner's ruling R5: vsms serves apps beyond vaam, and their
+/// receivers were built against this). An empty `secret` is signed with the empty
+/// key and an empty `prevSecret` is a second `v1=` value, as they always were;
+/// [`warn_empty_hmac_keys`] says so loudly instead of this function changing the
+/// bytes. The API now refuses a secret under 32 characters, but a row from before
+/// that bound can hold one.
+///
+/// The only row this cannot sign is one with no `secret` at all, which the CHECK
+/// `webhook_endpoints_delivery_mode_hmac_needs_secret_check` makes impossible. It
+/// is an ordinary [`Outcome::Retryable`]: counted, backed off, and fed to the
+/// breaker like any other failure, never a request signed with nothing.
 fn hmac_request(
     http: &reqwest::Client,
     endpoint: &WebhookEndpoint,
@@ -409,12 +416,9 @@ fn hmac_request(
     body: &str,
     now: DateTime<Utc>,
 ) -> Result<reqwest::RequestBuilder, Outcome> {
-    let Some(secret) = endpoint
-        .secret
-        .as_deref()
-        .filter(|secret| !secret.is_empty())
-    else {
-        return Err(Outcome::NotSent {
+    let Some(secret) = endpoint.secret.as_deref() else {
+        return Err(Outcome::Retryable {
+            status: None,
             message: "delivery not signed: this hmac endpoint has no secret. Rotate it \
                       (rotateWebhookSecret) to mint one"
                 .to_owned(),
@@ -423,12 +427,7 @@ fn hmac_request(
     let timestamp = now.timestamp();
     let event_id = attempt.sourceEventId.to_string();
     let secrets: Vec<&str> = std::iter::once(secret)
-        .chain(
-            endpoint
-                .prevSecret
-                .as_deref()
-                .filter(|prev| !prev.is_empty()),
-        )
+        .chain(endpoint.prevSecret.as_deref())
         .collect();
     let signature = sms_webhook::sign_header(&secrets, timestamp, &event_id, body.as_bytes());
 
@@ -440,6 +439,38 @@ fn hmac_request(
         .header(sms_webhook::HEADER_SIGNATURE, signature)
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body(body.to_owned()))
+}
+
+/// How often one `hmac` endpoint's empty-key warning repeats. A busy endpoint
+/// would otherwise log it once per event.
+const EMPTY_KEY_WARNING_EVERY: StdDuration = StdDuration::from_secs(10 * 60);
+
+/// Which endpoints have said so recently ([`warn_empty_hmac_keys`]).
+static EMPTY_KEY_WARNINGS: LazyLock<Throttle> =
+    LazyLock::new(|| Throttle::new(EMPTY_KEY_WARNING_EVERY));
+
+/// Says, at `warn`, that an `hmac` endpoint is signing with an empty key, at most
+/// once per [`EMPTY_KEY_WARNING_EVERY`] per endpoint.
+///
+/// [`hmac_request`] signs such a row exactly as `29f93c4` did, because other apps'
+/// receivers were built against those bytes (R5), so the delivery is not where
+/// the problem is stopped. A signature under the empty key is one anyone can
+/// compute, though, and the operator who can fix it should be told which
+/// endpoint it is. The line names the endpoint and which of its two keys is
+/// empty, and nothing of any key's value.
+fn warn_empty_hmac_keys(endpoint: &WebhookEndpoint, throttle: &Throttle, now: Instant) {
+    let secret_empty = endpoint.secret.as_deref().is_some_and(str::is_empty);
+    let prev_secret_empty = endpoint.prevSecret.as_deref().is_some_and(str::is_empty);
+    if !(secret_empty || prev_secret_empty) || !throttle.admit(&endpoint.id, now) {
+        return;
+    }
+    warn!(
+        endpoint_id = %endpoint.id, app_id = %endpoint.appId, secret_empty, prev_secret_empty,
+        "hmac webhook endpoint signs with an empty key, so anyone can compute its \
+         X-Sms-Signature; deliveries are unchanged for the receivers that rely on them. Rotate \
+         the endpoint's secret (rotateWebhookSecret; twice when the secret itself is empty, \
+         since the first rotation moves the empty one into prevSecret)"
+    );
 }
 
 /// The §8.4 envelope, built from the stored rows at delivery time, in the shape
@@ -1125,45 +1156,228 @@ mod tests {
         )));
     }
 
-    /// A row with no secret (the CHECK makes one impossible) is a failed
-    /// delivery, never a request signed with an empty key.
+    /// The base algorithm, byte for byte, for a row whose `secret` and `prevSecret`
+    /// are both the empty string (owner's ruling R5: vsms serves apps beyond vaam,
+    /// so the HMAC delivery stays identical to what `29f93c4` sent them). The empty
+    /// key signs, and the empty `prevSecret` is a second `v1=` value, exactly as
+    /// `sign_header(&[secret, prevSecret])` always produced.
+    ///
+    /// The expected values were computed with neither this crate nor the worker,
+    /// by `openssl`, over the base's canonical string (`ts` 1785247391 is
+    /// `2026-07-28T14:03:11Z`, the event id is the nil UUID):
+    ///
+    /// ```text
+    /// printf '%s' '<the body below>' | openssl dgst -sha256 -r
+    /// # 283e620100ce200bb4a99b899e1d37528acacb6f4beb82005d757aa939af3ead
+    /// printf 'v1\n1785247391\n00000000-0000-0000-0000-000000000000\n283e62...3ead' \
+    ///   | openssl dgst -sha256 -hmac "" -r
+    /// # ca8be90f66e528653982259453d9a59d5716c29fa6d6d4b8ddaf46cde1391ab1
+    /// ```
     #[test]
-    fn an_hmac_endpoint_without_a_secret_sends_nothing() {
-        let http = build_http_client().hmac;
-        let attempt = fixture_attempt();
-        for secret in [None, Some(String::new())] {
-            let endpoint = WebhookEndpoint {
-                secret,
-                ..hmac_endpoint()
-            };
-            let outcome = hmac_request(&http, &endpoint, &attempt, "{}", Utc::now());
-            assert!(
-                matches!(outcome, Err(super::Outcome::NotSent { .. })),
-                "an hmac endpoint with no secret must not produce a request"
-            );
-        }
-    }
-
-    /// An empty `prevSecret` (a rotation that wrote one, or a row edited by hand)
-    /// is not a second key: it is left out of the signature.
-    #[test]
-    fn an_empty_previous_secret_is_left_out_of_the_signature() {
+    fn an_empty_secret_and_an_empty_previous_secret_are_signed_as_the_base_did() {
+        const EMPTY_KEY_SIGNATURE: &str =
+            "ca8be90f66e528653982259453d9a59d5716c29fa6d6d4b8ddaf46cde1391ab1";
         let http = build_http_client().hmac;
         let now = Utc.with_ymd_and_hms(2026, 7, 28, 14, 3, 11).unwrap();
         let attempt = fixture_attempt();
         let endpoint = WebhookEndpoint {
+            secret: Some(String::new()),
             prevSecret: Some(String::new()),
             ..hmac_endpoint()
         };
-        let request = hmac_request(&http, &endpoint, &attempt, "{}", now)
+        let body = build_envelope(&attempt, &endpoint, now).unwrap();
+        assert_eq!(
+            body,
+            concat!(
+                r#"{"data":{"messageId":"cmsg000000000000000000","to":"+2376****89"},"#,
+                r#""id":"cattempt00000000000000","occurredAt":"2026-07-28T14:03:11Z","#,
+                r#""type":"message.delivered"}"#
+            )
+        );
+
+        let request = hmac_request(&http, &endpoint, &attempt, &body, now)
+            .ok()
+            .expect("an empty secret is signed with, as at 29f93c4")
+            .build()
+            .unwrap();
+        assert_eq!(
+            header(&request, "x-sms-signature"),
+            format!("v1={EMPTY_KEY_SIGNATURE},v1={EMPTY_KEY_SIGNATURE}")
+        );
+        assert_eq!(header(&request, "x-sms-timestamp"), "1785247391");
+        assert_eq!(
+            header(&request, "x-sms-event-id"),
+            "00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(header(&request, "x-sms-event"), "message.delivered");
+        assert_eq!(header(&request, "content-type"), "application/json");
+        assert_eq!(
+            request.body().and_then(reqwest::Body::as_bytes),
+            Some(body.as_bytes())
+        );
+
+        // An empty secret alone, with no previous one, is one value.
+        let alone = WebhookEndpoint {
+            prevSecret: None,
+            ..endpoint
+        };
+        let request = hmac_request(&http, &alone, &attempt, &body, now)
             .ok()
             .unwrap()
             .build()
             .unwrap();
         assert_eq!(
-            header(&request, "x-sms-signature").matches("v1=").count(),
-            1
+            header(&request, "x-sms-signature"),
+            format!("v1={EMPTY_KEY_SIGNATURE}")
         );
+    }
+
+    /// What `tracing` is handed while the returned guard lives, as the text a
+    /// subscriber prints (the guard is thread-local, so an async test must run on
+    /// the current-thread runtime `#[tokio::test]` gives it).
+    #[derive(Clone, Default)]
+    struct Logs(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Logs {
+        fn capture() -> (Self, tracing::subscriber::DefaultGuard) {
+            let logs = Self::default();
+            let subscriber = tracing_subscriber::fmt()
+                .with_writer(logs.clone())
+                .with_ansi(false)
+                .finish();
+            (logs, tracing::subscriber::set_default(subscriber))
+        }
+
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl std::io::Write for Logs {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+        type Writer = Logs;
+
+        fn make_writer(&'a self) -> Logs {
+            self.clone()
+        }
+    }
+
+    fn logged_during(run: impl FnOnce()) -> String {
+        let (logs, _guard) = Logs::capture();
+        run();
+        logs.text()
+    }
+
+    /// An `hmac` endpoint that signs with an empty key is named at `warn`, once per
+    /// interval however many events arrive, again after it, and never with a key's
+    /// value in the line. An endpoint with real keys is not mentioned.
+    #[test]
+    fn an_empty_key_is_warned_about_loudly_once_per_interval_and_never_with_a_value() {
+        use super::{EMPTY_KEY_WARNING_EVERY, Throttle, warn_empty_hmac_keys};
+        let start = std::time::Instant::now();
+        let throttle = Throttle::new(EMPTY_KEY_WARNING_EVERY);
+        let marker = "whsec_marker_that_must_not_be_logged_0123456789";
+        let weak = WebhookEndpoint {
+            id: "cendpointweak0000000000".to_owned(),
+            secret: Some(marker.to_owned()),
+            prevSecret: Some(String::new()),
+            ..hmac_endpoint()
+        };
+        let healthy = WebhookEndpoint {
+            id: "cendpointhealthy00000000".to_owned(),
+            prevSecret: Some("whsec_previous".to_owned()),
+            ..hmac_endpoint()
+        };
+
+        let first = logged_during(|| {
+            warn_empty_hmac_keys(&healthy, &throttle, start);
+            warn_empty_hmac_keys(&weak, &throttle, start);
+        });
+        assert_eq!(first.matches("WARN").count(), 1, "{first}");
+        assert!(first.contains("cendpointweak0000000000"), "{first}");
+        assert!(first.contains("prev_secret_empty=true"), "{first}");
+        assert!(first.contains("secret_empty=false"), "{first}");
+        assert!(first.contains("rotateWebhookSecret"), "{first}");
+        assert!(!first.contains("cendpointhealthy"), "{first}");
+        assert!(!first.contains(marker), "{first}");
+
+        let within = logged_during(|| {
+            warn_empty_hmac_keys(&weak, &throttle, start + EMPTY_KEY_WARNING_EVERY / 2);
+        });
+        assert_eq!(
+            within, "",
+            "the same endpoint is not repeated inside the interval"
+        );
+
+        let after = logged_during(|| {
+            warn_empty_hmac_keys(&weak, &throttle, start + EMPTY_KEY_WARNING_EVERY);
+        });
+        assert_eq!(after.matches("WARN").count(), 1, "{after}");
+    }
+
+    /// The warning is on the delivery path, not just in its helper: `send` to an
+    /// endpoint with an empty key still makes the request, signed with that key,
+    /// and says so once however many events follow.
+    #[tokio::test]
+    async fn sending_to_an_endpoint_with_an_empty_key_warns_and_still_sends() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let endpoint = WebhookEndpoint {
+            id: "cendpointemptykeysend000".to_owned(),
+            url: format!("{}/hook", server.uri()),
+            secret: Some(String::new()),
+            ..hmac_endpoint()
+        };
+        let attempt = fixture_attempt();
+        let http = build_http_client();
+        let (logs, _guard) = Logs::capture();
+
+        for _ in 0..2 {
+            let outcome = super::send(&http, None, &endpoint, &attempt, "{}", Utc::now()).await;
+            assert!(matches!(outcome, super::Outcome::Success { status: 200 }));
+        }
+
+        let text = logs.text();
+        assert_eq!(text.matches("WARN").count(), 1, "{text}");
+        assert!(text.contains("cendpointemptykeysend000"), "{text}");
+    }
+
+    /// A row with no secret at all (the CHECK makes one impossible) is a failed
+    /// delivery like any other, never a request signed with nothing: counted,
+    /// backed off, and fed to the breaker by `write_outcome`.
+    #[test]
+    fn an_hmac_endpoint_with_no_secret_at_all_is_an_ordinary_failure() {
+        let http = build_http_client().hmac;
+        let endpoint = WebhookEndpoint {
+            secret: None,
+            ..hmac_endpoint()
+        };
+        let outcome = hmac_request(&http, &endpoint, &fixture_attempt(), "{}", Utc::now());
+        let Err(super::Outcome::Retryable {
+            status: None,
+            message,
+        }) = outcome
+        else {
+            panic!("a NULL secret must be a retryable failure and build no request");
+        };
+        assert!(message.contains("rotateWebhookSecret"), "{message}");
     }
 
     /// A sealed attempt on a worker with no signing key sends nothing, and says

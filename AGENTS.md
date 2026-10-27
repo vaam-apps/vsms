@@ -4455,7 +4455,7 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
 
 - **Both modes live in `sms-webhook`.** The sealer and the v2 contract are the crate root; the original HMAC (`sign_header`,
   `verify`, `generate_secret`, the four `X-Sms-*` header names, `tests/cross_language_fixtures.rs` and its `openssl`-computed
-  vectors) is the `hmac_v1` module, restored and re-exported flat (see Review round 3 for the three places it is not the pre-sealed worker). The hooks role picks per row: `sealed` seals,
+  vectors) is the `hmac_v1` module, restored and re-exported flat (see Review rounds 3 and 4: after round 4 there is no place a receiver can tell it from the pre-sealed worker). The hooks role picks per row: `sealed` seals,
   `hmac` signs with the current secret and, while a rotation is open, the previous one second. An `hmac` body is still the four-field
   `{id, type, occurredAt, data}` its receivers verify; a sealed body is `{id, eventId, type, occurredAt, appId, endpointId, data}`.
 - **Migration `0010_sealed_webhooks` is reversible and drops nothing.** It keeps `secret` (now nullable), `prev_secret` and
@@ -4527,17 +4527,26 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   gave both modes `Policy::none()`; the pre-sealed worker used reqwest's default (ten hops, a `307`/`308` re-sending the body), so
   `HttpClients` now holds one client per mode: `sealed` follows none, `hmac` follows as it did. (3) A delivery that sent nothing (no
   signing key, an empty `hmac` secret) went through `Retryable`, opening the endpoint's breaker and burning `maxAttempts`, against
-  `write_outcome`'s own invariant; `Outcome::NotSent` logs `error!`, retries after a minute, hands the claim's increment back and
-  never touches the breaker. (4) `migrations-current` checked generated statements with `text.contains` on the raw file, so a
+  `write_outcome`'s own invariant; `Outcome::NotSent` logged `error!`, retried after a minute, handed the claim's increment back and
+  never touched the breaker (**superseded in round 4**: the cause was a keyless worker claiming rows it cannot serve, so it no
+  longer claims them, and `NotSent` is deleted). (4) `migrations-current` checked generated statements with `text.contains` on the raw file, so a
   commented-out statement passed; it compares executable SQL now (`carries`). (5) `0010/down.sql` is one transaction. (6) A raw
   `PATCH` of the mode answered a CHECK with a 500, which no layer maps for generated routes; `switchWebhookDeliveryMode` validates,
   answers 422, mints the `hmac` secret, requires the `sealed` audience, and `map_database_error` maps `23514` on `webhook_endpoints_*`
   CHECKs to 422 for procedures. (7) `secret` is `@length(min: 32)` on input (not `prevSecret`, which only receives an earlier
   `secret`, and not a CHECK, so older secrets keep rotating); the doc no longer claims a format nothing enforced. (8) The router
-  refuses an `audience` on an `hmac` row's update. (10) Two small HMAC improvements are deliberate: an empty `secret` sends nothing
-  rather than signing with an empty key, and an empty `prevSecret` is left out of `X-Sms-Signature`. CodeQL's three
+  refuses an `audience` on an `hmac` row's update. (10) Two small HMAC "improvements" were made (an empty `secret` sent nothing,
+  an empty `prevSecret` was left out of `X-Sms-Signature`); both **reverted in round 4**, because they were changes to what a
+  receiver sees. CodeQL's three
   cleartext-logging alerts were fixed alongside: no test message or `println!` prints a secret, and the demo seed writes its secret
   file mode 0600.
+- **Review round 4 (the HMAC delivery is byte-identical, and a keyless worker claims no sealed row).** Eight findings. (A, F4) The
+  two round-3 "improvements" to HMAC were still changes to what a receiver sees, and R5 rules out any: an `hmac` row with an empty
+  `secret` is signed with the empty key and an empty `prevSecret` is a second `v1=` value, as at `29f93c4`.
+  `an_empty_secret_and_an_empty_previous_secret_are_signed_as_the_base_did` proves the bytes against a vector computed with `openssl`, and the worker `warn`s naming the
+  endpoint (never a key's value) at most every ten minutes per endpoint (`throttle.rs`), telling the operator to rotate. The
+  runbook has the query that counts such endpoints before a deploy. A NULL secret (a CHECK makes it impossible) is an ordinary
+  `Retryable` failure.
 - **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,
   and a signature cannot survive that. Its nonce memory is per process and cannot be replaced (the check runs in WebAssembly),
   unlike the Rust SDK's `with_nonce_store`; the README says so.

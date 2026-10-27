@@ -18,6 +18,7 @@ pub mod jobs;
 pub mod lease;
 pub mod routing;
 pub mod scheduler;
+mod throttle;
 
 /// A provider adapter registry, keyed by [`SmsProvider::key`] — matching
 /// `Provider.key`, the column [`routing::decide`] resolves a chosen

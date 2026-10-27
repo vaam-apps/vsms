@@ -121,5 +121,10 @@ axum.workspace = true
 # not this crate's own re-export of one.
 rust_decimal.workspace = true
 
+# hooks.rs's own unit tests read the warnings it logs (the empty-key line, the
+# keyless sealed backlog): a line an operator must see is only proved by looking
+# at what the subscriber was handed.
+tracing-subscriber.workspace = true
+
 [lints]
 workspace = true

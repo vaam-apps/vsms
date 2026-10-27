@@ -640,17 +640,18 @@ async fn a_redirect_is_not_followed() {
     assert_eq!(reread.lastStatusCode, Some(307));
 }
 
-/// Writes `secret` onto an endpoint behind the API's back, with `psql`. The API
-/// refuses a secret under 32 characters, so an empty one exists only from before
-/// that bound, or from a hand edit; the worker still refuses to sign with it, and
-/// this is how the test gets one.
-async fn force_secret(endpoint_id: &str, secret: &str) {
+/// Writes `value` into one of an endpoint's secret columns behind the API's back,
+/// with `psql`. The API refuses a secret under 32 characters, so a short or empty
+/// one exists only from before that bound, or from a hand edit; the worker still
+/// signs with it (R5), and this is how the test gets one.
+async fn force_column(endpoint_id: &str, column: &str, value: &str) {
+    assert!(matches!(column, "secret" | "prev_secret"), "{column}");
     let database_url = sms_test_support::database_url().await;
     let output = std::process::Command::new("psql")
         .arg(database_url)
         .args(["-v", "ON_ERROR_STOP=1", "-q", "-c"])
         .arg(format!(
-            "UPDATE webhook_endpoints SET secret = '{secret}' WHERE id = '{endpoint_id}'"
+            "UPDATE webhook_endpoints SET {column} = '{value}' WHERE id = '{endpoint_id}'"
         ))
         .output()
         .expect("spawning `psql`");
@@ -688,12 +689,15 @@ async fn assert_not_sent(
     reread
 }
 
-/// An `hmac` row with an empty secret (the CHECK stops a missing one) signs
-/// nothing and sends nothing, and that is the operator's to fix, not the
-/// endpoint's fault: no breaker, no attempt spent, even at `maxAttempts` 1.
+/// An `hmac` row whose `secret` and `prevSecret` are empty (a row from before the
+/// API's 32-character bound, or a hand edit) is delivered exactly as it was at
+/// `29f93c4`: signed with the empty key, the empty previous secret a second
+/// `v1=` value. Owner's ruling R5: vsms serves apps beyond vaam, so the HMAC
+/// delivery stays byte-identical for the receivers built against it. The
+/// worker warns instead of withholding (`hooks.rs`'s unit test reads the line).
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn an_hmac_endpoint_with_an_empty_secret_sends_nothing_and_is_not_held_against_it() {
+async fn an_hmac_endpoint_with_empty_secrets_is_delivered_signed_with_the_empty_key() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
     let suffix = unique_suffix();
@@ -701,8 +705,9 @@ async fn an_hmac_endpoint_with_an_empty_secret_sends_nothing_and_is_not_held_aga
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
+        .and(path("/hook"))
         .respond_with(ResponseTemplate::new(200))
-        .expect(0)
+        .expect(1)
         .mount(&server)
         .await;
     let endpoint = seed_hmac_endpoint(
@@ -711,10 +716,11 @@ async fn an_hmac_endpoint_with_an_empty_secret_sends_nothing_and_is_not_held_aga
         &format!("{}/hook", server.uri()),
         1,
         "whsec_to_be_emptied_0123456789abcdef0123456789",
-        None,
+        Some("whsec_prev_to_be_emptied_0123456789abcdef01234"),
     )
     .await;
-    force_secret(&endpoint.id, "").await;
+    force_column(&endpoint.id, "secret", "").await;
+    force_column(&endpoint.id, "prev_secret", "").await;
     let attempt = seed_attempt(&db, &endpoint.id, "cmsgE", "message.delivered", "{}").await;
 
     hooks::tick(
@@ -725,8 +731,38 @@ async fn an_hmac_endpoint_with_an_empty_secret_sends_nothing_and_is_not_held_aga
     )
     .await
     .expect("tick succeeds");
-    assert_not_sent(&db, &attempt.id, &endpoint.id, "rotateWebhookSecret").await;
-    assert!(server.received_requests().await.unwrap().is_empty());
+
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(reread.state, AttemptState::succeeded, "{reread:?}");
+    assert_eq!(reread.attempts, 1);
+    let requests = server.received_requests().await.expect("recording is on");
+    assert_eq!(requests.len(), 1);
+    let request = &requests[0];
+    let header = |name: &str| {
+        request
+            .headers
+            .get(name)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    };
+    let timestamp: i64 = header("x-sms-timestamp").parse().unwrap();
+    let empty_key = sms_webhook::sign_v1(
+        "",
+        timestamp,
+        &attempt.sourceEventId.to_string(),
+        &request.body,
+    );
+    assert_eq!(
+        header("x-sms-signature"),
+        format!("v1={empty_key},v1={empty_key}"),
+        "the empty secret signs, and the empty previous secret is a second value"
+    );
+    assert_eq!(
+        reread_endpoint(&db, &endpoint.id).await.consecutiveFailures,
+        0
+    );
 }
 
 /// A process with no signing key (VS-8R) still delivers an `hmac` endpoint,

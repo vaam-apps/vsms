@@ -257,6 +257,8 @@ X-Sms-Signature:  v1=<hex>[,v1=<hex>]  (the second value only during a rotation)
 
 **Redirects.** An `hmac` delivery follows redirects as it always has (up to ten, a `307` or `308` re-sending the signed body), so a receiver behind a redirect keeps working; the signed body and signature travel to wherever the redirect points, so keep the redirects of a receiver you register under your control. A `sealed` delivery never follows one: a redirect is a failed attempt, and the URL is fixed on the endpoint.
 
+**Nothing about an `hmac` delivery changed when the sealed mode arrived**, whatever the endpoint's secret is: the bytes, the headers and the signature are what a receiver written against the first version verifies. That includes an old endpoint whose secret is short or empty, which is still signed with it; vsms logs a warning naming such an endpoint, and the fix is `rotateWebhookSecret` (twice when the secret is empty), after which the new secret has to reach your receiver.
+
 Three obligations on a correct `hmac` receiver:
 
 1. **Verify the signature.** HMAC-SHA256 over `v1\n{timestamp}\n{eventId}\n{sha256(body)}`, with the **raw request bytes** in the hash and the endpoint's secret as the key, compared in constant time. During a rotation window `X-Sms-Signature` carries **two** `v1=` values, current secret first: accept if *either* verifies against *any* secret you hold. There is no freshness window in the scheme (the timestamp is signed, so a tampered one fails, but a captured request verifies at any later time); dedupe is what stops a replay being acted on twice.

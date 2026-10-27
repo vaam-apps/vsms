@@ -61,9 +61,12 @@ is the value that follows `v1=` in `X-Sms-Signature`. See [`sign_v1`].
 
 `X-Sms-Signature` may carry two `v1=` values — current secret first,
 `WebhookEndpoint.prevSecret` second, "oldest last" per §4.4. (The `hooks`
-role passes [`sign_header`] only non-empty secrets: an empty `prevSecret` is left
-out of the header instead of being signed with, and an empty `secret` sends
-nothing at all, where the pre-sealed worker signed with an empty key.) A receiver
+role passes [`sign_header`] whatever the row holds, as the pre-sealed worker did
+(owner's ruling R5): an empty `secret` signs with the empty key and an empty
+`prevSecret` is a second value, byte for byte what `29f93c4` sent, and the worker
+warns about the endpoint instead of changing the bytes. [`verify`] skips an empty
+candidate secret, so a receiver built on it rejects such a delivery until the
+endpoint is rotated.) A receiver
 should accept if *any* presented value verifies against *any* secret it
 holds; [`verify`] implements exactly that (every presented value
 against every candidate secret, first match wins — order of
