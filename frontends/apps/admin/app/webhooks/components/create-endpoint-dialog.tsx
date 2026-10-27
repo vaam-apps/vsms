@@ -9,7 +9,7 @@ import {
   DialogTitle,
 } from "@vaam-apps/ui";
 import type { UseFormReturn } from "react-hook-form";
-import type { CreateEndpointFormValues, EventType } from "../webhook-domain";
+import type { CreateEndpointFormValues, DeliveryMode, EventType } from "../webhook-domain";
 import { CreateEndpointFields } from "./create-endpoint-fields";
 
 // Dumb (R6): the "New webhook endpoint" dialog, start to finish. Not
@@ -22,6 +22,7 @@ export function CreateEndpointDialog({
   open,
   onOpenChange,
   form,
+  deliveryMode,
   eventTypes,
   onEventTypesChange,
   onSubmit,
@@ -31,6 +32,7 @@ export function CreateEndpointDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   form: UseFormReturn<CreateEndpointFormValues>;
+  deliveryMode: DeliveryMode;
   eventTypes: EventType[];
   onEventTypesChange: (types: EventType[]) => void;
   onSubmit: (values: CreateEndpointFormValues) => void;
@@ -51,6 +53,7 @@ export function CreateEndpointDialog({
         <CreateEndpointFields
           formId="create-endpoint-form"
           form={form}
+          deliveryMode={deliveryMode}
           eventTypes={eventTypes}
           onEventTypesChange={onEventTypesChange}
           onSubmit={onSubmit}

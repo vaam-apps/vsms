@@ -47,6 +47,7 @@ export function EndpointMoreDetailBody({
       <EndpointEditFields
         formId={formId}
         form={form}
+        deliveryMode={endpoint.deliveryMode}
         eventTypes={eventTypes}
         onEventTypesChange={onEventTypesChange}
         onSubmit={onSubmit}

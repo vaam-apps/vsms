@@ -1,6 +1,6 @@
 import { FormField, InlineBanner, Input } from "@vaam-apps/ui";
 import { Controller, type UseFormReturn } from "react-hook-form";
-import type { EndpointFormValues, EventType } from "../webhook-domain";
+import type { DeliveryMode, EndpointFormValues, EventType } from "../webhook-domain";
 import { EventTypeToggles } from "./event-type-toggles";
 
 // Dumb (R6): the endpoint edit form's own fields (URL, audience for a sealed
@@ -11,6 +11,7 @@ import { EventTypeToggles } from "./event-type-toggles";
 export function EndpointEditFields({
   formId,
   form,
+  deliveryMode,
   eventTypes,
   onEventTypesChange,
   onSubmit,
@@ -18,6 +19,8 @@ export function EndpointEditFields({
 }: {
   formId: string;
   form: UseFormReturn<EndpointFormValues>;
+  /** The endpoint's own mode: fixed for its life, read off the row. */
+  deliveryMode: DeliveryMode;
   eventTypes: EventType[];
   onEventTypesChange: (types: EventType[]) => void;
   onSubmit: (values: EndpointFormValues) => void;
@@ -30,7 +33,7 @@ export function EndpointEditFields({
       <FormField label="URL" htmlFor="endpoint-url" error={formState.errors.url?.message}>
         <Input id="endpoint-url" aria-invalid={formState.errors.url != null} {...register("url")} />
       </FormField>
-      {form.watch("deliveryMode") === "sealed" && (
+      {deliveryMode === "sealed" && (
         <FormField
           label="Audience"
           htmlFor="endpoint-audience"

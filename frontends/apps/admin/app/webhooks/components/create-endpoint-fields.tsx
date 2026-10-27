@@ -5,6 +5,7 @@ import {
   DELIVERY_MODE_HINTS,
   DELIVERY_MODE_LABELS,
   DELIVERY_MODES,
+  type DeliveryMode,
   type EventType,
 } from "../webhook-domain";
 import { EventTypeToggles } from "./event-type-toggles";
@@ -13,6 +14,7 @@ import { EventTypeToggles } from "./event-type-toggles";
 export function CreateEndpointFields({
   formId,
   form,
+  deliveryMode,
   eventTypes,
   onEventTypesChange,
   onSubmit,
@@ -20,6 +22,9 @@ export function CreateEndpointFields({
 }: {
   formId: string;
   form: UseFormReturn<CreateEndpointFormValues>;
+  /** The mode chosen in the form right now, watched by the smart layer: this
+   * component only draws, so it never subscribes to the form itself. */
+  deliveryMode: DeliveryMode;
   eventTypes: EventType[];
   onEventTypesChange: (types: EventType[]) => void;
   onSubmit: (values: CreateEndpointFormValues) => void;
@@ -75,7 +80,7 @@ export function CreateEndpointFields({
           )}
         />
       </FormField>
-      {form.watch("deliveryMode") === "sealed" && (
+      {deliveryMode === "sealed" && (
         <FormField
           label="Audience"
           htmlFor="new-endpoint-audience"

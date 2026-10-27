@@ -87,7 +87,7 @@ import {
 import { trpc } from "@vsms/hooks";
 import { parseAsString, parseAsStringEnum, useQueryState, useQueryStates } from "nuqs";
 import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { Caption } from "@/components/caption";
 import { ListSurface } from "@/components/list-surface";
 import { LiveChip } from "@/components/live-chip";
@@ -220,6 +220,11 @@ export function WebhooksScreen({
   const createForm = useForm<CreateEndpointFormValues>({
     resolver: zodResolver(createEndpointSchema),
     defaultValues: newEndpointDefaults,
+  });
+  const createDeliveryMode = useWatch({
+    control: createForm.control,
+    name: "deliveryMode",
+    defaultValue: newEndpointDefaults.deliveryMode,
   });
   const createMutation = trpc.webhookEndpoints.create.useMutation({
     onSuccess: (created) => {
@@ -430,6 +435,7 @@ export function WebhooksScreen({
         open={createOpen}
         onOpenChange={(open) => !open && setCreateOpen(false)}
         form={createForm}
+        deliveryMode={createDeliveryMode}
         eventTypes={createEventTypes}
         onEventTypesChange={setCreateEventTypes}
         onSubmit={submitCreate}

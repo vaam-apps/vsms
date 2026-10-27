@@ -181,6 +181,7 @@ const CASES: Case[] = [
         open: true,
         onOpenChange: () => {},
         form: fakeForm(),
+        deliveryMode: "sealed",
         eventTypes: ["message.delivered"],
         onEventTypesChange: () => {},
         onSubmit: confirm,
