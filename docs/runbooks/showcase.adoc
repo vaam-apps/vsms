@@ -2,7 +2,8 @@
 :idprefix:
 :idseparator: -
 
-One command, no Rust toolchain, no Node toolchain, no clone-and-build wait --
+No Rust or Node toolchain and no clone-and-build wait (only `just` and
+`openssl`, to make the dev keys below) --
 `compose.demo.yaml` pulls every vsms image from GHCR and brings up a working
 console you can open, with a message reaching a terminal state. This is
 *not* xref:local-development.adoc[Local development] (`just demo`, which builds

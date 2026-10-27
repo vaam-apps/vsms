@@ -309,6 +309,8 @@ describe("the composer spends the service key only for a person the gateway name
       { proof, input: "[1]" },
       { proof, input: { to: "x" } },
       { proof, input: "" },
+      // A lone surrogate: UTF-8 would hash it as U+FFFD, the same as a real one.
+      { proof, input: '{"to":"\ud800"}' },
     ]) {
       expect((await post(h.composer, "send", body)).status).toBe(400);
     }
@@ -325,6 +327,7 @@ describe("the composer spends the service key only for a person the gateway name
       ["content-type\r\nx-injected", "x"],
       ["x-ok", "two\r\nlines"],
       ["", "x"],
+      ["x-ok", "beyond latin-1: \u4e2d"],
     ] as [string, string][]) {
       const response = await post(h.composer, "send", {
         proof: { ...proof, headers: [...proof.headers, header] },

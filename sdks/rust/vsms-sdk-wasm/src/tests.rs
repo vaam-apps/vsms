@@ -746,6 +746,10 @@ async fn a_forwarder_trusts_the_next_key_and_not_a_stranger() {
 async fn a_forwarder_does_not_believe_an_answer_to_another_request() {
     let server = responder("vsms");
     let mut f = forwarded(&server, 200, r#"{"userId":"u1"}"#).await;
+    assert!(
+        open_forwarded(&opener(), &f, 200).await.is_ok(),
+        "the control: the answer opens against the request it answers"
+    );
     // The same answer, offered as the answer to a different sealed request.
     f.sealed = send(&seed_sealer(), None).await;
     assert_eq!(

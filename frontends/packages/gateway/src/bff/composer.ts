@@ -105,9 +105,10 @@ function json(status: number, body: unknown): Response {
 
 /** An HTTP field name (RFC 9110 token): what `new Headers` accepts. */
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-/** A field value that cannot smuggle a line: no control character but tab. */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: that is the point
-const HEADER_VALUE = /^[^\u0000-\u0008\u000a-\u001f\u007f]*$/;
+/** A field value `new Headers` accepts and that cannot smuggle a line: tab,
+ *  visible ASCII and space, and the obs-text octets — nothing above U+00FF,
+ *  which `Headers` would throw on. */
+const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
 
 function parseProof(value: unknown): { headers: [string, string][]; body: Uint8Array } | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -164,12 +165,15 @@ async function verdictOf(
 
   let text: string;
   try {
-    text = await options
-      .opener()
-      .open(
-        { method: COMPOSE_PROOF_METHOD, target: COMPOSE_PROOF_PATH, body: proof.body, headers: [] },
-        { status: answer.status, headers: [...answer.headers.entries()], body: answer.body },
-      );
+    text = await options.opener().open(
+      {
+        method: COMPOSE_PROOF_METHOD,
+        target: COMPOSE_PROOF_PATH,
+        body: proof.body,
+        headers: forwarded,
+      },
+      { status: answer.status, headers: [...answer.headers.entries()], body: answer.body },
+    );
   } catch (error) {
     if (isSdkFailure(error) && error.kind === "unsigned" && error.httpStatus === 401) {
       // The gateway's coarse refusal of a signature it does not accept: this
@@ -212,6 +216,11 @@ async function verdictOf(
   return undefined;
 }
 
+/** True when `text` holds no lone surrogate: UTF-8 round-trips it unchanged. */
+function isWellFormed(text: string): boolean {
+  return new TextDecoder().decode(new TextEncoder().encode(text)) === text;
+}
+
 /** The handler of `POST <mount>/<preview|send>`. */
 export function createComposer(options: ComposerOptions): (request: Request) => Promise<Response> {
   return async (request) => {
@@ -243,6 +252,10 @@ export function createComposer(options: ComposerOptions): (request: Request) => 
     }
     if (typeof input !== "object" || input === null || Array.isArray(input)) {
       return json(400, { code: "invalid_argument", message: "The input is not an object." });
+    }
+    // A lone surrogate encodes as U+FFFD, so two texts would share one hash.
+    if (!isWellFormed(parsed.input)) {
+      return json(400, { code: "invalid_argument", message: "The input is not well-formed text." });
     }
     const inputSha256 = await sha256Hex(parsed.input);
 

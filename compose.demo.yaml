@@ -21,8 +21,13 @@
 # Usage — see docs/runbooks/showcase.adoc for the full walkthrough, including
 # what to expect at each step and how to open the console:
 #
-#   docker compose -f compose.demo.yaml --profile console up -d
+#   VSMS_COMPOSER_PUBLIC_KEY="$(just dev-composer-public-key)" \
+#     docker compose -f compose.demo.yaml --profile console up -d
 #   docker compose -f compose.demo.yaml --profile console down -v   # reset
+#
+# The console profile needs the composer's public key (`register-composer`
+# fails without it, and `admin` waits on that); the backend-only stack below
+# does not, which is why the variable defaults to empty rather than `:?`.
 #
 # Backend-only (R4 — CONTRIBUTING.md: "the admin console is optional, the
 # backend must run without it"): omit `--profile console` entirely. Every
