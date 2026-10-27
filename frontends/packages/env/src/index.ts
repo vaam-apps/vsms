@@ -1,45 +1,43 @@
 import { createEnv } from "@t3-oss/env-nextjs";
 import { z } from "zod";
+import { gatewayUrlProblem } from "./gateway-url";
 import { TUNING, withTuningCoerced } from "./tuning";
 
+/** 32 bytes as unpadded base64url: 43 characters of the URL-safe alphabet. */
+const KEY_32_BASE64URL = /^[A-Za-z0-9_-]{43}$/;
+
+// What the console's server is configured with. There is no credential in this
+// list on purpose: no client id, no signing key of the operator's, no session
+// secret, no issuer. A person's rights come from a key their own browser made
+// and a vaam admin phone vouched for (docs/architecture.md, "The console signs
+// in the browser"), and the console's server only carries sealed bytes.
+//
+// What is here instead:
+//   * where the gateway is, and how this process proves which *process* it is
+//     (mTLS, when the URL is https);
+//   * the gateway's two PUBLIC sealing keys, which the browser pins so it
+//     believes only answers the gateway signed (`sms-gateway server-keys`
+//     prints them; they are configuration, not secrets);
+//   * the composer's service key, the one private key the server holds.
 const created = createEnv({
   server: {
+    // The gateway's ORIGIN: no path (`./gateway-url.ts` says why).
     SMS_API_URL: z.string().url(),
     SMS_API_CLIENT_CERT_PATH: z.string().optional(),
     SMS_API_CLIENT_KEY_PATH: z.string().optional(),
     SMS_API_CA_PATH: z.string().optional(),
-    SMS_AUTH_ISSUER: z.string().url(),
-    SMS_CONSOLE_CLIENT_ID: z.string(),
-    SMS_CONSOLE_PRIVATE_KEY_PATH: z.string(),
-    // #56/#57: job:read/job:enqueue (Jobs screen) and worker:read (Workers
-    // screen) — the console's own AppClient must be *provisioned* with
-    // these scopes too (`scripts/demo.sh`'s `provision-client` call, or the
-    // getting-started runbook's own `--scope` flags); requesting a scope
-    // the client isn't registered for at `/token` fails the exchange, and
-    // omitting it here even when the client *is* registered still denies
-    // every call at Layer 2 (`sms_api::rbac::require_permission` — an
-    // absent scope claim is denial, never a fallback to "whatever the
-    // client is allowed to ask for").
-    SMS_CONSOLE_SCOPE: z
-      .string()
-      .min(1)
-      .default("sms:send sms:read job:read job:enqueue worker:read"),
-    // #194: the human authorization-code + PKCE flow. DASHBOARD_AUTH
-    // (none|basic) is gone — a hard cutover, not a parallel path: see
-    // frontends/apps/admin/middleware.ts's own module doc for why leaving Basic auth
-    // reachable behind a flag was rejected. ADMIN_BASE_URL is this
-    // console's own externally-reachable origin — the one fixed
-    // `redirect_uri` (`${ADMIN_BASE_URL}/api/auth/callback`) the
-    // `sms-console` OauthClient row is registered with; an exact-match
-    // requirement per RFC 6749 §3.1.2, so this must be the literal origin
-    // browsers reach this app at, not an internal/loopback address.
-    ADMIN_BASE_URL: z.string().url(),
-    SMS_CONSOLE_OIDC_CLIENT_ID: z.string().min(1).default("sms-console"),
-    // AES-256-GCM needs 32 raw bytes once hashed down (frontends/apps/admin/lib/oidc.ts) —
-    // require real entropy up front rather than accepting a short string
-    // that would still "work" (any string hashes to 32 bytes) but with far
-    // less real keyspace than the cookie's own encryption implies.
-    SMS_CONSOLE_SESSION_SECRET: z.string().min(32),
+    // The gateway's response-signing keys, `current` and `next`, as
+    // `sms-gateway server-keys` prints them: 32 bytes of unpadded base64url
+    // each, and different (with one pinned a rotation is a flag day). The
+    // layout hands them to the browser, which pins them.
+    SMS_ENVELOPE_SERVER_KEY_CURRENT: z.string().regex(KEY_32_BASE64URL),
+    SMS_ENVELOPE_SERVER_KEY_NEXT: z.string().regex(KEY_32_BASE64URL),
+    // The composer's own service key: an Ed25519 PKCS#8 PEM file, registered
+    // with `sms-gateway register-client --client-name console-composer`
+    // (docs/runbooks/deployment.adoc, "The composer's key"). Read when the
+    // composer first sends, so a console deployed without one still serves
+    // every other screen.
+    SMS_COMPOSER_KEY_FILE: z.string().min(1).optional(),
     MESSAGE_STREAM_POLL_MS: TUNING.MESSAGE_STREAM_POLL_MS,
     // R6 (AGENTS.md): a tuning value, same shape as `MESSAGE_STREAM_POLL_MS`
     // above — one place, validated at boot, instead of a `REFETCH_INTERVAL_MS
@@ -80,13 +78,9 @@ const created = createEnv({
     SMS_API_CLIENT_CERT_PATH: process.env.SMS_API_CLIENT_CERT_PATH,
     SMS_API_CLIENT_KEY_PATH: process.env.SMS_API_CLIENT_KEY_PATH,
     SMS_API_CA_PATH: process.env.SMS_API_CA_PATH,
-    SMS_AUTH_ISSUER: process.env.SMS_AUTH_ISSUER,
-    SMS_CONSOLE_CLIENT_ID: process.env.SMS_CONSOLE_CLIENT_ID,
-    SMS_CONSOLE_PRIVATE_KEY_PATH: process.env.SMS_CONSOLE_PRIVATE_KEY_PATH,
-    SMS_CONSOLE_SCOPE: process.env.SMS_CONSOLE_SCOPE,
-    ADMIN_BASE_URL: process.env.ADMIN_BASE_URL,
-    SMS_CONSOLE_OIDC_CLIENT_ID: process.env.SMS_CONSOLE_OIDC_CLIENT_ID,
-    SMS_CONSOLE_SESSION_SECRET: process.env.SMS_CONSOLE_SESSION_SECRET,
+    SMS_ENVELOPE_SERVER_KEY_CURRENT: process.env.SMS_ENVELOPE_SERVER_KEY_CURRENT,
+    SMS_ENVELOPE_SERVER_KEY_NEXT: process.env.SMS_ENVELOPE_SERVER_KEY_NEXT,
+    SMS_COMPOSER_KEY_FILE: process.env.SMS_COMPOSER_KEY_FILE,
     MESSAGE_STREAM_POLL_MS: process.env.MESSAGE_STREAM_POLL_MS,
     DIAGNOSTICS_POLL_MS: process.env.DIAGNOSTICS_POLL_MS,
     AUDIT_LOG_PAGE_SIZE: process.env.AUDIT_LOG_PAGE_SIZE,
@@ -125,22 +119,24 @@ const skipValidation = !!process.env.SKIP_ENV_VALIDATION;
 if (!skipValidation) {
   // `next build` sets NODE_ENV=production while *compiling*, which is not the
   // same thing as *running* a production server. Next signals the compile with
-  // NEXT_PHASE=phase-production-build. The two rules below exist to stop a
-  // production deployment being served open to the internet or over plaintext —
-  // they are deploy-time guarantees, not compile-time ones — so applying them
-  // during a build makes the workspace unbuildable on a developer machine and in
-  // CI (where no real auth config or TLS upstream exists) while protecting
-  // nothing. Runtime boot is still fully checked: this only exempts the build.
+  // NEXT_PHASE=phase-production-build. The rule below exists to stop a
+  // production deployment talking to its gateway over plaintext: a deploy-time
+  // guarantee, not a compile-time one, so applying it during a build makes the
+  // workspace unbuildable on a developer machine and in CI (where no TLS
+  // upstream exists) while protecting nothing. Runtime boot is still fully
+  // checked: this only exempts the build.
   const isProductionBuild = process.env.NEXT_PHASE === "phase-production-build";
   const enforceDeploymentRules = env.NODE_ENV === "production" && !isProductionBuild;
 
-  // #194's own hard requirement: session cookies must be Secure, which
-  // means an HTTPS ADMIN_BASE_URL in production — a `redirect_uri` (and a
-  // cookie) served over plaintext defeats the point of encrypting the
-  // session in the first place.
-  if (enforceDeploymentRules && new URL(env.ADMIN_BASE_URL).protocol !== "https:") {
-    throw new Error("NODE_ENV=production requires ADMIN_BASE_URL to use https: protocol");
+  if (env.SMS_ENVELOPE_SERVER_KEY_CURRENT === env.SMS_ENVELOPE_SERVER_KEY_NEXT) {
+    throw new Error(
+      "SMS_ENVELOPE_SERVER_KEY_CURRENT and SMS_ENVELOPE_SERVER_KEY_NEXT are the same key: pin " +
+        "both of the gateway's keys (`sms-gateway server-keys`); with one, a rotation is a flag day",
+    );
   }
+
+  const urlProblem = gatewayUrlProblem(env.SMS_API_URL);
+  if (urlProblem !== undefined) throw new Error(urlProblem);
 
   const apiUrl = new URL(env.SMS_API_URL);
   const isHttps = apiUrl.protocol === "https:";

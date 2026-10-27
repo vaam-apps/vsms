@@ -7,9 +7,11 @@
 // `to` and `body` feed a debounced `compose.preview` query as the operator
 // types, rendered through `@vaam-apps/ui`'s `EncodingPreview`; submitting calls
 // `compose.send`, which triggers a real `sendMessage` against the gateway
-// on the console's own machine credential (`SMS_CONSOLE_CLIENT_ID` —
-// nothing here proves who the human at the keyboard was, see the
-// architecture plan's DECISIONS §1).
+// through the console's own service key (`SMS_COMPOSER_KEY_FILE`, an app
+// client key registered with `register-client`; `@vsms/gateway/bff`'s
+// `composer.ts`). The service key is the console's, not the operator's: the
+// browser proves it is paired (a sealed read with its own key) before the
+// console's server will use it, and the message is sent as the composer's app.
 //
 // Type-only `@vsms/api` import — see `composer-types.ts`'s own note.
 

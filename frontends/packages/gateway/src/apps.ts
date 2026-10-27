@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /apps`, `GET /apps/{id}`, `POST /apps`, `PATCH /apps/{id}`,
 // `DELETE /apps/{id}` — #52's Apps screen. Same temporary hand-written seam
 // as `providers.ts`/`routes.ts` (see `client.ts`'s module doc for why: T3/
@@ -8,13 +6,12 @@ import "server-only";
 // `App` is `@@paged`, unlike `Provider`/`Route` — the response envelope is
 // `{ items, totalCount, pageInfo }`, the same shape `jobs.ts`/`messages.ts`
 // already document at length, not the bare array `providers.ts` sees for a
-// non-paged model. Every call here goes through `resolveUpstreamAccessToken`
-// (`./request-credential.ts`), so an ordinary console request reaches
-// `sms-api` as the signed-in human, not this console's own machine
-// credential — `App.update`/`App.delete`'s own `@@allow` (`hasRole('owner')`/
-// `hasRole('admin')` only, no `auth().kind == "app"` clause) has never been
-// reachable by the machine credential at all, so write screens here only
-// became meaningful once #211 landed.
+// non-paged model. Every call here goes through `gatewayFetch` (`./upstream.ts`),
+// which in the console is the sealing fetch: the request reaches `sms-api`
+// signed by the paired person's own browser key, so it is made as that person
+// and their role decides — `App.update`/`App.delete`'s own `@@allow`
+// (`hasRole('owner')`/`hasRole('admin')` only, no `auth().kind == "app"`
+// clause) admits no app principal at all.
 //
 // `ipAllowlist` is sentinel-packed the same way `AppClient.scopes`/
 // `OauthClient.grantTypes` are (`sms_core::pack`'s convention: a leading and
@@ -28,13 +25,10 @@ import "server-only";
 // form — cheap to get right here rather than relying on every future
 // reader being equally tolerant.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** The full row shape `GET /apps`/`GET /apps/{id}` can return — transcribed
  * from `schema.cstack`'s `App` model. */
@@ -68,31 +62,19 @@ const LIST_FIELDS = [
 
 export type AppListItem = Pick<AppRecord, (typeof LIST_FIELDS)[number]>;
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function gatewayUrl(path: string, query: Record<string, string | number | undefined>): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
   return url.toString();
 }
 
-async function authedGet(url: string): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "GET",
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
-      dispatcher: gatewayAgent(),
-    });
-  };
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
-  return response;
+async function authedGet(url: string): Promise<Response> {
+  return gatewayFetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+  });
 }
 
 interface AppsPage {

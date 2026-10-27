@@ -2172,6 +2172,20 @@ impl schema::procedures::ProcedureRegistry for Procedures {
         async move { crate::console_keys::revoke(db, &sys, args.args).await }
     }
 
+    fn authorize_composition(
+        &self,
+        _db: &schema::Cratestack,
+        ctx: &CratestackContext,
+        args: schema::procedures::authorize_composition::Args,
+        // cratestack 0.7.13 (cratestack#512): see `preview_message`'s
+        // identical comment above.
+        _authorized: schema::procedures::authorize_composition::Authorized,
+    ) -> impl core::future::Future<
+        Output = Result<schema::procedures::authorize_composition::Output, CratestackError>,
+    > + Send {
+        core::future::ready(crate::composition::authorize(ctx, args.args))
+    }
+
     fn rotate_webhook_secret(
         &self,
         db: &schema::IsolatedCratestack,

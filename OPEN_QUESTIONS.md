@@ -83,7 +83,8 @@ explicit credential parameter would have touched every one of those call
 sites *and* every router that calls them. Instead, `frontends/packages/gateway/src/
 request-credential.ts`'s `AsyncLocalStorage` is set once, at the one true
 per-request boundary (`frontends/apps/admin/app/api/trpc/[trpc]/route.ts`'s `handler`,
-reading the `x-vsms-access-token` header `frontends/apps/admin/middleware.ts` forwards),
+reading the `x-vsms-access-token` header `frontends/apps/admin/middleware.ts` forwarded; both
+files, and the whole mechanism, were deleted by VS-5b: the browser's own key signs now),
 and every ordinary call site resolves it implicitly via
 `resolveUpstreamAccessToken()`. The failure mode the ticket named — a new
 screen silently getting the machine credential when it meant the human's —

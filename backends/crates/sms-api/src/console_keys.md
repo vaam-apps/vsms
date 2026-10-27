@@ -14,6 +14,9 @@ what `CoseVerifyKey::p256_sec1` accepts and `p256_sec1_uncompressed` returns.
 A compressed point is a valid key in a second spelling and is refused, not
 normalised. On the wire it is base64url without padding.
 
+The console that holds the key is `frontends/apps/admin`: it makes the key, draws the QR below and
+seals every request in the browser (`docs/design/console-pairing.md`, VS-5b).
+
 # Pairing through vaam
 
 vaam is the only identity source: a person is a vaam admin on a bound phone,

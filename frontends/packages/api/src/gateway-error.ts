@@ -1,5 +1,3 @@
-import "server-only";
-
 // Shared by every router that calls through `@vsms/gateway`: re-throws a
 // `GatewayError` (its own `trpcCode` already computed in
 // `@vsms/gateway/errors.ts` from sms-api's real HTTP status) as the

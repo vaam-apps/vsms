@@ -1,5 +1,3 @@
-import "server-only";
-
 // `routeSimulator.simulate` — #54's route simulator. A thin wrap over
 // `@vsms/gateway`'s `simulateRoute`, which calls `POST /$procs/
 // simulateRoute` and hands back exactly what the real engine

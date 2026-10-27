@@ -14,6 +14,12 @@ sdks/node/*/dist/
 # listed in `files`.
 sdks/node/*/wasm/
 sdks/node/*/wasm-test/
+# The operator console's browser sealing module: the same crate built with
+# `--target web` by `scripts/build-wasm.sh --web` (the admin package's
+# `build:sealer`), served from the console's own origin and never bundled.
+frontends/apps/admin/public/sealer/
+# The same module with the gateway's server half compiled in, for the console's tests.
+frontends/apps/admin/.sealer-test/
 **/*.rs.bk
 # Cargo.lock is committed. This workspace ships binaries (sms-api, sms-worker)
 # against a pre-1.0 framework pinned to =0.4.16; a floating lock file would

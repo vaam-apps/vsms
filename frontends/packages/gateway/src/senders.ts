@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /sender_ids`, `GET /sender_ids/{id}`, `POST /sender_ids`,
 // `PATCH /sender_ids/{id}`, and the same five verbs for
 // `sender_id_registrations` — #53's Sender IDs screen. Same temporary
@@ -39,15 +37,14 @@ import "server-only";
 // neutral fallback for anything else — the same "free-form, not
 // type-system-enforced" treatment `jobs.ts`'s own `kind` field gets.
 //
-// # Writes are real, and reachable, as of #211
+// # Writes are made as the signed-in person
 //
 // `SenderId.create`/`.update` and `SenderIdRegistration.create`/`.update`
 // (`schema.cstack`) are each `hasRole('owner') || hasRole('admin') ||
 // hasRole('operator')` — no `auth().kind == "app"` clause, so (like
-// `providers.ts`'s own `updateProvider`) these were never reachable by this
-// console's machine credential and need a real human principal. Every
-// function below resolves its Bearer token via `resolveUpstreamAccessToken()`
-// (`./request-credential.ts`), the signed-in operator's own session token —
+// `providers.ts`'s own `updateProvider`) these admit no app principal and need a
+// real human one. Every function below goes through `gatewayFetch`
+// (`./upstream.ts`), so the paired operator's own browser key signs the call —
 // gated further at Layer 2 by `router::SENDER_AND_WEBHOOK_WRITE_ROUTES`
 // (`sender:manage`, granted to `owner`/`admin`/`operator` per §5.2's
 // seeded roles), matching the shape `providers.ts`'s own doc records for
@@ -103,13 +100,10 @@ import "server-only";
 // column over REST cannot use this trick safely and needs the actual
 // upstream fix (a `deserialize_with` on the generated update input).
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 export interface SenderIdRecord {
   id: string;
@@ -136,10 +130,8 @@ export interface SenderIdRegistrationRecord {
   updatedAt: string;
 }
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function gatewayUrl(path: string, query: Record<string, string | number | undefined> = {}): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -173,22 +165,11 @@ function normalizeRegistration<T extends Partial<SenderIdRegistrationRecord>>(ro
   };
 }
 
-async function authedGet(url: string): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "GET",
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
-  return response;
+async function authedGet(url: string): Promise<Response> {
+  return gatewayFetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+  });
 }
 
 /** `GET /sender_ids` — every `SenderId` row this deployment has. */
@@ -240,7 +221,7 @@ export async function createSenderId(fields: CreateSenderIdFields): Promise<Send
     "/sender_ids",
     fields,
     "createSenderId",
-    undiciFetch,
+    gatewayFetch,
   );
   return normalizeSenderId(created);
 }
@@ -285,7 +266,7 @@ export async function createSenderIdRegistration(
     "/sender_id_registrations",
     { ...fields, submittedAt: new Date().toISOString() },
     "createSenderIdRegistration",
-    undiciFetch,
+    gatewayFetch,
   );
   return normalizeRegistration(created);
 }

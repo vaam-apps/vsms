@@ -46,7 +46,7 @@ does not check that its target Service is actually enabled, so an
 operator who had separately turned it on would otherwise render a
 dangling Ingress pointing at nothing.
 
-`persistence.console-private-key` has to flip too, and not for the
+`persistence.console-composer-key` has to flip too, and not for the
 reason first assumed while writing this: it is only *mounted* while
 building the admin controller's own pod spec
 (templates/lib/pod/fields/_volumes.tpl resolves `advancedMounts` per
@@ -63,7 +63,7 @@ hit exactly that error before this line was added.
 {{- $_ := set .Values.controllers.admin "enabled" false -}}
 {{- $_ := set .Values.service.admin "enabled" false -}}
 {{- $_ := set .Values.ingress.admin "enabled" false -}}
-{{- $_ := set (index .Values.persistence "console-private-key") "enabled" false -}}
+{{- $_ := set (index .Values.persistence "console-composer-key") "enabled" false -}}
 {{- end -}}
 
 {{/*

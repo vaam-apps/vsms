@@ -4,9 +4,17 @@
 #
 #   scripts/build-wasm.sh              -> sdks/node/vsms-sdk-node/wasm       (ships in the npm package)
 #   scripts/build-wasm.sh --responder  -> sdks/node/vsms-sdk-node/wasm-test  (the server half, for the tests only)
+#   scripts/build-wasm.sh --web [DIR]  -> frontends/apps/admin/public/sealer (the operator console's browser build)
+#   scripts/build-wasm.sh --web --responder DIR
+#                                      -> DIR (the browser build plus the server half, for the console's tests)
 #
-# Both are build outputs and gitignored. `wasm-bindgen`'s command-line tool must
-# be exactly the version of the `wasm-bindgen` crate in sdks/rust/Cargo.lock:
+# All are build outputs and gitignored. `--web` is the same crate and the same
+# pinned `wasm-bindgen`, run with `--target web` (an ES module the console
+# imports by URL, and a `.wasm` file its own origin serves); it stops there:
+# the Node glue's rewrite below is for a bundler that would inline it, and the
+# console loads this one at run time, unbundled.
+#
+# `wasm-bindgen`'s command-line tool must be exactly the version of the `wasm-bindgen` crate in sdks/rust/Cargo.lock:
 # the two agree on a private interface, and a mismatch fails at load time with
 # an error that names neither (`just wasm-tools` installs the right one; this
 # script installs nothing and says which to install when it disagrees).
@@ -17,10 +25,24 @@ package="$(cd "$here/.." && pwd)"
 rust="$(cd "$package/../../rust" && pwd)"
 
 features=()
-out="$package/wasm"
-if [ "${1:-}" = "--responder" ]; then
-	features=(--features responder)
-	out="$package/wasm-test"
+out=""
+bindgen_target=nodejs
+web_default="$(cd "$package/../../../frontends/apps/admin" && pwd)/public/sealer"
+for arg in "$@"; do
+	case "$arg" in
+	--responder) features=(--features responder) ;;
+	--web) bindgen_target=web ;;
+	*) out="$arg" ;;
+	esac
+done
+if [ -z "$out" ]; then
+	if [ "$bindgen_target" = "web" ]; then
+		out="$web_default"
+	elif [ "${#features[@]}" -gt 0 ]; then
+		out="$package/wasm-test"
+	else
+		out="$package/wasm"
+	fi
 fi
 
 wanted="$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/version = |"/, ""); print; exit}' "$rust/Cargo.lock")"
@@ -47,8 +69,13 @@ rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
 
 rm -rf "$out"
 mkdir -p "$out"
-wasm-bindgen --target nodejs --out-dir "$out" --out-name vsms_sdk_wasm \
+wasm-bindgen --target "$bindgen_target" --out-dir "$out" --out-name vsms_sdk_wasm \
 	"${CARGO_TARGET_DIR:-$rust/target}/wasm32-unknown-unknown/release/vsms_sdk_wasm.wasm"
+
+if [ "$bindgen_target" = "web" ]; then
+	echo "build-wasm: wrote $out"
+	exit 0
+fi
 
 # wasm-bindgen's Node glue reads its `.wasm` from `${__dirname}` at load time.
 # A bundler that inlines the glue (Next's Turbopack does, for a workspace

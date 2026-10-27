@@ -1,5 +1,3 @@
-import "server-only";
-
 // `POST /$procs/auditLog` and `POST /$procs/auditChainStatus` — #58's
 // read-only Audit log screen. Both are procedures, not a generated CRUD
 // route: `cratestack_audit` is the framework's own internal bookkeeping
@@ -10,12 +8,9 @@ import "server-only";
 // live against a real Postgres, not assumed: no role, human or synthetic,
 // can write an `AuditAnchor` row through any path this codebase exposes).
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 export interface AuditLogEntry {
   eventId: string;
@@ -56,27 +51,15 @@ export interface AuditChainStatus {
   latestContentVerified?: boolean | undefined;
 }
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
-async function authedPost(url: string, body: unknown): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-      dispatcher: gatewayAgent(),
-    });
-  };
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+async function authedPost(url: string, body: unknown): Promise<Response> {
+  const response = await gatewayFetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify(body),
+  });
   return response;
 }
 
@@ -90,7 +73,7 @@ async function authedPost(url: string, body: unknown): Promise<UndiciResponse> {
  * their own encoded contents either — see `./json.ts`'s module doc for the
  * full reasoning. */
 export async function fetchAuditLog(query: AuditLogQuery): Promise<AuditLogPage> {
-  const url = new URL("/$procs/auditLog", env.SMS_API_URL).toString();
+  const url = new URL("/$procs/auditLog", GATEWAY_ORIGIN).toString();
   const response = await authedPost(url, { args: query });
   const parsed = await parseGatewayJson(response);
   if (!response.ok) {
@@ -102,7 +85,7 @@ export async function fetchAuditLog(query: AuditLogQuery): Promise<AuditLogPage>
 /** `POST /$procs/auditChainStatus`. Same seam, same reasoning as
  * [`fetchAuditLog`] above. */
 export async function fetchAuditChainStatus(): Promise<AuditChainStatus> {
-  const url = new URL("/$procs/auditChainStatus", env.SMS_API_URL).toString();
+  const url = new URL("/$procs/auditChainStatus", GATEWAY_ORIGIN).toString();
   const response = await authedPost(url, {});
   const parsed = await parseGatewayJson(response);
   if (!response.ok) {

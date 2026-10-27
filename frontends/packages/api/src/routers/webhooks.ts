@@ -1,5 +1,3 @@
-import "server-only";
-
 // `webhookEndpoints.list/get/create/update/remove/rotateSecret` and
 // `webhookAttempts.list/replay` — #55's Webhooks screen. Thin wraps over
 // `@vsms/gateway`'s `webhooks.ts` (see that module's own doc for the

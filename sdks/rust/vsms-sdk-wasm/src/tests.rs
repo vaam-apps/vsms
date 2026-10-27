@@ -8,8 +8,9 @@ use std::sync::Arc;
 use cratestack::cose::{CoseSigner, Ed25519Signer, ExternalSigner, P256Signer};
 
 use crate::core::{
-    concrete_path, Algorithm, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys,
+    concrete_path, Algorithm, Bound, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys,
 };
+use crate::opener::Opener;
 use crate::responder::{OpenedRequest, Responder};
 
 const CLIENT_SEED: [u8; 32] = [7; 32];
@@ -592,4 +593,285 @@ async fn an_answer_sealed_but_sent_with_another_payload_type_is_not_a_seal_failu
         .await
         .unwrap_err();
     assert!(matches!(error, OpenError::Other(_)), "{error:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_if_match_is_bound_as_sent() {
+    // A write under optimistic locking: the gateway rebuilds the binding from
+    // the `If-Match` it receives, so a client that did not bind it is refused,
+    // and so is one whose header changed after it signed.
+    let server = responder("vsms");
+    let bound = Bound {
+        idempotency_key: None,
+        if_match: Some("\"3\""),
+    };
+    let sealed = seed_sealer()
+        .seal(
+            "PATCH",
+            "/providers/{id}",
+            &["p1"],
+            Some("{}"),
+            None,
+            &bound,
+        )
+        .await
+        .unwrap();
+    assert_eq!(header(&sealed, "if-match"), Some("\"3\""));
+    let accepted = server
+        .open_request(
+            "PATCH",
+            "/providers/p1",
+            None,
+            &sealed.headers,
+            sealed.body.clone(),
+        )
+        .await;
+    assert!(accepted.is_ok());
+
+    let fresh = || async {
+        seed_sealer()
+            .seal(
+                "PATCH",
+                "/providers/{id}",
+                &["p1"],
+                Some("{}"),
+                None,
+                &bound,
+            )
+            .await
+            .unwrap()
+    };
+    let sealed = fresh().await;
+    let swapped: Vec<(String, String)> = sealed
+        .headers
+        .iter()
+        .map(|(name, value)| {
+            let value = if name == "if-match" { "\"4\"" } else { value };
+            (name.clone(), value.to_owned())
+        })
+        .collect();
+    let refused = server
+        .open_request(
+            "PATCH",
+            "/providers/p1",
+            None,
+            &swapped,
+            sealed.body.clone(),
+        )
+        .await;
+    assert!(refused.is_err(), "a changed If-Match must not verify");
+
+    // A request sealed with no If-Match, sent with one: also refused.
+    let unbound = seed_sealer()
+        .seal_call("PATCH", "/providers/{id}", &["p1"], Some("{}"), None, None)
+        .await
+        .unwrap();
+    let mut with_header = unbound.headers.clone();
+    with_header.push(("if-match".to_owned(), "\"3\"".to_owned()));
+    let refused = server
+        .open_request(
+            "PATCH",
+            "/providers/p1",
+            None,
+            &with_header,
+            unbound.body.clone(),
+        )
+        .await;
+    assert!(
+        refused.is_err(),
+        "an If-Match nobody signed must not verify"
+    );
+}
+
+// ---- an answer to a request somebody else sealed ----------------------
+
+fn opener() -> Opener {
+    Opener::new(&server_keys()).unwrap()
+}
+
+/// What a forwarding server holds after the gateway answered: the sealed bytes
+/// it forwarded and the answer it got back.
+struct Forwarded {
+    sealed: Sealed,
+    headers: Vec<(String, String)>,
+    answer: Vec<u8>,
+}
+
+async fn forwarded(server: &Responder, status: u16, body: &str) -> Forwarded {
+    let (sealed, headers, answer) = answered(server, &seed_sealer(), status, body).await;
+    Forwarded {
+        sealed,
+        headers,
+        answer,
+    }
+}
+
+async fn open_forwarded(opener: &Opener, f: &Forwarded, status: u16) -> Result<Vec<u8>, OpenError> {
+    opener
+        .open_answer(
+            SEND.0,
+            SEND.1,
+            None,
+            &f.sealed.body,
+            &f.sealed.headers,
+            status,
+            &f.headers,
+            f.answer.clone(),
+        )
+        .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_forwarder_opens_the_answer_to_bytes_it_did_not_seal() {
+    let f = forwarded(&responder("vsms"), 200, r#"{"userId":"u1"}"#).await;
+    let payload = open_forwarded(&opener(), &f, 200).await.unwrap();
+    assert_eq!(payload, br#"{"userId":"u1"}"#);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_forwarder_trusts_the_next_key_and_not_a_stranger() {
+    let next = Responder::new(&NEXT_SEED, &[client_public()], "vsms").unwrap();
+    let f = forwarded(&next, 200, "{}").await;
+    assert!(open_forwarded(&opener(), &f, 200).await.is_ok());
+
+    let stranger = Responder::new(&STRANGER_SEED, &[client_public()], "vsms").unwrap();
+    let f = forwarded(&stranger, 200, "{}").await;
+    assert_eq!(
+        open_forwarded(&opener(), &f, 200).await.unwrap_err(),
+        OpenError::Unverified
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_forwarder_does_not_believe_an_answer_to_another_request() {
+    let server = responder("vsms");
+    let mut f = forwarded(&server, 200, r#"{"userId":"u1"}"#).await;
+    assert!(
+        open_forwarded(&opener(), &f, 200).await.is_ok(),
+        "the control: the answer opens against the request it answers"
+    );
+    // The same answer, offered as the answer to a different sealed request.
+    f.sealed = send(&seed_sealer(), None).await;
+    assert_eq!(
+        open_forwarded(&opener(), &f, 200).await.unwrap_err(),
+        OpenError::Unverified
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_forwarder_does_not_believe_another_status_route_or_query() {
+    let f = forwarded(&responder("vsms"), 403, "{}").await;
+    assert!(open_forwarded(&opener(), &f, 403).await.is_ok());
+    assert_eq!(
+        open_forwarded(&opener(), &f, 200).await.unwrap_err(),
+        OpenError::Unverified,
+        "a refusal presented as a success"
+    );
+
+    let wrong_route = opener()
+        .open_answer(
+            "POST",
+            "/$procs/previewMessage",
+            None,
+            &f.sealed.body,
+            &f.sealed.headers,
+            403,
+            &f.headers,
+            f.answer.clone(),
+        )
+        .await;
+    assert_eq!(wrong_route.unwrap_err(), OpenError::Unverified);
+
+    let wrong_query = opener()
+        .open_answer(
+            SEND.0,
+            SEND.1,
+            Some("a=1"),
+            &f.sealed.body,
+            &f.sealed.headers,
+            403,
+            &f.headers,
+            f.answer.clone(),
+        )
+        .await;
+    assert_eq!(wrong_query.unwrap_err(), OpenError::Unverified);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_forwarder_binds_the_idempotency_key_the_request_carried() {
+    let server = responder("vsms");
+    let sealed = send(&seed_sealer(), Some("idem-9")).await;
+    let opened = open(&server, SEND.0, &sealed).await.unwrap();
+    let (headers, answer) = opened.seal_response(200, "{}").await.unwrap();
+    let call = |request_headers: Vec<(String, String)>| {
+        let (sealed, headers, answer) = (&sealed, &headers, &answer);
+        async move {
+            opener()
+                .open_answer(
+                    SEND.0,
+                    SEND.1,
+                    None,
+                    &sealed.body,
+                    &request_headers,
+                    200,
+                    headers,
+                    answer.clone(),
+                )
+                .await
+        }
+    };
+    assert!(call(sealed.headers.clone()).await.is_ok());
+    assert_eq!(call(Vec::new()).await.unwrap_err(), OpenError::Unverified);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_forwarder_reads_nothing_of_an_answer_that_is_not_sealed() {
+    for status in [200, 401, 502] {
+        let f = forwarded(&responder("vsms"), 200, "{}").await;
+        let error = opener()
+            .open_answer(
+                SEND.0,
+                SEND.1,
+                None,
+                &f.sealed.body,
+                &f.sealed.headers,
+                status,
+                &[("content-type".into(), "application/json".into())],
+                br#"{"userId":"u1"}"#.to_vec(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error, OpenError::Unsigned { status }, "{status}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_forwarder_refuses_a_payload_type_the_call_did_not_ask_for() {
+    let mut f = forwarded(&responder("vsms"), 200, "{}").await;
+    for (name, value) in &mut f.headers {
+        if name.eq_ignore_ascii_case("cratestack-payload-type") {
+            *value = "text/plain".to_owned();
+        }
+    }
+    let error = open_forwarded(&opener(), &f, 200).await.unwrap_err();
+    assert!(matches!(error, OpenError::Other(_)), "{error:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_path_the_schema_does_not_serve_is_never_an_answer() {
+    let f = forwarded(&responder("vsms"), 200, "{}").await;
+    let error = opener()
+        .open_answer(
+            "GET",
+            "/nope",
+            None,
+            &f.sealed.body,
+            &f.sealed.headers,
+            200,
+            &f.headers,
+            f.answer.clone(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error, OpenError::Unverified);
 }

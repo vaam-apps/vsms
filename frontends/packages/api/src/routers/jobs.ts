@@ -1,5 +1,3 @@
-import "server-only";
-
 // `jobs.list` / `jobs.requeue` — #56's Jobs screen. Thin wraps over
 // `@vsms/gateway`'s `listJobs`/`requeueJob` (see that module's own doc for
 // the live-grammar reasoning `listJobs` inherits from `messages.ts` rather

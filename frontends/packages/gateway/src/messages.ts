@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /messages` and `GET /messages/{id}` — hand-written, same temporary
 // seam as `client.ts` (see its module doc for why: T3/`frontends/packages/sms-client`
 // is blocked on an upstream cratestack release). This file exists
@@ -88,14 +86,10 @@ import "server-only";
 // server-side, or CrateStack's REST filter grammar extended to cover enum
 // columns — neither is this task's scope.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
 import type { Encoding, MessageClass, MessageState, OperatorCode } from "./client";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
-import { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** The server's own enforced ceiling (`limit must not exceed 1000`) — also
  * used as the size of the bounded window `listMessages` fetches before
@@ -210,58 +204,33 @@ export interface ListMessagesResult {
 
 const DEFAULT_LIST_LIMIT = 50;
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function messagesUrl(path: string, query: Record<string, string | number | undefined>): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
   return url.toString();
 }
 
-/** `GET` with a Bearer token, retrying once on an unexpected 401 — same
- * shape as `client.ts`'s `callProcedure`, duplicated rather than shared:
- * this module and `client.ts` are two temporary, independently-replaceable
- * halves of the same seam (REST list/detail vs. `$procs`), and each is
- * small enough that sharing a helper isn't worth coupling their futures
- * together before T3 replaces both anyway.
- *
- * `resolveToken`/`onUnauthorized` are injected rather than hardcoded — see
- * this file's own two call sites, [`getJson`] and [`getJsonAsMachine`], and
- * `message-stream.ts`'s module doc for why `listMessagesForStream` must
- * never resolve the signed-in human's own token (#211): it is driven by
- * `MessageStreamHub`'s process-wide `setInterval` poll, not by any single
- * request, so it has no one human to act as, and — the sharper reason —
- * `AsyncLocalStorage` context set up by whichever request happens to first
- * trigger `hub.start()` would otherwise leak into every later poll tick,
- * including ticks serving *other* operators' own open tabs. */
-async function getJsonWith<T>(
-  resolveToken: () => Promise<string>,
-  onUnauthorized: () => void,
+/** `GET` through the sealing transport. A 404 is `null`; any other refusal is
+ * the `GatewayError` the status maps to. The caller is whoever's key signed the
+ * request: `Message.list`/`.detail`'s own `@@allow` admits `auth().kind ==
+ * "user"` unconditionally (schema.cstack), which is what a paired console is.
+ * One call per page the stream hub polls too: the hub runs in the operator's
+ * own tab now, so its poll is that operator's request and no one else's. */
+async function getJson<T>(
   path: string,
   query: Record<string, string | number | undefined>,
   routeLabel: string,
 ): Promise<T | null> {
   const url = messagesUrl(path, query);
 
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveToken();
-    return undiciFetch(url, {
-      method: "GET",
-      headers: {
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    onUnauthorized();
-    response = await attempt();
-  }
+  const response = await gatewayFetch(url, {
+    method: "GET",
+    headers: {
+      accept: "application/json",
+    },
+  });
 
   if (response.status === 404) return null;
 
@@ -270,37 +239,6 @@ async function getJsonWith<T>(
     throw mapGatewayError(response.status, parsed, routeLabel);
   }
   return parsed as T;
-}
-
-/** The signed-in operator's own credential — every ordinary admin-console
- * read in this file (`listMessages`, `getMessageById`) goes through this.
- * `Message.list`/`.detail`'s own `@@allow` admits `auth().kind == "user"`
- * unconditionally (schema.cstack), so this has been reachable by any
- * authenticated human since before #211 — #211 is what actually forwards
- * one. */
-function getJson<T>(
-  path: string,
-  query: Record<string, string | number | undefined>,
-  routeLabel: string,
-): Promise<T | null> {
-  return getJsonWith(
-    resolveUpstreamAccessToken,
-    invalidateUpstreamAccessToken,
-    path,
-    query,
-    routeLabel,
-  );
-}
-
-/** The console's own machine credential, explicitly — see this function's
- * one caller, `listMessagesForStream`, and this file's own doc on
- * `getJsonWith` for why. */
-function getJsonAsMachine<T>(
-  path: string,
-  query: Record<string, string | number | undefined>,
-  routeLabel: string,
-): Promise<T | null> {
-  return getJsonWith(getMachineAccessToken, invalidateMachineAccessToken, path, query, routeLabel);
 }
 
 interface MessagesPage {
@@ -423,7 +361,7 @@ export interface MessageReceiptsResult {
 }
 
 function procedureUrl(procedure: string): string {
-  return new URL(`/$procs/${procedure}`, env.SMS_API_URL).toString();
+  return new URL(`/$procs/${procedure}`, GATEWAY_ORIGIN).toString();
 }
 
 /**
@@ -438,25 +376,14 @@ function procedureUrl(procedure: string): string {
 export async function listMessageReceipts(messageId: string): Promise<MessageReceiptsResult> {
   const url = procedureUrl("listMessageReceipts");
 
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ args: { messageId } }),
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+  const response = await gatewayFetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({ args: { messageId } }),
+  });
 
   const parsed = await parseGatewayJson(response);
   if (!response.ok) {
@@ -501,7 +428,7 @@ export type StreamCandidate = Pick<MessageRecord, (typeof STREAM_FIELDS)[number]
  * slice, not the whole table.
  */
 export async function listMessagesForStream(windowSize: number): Promise<StreamCandidate[]> {
-  const page = await getJsonAsMachine<{ items: StreamCandidate[] }>(
+  const page = await getJson<{ items: StreamCandidate[] }>(
     "/messages",
     { limit: windowSize, sort: "-updatedAt", fields: STREAM_FIELDS.join(",") },
     "listMessagesForStream",

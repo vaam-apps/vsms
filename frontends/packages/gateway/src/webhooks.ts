@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /webhook_endpoints`, `GET /webhook_attempts`, `POST`/`PATCH`/`DELETE
 // /webhook_endpoints/{id}`, and the two procedures `rotateWebhookSecret`/
 // `replayWebhookAttempt` (#41/#43, already real and tested server-side) —
@@ -57,27 +55,23 @@ import "server-only";
 // port, matching `sms_core::pack`/`unpack` byte-for-byte rather than
 // guessing a shape that merely looks plausible.
 //
-// # Writes are real, and reachable, as of #211 — same shape `providers.ts`/
+// # Writes are made as the signed-in person — same shape `providers.ts`/
 // `senders.ts` already document
 //
 // `WebhookEndpoint.create`/`.update`/`.delete` admit no `auth().kind ==
 // "app"` clause — `owner`/`admin`/`developer` (create/update) or
-// `owner`/`admin` (delete) only. Every write here resolves its Bearer token
-// via `resolveUpstreamAccessToken()`, gated further at Layer 2 by
+// `owner`/`admin` (delete) only. Every write here goes through `gatewayFetch`
+// (`./upstream.ts`), signed by the paired person's own key, and is gated further at Layer 2 by
 // `router::SENDER_AND_WEBHOOK_WRITE_ROUTES` (`webhook:manage`, granted to
 // `owner`/`admin`/`developer` per §5.2's seeded roles). `rotateWebhookSecret`/
 // `replayWebhookAttempt` (procedures, not REST) carry their own
 // `require_permission(ctx, "webhook:manage")` server-side (#193/#43) —
 // nothing new to gate here, this module just calls them.
 
-import { randomBytes } from "node:crypto";
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { deleteResource, fetchWithEtag, updateWithIfMatch, type WithEtag } from "./rest";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** §8.4's own catalogue, verbatim — the only seven event types any
  * subscriber in this deployment ever emits (`webhooks.rs`'s own
@@ -189,10 +183,8 @@ export interface WebhookAttemptRecord {
   version: number;
 }
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function gatewayUrl(path: string, query: Record<string, string | number | undefined> = {}): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -216,27 +208,16 @@ function normalizeEndpoint(row: WireEndpoint): WebhookEndpointRecord {
 async function authedRequest(
   url: string,
   init: { method: "GET" | "POST" | "PATCH" | "DELETE"; body?: string; ifMatch?: string },
-): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: init.method,
-      headers: {
-        accept: "application/json",
-        ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
-        ...(init.ifMatch !== undefined ? { "if-match": init.ifMatch } : {}),
-        authorization: `Bearer ${token}`,
-      },
-      ...(init.body !== undefined ? { body: init.body } : {}),
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+): Promise<Response> {
+  const response = await gatewayFetch(url, {
+    method: init.method,
+    headers: {
+      accept: "application/json",
+      ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+      ...(init.ifMatch !== undefined ? { "if-match": init.ifMatch } : {}),
+    },
+    ...(init.body !== undefined ? { body: init.body } : {}),
+  });
   return response;
 }
 
@@ -287,7 +268,10 @@ export interface CreatedWebhookEndpoint {
 export async function createWebhookEndpoint(
   fields: CreateWebhookEndpointFields,
 ): Promise<CreatedWebhookEndpoint> {
-  const secret = `whsec_${randomBytes(32).toString("hex")}`;
+  // 32 bytes from the browser's CSPRNG, hex: the same wire format the server's
+  // `randomBytes(32)` gave when this ran there.
+  const entropy = crypto.getRandomValues(new Uint8Array(32));
+  const secret = `whsec_${Array.from(entropy, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
   const body = JSON.stringify({
     appId: fields.appId,
     url: fields.url,

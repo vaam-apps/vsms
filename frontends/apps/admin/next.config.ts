@@ -18,6 +18,37 @@ const config: NextConfig = {
   // `next build` and `node server.js`, not assumed. See frontends/apps/admin/Dockerfile's
   // own comment for the copy list this depends on.
   output: "standalone",
+  // The static half of the console's hardening. A script that runs on a page of
+  // this console can ask its key to sign (the key cannot be exported, but it can
+  // be used while the page is open), so nothing on a page should leave it
+  // uninvited: no referrer, no sniffed content types, no window sharing. A
+  // per-request Content-Security-Policy (`script-src 'self' 'wasm-unsafe-eval'`
+  // with a nonce) is the missing half and is called out in
+  // docs/design/console-pairing.md, "What a stolen browser profile gets".
+  //
+  // Framing is the one thing a static policy settles: a page of this console
+  // inside another site's frame is a page whose key an attacker can ask to sign
+  // behind a transparent overlay. `frame-ancestors 'none'` is the modern header
+  // and `X-Frame-Options: DENY` the one an older browser reads; neither
+  // console route has a reason to be framed.
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+          {
+            key: "Permissions-Policy",
+            value: "camera=(), microphone=(), geolocation=(), payment=()",
+          },
+        ],
+      },
+    ];
+  },
   // Pin the trace root to the pnpm workspace root explicitly rather than
   // let Next infer it from the nearest lockfile. Without this, a checkout
   // nested under another pnpm workspace (this repo's own dev worktrees

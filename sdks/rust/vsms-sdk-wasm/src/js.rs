@@ -20,7 +20,9 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::core::{OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys};
+use crate::contracts::route_of;
+use crate::core::{Bound, OpenError, SealError, Sealed, Sealer, SealerKey, ServerKeys};
+use crate::opener::Opener;
 
 fn error(kind: &str, message: &str, status: Option<u16>) -> JsValue {
     let object = Object::new();
@@ -281,8 +283,14 @@ impl JsSealer {
 
     /// Seals one call. `route` is the schema's template (`/messages/{id}`),
     /// `params` its decoded parameters in order, `body` the JSON text of a
-    /// write, `query` the query string as it will be sent.
+    /// write, `query` the query string as it will be sent, `idempotencyKey` and
+    /// `ifMatch` the headers of the same names as they will be sent (a strong
+    /// ETag, quotes included).
     #[wasm_bindgen(js_name = "sealCall")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the JavaScript surface is positional, and the two bound headers are optional trailing arguments so the Node SDK's calls are unchanged"
+    )]
     pub async fn seal_call(
         &self,
         method: String,
@@ -291,22 +299,52 @@ impl JsSealer {
         body: Option<String>,
         query: Option<String>,
         idempotency_key: Option<String>,
+        if_match: Option<String>,
     ) -> Result<JsSealedCall, JsValue> {
         let params: Vec<&str> = params.iter().map(String::as_str).collect();
         let sealed = self
             .inner
-            .seal_call(
+            .seal(
                 &method,
                 &route,
                 &params,
                 body.as_deref(),
                 query.as_deref(),
-                idempotency_key.as_deref(),
+                &Bound {
+                    idempotency_key: idempotency_key.as_deref(),
+                    if_match: if_match.as_deref(),
+                },
             )
             .await
             .map_err(|e| seal_error(&e))?;
         Ok(JsSealedCall { inner: sealed })
     }
+}
+
+/// The route a concrete path is: `{ route, params }`, to be handed to
+/// `Sealer.sealCall` as given. For a caller that holds a path rather than a
+/// template (the operator console's `fetch`-shaped data layer). `path` carries
+/// no query. A path the schema does not serve is an `unbound` failure, before
+/// anything is signed.
+#[wasm_bindgen(js_name = "routeOf")]
+#[allow(
+    unreachable_pub,
+    reason = "wasm-bindgen exports it from this private module; the structs beside it are `pub` for the same reason"
+)]
+pub fn route_of_js(method: &str, path: &str) -> Result<JsValue, JsValue> {
+    let (route, params) = route_of(method, path).ok_or_else(|| {
+        error(
+            "unbound",
+            &format!("the schema serves no operation `{method} {path}`"),
+            None,
+        )
+    })?;
+    let found = Object::new();
+    // `Reflect::set` on a fresh plain object cannot fail.
+    let _ = Reflect::set(&found, &"route".into(), &route.into());
+    let params: Array = params.into_iter().map(JsValue::from).collect();
+    let _ = Reflect::set(&found, &"params".into(), &params.into());
+    Ok(found.into())
 }
 
 /// One sealed call: send `body` with `headers` to `target`, then
@@ -354,6 +392,69 @@ impl JsSealedCall {
         let payload = self
             .inner
             .open_response(status, &pairs, body.to_vec())
+            .await
+            .map_err(|e| open_error(&e))?;
+        String::from_utf8(payload).map_err(|_| error("unreadable", "the answer is not UTF-8", None))
+    }
+}
+
+/// Verifies the answer to a request somebody else sealed: the console's
+/// server forwards a browser's sealed bytes and believes the gateway's answer
+/// only if it opens here, under the two pinned server keys and against those
+/// very bytes. It holds no signing key.
+#[wasm_bindgen(js_name = "Opener")]
+#[derive(Debug)]
+pub struct JsOpener {
+    inner: Opener,
+}
+
+#[wasm_bindgen(js_class = "Opener")]
+impl JsOpener {
+    /// An opener that believes `server_current` and `server_next` (unpadded
+    /// base64url, both required and distinct).
+    #[wasm_bindgen(js_name = "forServerKeys")]
+    pub fn for_server_keys(server_current: &str, server_next: &str) -> Result<JsOpener, JsValue> {
+        let keys = server_keys(server_current, server_next)?;
+        let inner = Opener::new(&keys).map_err(|e| seal_error(&e))?;
+        Ok(JsOpener { inner })
+    }
+
+    /// The payload, as text, of the answer (`status`, `headers`, `body`) to
+    /// the request `method path?query` whose sealed bytes are `request` and
+    /// whose `Idempotency-Key` and `If-Match` were among `requestHeaders`
+    /// (`[name, value]` pairs; any other header is ignored). Rejects with an
+    /// `unsigned`, `unverified` or `unreadable` failure, as
+    /// `SealedCall.openResponse` does.
+    #[wasm_bindgen(js_name = "openAnswer")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the JavaScript surface is positional"
+    )]
+    pub async fn open_answer(
+        &self,
+        method: String,
+        path: String,
+        query: Option<String>,
+        request: Uint8Array,
+        request_headers: JsValue,
+        status: u16,
+        headers: JsValue,
+        body: Uint8Array,
+    ) -> Result<String, JsValue> {
+        let request_headers = pairs_from_js(&request_headers)?;
+        let headers = pairs_from_js(&headers)?;
+        let payload = self
+            .inner
+            .open_answer(
+                &method,
+                &path,
+                query.as_deref(),
+                &request.to_vec(),
+                &request_headers,
+                status,
+                &headers,
+                body.to_vec(),
+            )
             .await
             .map_err(|e| open_error(&e))?;
         String::from_utf8(payload).map_err(|_| error("unreadable", "the answer is not UTF-8", None))

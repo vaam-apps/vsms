@@ -4,17 +4,15 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./bff": "./src/bff/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
   "dependencies": {
-    "@vsms/env": "workspace:*",
-    "jose": "6.2.12",
-    "server-only": "0.0.1",
-    "undici": "8.10.2"
+    "server-only": "0.0.1"
   },
   "devDependencies": {
     "@types/node": "^26",

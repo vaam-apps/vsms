@@ -52,9 +52,28 @@ export interface WasmFailure {
   status?: number;
 }
 
+/** Verifies the answer to a request somebody else sealed; see {@link AnswerOpener}. */
+export interface WasmOpener {
+  openAnswer(
+    method: string,
+    path: string,
+    query: string | undefined,
+    request: Uint8Array,
+    requestHeaders: HeaderPairs,
+    status: number,
+    headers: HeaderPairs,
+    body: Uint8Array,
+  ): Promise<string>;
+}
+
 export type WasmSign = (tbs: Uint8Array) => Uint8Array | Promise<Uint8Array>;
 
 export interface WasmModule {
+  /** The schema's route for a concrete path; rejects with `unbound` for one it does not serve. */
+  routeOf(method: string, path: string): { route: string; params: string[] };
+  Opener: {
+    forServerKeys(serverCurrent: string, serverNext: string): WasmOpener;
+  };
   Sealer: {
     fromSeed(seedBase64url: string, serverCurrent: string, serverNext: string): WasmSealer;
     fromCallback(

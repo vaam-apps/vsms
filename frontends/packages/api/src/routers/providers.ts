@@ -1,5 +1,3 @@
-import "server-only";
-
 // `providers.list` / `providers.get` / `providers.update` — #54's Providers
 // screen. Thin wraps over `@vsms/gateway`'s `listProviders`/
 // `getProviderById`/`updateProvider` (see that module's own doc for the

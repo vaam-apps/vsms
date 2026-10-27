@@ -9,39 +9,16 @@
 // latency ≈ `pollMs`. Nothing in this file, its copy, or its behaviour
 // should read as "live" in the WebSocket/SSE sense.
 //
-// # Why the visible scope banner, and a real inconsistency #211 introduces
+// # Scope: every app, for the key that is signed in
 //
-// **Before #211**, every call this screen made ran as the console's own
-// gateway credential (`SMS_CONSOLE_CLIENT_ID`), which belongs to exactly
-// one `App` — `Message`'s own row policy (`appId == auth().appId`)
-// enforced a single-app list server-side regardless of any query param
-// this screen sends (verified live, `@vsms/gateway/messages.ts`'s own
-// module doc, point 9).
-//
-// **#211 changes this for the initial list/detail fetch, but deliberately
-// NOT for live updates**, and that split is worth understanding rather
-// than assuming away: `messages.list`/`messages.get` now run as the
-// signed-in human (`@vsms/gateway/messages.ts::listMessages`/
-// `getMessageById`), and `Message.list`/`.detail`'s own `@@allow`
-// (`schema.cstack`) admits `auth().kind == "user"` unconditionally — so
-// for any signed-in human, regardless of role, the fetched window now
-// spans every app in this deployment, not one. `messages.onStateChange`
-// (the live-update poll below), by contrast, is backed by
-// `MessageStreamHub` — a process-wide singleton shared by every open
-// browser tab, not scoped to any one request — and deliberately keeps
-// using the console's own machine credential (`@vsms/gateway/
-// messages.ts::listMessagesForStream`, `@vsms/gateway/request-
-// credential.ts`'s own module doc explains why: there is no single human
-// to attribute a shared background poll to, and forwarding whichever
-// operator happened to open the first tab would leak that operator's
-// credential into every other tab's stream).
-//
-// The practical consequence: a row belonging to an app other than the
-// console's own machine credential's app can appear in the initial list,
-// but will never receive a live state-change update from the stream — it
-// sits on screen until the next full refetch. Accepted, not silently
-// shipped: the list's footer says live updates cover this console's own app
-// and that a refresh updates the rest.
+// The list, the detail and the live poll all run as the paired person's own key
+// (`@vsms/gateway/messages.ts`), and `Message.list`/`.detail`'s `@@allow`
+// (`schema.cstack`) admits `auth().kind == "user"` unconditionally, so the
+// figures span every app in this deployment. The live-update poll used to be the
+// exception: it ran in the server as one shared machine credential, shared by
+// every open tab, scoped to that credential's single `App`, and a row of another
+// app never received an update. It runs in the page now, as the operator, so the
+// same window the list shows is the one the poll refreshes.
 //
 // # Live reconciliation, briefly
 //
@@ -246,7 +223,7 @@ export function MessagesScreen({ pollMs }: MessagesScreenProps) {
     listQuery.data?.truncated === true
       ? "The newest 1,000 messages. Filters apply within them; older matches do not appear."
       : total !== undefined
-        ? `${total.toLocaleString("en-US")} message${total === 1 ? "" : "s"}. Live updates cover this console's own app; refresh for other apps' rows.`
+        ? `${total.toLocaleString("en-US")} message${total === 1 ? "" : "s"}. Live updates cover every app.`
         : undefined;
 
   return (

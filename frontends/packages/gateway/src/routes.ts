@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /routes`, `GET /routes/{id}`, `POST /routes`, `PATCH /routes/{id}`,
 // `DELETE /routes/{id}` — #54's Routes screen. Same temporary hand-written
 // seam as `providers.ts` (see that module's own doc and `client.ts`'s for
@@ -12,13 +10,11 @@ import "server-only";
 // (`create`/`update`/`delete`) stay `hasRole('owner') || hasRole('admin')`
 // only — untouched by this PR.
 //
-// # Writes are reachable today, as of #211
+// # Writes are made as the signed-in person
 //
-// Every function below goes through `resolveUpstreamAccessToken()`
-// (`./request-credential.ts`), which forwards the signed-in human's own
-// session token rather than this console's own separate
-// `SMS_CONSOLE_CLIENT_ID` machine credential — see `providers.ts`'s own
-// `updateProvider` doc for the full mechanism (identical here). A write
+// Every function below goes through `gatewayFetch` (`./upstream.ts`): in the
+// console the paired person's own browser key signs the request — see
+// `providers.ts`'s own `updateProvider` doc for the mechanism (identical here). A write
 // succeeds for a session whose role is `owner`/`admin`, and 403s for
 // anyone else — a real permission denial, not a blanket unreachability.
 // `routes-screen.tsx` states this on screen.
@@ -52,13 +48,10 @@ import "server-only";
 // copy any more. See that file's own module doc for the full reasoning,
 // including why it's safe to apply blindly here.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { deleteResource, fetchWithEtag, postJson, updateWithIfMatch, type WithEtag } from "./rest";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** `schema.cstack`'s `OperatorCode`, verbatim — duplicated from `client.ts`
  * rather than imported, same reasoning `jobs.ts`'s own `JobState` duplicate
@@ -106,32 +99,19 @@ const LIST_FIELDS = [
 
 export type RouteListItem = Pick<RouteRecord, (typeof LIST_FIELDS)[number]>;
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function routesUrl(path: string, query: Record<string, string | number | undefined>): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
   return url.toString();
 }
 
-async function authedGet(url: string): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "GET",
-      headers: { accept: "application/json", authorization: `Bearer ${token}` },
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
-  return response;
+async function authedGet(url: string): Promise<Response> {
+  return gatewayFetch(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+  });
 }
 
 /** `GET /routes`, unpaged — see module doc. Sorted by `priority` desc, then

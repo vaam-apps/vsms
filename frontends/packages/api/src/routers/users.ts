@@ -1,5 +1,3 @@
-import "server-only";
-
 // `users.list` / `users.get` / `users.provision` / `users.update` /
 // `users.delete` — #58's Users screen. Thin wraps over `@vsms/gateway`'s
 // own `users.ts`.

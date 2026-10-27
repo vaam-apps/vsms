@@ -1,8 +1,20 @@
-import "server-only";
-
-// @vsms/gateway — server-only mTLS + Bearer seam to sms-api. See
-// client.ts's module doc for why the two calls below are hand-written
-// rather than generated (T3, pending).
+// @vsms/gateway — the console's data layer over the gateway's sealed transport.
+//
+// Everything exported here runs in the BROWSER, where the person's signing key
+// is, and imports nothing from Node: a module writes an ordinary request
+// (`GET /apps?limit=500`), `./upstream.ts` hands it to whatever transport the
+// console installed (`./sealing-fetch.ts`: the browser's key signs it, the
+// gateway's answer is believed only if it verifies), and the module reads the
+// answer as JSON. No module holds a credential, a cookie or the gateway's
+// address.
+//
+// The server half is `@vsms/gateway/bff` (`./bff/index.ts`): a pass-through of
+// sealed bytes that holds no credential and no session, and the composer's own
+// service key. It is a separate entry point so that nothing here can import it
+// by accident and put `node:https` in a bundle for the browser.
+//
+// The calls below are hand-written rather than generated; see client.ts for why
+// (T3, pending).
 
 export type {
   AppClientListItem,
@@ -50,13 +62,25 @@ export type {
   SendMessageResult,
 } from "./client";
 export { previewMessage, sendMessage } from "./client";
+export type { ComposeFetchOptions, SealedProof } from "./compose-fetch";
+export { createComposeFetch } from "./compose-fetch";
+export type { ComposeOperation, CompositionAuthorization } from "./compose-proof";
+export {
+  COMPOSE_OPERATIONS,
+  COMPOSE_PROOF_METHOD,
+  COMPOSE_PROOF_PATH,
+  composeProofBody,
+  parseAuthorization,
+  sha256Hex,
+} from "./compose-proof";
+export type { ConsoleKeyRecord } from "./console-keys";
+export { getConsoleKeyByThumbprint, probeKey, revokeConsoleKey } from "./console-keys";
 export type {
   DashboardSummary,
   HourlyBucket,
   OperatorDeliveryStats,
 } from "./dashboard";
 export { dashboardSummary } from "./dashboard";
-export { gatewayAgent } from "./dispatcher";
 export type { GatewayFieldErrors, GatewayTrpcCode } from "./errors";
 export { GatewayError, isStaleWriteError, mapGatewayError } from "./errors";
 export type {
@@ -118,8 +142,6 @@ export type {
   UpdateProviderFields,
 } from "./providers";
 export { getProviderById, listProviders, updateProvider } from "./providers";
-export type { RequestCredential } from "./request-credential";
-export { runWithRequestCredential } from "./request-credential";
 export type { WithEtag } from "./rest";
 export { deleteResource, fetchWithEtag, postJson, updateWithIfMatch } from "./rest";
 export type {
@@ -161,6 +183,21 @@ export type {
 } from "./routes";
 export { createRoute, deleteRoute, getRouteById, listRoutes, updateRoute } from "./routes";
 export type {
+  SealerFailure,
+  SealingFetchOptions,
+  SealingRuntime,
+  WasmSealedCall,
+  WasmSealer,
+} from "./sealing-fetch";
+export {
+  createSealingFetch,
+  etagOf,
+  METHOD_HEADER,
+  NoDeviceKeyError,
+  refusalOf,
+  STATUS_HEADER,
+} from "./sealing-fetch";
+export type {
   CreateSenderIdFields,
   CreateSenderIdRegistrationFields,
   SenderIdRecord,
@@ -177,7 +214,13 @@ export {
   updateSenderId,
   updateSenderIdRegistration,
 } from "./senders";
-export { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
+export type { ComposeFetch, GatewayFetch } from "./upstream";
+export {
+  configureComposeFetch,
+  configureGatewayFetch,
+  GATEWAY_ORIGIN,
+  GatewayNotConfiguredError,
+} from "./upstream";
 export type {
   ProvisionUserResult,
   UpdateUserFields,

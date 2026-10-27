@@ -26,7 +26,7 @@
 //
 // # Scope
 //
-// Since #211 this call runs as the signed-in human, and `Message`/
+// This call runs as the paired person's own key, and `Message`/
 // `WebhookAttempt`'s `@@allow` admits any `kind == "user"` unscoped, so the
 // figures cover every app in the deployment. The panel's caption says so,
 // read off `summary.appId`'s presence rather than assumed. `jobBacklog` is

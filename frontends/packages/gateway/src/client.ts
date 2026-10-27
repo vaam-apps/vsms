@@ -1,5 +1,3 @@
-import "server-only";
-
 // The two calls the composer (T13) needs: `previewMessage` and
 // `sendMessage`. Hand-written, temporarily.
 //
@@ -8,9 +6,9 @@ import "server-only";
 // upstream `Decimal` fix ships (cratestack#456, merged, release pending)
 // — at which point this file's two functions get replaced by calls into
 // the generated client, and every other file in this package
-// (`token.ts`, `dispatcher.ts`, `errors.ts`) stays as-is. `@vsms/gateway`
+// (`upstream.ts`, `sealing-fetch.ts`, `errors.ts`) stays as-is. `@vsms/gateway`
 // exists specifically so that swap touches this one package: nothing
-// outside `@vsms/gateway` imports `undici` or knows the routes are
+// outside `@vsms/gateway` knows the routes are
 // `POST /$procs/...` rather than whatever shape the generated client
 // prefers. `frontends/packages/api/src/routers/compose.ts` only ever imports
 // `previewMessage`/`sendMessage` by name from here.
@@ -29,12 +27,9 @@ import "server-only";
 // offending *characters*, not byte/codepoint offsets (T13 does the
 // highlighting against that).
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { getMachineAccessToken, invalidateMachineAccessToken } from "./token";
+import { composeFetch } from "./upstream";
 
 export type Encoding = "gsm7" | "ucs2";
 export type OperatorCode = "mtn" | "orange" | "camtel" | "nexttel" | "unknown";
@@ -106,57 +101,21 @@ export interface SendMessageResult {
   estimatedCostXaf: string;
 }
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
-function procedureUrl(procedure: string): string {
-  return new URL(`/$procs/${procedure}`, env.SMS_API_URL).toString();
-}
-
 /**
- * `POST /$procs/{procedure}` with a Bearer token, retrying exactly once —
- * with a freshly minted token — on an unexpected 401. `getMachineAccessToken`'s
- * own `exp - 60s` cache margin should make a 401 unreachable in normal
- * operation; the retry exists for the one case that margin can't cover, a
- * signing-key rotation invalidating the cached token mid-window.
- *
- * **Deliberately the console's machine credential, never the signed-in
- * human's own token (#211).** `backends/crates/sms-api/src/procedures.rs::
- * Procedures::caller_client_id` — the function both `previewMessage` and
- * `sendMessage` call to resolve which `App` a send belongs to — hard-rejects
- * any caller whose `kind` isn't `"app"`: "sendMessage currently requires a
- * machine (client_credentials) caller — deriving an App for a human caller
- * has no design yet." Forwarding a human token here wouldn't merely be the
- * wrong credential, it would turn every composer send into a guaranteed
- * `Validation` error. `./request-credential.ts`'s own module doc names this
- * as one of the two call sites that must keep using `getMachineAccessToken`
- * explicitly rather than `resolveUpstreamAccessToken`.
+ * One composer call. `previewMessage` and `sendMessage` are procedures only an
+ * app may call (`backends/crates/sms-api/src/procedures.rs::caller_client_id`
+ * rejects any other caller: "deriving an App for a human caller has no design
+ * yet"), so they do not go through the person's key like everything else in
+ * this package. They go to the console's composer route, which sends them
+ * through the console's own service key (`./bff/composer.ts`, provisioned with
+ * `register-client`; `docs/runbooks/deployment.adoc`) once the browser has
+ * proved it is paired (`./compose-proof.ts`).
  */
 async function callProcedure<TArgs extends object, TResult>(
-  procedure: string,
+  procedure: "previewMessage" | "sendMessage",
   args: TArgs,
 ): Promise<TResult> {
-  const url = procedureUrl(procedure);
-  const body = JSON.stringify({ args });
-
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await getMachineAccessToken();
-    return undiciFetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      body,
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateMachineAccessToken();
-    response = await attempt();
-  }
+  const response = await composeFetch(procedure === "previewMessage" ? "preview" : "send", args);
 
   const parsed = await parseGatewayJson(response);
   if (!response.ok) {

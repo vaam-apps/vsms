@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /users`, `PATCH /users/{id}`, `DELETE /users/{id}`, and
 // `POST /$procs/provisionUser` — #58's Users screen.
 //
@@ -18,13 +16,10 @@ import "server-only";
 // `provisionUser` for why there is no rotate/reset counterpart (see
 // `OPEN_QUESTIONS.md` for that gap, named rather than silently absent).
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { deleteResource, fetchWithEtag, updateWithIfMatch, type WithEtag } from "./rest";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 export interface UserRecord {
   id: string;
@@ -61,10 +56,8 @@ const LIST_FIELDS = [
 
 export type UserListItem = Pick<UserRecord, (typeof LIST_FIELDS)[number]>;
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function gatewayUrl(path: string, query: Record<string, string | number | undefined>): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -74,25 +67,15 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
 async function authedRequest(
   url: string,
   init: { method: "GET" | "POST" | "DELETE"; body?: string },
-): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: init.method,
-      headers: {
-        accept: "application/json",
-        ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
-        authorization: `Bearer ${token}`,
-      },
-      ...(init.body !== undefined ? { body: init.body } : {}),
-      dispatcher: gatewayAgent(),
-    });
-  };
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+): Promise<Response> {
+  const response = await gatewayFetch(url, {
+    method: init.method,
+    headers: {
+      accept: "application/json",
+      ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+    },
+    ...(init.body !== undefined ? { body: init.body } : {}),
+  });
   return response;
 }
 
@@ -196,7 +179,7 @@ export async function provisionUser(
   displayName: string,
   roleKey: string,
 ): Promise<ProvisionUserResult> {
-  const url = new URL("/$procs/provisionUser", env.SMS_API_URL).toString();
+  const url = new URL("/$procs/provisionUser", GATEWAY_ORIGIN).toString();
   const response = await authedRequest(url, {
     method: "POST",
     body: JSON.stringify({ args: { email, displayName, roleKey } }),

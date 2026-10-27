@@ -1,7 +1,7 @@
 # The from-source developer stack — everything `scripts/demo.sh` used to
 # assemble by hand (a scratch Postgres, both migrations, an OP signing key,
 # an `App` + `Provider` + `Route` + `SenderId`, a machine client, the
-# `sms-console` OIDC client, a human operator account, `sms-fake-orange`,
+# console composer's service key, a human operator account, `sms-fake-orange`,
 # `sms-gateway`, `sms-worker`, and the admin console), now as one
 # declarative compose file instead of a 300-line bash script driving
 # `docker run`/backgrounded host processes/`pnpm exec next dev` by hand.
@@ -34,7 +34,7 @@
 #
 # Backend-only (R4 — CONTRIBUTING.md: "the admin console is optional, the
 # backend must run without it"): omit `--profile console`. Every service
-# the console needs (`admin`, `seed-console-client`, `provision-user`, and
+# the console needs (`admin`, `register-composer`, `provision-user`, and
 # the permission-fix step between `provision-client` and `admin`) carries
 # `profiles: [console]` and is skipped outright. `sms-gateway`/`sms-worker`
 # come up healthy either way, and `provision-client` (a real, HTTP-usable
@@ -373,10 +373,12 @@ services:
     restart: 'no'
     profiles: [console, demo]
 
-  # Registers the `sms-console` OauthClient row #194's human login needs.
-  # `--redirect-uri` must equal `${ADMIN_BASE_URL}/api/auth/callback`
-  # character for character (RFC 6749 §3.1.2).
-  seed-console-client:
+  # The composer's own service key (VS-5b): the console sends through an
+  # Ed25519 `AppClient` key of its own, registered with `register-client` (the
+  # private half is `dev-keys/console-composer.pem`, mounted into `admin`; only
+  # the public half is an argument here, from `VSMS_COMPOSER_PUBLIC_KEY`, which
+  # `just demo-up` sets). Console-only: a backend-only `up -d` never runs it.
+  register-composer:
     build:
       context: .
       dockerfile: backends/apps/sms-gateway/Dockerfile
@@ -388,11 +390,19 @@ services:
         CARGO_FEATURES: fake-aws
     image: vsms-dev/sms-gateway:local
     command:
-      - seed-console-client
-      - --client-id
-      - sms-console
-      - --redirect-uri
-      - http://127.0.0.1:${VSMS_DEMO_CONSOLE_PORT:-3100}/api/auth/callback
+      - register-client
+      - --app
+      - vsms-demo
+      - --client-name
+      - console-composer
+      - --label
+      - console composer (compose.dev.yaml)
+      - --scope
+      - sms:send
+      - --scope
+      - sms:read
+      - --public-key
+      - ${VSMS_COMPOSER_PUBLIC_KEY:-}
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
     depends_on:
@@ -427,7 +437,7 @@ services:
     environment:
       DATABASE_URL: postgres://vsms:vsms-dev-only@postgres:5432/vsms
     depends_on:
-      seed-console-client:
+      register-composer:
         condition: service_completed_successfully
     restart: 'no'
     profiles: [console]
@@ -624,12 +634,10 @@ services:
     profiles: [console]
     environment:
       SMS_API_URL: http://sms-gateway:8080
-      SMS_AUTH_ISSUER: http://sms-gateway:8080
-      SMS_CONSOLE_PRIVATE_KEY_PATH: /secrets/console-client-key.pem
-      SMS_CONSOLE_SCOPE: sms:send sms:read job:read job:enqueue worker:read provider:read route:read dashboard:read
-      ADMIN_BASE_URL: http://127.0.0.1:${VSMS_DEMO_CONSOLE_PORT:-3100}
-      SMS_CONSOLE_OIDC_CLIENT_ID: sms-console
-      SMS_CONSOLE_SESSION_SECRET: vsms-dev-session-secret-DO-NOT-USE-IN-PRODUCTION-abcdefgh
+      # The composer's service key (registered by `register-composer`). The
+      # gateway's two public sealing keys are derived from the dev envelope keys
+      # in the entrypoint below; a browser pins them.
+      SMS_COMPOSER_KEY_FILE: /run/envelope/console-composer.pem
       MESSAGE_STREAM_POLL_MS: '2000'
       # Every entry below has a zod `.default()` in `@vsms/env`, and every
       # one must still be set explicitly HERE, because `SKIP_ENV_VALIDATION=1`
@@ -649,28 +657,29 @@ services:
       # length: the packaged image's own `next.config.ts` hardcodes
       # `NODE_ENV=production`, which trips @vsms/env's https-only deploy
       # rules for a loopback, no-TLS stack. See that file's own comment for
-      # the full mechanism. The cross-origin-write bug that comment also
-      # used to describe (reads work; POST/PATCH/DELETE from the browser
-      # do not) was fixed in #243/#244, ahead of this file's own PR — see
-      # `frontends/packages/api/src/context.ts`'s own module doc.
+      # the full mechanism.
       SKIP_ENV_VALIDATION: '1'
     volumes:
-      - vsms_dev_secrets:/secrets:ro
-    # Same entrypoint override as `compose.demo.yaml`'s own `admin`
-    # service, for the identical reason: `SMS_CONSOLE_CLIENT_ID` is
-    # computed by `provision-client` and Compose has no declarative way to
-    # feed one container's output into a sibling's environment.
+      - ./dev-keys/envelope-current.pem:/run/envelope/current.pem:ro
+      - ./dev-keys/envelope-next.pem:/run/envelope/next.pem:ro
+      - ./dev-keys/console-composer.pem:/run/envelope/console-composer.pem:ro
+    # The browser pins the gateway's two PUBLIC sealing keys, and Compose has no
+    # declarative way to derive them from the private PEMs this stack already
+    # mounts into the gateway, so the entrypoint does: Node's own `crypto`
+    # turns each PEM into the raw 32-byte public key as base64url
+    # (`sms-gateway server-keys` prints the same two values). Dev keys only; a
+    # real deployment sets the two variables from `sms-gateway server-keys`.
     entrypoint: ['/bin/sh', '-c']
     command:
-      - export SMS_CONSOLE_CLIENT_ID="$(cat /secrets/console-client-id)" && exec node frontends/apps/admin/server.js
+      - |
+        pub() { node -e 'const c=require("node:crypto"),fs=require("node:fs");process.stdout.write(c.createPublicKey(c.createPrivateKey(fs.readFileSync(process.argv[1]))).export({format:"jwk"}).x)' "$$1"; }
+        export SMS_ENVELOPE_SERVER_KEY_CURRENT="$$(pub /run/envelope/current.pem)"
+        export SMS_ENVELOPE_SERVER_KEY_NEXT="$$(pub /run/envelope/next.pem)"
+        exec node frontends/apps/admin/server.js
     depends_on:
       sms-gateway:
         condition: service_healthy
-      provision-client:
-        condition: service_completed_successfully
-      secrets-fix-perms:
-        condition: service_completed_successfully
-      seed-console-client:
+      register-composer:
         condition: service_completed_successfully
       provision-user:
         condition: service_completed_successfully

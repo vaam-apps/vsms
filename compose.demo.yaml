@@ -10,7 +10,7 @@
 #     real `SMS_OIDC_ISSUER`, ...), backups, Prometheus. Meant to be cloned
 #     onto a VM an operator controls and configures for real traffic.
 #   - `compose.demo.yaml` (this file) — a *showcase*: clone the repo, run one
-#     command, sign into a working console, and watch a message reach a
+#     command, open a working console, and watch a message reach a
 #     terminal state, with no source build, no real Orange account, and no
 #     secret an evaluator has to go find. Every application image is pulled
 #     from GHCR, pinned to an explicit tag (never `:latest` — a showcase that
@@ -19,16 +19,20 @@
 #     Prometheus; that's what the other two are for.
 #
 # Usage — see docs/runbooks/showcase.adoc for the full walkthrough, including
-# what to expect at each step and how to sign into the console:
+# what to expect at each step and how to open the console:
 #
-#   docker compose -f compose.demo.yaml --profile console up -d
+#   VSMS_COMPOSER_PUBLIC_KEY="$(just dev-composer-public-key)" \
+#     docker compose -f compose.demo.yaml --profile console up -d
 #   docker compose -f compose.demo.yaml --profile console down -v   # reset
+#
+# The console profile needs the composer's public key (`register-composer`
+# fails without it, and `admin` waits on that); the backend-only stack below
+# does not, which is why the variable defaults to empty rather than `:?`.
 #
 # Backend-only (R4 — CONTRIBUTING.md: "the admin console is optional, the
 # backend must run without it"): omit `--profile console` entirely. Every
-# service the console needs (`admin`, `seed-console-client`, `provision-
-# user`, and the tiny permission-fix step between `provision-client` and
-# `admin`) carries `profiles: [console]` and is skipped outright — not
+# service the console needs (`admin`, `register-composer` and `provision-
+# user`) carries `profiles: [console]` and is skipped outright — not
 # started-then-idle, not present-but-unconfigured. `sms-gateway` and
 # `sms-worker` come up healthy either way, and `provision-client` (a real,
 # HTTP-usable client credential) is *not* gated behind the profile, since a
@@ -430,25 +434,33 @@ services:
     restart: 'no'
     profiles: [console, demo]
 
-  # Registers the `sms-console` OauthClient row #194's human login flow
-  # needs. `--redirect-uri` must equal `${ADMIN_BASE_URL}/api/auth/callback`
-  # character for character (RFC 6749 §3.1.2) — `localhost`, matching
-  # `admin`'s own `ADMIN_BASE_URL` below and the host port this file
-  # publishes `admin` on.
+  # The composer's own service key (VS-5b): the console sends through an
+  # Ed25519 `AppClient` key of its own, registered with `register-client` (the
+  # private half is `dev-keys/console-composer.pem`, mounted into `admin`; only
+  # the public half is an argument here, from `VSMS_COMPOSER_PUBLIC_KEY`, which
+  # `just demo-up` sets). Console-only: a backend-only `up -d` never runs it.
   #
   # Depends on `provision-client`, not just `migrate` — see `seed-dispatch`'s
   # own comment: every seed/provision step against this fresh database
   # chains sequentially, console-only steps included, rather than racing a
   # sibling container's first touch of the same catalog.
-  seed-console-client:
+  register-composer:
     image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.9.0} # x-release-please-version
     platform: linux/amd64
     command:
-      - seed-console-client
-      - --client-id
-      - sms-console
-      - --redirect-uri
-      - http://localhost:${VSMS_DEMO_CONSOLE_PORT:-3200}/api/auth/callback
+      - register-client
+      - --app
+      - vsms-demo
+      - --client-name
+      - console-composer
+      - --label
+      - console composer (compose.demo.yaml)
+      - --scope
+      - sms:send
+      - --scope
+      - sms:read
+      - --public-key
+      - ${VSMS_COMPOSER_PUBLIC_KEY:-}
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
     depends_on:
@@ -465,8 +477,8 @@ services:
   #
   #   docker compose -f compose.demo.yaml logs provision-user
   #
-  # Depends on `seed-console-client`, not just `migrate` — same reasoning
-  # as that service's own comment, chaining the last of the seed/provision
+  # Depends on `register-composer`, not just `migrate` — same reasoning as
+  # that service's own comment, chaining the last of the seed/provision
   # one-shots.
   provision-user:
     image: ghcr.io/${VSMS_IMAGE_OWNER:-vaam-apps}/vsms-sms-gateway:${VSMS_IMAGE_TAG:-v0.9.0} # x-release-please-version
@@ -482,7 +494,7 @@ services:
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
     depends_on:
-      seed-console-client:
+      register-composer:
         condition: service_completed_successfully
     restart: 'no'
     profiles: [console]
@@ -525,14 +537,9 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgres://vsms:vsms-demo-only@postgres:5432/vsms
-      # Internal DNS, never the host-published port below — `admin` (when
-      # the console profile is active) fetches JWKS/exchanges `/token`
-      # against exactly this value, server-side, over the compose network;
-      # the browser never talks to sms-gateway directly (see #194's own
-      # "POST /login... the browser never talks to sms-gateway directly"
-      # note). Every token this OP mints carries this as `iss`, so this
-      # must be the *same* string `admin`'s own `SMS_AUTH_ISSUER` uses
-      # below, not merely an equivalent one.
+      # The gateway's OpenID issuer, which `serve` still requires. Nothing here
+      # uses it: the console has no login (it carries sealed bytes for a
+      # browser's own key), and the composer signs with a key.
       SMS_OIDC_ISSUER: http://sms-gateway:8080
       # No real Orange account exists for this showcase — every submit
       # goes to sms-fake-orange instead (ORANGE_CM_BASE_URL below), which
@@ -582,10 +589,9 @@ services:
       start_period: 10s
     ports:
       # Loopback only. Not required for anything in this file to function
-      # (admin reaches sms-gateway over the internal network exclusively —
-      # see SMS_OIDC_ISSUER's own comment above) — published purely so an
-      # evaluator can `curl http://127.0.0.1:.../healthz` or exercise the
-      # REST API directly without a browser.
+      # (admin reaches sms-gateway over the internal network exclusively) —
+      # published purely so an evaluator can `curl http://127.0.0.1:.../healthz`
+      # or exercise the REST API directly without a browser.
       - 127.0.0.1:${VSMS_DEMO_GATEWAY_PORT:-8280}:8080
 
   sms-worker:
@@ -637,62 +643,37 @@ services:
     # directly (`docker run --entrypoint sh ... server.js`), not assumed —
     # so there is no environment variable this file can set that makes the
     # packaged image believe it is running in development. That, in turn,
-    # unconditionally trips two of @vsms/env's own deploy-time rules
-    # (frontends/packages/env/src/index.ts's `enforceDeploymentRules` block):
-    # `ADMIN_BASE_URL` and `SMS_API_URL` must both be `https://` whenever
-    # `NODE_ENV === "production"`. A showcase reachable at `http://
-    # localhost:...` with no TLS anywhere in this file is exactly the case
-    # that rule exists to refuse — by design, for a real deployment.
+    # trips @vsms/env's deploy-time rule (frontends/packages/env/src/index.ts's
+    # `enforceDeploymentRules` block): `SMS_API_URL` must be `https://`
+    # whenever `NODE_ENV === "production"`. A showcase reaching its gateway at
+    # `http://sms-gateway:8080` with no TLS anywhere in this file is exactly
+    # the case that rule exists to refuse — by design, for a real deployment.
     # `SKIP_ENV_VALIDATION=1` is the same escape hatch
-    # `frontends/apps/admin/Dockerfile`'s own build stage already uses for the identical
-    # reason at build time (its own comment: "next build sets
+    # `frontends/apps/admin/Dockerfile`'s own build stage already uses for the
+    # identical reason at build time (its own comment: "next build sets
     # NODE_ENV=production, which would otherwise trip @vsms/env's deploy-
     # time rules... that only make sense at runtime, not compile time") —
     # here it's the runtime instance of the same problem. This is a real,
     # load-bearing trade this showcase makes, not a convenience default:
-    # it disables *all* of @vsms/env's zod validation, not just the two
-    # https checks, so a genuine misconfiguration here fails as a confusing
-    # runtime error deep in the app rather than a clear startup message.
-    # Fronting this with a real (even self-signed) TLS edge would let this
-    # image run in its own intended mode instead — out of scope for a
-    # one-command, clone-and-run showcase; tracked as follow-up work, not
-    # silently worked around.
+    # it disables *all* of @vsms/env's zod validation, so a genuine
+    # misconfiguration here fails as a confusing runtime error deep in the
+    # app rather than a clear startup message. Fronting this with a real
+    # (even self-signed) TLS edge would let this image run in its own
+    # intended mode instead — out of scope for a one-command, clone-and-run
+    # showcase; tracked as follow-up work, not silently worked around.
     #
-    # **A second finding, found live while this file was first written —
-    # fixed since, in #243/#244, not by this file.** At the time, every
-    # mutating (POST) tRPC call through this console — the Composer's own
-    # "Send message" included — was rejected with `cross-origin request
-    # rejected: Origin "http://localhost:<port>" does not match
-    # "http://0.0.0.0:8080"` by `frontends/packages/api/src/context.ts`'s
-    # `assertSameOriginForMutations`. Root cause: the "expected" side of
-    # that check was `new URL(req.url).origin`, which under this image's
-    # `output: "standalone"` runtime resolves from the server's own
-    # `HOSTNAME`/`PORT` bind (`0.0.0.0:8080`, required for Docker's own
-    # port-publishing to reach it) rather than from anything a browser's
-    # `Origin` could ever equal — and, since `next.config.ts`'s
-    # `experimental.trustHostHeader` is `false`, no incoming `Host`/
-    # `X-Forwarded-Host` header changed that either, so no reverse proxy in
-    # front could have masked or fixed it. `#244` re-pinned the check to
-    # `ADMIN_BASE_URL` instead — already the validated, documented "origin a
-    # browser actually reaches" value below, needing no new trust — and
-    # deliberately did *not* switch to trusting `X-Forwarded-Host` (see that
-    # commit's own reasoning, echoing #163: this deployment has more than
-    # one internal caller of the gateway, so there is no single trusted hop
-    # to pin a header-based check to). A pulled `VSMS_IMAGE_TAG` built from
-    # a commit before #244 (2026-08-14) still has the bug; one built after
-    # does not — verified live against a source build of the same image in
-    # this PR.
+    # There is no login here (docs/design/console-pairing.md): no client id,
+    # no session secret, no issuer, no public origin. A browser makes a key it
+    # cannot export and pairs it (the gateway's `pair-console-key`, or a vaam
+    # admin phone); the server only carries sealed bytes. What it is
+    # configured with is where the gateway is, the gateway's two PUBLIC
+    # sealing keys (the browser pins them), and the composer's own key.
     environment:
       SMS_API_URL: http://sms-gateway:8080
-      SMS_AUTH_ISSUER: http://sms-gateway:8080
-      SMS_CONSOLE_PRIVATE_KEY_PATH: /secrets/console-client-key.pem
-      SMS_CONSOLE_SCOPE: sms:send sms:read job:read job:enqueue worker:read provider:read route:read dashboard:read
-      ADMIN_BASE_URL: http://localhost:${VSMS_DEMO_CONSOLE_PORT:-3200}
-      SMS_CONSOLE_OIDC_CLIENT_ID: sms-console
-      # 32+ chars, obviously a demo value — see @t3-oss/env-nextjs's own
-      # `.min(32)` check on this field (real entropy in production; this
-      # showcase has no real session to protect).
-      SMS_CONSOLE_SESSION_SECRET: vsms-demo-session-secret-DO-NOT-USE-IN-PRODUCTION-abcdefgh
+      # The composer's service key (registered by `register-composer`). The
+      # gateway's two public sealing keys are derived from the dev envelope
+      # keys in the entrypoint below; a browser pins them.
+      SMS_COMPOSER_KEY_FILE: /run/envelope/console-composer.pem
       MESSAGE_STREAM_POLL_MS: '2000'
       # Every entry below has a zod `.default()` in `@vsms/env`, and every
       # one must still be set explicitly HERE, because `SKIP_ENV_VALIDATION=1`
@@ -710,30 +691,30 @@ services:
       NEXT_PUBLIC_APP_NAME: vsms Admin Console (showcase)
       SKIP_ENV_VALIDATION: '1'
     volumes:
-      - vsms_demo_secrets:/secrets:ro
-    # SMS_CONSOLE_CLIENT_ID is deliberately absent from `environment:`
-    # above — `provision-client` generates it server-side and this file
-    # cannot know it in advance (see that service's own comment). This
-    # entrypoint override reads the value `--client-id-out` wrote to the
-    # shared volume and exports it into the *same* shell that then execs
-    # the image's own real entrypoint (`node frontends/apps/admin/server.js`, per
-    # `frontends/apps/admin/Dockerfile`) — the only place in this file that overrides an
-    # image's entrypoint, and only because Compose has no declarative way
-    # to feed one container's computed output into a sibling container's
-    # environment. `node:26-bookworm-slim` (this image's runtime base,
-    # unlike the distroless gateway/worker/fake-orange images) has a real
-    # `/bin/sh` to run this with — confirmed directly, not assumed.
+      - ./dev-keys/envelope-current.pem:/run/envelope/current.pem:ro
+      - ./dev-keys/envelope-next.pem:/run/envelope/next.pem:ro
+      - ./dev-keys/console-composer.pem:/run/envelope/console-composer.pem:ro
+    # The browser pins the gateway's two PUBLIC sealing keys, and Compose has no
+    # declarative way to derive them from the private PEMs this stack already
+    # mounts into the gateway, so the entrypoint does: Node's own `crypto`
+    # turns each PEM into the raw 32-byte public key as base64url
+    # (`sms-gateway server-keys` prints the same two values). Dev keys only
+    # (`just dev-keys`); a real deployment sets the two variables from
+    # `sms-gateway server-keys`. `node:26-bookworm-slim` (this image's runtime
+    # base, unlike the distroless gateway/worker/fake-orange images) has a real
+    # `/bin/sh` to run this with — confirmed directly, not assumed. The only
+    # place in this file that overrides an image's entrypoint.
     entrypoint: ['/bin/sh', '-c']
     command:
-      - export SMS_CONSOLE_CLIENT_ID="$(cat /secrets/console-client-id)" && exec node frontends/apps/admin/server.js
+      - |
+        pub() { node -e 'const c=require("node:crypto"),fs=require("node:fs");process.stdout.write(c.createPublicKey(c.createPrivateKey(fs.readFileSync(process.argv[1]))).export({format:"jwk"}).x)' "$$1"; }
+        export SMS_ENVELOPE_SERVER_KEY_CURRENT="$$(pub /run/envelope/current.pem)"
+        export SMS_ENVELOPE_SERVER_KEY_NEXT="$$(pub /run/envelope/next.pem)"
+        exec node frontends/apps/admin/server.js
     depends_on:
       sms-gateway:
         condition: service_healthy
-      provision-client:
-        condition: service_completed_successfully
-      secrets-fix-perms:
-        condition: service_completed_successfully
-      seed-console-client:
+      register-composer:
         condition: service_completed_successfully
       provision-user:
         condition: service_completed_successfully

@@ -1,5 +1,3 @@
-import "server-only";
-
 // `appClients.listForApp` / `appClients.provision` / `appClients.retire` /
 // `appClients.update` — #52's client-management half of the Apps screen.
 // Thin wraps over `@vsms/gateway`'s own `app-clients.ts`.

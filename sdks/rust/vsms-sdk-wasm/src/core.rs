@@ -27,7 +27,7 @@ use crate::contracts::contract_digest;
 pub const AUDIENCE: &str = "vsms";
 
 /// The only payload type the gateway seals, in both directions.
-const PAYLOAD_TYPE: &str = "application/json";
+pub(crate) const PAYLOAD_TYPE: &str = "application/json";
 
 /// Why a call could not be sealed. Nothing was sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,8 +86,8 @@ impl std::error::Error for OpenError {}
 /// `ServerKeys` holds them: with one pinned, a rotation is a flag day.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerKeys {
-    current: [u8; 32],
-    next: [u8; 32],
+    pub(crate) current: [u8; 32],
+    pub(crate) next: [u8; 32],
 }
 
 impl ServerKeys {
@@ -267,6 +267,37 @@ impl Sealer {
         query: Option<&str>,
         idempotency_key: Option<&str>,
     ) -> Result<Sealed, SealError> {
+        self.seal(
+            method,
+            template,
+            params,
+            body,
+            query,
+            &Bound {
+                idempotency_key,
+                if_match: None,
+            },
+        )
+        .await
+    }
+
+    /// [`Sealer::seal_call`] with every header a signature can bind: a write
+    /// under optimistic locking sends `If-Match`, and the gateway rebuilds the
+    /// binding from the header it receives, so the client must have bound that
+    /// same value.
+    ///
+    /// # Errors
+    ///
+    /// [`SealError::Unbound`] or [`SealError::Seal`].
+    pub async fn seal(
+        &self,
+        method: &str,
+        template: &str,
+        params: &[&str],
+        body: Option<&str>,
+        query: Option<&str>,
+        bound: &Bound<'_>,
+    ) -> Result<Sealed, SealError> {
         let digest = contract_digest(method, template)?;
         let path = concrete_path(template, params)?;
         let query = query.filter(|query| !query.is_empty());
@@ -274,8 +305,11 @@ impl Sealer {
             .query(query)
             .payload(body.unwrap_or("").as_bytes(), PAYLOAD_TYPE)
             .accept(PAYLOAD_TYPE);
-        if let Some(key) = idempotency_key {
+        if let Some(key) = bound.idempotency_key {
             call = call.idempotency_key(key);
+        }
+        if let Some(if_match) = bound.if_match {
+            call = call.if_match(if_match);
         }
         let sealed = self
             .envelope
@@ -301,6 +335,17 @@ impl Sealer {
             pending: Some(sealed.pending),
         })
     }
+}
+
+/// The request headers a signature binds besides the payload type: what the
+/// caller sends as `Idempotency-Key` and `If-Match`, bound as sent.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Bound<'a> {
+    /// The write's `Idempotency-Key`.
+    pub idempotency_key: Option<&'a str>,
+    /// The `If-Match` of a write under optimistic locking, a strong ETag
+    /// (`"3"`, quotes included).
+    pub if_match: Option<&'a str>,
 }
 
 /// `template` with each `{parameter}` replaced by the matching entry of

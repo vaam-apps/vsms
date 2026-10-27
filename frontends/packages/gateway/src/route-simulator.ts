@@ -1,5 +1,3 @@
-import "server-only";
-
 // `POST /$procs/simulateRoute` — #54's route simulator: "given this
 // recipient, class and app, which route wins and why," without sending
 // anything. Same temporary hand-written seam as `workers.ts`'s own
@@ -31,12 +29,9 @@ import "server-only";
 // single one of them. See that file's own module doc for the full
 // reasoning and for why it's safe to apply without enumerating fields here.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 export type SimulateOperatorCode = "mtn" | "orange" | "camtel" | "nexttel" | "unknown";
 export type SimulateMessageClass = "otp" | "transactional" | "notification" | "marketing";
@@ -103,10 +98,8 @@ export interface SimulateRouteResult {
   winner?: RouteWinnerInfo | undefined;
 }
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function procedureUrl(procedure: string): string {
-  return new URL(`/$procs/${procedure}`, env.SMS_API_URL).toString();
+  return new URL(`/$procs/${procedure}`, GATEWAY_ORIGIN).toString();
 }
 
 /**
@@ -119,25 +112,14 @@ export async function simulateRoute(input: SimulateRouteInput): Promise<Simulate
   const url = procedureUrl("simulateRoute");
   const body = JSON.stringify({ args: input });
 
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        authorization: `Bearer ${token}`,
-      },
-      body,
-      dispatcher: gatewayAgent(),
-    });
-  };
-
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+  const response = await gatewayFetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body,
+  });
 
   const parsed = await parseGatewayJson(response);
   if (!response.ok) {

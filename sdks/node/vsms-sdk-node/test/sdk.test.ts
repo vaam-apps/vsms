@@ -34,11 +34,13 @@ test("the package exports a client and its errors and no token machinery", () =>
   // factory and a `tokenStore` accessor. There is no compatibility mode: not
   // one of them may come back as an export.
   assert.deepEqual(Object.keys(sdk).sort(), [
+    "AnswerOpener",
     "DEFAULT_TIMEOUT_MS",
     "MAX_RESPONSE_BYTES",
     "SdkError",
     "VsmsClient",
     "parseServerKeysReport",
+    "routeOf",
   ]);
   assert.equal("privateKeyJwt" in sdk.VsmsClient, false);
   assert.equal("tokenStore" in sdk.VsmsClient.prototype, false);

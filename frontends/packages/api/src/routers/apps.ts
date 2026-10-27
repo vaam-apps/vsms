@@ -1,5 +1,3 @@
-import "server-only";
-
 // `apps.list` / `apps.get` / `apps.create` / `apps.update` / `apps.delete`
 // — #52's Apps screen. Thin wraps over `@vsms/gateway`'s own `apps.ts`.
 

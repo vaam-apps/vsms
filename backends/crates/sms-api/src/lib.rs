@@ -30,6 +30,7 @@ pub mod audit_log;
 pub mod auth;
 mod cache;
 pub mod client_keys;
+pub mod composition;
 pub mod consent;
 pub mod console_keys;
 pub mod dlr;

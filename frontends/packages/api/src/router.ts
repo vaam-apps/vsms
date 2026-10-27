@@ -1,9 +1,8 @@
-import "server-only";
-
 import { appClientsRouter } from "./routers/app-clients";
 import { appsRouter } from "./routers/apps";
 import { auditLogRouter } from "./routers/audit-log";
 import { composeRouter } from "./routers/compose";
+import { consoleKeyRouter } from "./routers/console-key";
 import { dashboardRouter } from "./routers/dashboard";
 import { jobsRouter } from "./routers/jobs";
 import { messagesRouter } from "./routers/messages";
@@ -20,6 +19,7 @@ import { router } from "./trpc";
 
 export const appRouter = router({
   compose: composeRouter,
+  consoleKey: consoleKeyRouter,
   dashboard: dashboardRouter,
   messages: messagesRouter,
   jobs: jobsRouter,

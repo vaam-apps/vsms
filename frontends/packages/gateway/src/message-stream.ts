@@ -1,5 +1,3 @@
-import "server-only";
-
 // The T10 stream hub — **polling, permanently**, per DECISIONS §3 of the
 // architecture plan (2026-08-08): no SSE, no `LISTEN`/`NOTIFY`, no Postgres
 // trigger, no Rust changes. `MessageStreamHub` is a process-wide singleton:
@@ -278,7 +276,7 @@ declare global {
 
 /**
  * The process-wide singleton. Cached on `globalThis` for the same reason
- * `dispatcher.ts` caches its `Agent` there — Next's dev-mode HMR
+ * the gateway transport (`bff/upstream-agent.ts`) is cached by its caller for the same reason — Next's dev-mode HMR
  * re-evaluates modules on every edit, and a module-level `const` would
  * silently spin up a second hub (a second `setInterval`, a second
  * upstream poller) per edit rather than reusing the one already running.

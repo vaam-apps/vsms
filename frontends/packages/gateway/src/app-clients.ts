@@ -1,5 +1,3 @@
-import "server-only";
-
 // `GET /app_clients`, `PATCH /app_clients/{id}`, and
 // `POST /$procs/provisionAppClient` — #52's own client-management half of
 // the Apps screen.
@@ -26,13 +24,10 @@ import "server-only";
 // - **List/get** are ordinary `GET`s, no different in shape from
 //   `providers.ts`/`apps.ts`.
 
-import { env } from "@vsms/env";
-import { fetch as undiciFetch } from "undici";
-import { gatewayAgent } from "./dispatcher";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
-import { invalidateUpstreamAccessToken, resolveUpstreamAccessToken } from "./request-credential";
 import { fetchWithEtag, updateWithIfMatch, type WithEtag } from "./rest";
+import { GATEWAY_ORIGIN, gatewayFetch } from "./upstream";
 
 /** The full row shape `GET /app_clients`/`GET /app_clients/{id}` can
  * return — transcribed from `schema.cstack`'s `AppClient` model. `scopes`
@@ -70,10 +65,8 @@ const LIST_FIELDS = [
 
 export type AppClientListItem = Pick<AppClientRecord, (typeof LIST_FIELDS)[number]>;
 
-type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
-
 function gatewayUrl(path: string, query: Record<string, string | number | undefined>): string {
-  const url = new URL(path, env.SMS_API_URL);
+  const url = new URL(path, GATEWAY_ORIGIN);
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
@@ -83,25 +76,15 @@ function gatewayUrl(path: string, query: Record<string, string | number | undefi
 async function authedRequest(
   url: string,
   init: { method: "GET" | "POST"; body?: string },
-): Promise<UndiciResponse> {
-  const attempt = async (): Promise<UndiciResponse> => {
-    const token = await resolveUpstreamAccessToken();
-    return undiciFetch(url, {
-      method: init.method,
-      headers: {
-        accept: "application/json",
-        ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
-        authorization: `Bearer ${token}`,
-      },
-      ...(init.body !== undefined ? { body: init.body } : {}),
-      dispatcher: gatewayAgent(),
-    });
-  };
-  let response = await attempt();
-  if (response.status === 401) {
-    invalidateUpstreamAccessToken();
-    response = await attempt();
-  }
+): Promise<Response> {
+  const response = await gatewayFetch(url, {
+    method: init.method,
+    headers: {
+      accept: "application/json",
+      ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+    },
+    ...(init.body !== undefined ? { body: init.body } : {}),
+  });
   return response;
 }
 
@@ -173,7 +156,7 @@ export async function provisionClient(
   label: string,
   scopes: string[],
 ): Promise<ProvisionClientResult> {
-  const url = new URL("/$procs/provisionAppClient", env.SMS_API_URL).toString();
+  const url = new URL("/$procs/provisionAppClient", GATEWAY_ORIGIN).toString();
   const response = await authedRequest(url, {
     method: "POST",
     body: JSON.stringify({ args: { appId, label, scopes } }),

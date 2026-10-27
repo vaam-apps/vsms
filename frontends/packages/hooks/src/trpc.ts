@@ -1,12 +1,11 @@
 "use client";
 
 import { createTRPCReact } from "@trpc/react-query";
-// Type-only, per this package's own contract (see index.ts's module doc
-// and the root architecture plan §2): a value import here would drag
-// `@vsms/api`'s server-only module graph — `node:fs` reads for cert/key
-// material included — into the browser bundle. `verbatimModuleSyntax`
+// Type-only: the React bindings need the router's *type* and nothing else.
+// The router itself is a value only `createLocalFetch` (`./local-fetch.ts`)
+// takes, handed in by the console. `verbatimModuleSyntax`
 // (tsconfig.base.json) makes accidentally dropping the `type` keyword a
-// compile error, not a silent bundle-size regression.
+// compile error.
 import type { AppRouter } from "@vsms/api";
 
 export const trpc = createTRPCReact<AppRouter>();

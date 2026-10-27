@@ -1,28 +1,22 @@
 "use client";
 
 // The Providers screen (#54): list and detail, plus editing — real, tested
-// code, and (as of #211) real writes against a real gateway for a
-// signed-in `owner`/`admin`/`operator`. This screen is #211's own named
-// proof case: it was the concrete example that exposed the console
-// forwarding its machine credential regardless of who was signed in.
+// code, and real writes against a real gateway for a paired `owner`/`admin`/
+// `operator`.
 //
-// # Reads and writes both work today, for a real signed-in human
+// # Reads and writes both work today, for the person whose key is paired
 //
 // `Provider.read`'s `@@allow` admits `auth().kind == "app"` (#54,
 // `schema.cstack`) alongside the human roles. `Provider.update` stays
 // `hasRole('owner') || hasRole('admin') || hasRole('operator')` only — no
-// `auth().kind == "app"` clause at all, so it was never reachable by this
-// console's own machine credential and needed a real human principal.
-// `frontends/packages/gateway/src/providers.ts` resolves its Bearer token via
-// `resolveUpstreamAccessToken()` (`./request-credential.ts`), which
-// forwards the signed-in operator's own session token for an ordinary
-// admin-console request — see that module's own doc for the mechanism.
-// Save genuinely succeeds for a signed-in `owner`/`admin`/`operator`
-// carrying the `provider:update` permission, and genuinely still 403s for
-// a role that lacks it (e.g. `auditor`) — Layer 2 real, not defense in
-// depth. The failure surfaces verbatim in the edit drawer's own error
-// banner below (`updateMutation.error.message`) — never swallowed, never
-// silently retried.
+// `auth().kind == "app"` clause at all, so it needs a real human principal: a
+// console key (`ConsoleKey` -> user principal). Every call in
+// `frontends/packages/gateway/src/providers.ts` is signed by that key in the
+// browser. Save genuinely succeeds for a paired `owner`/`admin`/`operator`
+// carrying the `provider:update` permission, and genuinely still 403s for a
+// role that lacks it (e.g. `auditor`) — Layer 2 real, not defense in depth. The
+// failure surfaces verbatim in the edit drawer's own error banner below
+// (`updateMutation.error.message`) — never swallowed, never silently retried.
 //
 // # Quick vs. more detail (console-redesign.md §3/D14)
 //
