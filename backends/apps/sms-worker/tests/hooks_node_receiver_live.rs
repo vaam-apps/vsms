@@ -15,6 +15,13 @@
 //! yield, an audience the row does not carry, a signing key the worker loaded
 //! differently from the one the receiver pinned).
 //!
+//! Both delivery modes (VS-8R) run through the same receiver code, which is
+//! configured for one: `sealed` (the SDK's `WebhookOpener`) or `hmac` (the
+//! original signature, `src/signature.ts`, written in a language that shares
+//! nothing with `sms-webhook`'s Rust). The `hmac` tests are
+//! `a_real_hmac_delivery_...`, `an_hmac_delivery_in_a_rotation_window_...` and
+//! `an_hmac_delivery_signed_with_another_secret_...`.
+//!
 //! # What's real here, and what isn't
 //!
 //! Real: a genuinely separate `sms-worker --roles hooks` OS process
@@ -168,7 +175,11 @@ async fn seed_endpoint(
         .create(CreateWebhookEndpointInput {
             appId: app_id.to_owned(),
             url: url.to_owned(),
-            audience: audience.to_owned(),
+            deliveryMode: schema::WebhookDeliveryMode::sealed,
+            audience: Some(audience.to_owned()),
+            secret: None,
+            prevSecret: None,
+            secretRotatedAt: None,
             eventTypes: " message.delivered ".to_owned(),
             maskRecipient: true,
             maxAttempts: 8,
@@ -177,6 +188,33 @@ async fn seed_endpoint(
         .run(&owner())
         .await
         .expect("seeding the webhook endpoint")
+}
+
+/// An `hmac` endpoint (VS-8R) pointed at the same receiver.
+async fn seed_hmac_endpoint(
+    db: &Cratestack,
+    app_id: &str,
+    url: &str,
+    secret: &str,
+    prev_secret: Option<&str>,
+) -> schema::WebhookEndpoint {
+    db.webhook_endpoint()
+        .create(CreateWebhookEndpointInput {
+            appId: app_id.to_owned(),
+            url: url.to_owned(),
+            deliveryMode: schema::WebhookDeliveryMode::hmac,
+            audience: None,
+            secret: Some(secret.to_owned()),
+            prevSecret: prev_secret.map(str::to_owned),
+            secretRotatedAt: prev_secret.map(|_| Utc::now()),
+            eventTypes: " message.delivered ".to_owned(),
+            maskRecipient: true,
+            maxAttempts: 8,
+            circuitOpenUntil: None,
+        })
+        .run(&owner())
+        .await
+        .expect("seeding the hmac webhook endpoint")
 }
 
 /// The exact shape #38's own subscriber produces (`webhooks.rs::message_payload`)
@@ -250,20 +288,17 @@ fn write_signing_key() -> std::path::PathBuf {
 struct NodeReceiver {
     child: Child,
     base_url: String,
-    audience: String,
+    /// What the receiver was configured as, for a failure message.
+    configured: String,
 }
 
 impl NodeReceiver {
-    /// `app_id` and `endpoint_id` are the app and the endpoint the receiver
-    /// believes it serves (`WEBHOOK_RECEIVER_APP_ID`,
+    /// A `sealed` receiver. `app_id` and `endpoint_id` are the app and the
+    /// endpoint the receiver believes it serves (`WEBHOOK_RECEIVER_APP_ID`,
     /// `WEBHOOK_RECEIVER_ENDPOINT_ID`): the receiver has no mode without them.
     async fn spawn(port: u16, audience: &str, app_id: &str, endpoint_id: &str) -> Self {
-        let package_dir = node_receiver_dir();
-        let mut command = Command::new("node");
+        let mut command = Self::command(port);
         command
-            .current_dir(&package_dir)
-            .arg("src/gate-receiver.ts")
-            .env("WEBHOOK_RECEIVER_PORT", port.to_string())
             .env(
                 "WEBHOOK_RECEIVER_SERVER_CURRENT",
                 public_key_b64u(&CURRENT_SEED),
@@ -271,9 +306,36 @@ impl NodeReceiver {
             .env("WEBHOOK_RECEIVER_SERVER_NEXT", public_key_b64u(&NEXT_SEED))
             .env("WEBHOOK_RECEIVER_AUDIENCE", audience)
             .env("WEBHOOK_RECEIVER_APP_ID", app_id)
-            .env("WEBHOOK_RECEIVER_ENDPOINT_ID", endpoint_id)
+            .env("WEBHOOK_RECEIVER_ENDPOINT_ID", endpoint_id);
+        Self::start(command, port, format!("sealed, audience {audience}")).await
+    }
+
+    /// An `hmac` receiver holding the endpoint's secret (and, inside a rotation
+    /// window, its previous one).
+    async fn spawn_hmac(port: u16, secret: &str, prev_secret: Option<&str>) -> Self {
+        let mut command = Self::command(port);
+        command
+            .env("WEBHOOK_RECEIVER_MODE", "hmac")
+            .env("WEBHOOK_RECEIVER_SECRET", secret);
+        if let Some(prev) = prev_secret {
+            command.env("WEBHOOK_RECEIVER_PREV_SECRET", prev);
+        }
+        Self::start(command, port, "hmac".to_owned()).await
+    }
+
+    fn command(port: u16) -> Command {
+        let mut command = Command::new("node");
+        command
+            .current_dir(node_receiver_dir())
+            .arg("src/gate-receiver.ts")
+            .env("WEBHOOK_RECEIVER_PORT", port.to_string())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        command
+    }
+
+    async fn start(mut command: Command, port: u16, configured: String) -> Self {
+        let package_dir = node_receiver_dir();
 
         let mut child = command.spawn().unwrap_or_else(|error| {
             panic!(
@@ -299,7 +361,7 @@ impl NodeReceiver {
         Self {
             child,
             base_url,
-            audience: audience.to_owned(),
+            configured,
         }
     }
 
@@ -402,9 +464,9 @@ async fn wait_for_receiver_result(receiver: &NodeReceiver, timeout: Duration) ->
         assert!(
             tokio::time::Instant::now() < deadline,
             "the node gate-receiver never recorded any processed result within {timeout:?} \
-             (audience configured: {}); either the hooks role never reached it, or the \
+             (receiver configured: {}); either the hooks role never reached it, or the \
              delivery was refused before reaching the point this test can observe",
-            receiver.audience
+            receiver.configured
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -632,6 +694,124 @@ async fn a_delivery_from_a_second_endpoint_of_the_receivers_own_app_is_refused()
         result["status"].as_str(),
         Some("rejected-unverified"),
         "the receiver must refuse another endpoint's delivery though the app and audience match: {result}"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let reread = reread_attempt(&db, &attempt.id).await;
+        if reread.state == schema::AttemptState::failed {
+            assert_eq!(reread.lastStatusCode, Some(401));
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the refused attempt never reached failed: {:?}",
+            reread.state
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// An `hmac` endpoint, end to end: a real `hooks` worker signs with the
+/// endpoint's secret, a real Node receiver (the original TypeScript verifier,
+/// which shares no code with `sms-webhook`) verifies it, dedupes on the signed
+/// `X-Sms-Event-Id` and reads the unchanged four-field body.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres, the built sms-worker binary, Node >=23.6, the \
+            built Node SDK and `pnpm install` in examples/node/webhook-receiver — see module docs"]
+async fn a_real_hmac_delivery_is_independently_verified_by_the_node_receiver() {
+    let _guard = TEST_MUTEX.lock().await;
+    let database_url = sms_test_support::database_url().await;
+    let db = db().await;
+
+    let secret = format!("whsec_gate_{}", unique_suffix());
+    let port = free_port();
+    let app_id = seed_app(&db).await;
+    let endpoint = seed_hmac_endpoint(&db, &app_id, &receiver_url(port), &secret, None).await;
+    let receiver = NodeReceiver::spawn_hmac(port, &secret, None).await;
+    let aggregate_id = format!("cmsg{}", unique_suffix());
+    let attempt = seed_attempt(&db, &endpoint.id, &aggregate_id).await;
+
+    let worker_id = format!("hooks-node-receiver-test-{}", unique_suffix());
+    let _worker = spawn_hooks_worker(&database_url, &worker_id);
+
+    let result = wait_for_receiver_result(&receiver, Duration::from_secs(20)).await;
+    assert_eq!(
+        result["status"].as_str(),
+        Some("accepted-new"),
+        "the node receiver's own verdict on the real hmac delivery: {result}"
+    );
+    assert_eq!(result["eventType"].as_str(), Some("message.delivered"));
+    assert_eq!(result["aggregateId"].as_str(), Some(aggregate_id.as_str()));
+
+    let reread = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(reread.state, schema::AttemptState::succeeded);
+    assert_eq!(reread.lastStatusCode, Some(202));
+}
+
+/// During a rotation's overlap window the worker signs with both secrets, so a
+/// receiver that has learnt only the previous one still verifies: the property
+/// that makes a rotation a non-event for a receiver.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres, the built sms-worker binary, Node >=23.6, the \
+            built Node SDK and `pnpm install` in examples/node/webhook-receiver — see module docs"]
+async fn an_hmac_delivery_in_a_rotation_window_verifies_at_a_receiver_holding_only_the_old_secret()
+{
+    let _guard = TEST_MUTEX.lock().await;
+    let database_url = sms_test_support::database_url().await;
+    let db = db().await;
+
+    let old = format!("whsec_old_{}", unique_suffix());
+    let new = format!("whsec_new_{}", unique_suffix());
+    let port = free_port();
+    let app_id = seed_app(&db).await;
+    let endpoint = seed_hmac_endpoint(&db, &app_id, &receiver_url(port), &new, Some(&old)).await;
+    let receiver = NodeReceiver::spawn_hmac(port, &old, None).await;
+    let attempt = seed_attempt(&db, &endpoint.id, &format!("cmsg{}", unique_suffix())).await;
+
+    let worker_id = format!("hooks-node-receiver-test-{}", unique_suffix());
+    let _worker = spawn_hooks_worker(&database_url, &worker_id);
+
+    let result = wait_for_receiver_result(&receiver, Duration::from_secs(20)).await;
+    assert_eq!(result["status"].as_str(), Some("accepted-new"), "{result}");
+    assert_eq!(
+        reread_attempt(&db, &attempt.id).await.state,
+        schema::AttemptState::succeeded
+    );
+}
+
+/// The deliberate break for the `hmac` mode, kept: the receiver holds a secret
+/// the endpoint does not, so the genuine delivery is refused by its independent
+/// verifier and the worker treats it as a failed attempt.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres, the built sms-worker binary, Node >=23.6, the \
+            built Node SDK and `pnpm install` in examples/node/webhook-receiver — see module docs"]
+async fn an_hmac_delivery_signed_with_another_secret_is_refused_by_the_node_receiver() {
+    let _guard = TEST_MUTEX.lock().await;
+    let database_url = sms_test_support::database_url().await;
+    let db = db().await;
+
+    let port = free_port();
+    let app_id = seed_app(&db).await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &receiver_url(port),
+        &format!("whsec_endpoint_{}", unique_suffix()),
+        None,
+    )
+    .await;
+    let receiver = NodeReceiver::spawn_hmac(port, "whsec_some_other_secret", None).await;
+    let attempt = seed_attempt(&db, &endpoint.id, &format!("cmsg{}", unique_suffix())).await;
+
+    let worker_id = format!("hooks-node-receiver-test-{}", unique_suffix());
+    let _worker = spawn_hooks_worker(&database_url, &worker_id);
+
+    let result = wait_for_receiver_result(&receiver, Duration::from_secs(20)).await;
+    assert_eq!(
+        result["status"].as_str(),
+        Some("rejected-unverified"),
+        "{result}"
     );
 
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);

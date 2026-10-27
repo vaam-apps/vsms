@@ -1,25 +1,26 @@
 import type { Server } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { WebhookEvent } from "@vaam-apps/vsms-node";
 import { SdkError } from "@vaam-apps/vsms-node";
 import express, { type Request, type Response } from "express";
 import { WebhookStore } from "./store.ts";
-import type { ProcessedResult } from "./types.ts";
+import type { Delivery, ProcessedResult, ReceivedEvent } from "./types.ts";
 import { AsyncWorkQueue } from "./work-queue.ts";
 
 /**
- * What the receiver needs from `@vaam-apps/vsms-node`'s `WebhookOpener`: the
- * body of one delivery in, the verified event out, or an `SdkError`. A seam so
- * the tests can hand the handler events (to drive an out-of-order arrival)
- * without sealing one; the shipped entry points pass the real opener.
+ * What the receiver needs from an opener: one delivery in, the verified event
+ * out, or an `SdkError`. There are two, one per delivery mode
+ * (`WebhookEndpoint.deliveryMode`): `sealedOpener` over
+ * `@vaam-apps/vsms-node`'s `WebhookOpener`, and `HmacOpener`. A seam so the
+ * tests can hand the handler events (to drive an out-of-order arrival) without
+ * sealing or signing one; the shipped entry points pass a real opener.
  */
 export interface EventOpener {
-  open(body: Uint8Array): Promise<WebhookEvent>;
+  open(delivery: Delivery): Promise<ReceivedEvent>;
 }
 
 export interface ReceiverOptions {
   port: number;
-  /** Opens a delivery: verifies it was sealed by the gateway, for this receiver. */
+  /** Opens a delivery: verifies it came from the gateway, for this receiver, in the mode the endpoint is set to. */
   opener: EventOpener;
   /**
    * Simulates the real work a receiver does after ack (write to a DB,
@@ -50,7 +51,7 @@ export interface Receiver {
  * subscribes to `provider.*` / `sender_id.*` / `balance.*` / `quota.*`
  * events would need an equivalent extractor per domain.
  */
-function extractAggregateId(event: WebhookEvent): string {
+function extractAggregateId(event: ReceivedEvent): string {
   const data = event.data as { messageId?: unknown } | null;
   const messageId = data?.messageId;
   if (typeof messageId === "string" && messageId.length > 0) return messageId;
@@ -69,25 +70,26 @@ export function createReceiver(options: ReceiverOptions): Receiver {
 
   app.post(
     "/webhooks/vsms",
-    // Raw bytes, not parsed JSON — the body is a COSE_Sign1 message
-    // (`application/cose`), and the opener verifies exactly the bytes vsms
-    // sent. Any content type: the type is not what is trusted.
+    // Raw bytes, not parsed JSON — a `sealed` body is a COSE_Sign1 message
+    // (`application/cose`) and an `hmac` one is JSON whose SHA-256 the signature
+    // covers, so either way the opener verifies exactly the bytes vsms sent.
+    // Any content type: the type is not what is trusted.
     express.raw({ type: () => true, limit: "1mb" }),
     async (req: Request, res: Response) => {
       const receivedAt = Date.now();
       const rawBody = req.body instanceof Buffer ? req.body : Buffer.alloc(0);
 
-      let event: WebhookEvent;
+      let event: ReceivedEvent;
       try {
-        event = await options.opener.open(rawBody);
+        event = await options.opener.open({ body: rawBody, headers: req.headers });
       } catch (err) {
         const kind = err instanceof SdkError ? err.kind : "backend";
         const detail = err instanceof Error ? err.message : String(err);
         if (kind === "unverified") {
           options.onProcessed?.({ status: "rejected-unverified", detail });
-          // 401: one answer for a forgery, a delivery addressed to another audience
-          // or made for another app, a replay and a stale timestamp, exactly as the
-          // opener gives it.
+          // 401: one answer for a forgery, and (sealed) a delivery addressed to
+          // another audience or made for another app, a replay and a stale
+          // timestamp, exactly as the opener gives it.
           // §8.5 treats anything outside {2xx, 410} as retryable, and a retry
           // is sealed afresh, so a delivery that failed on the clock heals.
           res.status(401).json({ error: "unverified" });
@@ -119,7 +121,7 @@ export function createReceiver(options: ReceiverOptions): Receiver {
             aggregateId,
             detail:
               duplicateReason === "event-id"
-                ? `duplicate event id "${event.id}" — already processed, skipped (a retry is a new sealed request carrying the same id)`
+                ? `duplicate event id "${event.id}" — already processed, skipped (a retry, sealed afresh or signed again, carries the same id)`
                 : `distinct event id but duplicate (aggregateId, eventType) tuple — skipped ` +
                   `(secondary, defensive check beyond the documented contract)`,
           });

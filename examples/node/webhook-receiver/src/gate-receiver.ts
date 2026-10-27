@@ -19,6 +19,12 @@
  * than scraping stdout. It is test-only scaffolding; it changes nothing about
  * `/webhooks/vsms`'s own verification.
  *
+ * It serves one delivery mode, `WEBHOOK_RECEIVER_MODE` (VS-8R): `sealed`, the
+ * default, opened with the Node SDK's `WebhookOpener`, or `hmac`, verified with
+ * `signature.ts`. For `hmac`, set `WEBHOOK_RECEIVER_MODE=hmac` and
+ * `WEBHOOK_RECEIVER_SECRET` (and `WEBHOOK_RECEIVER_PREV_SECRET` inside a
+ * rotation's overlap window) instead of the keys, audience and ids below.
+ *
  * ```bash
  * WEBHOOK_RECEIVER_PORT=4790 \
  * WEBHOOK_RECEIVER_SERVER_CURRENT=<base64url> \

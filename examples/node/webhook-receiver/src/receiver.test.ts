@@ -4,8 +4,10 @@ import type { AddressInfo } from "node:net";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { SdkError, type WebhookEvent, WebhookOpener } from "@vaam-apps/vsms-node";
-import { ROUTE } from "./config.ts";
+import { ROUTE, sealedOpener } from "./config.ts";
+import { HmacOpener } from "./hmac-opener.ts";
 import { createReceiver, type EventOpener } from "./server.ts";
+import { computeSignature } from "./signature.ts";
 import type { ProcessedResult } from "./types.ts";
 
 /**
@@ -62,18 +64,20 @@ async function started(opener: EventOpener) {
 
 function realOpener(
   overrides: { audience?: string; appId?: string; endpointId?: string; nowSeconds?: number } = {},
-): WebhookOpener {
-  return new WebhookOpener({
-    serverKeys: {
-      current: Buffer.from(VECTOR.publicKeyHex, "hex").toString("base64url"),
-      next: NEXT_KEY,
-    },
-    audience: overrides.audience ?? VECTOR.audience,
-    route: ROUTE,
-    appId: overrides.appId ?? VECTOR.appId,
-    endpointId: overrides.endpointId ?? VECTOR.endpointId,
-    nowSeconds: overrides.nowSeconds ?? VECTOR.iat,
-  });
+): EventOpener {
+  return sealedOpener(
+    new WebhookOpener({
+      serverKeys: {
+        current: Buffer.from(VECTOR.publicKeyHex, "hex").toString("base64url"),
+        next: NEXT_KEY,
+      },
+      audience: overrides.audience ?? VECTOR.audience,
+      route: ROUTE,
+      appId: overrides.appId ?? VECTOR.appId,
+      endpointId: overrides.endpointId ?? VECTOR.endpointId,
+      nowSeconds: overrides.nowSeconds ?? VECTOR.iat,
+    }),
+  );
 }
 
 describe("with the real WebhookOpener and a delivery the gateway's own sealer produced", () => {
@@ -208,5 +212,123 @@ describe("dedupe and ordering, on events the test chooses", () => {
       results.map((r) => r.status),
       ["rejected-malformed", "failed-backend"],
     );
+  });
+});
+
+describe("an hmac endpoint, with the original signature scheme", () => {
+  const SECRET = "whsec_current";
+  const PREV = "whsec_previous";
+  const EVENT_ID = "11111111-1111-4111-8111-111111111111";
+
+  function signed(
+    options: { secret?: string; type?: string; messageId?: string; eventId?: string } = {},
+  ) {
+    const body = Buffer.from(
+      JSON.stringify({
+        id: "attempt-1",
+        type: options.type ?? "message.delivered",
+        occurredAt: "2026-10-27T10:00:00Z",
+        data: { messageId: options.messageId ?? "msg-h1" },
+      }),
+      "utf8",
+    );
+    const eventId = options.eventId ?? EVENT_ID;
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = `v1=${computeSignature(options.secret ?? SECRET, timestamp, eventId, body)}`;
+    return { body, eventId, timestamp, signature };
+  }
+
+  async function startedHmac(opener: EventOpener = new HmacOpener(SECRET, PREV)) {
+    const results: ProcessedResult[] = [];
+    const receiver = createReceiver({
+      port: 0,
+      opener,
+      simulatedWorkMs: 1,
+      onProcessed: (r) => results.push(r),
+    });
+    const server = await receiver.listen();
+    const port = (server.address() as AddressInfo).port;
+    const post = async (
+      delivery: ReturnType<typeof signed>,
+      headers: Record<string, string> = {},
+    ): Promise<number> =>
+      (
+        await fetch(`http://127.0.0.1:${port}${ROUTE}`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-sms-event": "message.delivered",
+            "x-sms-event-id": delivery.eventId,
+            "x-sms-timestamp": delivery.timestamp,
+            "x-sms-signature": delivery.signature,
+            ...headers,
+          },
+          body: new Uint8Array(delivery.body),
+        })
+      ).status;
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 80));
+    after(() => server.close());
+    return { receiver, results, post, settle };
+  }
+
+  test("a delivery signed with the endpoint's secret is acked and processed", async () => {
+    const { results, post, settle } = await startedHmac();
+    assert.equal(await post(signed()), 202);
+    await settle();
+    assert.equal(results[0]?.status, "accepted-new");
+    assert.equal(results[0]?.eventType, "message.delivered");
+    assert.equal(results[0]?.aggregateId, "msg-h1");
+  });
+
+  test("a delivery signed with the previous secret verifies while the overlap window is open", async () => {
+    const { results, post, settle } = await startedHmac();
+    assert.equal(await post(signed({ secret: PREV })), 202);
+    await settle();
+    assert.equal(results[0]?.status, "accepted-new");
+  });
+
+  test("a receiver that has only the new secret refuses a delivery signed with the old one", async () => {
+    const { post } = await startedHmac(new HmacOpener(SECRET));
+    assert.equal(await post(signed({ secret: PREV })), 401);
+  });
+
+  test("a retry carries the same event id and is acked but not reprocessed", async () => {
+    const { results, post, settle } = await startedHmac();
+    assert.equal(await post(signed()), 202);
+    await settle();
+    assert.equal(await post(signed()), 202);
+    await settle();
+    assert.deepEqual(
+      results.map((r) => r.status),
+      ["accepted-new", "accepted-duplicate"],
+    );
+  });
+
+  test("a forged signature, a tampered body and a swapped event id are refused", async () => {
+    const { results, post } = await startedHmac();
+    const genuine = signed();
+    assert.equal(await post({ ...genuine, signature: `v1=${"0".repeat(64)}` }), 401);
+    assert.equal(await post({ ...genuine, body: Buffer.from(`${genuine.body}x`) }), 401);
+    assert.equal(await post(genuine, { "x-sms-event-id": "someone-elses-event" }), 401);
+    assert.deepEqual(
+      results.map((r) => r.status),
+      ["rejected-unverified", "rejected-unverified", "rejected-unverified"],
+    );
+  });
+
+  test("a missing signature header is refused", async () => {
+    const { post } = await startedHmac();
+    assert.equal(await post(signed(), { "x-sms-signature": "" }), 401);
+  });
+
+  test("a sealed delivery is not an hmac one", async () => {
+    const { post } = await startedHmac();
+    const sealed = Buffer.from(VECTOR.sealedHex, "hex");
+    const delivery = { body: sealed, eventId: EVENT_ID, timestamp: "1", signature: "" };
+    assert.equal(await post(delivery), 401);
+  });
+
+  test("an hmac receiver cannot be built without a secret", () => {
+    assert.throws(() => new HmacOpener(""), /needs the endpoint's secret/);
   });
 });
