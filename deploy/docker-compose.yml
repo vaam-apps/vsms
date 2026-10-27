@@ -287,7 +287,19 @@ services:
       AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER:
       AWS_SMS_ENDPOINT_URL:
       AWS_SMS_TIME_TO_LIVE_SECONDS:
+      # VS-8: a webhook delivery is a sealed request signed with the gateway's
+      # own envelope signing key, so the `hooks` role (in SMS_WORKER_ROLES by
+      # default) needs the CURRENT key and refuses to start without it. It is
+      # the very file the gateway signs its answers with, so a receiver pins
+      # one pair of public keys for both. Only this one: the `next` key signs
+      # nothing and the worker never reads it. A worker that does not run
+      # `hooks` reads no key at all.
+      SMS_ENVELOPE_SIGNING_KEY_FILE: /run/envelope/current.pem
       RUST_LOG: ${SMS_WORKER_LOG:-sms_worker=info,sms_worker_bin=info}
+    # Read-only, mode 0400 and owned by the worker's uid, like the gateway's
+    # copy of the same file (see the comment on its volumes).
+    volumes:
+      - ./secrets/envelope-current.pem:/run/envelope/current.pem:ro
     depends_on:
       postgres:
         condition: service_healthy

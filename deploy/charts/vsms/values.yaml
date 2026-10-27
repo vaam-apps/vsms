@@ -134,6 +134,17 @@ existingSecrets:
   awsSms:
     name: ""
     key: AWS_SMS_SECRET_ACCESS_KEY
+  # The gateway's two Ed25519 envelope signing keys (PKCS#8 PEM,
+  # `openssl genpkey -algorithm ed25519`), under the keys `envelope-current.pem`
+  # and `envelope-next.pem`. REQUIRED: the gateway refuses to start without
+  # both. The same `current` key SEALS every webhook delivery (VS-8): the worker
+  # mounts that one file alone (`persistence.envelope-keys` below, `subPath`)
+  # because its `hooks` role refuses to start without it, and never gets `next`,
+  # which signs nothing. Integrators and webhook receivers pin the public halves
+  # `sms-gateway server-keys` prints. Mounted as files, never read through an
+  # env var, like the composer key below.
+  envelopeKeys:
+    name: ""
   # Must contain a key literally named `console-composer.pem` - the composer's
   # Ed25519 service key (PKCS#8 PEM), registered with `sms-gateway
   # register-client --client-name console-composer` and never stored anywhere
@@ -444,6 +455,11 @@ controllers:
   gateway:
     type: deployment
     replicas: 1
+    pod:
+      # The envelope keys are mounted 0440 (persistence.envelope-keys): the
+      # distroless nonroot uid reads them through this group.
+      securityContext:
+        fsGroup: 65532
     containers:
       main:
         image:
@@ -504,6 +520,12 @@ controllers:
               secretKeyRef:
                 name: '{{ required "existingSecrets.hashPepper.name is required" .Values.existingSecrets.hashPepper.name }}'
                 key: '{{ .Values.existingSecrets.hashPepper.key }}'
+          # VS-3: the signed transport's two keys, mounted from
+          # existingSecrets.envelopeKeys (persistence.envelope-keys below).
+          SMS_ENVELOPE_SIGNING_KEY_FILE:
+            value: /run/envelope/envelope-current.pem
+          SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE:
+            value: /run/envelope/envelope-next.pem
           RUST_LOG:
             value: 'sms_gateway=info,sms_api=info,sms_provider_aws_sms=info,cratestack=info'
         probes:
@@ -597,6 +619,10 @@ controllers:
       # if a lease's Postgres round-trip is slow; kept modestly above the
       # binary's own grace constant rather than equal to it.
       terminationGracePeriodSeconds: 30
+      # The envelope key is mounted 0440 (persistence.envelope-keys): the
+      # distroless nonroot uid reads it through this group.
+      securityContext:
+        fsGroup: 65532
     containers:
       main:
         image:
@@ -674,6 +700,11 @@ controllers:
             value: '{{ .Values.awsSms.endpointUrl }}'
           AWS_SMS_TIME_TO_LIVE_SECONDS:
             value: '{{ .Values.awsSms.timeToLiveSeconds }}'
+          # VS-8: the `hooks` role seals every webhook delivery with the
+          # gateway's CURRENT envelope signing key and refuses to start
+          # without it. Only that one file is mounted into this pod.
+          SMS_ENVELOPE_SIGNING_KEY_FILE:
+            value: /run/envelope/current.pem
           RUST_LOG:
             value: 'sms_worker=info,sms_worker_bin=info'
         probes:
@@ -847,6 +878,24 @@ ingress:
 # the required key name.
 # ---------------------------------------------------------------------------
 persistence:
+  # The gateway's envelope keys. `defaultMode` 0440 with the pods' `fsGroup`
+  # (controllers.gateway.pod / controllers.worker.pod) lets the distroless
+  # nonroot uid (65532) read them and nobody else; the worker mounts the
+  # `current` key alone, at the path its flag names.
+  envelope-keys:
+    type: secret
+    name: '{{ required "existingSecrets.envelopeKeys.name is required" .Values.existingSecrets.envelopeKeys.name }}'
+    defaultMode: 288 # 0440 octal, spelled in decimal so no YAML parser reads it otherwise
+    advancedMounts:
+      gateway:
+        main:
+          - path: /run/envelope
+            readOnly: true
+      worker:
+        main:
+          - path: /run/envelope/current.pem
+            subPath: envelope-current.pem
+            readOnly: true
   console-composer-key:
     type: secret
     name: '{{ .Values.existingSecrets.consoleComposerKey.name }}'
