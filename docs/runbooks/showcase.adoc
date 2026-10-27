@@ -4,7 +4,7 @@
 
 One command, no Rust toolchain, no Node toolchain, no clone-and-build wait --
 `compose.demo.yaml` pulls every vsms image from GHCR and brings up a working
-console you can sign into, with a message reaching a terminal state. This is
+console you can open, with a message reaching a terminal state. This is
 *not* xref:local-development.adoc[Local development] (`just demo`, which builds
 from source and is what you want if you're changing this codebase) and it is
 *not* xref:deployment.adoc[Deployment] (`deploy/docker-compose.yml`, the
@@ -23,9 +23,18 @@ Docker Desktop's own emulation handles it transparently; expect the first
 
 == Bring it up
 
+The gateway signs every answer and the console pins its public keys, so the
+stack mounts three dev keys from the git-ignored `dev-keys/` (`just dev-keys`
+writes them, and keeps any that exist): the gateway's current and next sealing
+keys, and the console composer's service key. The composer's public half is
+registered by the `register-composer` service, which reads it from
+`VSMS_COMPOSER_PUBLIC_KEY`:
+
 [,bash]
 ----
-docker compose -f compose.demo.yaml --profile console --profile demo up -d
+just dev-keys
+VSMS_COMPOSER_PUBLIC_KEY="$(just dev-composer-public-key)" \
+  docker compose -f compose.demo.yaml --profile console --profile demo up -d
 ----
 
 This runs, in order, entirely sequentially -- Postgres, `migrate` (applies
@@ -36,8 +45,9 @@ approved `SenderId`, seeded by the dedicated `vsms-demo-seed` binary/image
 -- see ``backends/apps/vsms-demo-seed/src/main.rs``'s own doc for why this
 step exists only for this showcase and isn't compiled into the production
 `sms-gateway` image), `provision-client` (a real, HTTP-usable machine
-credential), and, because both profiles are present, `seed-console-client`
-and `provision-user` (the account you'll sign in with, `--profile console`)
+credential), and, because both profiles are present, `register-composer`
+(the console composer's service key) and `provision-user` (the account the
+console's key is paired to, `--profile console`)
 alongside `seed-demo-webhook` (a `WebhookEndpoint` pointed at `demo-app`,
 `--profile demo` -- deliberately a SEPARATE step from `seed-demo-app`,
 not a flag it always passes: R4 means a backend-only `up -d` with no
@@ -76,20 +86,26 @@ Everything with a `restart: unless-stopped` service should show `Up
 (healthy)` for `sms-gateway` within about 30 seconds; the one-shot seed/
 provision containers show `Exited (0)` -- that's success, not a crash.
 
-== Sign in
+== Open the console
 
-Find the generated password (never stored, printed once, to this
-container's own log -- the exact same design `sms-gateway provision-user`
-uses everywhere else):
+The console has no login (``docs/design/console-pairing.md``). Open
+http://localhost:3200/ (override with `VSMS_DEMO_CONSOLE_PORT` if that port
+collides with something else on your machine): it makes a key in your browser,
+which it cannot export, and shows a QR. There is no vaam admin phone in this
+stack, so pair it on the command line, with the `k` field of the QR (the page
+says where it is):
 
 [,bash]
 ----
-docker compose -f compose.demo.yaml logs provision-user
+docker compose -f compose.demo.yaml --profile console run --rm --no-deps \
+  register-composer pair-console-key \
+  --user demo@vsms.local --public-key "<the k field of the QR>"
 ----
 
-Then open http://localhost:3200/ (override with `VSMS_DEMO_CONSOLE_PORT`
-if that port collides with something else on your machine) and sign in with
-`demo@vsms.local` and the password from the log line above.
+The page notices within a couple of seconds and opens. The account is
+`demo@vsms.local` (`provision-user` made it; its generated password is not
+used by the console and is printed once to that container's log). The key
+lasts 30 days.
 
 NOTE: whatever `VSMS_IMAGE_TAG` you're pinned to may predate a console
 redesign in progress on `main` (a new app shell, dark-only theme). A
@@ -99,7 +115,7 @@ otherwise.
 
 == Send a message and watch it reach a terminal state
 
-From the signed-in console, open the Composer and send a message to
+From the console, open the Composer and send a message to
 `+237677123456` with any body and an approved sender id. It moves
 `accepted → queued → routed → submitted → delivered` within a few
 seconds on the Messages screen -- the same pipeline
@@ -162,8 +178,8 @@ docker compose -f compose.demo.yaml up -d
 ----
 
 Omitting both `--profile console` and `--profile demo` skips `admin`,
-`seed-console-client`, `provision-user`, the permission-fix step between
-them, `demo-app`, and `seed-demo-webhook` entirely -- not
+`register-composer`, `provision-user`, the permission-fix step,
+`demo-app`, and `seed-demo-webhook` entirely -- not
 started-then-idle, not present-but-misconfigured. That last pair matters
 specifically: `seed-demo-app` (unconditional) seeds only the `App` +
 `SenderId` `sendMessage` needs, never a `WebhookEndpoint` -- only

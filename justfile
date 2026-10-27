@@ -344,7 +344,7 @@ dev-composer-public-key: dev-keys
 
 # Bring up the full demo chain — scratch Postgres, both migrations, an OP
 # signing key, an `App`+`Provider`+`Route`+`SenderId`, a machine client,
-# the `sms-console` OIDC client, a human operator account, sms-fake-orange,
+# the console composer's service key, a human operator account, sms-fake-orange,
 # sms-gateway, sms-worker (dispatch,scheduler,jobs), and the admin console
 # — as containers, built from this checkout's own source
 # (`compose.dev.yaml`; see that file's own header for the full design and
@@ -386,7 +386,7 @@ dev-composer-public-key: dev-keys
 # so below.
 #
 # Eight loop entries, not every `--profile console` service: the
-# rest (`provision-client`, `provision-user`, `seed-console-client`,
+# rest (`provision-client`, `provision-user`, `register-composer`,
 # `seed-dispatch`, `seed-dispatch-aws`, `seed-signing-key`, plus
 # non-building services) either
 # share `sms-gateway`'s own explicit `image: vsms-dev/sms-gateway:local`

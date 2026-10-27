@@ -1,7 +1,7 @@
 # The from-source developer stack — everything `scripts/demo.sh` used to
 # assemble by hand (a scratch Postgres, both migrations, an OP signing key,
 # an `App` + `Provider` + `Route` + `SenderId`, a machine client, the
-# `sms-console` OIDC client, a human operator account, `sms-fake-orange`,
+# console composer's service key, a human operator account, `sms-fake-orange`,
 # `sms-gateway`, `sms-worker`, and the admin console), now as one
 # declarative compose file instead of a 300-line bash script driving
 # `docker run`/backgrounded host processes/`pnpm exec next dev` by hand.
