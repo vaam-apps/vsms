@@ -1,8 +1,19 @@
 // The browser half of a composer call: seal the proof (`./compose-proof.ts`) and
 // post it, with the message, to the console's composer route. See that file for
 // why the composer needs a proof at all.
+//
+// The message goes as the TEXT of its JSON, and the proof names the SHA-256 of
+// exactly that text. The server hashes the text it received, not a value it
+// parsed and wrote out again, so the two sides never disagree about what the
+// bytes were.
 
-import { COMPOSE_PROOF_PATH, COMPOSE_PROOF_QUERY } from "./compose-proof";
+import {
+  COMPOSE_PROOF_METHOD,
+  COMPOSE_PROOF_PATH,
+  type ComposeOperation,
+  composeProofBody,
+  sha256Hex,
+} from "./compose-proof";
 import { NoDeviceKeyError, type SealingRuntime } from "./sealing-fetch";
 
 /** A sealed read, as the composer route receives it. */
@@ -42,21 +53,22 @@ function refusal(status: number, code: string, message: string): Response {
  *  every other call reads (`{ code, message, details }`). */
 export function createComposeFetch(
   options: ComposeFetchOptions,
-): (operation: "preview" | "send", input: unknown) => Promise<Response> {
+): (operation: ComposeOperation, input: unknown) => Promise<Response> {
   const { runtime, endpoint, onUnauthenticated } = options;
   const send = options.send ?? ((input, init) => globalThis.fetch(input, init));
 
   return async (operation, input) => {
     let proof: SealedProof;
+    const inputText = JSON.stringify(input) ?? "";
     try {
       const sealing = await runtime();
-      const { route, params } = sealing.routeOf("GET", COMPOSE_PROOF_PATH);
+      const { route, params } = sealing.routeOf(COMPOSE_PROOF_METHOD, COMPOSE_PROOF_PATH);
       const sealed = await sealing.sealer.sealCall(
-        "GET",
+        COMPOSE_PROOF_METHOD,
         route,
         params,
+        composeProofBody(operation, await sha256Hex(inputText)),
         undefined,
-        COMPOSE_PROOF_QUERY,
         undefined,
         undefined,
       );
@@ -80,7 +92,7 @@ export function createComposeFetch(
         cache: "no-store",
         referrerPolicy: "no-referrer",
         headers: { "content-type": "application/json", accept: "application/json" },
-        body: JSON.stringify({ proof, input }),
+        body: JSON.stringify({ proof, input: inputText }),
       });
     } catch {
       return refusal(503, "unavailable", "The console could not be reached.");

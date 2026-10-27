@@ -209,17 +209,47 @@ The composer (`app/api/compose/[operation]`, `@vsms/gateway/bff` `composer.ts`) 
 service key of the console's own: an Ed25519 key registered as an `AppClient` key, read from
 `SMS_COMPOSER_KEY_FILE`, signing through the Node SDK, which believes only answers that verify. Q5.
 
-A standing key must not be spent on whoever reaches the route, and there is no session to ask. So the
-browser attaches a **proof**: one cheap sealed read (`GET /sender_ids?fields=id&limit=1`, admitted to
-any user) made with its own key. The route forwards those bytes and goes on only if the gateway
-answers `200`, which it does for a paired, unexpired, unrevoked console key and for nothing else. By
-test: a stranger's key, a replayed proof (the gateway refuses a nonce it has seen), a proof of some
-other read (the route is bound into the signature) and a malformed body each leave the service key
-unused.
+A standing key must not be spent on whoever reaches the route, and there is no session to ask. A
+sealed read answered `200` is no proof of who signed it: the gateway answers `200` to **every** signer
+its envelope accepts, an `AppClient`'s Ed25519 key of any app as well as a paired person's, and
+`SenderId` is readable by an app and a user alike. So the proof is a call to a procedure made for it,
+`authorizeComposition` (`schemas/vsms.cstack`, `backends/crates/sms-api/src/composition.rs`):
 
-The limit, stated plainly: the proof is not bound to the message. It shows that a paired operator's
-browser is making the call, not what they typed. Anyone who can make the browser sign can already sign
-anything, so binding it would add ceremony and no protection.
+```mermaid
+sequenceDiagram
+    participant B as Browser (paired key)
+    participant C as Console server
+    participant G as Gateway
+    participant S as sms-gateway SDK (service key)
+    B->>B: SHA-256 of the exact text of the input
+    B->>C: proof = sealed authorizeComposition(operation, hash) + the input text
+    C->>C: SHA-256 of the text it received
+    C->>G: the proof's bytes, as sealed
+    G->>G: user + role (owner, admin, operator), then sms:send
+    G-->>C: sealed { userId, role, operation, inputSha256 }, or a sealed 403
+    C->>C: opens under the pinned keys, against those bytes
+    C->>C: names a person, this operation, this hash?
+    C->>S: sendMessage / previewMessage
+```
+
+The gateway refuses (a sealed `403`) anything that is not a signed-in person holding `owner`,
+`admin` or `operator` (the roles `sendMessage` itself admits for a human) **and** the `sms:send`
+permission, so an app client, an auditor or a role that lost the permission cannot spend the key.
+The console's server opens the answer with the Node SDK's `AnswerOpener` (the wasm module's
+`Opener`, cratestack's own envelope: the two pinned server keys, against the bytes it forwarded and
+the status it received), so a `200` from something that is not the gateway, or an answer meant for
+another request, is a `502` and the key stays unused. Only an opened answer that names a person, the
+route's operation and the hash of the text received lets the service key sign.
+
+By test (`frontends/apps/admin/lib/composer.test.ts`, with the real gateway's rule held by
+`backends/crates/sms-api/tests/authorize_composition_live_postgres.rs`): an app client's key, an
+auditor, a support user, a developer, a role without `sms:send`, a stranger's key, a replayed proof
+(the gateway refuses a nonce it has seen), a proof of some other call (the route is bound into the
+signature), a proof made for another message or for `preview` presented to `send`, an answer that is
+not the gateway's and a malformed body each leave the service key unused.
+
+The proof is bound to the message and used once. What it still does not show is that what the
+operator typed was wise: it shows a paired operator who may send is making this call, with these bytes.
 
 R4 holds: the gateway never calls the console, and the service key is useful without it (any
 deployment can send with the SDK and the same `register-client` flow).
@@ -272,16 +302,16 @@ chosen so it can say `script-src 'self'` without `unsafe-eval` beyond WebAssembl
 
 ## Configuration
 
-| Variable                          | Where  | What                                                                     |
-| --------------------------------- | ------ | ------------------------------------------------------------------------ |
-| `SMS_API_URL`                     | server | the gateway; with `https:`, all three certificate paths below            |
-| `SMS_API_CLIENT_CERT_PATH`        | server | mTLS client certificate from the console's process to the gateway        |
-| `SMS_API_CLIENT_KEY_PATH`         | server | its key                                                                  |
-| `SMS_API_CA_PATH`                 | server | the CA that signed the gateway's certificate                             |
-| `SMS_ENVELOPE_SERVER_KEY_CURRENT` | server | the gateway's current sealing public key (`sms-gateway server-keys`)     |
-| `SMS_ENVELOPE_SERVER_KEY_NEXT`    | server | the next one; must differ                                                |
-| `SMS_COMPOSER_KEY_FILE`           | server | Ed25519 PKCS#8 PEM of the composer's service key (optional)              |
-| `MESSAGE_STREAM_POLL_MS`          | server | the Messages screen's poll window; the other tuning values are unchanged |
+| Variable                          | Where  | What                                                                      |
+| --------------------------------- | ------ | ------------------------------------------------------------------------- |
+| `SMS_API_URL`                     | server | the gateway's origin, no path; with `https:`, all three certificate paths |
+| `SMS_API_CLIENT_CERT_PATH`        | server | mTLS client certificate from the console's process to the gateway         |
+| `SMS_API_CLIENT_KEY_PATH`         | server | its key                                                                   |
+| `SMS_API_CA_PATH`                 | server | the CA that signed the gateway's certificate                              |
+| `SMS_ENVELOPE_SERVER_KEY_CURRENT` | server | the gateway's current sealing public key (`sms-gateway server-keys`)      |
+| `SMS_ENVELOPE_SERVER_KEY_NEXT`    | server | the next one; must differ                                                 |
+| `SMS_COMPOSER_KEY_FILE`           | server | Ed25519 PKCS#8 PEM of the composer's service key (optional)               |
+| `MESSAGE_STREAM_POLL_MS`          | server | the Messages screen's poll window; the other tuning values are unchanged  |
 
 The server keys reach the browser as props from the root layout, which opts out of static rendering
 (`connection()`), so a build never bakes one environment's keys into an image promoted to another.
@@ -304,7 +334,7 @@ line, `backends/crates/sms-api/src/pair_scope.md`).
   module with the server half compiled in): the key is non-extractable and stays so through IndexedDB
   (`fake-indexeddb`); the QR verifies under its tag; the thumbprint is RFC 9679's; every outbound call
   is sealed and credential-free; an unsealed, forged, mismatched or unpinned answer is refused; the
-  composer is gated by the proof; the status machine, the pairing flow and the clock check.
+  composer is gated by the proof (the gateway's named person, this operation, this message); the status machine, the pairing flow and the clock check.
 - **Gateway package** (`@vsms/gateway`): the pass-through's rules, the upstream transport against a real
   local HTTP server (a `GET` with a body, a redirect not followed, the size cap, the timeout), and the
   sealing `fetch`'s own logic.

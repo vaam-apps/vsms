@@ -13,23 +13,40 @@ import "server-only";
 // it through the Node SDK, which seals every call and believes only an answer
 // that verifies under the gateway's pinned keys.
 //
-// **A standing key must not be spent on whoever reaches the route.** There is no
-// session here to ask, so the caller proves itself with the only thing it has: a
-// request its own key signed. The browser seals one cheap read
-// (`./compose-proof.ts`) and posts it with the message; this handler forwards
-// those bytes to the gateway and goes on only if the gateway answers 200, which
-// it does for a paired, unexpired, unrevoked console key and for nothing else.
-// The proof is single-use (the gateway refuses a nonce it has seen) and at most
-// five minutes old. It is not bound to the message, which is a deliberate
-// limit: it proves a paired operator is at the keyboard, not what they typed,
-// and anyone who can make the browser sign can already make it sign anything.
+// **A standing key must not be spent on whoever reaches the route, and "the
+// gateway answered 200" does not say who signed**: the gateway answers 200 to
+// every signer its envelope accepts, an app client's key as well as a paired
+// person's. So the proof is a call to `authorizeComposition`
+// (`../compose-proof.ts`), a procedure the gateway answers only for a signed-in
+// person holding `sms:send`, and this handler:
+//
+//   1. hashes the text of the input it received, and requires the operation of
+//      the route;
+//   2. forwards the proof's sealed bytes to the gateway;
+//   3. opens the sealed answer under the gateway's two pinned keys, against
+//      those very bytes (`AnswerOpener`), so that nothing but the gateway can
+//      have said it, and about nothing but this request;
+//   4. goes on only if the opened answer names a person, that operation and that
+//      hash.
+//
+// Only then does the service key sign. A proof is for one message: it cannot
+// send another (the hash differs), and it cannot be sent twice (the gateway
+// refuses a nonce it has seen, and the answer to a second presentation is the
+// unsigned 401). It is at most five minutes old. What it still does not prove
+// is that what the operator typed was wise.
 //
 // R4 holds: the gateway never calls this. Delete the console and the service
 // key does nothing; a deployment that wants to send without a console uses the
 // SDK with the same `register-client` flow.
 
 import type { SealedProof } from "../compose-fetch";
-import { COMPOSE_PROOF_TARGET } from "../compose-proof";
+import {
+  COMPOSE_PROOF_METHOD,
+  COMPOSE_PROOF_PATH,
+  type ComposeOperation,
+  parseAuthorization,
+  sha256Hex,
+} from "../compose-proof";
 import { MAX_REQUEST_BYTES, pick, readBounded, type Upstream } from "./pass-through";
 
 /** The part of `@vaam-apps/vsms-node`'s `VsmsClient` the composer uses. */
@@ -45,6 +62,21 @@ interface SdkFailure {
   httpStatus?: number | undefined;
   gatewayCode?: string | undefined;
   fieldErrors?: Record<string, string[]> | undefined;
+}
+
+/** The part of `@vaam-apps/vsms-node`'s `AnswerOpener` the composer uses: it
+ *  rejects with an `SdkError` unless the answer is the gateway's, to exactly
+ *  this request. */
+export interface ComposerOpener {
+  open(
+    request: {
+      method: string;
+      target: string;
+      body: Uint8Array;
+      headers?: [string, string][];
+    },
+    answer: { status: number; headers: [string, string][]; body: Uint8Array },
+  ): Promise<string>;
 }
 
 function isSdkFailure(error: unknown): error is SdkFailure {
@@ -71,6 +103,12 @@ function json(status: number, body: unknown): Response {
   });
 }
 
+/** An HTTP field name (RFC 9110 token): what `new Headers` accepts. */
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+/** A field value that cannot smuggle a line: no control character but tab. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: that is the point
+const HEADER_VALUE = /^[^\u0000-\u0008\u000a-\u001f\u007f]*$/;
+
 function parseProof(value: unknown): { headers: [string, string][]; body: Uint8Array } | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   const { headers, body } = value as Partial<SealedProof>;
@@ -81,7 +119,9 @@ function parseProof(value: unknown): { headers: [string, string][]; body: Uint8A
       !Array.isArray(pair) ||
       pair.length !== 2 ||
       typeof pair[0] !== "string" ||
-      typeof pair[1] !== "string"
+      typeof pair[1] !== "string" ||
+      !HEADER_NAME.test(pair[0]) ||
+      !HEADER_VALUE.test(pair[1])
     ) {
       return undefined;
     }
@@ -97,16 +137,90 @@ export interface ComposerOptions {
   upstream: Upstream;
   /** The service key's client, built when first needed (a build has no key). */
   client: () => ComposerClient;
+  /** Opens the gateway's answer to the proof under its pinned keys. */
+  opener: () => ComposerOpener;
+}
+
+/** `undefined` when the gateway has vouched for a person who may `operation`
+ *  this very input, and otherwise the response that refuses. */
+async function verdictOf(
+  options: ComposerOptions,
+  operation: ComposeOperation,
+  inputSha256: string,
+  proof: { headers: [string, string][]; body: Uint8Array },
+): Promise<Response | undefined> {
+  const forwarded = pick(new Headers(proof.headers), PROOF_HEADERS);
+  let answer: Awaited<ReturnType<Upstream>>;
+  try {
+    answer = await options.upstream({
+      method: COMPOSE_PROOF_METHOD,
+      target: COMPOSE_PROOF_PATH,
+      headers: forwarded,
+      body: proof.body,
+    });
+  } catch {
+    return json(503, { code: "unavailable", message: "The gateway could not be reached." });
+  }
+
+  let text: string;
+  try {
+    text = await options
+      .opener()
+      .open(
+        { method: COMPOSE_PROOF_METHOD, target: COMPOSE_PROOF_PATH, body: proof.body, headers: [] },
+        { status: answer.status, headers: [...answer.headers.entries()], body: answer.body },
+      );
+  } catch (error) {
+    if (isSdkFailure(error) && error.kind === "unsigned" && error.httpStatus === 401) {
+      // The gateway's coarse refusal of a signature it does not accept: this
+      // browser's key is not a paired one, or the proof was spent or stale.
+      return json(401, {
+        code: "unauthenticated",
+        message: "This console is not paired with a vaam admin phone.",
+      });
+    }
+    console.error(
+      `[@vsms/gateway] the gateway's answer to a composer proof was not believed (${
+        isSdkFailure(error) ? error.kind : "unknown"
+      })`,
+    );
+    return json(502, {
+      code: "unverified",
+      message: "The answer from the gateway could not be verified, so nothing was sent.",
+    });
+  }
+
+  if (answer.status === 403) {
+    return json(403, {
+      code: "forbidden",
+      message: "This person is not allowed to send messages from the console.",
+    });
+  }
+  const authorization = answer.status === 200 ? parseAuthorization(text) : undefined;
+  if (authorization === undefined) {
+    return json(502, {
+      code: "unverified",
+      message: "The gateway did not name the person asking, so nothing was sent.",
+    });
+  }
+  if (authorization.operation !== operation || authorization.inputSha256 !== inputSha256) {
+    return json(403, {
+      code: "forbidden",
+      message: "This proof was not made for this message.",
+    });
+  }
+  return undefined;
 }
 
 /** The handler of `POST <mount>/<preview|send>`. */
 export function createComposer(options: ComposerOptions): (request: Request) => Promise<Response> {
   return async (request) => {
     if (request.method !== "POST") return json(405, { code: "refused", message: "POST only." });
-    const operation = new URL(request.url).pathname.split("/").pop();
-    if (operation !== "preview" && operation !== "send") {
+    const named = new URL(request.url).pathname.split("/").pop();
+    if (named !== "preview" && named !== "send") {
       return json(404, { code: "refused", message: "Not a composer route." });
     }
+    const operation: ComposeOperation = named;
     const raw = await readBounded(request, 2 * MAX_REQUEST_BYTES);
     if (raw === undefined) return json(413, { code: "refused", message: "Too large." });
     let parsed: { proof?: unknown; input?: unknown };
@@ -116,35 +230,33 @@ export function createComposer(options: ComposerOptions): (request: Request) => 
       return json(400, { code: "invalid_argument", message: "The body is not JSON." });
     }
     const proof = parseProof(parsed.proof);
-    if (proof === undefined || typeof parsed.input !== "object" || parsed.input === null) {
+    if (proof === undefined || typeof parsed.input !== "string" || parsed.input === "") {
       return json(400, { code: "invalid_argument", message: "A proof and an input are required." });
     }
-
-    // Who is asking? Whoever the gateway says: it answers 200 to a sealed read
-    // from a paired console key, and with its unsigned 401 to anything else.
+    // The text that was hashed is the text that is sent: the proof is for these
+    // bytes and no others.
+    let input: unknown;
     try {
-      const verdict = await options.upstream({
-        method: "GET",
-        target: COMPOSE_PROOF_TARGET,
-        headers: pick(new Headers(proof.headers), PROOF_HEADERS),
-        body: proof.body,
-      });
-      if (verdict.status !== 200) {
-        return json(401, {
-          code: "unauthenticated",
-          message: "This console is not paired with a vaam admin phone.",
-        });
-      }
+      input = JSON.parse(parsed.input);
     } catch {
-      return json(503, { code: "unavailable", message: "The gateway could not be reached." });
+      return json(400, { code: "invalid_argument", message: "The input is not JSON." });
     }
+    if (typeof input !== "object" || input === null || Array.isArray(input)) {
+      return json(400, { code: "invalid_argument", message: "The input is not an object." });
+    }
+    const inputSha256 = await sha256Hex(parsed.input);
+
+    // Who is asking? Whoever the gateway says, in a sealed answer that names
+    // this operation and this input.
+    const refusal = await verdictOf(options, operation, inputSha256, proof);
+    if (refusal !== undefined) return refusal;
 
     try {
       const client = options.client();
       if (operation === "preview") {
-        return json(200, await client.previewMessage(parsed.input as never));
+        return json(200, await client.previewMessage(input as never));
       }
-      const { result } = await client.sendMessage(parsed.input as never);
+      const { result } = await client.sendMessage(input as never);
       return json(200, result);
     } catch (error) {
       if (isSdkFailure(error) && error.kind === "remote" && error.httpStatus !== undefined) {

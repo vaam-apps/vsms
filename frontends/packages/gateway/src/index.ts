@@ -64,7 +64,15 @@ export type {
 export { previewMessage, sendMessage } from "./client";
 export type { ComposeFetchOptions, SealedProof } from "./compose-fetch";
 export { createComposeFetch } from "./compose-fetch";
-export { COMPOSE_PROOF_PATH, COMPOSE_PROOF_QUERY, COMPOSE_PROOF_TARGET } from "./compose-proof";
+export type { ComposeOperation, CompositionAuthorization } from "./compose-proof";
+export {
+  COMPOSE_OPERATIONS,
+  COMPOSE_PROOF_METHOD,
+  COMPOSE_PROOF_PATH,
+  composeProofBody,
+  parseAuthorization,
+  sha256Hex,
+} from "./compose-proof";
 export type { ConsoleKeyRecord } from "./console-keys";
 export { getConsoleKeyByThumbprint, probeKey, revokeConsoleKey } from "./console-keys";
 export type {

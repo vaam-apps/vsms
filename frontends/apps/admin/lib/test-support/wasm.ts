@@ -8,6 +8,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type { WasmSealer } from "@vsms/gateway";
 import type { SealerModule } from "../sealer";
 
 export interface WasmOpenedRequest {
@@ -31,7 +32,31 @@ export interface WasmResponder {
   ): Promise<WasmOpenedRequest>;
 }
 
+export interface WasmOpener {
+  openAnswer(
+    method: string,
+    path: string,
+    query: string | undefined,
+    request: Uint8Array,
+    requestHeaders: [string, string][],
+    status: number,
+    headers: [string, string][],
+    body: Uint8Array,
+  ): Promise<string>;
+}
+
 export interface TestModule extends SealerModule {
+  /** An app client's identity: Ed25519, signing with a seed. */
+  Sealer: SealerModule["Sealer"] & {
+    fromSeed(
+      seed: string,
+      serverCurrent: string,
+      serverNext: string,
+    ): WasmSealer & { readonly publicKey: string };
+  };
+  Opener: {
+    forServerKeys(serverCurrent: string, serverNext: string): WasmOpener;
+  };
   Responder: {
     new (serverSeed: string, clientKeys: string[], audience: string): WasmResponder;
     serverPublicKey(seed: string): string;

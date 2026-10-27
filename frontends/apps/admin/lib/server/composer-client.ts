@@ -7,7 +7,7 @@ import "server-only";
 // screen), signing every call through the Node SDK and believing only an answer
 // that verifies under the gateway's two pinned keys.
 
-import { VsmsClient } from "@vaam-apps/vsms-node";
+import { AnswerOpener, VsmsClient } from "@vaam-apps/vsms-node";
 import { env } from "@vsms/env";
 import { agentFor } from "@vsms/gateway/bff";
 import { gatewayAddress } from "./gateway-address";
@@ -33,4 +33,19 @@ export function composerClient(): VsmsClient {
     });
   }
   return client;
+}
+
+let opener: AnswerOpener | undefined;
+
+/** Opens the gateway's answer to a browser's proof under the same two pinned
+ *  keys the service key's client believes, so the composer takes the gateway's
+ *  word and nobody else's for who is asking. */
+export function composerOpener(): AnswerOpener {
+  opener ??= new AnswerOpener({
+    serverKeys: {
+      current: env.SMS_ENVELOPE_SERVER_KEY_CURRENT,
+      next: env.SMS_ENVELOPE_SERVER_KEY_NEXT,
+    },
+  });
+  return opener;
 }

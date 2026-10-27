@@ -1,29 +1,34 @@
-// The composer's route: the console's service key is spent only for a browser
-// the gateway has just vouched for. The route code under test is the real
-// `createComposer`; the gateway behind it is a real sealed verifier; the browser
-// side is the real `createComposeFetch` signing with a real WebCrypto key.
+// The composer's route: the console's service key is spent only for a person
+// the gateway has just named, in an answer that is its own, for this very
+// message. The route code under test is the real `createComposer`; the gateway
+// behind it is a real sealed verifier that decides `authorizeComposition` the
+// way the real one does; the browser side is the real `createComposeFetch`
+// signing with a real WebCrypto key; the answer is opened by the real opener
+// (cratestack's envelope, through the same wasm module the SDK loads).
 
-import { createComposeFetch, type SealedProof } from "@vsms/gateway";
-import { type ComposerClient, createComposer, type Upstream } from "@vsms/gateway/bff";
+import { randomBytes } from "node:crypto";
+import {
+  type ComposeOperation,
+  type CompositionAuthorization,
+  composeProofBody,
+  createComposeFetch,
+  type SealedProof,
+  sha256Hex,
+} from "@vsms/gateway";
+import { type ComposerClient, createComposer } from "@vsms/gateway/bff";
 import { describe, expect, it, vi } from "vitest";
-import { type FakeGateway, startFakeGateway } from "./test-support/fake-gateway";
+import { base64Url } from "./pairing";
+import {
+  authorizeComposition,
+  composeOpener,
+  composeUpstream,
+  type FakeGateway,
+  type Principal,
+  type Signer,
+  startFakeGateway,
+} from "./test-support/fake-gateway";
 
-/** The route's upstream, standing in for the real mTLS call: the gateway's
- *  verifier decides, exactly as the real gateway does, and says 200 or the
- *  coarse unsigned 401. */
-function upstreamOf(gateway: FakeGateway, seen: { target: string }[] = []): Upstream {
-  return async ({ method, target, headers, body }) => {
-    seen.push({ target });
-    const [path = "", query] = target.split("?");
-    try {
-      const opened = await gateway.responder.openRequest(method, path, query, headers, body);
-      const sealed = await opened.sealResponse(200, '{"items":[]}');
-      return { status: 200, headers: new Headers(sealed.headers), body: sealed.body };
-    } catch {
-      return { status: 401, headers: new Headers(), body: new TextEncoder().encode("unsigned") };
-    }
-  };
-}
+const ADMIN: Principal = { kind: "user", id: "u1", role: "admin", perms: ["sms:send", "sms:read"] };
 
 function clientSpy(): ComposerClient & {
   previewMessage: ReturnType<typeof vi.fn>;
@@ -35,11 +40,24 @@ function clientSpy(): ComposerClient & {
   };
 }
 
-async function harness(options: { registered?: boolean } = {}) {
-  const gateway = await startFakeGateway(options);
+/** The browser's key stands as `principal` at the gateway; `extra` are other
+ *  keys the gateway knows (an app client's, say). No principal: unpaired. */
+async function harness(options: { browser?: Principal | null; extra?: Signer[] } = {}) {
+  const gateway = await startFakeGateway();
+  const browser = options.browser === undefined ? ADMIN : options.browser;
+  const signers: Signer[] = [
+    ...(browser === null
+      ? []
+      : [{ publicKey: base64Url(gateway.key.publicKey), principal: browser }]),
+    ...(options.extra ?? []),
+  ];
+  const upstream = composeUpstream(gateway, signers);
   const client = clientSpy();
-  const seen: { target: string }[] = [];
-  const composer = createComposer({ upstream: upstreamOf(gateway, seen), client: () => client });
+  const composer = createComposer({
+    upstream,
+    client: () => client,
+    opener: () => composeOpener(gateway),
+  });
   const unauthenticated = vi.fn();
   const send = (async (url: string, init: RequestInit) =>
     composer(new Request(`http://console.test${url}`, init))) as unknown as typeof fetch;
@@ -49,24 +67,32 @@ async function harness(options: { registered?: boolean } = {}) {
     send,
     onUnauthenticated: unauthenticated,
   });
-  return { gateway, client, seen, composer, compose, unauthenticated };
+  return { gateway, client, upstream, composer, compose, unauthenticated };
 }
 
-async function proofFor(gateway: FakeGateway, path: string, query?: string): Promise<SealedProof> {
-  const { route, params } = gateway.runtime.routeOf("GET", path);
-  const sealed = await gateway.runtime.sealer.sealCall(
-    "GET",
+const MESSAGE = { to: "+237677123456", body: "hello" };
+
+/** A proof sealed by `sealer` for `operation` and the hash of `inputText`. */
+async function proofFrom(
+  gateway: FakeGateway,
+  sealer: {
+    sealCall: FakeGateway["runtime"]["sealer"]["sealCall"];
+  },
+  operation: string,
+  inputText: string,
+  body?: string,
+): Promise<SealedProof> {
+  const { route, params } = gateway.runtime.routeOf("POST", "/$procs/authorizeComposition");
+  const sealed = await sealer.sealCall(
+    "POST",
     route,
     params,
+    body ?? composeProofBody(operation as ComposeOperation, await sha256Hex(inputText)),
     undefined,
-    query,
     undefined,
     undefined,
   );
-  return {
-    headers: sealed.headers,
-    body: Buffer.from(sealed.body).toString("base64"),
-  };
+  return { headers: sealed.headers, body: Buffer.from(sealed.body).toString("base64") };
 }
 
 function post(composer: (r: Request) => Promise<Response>, operation: string, body: unknown) {
@@ -78,30 +104,86 @@ function post(composer: (r: Request) => Promise<Response>, operation: string, bo
   );
 }
 
-describe("the composer spends the service key only for a paired browser", () => {
-  it("previews and sends for a browser whose key the gateway accepts", async () => {
+/** An app client's Ed25519 key, registered at the gateway with `scopes`. */
+function appClient(gateway: FakeGateway, scopes: string[]): { signer: Signer; sealer: never } {
+  const seed = randomBytes(32).toString("base64url");
+  const sealer = gateway.module.Sealer.fromSeed(
+    seed,
+    gateway.config.serverKeys.current,
+    gateway.config.serverKeys.next,
+  );
+  return {
+    signer: {
+      publicKey: sealer.publicKey,
+      principal: { kind: "app", id: "appc_other", role: "app", perms: scopes },
+    },
+    sealer: sealer as never,
+  };
+}
+
+describe("the composer spends the service key only for a person the gateway names", () => {
+  it("previews and sends for a paired person who may send", async () => {
     const h = await harness();
 
-    const preview = await h.compose("preview", { body: "hello", to: "+237677123456" });
-    const send = await h.compose("send", { to: "+237677123456", body: "hello" });
+    const preview = await h.compose("preview", MESSAGE);
+    const send = await h.compose("send", MESSAGE);
 
     expect(preview.status).toBe(200);
     expect(await preview.json()).toEqual({ encoding: "gsm7", segments: 1 });
     expect(send.status).toBe(200);
     expect(await send.json()).toEqual({ messageId: "m1", state: "queued" });
-    expect(h.client.previewMessage).toHaveBeenCalledWith({ body: "hello", to: "+237677123456" });
-    expect(h.client.sendMessage).toHaveBeenCalledTimes(1);
-    // The proof the route forwarded was the one cheap read, to the letter.
-    expect(h.seen.map((s) => s.target)).toEqual([
-      "/sender_ids?fields=id&limit=1",
-      "/sender_ids?fields=id&limit=1",
+    expect(h.client.previewMessage).toHaveBeenCalledWith(MESSAGE);
+    expect(h.client.sendMessage).toHaveBeenCalledWith(MESSAGE);
+    // The proof the route forwarded was one call to the procedure, each time.
+    expect(h.upstream.seen).toEqual([
+      "/$procs/authorizeComposition",
+      "/$procs/authorizeComposition",
     ]);
   });
 
-  it("does not use the service key for a browser the gateway does not know, and says 'not paired'", async () => {
-    const h = await harness({ registered: false });
+  it("does not use it for an app client's key, whatever scopes that client holds", async () => {
+    // The gateway answers 200 to a sealed read from any signer it accepts. The
+    // procedure it answers only for a person, so an app client's proof is a 403.
+    const gateway = await startFakeGateway();
+    const app = appClient(gateway, ["sms:send", "sms:read"]);
+    const upstream = composeUpstream(gateway, [app.signer]);
+    const client = clientSpy();
+    const composer = createComposer({
+      upstream,
+      client: () => client,
+      opener: () => composeOpener(gateway),
+    });
+    const inputText = JSON.stringify(MESSAGE);
+    const proof = await proofFrom(gateway, app.sealer, "send", inputText);
 
-    const response = await h.compose("send", { to: "+237677123456", body: "hello" });
+    const response = await post(composer, "send", { proof, input: inputText });
+
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { code: string }).code).toBe("forbidden");
+    expect(client.sendMessage).not.toHaveBeenCalled();
+    expect(client.previewMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not use it for a paired person who may not send, nor for one whose role lost the permission", async () => {
+    for (const principal of [
+      { ...ADMIN, role: "auditor", perms: ["sms:read"] },
+      { ...ADMIN, role: "support", perms: ["sms:read"] },
+      { ...ADMIN, role: "developer", perms: ["sms:send", "sms:read"] },
+      { ...ADMIN, role: "operator", perms: ["sms:read"] },
+    ]) {
+      const h = await harness({ browser: principal });
+
+      const response = await h.compose("send", MESSAGE);
+
+      expect(response.status, principal.role).toBe(403);
+      expect(h.client.sendMessage, principal.role).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not use it for a browser the gateway does not know, and says 'not paired'", async () => {
+    const h = await harness({ browser: null });
+
+    const response = await h.compose("send", MESSAGE);
 
     expect(response.status).toBe(401);
     expect(((await response.json()) as { code: string }).code).toBe("unauthenticated");
@@ -109,41 +191,148 @@ describe("the composer spends the service key only for a paired browser", () => 
     expect(h.unauthenticated).toHaveBeenCalled();
   });
 
+  it("does not send a different message than the one the proof was made for", async () => {
+    const h = await harness();
+    const proved = JSON.stringify(MESSAGE);
+    const proof = await proofFrom(h.gateway, h.gateway.runtime.sealer, "send", proved);
+
+    const other = JSON.stringify({ to: "+237677999999", body: "pay me" });
+    const response = await post(h.composer, "send", { proof, input: other });
+
+    expect(response.status).toBe(403);
+    expect(h.client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not send what it was only allowed to preview", async () => {
+    const h = await harness();
+    const inputText = JSON.stringify(MESSAGE);
+    const proof = await proofFrom(h.gateway, h.gateway.runtime.sealer, "preview", inputText);
+
+    const response = await post(h.composer, "send", { proof, input: inputText });
+
+    expect(response.status).toBe(403);
+    expect(h.client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("sends exactly the text that was proved, however it would parse", async () => {
+    const h = await harness();
+    // Duplicate keys and odd spacing: the hash is of these bytes, not of a
+    // value written out again.
+    const text = '{ "to":"+237677123456", "body":"a", "body":"b" }';
+    const proof = await proofFrom(h.gateway, h.gateway.runtime.sealer, "send", text);
+
+    const response = await post(h.composer, "send", { proof, input: text });
+
+    expect(response.status).toBe(200);
+    expect(h.client.sendMessage).toHaveBeenCalledWith({ to: "+237677123456", body: "b" });
+    // The same bytes with a space moved are another message.
+    const moved = await post(h.composer, "send", {
+      proof: await proofFrom(h.gateway, h.gateway.runtime.sealer, "send", text),
+      input: text.replace('"to":', '"to": '),
+    });
+    expect(moved.status).toBe(403);
+  });
+
   it("does not use it for a proof that is replayed: a proof is single-use", async () => {
     const h = await harness();
-    const proof = await proofFor(h.gateway, "/sender_ids", "fields=id&limit=1");
+    const inputText = JSON.stringify(MESSAGE);
+    const proof = await proofFrom(h.gateway, h.gateway.runtime.sealer, "send", inputText);
 
-    const first = await post(h.composer, "send", { proof, input: { to: "x", body: "y" } });
-    const replay = await post(h.composer, "send", { proof, input: { to: "x", body: "y" } });
+    const first = await post(h.composer, "send", { proof, input: inputText });
+    const replay = await post(h.composer, "send", { proof, input: inputText });
 
     expect(first.status).toBe(200);
     expect(replay.status).toBe(401);
     expect(h.client.sendMessage).toHaveBeenCalledTimes(1);
   });
 
-  it("does not use it for a proof of some other read: the route is bound into the signature", async () => {
+  it("does not use it for a proof of some other call: the route is bound into the signature", async () => {
     const h = await harness();
-    const proof = await proofFor(h.gateway, "/apps", "limit=1");
+    const inputText = JSON.stringify(MESSAGE);
+    const { route, params } = h.gateway.runtime.routeOf("GET", "/apps");
+    const sealed = await h.gateway.runtime.sealer.sealCall(
+      "GET",
+      route,
+      params,
+      undefined,
+      "limit=1",
+      undefined,
+      undefined,
+    );
+    const proof = { headers: sealed.headers, body: Buffer.from(sealed.body).toString("base64") };
 
-    const response = await post(h.composer, "send", { proof, input: { to: "x", body: "y" } });
+    const response = await post(h.composer, "send", { proof, input: inputText });
 
     expect(response.status).toBe(401);
     expect(h.client.sendMessage).not.toHaveBeenCalled();
   });
 
+  it("does not believe an answer that is not the gateway's, even one that says 200 and names a person", async () => {
+    const h = await harness();
+    const inputText = JSON.stringify(MESSAGE);
+    const proof = await proofFrom(h.gateway, h.gateway.runtime.sealer, "send", inputText);
+    const hash = await sha256Hex(inputText);
+    const claim: CompositionAuthorization = {
+      userId: "u1",
+      role: "admin",
+      operation: "send",
+      inputSha256: hash,
+    };
+    const impostor = createComposer({
+      upstream: async () => ({
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        body: new TextEncoder().encode(JSON.stringify(claim)),
+      }),
+      client: () => h.client,
+      opener: () => composeOpener(h.gateway),
+    });
+
+    const response = await post(impostor, "send", { proof, input: inputText });
+
+    expect(response.status).toBe(502);
+    expect(h.client.sendMessage).not.toHaveBeenCalled();
+  });
+
   it("does not use it when the proof is missing, malformed or has no input", async () => {
     const h = await harness();
-    const proof = await proofFor(h.gateway, "/sender_ids", "fields=id&limit=1");
+    const inputText = JSON.stringify(MESSAGE);
+    const proof = await proofFrom(h.gateway, h.gateway.runtime.sealer, "send", inputText);
 
     for (const body of [
       {},
-      { input: { to: "x" } },
-      { proof: { headers: "no", body: "AAAA" }, input: {} },
-      { proof: { headers: [], body: "" }, input: {} },
-      { proof, input: "not an object" },
+      { input: inputText },
+      { proof: { headers: "no", body: "AAAA" }, input: inputText },
+      { proof: { headers: [], body: "" }, input: inputText },
+      { proof, input: "not json" },
+      { proof, input: '"a string, not an object"' },
+      { proof, input: "[1]" },
+      { proof, input: { to: "x" } },
+      { proof, input: "" },
     ]) {
       expect((await post(h.composer, "send", body)).status).toBe(400);
     }
+    expect(h.client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("answers 400, not 503, for a proof with a header that is not a header", async () => {
+    const h = await harness();
+    const inputText = JSON.stringify(MESSAGE);
+    const proof = await proofFrom(h.gateway, h.gateway.runtime.sealer, "send", inputText);
+
+    for (const header of [
+      ["not a header name", "x"],
+      ["content-type\r\nx-injected", "x"],
+      ["x-ok", "two\r\nlines"],
+      ["", "x"],
+    ] as [string, string][]) {
+      const response = await post(h.composer, "send", {
+        proof: { ...proof, headers: [...proof.headers, header] },
+        input: inputText,
+      });
+      expect(response.status, JSON.stringify(header)).toBe(400);
+    }
+    expect(h.upstream.seen).toEqual([]);
     expect(h.client.sendMessage).not.toHaveBeenCalled();
   });
 
@@ -155,10 +344,12 @@ describe("the composer spends the service key only for a paired browser", () => 
         throw new Error("ECONNREFUSED");
       },
       client: () => client,
+      opener: () => composeOpener(gateway),
     });
-    const proof = await proofFor(gateway, "/sender_ids", "fields=id&limit=1");
+    const inputText = JSON.stringify(MESSAGE);
+    const proof = await proofFrom(gateway, gateway.runtime.sealer, "send", inputText);
 
-    const response = await post(composer, "send", { proof, input: { to: "x", body: "y" } });
+    const response = await post(composer, "send", { proof, input: inputText });
 
     expect(response.status).toBe(503);
     expect(client.sendMessage).not.toHaveBeenCalled();
@@ -166,11 +357,46 @@ describe("the composer spends the service key only for a paired browser", () => 
 
   it("refuses any operation but preview and send, and any method but POST", async () => {
     const h = await harness();
-    const proof = await proofFor(h.gateway, "/sender_ids", "fields=id&limit=1");
+    const inputText = JSON.stringify(MESSAGE);
+    const proof = await proofFrom(h.gateway, h.gateway.runtime.sealer, "send", inputText);
 
-    expect((await post(h.composer, "delete-everything", { proof, input: {} })).status).toBe(404);
+    expect((await post(h.composer, "delete-everything", { proof, input: inputText })).status).toBe(
+      404,
+    );
     const get = await h.composer(new Request("http://console.test/api/compose/send"));
     expect(get.status).toBe(405);
+  });
+});
+
+describe("the fake gateway decides authorizeComposition as the real one does", () => {
+  const body = (operation: string, hash: string) =>
+    JSON.stringify({ args: { operation, inputSha256: hash } });
+  const hash = "a".repeat(64);
+
+  it("admits a person of an admitted role holding sms:send, and names them", () => {
+    const reply = authorizeComposition(ADMIN, body("send", hash));
+    expect(reply.status).toBe(200);
+    expect(JSON.parse(reply.body)).toEqual({
+      userId: "u1",
+      role: "admin",
+      operation: "send",
+      inputSha256: hash,
+    });
+  });
+
+  it("refuses an app, a role Layer 1 does not admit, and a role without the permission", () => {
+    expect(
+      authorizeComposition({ ...ADMIN, kind: "app", role: "app" }, body("send", hash)).status,
+    ).toBe(403);
+    expect(authorizeComposition({ ...ADMIN, role: "auditor" }, body("send", hash)).status).toBe(
+      403,
+    );
+    expect(authorizeComposition({ ...ADMIN, perms: [] }, body("send", hash)).status).toBe(403);
+  });
+
+  it("refuses an unknown operation and a malformed hash", () => {
+    expect(authorizeComposition(ADMIN, body("delete", hash)).status).toBe(422);
+    expect(authorizeComposition(ADMIN, body("send", "xyz")).status).toBe(422);
   });
 });
 

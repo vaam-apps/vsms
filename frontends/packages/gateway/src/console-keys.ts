@@ -10,7 +10,6 @@
 // only their own, and `revokeConsoleKey` applies the same read policy to
 // `args.keyId`, so revoking is "whoever can see it".
 
-import { COMPOSE_PROOF_PATH, COMPOSE_PROOF_QUERY } from "./compose-proof";
 import { mapGatewayError } from "./errors";
 import { parseGatewayJson } from "./json";
 import { postJson } from "./rest";
@@ -30,13 +29,23 @@ export interface ConsoleKeyRecord {
 
 const KEY_FIELDS = ["id", "userId", "thumbprint", "label", "pairedAt", "expiresAt", "revokedAt"];
 
+/** The probe is `SenderId`'s list, which `SenderId.read` admits to any user:
+ *  the row set is small and `fields=id` keeps the answer to ids. */
+const PROBE_PATH = "/sender_ids";
+const PROBE_QUERY = "fields=id&limit=1";
+
 /** Whether the gateway accepts this browser's key: one sealed read that any
  *  paired console may make. Resolves when the gateway answered 200; rejects with
  *  the `GatewayError` it maps to otherwise, whose `httpStatus` 401 is "not
- *  paired (yet)" and nothing worse. */
+ *  paired (yet)" and nothing worse.
+ *
+ *  It says the gateway KNOWS the key, and nothing about who may do what: the
+ *  gateway answers 200 to every signer it accepts, an app client's as well, so
+ *  this is the status machine's question and never an authorization (the
+ *  composer asks `authorizeComposition` for that, `./compose-proof.ts`). */
 export async function probeKey(): Promise<void> {
-  const url = new URL(COMPOSE_PROOF_PATH, GATEWAY_ORIGIN);
-  url.search = COMPOSE_PROOF_QUERY;
+  const url = new URL(PROBE_PATH, GATEWAY_ORIGIN);
+  url.search = PROBE_QUERY;
   const response = await gatewayFetch(url.toString(), {
     method: "GET",
     headers: { accept: "application/json" },

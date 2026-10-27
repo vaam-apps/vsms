@@ -3,7 +3,7 @@ import "server-only";
 // @vsms/gateway/bff — the console's server half: a pass-through of sealed bytes
 // and the composer's service key. See `./pass-through.ts` and `./composer.ts`.
 
-export type { ComposerClient, ComposerOptions } from "./composer";
+export type { ComposerClient, ComposerOpener, ComposerOptions } from "./composer";
 export { createComposer } from "./composer";
 export type { Upstream, UpstreamAnswer, UpstreamRequest } from "./pass-through";
 export {
