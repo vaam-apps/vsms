@@ -13,6 +13,7 @@
  *   audience: "vaam",                // the name the endpoint was created with
  *   route: "/webhooks/vsms",         // the whole path of the endpoint's URL
  *   appId: "capp00000000000000000",  // the vsms app the endpoint belongs to
+ *   endpointId: "cend00000000000000000", // the endpoint itself: the console shows it when it is created
  * });
  * app.post("/webhooks/vsms", express.raw({ type: "*\/*" }), async (req, res) => {
  *   try {
@@ -29,12 +30,17 @@
  * client seals with (`sdks/rust/vsms-sdk-wasm`), not a TypeScript copy. It binds
  * the audience, `POST`, the route, the delivery contract, the payload type, the
  * timestamp (300 s) and the nonce, which is remembered so a replayed body is
- * refused; then, inside the verified envelope, it compares `appId` (required)
- * and `endpointId` (optional) with the ones you gave. The last step is not
+ * refused; then, inside the verified envelope, it compares `endpointId` and
+ * `appId` (both required) with the ones you gave. The last step is not
  * decoration: one gateway key signs every app's deliveries, so the signature
  * and the audience only say "vsms sent this to the name `vaam`", and a delivery
  * made for someone else's endpoint that names your audience verifies in every
- * other respect.
+ * other respect. **`endpointId` is the binding**: a receiver serves exactly one
+ * endpoint, and it is the one signed value no one but the gateway chooses. An
+ * endpoint can be registered under your app id by anyone who may create
+ * endpoints, so `appId` alone is not enough; it additionally catches an
+ * endpoint registered under another app. The unique audience is defence in
+ * depth, not the binding.
  *
  * **The nonce memory is per process, and unlike the Rust SDK's
  * `WebhookOpener::with_nonce_store` it cannot be replaced**: the check runs in
@@ -62,16 +68,16 @@ export interface WebhookOpenerOptions {
   route: string;
   /**
    * The id of the vsms app the endpoint belongs to (`WebhookEndpoint.appId`).
-   * Required: without it the opener would accept any delivery that merely
-   * reached your audience. A delivery made for another app is refused as
-   * `unverified`.
+   * Required. A delivery made for another app is refused as `unverified`.
    */
   appId: string;
   /**
-   * The id of the endpoint (`WebhookEndpoint.id`). Optional; when given, a
-   * delivery made through another endpoint is refused as `unverified`.
+   * The id of the endpoint this receiver serves (`WebhookEndpoint.id`; the
+   * console shows it when the endpoint is created). Required, and the binding:
+   * a delivery made through any other endpoint, of your app or not, is refused
+   * as `unverified`.
    */
-  endpointId?: string | undefined;
+  endpointId: string;
   /** A fixed clock in whole Unix seconds. For tests and for replaying a recorded delivery. */
   nowSeconds?: number | undefined;
 }
@@ -107,6 +113,12 @@ export class WebhookOpener {
     if (typeof options.appId !== "string" || options.appId === "") {
       throw new SdkError(
         "appId is required: the audience alone does not say whose delivery it is",
+        { kind: "config" },
+      );
+    }
+    if (typeof options.endpointId !== "string" || options.endpointId === "") {
+      throw new SdkError(
+        "endpointId is required: the audience and the app id do not say which endpoint of the app a delivery was made through",
         { kind: "config" },
       );
     }

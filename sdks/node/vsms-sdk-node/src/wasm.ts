@@ -95,7 +95,7 @@ export interface WasmModule {
       audience: string,
       route: string,
       appId: string,
-      endpointId: string | undefined,
+      endpointId: string,
       nowSeconds: number | undefined,
     ): WasmWebhookOpener;
   };

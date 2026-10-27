@@ -116,13 +116,13 @@ const opener = new WebhookOpener({
   audience: "https://hooks.example.com", // the name on your WebhookEndpoint: choose one only you can have
   route: "/webhooks/vsms", // the whole path of its URL
   appId: "capp00000000000000000", // your App's id (required)
-  // endpointId: "cendpoint0000000000000", // optional: also pin the endpoint
+  endpointId: "cendpoint0000000000000", // your WebhookEndpoint's id (required): the binding
 });
 // `rawBody` is the request's bytes (a Buffer), never text a framework decoded.
 const event = await opener.open(rawBody); // { id, eventId, type, occurredAt, appId, endpointId, data }
 ```
 
-One gateway key signs every app's deliveries, so a signature and an audience say only that vsms sent this to your name. `appId` is inside the signed envelope, and `open` compares it (and `endpointId`, if you gave one) with yours: a delivery made for someone else's endpoint that happens to name your audience is refused like a forgery. There is no way to build an opener without an `appId`.
+One gateway key signs every app's deliveries, so a signature and an audience say only that vsms sent this to your name. **`endpointId` is the binding**: a receiver serves exactly one endpoint, whose id it learns when the endpoint is created (the console panel shows it), and `open` compares it with the `endpointId` inside the signed envelope. It is the one signed value nobody but the gateway chooses: whoever may create endpoints can register one under your `appId` and, while your audience name is free, give it that name. `appId` additionally catches an endpoint registered under another app, and the unique audience is defence in depth. A delivery made through someone else's endpoint is refused like a forgery. There is no way to build an opener without both ids (the constructor throws `config` on a missing or empty one).
 
 `open` takes bytes only (`Uint8Array`/`Buffer`) and throws an `SdkError` of kind `config` for a string: re-encoding text a framework already decoded can change the bytes, and a signature cannot survive that. Read the body raw (`express.raw({ type: "*/*" })`, `await request.arrayBuffer()`).
 

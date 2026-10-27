@@ -14,14 +14,15 @@ const AUDIENCE = "vaam";
 const ROUTE = "/webhooks/vsms";
 const APP_ID = "capp00000000000000000";
 const ENDPOINT_ID = "cendpoint0000000000000";
-const envelope = (appId: string) =>
+const OTHER_ENDPOINT_ID = "cendpointother00000000";
+const envelope = (appId: string, endpointId: string = ENDPOINT_ID) =>
   JSON.stringify({
     id: "cattempt00000000000000",
     eventId: "11111111-1111-4111-8111-111111111111",
     type: "message.delivered",
     occurredAt: "2026-10-27T10:00:00Z",
     appId,
-    endpointId: ENDPOINT_ID,
+    endpointId,
     data: { messageId: "cmsg000000000000000000", state: "delivered" },
   });
 const ENVELOPE = envelope(APP_ID);
@@ -37,7 +38,7 @@ function opener(
       audience: overrides.audience ?? AUDIENCE,
       route: overrides.route ?? ROUTE,
       appId: overrides.appId ?? APP_ID,
-      endpointId: overrides.endpointId,
+      endpointId: overrides.endpointId ?? ENDPOINT_ID,
     }),
   };
 }
@@ -91,6 +92,9 @@ test("every wrong delivery is the one coarse refusal", async () => {
     await seal(identity.serverSeed, { iat: now() - 3600 }),
     // Verifies in every other respect: made for another app's endpoint.
     await seal(identity.serverSeed, { body: envelope("cappother000000000000") }),
+    // The attacker's endpoint registered under this app: the app id matches,
+    // only the endpoint id differs.
+    await seal(identity.serverSeed, { body: envelope(APP_ID, OTHER_ENDPOINT_ID) }),
   ];
   for (const delivery of wrong) await assert.rejects(o.open(delivery), unverified);
   const tampered = await seal(identity.serverSeed);
@@ -100,11 +104,35 @@ test("every wrong delivery is the one coarse refusal", async () => {
   await assert.rejects(o.open(new Uint8Array()), unverified);
 });
 
-test("an endpoint is checked only when the opener is given one", async () => {
-  const { identity, opener: other } = opener(undefined, { endpointId: "cendpointother0000000" });
-  await assert.rejects(other.open(await seal(identity.serverSeed)), unverified);
-  const { identity: id2, opener: matching } = opener(undefined, { endpointId: ENDPOINT_ID });
-  assert.equal((await matching.open(await seal(id2.serverSeed))).endpointId, ENDPOINT_ID);
+test("an opener serves exactly one endpoint, though the app and the audience match", async () => {
+  const { identity, opener: o } = opener();
+  const theirs = await seal(identity.serverSeed, { body: envelope(APP_ID, OTHER_ENDPOINT_ID) });
+  await assert.rejects(o.open(theirs), unverified);
+  // The same body opens for an opener that serves that endpoint, so the
+  // refusal above is the endpoint comparison and nothing else.
+  const { identity: id2, opener: other } = opener(undefined, { endpointId: OTHER_ENDPOINT_ID });
+  const sealed = await seal(id2.serverSeed, { body: envelope(APP_ID, OTHER_ENDPOINT_ID) });
+  assert.equal((await other.open(sealed)).endpointId, OTHER_ENDPOINT_ID);
+});
+
+test("a verified body without both ids named once is a decode error", async () => {
+  const { identity, opener: o } = opener();
+  const bodies = [
+    JSON.stringify({ appId: APP_ID }),
+    JSON.stringify({ endpointId: ENDPOINT_ID }),
+    JSON.stringify({ appId: APP_ID, endpointId: 7 }),
+    // A key named twice: `JSON.parse` would take the last, and so would a
+    // `serde_json::Value`; the opener reads the two ids as a typed struct.
+    `{"appId":"x","appId":"${APP_ID}","endpointId":"${ENDPOINT_ID}","data":{}}`,
+    `{"appId":"${APP_ID}","endpointId":"${ENDPOINT_ID}","endpointId":"y","data":{}}`,
+  ];
+  for (const body of bodies) {
+    await assert.rejects(
+      o.open(await seal(identity.serverSeed, { body })),
+      (error: unknown) => error instanceof SdkError && error.kind === "decode",
+      body,
+    );
+  }
 });
 
 test("an app id rewritten in the sealed bytes fails the signature", async () => {
@@ -151,13 +179,21 @@ test("a misconfigured opener is refused before anything is opened", () => {
   const identity = newTestIdentity();
   const serverKeys = { current: identity.serverPublic, next: identity.nextPublic };
   const config = (error: unknown) => error instanceof SdkError && error.kind === "config";
-  const base = { serverKeys, audience: AUDIENCE, route: ROUTE, appId: APP_ID };
+  const base = {
+    serverKeys,
+    audience: AUDIENCE,
+    route: ROUTE,
+    appId: APP_ID,
+    endpointId: ENDPOINT_ID,
+  };
   assert.throws(() => new WebhookOpener({ ...base, audience: "" }), config);
   assert.throws(() => new WebhookOpener({ ...base, route: "no-slash" }), config);
   // No default accepts any app: an opener without an app id cannot be built.
   assert.throws(() => new WebhookOpener({ ...base, appId: "" }), config);
   assert.throws(() => new WebhookOpener({ ...base, appId: undefined as never }), config);
+  // Nor any endpoint: the endpoint id is the binding.
   assert.throws(() => new WebhookOpener({ ...base, endpointId: "" }), config);
+  assert.throws(() => new WebhookOpener({ ...base, endpointId: undefined as never }), config);
   assert.throws(
     () =>
       new WebhookOpener({

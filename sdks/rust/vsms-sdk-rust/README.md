@@ -80,17 +80,28 @@ use vsms_sdk::{ServerKeys, WebhookOpener};
 
 let keys = ServerKeys::parse_report(&std::fs::read_to_string("server-keys.txt")?)?;
 // `audience` is the name on your WebhookEndpoint (choose one only you can have);
-// `route` is the whole path of its URL; `app_id` is your App's id, required.
-let opener = WebhookOpener::new(&keys, "https://hooks.example.com", "/webhooks/vsms", "capp00000000000000000")?;
+// `route` is the whole path of its URL; `app_id` and `endpoint_id` are the ids
+// of your App and of your WebhookEndpoint (the console shows the latter when
+// the endpoint is created). Both are required.
+let opener = WebhookOpener::new(
+    &keys,
+    "https://hooks.example.com",
+    "/webhooks/vsms",
+    "capp00000000000000000",
+    "cend00000000000000000",
+)?;
 let event = opener.open(&raw_request_body).await?;
 println!("{} {}", event.event_type, event.id);
 ```
 
 One gateway key signs every app's deliveries, so a signature and an audience say
-only that vsms sent this to your name. `app_id` is compared with the `appId`
-inside the signed envelope, and `WebhookOpener::builder(..).endpoint_id(..)` also
-pins the endpoint: a delivery made for someone else's endpoint that happens to
-name your audience is refused. There is no opener without an app id.
+only that vsms sent this to your name. **`endpoint_id` is the binding**: a
+receiver serves exactly one endpoint, whose id it learns when the endpoint is
+created, and it is compared with the `endpointId` inside the signed envelope. A
+global role may register an endpoint under any app, so `app_id` is compared too
+and additionally catches an endpoint registered under another app. The unique
+audience is defence in depth, not the binding. A delivery made through someone
+else's endpoint is refused. There is no opener without both ids.
 
 `open` returns `WebhookError::Unverified` for a forgery, a body sealed by a key
 you did not pin, a delivery made for another app or endpoint, another audience or

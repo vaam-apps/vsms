@@ -29,6 +29,9 @@ const BODY: &str = r#"{"id":"a","eventId":"11111111-1111-4111-8111-111111111111"
 /// The same delivery made for another app's endpoint that names this audience.
 const OTHER_APP_BODY: &str = r#"{"id":"a","eventId":"11111111-1111-4111-8111-111111111111","type":"message.delivered","occurredAt":"2026-10-27T10:00:00Z","appId":"cappother000000000000","endpointId":"cendpoint0000000000000","data":{"state":"delivered"}}"#;
 
+/// The same delivery made through another endpoint of the same app.
+const SAME_APP_OTHER_ENDPOINT_BODY: &str = r#"{"id":"a","eventId":"11111111-1111-4111-8111-111111111111","type":"message.delivered","occurredAt":"2026-10-27T10:00:00Z","appId":"capp00000000000000000","endpointId":"cendpointother00000000","data":{"state":"delivered"}}"#;
+
 fn public(seed: &[u8; 32]) -> [u8; 32] {
     Ed25519Signer::from_seed(seed)
         .verify_key()
@@ -90,7 +93,7 @@ impl Delivery {
 }
 
 fn opener() -> WebhookOpener {
-    WebhookOpener::new(&keys(), AUDIENCE, ROUTE, APP_ID, None, None).unwrap()
+    WebhookOpener::new(&keys(), AUDIENCE, ROUTE, APP_ID, ENDPOINT_ID, None).unwrap()
 }
 
 #[tokio::test]
@@ -131,6 +134,12 @@ async fn every_wrong_delivery_is_the_one_coarse_refusal() {
             body: OTHER_APP_BODY,
             ..Delivery::genuine()
         },
+        // The attacker's endpoint registered under this app: the app id
+        // matches, only the endpoint id differs.
+        Delivery {
+            body: SAME_APP_OTHER_ENDPOINT_BODY,
+            ..Delivery::genuine()
+        },
     ];
     for delivery in wrong {
         assert_eq!(
@@ -146,27 +155,59 @@ async fn every_wrong_delivery_is_the_one_coarse_refusal() {
 }
 
 #[tokio::test]
-async fn an_endpoint_is_checked_only_when_the_opener_is_given_one() {
-    let sealed = Delivery::genuine().seal().await;
-    let other = WebhookOpener::new(
+async fn an_opener_serves_exactly_one_endpoint() {
+    let sealed = Delivery {
+        body: SAME_APP_OTHER_ENDPOINT_BODY,
+        ..Delivery::genuine()
+    }
+    .seal()
+    .await;
+    assert_eq!(opener().open(&sealed).await, Err(WebhookError::Unverified));
+    // The same body opens for an opener that serves that endpoint, so the
+    // refusal above is the endpoint comparison and nothing else.
+    let theirs = WebhookOpener::new(
         &keys(),
         AUDIENCE,
         ROUTE,
         APP_ID,
-        Some("cendpointother0000000"),
+        "cendpointother00000000",
         None,
     )
     .unwrap();
-    assert_eq!(other.open(&sealed).await, Err(WebhookError::Unverified));
-    let matching =
-        WebhookOpener::new(&keys(), AUDIENCE, ROUTE, APP_ID, Some(ENDPOINT_ID), None).unwrap();
     assert_eq!(
-        matching
-            .open(&Delivery::genuine().seal().await)
-            .await
-            .unwrap(),
-        BODY
+        theirs.open(&sealed).await.unwrap(),
+        SAME_APP_OTHER_ENDPOINT_BODY
     );
+}
+
+/// The forms of a verified body that is not the envelope: no ids, no endpoint
+/// id, an id that is not text, a key named twice (Rust's typed event rejects
+/// it, and `serde_json::Value` would take the last, so this opener does not
+/// read the envelope as a `Value`).
+#[tokio::test]
+async fn a_verified_body_without_both_ids_named_once_is_malformed() {
+    let bodies = [
+        r#"{"appId":"capp00000000000000000"}"#,
+        r#"{"endpointId":"cendpoint0000000000000"}"#,
+        r#"{"appId":"capp00000000000000000","endpointId":7}"#,
+        r#"{"appId":"x","appId":"capp00000000000000000","endpointId":"cendpoint0000000000000"}"#,
+        r#"{"appId":"capp00000000000000000","endpointId":"cendpoint0000000000000","endpointId":"y"}"#,
+    ];
+    for body in bodies {
+        let sealed = Delivery {
+            body,
+            ..Delivery::genuine()
+        }
+        .seal()
+        .await;
+        assert!(
+            matches!(
+                opener().open(&sealed).await,
+                Err(WebhookError::Malformed(_))
+            ),
+            "{body}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -222,20 +263,20 @@ async fn the_next_key_opens_too() {
 #[test]
 fn a_misconfigured_opener_is_refused_up_front() {
     assert!(matches!(
-        WebhookOpener::new(&keys(), "", ROUTE, APP_ID, None, None),
+        WebhookOpener::new(&keys(), "", ROUTE, APP_ID, ENDPOINT_ID, None),
         Err(WebhookError::Invalid(_))
     ));
     assert!(matches!(
-        WebhookOpener::new(&keys(), AUDIENCE, "no-slash", APP_ID, None, None),
+        WebhookOpener::new(&keys(), AUDIENCE, "no-slash", APP_ID, ENDPOINT_ID, None),
         Err(WebhookError::Invalid(_))
     ));
-    // No default accepts any app.
+    // No default accepts any app or endpoint.
     assert!(matches!(
-        WebhookOpener::new(&keys(), AUDIENCE, ROUTE, "", None, None),
+        WebhookOpener::new(&keys(), AUDIENCE, ROUTE, "", ENDPOINT_ID, None),
         Err(WebhookError::Invalid(_))
     ));
     assert!(matches!(
-        WebhookOpener::new(&keys(), AUDIENCE, ROUTE, APP_ID, Some(""), None),
+        WebhookOpener::new(&keys(), AUDIENCE, ROUTE, APP_ID, "", None),
         Err(WebhookError::Invalid(_))
     ));
 }
@@ -265,7 +306,7 @@ async fn the_gateways_own_vector_opens() {
         vector["audience"].as_str().unwrap(),
         vector["route"].as_str().unwrap(),
         vector["appId"].as_str().unwrap(),
-        Some(vector["endpointId"].as_str().unwrap()),
+        vector["endpointId"].as_str().unwrap(),
         Some(Arc::new(move || iat)),
     )
     .unwrap();

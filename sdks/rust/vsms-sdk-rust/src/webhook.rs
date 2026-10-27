@@ -17,9 +17,17 @@
 //! .unwrap();
 //! // `audience` is the name this receiver chose when its endpoint was created;
 //! // `route` is the whole path of the endpoint's URL; `app_id` is the id of the
-//! // vsms app the endpoint belongs to, which no one else's delivery carries.
-//! let opener =
-//!     WebhookOpener::new(&keys, "vaam", "/webhooks/vsms", "capp00000000000000000").unwrap();
+//! // vsms app the endpoint belongs to and `endpoint_id` the id of the endpoint
+//! // itself, which the console shows when the endpoint is created. No one
+//! // else's delivery carries the endpoint id.
+//! let opener = WebhookOpener::new(
+//!     &keys,
+//!     "vaam",
+//!     "/webhooks/vsms",
+//!     "capp00000000000000000",
+//!     "cend00000000000000000",
+//! )
+//! .unwrap();
 //! let event = opener.open(body).await?;
 //! println!("{} {}", event.event_type, event.event_id);
 //! # Ok(())
@@ -31,15 +39,18 @@
 //! the method, the delivery contract ([`WEBHOOK_CONTRACT_SHA`]), the payload
 //! type, the timestamp (within the skew, 300 s by default) and the nonce, which
 //! is recorded so a replayed body is refused. Then, inside the verified
-//! envelope, **the app id** (and the endpoint id, when you gave one).
+//! envelope, **the endpoint id and the app id**.
 //!
-//! The last check is not decoration. One gateway key signs every app's
+//! The last two checks are not decoration. One gateway key signs every app's
 //! deliveries, so the signature and the audience only say "vsms sent this to
 //! the name `vaam`"; whoever may create an endpoint can name any audience and
 //! point it at a URL of their own, and collect seals that open anywhere that
-//! name is answered to. The audience is unique per endpoint in the gateway, but
-//! the app id (and, if you can, the endpoint id) is what ties a delivery to the
-//! receiver it was made for. There is deliberately no opener without one.
+//! name is answered to. The **endpoint id is the binding**: a receiver serves
+//! exactly one endpoint, and it is the one signed value that no one but the
+//! gateway chooses. The app id additionally catches an endpoint registered
+//! under another app. The unique audience is defence in depth: a name can be
+//! free before the endpoint exists, after it is renamed or deleted, or while
+//! someone squats it. There is deliberately no opener without both ids.
 //!
 //! **The nonce store is per process by default.** A receiver with several
 //! replicas must pass one they share ([`WebhookOpener::with_nonce_store`]),
@@ -137,8 +148,8 @@ pub struct WebhookEvent {
     /// it with the id it was built with.
     #[serde(rename = "appId")]
     pub app_id: String,
-    /// The endpoint the delivery was made through. Compared too when the opener
-    /// was given one.
+    /// The endpoint the delivery was made through. [`WebhookOpener`] has
+    /// already compared it with the id it was built with.
     #[serde(rename = "endpointId")]
     pub endpoint_id: String,
     /// `message.delivered` and the rest of the catalogue in
@@ -159,7 +170,7 @@ pub struct WebhookOpener {
     audience: String,
     route: String,
     app_id: String,
-    endpoint_id: Option<String>,
+    endpoint_id: String,
 }
 
 impl std::fmt::Debug for WebhookOpener {
@@ -180,7 +191,7 @@ pub struct WebhookOpenerBuilder<'a> {
     audience: String,
     route: String,
     app_id: String,
-    endpoint_id: Option<String>,
+    endpoint_id: String,
     nonces: Option<Arc<dyn NonceStore>>,
     skew: Option<Duration>,
     clock: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
@@ -189,25 +200,28 @@ pub struct WebhookOpenerBuilder<'a> {
 impl WebhookOpener {
     /// An opener for deliveries to the route `route` (the whole path of the
     /// endpoint's URL, such as `/webhooks/vsms`) that name `audience` and were
-    /// made for the app `app_id`, with an in-memory nonce store and the default
+    /// made for the app `app_id` through the endpoint `endpoint_id`
+    /// (`WebhookEndpoint.id`), with an in-memory nonce store and the default
     /// 300 s skew.
     ///
-    /// `app_id` is required: without it the opener would accept any delivery
-    /// that merely reached its audience (see the module docs). To also pin the
-    /// endpoint, use [`WebhookOpener::builder`] and
-    /// [`WebhookOpenerBuilder::endpoint_id`].
+    /// Both ids are required: without them the opener would accept a delivery
+    /// that merely reached its audience (see the module docs). The endpoint id
+    /// is the binding; the app id additionally catches an endpoint registered
+    /// under another app.
     ///
     /// # Errors
     ///
-    /// [`SdkError::Config`] for an empty audience or app id, a route that does
-    /// not start with `/`, or a pinned key the envelope refuses.
+    /// [`SdkError::Config`] for an empty audience, app id or endpoint id, a
+    /// route that does not start with `/`, or a pinned key the envelope
+    /// refuses.
     pub fn new(
         keys: &ServerKeys,
         audience: impl Into<String>,
         route: impl Into<String>,
         app_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
     ) -> Result<Self, SdkError> {
-        Self::builder(keys, audience, route, app_id).build()
+        Self::builder(keys, audience, route, app_id, endpoint_id).build()
     }
 
     /// Starts a [`WebhookOpenerBuilder`].
@@ -216,13 +230,14 @@ impl WebhookOpener {
         audience: impl Into<String>,
         route: impl Into<String>,
         app_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
     ) -> WebhookOpenerBuilder<'_> {
         WebhookOpenerBuilder {
             keys,
             audience: audience.into(),
             route: route.into(),
             app_id: app_id.into(),
-            endpoint_id: None,
+            endpoint_id: endpoint_id.into(),
             nonces: None,
             skew: None,
             clock: None,
@@ -235,10 +250,10 @@ impl WebhookOpener {
     /// # Errors
     ///
     /// [`WebhookError::Unverified`] for anything that does not verify, and for
-    /// a verified delivery made for another app (or another endpoint, when the
-    /// opener was given one), [`WebhookError::Malformed`] for a verified body
-    /// that is not the envelope, [`WebhookError::Backend`] when the nonce store
-    /// fails.
+    /// a verified delivery made for another app or another endpoint,
+    /// [`WebhookError::Malformed`] for a verified body that is not the envelope
+    /// (a missing `endpointId` among it), [`WebhookError::Backend`] when the
+    /// nonce store fails.
     pub async fn open(&self, body: &[u8]) -> Result<WebhookEvent, WebhookError> {
         let binding = Binding {
             audience: Cow::Borrowed(&self.audience),
@@ -261,14 +276,10 @@ impl WebhookOpener {
             })?;
         let event: WebhookEvent = serde_json::from_slice(&opened.payload)
             .map_err(|error| WebhookError::Malformed(error.to_string()))?;
-        if event.app_id != self.app_id {
+        if event.endpoint_id != self.endpoint_id {
             return Err(WebhookError::Unverified);
         }
-        if self
-            .endpoint_id
-            .as_deref()
-            .is_some_and(|endpoint| event.endpoint_id != endpoint)
-        {
+        if event.app_id != self.app_id {
             return Err(WebhookError::Unverified);
         }
         Ok(event)
@@ -276,15 +287,6 @@ impl WebhookOpener {
 }
 
 impl WebhookOpenerBuilder<'_> {
-    /// Also require the delivery to have been made through this endpoint
-    /// (`WebhookEndpoint.id`). Worth setting when the receiver knows it: it is
-    /// what separates two endpoints of one app.
-    #[must_use]
-    pub fn endpoint_id(mut self, endpoint_id: impl Into<String>) -> Self {
-        self.endpoint_id = Some(endpoint_id.into());
-        self
-    }
-
     /// A nonce store shared by every replica of the receiver. The default is
     /// per process.
     #[must_use]
@@ -335,9 +337,11 @@ impl WebhookOpenerBuilder<'_> {
                     .to_owned(),
             ));
         }
-        if self.endpoint_id.as_deref() == Some("") {
+        if self.endpoint_id.is_empty() {
             return Err(SdkError::Config(
-                "an endpoint id given to a webhook opener must not be empty".to_owned(),
+                "a webhook opener needs the id of the endpoint it serves: the audience and the \
+                 app id do not say which endpoint of the app a delivery was made through"
+                    .to_owned(),
             ));
         }
         crate::client::ensure_crypto_provider();
