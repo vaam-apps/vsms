@@ -59,6 +59,17 @@ interface CratestackErrorResponseBody {
  *   serverKeys: parseServerKeysReport(readFileSync("server-keys.txt", "utf8")),
  * });
  */
+/**
+ * `baseUrl` with every trailing `/` removed. A loop rather than `/\/+$/`:
+ * that pattern backtracks quadratically on a string of many `/` that does
+ * not end in one (CodeQL js/polynomial-redos), and this runs on caller input.
+ */
+function withoutTrailingSlashes(url: string): string {
+  let end = url.length;
+  while (end > 0 && url.charCodeAt(end - 1) === 0x2f) end -= 1;
+  return url.slice(0, end);
+}
+
 export class VsmsClient {
   readonly #context: CallContext;
 
@@ -73,7 +84,7 @@ export class VsmsClient {
       });
     }
     this.#context = {
-      baseUrl: options.baseUrl.replace(/\/+$/, ""),
+      baseUrl: withoutTrailingSlashes(options.baseUrl),
       timeoutMs,
       agent: options.agent,
       sealer: resolveSealer(options),
