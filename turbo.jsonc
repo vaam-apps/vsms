@@ -72,8 +72,13 @@
     // invisible to the package's own input hash (a stale module served from
     // cache after a Rust change). Declaring `inputs` replaces the default set,
     // so the package's own files are named too.
+    //
+    // `RUSTUP_TOOLCHAIN` is an `env` (hashed) and not a pass-through: it picks
+    // the compiler that produces `wasm/`, so a different value is a different
+    // build and must not be served the other's cache.
     "@vaam-apps/vsms-node#build": {
       "outputs": ["dist/**", "wasm/**"],
+      "env": ["RUSTUP_TOOLCHAIN"],
       "inputs": [
         "src/**",
         "scripts/**",
@@ -85,19 +90,20 @@
         "$TURBO_ROOT$/sdks/rust/vsms-sdk-wasm/**",
         "$TURBO_ROOT$/sdks/rust/vsms-sdk-rust/schema.cstack"
       ]
+    },
+    // The generic `test` task, plus the toolchain `build:wasm-test` compiles with.
+    "@vaam-apps/vsms-node#test": {
+      "dependsOn": ["build"],
+      "outputs": [],
+      "env": ["RUSTUP_TOOLCHAIN"]
     }
   },
   "globalEnv": ["NODE_ENV", "SKIP_ENV_VALIDATION", "CRATESTACK_BIN"],
-  // Where `@vaam-apps/vsms-node#build` and `#test` find their Rust toolchain
-  // (`scripts/build-wasm.sh` runs cargo). Turbo's strict mode drops every
-  // variable not named, and with them a `RUSTUP_TOOLCHAIN` pin or a relocated
-  // cargo home would silently stop reaching cargo. Pass-through, not `env`: none
-  // of these changes what the build produces, so none should invalidate a cache.
-  "globalPassThroughEnv": [
-    "CARGO_HOME",
-    "CARGO_BUILD_JOBS",
-    "CARGO_TARGET_DIR",
-    "RUSTUP_HOME",
-    "RUSTUP_TOOLCHAIN"
-  ]
+  // Where `@vaam-apps/vsms-node#build` and `#test` find cargo
+  // (`scripts/build-wasm.sh` runs it). Turbo's strict mode drops every variable
+  // not named, and with them a relocated cargo home would silently stop reaching
+  // cargo. Pass-through, not `env`: none of these changes what the build
+  // produces, so none should invalidate a cache. (`RUSTUP_TOOLCHAIN`, which
+  // does, is a hashed `env` on those two tasks above.)
+  "globalPassThroughEnv": ["CARGO_HOME", "CARGO_BUILD_JOBS", "CARGO_TARGET_DIR", "RUSTUP_HOME"]
 }
