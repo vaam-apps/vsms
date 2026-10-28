@@ -87,7 +87,33 @@ allow = [
 # narrows advisory scope for the *whole* graph, which is a wider decision
 # than this one crate warrants and belongs to the maintainer, not to a
 # dependency addition.
+# RUSTSEC-2024-0449 — `unsafe-libyaml` is unmaintained (the repository was
+# archived on 2024-03-25; the last release is 0.2.11). An "unmaintained" notice,
+# not a vulnerability: no exploitable defect is named.
+#
+# New with VSC-1, which added the YAML deployment configuration:
+#
+#     unsafe-libyaml <- serde_yaml 0.9 (deprecated) <- figment <- sms-config
+#     unsafe-libyaml <- serde_yaml_ng 0.10 <- sms-config
+#
+# so it is linked into `sms-gateway` and `sms-worker`. What it parses is the
+# deployment's own configuration document, written by the operator and mounted
+# from the image, a compose bind or a ConfigMap - never a request body, a
+# webhook payload or anything a caller controls. vpay accepts the same advisory
+# for the same chain (`vpay-config`), for the same reason.
+#
+# There is no drop-in: removing it means replacing figment's YAML provider and
+# `serde_yaml_ng` with a parser that does not sit on libyaml (the advisory names
+# `saphyr` and `noyalib`), which changes how every deployment's configuration is
+# read and belongs in its own reviewed change, ideally made alongside vpay's.
+#
+# Accepted, not silenced, and scoped to this one advisory id so any other
+# advisory - including a vulnerability, not only "unmaintained", published
+# against `unsafe-libyaml` under a different id - still fails this job.
+# Time-boxed: revisit by 2026-12-04, with the two entries below, or sooner if
+# vpay replaces its parser.
 ignore = [
+  { id = "RUSTSEC-2024-0449", reason = "`unsafe-libyaml` is unmaintained (archived 2024-03-25), an unmaintained notice and not a vulnerability. It enters only through serde_yaml (figment) and serde_yaml_ng, which sms-config uses to read the operator-written deployment configuration; nothing a caller controls is parsed by it. No drop-in replacement exists short of changing the YAML parser, which vpay has deferred for the same reason. See the comment above for the full analysis and revisit date." },
   { id = "RUSTSEC-2023-0071", reason = "Marvin Attack (timing sidechannel) only affects RSA PKCS#1v1.5 *decryption*. This graph's only `rsa` usage is sms-fake-aws (a dev/demo fake, linked by no production binary), which only signs — no decrypt call exists anywhere in the reachable code. Re-verified 2026-10-27 after authkestra left the graph. See the comment above for the full analysis and revisit date." },
   { id = "RUSTSEC-2023-0089", reason = "`atomic-polyfill` is unmaintained with no patched release. It enters only via phonenumber -> postcard -> heapless 0.7, and heapless gates it to AVR/RISC-V/thumbv6m/Xtensa targets — none of which this workspace builds (x86_64 and aarch64 Linux only). `cargo tree -i atomic-polyfill` finds nothing for the host target; only `--target all` reaches it. See the comment above for the full analysis and revisit date." },
 ]
