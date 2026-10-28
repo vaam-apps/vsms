@@ -1,5 +1,6 @@
 #![doc = include_str!("lib.md")]
 
+pub mod config;
 pub mod sealed;
 pub mod webhook_receiver;
 

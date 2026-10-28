@@ -117,6 +117,7 @@
 #[path = "../../../crates/sms-api/tests/support/sealed_fixtures.rs"]
 mod sealed_fixtures;
 
+use sms_test_support::config::{self, TestConfig};
 use std::net::TcpListener as StdTcpListener;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -150,7 +151,6 @@ const ENDPOINT_COUNT: usize = 800;
 const KILL_SETTLE_DELAY: Duration = Duration::from_millis(50);
 
 const ORANGE_PROVIDER_KEY: &str = "orange_cm";
-const TEST_HASH_PEPPER: &str = "webhook-outbox-kill-mid-drain-live-test-pepper-over-minimum";
 
 fn sys() -> CratestackContext {
     Principal {
@@ -489,21 +489,19 @@ impl GatewayProcess {
         let (current_key, next_key) = sealed_fixtures::write_server_key_files(
             &std::env::temp_dir().join(format!("sms-kill-mid-drain-keys-{port}")),
         );
+        let config = TestConfig::write(
+            &format!("kill-mid-drain-{port}"),
+            &config::orange_overlay("http://127.0.0.1:9"),
+        );
         let mut command = Command::new(env!("CARGO_BIN_EXE_sms-gateway"));
         command
             .arg("serve")
+            .args(config.args())
+            .env(config::PEPPER_VAR, config::PEPPER)
             .arg("--listen")
             .arg(format!("127.0.0.1:{port}"))
             .arg("--database-url")
             .arg(db_url)
-            .arg("--orange-client-id")
-            .arg("kill-mid-drain-test-orange-client-id")
-            .arg("--orange-client-secret")
-            .arg("kill-mid-drain-test-orange-client-secret")
-            .arg("--orange-sender-number")
-            .arg("+237600000000")
-            .arg("--hash-pepper")
-            .arg(TEST_HASH_PEPPER)
             .arg("--envelope-signing-key-file")
             .arg(&current_key)
             .arg("--envelope-next-signing-key-file")

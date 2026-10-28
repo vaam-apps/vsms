@@ -145,14 +145,7 @@ mod tests {
     fn parse_serve(extra: &[&str]) -> Result<crate::Cli, clap::Error> {
         use clap::Parser;
 
-        let mut args = vec![
-            "sms-gateway",
-            "serve",
-            "--database-url",
-            "postgres://x",
-            "--hash-pepper",
-            "p",
-        ];
+        let mut args = vec!["sms-gateway", "serve", "--database-url", "postgres://x"];
         args.extend_from_slice(extra);
         crate::Cli::try_parse_from(args)
     }

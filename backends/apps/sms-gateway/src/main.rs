@@ -19,15 +19,10 @@ struct Cli {
 enum Command {
     /// Bind the HTTP API.
     ///
-    /// `Box`ed, not a bare `ServeArgs` — the MTN wiring's own
-    /// `--mtn-client-id`/`--mtn-client-secret`/`--mtn-service-code` split
-    /// (replacing the previous single `--mtn-api-key`) pushed `ServeArgs`
-    /// past clippy's `large_enum_variant` threshold relative to this
-    /// enum's next-largest variant. Boxing is the standard fix for one
-    /// outsized variant in an otherwise-small enum — `Command` is
-    /// constructed once per process (`Cli::parse()`) and matched once, so
-    /// the extra allocation is not a cost anything here is sensitive to.
-    Serve(Box<commands::serve::ServeArgs>),
+    /// Reads the YAML deployment configuration (`--config`, `--profile`):
+    /// the pepper, the pool size, the rate limits and every provider live
+    /// there, not in flags (VSC-1; `docs/architecture.md`, section 9.4).
+    Serve(commands::serve::ServeArgs),
     /// Print the generated route table and exit. Needs no database.
     Routes,
     /// Registers an Ed25519 public key for an `App`'s signing client (VS-2),
@@ -224,7 +219,8 @@ enum Command {
     /// receipt ever arriving — which looks exactly like a broken route.
     ///
     /// Needs no database: it talks only to MADAPI, which is why it is the
-    /// one subcommand here with no `--database-url`.
+    /// one subcommand here with no `--database-url`. MTN's credentials are
+    /// the `providers[code=mtn_cm]` entry of the YAML configuration.
     MtnSubscribeDlr(commands::mtn_subscribe_dlr::MtnSubscribeDlrArgs),
 
     /// Exec-form liveness/readiness check for orchestrators that can't run
@@ -292,10 +288,14 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    // VSC-1: before clap parses, so a flag that moved into the YAML is refused
+    // naming the key that replaced it, not with "unexpected argument".
+    sms_config::reject_retired_flags(std::env::args_os().skip(1))?;
+
     match Cli::parse().command {
         Command::Routes => commands::routes::run(),
 
-        Command::Serve(args) => commands::serve::serve_command(*args).await,
+        Command::Serve(args) => commands::serve::serve_command(args).await,
 
         Command::RegisterClient(args) => {
             commands::register_client::register_client_command(args).await
@@ -333,9 +333,63 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    /// A build without the `fake-aws` feature — every release image — has
-    /// no way to be told to trust `sms-fake-aws`'s certificate: the flag is
-    /// not merely ignored, it does not parse.
+    use clap::{Command, CommandFactory};
+
+    /// Every argument of `command` and of every subcommand beneath it.
+    fn arguments(command: &Command) -> Vec<&clap::Arg> {
+        let mut found: Vec<&clap::Arg> = command.get_arguments().collect();
+        for sub in command.get_subcommands() {
+            found.extend(arguments(sub));
+        }
+        found
+    }
+
+    /// The flags VSC-1 moved into the YAML are not flags any more, and none is
+    /// bound to its old variable: clap would otherwise read the variable the
+    /// retired-variable check exists to refuse. Re-adding any one of them to
+    /// any subcommand fails here.
+    #[test]
+    fn no_subcommand_still_declares_a_retired_flag_or_variable() {
+        let command = super::Cli::command();
+        for arg in arguments(&command) {
+            if let Some(long) = arg.get_long() {
+                assert!(
+                    !sms_config::RETIRED
+                        .iter()
+                        .any(|retired| retired.flag == format!("--{long}")),
+                    "--{long} is retired (sms_config::RETIRED) and is declared again"
+                );
+            }
+            if let Some(env) = arg.get_env().and_then(|env| env.to_str()) {
+                assert!(
+                    !sms_config::RETIRED.iter().any(|retired| retired.env == env),
+                    "{env} is retired (sms_config::RETIRED) and is bound to an argument again"
+                );
+            }
+        }
+    }
+
+    /// The commands that read the YAML take `--config` and `--profile` (bound to
+    /// `SMS_CONFIG` and `SMS_PROFILE`); the ones that read nothing do not grow
+    /// them. `seed-dispatch` has an unrelated `--config` (the provider's JSON
+    /// settings), which is why this looks at the variable and not the name.
+    #[test]
+    fn exactly_serve_and_mtn_subscribe_dlr_take_the_configuration_options() {
+        let command = super::Cli::command();
+        let mut with_config: Vec<&str> = command
+            .get_subcommands()
+            .filter(|sub| {
+                sub.get_arguments()
+                    .any(|arg| arg.get_env().is_some_and(|env| env == "SMS_CONFIG"))
+            })
+            .map(Command::get_name)
+            .collect();
+        with_config.sort_unstable();
+        assert_eq!(with_config, ["mtn-subscribe-dlr", "serve"]);
+    }
+
+    /// A build without the `fake-aws` feature - every release image - has no
+    /// flag that names a fake certificate authority at all.
     #[cfg(not(feature = "fake-aws"))]
     #[test]
     fn a_release_build_has_no_fake_certificate_flag() {

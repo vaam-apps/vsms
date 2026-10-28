@@ -11,6 +11,8 @@ publish.workspace = true
 
 [dependencies]
 sms-api.workspace = true
+# VSC-1: the YAML configuration `serve` and `mtn-subscribe-dlr` read.
+sms-config.workspace = true
 cratestack.workspace = true
 axum.workspace = true
 # dlr.rs's real dependency: the SmsProvider trait (#34), and the concrete
@@ -21,8 +23,8 @@ sms-provider-mtn.workspace = true
 sms-provider-aws-sms.workspace = true
 # Only with the `fake-aws` feature, below.
 sms-fake-aws = { workspace = true, optional = true }
-# commands/serve.rs's --mtn-cost-per-segment-xaf flag — money, never a
-# float (see `MtnConfig::cost_per_segment_xaf`'s own doc).
+# dlr.rs builds a test `MtnConfig`, whose price is money, never a float (see
+# `MtnConfig::cost_per_segment_xaf`'s own doc).
 rust_decimal.workspace = true
 
 # commands/register_client.rs's `pack` for the client's scopes.
@@ -43,11 +45,11 @@ chrono.workspace = true
 
 [features]
 default = []
-# Demo and test builds only: `serve --aws-sms-fake-sns-cert-base` trusts SNS
+# Demo and test builds only: `providers[code=aws_sms].settings.fake_sns_cert_base` trusts SNS
 # signing certificates served by `sms-fake-aws`, so `just demo` can show an
 # AWS receipt arriving without an AWS account. Off by default; the release
-# workflow builds every image without it, and a build without it has neither
-# the flag nor the code (`commands/serve.rs`'s `aws_sms_receiver`). The
+# workflow builds every image without it, and a build without it refuses the
+# key and has not the code (`commands/serve.rs`'s `aws_sms_receiver`). The
 # Dockerfile's `CARGO_FEATURES` build argument is how compose.dev.yaml turns
 # it on.
 fake-aws = ["dep:sms-fake-aws"]

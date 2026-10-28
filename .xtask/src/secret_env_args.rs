@@ -17,31 +17,20 @@
 //! reading `--help` is usually doing so because they do not yet know how
 //! to invoke the command, and hiding the harmless values makes that
 //! worse for no gain.
+//!
+//! The list held five variables until VSC-1. The other four
+//! (`SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `MTN_CLIENT_SECRET`,
+//! `AWS_SMS_SECRET_ACCESS_KEY`) are no longer bound to any clap argument:
+//! they are `${VAR}` placeholders in `config/*.yml` now, and
+//! `sms_config::RETIRED` refuses a binary that is handed one as a flag or sets
+//! one the YAML does not read. `config-literal-secrets` is their static guard.
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Variables whose value is credential material. Adding one here makes
 /// every existing `#[arg(..., env = "…")]` binding it a hard failure
 /// until it also carries `hide_env_values = true`.
-const SECRET_ENV_VARS: [&str; 5] = [
-    "DATABASE_URL",
-    "SMS_HASH_PEPPER",
-    "ORANGE_CM_CLIENT_SECRET",
-    // MTN's direct API (MADAPI) authenticates the same way Orange does —
-    // `OAuth2 client_credentials` — so `MTN_CLIENT_SECRET` is the
-    // sensitive half of that pair, the same role `ORANGE_CM_CLIENT_SECRET`
-    // plays above; `MTN_CLIENT_ID` is not credential material on its own
-    // (matching `ORANGE_CM_CLIENT_ID`'s own absence from this list) and
-    // stays visible. Replaces this list's original `MTN_AGGREGATOR_API_KEY`
-    // entry from this crate's now-retired static-Bearer-key shape — both
-    // bindings already carried `hide_env_values = true`, so this list
-    // entry is what stops a *future* binding from silently omitting it.
-    "MTN_CLIENT_SECRET",
-    // The secret half of the IAM access key the worker signs AWS End User
-    // Messaging requests with. `AWS_SMS_ACCESS_KEY_ID` identifies the key
-    // and is not credential material on its own, like the client ids.
-    "AWS_SMS_SECRET_ACCESS_KEY",
-];
+const SECRET_ENV_VARS: [&str; 1] = ["DATABASE_URL"];
 
 /// Directory names never worth walking into — build output, VCS
 /// internals, agent worktrees (each a full second copy of this repo,

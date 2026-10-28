@@ -90,8 +90,8 @@ schema, should never happen in practice; the fallback exists for
 defensive correctness, not because this crate has observed it being
 needed.
 
-**`--mtn-sender-id`/[`MtnConfig::sender_id`] is deliberately *not* part
-of the all-or-none required-credential group any more.** The Swagger
+**`providers[code=mtn_cm].settings.sender_id`/[`MtnConfig::sender_id`] is
+deliberately *not* part of the required group any more.** The Swagger
 marks `senderAddress` optional, and unlike `serviceCode` there is a
 fully valid MADAPI submission with no `senderAddress` at all (MTN then
 uses the `serviceCode` identity for the message) — requiring an operator

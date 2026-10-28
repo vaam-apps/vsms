@@ -14,6 +14,13 @@ use serde::Deserialize;
 pub struct Secret(String);
 
 impl Secret {
+    /// A secret from text already in hand: a test building a `Providers` by
+    /// hand. The loader constructs them by deserialising.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self(text.into())
+    }
+
     /// The secret itself. Call it only to hand the value to the adapter that
     /// authenticates with it.
     #[must_use]

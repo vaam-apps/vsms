@@ -314,4 +314,11 @@ or was the layer's unsigned refusal, which is how a test tells a refused
 signature from a refused operation. The server keys the suites boot with are
 fixed seeds, shared with the gateway-binary suites through key files.
 
+# `config`: the YAML a spawned binary reads (VSC-1)
+
+[`config::TestConfig`] copies the repository's `config/application.yml` next to
+a one-off overlay and hands back the `--config`/`--profile` flags, so a suite
+that spawns `sms-gateway serve` or `sms-worker` runs on the repository's own
+defaults and writes only the providers it needs.
+
 <!-- markdownlint-disable-file MD041 -->

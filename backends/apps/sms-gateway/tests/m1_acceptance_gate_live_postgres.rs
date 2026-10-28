@@ -67,6 +67,7 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, SenderIdKind, SenderIdRegistrationStatus, provider as provider_filter,
 };
+use sms_test_support::config::{self, TestConfig};
 use sms_test_support::sealed::TestKey;
 
 #[path = "../../../crates/sms-api/tests/support/sealed_fixtures.rs"]
@@ -85,8 +86,6 @@ static TEST_MUTEX: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// `lib.rs` (`examples/send_test_message.rs` duplicates it the same way,
 /// for the same reason).
 const ORANGE_PROVIDER_KEY: &str = "orange_cm";
-
-const TEST_HASH_PEPPER: &str = "m1-acceptance-gate-live-postgres-test-pepper-over-minimum";
 
 fn owner() -> CratestackContext {
     Principal {
@@ -291,21 +290,21 @@ impl GatewayProcess {
         let (current_key, next_key) = sealed_fixtures::write_server_key_files(
             &std::env::temp_dir().join(format!("sms-m1-gate-keys-{port}")),
         );
+        // Never exercised: this suite never runs `dispatch`, so the adapter is
+        // constructed but never asked to reach the network.
+        let config = TestConfig::write(
+            &format!("m1-gate-{port}"),
+            &config::orange_overlay("http://127.0.0.1:9"),
+        );
         let mut command = Command::new(env!("CARGO_BIN_EXE_sms-gateway"));
         command
             .arg("serve")
+            .args(config.args())
+            .env(config::PEPPER_VAR, config::PEPPER)
             .arg("--listen")
             .arg(format!("127.0.0.1:{port}"))
             .arg("--database-url")
             .arg(db_url)
-            .arg("--orange-client-id")
-            .arg("m1-acceptance-gate-test-orange-client-id")
-            .arg("--orange-client-secret")
-            .arg("m1-acceptance-gate-test-orange-client-secret")
-            .arg("--orange-sender-number")
-            .arg("+237600000000")
-            .arg("--hash-pepper")
-            .arg(TEST_HASH_PEPPER)
             .arg("--envelope-signing-key-file")
             .arg(&current_key)
             .arg("--envelope-next-signing-key-file")

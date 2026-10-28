@@ -18,10 +18,11 @@ use std::process::Command;
 
 /// Deliberately recognisable, and deliberately not a real credential.
 const DB_SENTINEL: &str = "SENTINELPASSWORD";
-const PEPPER_SENTINEL: &str = "SENTINELPEPPER";
-const ORANGE_SENTINEL: &str = "SENTINELORANGESECRET";
 
-const SENTINELS: [&str; 3] = [DB_SENTINEL, PEPPER_SENTINEL, ORANGE_SENTINEL];
+/// `DATABASE_URL` is the one secret still bound to a clap argument. The pepper
+/// and the provider secrets are `${VAR}` placeholders in the YAML since VSC-1:
+/// no argument can print them, and `sms_config::Secret`'s `Debug` redacts them.
+const SENTINELS: [&str; 1] = [DB_SENTINEL];
 
 fn help(args: &[&str]) -> String {
     let out = Command::new(env!("CARGO_BIN_EXE_sms-gateway"))
@@ -31,10 +32,8 @@ fn help(args: &[&str]) -> String {
             "DATABASE_URL",
             format!("postgres://vsms:{DB_SENTINEL}@db.example:5432/vsms"),
         )
-        .env("SMS_HASH_PEPPER", PEPPER_SENTINEL)
-        .env("ORANGE_CM_CLIENT_SECRET", ORANGE_SENTINEL)
         // `dotenvy` loads a developer's own `.env` in `main`, but never
-        // over a variable already set — these three win regardless.
+        // over a variable already set — this one wins regardless.
         .output()
         .expect("the binary under test is built by cargo before this test runs");
 

@@ -22,3 +22,15 @@ different question — process observability, not container liveness —
 so it does not replace the heartbeat file, it sits alongside it.
 `sms_metrics`'s own module doc covers what each of the four gauges this
 process's `/metrics` reports actually measures, and why.
+
+# VSC-1: the configuration is a YAML document, shared with the gateway
+
+`--roles`, `--database-url`, `--metrics-listen`, `--worker-id` and
+`--envelope-signing-key-file` are process plumbing and stay flags. The pool size
+and every provider's credentials are `config/application*.yml`
+(`--config`/`--profile`, `SMS_CONFIG`/`SMS_PROFILE`), the same document
+`sms-gateway serve` reads, so the two binaries cannot disagree about a provider.
+The provider registry is built from `sms_config::Providers`; an `aws_sms` entry
+that only has `events_topic_arn` is the gateway's half and registers nothing
+here. The flags that carried those values are refused before clap parses, naming
+the YAML key that replaced each (`sms_config::RETIRED`).

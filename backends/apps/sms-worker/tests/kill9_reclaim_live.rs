@@ -44,6 +44,7 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
 };
+use sms_test_support::config::{self, TestConfig};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -381,16 +382,20 @@ impl Drop for KillOnDrop {
 
 fn spawn_worker(database_url: &str, orange_base_url: &str, worker_id: &str) -> KillOnDrop {
     let bin = env!("CARGO_BIN_EXE_sms-worker");
+    // Never a real Orange account — the responder above never checks the
+    // credentials, only that dispatch's own startup finds a provider (VSC-1:
+    // the `providers` entry of the YAML, where the flags used to be).
+    let overlay = format!(
+        "providers:\n  - code: orange_cm\n    host:\n      url: {orange_base_url}\n    \
+         credentials:\n      client_id: kill9-test-client\n      client_secret: \
+         kill9-test-secret\n    settings:\n      sender_number: \"{SENDER_NUMBER}\"\n"
+    );
+    let config = TestConfig::write(&format!("kill9-{worker_id}"), &overlay);
     let child = Command::new(bin)
         .args(["--roles", "dispatch"])
         .args(["--database-url", database_url])
-        // Never a real Orange account — the responder above never checks
-        // these, only that dispatch's own startup requires all three set
-        // together (see main.rs's `orange_provider`).
-        .args(["--orange-client-id", "kill9-test-client"])
-        .args(["--orange-client-secret", "kill9-test-secret"])
-        .args(["--orange-sender-number", SENDER_NUMBER])
-        .args(["--orange-base-url", orange_base_url])
+        .args(config.args())
+        .env(config::PEPPER_VAR, config::PEPPER)
         .args(["--worker-id", worker_id])
         // Ephemeral metrics port: the default is a fixed 127.0.0.1:9091 and
         // `cargo test` runs test binaries in parallel, so two suites that each
