@@ -21,7 +21,7 @@ pins the published `v0.9.0` images, which predate the YAML configuration
 variables that this file no longer sets, and they ignore `SMS_CONFIG` and
 `SMS_PROFILE`, so the stack does not come up as designed (not exercised: the
 images this file needs are not yet published). The file is already written for the next release's images; release-please moves
-every default tag in it (the `x-release-please-version` comments) when that
+every default tag in it (the release-please annotations on each tag) when that
 release is cut, and it works again from then on. Until then use
 xref:local-development.adoc[Local development] (`just demo`, which builds from
 source), or build the images from this commit and pass their tag as

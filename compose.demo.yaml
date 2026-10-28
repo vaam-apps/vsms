@@ -4,7 +4,7 @@
 # sets, and they ignore SMS_CONFIG and SMS_PROFILE, so the stack does not come
 # up as designed (not exercised: the images this file needs are not yet
 # published). The file is already written for the images
-# release-please publishes next; the `x-release-please-version` comments move
+# release-please publishes next; the release-please annotations on each tag move
 # every default tag below to that release, and it works again from the first
 # tag cut after VSC-1 merged. Until then run `just demo` (builds from source) or
 # pass VSMS_IMAGE_TAG, VSMS_DEMO_IMAGE_TAG and VSMS_FAKE_ORANGE_IMAGE_TAG naming
