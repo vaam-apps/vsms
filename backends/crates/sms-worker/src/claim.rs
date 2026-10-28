@@ -606,9 +606,10 @@ async fn filter_by_endpoint_health(
 /// writes the row (`delivering`, a lease, an attempt counted), and a worker that
 /// then cannot send it has either failed an attempt that never reached the
 /// endpoint or invented a bookkeeping state to hide that. So the mode is decided
-/// where the rows are chosen, in the claim's own query, ahead of the over-fetch
-/// window: a sealed backlog the worker will not take cannot crowd the `hmac` rows
-/// it will out of that window.
+/// where the rows are chosen, from the endpoints read first (a `hmac` endpoint's
+/// attempts are asked for by its id), ahead of the over-fetch window: a sealed
+/// backlog the worker will not take cannot crowd the `hmac` rows it will out of
+/// that window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServedModes {
     /// The worker holds the signing key: `hmac` and `sealed` attempts alike.
@@ -645,7 +646,7 @@ fn endpoint_delivers(mode: WebhookDeliveryMode) -> FilterExpr {
 /// Whether a claim may take `endpoint`'s attempts at `now`: it is active and its
 /// circuit is closed (never opened, or open until a time that has passed). The one
 /// rule [`filter_by_endpoint_health`] and the keyless worker's choice of endpoints
-/// ([`claimable_hmac_endpoints`]) share.
+/// ([`hmac_only_candidates`]) share.
 fn endpoint_is_claimable(endpoint: &WebhookEndpoint, now: DateTime<Utc>) -> bool {
     endpoint.active
         && endpoint
@@ -674,8 +675,11 @@ async fn webhook_candidates(
         .max(budget);
     let candidates = match served {
         ServedModes::Both => both_modes_candidates(db, sys, now, fetch_budget).await?,
-        ServedModes::HmacOnly => hmac_only_candidates(db, sys, now, fetch_budget).await?,
+        ServedModes::HmacOnly => hmac_only_candidates(db, sys, now, budget, fetch_budget).await?,
     };
+    // Re-reads the endpoints of the candidates, on purpose and although the keyless
+    // path read them a moment ago: the point is to catch an endpoint an operator
+    // deactivated, or whose circuit opened, between that read and this one.
     filter_by_endpoint_health(db, sys, candidates, now, budget).await
 }
 
@@ -720,17 +724,35 @@ async fn both_modes_candidates(
 /// every entry's endpoint up until it has `fetch_budget` `hmac` rows, which is the
 /// whole sealed backlog when there are few of them (200 000 due sealed attempts
 /// and five `hmac` ones: 13 883 buffers, a poll). So the endpoints come first, from
-/// the small `webhook_endpoints` table, and each one's due attempts are asked for
-/// with the endpoint as an equality, which `webhook_endpoint_due_idx
-/// (endpoint_id, next_attempt_at)` answers in order from its first entry.
+/// the small `webhook_endpoints` table, and what is read next depends on them:
 ///
-/// It is one query per endpoint, deliberately and not one `endpointId IN (...)`:
-/// with a list the planner is free to read `webhook_due_idx` in time order and
-/// filter, and it does when it believes the endpoints hold a few percent of the
-/// table, which statistics over the whole table (history included) make it believe
-/// of any endpoint with a long past. An equality has no such plan to prefer: the
-/// per-endpoint index reads exactly the rows asked for, never more than the
-/// time-ordered index would. The merge of the per-endpoint lists by `nextAttemptAt`
+/// - **No `sealed` endpoint exists, in any state** (the all-`hmac` deployment,
+///   which is every deployment until an operator switches one): every attempt
+///   belongs to an `hmac` endpoint, so the mode filter would remove nothing and
+///   [`both_modes_candidates`] is exactly the right query. Its two index reads stop
+///   at `fetch_budget` rows, whatever the number of endpoints, which is what the
+///   claim cost before the mode was a condition at all. The rule is "none in any
+///   state", not "none active": an inactive or circuit-open `sealed` endpoint can
+///   hold many attempts, [`filter_by_endpoint_health`] would drop them only *after*
+///   they had filled the over-fetch window, and the fan-out below leaves them out
+///   before it.
+/// - **Otherwise** each claimable `hmac` endpoint's due attempts are asked for
+///   with the endpoint as an equality, which `webhook_endpoint_due_idx
+///   (endpoint_id, next_attempt_at)` answers in order from its first entry. It is
+///   one query per endpoint, deliberately and not one `endpointId IN (...)`: with a
+///   list the planner is free to read `webhook_due_idx` in time order and filter,
+///   and it does when it believes the endpoints hold a few percent of the table,
+///   which statistics over the whole table (history included) make it believe of
+///   any endpoint with a long past. An equality has no such plan to prefer.
+///
+/// The cost of the fan-out is therefore **per endpoint**: each query reads up to
+/// `min(its due backlog, budget)` full rows, so a mixed deployment with many
+/// backlogged `hmac` endpoints reads up to that many times `budget` per poll. Each
+/// is asked for `budget` and not `fetch_budget`: unhealthy endpoints are left out
+/// above already, and no endpoint can contribute more than `budget` rows to the
+/// oldest `budget` of the merge, so the batch is the same, bar an endpoint that
+/// turns unhealthy mid-poll (which [`CANDIDATE_OVERFETCH_FACTOR`] already allows to
+/// under-fill one poll). The merge of the per-endpoint lists by `nextAttemptAt`
 /// keeps the oldest-first order [`both_modes_candidates`] gives.
 ///
 /// The expired leases are one `IN` query: `webhook_attempts_lease_reclaim_idx`
@@ -740,9 +762,22 @@ async fn hmac_only_candidates(
     db: &Cratestack,
     sys: &CratestackContext,
     now: DateTime<Utc>,
+    budget: i64,
     fetch_budget: i64,
 ) -> Result<Vec<WebhookAttempt>, CratestackError> {
-    let endpoints = claimable_hmac_endpoints(db, sys, now).await?;
+    let endpoints = db.webhook_endpoint().find_many().run(sys).await?;
+    if !endpoints
+        .iter()
+        .any(|endpoint| endpoint.deliveryMode == WebhookDeliveryMode::sealed)
+    {
+        return both_modes_candidates(db, sys, now, fetch_budget).await;
+    }
+    let endpoints: Vec<String> = endpoints
+        .into_iter()
+        .filter(|endpoint| endpoint.deliveryMode == WebhookDeliveryMode::hmac)
+        .filter(|endpoint| endpoint_is_claimable(endpoint, now))
+        .map(|endpoint| endpoint.id)
+        .collect();
     if endpoints.is_empty() {
         return Ok(Vec::new());
     }
@@ -756,7 +791,7 @@ async fn hmac_only_candidates(
                     due_attempts(now).and(webhook_attempt::endpointId().eq(endpoint_id.clone())),
                 )
                 .order_by(webhook_attempt::nextAttemptAt().asc())
-                .limit(fetch_budget)
+                .limit(budget)
                 .run(sys)
                 .await?,
         );
@@ -778,28 +813,6 @@ async fn hmac_only_candidates(
         );
     }
     Ok(ready)
-}
-
-/// The ids of the `hmac` endpoints a claim may take attempts of now: [`endpoint_is_claimable`]
-/// among `webhook_endpoints`, a table of a few rows per app.
-async fn claimable_hmac_endpoints(
-    db: &Cratestack,
-    sys: &CratestackContext,
-    now: DateTime<Utc>,
-) -> Result<Vec<String>, CratestackError> {
-    let endpoints = db
-        .webhook_endpoint()
-        .find_many()
-        .where_expr(FilterExpr::from(
-            webhook_endpoint::deliveryMode().eq(WebhookDeliveryMode::hmac),
-        ))
-        .run(sys)
-        .await?;
-    Ok(endpoints
-        .into_iter()
-        .filter(|endpoint| endpoint_is_claimable(endpoint, now))
-        .map(|endpoint| endpoint.id)
-        .collect())
 }
 
 /// Claim up to `budget` webhook attempts a worker serving `served` can deliver

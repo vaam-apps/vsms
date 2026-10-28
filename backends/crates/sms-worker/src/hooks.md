@@ -71,11 +71,13 @@ default (`HttpClients`).
 A worker with no signing key still starts and still delivers every `hmac`
 endpoint, and it does not **claim** a `sealed` attempt at all
 ([`crate::claim::ServedModes::HmacOnly`]). The mode is decided where the rows are
-chosen: the claim reads the active `hmac` endpoints first and asks
-`webhook_endpoint_due_idx` for each one's due attempts, so its cost follows the
-`hmac` work and never touches a sealed backlog, however large (`claim.md` has the
-measurements). Filtering the rows after fetching them would let a sealed backlog
-fill the over-fetch window and starve the `hmac` rows behind it. A worker that
+chosen: the claim reads the endpoints first. With no `sealed` endpoint in any
+state it is the keyed claim's own query; otherwise it asks
+`webhook_endpoint_due_idx` for each active `hmac` endpoint's due attempts, so its
+cost follows the `hmac` work (per endpoint, up to `budget` rows each) and never
+touches a sealed backlog, however large (`claim.md` has the measurements).
+Filtering the rows after fetching them would let a sealed backlog fill the
+over-fetch window and starve the `hmac` rows behind it. A worker that
 holds the key claims both modes.
 
 Nothing about a sealed row is therefore written by a keyless worker: it stays
