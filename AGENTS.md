@@ -4614,6 +4614,45 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   plain build's `SHARE` lock stalls them for its whole duration. The statement is `CREATE INDEX IF NOT EXISTS` now, and
   `docs/runbooks/deployment.adoc` ("Before deploying: the `webhook_attempts` index of migration 0011") has the size query and the
   `CONCURRENTLY` build to run first; the migration test runs that statement and compares the index.
+- **Review round 7 (the third review of #448: head-of-line starvation, and 0011 over an invalid index).** (1) A claim took the
+  oldest rows of any endpoint and dropped the unhealthy ones after. An endpoint deactivated after a 410, or with its circuit
+  open, that held `budget` (3 x 20 = 60) or more due attempts, which nothing purges, was then all of every window and the claim
+  returned `[]` on every tick: delivery stopped for every app. Keyed workers had it from #447; round 6's all-`hmac` fallback
+  gave it to keyless ones. Measured with one inactive `hmac` endpoint holding 200 000 of the oldest due rows beside 50 healthy
+  ones x 2 000: the 60 oldest rows were all the inactive endpoint's, the claim took 0 and left 100 000 healthy attempts waiting.
+  There is one mechanism for both modes now: `ServedModes::can_claim` (mode served, active, circuit closed), the endpoints read
+  first, the single time-ordered query only when **every** endpoint is claimable, otherwise one `endpoint_id = $1` query per
+  claimable endpoint merged oldest first. Healthy deployments keep the single query (all-`hmac` healthy: 3 statements, 9 buffers;
+  keyed healthy and mixed: one endpoints read more than before, 9 buffers); the starved case costs what (c) always did, 52
+  statements and 1 176 buffers, for as long as the endpoint is out (`claim.md`, the table). The over-fetch factor is deleted: it
+  existed so that dropping unhealthy rows afterwards still filled the batch, those rows are left out before they are read now,
+  and what remains to drop is a row whose endpoint changed in the milliseconds between two reads, an under-filled poll the next
+  one does not repeat; keeping it cost three times the rows, payloads included, on every poll of every worker. Guarded by
+  `a_keyless_claim_over_all_hmac_endpoints_is_not_starved_by_a_deactivated_one` / `..._by_a_circuit_open_one`,
+  `a_keyed_claim_is_not_starved_by_a_deactivated_endpoint` / `..._by_a_circuit_open_endpoint` (the last fails on `47b8f1a`'s own
+  claim with `[]`), `a_keyless_claim_beside_a_sealed_endpoint_is_not_starved_by_a_deactivated_hmac_one`,
+  `a_deactivated_hmac_endpoint_still_keeps_a_keyless_claim_off_the_keyed_query` (the twin of the sealed one) and, for the cost,
+  `a_keyless_claim_over_healthy_hmac_endpoints_reads_about_budget_entries_of_the_time_ordered_index_only` and its keyed twin.
+  (2) `0011`'s `CREATE INDEX IF NOT EXISTS` stepped over an *invalid* index (an interrupted `CONCURRENTLY` build) and the migration
+  succeeded with one no query can use (`indisvalid` stayed false). (3) It also took the `SHARE` lock before checking, so it was
+  never "a no-op": over an index built by hand it queued behind every open write (a lock timeout with an uncommitted UPDATE
+  held). One `DO` block answers both: it looks the index up by name; absent, it builds it; present, valid and with the expected
+  definition, it runs no `CREATE INDEX` and so takes no lock; otherwise it raises, naming the runbook section, and `sms-migrate`
+  rolls it back (a `DO` runs under `raw_sql` in its transaction; the xtask guards read `0001_init` only). The runbook and the
+  migration say "runs no `CREATE INDEX`", not "no-op". (4) The re-read of the candidates' endpoints takes the worker's mode into
+  account, so a keyless worker drops an attempt whose endpoint was switched to `sealed` after the read; the `deliver_one`
+  fallback stays as the backstop. (5) The `ServedModes` and re-read docs describe the new design, and the fan-out test says why
+  it seeds 40 000 older sealed rows (the planner may otherwise answer the equality from `webhook_due_idx`).
+  **A lesson about the counters the cost tests read**: `idx_tup_read` is not only the claim's own entries. The planner reads the
+  two ends of an index to estimate a range (`get_actual_variable_range`), which steps over dead entries a vacuum has not
+  removed, and an idle backend hands its counters to the shared view on a timer of up to ten seconds, so a test that took its
+  baseline right after the previous test measured the previous test's claim (90 and 300 entries seen for a 20-entry claim,
+  only when that test ran right after another). The baseline is read once nothing is adding to it, and the single-query bound is
+  ten times `budget`, not two, against the 800 to 31 000 of the fan-out. Sabotage proofs (each watched failing, then restored):
+  the single query always (nine tests fail, the starvation ones with `[]`); never (the two healthy-cost tests); the mode
+  ignored everywhere (five); ignored in the re-read only (the new switch test); no merge sort (the oldest-across-endpoints
+  test); the fan-out asking for `3 x budget` (2 400 entries against a ceiling of 1 200); `0011` back to `IF NOT EXISTS` (lock
+  timeout at 1 s), without the validity check, without the definition check.
 - **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,
   and a signature cannot survive that. Its nonce memory is per process and cannot be replaced (the check runs in WebAssembly),
   unlike the Rust SDK's `with_nonce_store`; the README says so.

@@ -553,7 +553,7 @@ const HOOKS_LEASE: Duration = Duration::seconds(30);
 /// endpoint or invented a bookkeeping state to hide that. So the mode is decided
 /// where the rows are chosen, from the endpoints read first: a worker asks for
 /// the attempts of the endpoints it can serve, or, when every endpoint is one, for
-/// the oldest due attempts of any ([`webhook_candidates`]), and a sealed backlog it
+/// the oldest due attempts of any (`webhook_candidates`), and a sealed backlog it
 /// will not take cannot crowd the `hmac` rows it will out of a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServedModes {
@@ -775,7 +775,7 @@ async fn per_endpoint_candidates(
 /// inactive, circuit-open (§8.5: "stops attempting that endpoint... rows are
 /// still created as `pending`, so nothing is lost — they're just not
 /// attempted") or, for a keyless worker, no longer `hmac`. Not what keeps an
-/// unhealthy endpoint's backlog out of the window — [`webhook_candidates`] does
+/// unhealthy endpoint's backlog out of the window — `webhook_candidates` does
 /// that, before reading a row — but the check that holds at the last moment before
 /// the leases: the shortest the race between an operator's change and the claim can
 /// be made, the leases being compare-and-swaps on the attempt and not on the
@@ -893,7 +893,7 @@ impl Claimable for WebhookAttempt {
     /// (attempted at least once, resting out its backoff, `nextAttemptAt`
     /// set by `hooks::write_outcome`) — plus a crash-reclaim group: a
     /// `delivering` row whose lease has expired, `webhook_attempts_lease_
-    /// reclaim_idx`'s own reason to exist. [`webhook_candidates`] reads the
+    /// reclaim_idx`'s own reason to exist. `webhook_candidates` reads the
     /// endpoints first and leaves out those a claim must not take from
     /// (deactivated, circuit open) before it reads a row, so an unhealthy
     /// endpoint's backlog cannot fill the window; [`filter_by_endpoint_health`]
