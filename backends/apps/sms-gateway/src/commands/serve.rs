@@ -144,7 +144,7 @@ async fn build_dlr_router(
 
     if providers.is_empty() {
         anyhow::bail!(
-            "at least one provider must be configured to serve the DLR route: a `providers`              entry with `code: orange_cm` or `code: mtn_cm`, or `code: aws_sms` with              `settings.events_topic_arn` (config/application*.yml)"
+            "at least one provider must be configured to serve the DLR route: a `providers` entry with `code: orange_cm` or `code: mtn_cm`, or `code: aws_sms` with `settings.events_topic_arn` (config/application*.yml)"
         );
     }
 
@@ -167,7 +167,7 @@ fn aws_sms_receiver(
     #[cfg(feature = "fake-aws")]
     {
         tracing::warn!(
-            "this sms-gateway was built with the `fake-aws` feature, for demos and tests only;              a release image is never built with it"
+            "this sms-gateway was built with the `fake-aws` feature, for demos and tests only; a release image is never built with it"
         );
         if let Some(base) = aws.fake_sns_cert_base.as_deref() {
             return fake_aws_receiver(aws.events_topic_arn.clone(), base).map(Some);
@@ -176,7 +176,7 @@ fn aws_sms_receiver(
     #[cfg(not(feature = "fake-aws"))]
     if aws.fake_sns_cert_base.is_some() {
         anyhow::bail!(
-            "providers[code=aws_sms].settings.fake_sns_cert_base is set, but this sms-gateway              was built without the `fake-aws` feature and cannot be told to trust a fake SNS              certificate authority. Remove the key."
+            "providers[code=aws_sms].settings.fake_sns_cert_base is set, but this sms-gateway was built without the `fake-aws` feature and cannot be told to trust a fake SNS certificate authority. Remove the key."
         );
     }
     aws.events_topic_arn
