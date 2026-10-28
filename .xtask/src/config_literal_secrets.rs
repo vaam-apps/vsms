@@ -27,7 +27,10 @@ pub fn run(root: &Path) -> Result<(), String> {
         .filter(|path| {
             path.file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with("application") && name.ends_with(".yml"))
+                .is_some_and(|name| {
+                    name.starts_with("application")
+                        && Path::new(name).extension().is_some_and(|ext| ext == "yml")
+                })
         })
         .collect();
     files.sort();
@@ -125,11 +128,20 @@ fn is_placeholder(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// No literal found.
+    fn none() -> Vec<(usize, &'static str)> {
+        Vec::new()
+    }
+
     #[test]
     fn a_placeholder_is_not_a_literal() {
-        assert!(literal_secrets("  client_secret: ${ORANGE_CM_CLIENT_SECRET}\n").is_empty());
-        assert!(
-            literal_secrets("  hash_pepper: \"${SMS_HASH_PEPPER}\"  # the pepper\n").is_empty()
+        assert_eq!(
+            literal_secrets("  client_secret: ${ORANGE_CM_CLIENT_SECRET}\n"),
+            none()
+        );
+        assert_eq!(
+            literal_secrets("  hash_pepper: \"${SMS_HASH_PEPPER}\"  # the pepper\n"),
+            none()
         );
     }
 
@@ -153,15 +165,15 @@ mod tests {
 
     #[test]
     fn an_identifier_may_be_a_literal() {
-        assert!(
-            literal_secrets("      client_id: orange-id\n      access_key_id: AKIDEXAMPLE\n")
-                .is_empty()
+        assert_eq!(
+            literal_secrets("      client_id: orange-id\n      access_key_id: AKIDEXAMPLE\n"),
+            none()
         );
     }
 
     #[test]
     fn a_commented_literal_is_not_read() {
-        assert!(literal_secrets("  # client_secret: hunter2\n").is_empty());
+        assert_eq!(literal_secrets("  # client_secret: hunter2\n"), none());
     }
 
     #[test]

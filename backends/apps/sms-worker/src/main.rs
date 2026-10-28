@@ -96,6 +96,9 @@ struct Cli {
     config: sms_config::ConfigArgs,
 }
 
+/// The adapters this process holds credentials for, by `Provider.key`.
+type ProviderRegistry = HashMap<String, Arc<dyn SmsProvider>>;
+
 /// Build the [`sms_worker::ProviderRegistry`] this process holds
 /// credentials for, keyed by each adapter's own [`SmsProvider::key`] — #62:
 /// `dispatch::resolve_provider` looks a routed message's provider up by
@@ -111,10 +114,8 @@ struct Cli {
 ///
 /// The AWS adapter's own range checks (region shape, time to live) on a
 /// configuration the loader accepted.
-fn build_provider_registry(
-    providers: &sms_config::Providers,
-) -> Result<HashMap<String, Arc<dyn SmsProvider>>> {
-    let mut registry: HashMap<String, Arc<dyn SmsProvider>> = HashMap::new();
+fn build_provider_registry(providers: &sms_config::Providers) -> Result<ProviderRegistry> {
+    let mut registry = ProviderRegistry::new();
     if let Some(orange) = &providers.orange_cm {
         let provider: Arc<dyn SmsProvider> = Arc::new(
             sms_provider_orange_cm::OrangeCmProvider::new(orange.to_provider_config()),
@@ -223,6 +224,40 @@ fn spawn_heartbeat(path: std::path::PathBuf, shutdown: CancellationToken) {
     });
 }
 
+/// Reads the YAML configuration (VSC-1) and builds the provider registry from
+/// it, before anything is connected to: a retired variable, an unset `${VAR}` or
+/// a provider with a key missing stops the process here, naming the YAML key.
+/// Pulled out of `main` for clippy's `too_many_lines`, the convention this
+/// binary and the gateway's `serve` share for a block that is self-contained.
+///
+/// # Errors
+///
+/// The configuration does not load, an adapter refuses its settings, or
+/// `dispatch` is selected and no provider is configured to submit through.
+fn load_configuration(cli: &Cli, roles: &[Role]) -> Result<(sms_config::Config, ProviderRegistry)> {
+    let config = cli
+        .config
+        .load()
+        .context("loading the YAML configuration")?;
+    info!(
+        deployment = %config.deployment.name,
+        livemode = config.deployment.livemode,
+        profile = %cli.config.profile,
+        "configuration loaded"
+    );
+
+    let providers = build_provider_registry(&config.providers)?;
+    if roles.contains(&Role::Dispatch) && providers.is_empty() {
+        bail!(
+            "--roles includes dispatch, which needs at least one provider to submit anything: \
+             a `providers` entry with `code: orange_cm` or `code: mtn_cm`, or `code: aws_sms` \
+             with its sending keys (region, configuration_set, tps_ceiling, \
+             cost_per_segment_xaf, credentials) in config/application*.yml"
+        );
+    }
+    Ok((config, providers))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Must run before anything constructs an HTTP client — see
@@ -262,26 +297,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let roles = parse_roles(&cli.roles)?;
-    let config = cli
-        .config
-        .load()
-        .context("loading the YAML configuration")?;
-    info!(
-        deployment = %config.deployment.name,
-        livemode = config.deployment.livemode,
-        profile = %cli.config.profile,
-        "configuration loaded"
-    );
-
-    let providers = build_provider_registry(&config.providers)?;
-    if roles.contains(&Role::Dispatch) && providers.is_empty() {
-        bail!(
-            "--roles includes dispatch, which needs at least one provider to submit anything: \
-             a `providers` entry with `code: orange_cm` or `code: mtn_cm`, or `code: aws_sms` \
-             with its sending keys (region, configuration_set, tps_ceiling, \
-             cost_per_segment_xaf, credentials) in config/application*.yml"
-        );
-    }
+    let (config, providers) = load_configuration(&cli, &roles)?;
 
     let webhook_sealer = webhook_sealer(&cli, &roles)?;
 
