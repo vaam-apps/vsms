@@ -67,122 +67,80 @@ hit exactly that error before this line was added.
 {{- end -}}
 
 {{/*
-MTN is optional, and an unconfigured MTN must leave *no* MTN env var
-behind — not even an empty one. This is not tidiness; it is the
-difference between a gateway that starts and one that does not.
+VSC-1: the chart's guards. Each is a combination of values that is well-typed
+and still cannot work, and each calls `fail`, which aborts `helm lint`,
+`helm template`, `helm install` and `helm upgrade` alike. Every message starts
+with `vsms chart guard "<name>":` so a test can assert which guard fired.
 
-`sms-gateway`/`sms-worker` take the MTN credentials as `Option<T>` clap
-args bound to these env vars, and clap reads an env var that is *present
-but empty* as a value, not as absence. Verified against clap 4 directly
-rather than assumed:
-
-  - `Option<String>` with `MTN_CLIENT_ID=""` yields `Some("")`, which
-    trips `mtn_credentials`' all-or-none check ("all five must be set
-    together, or none") and aborts startup.
-  - `Option<f64>` with `MTN_TPS_CEILING=""` is worse still: clap fails to
-    parse before any of this repo's own validation runs, with
-    `invalid value '' for '--mtn-tps-ceiling': cannot parse float from
-    empty string`. The container never starts, and the message points at
-    a flag the operator never set.
-
-values.yaml cannot express this itself — it is loaded as plain data and
-only specific field *values* go through common's selective `tpl` pass
-(see this file's own R4 note above), so a `{{ if }}` there could blank a
-value but never remove the key. This template is a real Go-template pass
-over the merged values, so it can delete the keys outright, the same
-mutate-before-generate trick `global.nameOverride` and `admin.enabled`
-already use.
-
-Keyed on `mtn.clientId` alone: it is the first of the five the binary
-requires, so a deployment that sets it and forgets the rest gets this
-repo's own explicit all-or-none error rather than a silent half-config.
+retired-values: the structured `orange.*`, `mtn.*` and `awsSms.*` values were
+removed. They were the chart's copy of flags the binaries no longer have, and
+silently ignoring a release that still sets them would deploy a gateway with no
+provider (or, worse, with the one an earlier release configured and nobody
+meant to keep). The same hard cutover the binaries make: refuse, and say where
+the value went.
 */}}
-{{- if not .Values.mtn.clientId }}
+{{- range $retired := list "orange" "mtn" "awsSms" }}
+{{- if hasKey $.Values $retired }}
+{{- fail (printf "vsms chart guard \"retired-values\": values.%s was removed. A provider is no longer a chart value: it is a `providers` entry in the YAML overlay (config.overlay), read by sms-gateway and sms-worker alike, and its secret stays in existingSecrets.%s as the `${...}` placeholder of the same name (docs/architecture.md, section 9.4; docs/runbooks/deployment.adoc, \"Kubernetes (Helm)\"). Delete values.%s." $retired $retired $retired) }}
+{{- end }}
+{{- end }}
+
+{{/*
+config-overlay: the baked base file configures no provider, and the gateway
+refuses to start with none, so a release with no overlay is a crash-looping Pod
+found at `kubectl get pods` instead of here. The profile names a file, so it is
+held to what a file name in this position can safely be.
+*/}}
+{{- if not (and .Values.config.createOverlayConfigMap (trim .Values.config.overlay)) }}
+{{- fail "vsms chart guard \"config-overlay\": config.createOverlayConfigMap must be true and config.overlay must hold the YAML overlay. The image's base configuration (/config/application.yml) lists no SMS provider, and sms-gateway refuses to start with none. See the comment above `config:` in values.yaml for a minimal overlay." }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9][a-z0-9-]*$" .Values.config.profile) }}
+{{- fail (printf "vsms chart guard \"config-profile\": config.profile is %q; it names the file application-<profile>.yml and must match ^[a-z0-9][a-z0-9-]*$." .Values.config.profile) }}
+{{- end }}
+
+{{/*
+The overlay mount. A persistence item's `path` is not passed through `tpl`, and
+the file name carries the profile, so the mounts are built here, in a real
+template pass, the same mutate-before-generate trick `global.nameOverride` and
+`admin.enabled` use. `subPath` is load-bearing: see the comment above `config:`
+in values.yaml. The gateway and the worker mount the same file.
+*/}}
+{{- $overlayFile := printf "application-%s.yml" .Values.config.profile }}
+{{- $overlayMount := list (dict "path" (printf "%s/%s" (dir .Values.config.path) $overlayFile) "subPath" $overlayFile "readOnly" true) }}
+{{- $_ := set (index .Values.persistence "config-overlay") "advancedMounts" (dict "gateway" (dict "main" $overlayMount) "worker" (dict "main" $overlayMount)) -}}
+
+{{/*
+The process reads its configuration once, at start (no hot reload), and a
+ConfigMap mounted with `subPath` does not update in place, so an edit to the
+overlay has to restart the Pods. A checksum of its text on both pod templates
+does that: the template changes exactly when the overlay does.
+*/}}
+{{- $overlaySum := sha256sum .Values.config.overlay }}
 {{- range $controller := list "gateway" "worker" }}
-{{- $env := (index $.Values.controllers $controller "containers" "main" "env") }}
-{{- range $key := list "MTN_CLIENT_ID" "MTN_CLIENT_SECRET" "MTN_SERVICE_CODE" "MTN_SENDER_ID" "MTN_BASE_URL" "MTN_TPS_CEILING" "MTN_COST_PER_SEGMENT_XAF" "MTN_SUPPORTS_ALPHANUMERIC_SENDER" }}
-{{- $_ := unset $env $key }}
-{{- end }}
-{{- end }}
-{{- end -}}
-
-{{/*
-Providers. The gateway refuses to start with no provider configured at all
-(Orange, MTN, or AWS' events topic), and the worker refuses `--roles
-dispatch` likewise. Failing here instead gives the operator the message at
-`helm template` time rather than as a crash-looping Pod.
-*/}}
-{{- if not (or .Values.orange.clientId .Values.mtn.clientId .Values.awsSms.region .Values.awsSms.eventsTopicArn) }}
-{{- fail "no SMS provider is configured: set orange.clientId, mtn.clientId, awsSms.region and/or awsSms.eventsTopicArn" }}
+{{- $pod := index $.Values.controllers $controller "pod" }}
+{{- $_ := set $pod "annotations" (merge (default (dict) $pod.annotations) (dict "checksum/sms-config" $overlaySum)) -}}
 {{- end }}
 
 {{/*
-Orange is optional now that it is not the only provider, and an AWS-only (or
-MTN-only) deployment must leave *no* Orange env var behind - the same
-present-but-empty hazard as MTN above (`ORANGE_CM_CLIENT_ID=""` is
-`Some("")` to clap and trips the all-or-none check). ORANGE_CM_BASE_URL is
-left alone: it always has a value and the binary defaults it anyway.
+A provider's secret is optional, and an unconfigured one must leave *no* env var
+behind - not even an empty one. The overlay reads the secret as `${NAME}`, and an
+env var that is present-but-empty is a secretKeyRef to a Secret named ""
+(rejected by the API server), where an absent one is simply not there. values.yaml
+cannot express this itself - it is loaded as plain data, and only specific field
+*values* go through common's selective `tpl` pass (see this file's own R4 note
+above) - so a `{{ if }}` there could blank a value but never remove the key.
+This template is a real Go-template pass over the merged values, so it can
+delete the keys outright, the same trick as above.
 
-Stripping them also removes the chart's former render-time `required` on
-orange.clientId; the "no provider at all" check above replaces it.
-
-seedDispatch is switched off with it, for a reason beyond tidiness: it
-seeds an `orange_cm` Provider row *and a catch-all Route*. In a deployment
-whose worker holds no Orange credentials that route would still win the
-weighted draw for about half of all messages, and dispatch would keep
-retrying a provider it cannot resolve.
+The pepper is the one secret that is never optional; its `required` is in
+values.yaml.
 */}}
-{{- if not .Values.orange.clientId }}
+{{- range $secret := list (list "orange" "ORANGE_CM_CLIENT_SECRET") (list "mtn" "MTN_CLIENT_SECRET") (list "awsSms" "AWS_SMS_SECRET_ACCESS_KEY") }}
+{{- if not (index $.Values.existingSecrets (index $secret 0) "name") }}
 {{- range $controller := list "gateway" "worker" }}
-{{- $env := (index $.Values.controllers $controller "containers" "main" "env") }}
-{{- range $key := list "ORANGE_CM_CLIENT_ID" "ORANGE_CM_CLIENT_SECRET" "ORANGE_CM_SENDER_NUMBER" }}
-{{- $_ := unset $env $key }}
+{{- $_ := unset (index $.Values.controllers $controller "containers" "main" "env") (index $secret 1) }}
 {{- end }}
 {{- end }}
-{{- $_ := set .Values.controllers.seedDispatch "enabled" false -}}
-{{- end -}}
-
-{{/*
-AWS End User Messaging SMS is optional, and an unconfigured AWS must leave
-*no* AWS_SMS_* env var behind, for the MTN reasons above. Two independent
-switches because the two binaries are independent:
-
-  - the worker's whole AWS block is keyed on `awsSms.region` (the first of
-    the six it requires together, so a half-filled block gets the binary's
-    own all-or-none error). Its three optional variables are additionally
-    stripped one by one when empty, because an empty `Option<String>` is
-    `Some("")` and an empty `AWS_SMS_MESSAGE_TYPE` fails to parse;
-  - the gateway needs only `AWS_SMS_EVENTS_TOPIC_ARN` (no credentials), keyed
-    on `awsSms.eventsTopicArn`.
-
-`seedDispatchAws` is switched on by either, and its args are assembled here
-because a controller's `args` list is not passed through `tpl`. Flags are
-appended only when their value is set, so the subcommand's own defaults
-apply otherwise. The gateway resolves a Provider row for every provider it
-is configured with before binding its listener, which is why each provider
-needs its own seed.
-*/}}
-{{- if not .Values.awsSms.region }}
-{{- $env := (index $.Values.controllers "worker" "containers" "main" "env") }}
-{{- range $key := list "AWS_SMS_REGION" "AWS_SMS_ACCESS_KEY_ID" "AWS_SMS_SECRET_ACCESS_KEY" "AWS_SMS_CONFIGURATION_SET" "AWS_SMS_TPS_CEILING" "AWS_SMS_COST_PER_SEGMENT_XAF" "AWS_SMS_ORIGINATION_IDENTITY" "AWS_SMS_MESSAGE_TYPE" "AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER" "AWS_SMS_ENDPOINT_URL" "AWS_SMS_TIME_TO_LIVE_SECONDS" }}
-{{- $_ := unset $env $key }}
 {{- end }}
-{{- else }}
-{{- $env := (index $.Values.controllers "worker" "containers" "main" "env") }}
-{{- if not .Values.awsSms.originationIdentity }}{{- $_ := unset $env "AWS_SMS_ORIGINATION_IDENTITY" }}{{- end }}
-{{- if not .Values.awsSms.messageType }}{{- $_ := unset $env "AWS_SMS_MESSAGE_TYPE" }}{{- end }}
-{{- if not .Values.awsSms.endpointUrl }}{{- $_ := unset $env "AWS_SMS_ENDPOINT_URL" }}{{- end }}
-{{- if not .Values.awsSms.timeToLiveSeconds }}{{- $_ := unset $env "AWS_SMS_TIME_TO_LIVE_SECONDS" }}{{- end }}
-{{- end }}
-{{- if not .Values.awsSms.eventsTopicArn }}
-{{- $_ := unset (index $.Values.controllers "gateway" "containers" "main" "env") "AWS_SMS_EVENTS_TOPIC_ARN" }}
-{{- end }}
-{{- if or .Values.awsSms.region .Values.awsSms.eventsTopicArn }}
-{{- $seed := list "seed-dispatch" "--key" "aws_sms" "--kind" "aggregator_http" "--display-name" "AWS End User Messaging SMS" "--credential-ref" "env:AWS_SMS_SECRET_ACCESS_KEY" }}
-{{- if .Values.awsSms.tpsCeiling }}{{- $seed = concat $seed (list "--max-tps" (toString .Values.awsSms.tpsCeiling)) }}{{- end }}
-{{- if .Values.awsSms.costPerSegmentXaf }}{{- $seed = concat $seed (list "--cost-per-segment-xaf" (toString .Values.awsSms.costPerSegmentXaf)) }}{{- end }}
-{{- $_ := set .Values.controllers.seedDispatchAws "enabled" true -}}
-{{- $_ := set .Values.controllers.seedDispatchAws.containers.main "args" $seed -}}
-{{- end -}}
 
 {{ include "bjw-s.common.loader.generate" . }}

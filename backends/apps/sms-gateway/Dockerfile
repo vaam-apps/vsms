@@ -94,6 +94,17 @@ FROM gcr.io/distroless/static-debian13:nonroot AS runtime
 
 COPY --from=builder /tmp/sms-gateway /usr/local/bin/sms-gateway
 
+# VSC-1: the YAML deployment configuration (config/application.yml and its
+# profile overlays) is baked into the image, and SMS_CONFIG names the base file.
+# The profile (SMS_PROFILE) is chosen by whoever runs the image, never baked:
+# the default is `dev`, which points at local fakes and is never livemode.
+# Nothing in these files is a secret - secrets are `${VAR}` placeholders
+# (`cargo xtask config-literal-secrets`), delivered through the environment - so
+# a layer holding them holds no credential. A deployment replaces one overlay by
+# mounting a file over /config/application-<profile>.yml.
+COPY --from=builder /app/config /config
+ENV SMS_CONFIG=/config/application.yml
+
 # main.rs's own default (127.0.0.1:8080) is correct for a bare-metal
 # deploy where this process shares a host with its Caddy edge — inside a
 # container, "loopback" is this container's own network namespace, so a

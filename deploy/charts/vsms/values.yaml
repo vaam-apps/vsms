@@ -1,10 +1,17 @@
 # deploy/charts/vsms/values.yaml — every key below traces to a real
 # `#[arg(long, env = "...")]` in backends/apps/sms-gateway/src/main.rs or
-# backends/apps/sms-worker/src/main.rs, a docker-compose.yml service block, or an
-# frontends/apps/admin/ env var — the same "nothing speculative" convention
-# deploy/.env.example documents for the compose path. Read
-# docs/runbooks/deployment.adoc's "Kubernetes (Helm)" section alongside this
-# file before a real install.
+# backends/apps/sms-worker/src/main.rs, a docker-compose.yml service block, an
+# frontends/apps/admin/ env var, or the YAML deployment configuration (`config`
+# below) — the same "nothing speculative" convention deploy/.env.example
+# documents for the compose path. Read docs/runbooks/deployment.adoc's
+# "Kubernetes (Helm)" section alongside this file before a real install.
+#
+# VSC-1: what a deployment DECIDES — the pepper's source, the pool sizes, the
+# rate limits, every SMS provider and its credentials — is not a value of this
+# chart. It is the YAML overlay under `config.overlay`, opaque text to Helm,
+# read by sms-gateway and sms-worker alike (docs/architecture.md, section 9.4).
+# The structured `orange.*`, `mtn.*` and `awsSms.*` values this chart used to
+# carry are gone, and the chart refuses a release that still sets them.
 #
 # Fields referenced with `{{ ... }}` below are evaluated by the bjw-s
 # common library's own `tpl` pass over specific value classes only —
@@ -107,30 +114,33 @@ existingSecrets:
   # #134/#140 — HMAC-SHA256 pepper behind Message.msisdnHash/bodyHash.
   # Minimum 32 bytes; sms-gateway validates this at boot and refuses to
   # bind on a missing or too-short value. Generate with
-  # `openssl rand -base64 48`, exactly like the compose path.
+  # `openssl rand -base64 48`, exactly like the compose path. Delivered as
+  # the environment variable SMS_HASH_PEPPER, which the base configuration
+  # reads as `${SMS_HASH_PEPPER}` (`security.hash_pepper`). sms-worker gets it
+  # too: it loads the same document and never uses the value.
   hashPepper:
     name: ""
     key: SMS_HASH_PEPPER
-  # Orange Cameroon's OAuth2 client_credentials secret. The client id and
-  # sender number are not secret in the same sense (see .Values.orange
-  # below) and stay plain values, matching deploy/.env.example's own split.
+  # The three provider secrets below are optional, and each feeds the
+  # `${...}` placeholder of the same name in your overlay: the gateway and the
+  # worker get the environment variable when `name` is set, and neither when it
+  # is empty. A provider's client id, sender number and the rest are not secret
+  # and are written in the overlay itself.
+  #
+  # Orange Cameroon's OAuth2 client_credentials secret: `${ORANGE_CM_CLIENT_SECRET}`.
   orange:
     name: ""
     key: ORANGE_CM_CLIENT_SECRET
-  # MTN MADAPI's OAuth2 client_credentials secret. Only consulted when
-  # .Values.mtn.clientId is set — see the mtn block below and
-  # templates/common.yaml's own MTN stripping, which removes every MTN env
-  # var (including this secretKeyRef) from both controllers when MTN is
-  # not configured. Leave name empty for an Orange-only deployment.
+  # MTN MADAPI's OAuth2 client_credentials secret: `${MTN_CLIENT_SECRET}`.
+  # Leave name empty for a deployment without MTN.
   mtn:
     name: ""
     key: MTN_CLIENT_SECRET
-  # AWS End User Messaging SMS: the IAM user's secret access key. Only
-  # consulted when .Values.awsSms.region is set - templates/common.yaml
-  # strips every worker-side AWS_SMS_* env var (this secretKeyRef included)
-  # when it is not. The access key ID is a plain value (.Values.awsSms
-  # below), the same id/secret split Orange and MTN use. The gateway never
-  # needs this: it verifies SNS signatures, not AWS credentials.
+  # AWS End User Messaging SMS: the IAM user's secret access key:
+  # `${AWS_SMS_SECRET_ACCESS_KEY}`. The access key ID is a plain value in the
+  # overlay, the same id/secret split Orange and MTN use. Only the worker's
+  # sending half uses the value, but both processes load the one document, so a
+  # placeholder in the overlay needs the variable in both.
   awsSms:
     name: ""
     key: AWS_SMS_SECRET_ACCESS_KEY
@@ -163,114 +173,63 @@ existingSecrets:
 # below (never from a plain typed field — see this file's own header).
 # ---------------------------------------------------------------------------
 
-orange:
-  clientId: ""
-  senderNumber: ""
-  baseUrl: https://api.orange.com
-
-# MTN Cameroon via MADAPI, MTN's own developer platform. Entirely
-# optional: leave `clientId` empty and this deployment is Orange-only,
-# with every MTN env var stripped from both controllers before rendering.
+# ---------------------------------------------------------------------------
+# The YAML deployment configuration (VSC-1; docs/architecture.md, section 9.4).
 #
-# **Setting these is not sufficient on its own.** MADAPI sends no delivery
-# receipts until a `deliveryReportUrl` is registered against your approved
-# service code, which is a one-off API call, not a chart value:
+# sms-gateway and sms-worker read `config/application.yml`, which the images
+# bake at /config, and overlay `application-<profile>.yml` beside it. This chart
+# mounts `config.overlay` as that overlay, with `subPath`, into BOTH the gateway
+# and the worker, so they cannot disagree about a provider.
 #
-#     sms-gateway mtn-subscribe-dlr \
-#       --delivery-report-url https://<gateway host>/dlr/mtn_cm
+# `subPath` is load-bearing, not stylistic: the image bakes the whole `config/`
+# directory, so mounting a ConfigMap AT /config would replace it and the base
+# file would vanish (the process then refuses to start, naming a config file it
+# can no longer see). `subPath` also means the mounted file does not live-update
+# when the ConfigMap changes; the checksum annotation templates/common.yaml puts
+# on both pod templates turns an overlay edit into a rolling restart instead,
+# consistent with "no hot reload".
 #
-# Skip it and messages submit fine, reach `submitted`, and sit there with
-# no receipt ever arriving. See docs/runbooks/deployment.adoc's own
-# "Enabling MTN delivery receipts" section.
+# The overlay is REQUIRED (templates/common.yaml refuses a release without it):
+# the baked base file configures no provider, and a gateway with none refuses to
+# start. A minimal one, Orange only:
 #
-# `tpsCeiling` and `costPerSegmentXaf` have no defaults on purpose. They
-# are commercial terms of a specific MTN contract, absent from MADAPI's
-# own Swagger, and `MtnConfig` has no `Default` precisely so a real
-# sending path can never acquire an invented TPS ceiling (which would
-# either throttle a paid contract or get the account rate-limited) or an
-# invented per-segment price (which would misprice estimatedCostXaf). If
-# you set `clientId` you must set these too; the gateway refuses to start
-# on a partially-configured MTN, by design.
-mtn:
-  clientId: ""
-  serviceCode: ""
-  # Optional. MADAPI's senderAddress takes precedence over serviceCode
-  # when set; per-message sender IDs from sendMessage win over both.
-  senderId: ""
-  baseUrl: https://api.mtn.com
-  # Quoted strings, not YAML numbers: these are rendered into env values,
-  # and an unquoted 5.0 would reach the container as "5" and an unquoted
-  # 16.00 as "16", which is a silent precision change on a money field.
-  tpsCeiling: ""
-  costPerSegmentXaf: ""
-  supportsAlphanumericSender: false
-  # No dlrNotifyUrl here on purpose. Orange's own docs (§4 "About SMS
-  # Delivery Receipt", https://developer.orange.com/apis/sms/getting-started)
-  # are explicit that the DR webhook is pre-registered, account-level, and
-  # whitelisted via a support web form — not a per-request field, so
-  # OrangeCmConfig carries no such knob for a chart value to plumb into.
-
-# AWS End User Messaging SMS (provider key `aws_sms`). Entirely optional:
-# leave `region` and `eventsTopicArn` empty and every AWS_SMS_* env var is
-# stripped from both controllers before rendering (templates/common.yaml) -
-# never rendered empty, because a present-but-empty env var is a value to
-# clap, not an absence (`AWS_SMS_TPS_CEILING=""` aborts the binary with
-# `cannot parse float from empty string`; an empty Option<String> trips the
-# all-or-none check).
+#   config:
+#     profile: prod
+#     createOverlayConfigMap: true
+#     overlay: |
+#       deployment:
+#         name: vsms
+#         livemode: true
+#         public_base_url: https://sms.example.com
+#       providers:
+#         - code: orange_cm
+#           credentials:
+#             client_id: <the Orange client id>
+#             client_secret: ${ORANGE_CM_CLIENT_SECRET}    # existingSecrets.orange
+#           settings:
+#             sender_number: "+237..."
 #
-# Two halves, two binaries, deliberately independent:
-#
-#   * SENDING - sms-worker (`--roles dispatch`). `region` is the switch:
-#     set it and `accessKeyId`, `configurationSet`, `tpsCeiling` and
-#     `costPerSegmentXaf` (plus existingSecrets.awsSms) are all required;
-#     the worker refuses to start on a half-filled block, by design.
-#     `tpsCeiling` and `costPerSegmentXaf` have no defaults for the same
-#     reason MTN's have none: they are commercial terms of your AWS account
-#     (AWS prices in USD per destination country; this is that price in
-#     XAF), and an invented value either throttles you or misprices
-#     estimatedCostXaf.
-#
-#   * RECEIVING - sms-gateway. `eventsTopicArn` is the switch: the ARN of
-#     the Amazon SNS topic the configuration set publishes delivery events
-#     to. Setting it mounts POST /dlr/aws_sms, which authenticates every
-#     delivery by verifying the SNS message signature against this topic.
-#     The gateway needs NO AWS credentials. Without it, messages submit
-#     fine, reach `submitted`, and sit there - AWS reports nothing.
-#     Subscribe the topic to https://<gateway host>/dlr/aws_sms (https
-#     endpoint; SNS then sends a SubscriptionConfirmation).
-#
-# An AWS-only go-live sets orange.clientId/mtn.clientId to nothing and both
-# halves here; the seedDispatchAws hook then seeds the `aws_sms` Provider
-# row and a catch-all Route. If AWS runs beside another provider, both
-# seed hooks add a catch-all Route at the same priority and weight, so
-# traffic splits evenly until you edit the Routes in the console.
-awsSms:
-  region: ""
-  accessKeyId: ""
-  # The configuration set whose event destination publishes to the SNS
-  # topic above. Required by the worker: without one AWS reports nothing.
-  configurationSet: ""
-  # Quoted strings, not YAML numbers - see mtn.tpsCeiling.
-  tpsCeiling: ""
-  costPerSegmentXaf: ""
-  # Optional. A pool/phone number/sender ID in the AWS account; used when
-  # no approved per-message sender ID is passed. Stripped when empty.
-  originationIdentity: ""
-  # `transactional` (default) or `promotional`.
-  messageType: transactional
-  supportsAlphanumericSender: false
-  # Optional. Overrides https://sms-voice.<region>.amazonaws.com/ (VPC
-  # endpoints, a local emulator). Stripped when empty.
-  endpointUrl: ""
-  # Optional. Seconds AWS keeps trying to deliver one message (5..259200),
-  # a quoted string like tpsCeiling. Unset, AWS tries for up to 72 hours,
-  # so an OTP vsms already expired (15 minutes by default) can still
-  # arrive days later. Match the shortest validity of the traffic routed
-  # to AWS: "900" for an OTP-only route (other classes default to 24
-  # hours, so "900" would cut them short). Stripped when empty.
-  timeToLiveSeconds: ""
-  # sms-gateway only - see above.
-  eventsTopicArn: ""
+# `livemode: true` turns on the rules a real deployment needs: https everywhere,
+# no stub host, and every secret a `${VAR}` placeholder rather than a literal.
+# `${VAR}` in the overlay must be set in the container environment, or the
+# process refuses to start naming it; the three provider secrets and the pepper
+# are wired from `existingSecrets`, and anything else the overlay reads is added
+# to BOTH controllers' `env` (controllers.gateway.containers.main.env and
+# controllers.worker.containers.main.env). The key reference, every provider's
+# settings and what is refused: docs/architecture.md, section 9.4.
+# ---------------------------------------------------------------------------
+config:
+  # `SMS_PROFILE`. Selects a FILE, never a code path: the overlay below is
+  # mounted as `application-<profile>.yml`, replacing the one the image bakes
+  # under that name (the image's `prod` is the single-VM compose stack's).
+  profile: prod
+  # `SMS_CONFIG`: the baked base file. Changing this is almost certainly wrong.
+  path: /config/application.yml
+  # Render the overlay below into a ConfigMap and mount it. Required.
+  createOverlayConfigMap: false
+  # The overlay's text: YAML, opaque to Helm. Not templated (`${VAR}` is the
+  # process's placeholder syntax, not Helm's).
+  overlay: ""
 
 worker:
   # Comma-separated, no spaces — any of dispatch,drain,scheduler,hooks,jobs
@@ -406,10 +365,12 @@ controllers:
         # configured with at startup. The Route half has no flags at all —
         # a hardcoded catch-all, per the subcommand's own doc.
         #
-        # Switched off by templates/common.yaml when orange.clientId is
-        # empty: seeding an Orange row and catch-all Route in an AWS-only
-        # deployment would send half of all traffic to a provider the
-        # worker holds no credentials for.
+        # Switch it off (`controllers.seedDispatch.enabled: false`) when the
+        # overlay has no `orange_cm` provider: seeding an Orange row and
+        # catch-all Route in an AWS-only deployment would send half of all
+        # traffic to a provider the worker holds no credentials for. Since
+        # VSC-1 the chart cannot see which providers the (opaque) overlay
+        # configures, so this is the operator's switch, not derived.
         args: ['seed-dispatch']
         env:
           DATABASE_URL:
@@ -420,12 +381,16 @@ controllers:
         resources: {}
 
   # The `aws_sms` counterpart of seedDispatch: same subcommand, same
-  # idempotency, same Provider row + catch-all Route. Disabled unless
-  # templates/common.yaml finds awsSms.region or awsSms.eventsTopicArn set,
-  # and its args are built there too (a controller's `args` is not passed
-  # through `tpl`, so the values cannot be referenced from here). Weight -14
-  # puts it directly after seedDispatch (-15) rather than racing it; the
-  # two touch different rows, so the order is cosmetic.
+  # idempotency, same Provider row + catch-all Route. Off by default; enable it
+  # (`controllers.seedDispatchAws.enabled: true`) when the overlay has an
+  # `aws_sms` provider - the gateway resolves a Provider row for every provider
+  # it is configured with before it binds, so each one needs its seed. To record
+  # the account's commercial terms on the row append `--max-tps <n>` and
+  # `--cost-per-segment-xaf <n>` to `args` (the same numbers as the overlay's
+  # `tps_ceiling` and `cost_per_segment_xaf`; the chart no longer derives them,
+  # because it cannot read the overlay). Weight -14 puts it directly after
+  # seedDispatch (-15) rather than racing it; the two touch different rows, so
+  # the order is cosmetic.
   seedDispatchAws:
     enabled: false
     type: job
@@ -444,7 +409,16 @@ controllers:
           repository: '{{ printf "%s/%s/vsms-sms-gateway" .Values.image.registry .Values.image.repositoryOwner }}'
           tag: '{{ .Values.image.tag }}'
           pullPolicy: IfNotPresent
-        args: ['seed-dispatch']
+        args:
+          - seed-dispatch
+          - --key
+          - aws_sms
+          - --kind
+          - aggregator_http
+          - --display-name
+          - AWS End User Messaging SMS
+          - --credential-ref
+          - env:AWS_SMS_SECRET_ACCESS_KEY
         env:
           DATABASE_URL:
             valueFrom:
@@ -479,48 +453,34 @@ controllers:
               secretKeyRef:
                 name: '{{ required "existingSecrets.database.name is required" .Values.existingSecrets.database.name }}'
                 key: '{{ .Values.existingSecrets.database.key }}'
-          SMS_DB_MAX_CONNECTIONS:
-            value: '10'
-          ORANGE_CM_CLIENT_ID:
-            value: '{{ required "orange.clientId is required" .Values.orange.clientId }}'
-          ORANGE_CM_CLIENT_SECRET:
-            valueFrom:
-              secretKeyRef:
-                name: '{{ required "existingSecrets.orange.name is required" .Values.existingSecrets.orange.name }}'
-                key: '{{ .Values.existingSecrets.orange.key }}'
-          ORANGE_CM_SENDER_NUMBER:
-            value: '{{ required "orange.senderNumber is required" .Values.orange.senderNumber }}'
-          ORANGE_CM_BASE_URL:
-            value: '{{ .Values.orange.baseUrl }}'
-          MTN_CLIENT_ID:
-            value: '{{ .Values.mtn.clientId }}'
-          MTN_CLIENT_SECRET:
-            valueFrom:
-              secretKeyRef:
-                name: '{{ .Values.existingSecrets.mtn.name }}'
-                key: '{{ .Values.existingSecrets.mtn.key }}'
-          MTN_SERVICE_CODE:
-            value: '{{ .Values.mtn.serviceCode }}'
-          MTN_SENDER_ID:
-            value: '{{ .Values.mtn.senderId }}'
-          MTN_BASE_URL:
-            value: '{{ .Values.mtn.baseUrl }}'
-          MTN_TPS_CEILING:
-            value: '{{ .Values.mtn.tpsCeiling }}'
-          MTN_COST_PER_SEGMENT_XAF:
-            value: '{{ .Values.mtn.costPerSegmentXaf }}'
-          MTN_SUPPORTS_ALPHANUMERIC_SENDER:
-            value: '{{ .Values.mtn.supportsAlphanumericSender }}'
-          # Receiving side of AWS End User Messaging SMS - the one variable
-          # the gateway needs (no AWS credentials). Stripped by
-          # templates/common.yaml when awsSms.eventsTopicArn is empty.
-          AWS_SMS_EVENTS_TOPIC_ARN:
-            value: '{{ .Values.awsSms.eventsTopicArn }}'
+          # VSC-1: the YAML deployment configuration (the `config` block above).
+          SMS_PROFILE:
+            value: '{{ .Values.config.profile }}'
+          SMS_CONFIG:
+            value: '{{ .Values.config.path }}'
+          # The base configuration reads these as `${SMS_HASH_PEPPER}` and so on.
+          # The three provider secrets are stripped by templates/common.yaml
+          # when their existingSecrets name is empty.
           SMS_HASH_PEPPER:
             valueFrom:
               secretKeyRef:
                 name: '{{ required "existingSecrets.hashPepper.name is required" .Values.existingSecrets.hashPepper.name }}'
                 key: '{{ .Values.existingSecrets.hashPepper.key }}'
+          ORANGE_CM_CLIENT_SECRET:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ .Values.existingSecrets.orange.name }}'
+                key: '{{ .Values.existingSecrets.orange.key }}'
+          MTN_CLIENT_SECRET:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ .Values.existingSecrets.mtn.name }}'
+                key: '{{ .Values.existingSecrets.mtn.key }}'
+          AWS_SMS_SECRET_ACCESS_KEY:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ .Values.existingSecrets.awsSms.name }}'
+                key: '{{ .Values.existingSecrets.awsSms.key }}'
           # VS-3: the signed transport's two keys, mounted from
           # existingSecrets.envelopeKeys (persistence.envelope-keys below).
           SMS_ENVELOPE_SIGNING_KEY_FILE:
@@ -638,69 +598,33 @@ controllers:
               secretKeyRef:
                 name: '{{ required "existingSecrets.database.name is required" .Values.existingSecrets.database.name }}'
                 key: '{{ .Values.existingSecrets.database.key }}'
-          SMS_WORKER_DB_MAX_CONNECTIONS:
-            value: '10'
-          ORANGE_CM_CLIENT_ID:
-            value: '{{ .Values.orange.clientId }}'
+          # VSC-1: the same YAML document as the gateway's, from the same
+          # overlay mount, and so the same environment for its `${VAR}`s (the
+          # pepper is loaded with the rest of the document and never used).
+          SMS_PROFILE:
+            value: '{{ .Values.config.profile }}'
+          SMS_CONFIG:
+            value: '{{ .Values.config.path }}'
+          SMS_HASH_PEPPER:
+            valueFrom:
+              secretKeyRef:
+                name: '{{ required "existingSecrets.hashPepper.name is required" .Values.existingSecrets.hashPepper.name }}'
+                key: '{{ .Values.existingSecrets.hashPepper.key }}'
           ORANGE_CM_CLIENT_SECRET:
             valueFrom:
               secretKeyRef:
-                name: '{{ required "existingSecrets.orange.name is required" .Values.existingSecrets.orange.name }}'
+                name: '{{ .Values.existingSecrets.orange.name }}'
                 key: '{{ .Values.existingSecrets.orange.key }}'
-          ORANGE_CM_SENDER_NUMBER:
-            value: '{{ .Values.orange.senderNumber }}'
-          ORANGE_CM_BASE_URL:
-            value: '{{ .Values.orange.baseUrl }}'
-          MTN_CLIENT_ID:
-            value: '{{ .Values.mtn.clientId }}'
           MTN_CLIENT_SECRET:
             valueFrom:
               secretKeyRef:
                 name: '{{ .Values.existingSecrets.mtn.name }}'
                 key: '{{ .Values.existingSecrets.mtn.key }}'
-          MTN_SERVICE_CODE:
-            value: '{{ .Values.mtn.serviceCode }}'
-          MTN_SENDER_ID:
-            value: '{{ .Values.mtn.senderId }}'
-          MTN_BASE_URL:
-            value: '{{ .Values.mtn.baseUrl }}'
-          MTN_TPS_CEILING:
-            value: '{{ .Values.mtn.tpsCeiling }}'
-          MTN_COST_PER_SEGMENT_XAF:
-            value: '{{ .Values.mtn.costPerSegmentXaf }}'
-          MTN_SUPPORTS_ALPHANUMERIC_SENDER:
-            value: '{{ .Values.mtn.supportsAlphanumericSender }}'
-          # Sending side of AWS End User Messaging SMS. The first six are
-          # all-or-none; the rest optional. Every one is stripped by
-          # templates/common.yaml when awsSms.region is empty (and the
-          # optional ones individually when empty).
-          AWS_SMS_REGION:
-            value: '{{ .Values.awsSms.region }}'
-          AWS_SMS_ACCESS_KEY_ID:
-            value: '{{ required "awsSms.accessKeyId is required when awsSms.region is set" .Values.awsSms.accessKeyId }}'
           AWS_SMS_SECRET_ACCESS_KEY:
             valueFrom:
-              # Short message on purpose: toYaml folds a long line inside
-              # this valueFrom block and splits the quoted template string.
               secretKeyRef:
-                name: '{{ required "existingSecrets.awsSms.name is required" .Values.existingSecrets.awsSms.name }}'
+                name: '{{ .Values.existingSecrets.awsSms.name }}'
                 key: '{{ .Values.existingSecrets.awsSms.key }}'
-          AWS_SMS_CONFIGURATION_SET:
-            value: '{{ required "awsSms.configurationSet is required when awsSms.region is set" .Values.awsSms.configurationSet }}'
-          AWS_SMS_TPS_CEILING:
-            value: '{{ required "awsSms.tpsCeiling is required when awsSms.region is set" .Values.awsSms.tpsCeiling }}'
-          AWS_SMS_COST_PER_SEGMENT_XAF:
-            value: '{{ required "awsSms.costPerSegmentXaf is required when awsSms.region is set" .Values.awsSms.costPerSegmentXaf }}'
-          AWS_SMS_ORIGINATION_IDENTITY:
-            value: '{{ .Values.awsSms.originationIdentity }}'
-          AWS_SMS_MESSAGE_TYPE:
-            value: '{{ .Values.awsSms.messageType }}'
-          AWS_SMS_SUPPORTS_ALPHANUMERIC_SENDER:
-            value: '{{ .Values.awsSms.supportsAlphanumericSender }}'
-          AWS_SMS_ENDPOINT_URL:
-            value: '{{ .Values.awsSms.endpointUrl }}'
-          AWS_SMS_TIME_TO_LIVE_SECONDS:
-            value: '{{ .Values.awsSms.timeToLiveSeconds }}'
           # VS-8: the `hooks` role seals a `sealed` endpoint's deliveries with
           # the gateway's CURRENT envelope signing key (an `hmac` endpoint
           # needs no key, VS-8R; without one, this worker claims no sealed
@@ -881,6 +805,14 @@ ingress:
 # the required key name.
 # ---------------------------------------------------------------------------
 persistence:
+  # The YAML overlay (`config` above), a ConfigMap this chart renders, mounted
+  # with `subPath` over `application-<profile>.yml` into the gateway and the
+  # worker. templates/common.yaml fills in `advancedMounts` because the file
+  # name carries the profile, and a mount's `path` is not templated.
+  config-overlay:
+    type: configMap
+    name: '{{ include "bjw-s.common.lib.chart.names.fullname" $ }}-config'
+    advancedMounts: {}
   # The gateway's envelope keys. `defaultMode` 0440 with the pods' `fsGroup`
   # (controllers.gateway.pod / controllers.worker.pod) lets the distroless
   # nonroot uid (65532) read them and nobody else; the worker mounts the
