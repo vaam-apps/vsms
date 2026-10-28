@@ -24,12 +24,16 @@ use cratestack::{CratestackContext, FilterExpr};
 use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, AttemptState, Cratestack, CreateWebhookAttemptInput, CreateWebhookEndpointInput,
-    UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, webhook_attempt,
+    UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, WebhookAttempt, WebhookDeliveryMode,
+    webhook_attempt,
 };
 use sms_test_support::webhook_receiver::WebhookReceiver;
 use sms_webhook::{CONTRACT_SHA, Sealer};
 use sms_worker::WorkerContext;
-use sms_worker::claim::{ServedModes, claim_webhook_attempts, count_sealed_attempts_waiting};
+use sms_worker::claim::{
+    ServedModes, claim_batch, claim_webhook_attempts, count_sealed_attempts_waiting,
+    filter_by_endpoint_health,
+};
 use sms_worker::hooks;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1902,6 +1906,24 @@ async fn index_entries_read(index: &str) -> i64 {
     .expect("a count")
 }
 
+/// [`index_entries_read`] once nothing is adding to it any more: read every 2.5
+/// seconds until four readings in a row agree. An idle backend hands its counters
+/// to the shared view on a timer of up to ten seconds, so what the previous test's
+/// claims scanned (the unhealthy-backlog tests scan a few hundred entries) can land
+/// in the shared view well into the next test, and would count as the next claim's
+/// own if the baseline were read before it did.
+async fn index_entries_read_once_quiet(index: &str) -> i64 {
+    let mut last = index_entries_read(index).await;
+    let mut agreeing = 1;
+    while agreeing < 4 {
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        let now = index_entries_read(index).await;
+        agreeing = if now == last { agreeing + 1 } else { 1 };
+        last = now;
+    }
+    last
+}
+
 /// How many scans have used `index` so far; same reading rules as
 /// [`index_entries_read`].
 async fn index_scans(index: &str) -> i64 {
@@ -2082,12 +2104,19 @@ const ALL_HMAC_DUE_EACH: u32 = 1_000;
 /// Due `sealed` attempts, older than every `hmac` one, in the fan-out's backlog.
 const SEALED_BEHIND_THE_HMAC: u32 = 40_000;
 
-/// The claim's `budget` in the next tests, and the rows its first read asks for
-/// (`budget` times `CANDIDATE_OVERFETCH_FACTOR`, 3).
+/// The claim's `budget` in the next tests.
 const CLAIM_BUDGET: i64 = 20;
-const CLAIM_FETCH_BUDGET: i64 = 3 * CLAIM_BUDGET;
 
-/// What a keyless claim of [`CLAIM_BUDGET`] took, and what it cost in index entries.
+/// The most entries of `webhook_due_idx` a single time-ordered read of
+/// [`CLAIM_BUDGET`] rows may be seen to read: ten times the rows it asks for, against
+/// the 800 to 31 000 the per-endpoint reads of 40 backlogged endpoints take. Not
+/// tighter, because the server's counter (`idx_tup_read`) also counts the entries the
+/// *planner* reads at the two ends of the index to estimate the range
+/// (`get_actual_variable_range`, which steps over dead entries a vacuum has not
+/// removed yet, so a previous test's rows show up as 50 to 100 more).
+const SINGLE_QUERY_ENTRIES: i64 = 10 * CLAIM_BUDGET;
+
+/// What a claim of [`CLAIM_BUDGET`] took, and what it cost in index entries.
 struct BackloggedClaim {
     /// The `aggregateId`s it claimed, sorted.
     claimed: Vec<String>,
@@ -2097,19 +2126,32 @@ struct BackloggedClaim {
     endpoint_due_idx: i64,
 }
 
+/// The `sealed` side of the table a backlogged claim runs over.
+#[derive(Clone, Copy)]
+enum SealedEndpoint {
+    /// None: every endpoint is `hmac`.
+    Absent,
+    /// One, active and holding nothing.
+    Empty,
+    /// One, holding [`SEALED_BEHIND_THE_HMAC`] due attempts older than every `hmac` one.
+    WithBacklog,
+}
+
 /// Backlogs [`ALL_HMAC_ENDPOINTS`] `hmac` endpoints with [`ALL_HMAC_DUE_EACH`] due
-/// attempts each, and runs one keyless claim over them. With `sealed_endpoint` there
-/// is also one `sealed` endpoint, holding nothing: enough to take the per-endpoint
-/// fan-out, which an all-`hmac` table does not.
-async fn keyless_claim_behind_an_hmac_backlog(sealed_endpoint: bool) -> BackloggedClaim {
+/// attempts each, and runs one claim by a worker serving `served` over them.
+async fn claim_behind_an_hmac_backlog(
+    served: ServedModes,
+    sealed_endpoint: SealedEndpoint,
+) -> BackloggedClaim {
     let db = isolated_db().await;
     // Endpoints left by the other tests of this binary, a `sealed` one among them;
     // their attempts go with them (`ON DELETE CASCADE`).
     psql("DELETE FROM webhook_endpoints").await;
     let suffix = unique_suffix();
     let app_id = seed_app(&db, &suffix).await;
-    let sealed = if sealed_endpoint {
-        Some(
+    let sealed = match sealed_endpoint {
+        SealedEndpoint::Absent => None,
+        SealedEndpoint::Empty | SealedEndpoint::WithBacklog => Some(
             seed_endpoint(
                 &db,
                 &suffix,
@@ -2118,9 +2160,7 @@ async fn keyless_claim_behind_an_hmac_backlog(sealed_endpoint: bool) -> Backlogg
                 8,
             )
             .await,
-        )
-    } else {
-        None
+        ),
     };
     for n in 0..ALL_HMAC_ENDPOINTS {
         seed_hmac_endpoint(
@@ -2145,7 +2185,7 @@ async fn keyless_claim_behind_an_hmac_backlog(sealed_endpoint: bool) -> Backlogg
          ORDER BY k, e.rn"
     ))
     .await;
-    if let Some(sealed) = sealed {
+    if let (SealedEndpoint::WithBacklog, Some(sealed)) = (sealed_endpoint, sealed) {
         // A due sealed backlog older than every `hmac` attempt, as a deployment that
         // needs the fan-out has: it is what makes the planner prefer the endpoint's
         // own index to walking `webhook_due_idx` in time order and filtering. Without
@@ -2164,7 +2204,9 @@ async fn keyless_claim_behind_an_hmac_backlog(sealed_endpoint: bool) -> Backlogg
     }
     // Vacuumed as well as analysed: the rows other tests of this binary deleted
     // (the 200 000 of the one above) are dead entries in `webhook_due_idx` until a
-    // vacuum, and the first scan over them counts every one it steps past.
+    // vacuum, and the first scan over them counts every one it steps past. (A vacuum
+    // started this soon after a delete does not always get them all: see
+    // [`SINGLE_QUERY_ENTRIES`].)
     psql("VACUUM ANALYZE webhook_attempts").await;
 
     let pool = PgPoolOptions::new()
@@ -2173,18 +2215,12 @@ async fn keyless_claim_behind_an_hmac_backlog(sealed_endpoint: bool) -> Backlogg
         .await
         .expect("connecting to Postgres");
     let claim_db = Cratestack::builder(pool.clone()).build();
-    let due_before = index_entries_read("webhook_due_idx").await;
+    let due_before = index_entries_read_once_quiet("webhook_due_idx").await;
     let endpoint_due_before = index_entries_read("webhook_endpoint_due_idx").await;
 
-    let claimed = claim_webhook_attempts(
-        &claim_db,
-        &sys(),
-        "keyless-worker",
-        CLAIM_BUDGET,
-        ServedModes::HmacOnly,
-    )
-    .await
-    .expect("the keyless claim");
+    let claimed = claim_webhook_attempts(&claim_db, &sys(), "worker", CLAIM_BUDGET, served)
+        .await
+        .expect("the claim");
     pool.close().await;
 
     let mut ids: Vec<String> = claimed
@@ -2212,46 +2248,80 @@ fn the_oldest_claimable() -> Vec<String> {
     oldest
 }
 
-/// Review round 6, M-1: with no `sealed` endpoint at all, a keyless claim is the
-/// keyed claim's own query and reads about `fetch_budget` index entries, however
-/// many `hmac` endpoints are backlogged. The per-endpoint fan-out is what a
-/// deployment with a `sealed` endpoint needs; applied to an all-`hmac` one it read up
-/// to `endpoints x budget` full rows a poll for the answer one read gives, and that
-/// was every deployment until an operator switched one endpoint. Here 40 endpoints
-/// hold 1 000 due attempts each, and the claim of 20 must read at most twice its
-/// first read's 60 entries across both due indexes (the fan-out reads 40 x 20 = 800
-/// of `webhook_endpoint_due_idx`) and still take the 20 oldest, whichever endpoint
-/// holds them.
+/// Review round 6, M-1, and round 7: when every endpoint is one the worker can claim
+/// from, a keyless claim is the keyed claim's own time-ordered query, whatever the
+/// number of backlogged `hmac` endpoints. The per-endpoint fan-out is what a
+/// deployment that must leave an endpoint out needs; applied to a healthy all-`hmac`
+/// one it read up to `endpoints x budget` full rows a poll for the answer one read
+/// gives. Here 40 endpoints hold 1 000 due attempts each, and the claim of 20 must
+/// read about 20 entries of `webhook_due_idx` and none of
+/// `webhook_endpoint_due_idx` (the fan-out reads 40 x 20 = 800 of it), and still take
+/// the 20 oldest, whichever endpoint holds them. The counters are the server's own
+/// (`pg_stat_user_indexes`), so a claim that took the other path cannot pass.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn a_keyless_claim_with_no_sealed_endpoint_reads_about_fetch_budget_entries_however_many_hmac_endpoints_are_backlogged()
+async fn a_keyless_claim_over_healthy_hmac_endpoints_reads_about_budget_entries_of_the_time_ordered_index_only()
  {
     let _guard = TEST_MUTEX.lock().await;
-    let claim = keyless_claim_behind_an_hmac_backlog(false).await;
+    let claim = claim_behind_an_hmac_backlog(ServedModes::HmacOnly, SealedEndpoint::Absent).await;
     assert_eq!(
         claim.claimed,
         the_oldest_claimable(),
         "the 20 oldest due attempts of any endpoint"
     );
-    let read = claim.due_idx + claim.endpoint_due_idx;
+    assert_eq!(
+        claim.endpoint_due_idx, 0,
+        "a healthy all-hmac table is not the per-endpoint fan-out"
+    );
     assert!(
-        read <= 2 * CLAIM_FETCH_BUDGET,
-        "the claim read {read} due-index entries for {ALL_HMAC_ENDPOINTS} backlogged hmac \
-         endpoints; one read of the oldest {CLAIM_FETCH_BUDGET} is all an all-hmac \
-         deployment needs"
+        claim.due_idx > 0 && claim.due_idx <= SINGLE_QUERY_ENTRIES,
+        "the claim read {} entries of webhook_due_idx for {ALL_HMAC_ENDPOINTS} backlogged hmac \
+         endpoints; one read of the oldest {CLAIM_BUDGET} is all a healthy deployment needs",
+        claim.due_idx
     );
 }
 
-/// ... and with a `sealed` endpoint the fan-out asks each `hmac` endpoint for
-/// `budget` rows, not for the `fetch_budget` the first version asked: 40 x 20 = 800
-/// entries of `webhook_endpoint_due_idx`, where 40 x 60 = 2 400 was read, for the same
-/// batch. It reads none of `webhook_due_idx`, the time-ordered index.
+/// ... and so does a worker that holds the key, over healthy endpoints of both modes
+/// (round 7, case (e)): a `sealed` endpoint that is active and closed is no reason to
+/// leave the time-ordered query, which is also what it was before the claim learned
+/// to read the endpoints. The `sealed` endpoint here holds nothing, so the 20 oldest
+/// are the `hmac` ones.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn a_keyless_claim_beside_a_sealed_endpoint_asks_each_hmac_endpoint_for_budget_rows_not_fetch_budget()
+async fn a_keyed_claim_over_healthy_endpoints_of_both_modes_reads_about_budget_entries_of_the_time_ordered_index_only()
  {
     let _guard = TEST_MUTEX.lock().await;
-    let claim = keyless_claim_behind_an_hmac_backlog(true).await;
+    let claim = claim_behind_an_hmac_backlog(ServedModes::Both, SealedEndpoint::Empty).await;
+    assert_eq!(claim.claimed, the_oldest_claimable());
+    assert_eq!(claim.endpoint_due_idx, 0);
+    assert!(
+        claim.due_idx > 0 && claim.due_idx <= SINGLE_QUERY_ENTRIES,
+        "{} entries of webhook_due_idx",
+        claim.due_idx
+    );
+}
+
+/// ... and when an endpoint must be left out (here a `sealed` one, for a keyless
+/// worker) the fan-out asks each `hmac` endpoint for `budget` rows: 40 x 20 = 800
+/// entries of `webhook_endpoint_due_idx`, and none of `webhook_due_idx`, the
+/// time-ordered index.
+///
+/// The 40 000 older sealed attempts are there on purpose, not for volume. Whether the
+/// planner answers an `endpoint_id = $1` query from `webhook_endpoint_due_idx` or by
+/// walking `webhook_due_idx` in time order and filtering is its choice by estimated
+/// cost, and with 40 endpoints each holding 2.5% of the table and nothing else it
+/// estimates a walk of about 800 entries for 20 rows and may take it (`claim.md`
+/// has the measurement). The sealed backlog stands in front of every `hmac` attempt
+/// in time, which makes that walk the dearer plan by every estimate, so the plan this
+/// test counts entries of is the one the fan-out is for. The assertion stays as exact
+/// as the plan allows: the entry count is only bounded when the endpoint index is the
+/// one used, and `endpoint_due_idx > 0` says it was.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyless_claim_beside_a_sealed_endpoint_asks_each_hmac_endpoint_for_budget_rows() {
+    let _guard = TEST_MUTEX.lock().await;
+    let claim =
+        claim_behind_an_hmac_backlog(ServedModes::HmacOnly, SealedEndpoint::WithBacklog).await;
     assert_eq!(
         claim.claimed,
         the_oldest_claimable(),
@@ -2259,26 +2329,29 @@ async fn a_keyless_claim_beside_a_sealed_endpoint_asks_each_hmac_endpoint_for_bu
     );
     assert!(
         claim.endpoint_due_idx > 0 && claim.due_idx < CLAIM_BUDGET,
-        "with a sealed endpoint the claim is the per-endpoint fan-out: {} entries of \
+        "with a sealed endpoint the keyless claim is the per-endpoint fan-out: {} entries of \
          webhook_endpoint_due_idx, {} of webhook_due_idx",
         claim.endpoint_due_idx,
         claim.due_idx
     );
-    let ceiling = i64::from(ALL_HMAC_ENDPOINTS) * CLAIM_BUDGET;
+    // Half as much again as 40 x 20, for the planner's own probes of the index; the
+    // fan-out that asked each endpoint for three times the budget read 2 400.
+    let ceiling = i64::from(ALL_HMAC_ENDPOINTS) * CLAIM_BUDGET * 3 / 2;
     assert!(
         claim.endpoint_due_idx <= ceiling,
         "{} entries read for {ALL_HMAC_ENDPOINTS} endpoints asked for {CLAIM_BUDGET} rows each \
-         (at most {ceiling})",
+         (at most {ceiling}, where asking for three times that reads 2 400)",
         claim.endpoint_due_idx
     );
 }
 
-/// ... and "no `sealed` endpoint" means none in **any state**. A deactivated one
-/// can hold many due attempts: the keyless worker will never take them, but the
-/// keyed query would fetch them (they are the oldest) and drop them only after,
-/// leaving the `hmac` attempt behind them out of the window. Here 70 due attempts of
-/// a deactivated `sealed` endpoint are older than the one `hmac` attempt, which is
-/// more than the 60 the first read asks for.
+/// ... and "every endpoint is one this worker can claim from" is every endpoint in
+/// **any state**. A deactivated one can hold many due attempts: the keyless worker
+/// will never take them, but the time-ordered query would fetch them (they are the
+/// oldest) and drop them only after, leaving the `hmac` attempt behind them out of
+/// the window. Here 70 due attempts of a deactivated `sealed` endpoint are older than
+/// the one `hmac` attempt, which is more than the 60 rows an over-fetching window
+/// held, and more than twice a claim's `budget`.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
 async fn a_deactivated_sealed_endpoint_still_keeps_a_keyless_claim_off_the_keyed_query() {
@@ -2318,6 +2391,358 @@ async fn a_deactivated_sealed_endpoint_still_keeps_a_keyless_claim_off_the_keyed
         vec![attempt.id],
         "the hmac attempt, past {SEALED_BACKLOG} due attempts of a deactivated sealed endpoint"
     );
+}
+
+/// ... and the same with the deactivated endpoint `hmac`, the table all-`hmac`: the
+/// shape that brought the starvation back for keyless workers, since it is the one
+/// a keyless worker could take the keyed query for.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_deactivated_hmac_endpoint_still_keeps_a_keyless_claim_off_the_keyed_query() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    psql("DELETE FROM webhook_endpoints").await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let off = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/off",
+        8,
+        "whsec_off_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    bulk_due(&off.id, "off", u32::try_from(SEALED_BACKLOG).unwrap(), 60).await;
+    psql(&format!(
+        "UPDATE webhook_endpoints SET active = false WHERE id = '{}'",
+        off.id
+    ))
+    .await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/hmac",
+        8,
+        "whsec_on_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgI2", "message.delivered", "{}").await;
+
+    let claimed = claim_webhook_attempts(
+        &db,
+        &sys(),
+        "keyless-worker",
+        CLAIM_BUDGET,
+        ServedModes::HmacOnly,
+    )
+    .await
+    .expect("the keyless claim");
+    assert_eq!(
+        claimed.iter().map(|a| a.id.clone()).collect::<Vec<_>>(),
+        vec![attempt.id],
+        "the healthy attempt, past {SEALED_BACKLOG} due attempts of a deactivated hmac endpoint"
+    );
+    psql("DELETE FROM webhook_attempts WHERE aggregate_id LIKE 'bulk-%'").await;
+}
+
+/// Inserts `count` due `pending` attempts of `endpoint_id` with `psql`, the oldest
+/// due `minutes_ago` minutes ago and a millisecond apart, their `aggregateId` (and
+/// `id`) `bulk-{tag}-{k}`; [`clear_claimable_backlog`] sweeps `bulk-%`.
+async fn bulk_due(endpoint_id: &str, tag: &str, count: u32, minutes_ago: u32) {
+    psql(&format!(
+        "INSERT INTO webhook_attempts \
+           (id, endpoint_id, source_event_id, aggregate_id, event_type, payload, next_attempt_at) \
+         SELECT 'bulk-{tag}-' || k, '{endpoint_id}', gen_random_uuid(), 'bulk-{tag}-' || k, \
+                'message.delivered', '{{}}', \
+                now() - interval '{minutes_ago} minutes' + k * interval '1 millisecond' \
+         FROM generate_series(1, {count}) AS k"
+    ))
+    .await;
+}
+
+/// Due attempts an unhealthy endpoint holds in the next tests: more than a claim's
+/// [`CLAIM_BUDGET`] twice over, and more than the 60 rows the over-fetching claim
+/// asked for, all older than the healthy endpoints' attempts.
+const UNHEALTHY_BACKLOG: u32 = 70;
+
+/// How an endpoint stops being claimable without anything being deleted: an
+/// operator's deactivation (a 410 does it too) or an open circuit.
+#[derive(Clone, Copy, Debug)]
+enum Unhealthy {
+    Deactivated,
+    CircuitOpen,
+}
+
+impl Unhealthy {
+    fn assignment(self) -> &'static str {
+        match self {
+            Self::Deactivated => "active = false",
+            Self::CircuitOpen => "circuit_open_until = now() + interval '1 hour'",
+        }
+    }
+}
+
+/// Review round 7, finding 1: an endpoint a claim must not take from, holding
+/// [`UNHEALTHY_BACKLOG`] due attempts older than everyone else's, must not be the
+/// whole of the claim's window. Nothing purges attempts, so the endpoint keeps them
+/// for as long as it stays deactivated or open, and a claim that fetched the oldest
+/// rows of any endpoint and dropped the unhealthy ones after returned `[]` on every
+/// tick: delivery stopped for every app. Two healthy `hmac` endpoints hold 5 newer
+/// due attempts each (and, when `healthy_sealed`, a healthy `sealed` endpoint 3), and
+/// a claim by a worker serving `served` must take exactly those, in one call, and
+/// leave the unhealthy endpoint's 70 untouched.
+async fn claim_past_an_unhealthy_backlog(
+    served: ServedModes,
+    unhealthy_mode: WebhookDeliveryMode,
+    how: Unhealthy,
+    healthy_sealed: bool,
+) {
+    let db = isolated_db().await;
+    psql("DELETE FROM webhook_endpoints").await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let secret = "whsec_unhealthy_0123456789abcdef0123456789abcdef";
+    let bad = match unhealthy_mode {
+        WebhookDeliveryMode::sealed => {
+            seed_endpoint(&db, &suffix, &app_id, "https://hooks.example.test/bad", 8).await
+        }
+        WebhookDeliveryMode::hmac => {
+            seed_hmac_endpoint(
+                &db,
+                &app_id,
+                "https://hooks.example.test/bad",
+                8,
+                secret,
+                None,
+            )
+            .await
+        }
+    };
+    let h1 = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/h1",
+        8,
+        secret,
+        None,
+    )
+    .await;
+    let h2 = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/h2",
+        8,
+        secret,
+        None,
+    )
+    .await;
+    bulk_due(&bad.id, "bad", UNHEALTHY_BACKLOG, 120).await;
+    bulk_due(&h1.id, "h1", 5, 30).await;
+    bulk_due(&h2.id, "h2", 5, 20).await;
+    let mut expected: Vec<String> = (1..=5)
+        .flat_map(|k| [format!("bulk-h1-{k}"), format!("bulk-h2-{k}")])
+        .collect();
+    if healthy_sealed {
+        let sealed = seed_endpoint(
+            &db,
+            &format!("{suffix}-ok"),
+            &app_id,
+            "https://hooks.example.test/ok",
+            8,
+        )
+        .await;
+        bulk_due(&sealed.id, "s", 3, 10).await;
+        if served == ServedModes::Both {
+            expected.extend((1..=3).map(|k| format!("bulk-s-{k}")));
+        }
+    }
+    expected.sort();
+    psql(&format!(
+        "UPDATE webhook_endpoints SET {} WHERE id = '{}'",
+        how.assignment(),
+        bad.id
+    ))
+    .await;
+
+    let claimed = match served {
+        ServedModes::Both => {
+            claim_batch::<WebhookAttempt>(&db, &sys(), "keyed-worker", CLAIM_BUDGET).await
+        }
+        ServedModes::HmacOnly => {
+            claim_webhook_attempts(&db, &sys(), "keyless-worker", CLAIM_BUDGET, served).await
+        }
+    }
+    .expect("the claim");
+    let mut got: Vec<String> = claimed.into_iter().map(|a| a.aggregateId).collect();
+    got.sort();
+    assert_eq!(
+        got, expected,
+        "{served:?}, a {unhealthy_mode:?} endpoint {how:?} holding {UNHEALTHY_BACKLOG} older attempts: \
+         the healthy endpoints' attempts, within one claim"
+    );
+    assert_eq!(
+        psql(
+            "SELECT count(*) FROM webhook_attempts \
+             WHERE aggregate_id LIKE 'bulk-bad-%' AND state = 'pending' AND attempts = 0"
+        )
+        .await,
+        UNHEALTHY_BACKLOG.to_string(),
+        "and the unhealthy endpoint's attempts are not touched"
+    );
+    psql("DELETE FROM webhook_endpoints").await;
+}
+
+/// Case (i): a keyless worker, a table of `hmac` endpoints only, one of them
+/// deactivated after a 410. Which is the table the all-`hmac` fallback of round 5
+/// sent to the time-ordered query, whose window was that endpoint's rows alone.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyless_claim_over_all_hmac_endpoints_is_not_starved_by_a_deactivated_one() {
+    let _guard = TEST_MUTEX.lock().await;
+    claim_past_an_unhealthy_backlog(
+        ServedModes::HmacOnly,
+        WebhookDeliveryMode::hmac,
+        Unhealthy::Deactivated,
+        false,
+    )
+    .await;
+}
+
+/// Case (ii): the same with the circuit open, which ends by itself after fifteen
+/// minutes and so only starves for that long, every fifteen minutes an endpoint
+/// keeps failing.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyless_claim_over_all_hmac_endpoints_is_not_starved_by_a_circuit_open_one() {
+    let _guard = TEST_MUTEX.lock().await;
+    claim_past_an_unhealthy_backlog(
+        ServedModes::HmacOnly,
+        WebhookDeliveryMode::hmac,
+        Unhealthy::CircuitOpen,
+        false,
+    )
+    .await;
+}
+
+/// Case (iii): the keyed worker had this from the start. Every claim by a worker
+/// that holds the key took the oldest rows of any endpoint, so a deactivated one with
+/// a backlog stopped delivery for every app. (Fails on `47b8f1a`'s claim.)
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyed_claim_is_not_starved_by_a_deactivated_endpoint() {
+    let _guard = TEST_MUTEX.lock().await;
+    claim_past_an_unhealthy_backlog(
+        ServedModes::Both,
+        WebhookDeliveryMode::sealed,
+        Unhealthy::Deactivated,
+        true,
+    )
+    .await;
+}
+
+/// ... and by an endpoint whose circuit is open.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyed_claim_is_not_starved_by_a_circuit_open_endpoint() {
+    let _guard = TEST_MUTEX.lock().await;
+    claim_past_an_unhealthy_backlog(
+        ServedModes::Both,
+        WebhookDeliveryMode::hmac,
+        Unhealthy::CircuitOpen,
+        true,
+    )
+    .await;
+}
+
+/// ... and a keyless worker beside a healthy `sealed` endpoint, which takes the
+/// per-endpoint path anyway, leaves the deactivated `hmac` endpoint's backlog out of
+/// it too: the endpoints it asks are the claimable `hmac` ones, not every `hmac` one.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_keyless_claim_beside_a_sealed_endpoint_is_not_starved_by_a_deactivated_hmac_one() {
+    let _guard = TEST_MUTEX.lock().await;
+    claim_past_an_unhealthy_backlog(
+        ServedModes::HmacOnly,
+        WebhookDeliveryMode::hmac,
+        Unhealthy::Deactivated,
+        true,
+    )
+    .await;
+}
+
+/// Round 7, finding 4: the re-read of the candidates' endpoints just before the
+/// leases takes the worker's mode into account, so an `hmac` endpoint an operator
+/// switched to `sealed` after a keyless worker chose its attempts is dropped there
+/// and not left to the delivery step. Driven through the seam: the candidates are
+/// chosen, the endpoint is switched, and the filter is applied.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_candidate_whose_endpoint_was_switched_to_sealed_is_dropped_for_a_keyless_worker_only() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/switch",
+        8,
+        "whsec_switch2_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgSw", "message.delivered", "{}").await;
+    let candidates = vec![reread_attempt(&db, &attempt.id).await];
+
+    let keyless_kept = filter_by_endpoint_health(
+        &db,
+        &sys(),
+        candidates.clone(),
+        Utc::now(),
+        CLAIM_BUDGET,
+        ServedModes::HmacOnly,
+    )
+    .await
+    .expect("filtering");
+    assert_eq!(
+        keyless_kept.len(),
+        1,
+        "an hmac endpoint is the keyless worker's"
+    );
+
+    psql(&format!(
+        "UPDATE webhook_endpoints SET delivery_mode = 'sealed', audience = 'aud-{suffix}', \
+         secret = NULL, prev_secret = NULL, secret_rotated_at = NULL WHERE id = '{}'",
+        endpoint.id
+    ))
+    .await;
+    let keyless_kept = filter_by_endpoint_health(
+        &db,
+        &sys(),
+        candidates.clone(),
+        Utc::now(),
+        CLAIM_BUDGET,
+        ServedModes::HmacOnly,
+    )
+    .await
+    .expect("filtering");
+    assert!(
+        keyless_kept.is_empty(),
+        "switched to sealed, it is no longer the keyless worker's: {keyless_kept:?}"
+    );
+    let keyed_kept = filter_by_endpoint_health(
+        &db,
+        &sys(),
+        candidates,
+        Utc::now(),
+        CLAIM_BUDGET,
+        ServedModes::Both,
+    )
+    .await
+    .expect("filtering");
+    assert_eq!(keyed_kept.len(), 1, "and it is a keyed worker's");
 }
 
 /// L1: an operator switches an endpoint `hmac` to `sealed` while a keyless worker

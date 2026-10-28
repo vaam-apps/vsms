@@ -26,11 +26,9 @@ use crate::throttle::Throttle;
 /// throughput ceiling the way `dispatch`'s TPS-derived budget is.
 const POLL_INTERVAL: StdDuration = StdDuration::from_secs(1);
 
-/// How many attempts one poll claims at once, before endpoint-health
-/// filtering (`claim.rs`'s own `CANDIDATE_OVERFETCH_FACTOR` fetches beyond
-/// this). Fixed, matching `jobs::BUDGET`'s own reasoning: no external
-/// throughput ceiling constrains `hooks` the way Orange's contract
-/// constrains `dispatch`.
+/// How many attempts one poll claims at once. Fixed, matching `jobs::BUDGET`'s
+/// own reasoning: no external throughput ceiling constrains `hooks` the way
+/// Orange's contract constrains `dispatch`.
 const BUDGET: i64 = 20;
 
 /// §8.5, verbatim: "Timeout 10s per attempt." Set on the client at
