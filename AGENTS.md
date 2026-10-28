@@ -4578,7 +4578,7 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   when there are few `hmac` rows (200 000 due sealed rows and 5 `hmac` ones: 13 929 buffers, 102 ms a poll; 2 000 000: 64 253,
   877 ms). The claim now reads the active, circuit-closed `hmac` endpoints first and asks `webhook_endpoint_due_idx (endpoint_id,
   next_attempt_at) WHERE state IN ('pending','failed')` (migration `0011`) for each one's due attempts, merged oldest first:
-  4 buffers an endpoint at either size. The suggested `endpoint_id IN (...)` was measured and rejected: even with the new index
+  4 buffers for an endpoint holding a few rows at either size (23 for one holding more than `budget`; see round 6). The suggested `endpoint_id IN (...)` was measured and rejected: even with the new index
   the planner walked `webhook_due_idx` and filtered (64 207 buffers, 604 ms at 2 000 000), because its statistics span the whole
   table, history included, so an endpoint with a long past looks like a few percent of the rows; an equality leaves it no such
   plan. The reclaim read needs no new index (`webhook_attempts_lease_reclaim_idx` holds `delivering` rows only, so it costs what
@@ -4597,6 +4597,23 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   comparison on an optional timestamp). (N2) "wait, uncounted" is "wait without spending an attempt", everywhere it was. (N3)
   The CHECK on a sealed URL is a pattern; it is the pattern **together with `@uri`** that never accepts what the sealer refuses,
   and a row written with `psql` can still reach the sealer as an ordinary `Retryable`.
+- **Review round 6 (the review of #448: the keyless claim, again).** (M-1) Round 5's fan-out asked every `hmac` endpoint for
+  `fetch_budget` (3 x `budget`) full rows, so an all-`hmac` deployment, which is every deployment until an operator switches one
+  endpoint, read and shipped `N x fetch_budget` rows a poll for the 60 the old `EXISTS` query stopped at (50 endpoints x 2 000
+  due: 3 189 buffers, 12.1 ms, 3 000 rows against 17 buffers, 0.14 ms, 60 rows now). The claim reads the endpoints first and,
+  with **no `sealed` endpoint in any state**, runs the keyed claim's own query; otherwise the fan-out, each endpoint asked for
+  `budget` rows. "In any state" and not "none active": a deactivated sealed endpoint's backlog would fill the over-fetch window
+  of the keyed query before `filter_by_endpoint_health` dropped it. `claim.md` states the cost honestly now: per endpoint, up to
+  `min(backlog, budget)` rows each, mixed deployments only (50 `hmac` x 2 000 due beside 200 000 sealed: 1 169 buffers, 1 000
+  rows, a third of before, not free). The 'one equality leaves the planner no time-ordered plan' claim was false too: with 40 `hmac`
+  endpoints holding 1 000 due each and no sealed backlog ahead of them the planner walks `webhook_due_idx` (31 220 entries for 40
+  queries), which `claim.md` now says, and the fan-out test seeds 40 000 older sealed rows so it measures the plan the fan-out is for. Guarded by
+  `a_keyless_claim_with_no_sealed_endpoint_reads_about_fetch_budget_entries_however_many_hmac_endpoints_are_backlogged` and
+  `a_deactivated_sealed_endpoint_still_keeps_a_keyless_claim_off_the_keyed_query`. (L-1) `0011`'s comment said `sms-migrate` runs
+  before the workers start; on a Helm upgrade it is a `pre-upgrade` hook and the previous release's writers are running, so the
+  plain build's `SHARE` lock stalls them for its whole duration. The statement is `CREATE INDEX IF NOT EXISTS` now, and
+  `docs/runbooks/deployment.adoc` ("Before deploying: the `webhook_attempts` index of migration 0011") has the size query and the
+  `CONCURRENTLY` build to run first; the migration test runs that statement and compares the index.
 - **The Node opener takes bytes only** (a string is a `config` error): re-encoding text a framework decoded can change the bytes,
   and a signature cannot survive that. Its nonce memory is per process and cannot be replaced (the check runs in WebAssembly),
   unlike the Rust SDK's `with_nonce_store`; the README says so.
