@@ -70,24 +70,48 @@ default (`HttpClients`).
 
 A worker with no signing key still starts and still delivers every `hmac`
 endpoint, and it does not **claim** a `sealed` attempt at all
-([`crate::claim::ServedModes::HmacOnly`]). The filter is in the claim's own query,
-a correlated subquery on the endpoint's `deliveryMode` for the fresh claim and the
-expired-lease reclaim alike, placed ahead of the over-fetch window: filtering the
-rows after fetching them would let a sealed backlog fill the window and starve the
-`hmac` rows behind it. A worker that holds the key claims both modes.
+([`crate::claim::ServedModes::HmacOnly`]). The mode is decided where the rows are
+chosen: the claim reads the endpoints first. When every endpoint is one it may take
+attempts from (active, circuit closed, `hmac`) it is the keyed claim's own query;
+otherwise it asks `webhook_endpoint_due_idx` for each such endpoint's due attempts,
+so its cost follows the `hmac` work (per endpoint, up to `budget` rows each) and
+never touches a sealed backlog, however large (`claim.md` has the measurements).
+Filtering the rows after fetching them would let a sealed backlog, or a deactivated
+endpoint's, fill the window and starve the `hmac` rows behind it. A worker that
+holds the key claims both modes by the same rule, leaving out only the endpoints
+that are deactivated or whose circuit is open.
 
 Nothing about a sealed row is therefore written by a keyless worker: it stays
 `pending` (or `failed`, resting out its backoff), its `attempts` unchanged, its
 endpoint's breaker untouched, and a worker that has the key delivers it as soon as
-it runs. A row the sealer refuses anyway (a signer that fails; the database already
-refuses an audience or URL it cannot seal) is an ordinary [`Outcome::Retryable`]
-like any other failed delivery: counted, backed off, able to open the breaker and
-to go `dead`.
+it runs.
+
+**One window is left open, and it is closed after the claim.** The claim chose an
+`hmac` endpoint, and an operator can switch it to `sealed`
+(`switchWebhookDeliveryMode`) before the worker reads the endpoint again to
+deliver. The attempt is then `delivering`, counted by the claim, and this worker
+cannot send it. `deliver_one` logs it and returns without writing an outcome,
+exactly as for an endpoint that vanished: a failure written here would be a lie,
+burning an attempt of `maxAttempts` (`dead` for a `maxAttempts` of 1) and
+feeding the breaker for a request never made. The lease expires, a keyless
+reclaim skips the row (the endpoint is `sealed` now) and a worker that has the key
+resumes it without counting a second attempt.
+
+A row the sealer refuses anyway (a signer that fails, or a row written around
+the API: the CHECK on a `sealed` row's URL is a pattern, and it is the pattern
+**together with `@uri`**, which every write through the API passes, that never
+accepts what the sealer refuses, so a URL put into the table with `psql` can
+still reach the sealer) is an ordinary [`Outcome::Retryable`] like any other
+failed delivery: counted, backed off, able to open the breaker and to go `dead`.
 
 Rows that wait silently are the cost, so [`SealedBacklogWatch`] pays it: a keyless
-`run` counts the due sealed attempts (a `COUNT(*)`, due or abandoned by a crashed
-worker) every five minutes and, if there are any, logs a `warn` with the number
-and `--envelope-signing-key-file`. `backends/apps/sms-worker` logs one at start.
+`run` counts the due sealed attempts of **active** endpoints (a `COUNT(*)`, due
+or abandoned by a crashed worker) every five minutes and, if there are any, logs
+a `warn` with the number and `--envelope-signing-key-file`. A deactivated
+endpoint's attempts are claimed by no worker, key or not, so they are not
+waiting for one; an endpoint whose circuit is open is counted, because the
+circuit is a pause that ends by itself. `backends/apps/sms-worker` logs one at
+start.
 
 # Redirects
 

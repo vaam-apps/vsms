@@ -339,15 +339,24 @@ fn migration_dirs() -> (Vec<PathBuf>, PathBuf) {
         .filter(|path| path.is_dir())
         .collect();
     dirs.sort();
-    let (before, from_0010): (Vec<_>, Vec<_>) = dirs.into_iter().partition(|dir| {
-        dir.file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name < "0010")
-    });
+    // Migrations after 0010 are none of this file's business: it applies the ones
+    // before 0010, then 0010 itself, and stops there.
+    let (before, from_0010): (Vec<_>, Vec<_>) = dirs
+        .into_iter()
+        .filter(|dir| {
+            dir.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name <= "0010_sealed_webhooks")
+        })
+        .partition(|dir| {
+            dir.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name < "0010")
+        });
     assert_eq!(
         from_0010.len(),
         1,
-        "0010 is the newest migration: later ones need a case here"
+        "exactly one migration is 0010_sealed_webhooks"
     );
     (before, from_0010.into_iter().next().expect("0010"))
 }

@@ -123,12 +123,18 @@ an `hmac` endpoint is signed with its own secret and needs no key, so a
 deployment that has not moved a receiver to the seal may leave the file out. A
 `hooks` worker without it still starts and still delivers every `hmac`
 endpoint, and **claims no `sealed` endpoint's attempt at all**: those stay
-`pending` (or `failed`, resting out a backoff), untouched and uncounted toward
-`maxAttempts`, for a worker that holds the key, which delivers them as soon as it
-runs, so a late key loses nothing. Because the rows just wait, the keyless
-worker says so: every five minutes it logs a `warn` with the number of due sealed
-attempts it cannot serve, naming `--envelope-signing-key-file`, and it logs one
-at start. Treat either line as an unmounted key. Both containers
+`pending` (or `failed`, resting out a backoff), untouched and without spending an
+attempt of `maxAttempts`, for a worker that holds the key, which delivers them as
+soon as it runs, so a late key loses nothing. Because the rows just wait, the
+keyless worker says so: every five minutes it logs a `warn` with the number of
+due sealed attempts it cannot serve, naming `--envelope-signing-key-file`, and it
+logs one at start. Treat either line as an unmounted key. The number counts the
+attempts of **active** endpoints only: a deactivated endpoint's attempts are
+claimed by no worker, with the key or without it, so they say nothing about the
+key and a deployment whose only sealed endpoint is switched off does not warn
+for ever. An endpoint whose circuit is open is still counted: that is a pause
+which ends by itself (`circuitOpenUntil`, 15 minutes), after which its attempts
+are exactly what a keyless worker cannot take. Both containers
 run as uid 65532, which is why the one `chown`/`chmod 0400` above serves both.
 
 === Rotating the envelope keys
@@ -195,6 +201,72 @@ endpoint) that reads "signs with an empty key". The fix is
 rotation moves the empty secret into `prevSecret`), and handing the new secret to
 that endpoint's receiver; a short, non-empty secret signs correctly and is only
 weak, so rotate those at leisure.
+
+=== Before deploying: the `webhook_attempts` index of migration 0011
+
+Migration `0011_webhook_endpoint_due_idx` builds an index on `webhook_attempts`
+with a plain `CREATE INDEX`: `sms-migrate` applies each migration in a
+transaction, where `CONCURRENTLY` is refused. A plain build holds a `SHARE` lock
+on the table, which lets reads through and blocks every insert, update and delete
+until the build ends. On an upgrade the writers are the *previous* release's
+gateway and workers: the Helm `migrate` Job is a `pre-install,pre-upgrade` hook, so
+they are still running and still delivering when it starts, and each stalls on its
+write until the build finishes. Nothing purges `webhook_attempts` yet (the
+`@@retain(days: 30)` on `WebhookAttempt` is not enforced), so the build reads the
+table's whole history. Size it first, on the database the migration is about to run
+on:
+
+[,bash]
+----
+psql "$DATABASE_URL" -c "
+  SELECT pg_size_pretty(pg_relation_size('webhook_attempts'))        AS heap,
+         pg_size_pretty(pg_total_relation_size('webhook_attempts'))  AS with_indexes,
+         (SELECT reltuples::bigint FROM pg_class
+           WHERE oid = 'webhook_attempts'::regclass)                 AS approx_rows"
+----
+
+The build reads the heap once, so expect it to take about as long as a sequential
+scan of the `heap` figure, and writers wait that long. A table of a few tens of
+megabytes is a stall nobody notices; a table in the gigabytes is not. For one of
+the latter, build the index by hand, concurrently, *before* the deploy. It takes no
+lock that blocks writers, and the migration then finds the index there and runs
+no `CREATE INDEX` at all, so it takes no lock on the table either. (It looks the
+index up by name first; a bare `CREATE INDEX IF NOT EXISTS` would still queue for
+the `SHARE` lock before noticing the index exists, behind every open write, and
+block the next ones while it waits.)
+
+[,bash]
+----
+psql "$DATABASE_URL" -c "CREATE INDEX CONCURRENTLY IF NOT EXISTS webhook_endpoint_due_idx ON webhook_attempts (endpoint_id, next_attempt_at) WHERE state IN ('pending','failed')"
+----
+
+Run it as that one statement (`psql -c`, or a session with no open transaction):
+`CONCURRENTLY` cannot run inside a transaction block. If it is interrupted or fails
+it leaves an *invalid* index of the same name behind. Do not deploy over it: the
+migration refuses (it raises an error naming this section, and `sms-migrate` rolls
+it back), because an invalid index serves no query. So check the result before
+deploying and rebuild if it is not valid:
+
+[,bash]
+----
+psql "$DATABASE_URL" -At -c "
+  SELECT indisvalid FROM pg_index
+   WHERE indexrelid = 'webhook_endpoint_due_idx'::regclass"
+# t  -> deploy.   f  -> DROP INDEX CONCURRENTLY webhook_endpoint_due_idx;  and run the build again.
+----
+
+The statement is the migration's own, with `CONCURRENTLY` added
+(`backends/crates/sms-api/tests/webhook_endpoint_due_idx_live_postgres.rs` runs
+it and compares the index it builds with the migration's). The migration also
+refuses a valid index of that name that has another definition. The alternative,
+for a large table, is to let the migration build it inside a maintenance window with
+the gateway and workers stopped. The index is read by a `hooks` claim whenever it
+asks for one endpoint's attempts at a time, which is when some endpoint's attempts
+must be left out (deactivated, circuit open, or `sealed` for a worker without the
+envelope signing key; `backends/crates/sms-worker/src/claim.md`). Without it every
+`hooks` worker still delivers, but each such claim reads the backlog once per
+endpoint it asks for, on every poll. Rolling back the
+migration (`down.sql`) drops this index and nothing else.
 
 == 2. Build and bring up Postgres + migrations first
 

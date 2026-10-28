@@ -292,7 +292,7 @@ services:
       # default) needs the CURRENT key to deliver a `sealed` endpoint (an
       # `hmac` endpoint, VS-8R, needs none, and without the key `hooks` still
       # starts and delivers it, but claims no sealed endpoint's attempt: they
-      # wait, uncounted, and it warns how many, naming the flag). It is
+      # wait without spending an attempt, and it warns how many, naming the flag). It is
       # the very file the gateway signs its answers with, so a receiver pins
       # one pair of public keys for both. Only this one: the `next` key signs
       # nothing and the worker never reads it. A worker that does not run
