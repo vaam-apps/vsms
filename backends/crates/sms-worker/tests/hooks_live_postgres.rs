@@ -665,7 +665,11 @@ async fn force_column(endpoint_id: &str, column: &str, value: &str) {
 /// cannot do (a bulk insert, a hand edit, a statistics read), and returns its
 /// output with no headers or alignment.
 async fn psql(sql: &str) -> String {
-    let database_url = sms_test_support::database_url().await;
+    psql_at(&sms_test_support::database_url().await, sql)
+}
+
+/// [`psql`] against `database_url`.
+fn psql_at(database_url: &str, sql: &str) -> String {
     let output = std::process::Command::new("psql")
         .arg(database_url)
         .args(["-v", "ON_ERROR_STOP=1", "-X", "-q", "-A", "-t", "-c"])
@@ -1896,32 +1900,77 @@ const BULK_BACKLOG: u32 = 200_000;
 /// that scanned has exited: the caller closes its pool first, and this waits for
 /// the exits to land.
 async fn index_entries_read(index: &str) -> i64 {
+    index_entries_read_at(&sms_test_support::database_url().await, index).await
+}
+
+/// [`index_entries_read`] in the database at `database_url`.
+async fn index_entries_read_at(database_url: &str, index: &str) -> i64 {
     tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-    psql(&format!(
-        "SELECT coalesce(max(idx_tup_read), 0) FROM pg_stat_user_indexes \
-         WHERE indexrelname = '{index}'"
-    ))
-    .await
+    psql_at(
+        database_url,
+        &format!(
+            "SELECT coalesce(max(idx_tup_read), 0) FROM pg_stat_user_indexes \
+             WHERE indexrelname = '{index}'"
+        ),
+    )
     .parse()
     .expect("a count")
 }
 
-/// [`index_entries_read`] once nothing is adding to it any more: read every 2.5
-/// seconds until four readings in a row agree. An idle backend hands its counters
-/// to the shared view on a timer of up to ten seconds, so what the previous test's
-/// claims scanned (the unhealthy-backlog tests scan a few hundred entries) can land
-/// in the shared view well into the next test, and would count as the next claim's
-/// own if the baseline were read before it did.
-async fn index_entries_read_once_quiet(index: &str) -> i64 {
-    let mut last = index_entries_read(index).await;
-    let mut agreeing = 1;
-    while agreeing < 4 {
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-        let now = index_entries_read(index).await;
-        agreeing = if now == last { agreeing + 1 } else { 1 };
-        last = now;
+/// A database of its own for a test that reads the server's index counters: a copy
+/// of the harness's migrated template (`vsms_template`, `sms_test_support`'s), so no
+/// other test's connections, deleted rows or late-flushed counters are in it. Those
+/// were what the first version of these tests read: an idle backend hands its
+/// counters to the shared view on a timer of up to ten seconds, and the planner
+/// reads the two ends of an index, dead entries included, to estimate a range, so
+/// in the one database a claim of 20 rows was seen to read 90 and 300 entries when
+/// the test before it had scanned a few hundred.
+struct Scratch {
+    admin: String,
+    url: String,
+    name: String,
+}
+
+impl Scratch {
+    async fn create(tag: &str) -> Self {
+        let base = sms_test_support::database_url().await;
+        let (head, _) = base.rsplit_once('/').expect("a postgres URL has a path");
+        let name = format!("vsms_hooks_scratch_{tag}");
+        let admin = format!("{head}/postgres");
+        psql_at(
+            &admin,
+            &format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"),
+        );
+        psql_at(
+            &admin,
+            &format!("CREATE DATABASE {name} TEMPLATE vsms_template"),
+        );
+        Self {
+            url: format!("{head}/{name}"),
+            admin,
+            name,
+        }
     }
-    last
+
+    async fn cratestack(&self) -> Cratestack {
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .connect(&self.url)
+            .await
+            .expect("connecting to the scratch database");
+        Cratestack::builder(pool).build()
+    }
+
+    fn psql(&self, sql: &str) -> String {
+        psql_at(&self.url, sql)
+    }
+
+    fn drop_database(self) {
+        psql_at(
+            &self.admin,
+            &format!("DROP DATABASE IF EXISTS {} WITH (FORCE)", self.name),
+        );
+    }
 }
 
 /// How many scans have used `index` so far; same reading rules as
@@ -2112,8 +2161,8 @@ const CLAIM_BUDGET: i64 = 20;
 /// the 800 to 31 000 the per-endpoint reads of 40 backlogged endpoints take. Not
 /// tighter, because the server's counter (`idx_tup_read`) also counts the entries the
 /// *planner* reads at the two ends of the index to estimate the range
-/// (`get_actual_variable_range`, which steps over dead entries a vacuum has not
-/// removed yet, so a previous test's rows show up as 50 to 100 more).
+/// (`get_actual_variable_range`), and the first claim on a connection plans before it
+/// executes.
 const SINGLE_QUERY_ENTRIES: i64 = 10 * CLAIM_BUDGET;
 
 /// What a claim of [`CLAIM_BUDGET`] took, and what it cost in index entries.
@@ -2143,10 +2192,8 @@ async fn claim_behind_an_hmac_backlog(
     served: ServedModes,
     sealed_endpoint: SealedEndpoint,
 ) -> BackloggedClaim {
-    let db = isolated_db().await;
-    // Endpoints left by the other tests of this binary, a `sealed` one among them;
-    // their attempts go with them (`ON DELETE CASCADE`).
-    psql("DELETE FROM webhook_endpoints").await;
+    let scratch = Scratch::create("backlog").await;
+    let db = scratch.cratestack().await;
     let suffix = unique_suffix();
     let app_id = seed_app(&db, &suffix).await;
     let sealed = match sealed_endpoint {
@@ -2173,7 +2220,8 @@ async fn claim_behind_an_hmac_backlog(
         )
         .await;
     }
-    psql(&format!(
+    scratch
+        .psql(&format!(
         "INSERT INTO webhook_attempts \
            (id, endpoint_id, source_event_id, aggregate_id, event_type, payload, next_attempt_at) \
          SELECT 'bulk-' || e.rn || '-' || k, e.id, gen_random_uuid(), 'bulk-' || e.rn || '-' || k, \
@@ -2183,15 +2231,15 @@ async fn claim_behind_an_hmac_backlog(
                  FROM webhook_endpoints WHERE delivery_mode = 'hmac') e, \
               generate_series(1, {ALL_HMAC_DUE_EACH}) AS k \
          ORDER BY k, e.rn"
-    ))
-    .await;
+    ));
     if let (SealedEndpoint::WithBacklog, Some(sealed)) = (sealed_endpoint, sealed) {
         // A due sealed backlog older than every `hmac` attempt, as a deployment that
         // needs the fan-out has: it is what makes the planner prefer the endpoint's
         // own index to walking `webhook_due_idx` in time order and filtering. Without
         // it the 40 endpoints are each 2.5% of the table, and the planner, which
         // estimates a walk of about 800 entries for 20 rows, may take that walk.
-        psql(&format!(
+        scratch
+        .psql(&format!(
             "INSERT INTO webhook_attempts \
                (id, endpoint_id, source_event_id, aggregate_id, event_type, payload, next_attempt_at) \
              SELECT 'bulk-sealed-' || k, '{}', gen_random_uuid(), 'bulk-sealed-' || k, \
@@ -2199,24 +2247,18 @@ async fn claim_behind_an_hmac_backlog(
                     now() - interval '2 hours' + k * interval '1 millisecond' \
              FROM generate_series(1, {SEALED_BEHIND_THE_HMAC}) AS k",
             sealed.id
-        ))
-        .await;
+        ));
     }
-    // Vacuumed as well as analysed: the rows other tests of this binary deleted
-    // (the 200 000 of the one above) are dead entries in `webhook_due_idx` until a
-    // vacuum, and the first scan over them counts every one it steps past. (A vacuum
-    // started this soon after a delete does not always get them all: see
-    // [`SINGLE_QUERY_ENTRIES`].)
-    psql("VACUUM ANALYZE webhook_attempts").await;
+    scratch.psql("VACUUM ANALYZE webhook_attempts");
 
     let pool = PgPoolOptions::new()
         .max_connections(2)
-        .connect(&sms_test_support::database_url().await)
+        .connect(&scratch.url)
         .await
-        .expect("connecting to Postgres");
+        .expect("connecting to the scratch database");
     let claim_db = Cratestack::builder(pool.clone()).build();
-    let due_before = index_entries_read_once_quiet("webhook_due_idx").await;
-    let endpoint_due_before = index_entries_read("webhook_endpoint_due_idx").await;
+    let due_before = index_entries_read_at(&scratch.url, "webhook_due_idx").await;
+    let endpoint_due_before = index_entries_read_at(&scratch.url, "webhook_endpoint_due_idx").await;
 
     let claimed = claim_webhook_attempts(&claim_db, &sys(), "worker", CLAIM_BUDGET, served)
         .await
@@ -2230,11 +2272,12 @@ async fn claim_behind_an_hmac_backlog(
     ids.sort();
     let result = BackloggedClaim {
         claimed: ids,
-        due_idx: index_entries_read("webhook_due_idx").await - due_before,
-        endpoint_due_idx: index_entries_read("webhook_endpoint_due_idx").await
+        due_idx: index_entries_read_at(&scratch.url, "webhook_due_idx").await - due_before,
+        endpoint_due_idx: index_entries_read_at(&scratch.url, "webhook_endpoint_due_idx").await
             - endpoint_due_before,
     };
-    psql("DELETE FROM webhook_attempts WHERE aggregate_id LIKE 'bulk-%'").await;
+    drop(db);
+    scratch.drop_database();
     result
 }
 

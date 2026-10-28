@@ -4647,7 +4647,9 @@ receiver's configuration, with a snippet, and `hmac_v1.md` the HMAC's.
   two ends of an index to estimate a range (`get_actual_variable_range`), which steps over dead entries a vacuum has not
   removed, and an idle backend hands its counters to the shared view on a timer of up to ten seconds, so a test that took its
   baseline right after the previous test measured the previous test's claim (90 and 300 entries seen for a 20-entry claim,
-  only when that test ran right after another). The baseline is read once nothing is adding to it, and the single-query bound is
+  only when that test ran right after another, and a baseline taken after four quiet readings did not cure it). The cost tests
+  run in a database of their own now, a copy of the harness template (`Scratch` in `hooks_live_postgres.rs`), where no other
+  test's connections, deleted rows or counters exist, and the single-query bound is
   ten times `budget`, not two, against the 800 to 31 000 of the fan-out. Sabotage proofs (each watched failing, then restored):
   the single query always (nine tests fail, the starvation ones with `[]`); never (the two healthy-cost tests); the mode
   ignored everywhere (five); ignored in the re-read only (the new switch test); no merge sort (the oldest-across-endpoints
