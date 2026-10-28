@@ -124,6 +124,13 @@ console that looks different from a fresh `just demo` checkout is
 expected, not a sign this file is broken -- check the tag before assuming
 otherwise.
 
+NOTE: the gateway and the worker read their provider from the YAML configuration
+(`config/application-demo.yml`, baked into the images; `compose.demo.yaml` sets
+`SMS_PROFILE: demo`), not from the `ORANGE_CM_*` variables earlier releases took
+(VSC-1, `docs/architecture.md` section 9.4). A `VSMS_IMAGE_TAG` that predates that
+change does not contain the file and refuses the new environment; use a tag at or
+after it.
+
 == Send a message and watch it reach a terminal state
 
 From the console, open the Composer and send a message to

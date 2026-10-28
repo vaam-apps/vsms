@@ -46,8 +46,9 @@ that file's own header for how it differs from this runbook's
 production-shaped stack. `deploy/docker-compose.yml` itself still has no
 `fake-orange` profile; every step below still assumes real Orange
 Cameroon `client_credentials`, except the backend-only verification
-section, which points `ORANGE_CM_BASE_URL` at a manually-run
-`sms-fake-orange` container instead -- see that section for exactly how.
+section, which points the `orange_cm` entry's `host.url` (`config/application-prod.yml`)
+at a manually-run `sms-fake-orange` container instead -- see that section for
+exactly how.
 
 == Prerequisites
 
@@ -96,7 +97,8 @@ sudo chmod 0400 secrets/envelope-current.pem secrets/envelope-next.pem
 ----
 
 Fill in `.env` -- every var traces to a real `+#[arg(long, env = ...)]+` in
-`backends/apps/sms-gateway/src/main.rs` / `backends/apps/sms-worker/src/main.rs`, or to a
+`backends/apps/sms-gateway/src/main.rs` / `backends/apps/sms-worker/src/main.rs`, to a
+`+${NAME}+` placeholder in `config/application*.yml` (next section), or to a
 `docker-compose.yml` service block; see that file's own comments for
 which. At minimum:
 
@@ -171,6 +173,51 @@ else, so a missing or too-short value fails the container at boot, not at
 the first `sendMessage` call. Generate it once and keep it: rotating later
 does not retroactively rehash rows already written under the old value --
 see ``backends/crates/sms-api/src/pepper.rs``'s own module doc.
+
+=== The YAML configuration (`config/application-prod.yml`)
+
+Everything a deployment decides -- the pepper's source, the pool sizes, the
+idempotency and rate-limit policy, and every SMS provider with its host,
+settings and credentials -- is one YAML document read by both `sms-gateway` and
+`sms-worker` (VSC-1; `docs/architecture.md`, section 9.4 has every key). The
+images bake the base file, `config/application.yml`, and this stack mounts
+`config/application-prod.yml` from your clone over the `prod` overlay the image
+bakes, so you edit it *in the repository you cloned* and a `docker compose up -d`
+restarts the services on it, with no rebuild. `.env` keeps only the secrets and
+per-host facts that file reads as `+${NAME}+`.
+
+The shipped overlay runs `orange_cm` with `livemode: true`, which turns on the
+rules a real deployment needs: every URL `https`, no stub host, and every
+secret a `+${VAR}+` placeholder rather than a literal. To change the provider
+set:
+
+* *MTN or AWS instead of (or beside) Orange:* uncomment that provider's block in
+`config/application-prod.yml`, uncomment the matching pass-through lines under
+`sms-gateway` *and* `sms-worker` in `docker-compose.yml`, and set the variables in
+`.env`. For an MTN-only or AWS-only deployment, delete the Orange entry and leave
+its three variables unset: an entry whose variables are unset is a boot failure
+naming the variable, not a disabled provider.
+* *Anything else the file reads:* every `+${NAME}+` you add needs a line in both
+services' `environment:` (a bare `NAME:` forwards it when `.env` sets it). The
+process refuses to start on a `+${NAME}+` it cannot resolve, naming it.
+
+The process checks the document before it opens a key file or a connection, so a
+mistake in it stops `sms-gateway` and `sms-worker` at start, naming the key,
+before anything else is touched (step 4's `docker compose ps` shows the exit; the
+reason is in `docker compose logs sms-gateway`).
+
+[IMPORTANT]
+====
+*Upgrading from a release that configured these as flags and variables.* The
+flags are gone and are refused, not ignored. Move each value into
+`config/application-prod.yml` (the table in `docs/architecture.md`, section 9.4,
+maps every old name to its key), delete the old lines from `.env`, and expect
+the new `.env` to contain only the secrets and the `+${NAME}+`s the overlay
+reads. `docker-compose.yml` no longer forwards `ORANGE_CM_BASE_URL`,
+`SMS_IDEMPOTENCY_TTL_SECS`, `SMS_RATE_LIMIT_*`, `SMS_SOURCE_RATE_LIMIT_*` or the
+`AWS_SMS_*` settings, so setting them in `.env` does nothing; a deployment that
+still passes one to a container by hand is told, at start, which key replaced it.
+====
 
 === Before deploying: hmac endpoints with an empty or short key
 
@@ -619,10 +666,13 @@ docker compose run --rm sms-gateway mtn-subscribe-dlr \
   --target-system vsms
 ----
 
-`MTN_CLIENT_ID`, `MTN_CLIENT_SECRET`, `MTN_SERVICE_CODE` and
-`MTN_BASE_URL` come from the environment (see `deploy/.env.example`), so
-they are not repeated on the command line -- the secret in particular
-should never land in shell history.
+MTN's credentials are the `mtn_cm` entry of the YAML configuration (see
+`config/application-prod.yml` and `deploy/.env.example`), so they are not
+repeated on the command line -- the secret in particular should never land in
+shell history. The command loads the whole document, so every `+${NAME}+` it
+writes, the pepper's included, must be set in the environment it runs in: the
+compose service already has them, which is why the command above uses the
+`sms-gateway` service.
 
 Note the path segment is `mtn_cm`, matching `SmsProvider::key` and what
 ``sms-gateway``'s `+/dlr/{providerKey}+` handler matches against. A
@@ -630,7 +680,9 @@ subscription registered against any other path will be accepted by MTN
 and then silently 404 on every receipt.
 
 `run --rm`, not `exec`: this command needs no database and no running
-gateway, and the gateway may legitimately not be up yet.
+gateway, and the gateway may legitimately not be up yet. `run` starts it from
+the `sms-gateway` service definition, which is what gives it the configuration
+mount and the environment.
 
 == Backend-only deployment (R4, `CONTRIBUTING.md`)
 
@@ -685,7 +737,7 @@ The compose half was run against a real stack -- a fresh `deploy/.env`
 with every var this file marks required _except_ every console-only one
 (`SMS_ENVELOPE_SERVER_KEY_CURRENT`, `SMS_ENVELOPE_SERVER_KEY_NEXT`,
 `CADDY_ACME_EMAIL`, `SMS_GATEWAY_DOMAIN`, `SMS_ADMIN_DOMAIN` all absent),
-`ORANGE_CM_BASE_URL` pointed at a manually-run `sms-fake-orange` container
+the `orange_cm` entry's `host.url` pointed at a manually-run `sms-fake-orange` container
 on the compose network (no `fake-orange` profile exists in this file yet
 -- see "Known seams" above) rather than a real Orange account, since this
 section's job is proving R4, not re-proving `36-handset-gate.adoc`:
@@ -872,7 +924,8 @@ exists only in this deploy path, not in the committed
 == Secrets -- the decision, and what it doesn't protect against
 
 *No `sops` here*, despite §9.2 mentioning it. This deployment's secrets
-are: `POSTGRES_PASSWORD`, `ORANGE_CM_CLIENT_SECRET`, `SMS_HASH_PEPPER`,
+are: `POSTGRES_PASSWORD`, `ORANGE_CM_CLIENT_SECRET` (a `+${...}+` placeholder in
+`config/application-prod.yml`, which holds no secret itself), `SMS_HASH_PEPPER`,
 the admin console's `console-composer.pem`, and the backup service's
 `rclone.conf`. The first three live in `deploy/.env` (`chmod 600`, never
 committed -- `.gitignore`/`.dockerignore` both exclude it); the last two
@@ -1018,9 +1071,13 @@ their own operator/subscription in front of one) supplies -- the same
 "bring your own database" split the compose path already documents for
 why it doesn't use `sops`.
 * *Does not create any Secret.* Every credential (`DATABASE_URL`,
-`SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `MTN_CLIENT_SECRET` when
-MTN is configured, the composer's service key PEM, the two envelope key PEMs) is referenced by name from an `existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
-ever writes one into a ConfigMap or a rendered manifest. See
+`SMS_HASH_PEPPER`, `ORANGE_CM_CLIENT_SECRET`, `MTN_CLIENT_SECRET` and
+`AWS_SMS_SECRET_ACCESS_KEY` when those providers are configured, the composer's
+service key PEM, the two envelope key PEMs) is referenced by name from an
+`existingSecrets.*` value; nothing under `deploy/charts/vsms/templates`
+ever writes one into a ConfigMap or a rendered manifest. The provider
+configuration itself, which holds `+${NAME}+` placeholders and no secret, is the
+`config.overlay` ConfigMap (below). See
 ``values.yaml``'s own `existingSecrets` block for the exact key each
 Secret must contain.
 
@@ -1057,6 +1114,51 @@ weight; see ``values.yaml``'s own comment on `seedDispatch` for the full
 reasoning. (A third hook, `rotateSigningKey`, minted the signing key of the
 embedded OpenID Provider and went with it in VS-4.)
 
+=== The configuration: `config.overlay`
+
+The chart has no provider values any more (VSC-1). The `orange.*`, `mtn.*` and
+`awsSms.*` blocks are gone, and the chart *refuses* a release that still sets
+one (guard `retired-values`), naming where it went. What replaces them is
+`config.overlay`: the same YAML document the compose path edits, as text, which
+the chart renders into a ConfigMap and mounts -- with `subPath`, over
+`/config/application-<profile>.yml` -- into the gateway *and* the worker, so the
+two cannot disagree about a provider. `subPath` is what keeps the image's base
+file: a ConfigMap mounted at `/config` would replace the directory. The mounted
+file does not update in place, so both pod templates carry a checksum of the
+overlay and an edit rolls the Pods.
+
+The overlay is required (guard `config-overlay`): the base file lists no provider,
+and a gateway with none refuses to start, so a release without one would be a
+crash-looping Pod found by `kubectl get pods` instead of by `helm template`.
+
+[,yaml]
+----
+config:
+  profile: prod
+  createOverlayConfigMap: true
+  overlay: |
+    deployment:
+      name: vsms
+      livemode: true
+      public_base_url: https://sms.example.com
+    providers:
+      - code: orange_cm
+        credentials:
+          client_id: <the Orange client id>
+          client_secret: ${ORANGE_CM_CLIENT_SECRET}   # existingSecrets.orange
+        settings:
+          sender_number: "+237..."
+----
+
+The secrets the overlay reads as `+${NAME}+` come from `existingSecrets.hashPepper`
+(always), and `existingSecrets.orange`, `.mtn` and `.awsSms` (each optional: an
+empty `name` leaves its variable out of both Deployments). Anything else the
+overlay reads is added to *both* controllers' `env`. The two seed hooks follow
+the overlay by hand, because the chart cannot read an opaque overlay:
+`controllers.seedDispatch.enabled: false` when there is no `orange_cm` entry, and
+`controllers.seedDispatchAws.enabled: true` (with `--max-tps` and
+`--cost-per-segment-xaf` appended to its `args`) when there is an `aws_sms` one.
+
 === Installing
 
 [,bash]
@@ -1072,10 +1174,11 @@ kubectl create secret generic vsms-hash-pepper \
 kubectl create secret generic vsms-console-composer-key \
   --from-file=console-composer.pem=./console-composer.pem
 
+# overlay.yaml is the YAML overlay (config.overlay above), as a file.
 helm install vsms deploy/charts/vsms \
   --set image.tag=<a real tag published by release.yml — see above> \
-  --set orange.clientId=... \
-  --set orange.senderNumber=... \
+  --set-file config.overlay=overlay.yaml \
+  --set config.createOverlayConfigMap=true \
   --set admin.serverKeys.current=... \
   --set admin.serverKeys.next=... \
   --set existingSecrets.database.name=vsms-database \
@@ -1089,15 +1192,19 @@ empty when the console is disabled or the composer is not used); the console's o
 chart values are `admin.serverKeys.current` and `admin.serverKeys.next`, the two
 public keys `sms-gateway server-keys` prints. `values.yaml`'s own `existingSecrets`
 block is the source of truth for the secrets: `database`, `hashPepper`, `orange`,
-and `consoleComposerKey`.
+`mtn`, `awsSms` and `consoleComposerKey`.
 
-Every one of `image.tag`, `orange.clientId`, `orange.senderNumber`,
-the `existingSecrets.*.name` fields the gateway needs, and (with the console on)
-`admin.serverKeys.current`/`.next` is enforced with Helm's `required` function --
-an install with any of them missing fails immediately with a named field, not a
-cryptic render error or a silently-broken Pod.
+Every one of `image.tag`, the `existingSecrets.*.name` fields the gateway needs,
+the overlay, and (with the console on) `admin.serverKeys.current`/`.next` is
+enforced with Helm's `required` function or a named chart guard -- an install
+with any of them missing fails immediately with a named field, not a cryptic
+render error or a silently-broken Pod.
 
 === Verification actually performed for this PR
+
+_The VSC-1 change to this chart (the overlay, the guards and the removed values) was not rendered: `helm` was not available where it was written. It was read against bjw-s common 4.6.2's own templates, and the files around it (the compose stacks, the values and the Dockerfiles) are checked by `backends/crates/sms-config/tests/deploy.rs`. `helm lint --strict`, `helm template` with a full overlay, and a deliberate render of each guard are the first thing to run on it._
+
+The paragraph below describes the earlier chart and is kept as the record of what was verified then.
 
 `helm lint --strict` and `helm template` (with a full set of test values --
 no chart default was left to guess at) both ran clean, and the rendered

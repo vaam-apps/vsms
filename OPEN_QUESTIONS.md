@@ -206,7 +206,7 @@ cross-border transfers of personal data, and that "legitimate interest" is not
 a lawful basis. That was abstract while every provider was an in-country
 operator API. `aws_sms` makes it concrete: `SendTextMessage` hands each
 recipient's phone number and the full message body to AWS, in whichever Region
-`AWS_SMS_REGION` names, and AWS has no Cameroon Region (the nearest, `af-south-1`,
+`providers[code=aws_sms].settings.region` names, and AWS has no Cameroon Region (the nearest, `af-south-1`,
 is in South Africa). A phone number is personal data, and an OTP or
 notification body usually is too.
 

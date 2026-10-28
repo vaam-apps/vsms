@@ -22,7 +22,7 @@ environment, round-trips the result through `serde_yaml_ng` into the typed
 model, and validates it. A `${VAR}` the environment does not set is an error,
 never an empty string. There is no implicit path:
 
-```
+```rust
 use sms_config::{Config, ConfigError};
 
 assert_eq!(Config::load(None, "dev").unwrap_err(), ConfigError::MissingPath);

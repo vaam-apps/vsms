@@ -108,7 +108,7 @@ this deployment's own network path -- the closest real-world match to the
 automated suite's own connection-refused mechanism, and the one that
 _does_ open the circuit breaker (`ProviderError::Unavailable` →
 `OpenCircuitAndTryNextRoute`).
-. *Point `--orange-base-url` at an address nothing listens on*, restart
+. *Point the `orange_cm` entry's `host.url` (YAML configuration, `docs/architecture.md` section 9.4) at an address nothing listens on*, restart
 `sms-worker` -- the bluntest option, and the one furthest from "Orange
 itself broke" (it proves the mechanism, not a real-world failure mode of
 Orange's own infrastructure) -- prefer option 2 if at all available.

@@ -112,7 +112,25 @@ DATABASE_URL=postgres://localhost/vsms_check \
 
 Idempotent -- safe to run again later to send a second message; it reuses the `App`/`Provider`/`SenderId` fixtures it created the first time rather than accumulating new ones.
 
-Now, in separate terminals:
+Both binaries read a YAML configuration (VSC-1, `docs/architecture.md` section 9.4): the base file `config/application.yml` the repository ships, plus an overlay that says which provider they talk to. The committed profiles point at the compose stacks' containers (`sms-fake-orange` as a host name), so for a run on your own machine write a one-off overlay beside a copy of the base, outside the repository:
+
+[,bash]
+----
+mkdir -p /tmp/vsms-config
+cp config/application.yml /tmp/vsms-config/
+cat > /tmp/vsms-config/application-local.yml <<'EOF'
+providers:
+  - code: orange_cm
+    credentials:
+      client_id: placeholder
+      client_secret: placeholder
+    settings:
+      sender_number: "+2370000"
+EOF
+export SMS_CONFIG=/tmp/vsms-config/application.yml SMS_PROFILE=local
+----
+
+The base file reads the pepper as `${SMS_HASH_PEPPER}`, which step 5 exported. Now, in separate terminals (the exports above reach both):
 
 [,bash]
 ----
@@ -120,24 +138,17 @@ Now, in separate terminals:
 DATABASE_URL=postgres://localhost/vsms_check \
 SMS_ENVELOPE_SIGNING_KEY_FILE=dev-keys/envelope-current.pem \
 SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE=dev-keys/envelope-next.pem \
-SMS_HASH_PEPPER="$SMS_HASH_PEPPER" \
-ORANGE_CM_CLIENT_ID=placeholder \
-ORANGE_CM_CLIENT_SECRET=placeholder \
-ORANGE_CM_SENDER_NUMBER=+2370000 \
     cargo run -p sms-gateway -- serve
 
 # terminal 2 — dispatch, scheduler, and jobs
 DATABASE_URL=postgres://localhost/vsms_check \
 SMS_WORKER_ROLES=dispatch,scheduler,jobs \
-ORANGE_CM_CLIENT_ID=placeholder \
-ORANGE_CM_CLIENT_SECRET=placeholder \
-ORANGE_CM_SENDER_NUMBER=+2370000 \
     cargo run --bin sms-worker
 ----
 
 `cargo run --bin sms-worker`, not `-p sms-worker` -- the package is named `sms-worker-bin` (the _library_ crate `backends/crates/sms-worker` already owns the plain name), but the `[[bin]]` it produces is still called `sms-worker`, and `--bin` resolves by binary name across the whole workspace regardless of which package declares it.
 
-Placeholder Orange credentials are enough to prove the whole pipeline moves the message you already sent through `accepted → queued → routed`: routing only needs an `active` `Provider` row and a matching, enabled `Route` (since https://github.com/vymalo/vsms/issues/62[#62]; `send_test_message` seeds both), not a real Orange account. `routed` is where dispatch actually attempts a submission -- with placeholder credentials that attempt fails outright (a real `401` from Orange's own OAuth endpoint, since `ORANGE_CM_BASE_URL` defaults to the real `+https://api.orange.com+`), landing the message in `failed` with the rejection reason attached, never reaching `submitted`. That's expected, and exactly the boundary xref:36-handset-gate.adoc[docs/runbooks/36-handset-gate.adoc] exists to cross with real credentials. Watch it with the `psql` command `send_test_message` printed:
+Placeholder Orange credentials are enough to prove the whole pipeline moves the message you already sent through `accepted → queued → routed`: routing only needs an `active` `Provider` row and a matching, enabled `Route` (since https://github.com/vymalo/vsms/issues/62[#62]; `send_test_message` seeds both), not a real Orange account. `routed` is where dispatch actually attempts a submission -- with placeholder credentials that attempt fails outright (a real `401` from Orange's own OAuth endpoint, since the `orange_cm` entry's `host.url` defaults to the real `+https://api.orange.com+`), landing the message in `failed` with the rejection reason attached, never reaching `submitted`. That's expected, and exactly the boundary xref:36-handset-gate.adoc[docs/runbooks/36-handset-gate.adoc] exists to cross with real credentials. Watch it with the `psql` command `send_test_message` printed:
 
 [,text]
 ----
@@ -152,7 +163,7 @@ Everything above proves routing; it can't prove delivery, because `routed` is ex
 where a placeholder credential dies. `backends/apps/sms-fake-orange` closes that gap for a demo or
 local run -- it's a standalone process that impersonates Orange's token and submit
 endpoints and independently POSTs a `delivered` DLR back, so `sms-worker`/`sms-gateway`
-need no code change to talk to it, only `ORANGE_CM_BASE_URL` pointed elsewhere. *It is a
+need no code change to talk to it, only the `orange_cm` entry's `host.url` pointed elsewhere. *It is a
 development/demo tool, not a real provider -- never point a production deployment at it*
 (see the binary's own module doc, `backends/apps/sms-fake-orange/src/main.rs`).
 
@@ -165,10 +176,10 @@ cargo run -p sms-fake-orange-bin -- \
     --sender-number +2370000
 ----
 
-Then start terminals 1 and 2 exactly as in step 5, but with
-`+ORANGE_CM_BASE_URL=http://127.0.0.1:8090+` added to both (still with placeholder
-`ORANGE_CM_CLIENT_ID`/`ORANGE_CM_CLIENT_SECRET` -- the fake accepts any credentials by
-default) and send a fresh message. Watch the same `psql` query this time land on
+Then add `host: {url: http://127.0.0.1:8090}` to the `orange_cm` entry of
+`/tmp/vsms-config/application-local.yml` (still with the placeholder `client_id`/`client_secret`
+-- the fake accepts any credentials by default), restart terminals 1 and 2 exactly as in step 5,
+and send a fresh message. Watch the same `psql` query this time land on
 `delivered`, and ``backends/apps/sms-fake-orange``'s own log show the submit it received and the DLR
 it posted back. `--fault-mode seeded --seed <n>` drives the same weighted failure mix
 ``backends/crates/sms-worker``'s chaos suite uses, for demoing the interesting paths instead of the
@@ -191,6 +202,7 @@ PUBLIC_KEY="$(openssl pkey -in console-composer.pem -pubout -outform DER \
   | tail -c 32 | base64 | tr '+/' '-_' | tr -d '=\n')"
 
 # `SMS_HASH_PEPPER` is already exported from step 5, and must be the same value every other process here uses.
+# (`register-client` itself reads no configuration; the export is for the processes that do.)
 DATABASE_URL=postgres://localhost/vsms_check \
     cargo run -p sms-gateway -- register-client \
     --app <an App slug, e.g. from `psql ... -c 'select slug from app'`> \

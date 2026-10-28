@@ -10,7 +10,7 @@ YAML key which replaced each.
   it as `${NAME}`;
 - each binary's test that its clap definitions no longer declare any entry.
 
-```
+```rust
 use sms_config::{ConfigError, reject_retired_flags};
 
 let error = reject_retired_flags(["serve", "--hash-pepper", "x"]).unwrap_err();

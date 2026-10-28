@@ -21,7 +21,7 @@ The steps, in order, and why they are in this order:
 `std::env::set_var` is `unsafe` in edition 2024 and this workspace forbids
 `unsafe`.
 
-```
+```rust
 use sms_config::{Config, ConfigError};
 
 let typo = std::path::Path::new("config/aplication.yml");

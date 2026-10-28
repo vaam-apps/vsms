@@ -75,22 +75,23 @@ sealing keys.
 
 == Running both binaries
 
+Orange's credentials are the `orange_cm` entry of the YAML configuration
+(`docs/architecture.md`, section 9.4), read by both binaries. With the shipped
+`config/application-prod.yml` they arrive as `${ORANGE_CM_CLIENT_ID}`,
+`${ORANGE_CM_CLIENT_SECRET}` and `${ORANGE_CM_SENDER_NUMBER}` from the
+environment, and the host defaults to `https://api.orange.com`:
+
 [,bash]
 ----
+export SMS_CONFIG=config/application.yml SMS_PROFILE=prod   # SMS_GATEWAY_DOMAIN, SMS_HASH_PEPPER and the three ORANGE_CM_* set too
+
 sms-gateway serve \
   --database-url "$DATABASE_URL" \
   --envelope-signing-key-file secrets/envelope-current.pem \
-  --envelope-next-signing-key-file secrets/envelope-next.pem \
-  --orange-client-id "$ORANGE_CM_CLIENT_ID" \
-  --orange-client-secret "$ORANGE_CM_CLIENT_SECRET" \
-  --orange-sender-number "$ORANGE_CM_SENDER_NUMBER"
-  # --orange-base-url defaults to https://api.orange.com already
+  --envelope-next-signing-key-file secrets/envelope-next.pem
 
 sms-worker --roles dispatch,scheduler,jobs \
-  --database-url "$DATABASE_URL" \
-  --orange-client-id "$ORANGE_CM_CLIENT_ID" \
-  --orange-client-secret "$ORANGE_CM_CLIENT_SECRET" \
-  --orange-sender-number "$ORANGE_CM_SENDER_NUMBER"
+  --database-url "$DATABASE_URL"
 ----
 
 `sms-gateway serve` fails fast with a clear message
@@ -189,7 +190,7 @@ fast to reliably time a manual `kill -9` into. Two options, in order of
 preference:
 
 * *Insert a deliberate delay* between `sms-worker` and Orange for this one
-test -- point `--orange-base-url` at a local reverse proxy (e.g. `mitmproxy`,
+test -- point the `orange_cm` entry's `host.url` at a local reverse proxy (e.g. `mitmproxy`,
 `toxiproxy`, or a simple local HTTP relay) that forwards to the real Orange
 API but delays the response by a few seconds. This is exactly what proved
 the mechanic locally (see below) and is by far the more reliable approach.
