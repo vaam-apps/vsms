@@ -1,3 +1,15 @@
+# BROKEN UNTIL THE NEXT RELEASE (VSC-1). This file pulls the published v0.9.0
+# images, which predate the YAML configuration: they take their provider
+# credentials, pool sizes and pepper as flags and variables this file no longer
+# sets, and they ignore SMS_CONFIG and SMS_PROFILE, so the stack does not come
+# up as designed (not exercised: the images this file needs are not yet
+# published). The file is already written for the images
+# release-please publishes next; the `x-release-please-version` comments move
+# every default tag below to that release, and it works again from the first
+# tag cut after VSC-1 merged. Until then run `just demo` (builds from source) or
+# pass VSMS_IMAGE_TAG, VSMS_DEMO_IMAGE_TAG and VSMS_FAKE_ORANGE_IMAGE_TAG naming
+# images built from this commit. docs/runbooks/showcase.adoc says the same.
+#
 # A one-command showcase of the whole system, pulling every vsms image from
 # GHCR — no `build:` stanza anywhere. This is a *third*, distinct compose
 # file, alongside two that already exist for different purposes:
@@ -419,8 +431,7 @@ services:
       SMS_PROFILE: demo
       # #134: obviously-demo value, 32+ bytes, never reused anywhere real.
       # Read by the base file as `${SMS_HASH_PEPPER}` (`security.hash_pepper`).
-      # The worker loads the same document, so it carries the identical value,
-      # though it never computes a hash.
+      # Only the gateway computes a hash, and only the gateway is given this.
       SMS_HASH_PEPPER: vsms-demo-hash-pepper-DO-NOT-USE-IN-PRODUCTION-1234567890
       # VS-3: every request is a COSE_Sign1 envelope and every response is
       # signed back, so the gateway will not boot without its two Ed25519
@@ -478,10 +489,9 @@ services:
       # what's actually in the database, not of a profile flag threaded
       # into `SMS_WORKER_ROLES` itself.
       SMS_WORKER_ROLES: dispatch,scheduler,jobs,drain,hooks
-      # The same `demo` profile as the gateway's, and so the same pepper: the
-      # worker loads the whole document.
+      # The same `demo` profile as the gateway's. No SMS_HASH_PEPPER: the
+      # worker does not load `security.*` and is not given the secret.
       SMS_PROFILE: demo
-      SMS_HASH_PEPPER: vsms-demo-hash-pepper-DO-NOT-USE-IN-PRODUCTION-1234567890
       # VS-8: a sealed webhook delivery is a request signed with the gateway's
       # own envelope signing key, so `hooks` needs the CURRENT key file (never
       # the `next` one, which signs nothing) to deliver a `sealed` endpoint (an

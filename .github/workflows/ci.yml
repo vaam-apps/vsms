@@ -859,6 +859,21 @@ jobs:
       # commits it, with no YAML parser and no build of the workspace.
       - run: cargo xtask config-literal-secrets
 
+      # VSC-1: the Helm chart is rendered, not read. A ConfigMap the chart
+      # renders from one template and a volume it renders from another derive
+      # their names at different moments (Helm renders templates in reverse
+      # path order, and `global.nameOverride` is set in the later one), so for
+      # any release name without "vsms" in it the Pods named a ConfigMap that did
+      # not exist and hung in ContainerCreating, with `helm lint --strict`
+      # green. This runs `helm dependency build`, `helm lint --strict` and
+      # `helm template` under a release name that lacks "vsms", asserts the
+      # overlay ConfigMap is the one both workloads mount, and fires every chart
+      # guard once. The helm version is release.yml's, which packages the chart.
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.16.4
+      - run: cargo xtask chart-render
+
       # R2: the diagram everyone reads and the transition table the trigger
       # enforces must agree. Drift shows up in production as an SM001 on an
       # edge that looks legal in the documentation.

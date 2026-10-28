@@ -148,8 +148,8 @@ services:
       # bytes, validated at startup (`sms-gateway serve` refuses to bind on
       # a missing or too-short value, never silently at the first
       # sendMessage call). The base config reads it as `${SMS_HASH_PEPPER}`
-      # (`security.hash_pepper`). Only sms-gateway uses it, but the worker
-      # loads the same document and so needs the variable set too.
+      # (`security.hash_pepper`). Only sms-gateway reads it: the worker does
+      # not load `security.*`, and its service is not given the variable.
       SMS_HASH_PEPPER: ${SMS_HASH_PEPPER:?generate one via `openssl rand -base64 48`}
       # VS-3: the signed transport's two Ed25519 server keys (PKCS#8 PEM,
       # `openssl genpkey -algorithm ed25519`), mounted below. REQUIRED: the
@@ -292,9 +292,8 @@ services:
       # AWS_SMS_TPS_CEILING:
       # AWS_SMS_COST_PER_SEGMENT_XAF:
       # AWS_SMS_EVENTS_TOPIC_ARN:
-      # The worker loads the pepper's placeholder with the rest of the document
-      # and never uses the value.
-      SMS_HASH_PEPPER: ${SMS_HASH_PEPPER:?generate one via `openssl rand -base64 48`}
+      # No SMS_HASH_PEPPER: the worker does not load `security.*`, so it is not
+      # given the secret (the gateway's service above is).
       # VS-8: a sealed webhook delivery is a request signed with the gateway's
       # own envelope signing key, so the `hooks` role (in SMS_WORKER_ROLES by
       # default) needs the CURRENT key to deliver a `sealed` endpoint (an

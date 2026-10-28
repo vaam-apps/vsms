@@ -116,8 +116,8 @@ existingSecrets:
   # bind on a missing or too-short value. Generate with
   # `openssl rand -base64 48`, exactly like the compose path. Delivered as
   # the environment variable SMS_HASH_PEPPER, which the base configuration
-  # reads as `${SMS_HASH_PEPPER}` (`security.hash_pepper`). sms-worker gets it
-  # too: it loads the same document and never uses the value.
+  # reads as `${SMS_HASH_PEPPER}` (`security.hash_pepper`). Only sms-gateway gets
+  # it: sms-worker does not load `security.*` and is not given the secret.
   hashPepper:
     name: ""
     key: SMS_HASH_PEPPER
@@ -189,13 +189,12 @@ existingSecrets:
 # on both pod templates turns an overlay edit into a rolling restart instead,
 # consistent with "no hot reload".
 #
-# The overlay is REQUIRED (templates/common.yaml refuses a release without it):
-# the baked base file configures no provider, and a gateway with none refuses to
-# start. A minimal one, Orange only:
+# The overlay is REQUIRED (templates/common.yaml refuses a release without it, and
+# there is no flag to turn the ConfigMap off): the baked base file configures no
+# provider, and a gateway with none refuses to start. A minimal one, Orange only:
 #
 #   config:
 #     profile: prod
-#     createOverlayConfigMap: true
 #     overlay: |
 #       deployment:
 #         name: vsms
@@ -213,8 +212,8 @@ existingSecrets:
 # no stub host, and every secret a `${VAR}` placeholder rather than a literal.
 # `${VAR}` in the overlay must be set in the container environment, or the
 # process refuses to start naming it; the three provider secrets and the pepper
-# are wired from `existingSecrets`, and anything else the overlay reads is added
-# to BOTH controllers' `env` (controllers.gateway.containers.main.env and
+# are wired from `existingSecrets` (the pepper to the gateway only), and anything
+# else the overlay reads is added to BOTH controllers' `env` (controllers.gateway.containers.main.env and
 # controllers.worker.containers.main.env). The key reference, every provider's
 # settings and what is refused: docs/architecture.md, section 9.4.
 # ---------------------------------------------------------------------------
@@ -225,10 +224,11 @@ config:
   profile: prod
   # `SMS_CONFIG`: the baked base file. Changing this is almost certainly wrong.
   path: /config/application.yml
-  # Render the overlay below into a ConfigMap and mount it. Required.
-  createOverlayConfigMap: false
-  # The overlay's text: YAML, opaque to Helm. Not templated (`${VAR}` is the
-  # process's placeholder syntax, not Helm's).
+  # The overlay's text: YAML, opaque to Helm, rendered into a ConfigMap and
+  # mounted. Required: there is no switch to leave it out. `${VAR}` is the
+  # process's placeholder syntax, not Helm's, and `{{` is refused (guard
+  # `config-overlay-template`) because common renders ConfigMap data through
+  # `tpl`.
   overlay: ""
 
 worker:
@@ -599,17 +599,14 @@ controllers:
                 name: '{{ required "existingSecrets.database.name is required" .Values.existingSecrets.database.name }}'
                 key: '{{ .Values.existingSecrets.database.key }}'
           # VSC-1: the same YAML document as the gateway's, from the same
-          # overlay mount, and so the same environment for its `${VAR}`s (the
-          # pepper is loaded with the rest of the document and never used).
+          # overlay mount, and so the same environment for its `${VAR}`s - bar
+          # one. The worker does not load `security.*` (sms-config's
+          # `Binary::Worker`), so the hash pepper is not delivered to it: a
+          # process that never uses a secret does not get it.
           SMS_PROFILE:
             value: '{{ .Values.config.profile }}'
           SMS_CONFIG:
             value: '{{ .Values.config.path }}'
-          SMS_HASH_PEPPER:
-            valueFrom:
-              secretKeyRef:
-                name: '{{ required "existingSecrets.hashPepper.name is required" .Values.existingSecrets.hashPepper.name }}'
-                key: '{{ .Values.existingSecrets.hashPepper.key }}'
           ORANGE_CM_CLIENT_SECRET:
             valueFrom:
               secretKeyRef:
@@ -807,11 +804,14 @@ ingress:
 persistence:
   # The YAML overlay (`config` above), a ConfigMap this chart renders, mounted
   # with `subPath` over `application-<profile>.yml` into the gateway and the
-  # worker. templates/common.yaml fills in `advancedMounts` because the file
-  # name carries the profile, and a mount's `path` is not templated.
+  # worker. templates/common.yaml defines the ConfigMap (common's `configMaps`
+  # item `overlay`) and fills in `advancedMounts`, because the file name carries
+  # the profile and a mount's `path` is not templated. It is named by
+  # `identifier` and never by a name written here: one helper names the
+  # ConfigMap and the volume that mounts it, so they cannot disagree.
   config-overlay:
     type: configMap
-    name: '{{ include "bjw-s.common.lib.chart.names.fullname" $ }}-config'
+    identifier: overlay
     advancedMounts: {}
   # The gateway's envelope keys. `defaultMode` 0440 with the pods' `fsGroup`
   # (controllers.gateway.pod / controllers.worker.pod) lets the distroless

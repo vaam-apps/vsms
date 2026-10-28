@@ -40,6 +40,35 @@ fn placeholders(files: &[&str]) -> BTreeSet<String> {
     names
 }
 
+/// The variables only the gateway reads: every `${NAME}` under `security:` in
+/// the base file. The worker does not load that block (`Binary::Worker`), so a
+/// stack that hands it one gives a process a secret it never uses.
+fn gateway_only_variables() -> BTreeSet<String> {
+    fn collect(value: &Value, out: &mut BTreeSet<String>) {
+        match value {
+            Value::String(text) => {
+                let mut rest = text.as_str();
+                while let Some(start) = rest.find("${") {
+                    let after = &rest[start + 2..];
+                    let Some(end) = after.find('}') else { break };
+                    out.insert(after[..end].to_owned());
+                    rest = &after[end + 1..];
+                }
+            }
+            Value::Mapping(map) => map.values().for_each(|child| collect(child, out)),
+            Value::Sequence(items) => items.iter().for_each(|child| collect(child, out)),
+            _ => {}
+        }
+    }
+    let mut names = BTreeSet::new();
+    collect(&yaml("config/application.yml")["security"], &mut names);
+    assert!(
+        names.contains("SMS_HASH_PEPPER"),
+        "the base file's security block no longer reads the pepper: {names:?}"
+    );
+    names
+}
+
 fn compose_env(compose: &Value, service: &str) -> BTreeSet<String> {
     compose["services"][service]["environment"]
         .as_mapping()
@@ -61,13 +90,21 @@ fn every_compose_stack_forwards_the_variables_its_profile_reads() {
             &format!("config/application-{profile}.yml"),
         ]);
         let compose = yaml(file);
+        let gateway_only = gateway_only_variables();
         for service in ["sms-gateway", "sms-worker"] {
             let env = compose_env(&compose, service);
             for name in &wanted {
-                assert!(
+                let wanted_here = service == "sms-gateway" || !gateway_only.contains(name);
+                assert_eq!(
                     env.contains(name),
-                    "{file}: {service} does not forward {name}, which config/application*.yml \
-                     reads as ${{{name}}} under profile {profile}"
+                    wanted_here,
+                    "{file}: {service} {} {name}, which config/application*.yml reads as \
+                     ${{{name}}} under profile {profile} (security.* is the gateway's alone)",
+                    if wanted_here {
+                        "does not forward"
+                    } else {
+                        "is given"
+                    },
                 );
             }
             assert_eq!(
@@ -137,7 +174,10 @@ fn the_chart_no_longer_carries_the_values_the_yaml_replaced() {
         );
     }
     let config = &values["config"];
-    assert_eq!(config["createOverlayConfigMap"].as_bool(), Some(false));
+    assert!(
+        config.get("createOverlayConfigMap").is_none(),
+        "values.yaml still has a switch for the overlay ConfigMap, which is never optional"
+    );
     assert_eq!(config["path"].as_str(), Some("/config/application.yml"));
     assert!(config["overlay"].as_str().is_some());
 }
@@ -167,12 +207,18 @@ fn the_chart_declares_no_retired_variable_but_the_secrets_the_overlay_reads() {
                 retired.env
             );
         }
-        for needed in ["SMS_PROFILE", "SMS_CONFIG", "SMS_HASH_PEPPER"] {
+        for needed in ["SMS_PROFILE", "SMS_CONFIG"] {
             assert!(
                 names.contains(needed),
                 "the chart's {controller} lacks {needed}"
             );
         }
+        // The pepper is the gateway's alone: the worker does not load `security`.
+        assert_eq!(
+            names.contains("SMS_HASH_PEPPER"),
+            controller == "gateway",
+            "the chart's {controller} and the hash pepper"
+        );
     }
 }
 

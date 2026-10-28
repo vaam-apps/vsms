@@ -165,6 +165,14 @@ secret-env-args:
 config-literal-secrets:
 	{{_cargo}} xtask config-literal-secrets
 
+# Render the Helm chart under a release name without "vsms" and check the
+# overlay ConfigMap is the one both workloads mount, then fire every chart guard
+# (VSC-1). Needs `helm` on the PATH and network access, so it is not in
+# `all-checks` or the containerised `ci`; ci.yml's `rules` job runs it with
+# azure/setup-helm. See .xtask/src/chart_render.rs.
+chart-render:
+	{{_cargo}} xtask chart-render
+
 # Every path a workflow names must exist (release.yml never runs on a PR)
 workflow-paths:
 	{{_cargo}} xtask workflow-paths

@@ -476,9 +476,8 @@ services:
       # AWS's public demo account (`sms_fake_aws::DEFAULT_*`, accepted by
       # nothing but the fake).
       SMS_PROFILE: dev
-      # The worker loads the base file's `${SMS_HASH_PEPPER}` with the rest of
-      # the document and never uses the value.
-      SMS_HASH_PEPPER: vsms-dev-hash-pepper-DO-NOT-USE-IN-PRODUCTION-1234567890
+      # No SMS_HASH_PEPPER: the worker does not load `security.*` and is not
+      # given the secret.
       # VS-8: a sealed webhook delivery is a request signed with the gateway's
       # own envelope signing key, so `hooks` needs the CURRENT key file (never
       # the `next` one, which signs nothing) to deliver a `sealed` endpoint (an

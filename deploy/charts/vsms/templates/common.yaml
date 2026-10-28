@@ -77,35 +77,58 @@ removed. They were the chart's copy of flags the binaries no longer have, and
 silently ignoring a release that still sets them would deploy a gateway with no
 provider (or, worse, with the one an earlier release configured and nobody
 meant to keep). The same hard cutover the binaries make: refuse, and say where
-the value went.
+the value went. `config.createOverlayConfigMap` goes the same way: it could only
+ever be true, and a switch that cannot be turned off is dormant configuration.
 */}}
 {{- range $retired := list "orange" "mtn" "awsSms" }}
 {{- if hasKey $.Values $retired }}
 {{- fail (printf "vsms chart guard \"retired-values\": values.%s was removed. A provider is no longer a chart value: it is a `providers` entry in the YAML overlay (config.overlay), read by sms-gateway and sms-worker alike, and its secret stays in existingSecrets.%s as the `${...}` placeholder of the same name (docs/architecture.md, section 9.4; docs/runbooks/deployment.adoc, \"Kubernetes (Helm)\"). Delete values.%s." $retired $retired $retired) }}
 {{- end }}
 {{- end }}
+{{- if hasKey .Values.config "createOverlayConfigMap" }}
+{{- fail "vsms chart guard \"retired-values\": values.config.createOverlayConfigMap was removed. The overlay ConfigMap is always rendered, because the overlay is always required (guard \"config-overlay\"); there is no switch to leave it out. Delete values.config.createOverlayConfigMap." }}
+{{- end }}
 
 {{/*
 config-overlay: the baked base file configures no provider, and the gateway
 refuses to start with none, so a release with no overlay is a crash-looping Pod
-found at `kubectl get pods` instead of here. The profile names a file, so it is
-held to what a file name in this position can safely be.
+found at `kubectl get pods` instead of here. The overlay is always required;
+there is no switch to leave it out. The profile names a file, so it is held to
+what a file name in this position can safely be, and the overlay may not hold
+`{{`: common renders a ConfigMap's data through `tpl`, and a YAML overlay has no
+use for a template action.
 */}}
-{{- if not (and .Values.config.createOverlayConfigMap (trim .Values.config.overlay)) }}
-{{- fail "vsms chart guard \"config-overlay\": config.createOverlayConfigMap must be true and config.overlay must hold the YAML overlay. The image's base configuration (/config/application.yml) lists no SMS provider, and sms-gateway refuses to start with none. See the comment above `config:` in values.yaml for a minimal overlay." }}
+{{- if not (trim .Values.config.overlay) }}
+{{- fail "vsms chart guard \"config-overlay\": config.overlay must hold the YAML overlay. The image's base configuration (/config/application.yml) lists no SMS provider, and sms-gateway refuses to start with none. See the comment above `config:` in values.yaml for a minimal overlay." }}
+{{- end }}
+{{- if contains "{{" .Values.config.overlay }}
+{{- fail "vsms chart guard \"config-overlay-template\": config.overlay contains `{{`, which Helm would evaluate as a template action when it renders the ConfigMap. The overlay is YAML read by the process, and `${VAR}` (not `{{ }}`) is its placeholder syntax." }}
 {{- end }}
 {{- if not (regexMatch "^[a-z0-9][a-z0-9-]*$" .Values.config.profile) }}
 {{- fail (printf "vsms chart guard \"config-profile\": config.profile is %q; it names the file application-<profile>.yml and must match ^[a-z0-9][a-z0-9-]*$." .Values.config.profile) }}
 {{- end }}
 
 {{/*
-The overlay mount. A persistence item's `path` is not passed through `tpl`, and
-the file name carries the profile, so the mounts are built here, in a real
-template pass, the same mutate-before-generate trick `global.nameOverride` and
-`admin.enabled` use. `subPath` is load-bearing: see the comment above `config:`
-in values.yaml. The gateway and the worker mount the same file.
+The overlay's ConfigMap and its mount. The ConfigMap is common's own `configMaps`
+item, and the persistence item below names it by `identifier`, so one helper
+names both sides after the `global.nameOverride` set at the top of this file.
+That is the point of doing it this way: a ConfigMap rendered from a separate
+template file is rendered BEFORE this one (Helm orders by reverse path), computes
+its name before `global.nameOverride` is set, and so is named for the release
+while the Pods mount the name common derives; for any release name without
+"vsms" in it they disagree, and the Pods hang in ContainerCreating.
+
+The key is the file name the process looks for beside its base config
+(`<stem>-<profile>.<ext>`, sms_config's profile_overlay_path), and it is mounted
+with `subPath`, so it IS the mounted file name. A persistence item's `path` is
+not passed through `tpl`, and the file name carries the profile, so both are
+built here, in a real template pass: the same mutate-before-generate trick
+`global.nameOverride` and `admin.enabled` use. `subPath` is load-bearing: see the
+comment above `config:` in values.yaml. The gateway and the worker mount the
+same file.
 */}}
 {{- $overlayFile := printf "application-%s.yml" .Values.config.profile }}
+{{- $_ := set .Values "configMaps" (dict "overlay" (dict "enabled" true "suffix" "config" "data" (dict $overlayFile .Values.config.overlay))) -}}
 {{- $overlayMount := list (dict "path" (printf "%s/%s" (dir .Values.config.path) $overlayFile) "subPath" $overlayFile "readOnly" true) }}
 {{- $_ := set (index .Values.persistence "config-overlay") "advancedMounts" (dict "gateway" (dict "main" $overlayMount) "worker" (dict "main" $overlayMount)) -}}
 
