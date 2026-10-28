@@ -78,6 +78,10 @@ jobs:
               - 'compose*.yaml'
               - 'compose*.yml'
               - 'deploy/**'
+              # The YAML deployment configuration (VSC-1) is deployment
+              # configuration: a secret committed to a profile is exactly what
+              # the trivy secret scan is for.
+              - 'config/**'
               - '.github/workflows/**'
             any:
               - '**'
