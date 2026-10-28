@@ -2807,14 +2807,14 @@ fi
 
 `sms-gateway serve`, `sms-gateway mtn-subscribe-dlr` and `sms-worker` read one YAML document, `config/application.yml` plus a profile overlay `config/application-<profile>.yml`, through the `sms-config` crate. It is modelled on vpay's `vpay-config` and draws the same line:
 
-| Process plumbing: stays a flag or a variable | Deployment behaviour: the YAML |
-| --- | --- |
-| `DATABASE_URL` | `database.gateway_max_connections`, `database.worker_max_connections` |
-| `--listen` / `SMS_LISTEN_ADDR`, `--metrics-listen` / `SMS_METRICS_LISTEN_ADDR` / `SMS_WORKER_METRICS_LISTEN_ADDR` | `security.hash_pepper` |
-| `SMS_ENVELOPE_SIGNING_KEY_FILE`, `SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE` (paths) | `api.idempotency_ttl_secs`, `api.rate_limit`, `api.source_rate_limit` |
-| `SMS_WORKER_ROLES`, `SMS_WORKER_ID`, `SMS_WORKER_HEALTH_FILE` | `providers`: every provider's host, settings and credentials |
-| `RUST_LOG` | `deployment.name`, `.livemode`, `.public_base_url` |
-| `SMS_CONFIG`, `SMS_PROFILE` | |
+| Process plumbing: stays a flag or a variable                                                                      | Deployment behaviour: the YAML                                        |
+| ----------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `DATABASE_URL`                                                                                                    | `database.gateway_max_connections`, `database.worker_max_connections` |
+| `--listen` / `SMS_LISTEN_ADDR`, `--metrics-listen` / `SMS_METRICS_LISTEN_ADDR` / `SMS_WORKER_METRICS_LISTEN_ADDR` | `security.hash_pepper`                                                |
+| `SMS_ENVELOPE_SIGNING_KEY_FILE`, `SMS_ENVELOPE_NEXT_SIGNING_KEY_FILE` (paths)                                     | `api.idempotency_ttl_secs`, `api.rate_limit`, `api.source_rate_limit` |
+| `SMS_WORKER_ROLES`, `SMS_WORKER_ID`, `SMS_WORKER_HEALTH_FILE`                                                     | `providers`: every provider's host, settings and credentials          |
+| `RUST_LOG`                                                                                                        | `deployment.name`, `.livemode`, `.public_base_url`                    |
+| `SMS_CONFIG`, `SMS_PROFILE`                                                                                       |                                                                       |
 
 The one-shot operator subcommands (`register-client`, `bootstrap`, `create-app`, `provision-user`, `pair-console-key`, `seed-dispatch`, `record-route-validation`) take their arguments as arguments and read no deployment configuration.
 
@@ -2839,36 +2839,36 @@ sequenceDiagram
 
 **Profiles.** `--profile` / `SMS_PROFILE` (default `dev`) names a file and selects no code path. The images bake `config/` at `/config` and set `SMS_CONFIG=/config/application.yml`; the profile is never baked. A profile that names no file loads the base alone, as vpay's does. Maps merge key by key; a list in the overlay replaces the base's list wholesale, which is why each profile lists its `providers` in full.
 
-| Profile | Used by | Providers |
-| --- | --- | --- |
-| `dev` | `compose.dev.yaml`, and the default | `orange_cm` and `aws_sms` against the two local fakes |
-| `demo` | `compose.demo.yaml` | `orange_cm` against the fake Orange |
-| `prod` | `deploy/docker-compose.yml` (mounted over the baked file) | `orange_cm`, `livemode: true`; `mtn_cm` and `aws_sms` as commented examples that a test enables and loads |
+| Profile | Used by                                                   | Providers                                                                                                 |
+| ------- | --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `dev`   | `compose.dev.yaml`, and the default                       | `orange_cm` and `aws_sms` against the two local fakes                                                     |
+| `demo`  | `compose.demo.yaml`                                       | `orange_cm` against the fake Orange                                                                       |
+| `prod`  | `deploy/docker-compose.yml` (mounted over the baked file) | `orange_cm`, `livemode: true`; `mtn_cm` and `aws_sms` as commented examples that a test enables and loads |
 
 The Helm chart ships no profile: it renders `config.overlay` into a ConfigMap and mounts it over `application-<profile>.yml` in the gateway and the worker (`docs/runbooks/deployment.adoc`, "Kubernetes (Helm)").
 
 **Keys.** Every block refuses unknown keys, so a misspelt key is an error naming it, not a setting silently never applied. The defaults are the base file's, and are the defaults the clap flags had (`backends/crates/sms-config/tests/defaults.rs`).
 
-| Key | Default | Notes |
-| --- | --- | --- |
-| `deployment.name` | `vsms` | label for logs; must not be blank |
-| `deployment.livemode` | `false` | turns on the rules below; selects no code path |
-| `deployment.public_base_url` | `http://localhost:8080` | validated and logged; reserved for the issuer a future token realm would derive from it |
-| `security.hash_pepper` | `${SMS_HASH_PEPPER}` | at least 32 bytes, checked by `sms_api::HashPepper` |
-| `api.idempotency_ttl_secs` | `86400` | at least 1 |
-| `api.rate_limit.{burst, refill_per_second}` | `120`, `2.0` | burst at least 1, refill positive |
-| `api.source_rate_limit.{burst, refill_per_second}` | `1200`, `10.0` | |
-| `database.gateway_max_connections` | `10` | at least 1 |
-| `database.worker_max_connections` | `10` | at least 1 |
-| `providers` | `[]` | see below |
+| Key                                                | Default                 | Notes                                                                                   |
+| -------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------- |
+| `deployment.name`                                  | `vsms`                  | label for logs; must not be blank                                                       |
+| `deployment.livemode`                              | `false`                 | turns on the rules below; selects no code path                                          |
+| `deployment.public_base_url`                       | `http://localhost:8080` | validated and logged; reserved for the issuer a future token realm would derive from it |
+| `security.hash_pepper`                             | `${SMS_HASH_PEPPER}`    | at least 32 bytes, checked by `sms_api::HashPepper`                                     |
+| `api.idempotency_ttl_secs`                         | `86400`                 | at least 1                                                                              |
+| `api.rate_limit.{burst, refill_per_second}`        | `120`, `2.0`            | burst at least 1, refill positive                                                       |
+| `api.source_rate_limit.{burst, refill_per_second}` | `1200`, `10.0`          |                                                                                         |
+| `database.gateway_max_connections`                 | `10`                    | at least 1                                                                              |
+| `database.worker_max_connections`                  | `10`                    | at least 1                                                                              |
+| `providers`                                        | `[]`                    | see below                                                                               |
 
 **Providers.** An entry's presence configures the provider, so an incomplete entry is refused naming the missing key, where the flags used to be "all of these or none". A deployment that configures none cannot serve (nothing to parse receipts with) or dispatch.
 
-| `code` | `host.url` | `settings` | `credentials` |
-| --- | --- | --- | --- |
-| `orange_cm` | default `https://api.orange.com` | `sender_number` (E.164, quoted) | `client_id`, `client_secret` |
-| `mtn_cm` | default `https://api.mtn.com` | `service_code` (quoted), `tps_ceiling`, `cost_per_segment_xaf` (quote it: money is never a float), `sender_id`?, `supports_alphanumeric_sender` (default `false`) | `client_id`, `client_secret` |
-| `aws_sms` | endpoint override, optional | sending: `region`, `configuration_set`, `tps_ceiling`, `cost_per_segment_xaf`, `origination_identity`?, `message_type` (default `transactional`), `supports_alphanumeric_sender`, `time_to_live_seconds`?; receiving: `events_topic_arn`; demo builds: `fake_sns_cert_base` | `access_key_id`, `secret_access_key` |
+| `code`      | `host.url`                       | `settings`                                                                                                                                                                                                                                                                  | `credentials`                        |
+| ----------- | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `orange_cm` | default `https://api.orange.com` | `sender_number` (E.164, quoted)                                                                                                                                                                                                                                             | `client_id`, `client_secret`         |
+| `mtn_cm`    | default `https://api.mtn.com`    | `service_code` (quoted), `tps_ceiling`, `cost_per_segment_xaf` (quote it: money is never a float), `sender_id`?, `supports_alphanumeric_sender` (default `false`)                                                                                                           | `client_id`, `client_secret`         |
+| `aws_sms`   | endpoint override, optional      | sending: `region`, `configuration_set`, `tps_ceiling`, `cost_per_segment_xaf`, `origination_identity`?, `message_type` (default `transactional`), `supports_alphanumeric_sender`, `time_to_live_seconds`?; receiving: `events_topic_arn`; demo builds: `fake_sns_cert_base` | `access_key_id`, `secret_access_key` |
 
 `tps_ceiling` and `cost_per_segment_xaf` have no default: they are commercial terms of a contract or account, and an invented one throttles a paid contract or misprices `estimatedCostXaf`. `aws_sms` has two independent halves, as its two binaries do: the sending keys are all-or-none (naming any configures sending), and the gateway needs only `events_topic_arn`; an entry with neither is refused. `fake_sns_cert_base` exists in a `fake-aws` gateway build only; a release build refuses the key as it refused the flag (which did not parse).
 
@@ -2884,24 +2884,24 @@ The literal-secret rule reads the text as written, before `${VAR}` resolves, bec
 
 **The hard cutover.** The flags and variables below are gone. A retired flag is refused before clap parses (clap would otherwise say "unexpected argument" and name no key). A retired variable that is set while the YAML does not read it as `${VAR}` is refused by the loader, because clap ignores a variable it no longer declares and a deployment that still set `ORANGE_CM_CLIENT_ID` would boot with Orange silently missing. A variable set to the empty string counts as set. Both errors name the YAML key. A retired name the YAML does read as a placeholder is a secret's source, which is how the pepper and the provider secrets are still delivered.
 
-| Retired flag / variable | YAML key |
-| --- | --- |
-| `--max-connections` / `SMS_DB_MAX_CONNECTIONS` | `database.gateway_max_connections` |
-| `--db-max-connections` / `SMS_WORKER_DB_MAX_CONNECTIONS` | `database.worker_max_connections` |
-| `--hash-pepper` / `SMS_HASH_PEPPER` | `security.hash_pepper` (`${SMS_HASH_PEPPER}`) |
-| `--idempotency-ttl-secs` / `SMS_IDEMPOTENCY_TTL_SECS` | `api.idempotency_ttl_secs` |
-| `--rate-limit-burst`, `--rate-limit-refill-per-second` / `SMS_RATE_LIMIT_BURST`, `SMS_RATE_LIMIT_REFILL_PER_SECOND` | `api.rate_limit.{burst, refill_per_second}` |
-| `--source-rate-limit-burst`, `--source-rate-limit-refill-per-second` / `SMS_SOURCE_RATE_LIMIT_BURST`, `SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND` | `api.source_rate_limit.{burst, refill_per_second}` |
-| `--orange-client-id`, `--orange-client-secret` / `ORANGE_CM_CLIENT_ID`, `ORANGE_CM_CLIENT_SECRET` | `providers[code=orange_cm].credentials.{client_id, client_secret}` |
-| `--orange-sender-number`, `--orange-base-url` / `ORANGE_CM_SENDER_NUMBER`, `ORANGE_CM_BASE_URL` | `providers[code=orange_cm].settings.sender_number`, `.host.url` |
-| `--mtn-client-id`, `--mtn-client-secret` / `MTN_CLIENT_ID`, `MTN_CLIENT_SECRET` (also `mtn-subscribe-dlr`) | `providers[code=mtn_cm].credentials.{client_id, client_secret}` |
-| `--mtn-service-code`, `--mtn-sender-id`, `--mtn-tps-ceiling`, `--mtn-cost-per-segment-xaf`, `--mtn-supports-alphanumeric-sender` / `MTN_SERVICE_CODE`, `MTN_SENDER_ID`, `MTN_TPS_CEILING`, `MTN_COST_PER_SEGMENT_XAF`, `MTN_SUPPORTS_ALPHANUMERIC_SENDER` | `providers[code=mtn_cm].settings.*` |
-| `--mtn-base-url` / `MTN_BASE_URL` | `providers[code=mtn_cm].host.url` |
-| `--aws-sms-region`, `-configuration-set`, `-tps-ceiling`, `-cost-per-segment-xaf`, `-origination-identity`, `-message-type`, `-supports-alphanumeric-sender`, `-time-to-live-seconds` / `AWS_SMS_*` of the same name | `providers[code=aws_sms].settings.*` |
-| `--aws-sms-access-key-id`, `--aws-sms-secret-access-key` / `AWS_SMS_ACCESS_KEY_ID`, `AWS_SMS_SECRET_ACCESS_KEY` | `providers[code=aws_sms].credentials.*` |
-| `--aws-sms-endpoint-url` / `AWS_SMS_ENDPOINT_URL` | `providers[code=aws_sms].host.url` |
-| `--aws-sms-events-topic-arn` / `AWS_SMS_EVENTS_TOPIC_ARN` | `providers[code=aws_sms].settings.events_topic_arn` |
-| `--aws-sms-fake-sns-cert-base` / `AWS_SMS_FAKE_SNS_CERT_BASE` | `providers[code=aws_sms].settings.fake_sns_cert_base` |
+| Retired flag / variable                                                                                                                                                                                                                                   | YAML key                                                           |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `--max-connections` / `SMS_DB_MAX_CONNECTIONS`                                                                                                                                                                                                            | `database.gateway_max_connections`                                 |
+| `--db-max-connections` / `SMS_WORKER_DB_MAX_CONNECTIONS`                                                                                                                                                                                                  | `database.worker_max_connections`                                  |
+| `--hash-pepper` / `SMS_HASH_PEPPER`                                                                                                                                                                                                                       | `security.hash_pepper` (`${SMS_HASH_PEPPER}`)                      |
+| `--idempotency-ttl-secs` / `SMS_IDEMPOTENCY_TTL_SECS`                                                                                                                                                                                                     | `api.idempotency_ttl_secs`                                         |
+| `--rate-limit-burst`, `--rate-limit-refill-per-second` / `SMS_RATE_LIMIT_BURST`, `SMS_RATE_LIMIT_REFILL_PER_SECOND`                                                                                                                                       | `api.rate_limit.{burst, refill_per_second}`                        |
+| `--source-rate-limit-burst`, `--source-rate-limit-refill-per-second` / `SMS_SOURCE_RATE_LIMIT_BURST`, `SMS_SOURCE_RATE_LIMIT_REFILL_PER_SECOND`                                                                                                           | `api.source_rate_limit.{burst, refill_per_second}`                 |
+| `--orange-client-id`, `--orange-client-secret` / `ORANGE_CM_CLIENT_ID`, `ORANGE_CM_CLIENT_SECRET`                                                                                                                                                         | `providers[code=orange_cm].credentials.{client_id, client_secret}` |
+| `--orange-sender-number`, `--orange-base-url` / `ORANGE_CM_SENDER_NUMBER`, `ORANGE_CM_BASE_URL`                                                                                                                                                           | `providers[code=orange_cm].settings.sender_number`, `.host.url`    |
+| `--mtn-client-id`, `--mtn-client-secret` / `MTN_CLIENT_ID`, `MTN_CLIENT_SECRET` (also `mtn-subscribe-dlr`)                                                                                                                                                | `providers[code=mtn_cm].credentials.{client_id, client_secret}`    |
+| `--mtn-service-code`, `--mtn-sender-id`, `--mtn-tps-ceiling`, `--mtn-cost-per-segment-xaf`, `--mtn-supports-alphanumeric-sender` / `MTN_SERVICE_CODE`, `MTN_SENDER_ID`, `MTN_TPS_CEILING`, `MTN_COST_PER_SEGMENT_XAF`, `MTN_SUPPORTS_ALPHANUMERIC_SENDER` | `providers[code=mtn_cm].settings.*`                                |
+| `--mtn-base-url` / `MTN_BASE_URL`                                                                                                                                                                                                                         | `providers[code=mtn_cm].host.url`                                  |
+| `--aws-sms-region`, `-configuration-set`, `-tps-ceiling`, `-cost-per-segment-xaf`, `-origination-identity`, `-message-type`, `-supports-alphanumeric-sender`, `-time-to-live-seconds` / `AWS_SMS_*` of the same name                                      | `providers[code=aws_sms].settings.*`                               |
+| `--aws-sms-access-key-id`, `--aws-sms-secret-access-key` / `AWS_SMS_ACCESS_KEY_ID`, `AWS_SMS_SECRET_ACCESS_KEY`                                                                                                                                           | `providers[code=aws_sms].credentials.*`                            |
+| `--aws-sms-endpoint-url` / `AWS_SMS_ENDPOINT_URL`                                                                                                                                                                                                         | `providers[code=aws_sms].host.url`                                 |
+| `--aws-sms-events-topic-arn` / `AWS_SMS_EVENTS_TOPIC_ARN`                                                                                                                                                                                                 | `providers[code=aws_sms].settings.events_topic_arn`                |
+| `--aws-sms-fake-sns-cert-base` / `AWS_SMS_FAKE_SNS_CERT_BASE`                                                                                                                                                                                             | `providers[code=aws_sms].settings.fake_sns_cert_base`              |
 
 The authoritative list is `sms_config::RETIRED`. Each binary's tests fail if its clap definition declares any entry again. `mtn-subscribe-dlr` reads MTN's credentials from the `mtn_cm` entry, so it loads the whole document: run it where the gateway's environment is, because every `${VAR}` it writes, the pepper's included, must be set.
 

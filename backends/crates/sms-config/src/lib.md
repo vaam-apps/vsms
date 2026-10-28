@@ -5,13 +5,13 @@ Deployment behaviour lives in `config/application.yml` and a profile overlay
 and in the environment. The split is vpay's, and the loader is modelled on
 `vpay-config`:
 
-| Stays a flag or a variable | Moves to the YAML |
-| -------------------------- | ----------------- |
-| `DATABASE_URL`, `--listen`, `--metrics-listen` | pool sizes, `database.*` |
-| `SMS_ENVELOPE_SIGNING_KEY_FILE` and `..._NEXT_...` (paths) | the hash pepper, `security.*` |
-| `SMS_WORKER_ROLES`, `SMS_WORKER_ID`, `SMS_WORKER_HEALTH_FILE` | idempotency and rate limits, `api.*` |
-| `RUST_LOG` | every provider's host, settings and credentials, `providers` |
-| `SMS_CONFIG`, `SMS_PROFILE` | `deployment.*` |
+| Stays a flag or a variable                                    | Moves to the YAML                                            |
+| ------------------------------------------------------------- | ------------------------------------------------------------ |
+| `DATABASE_URL`, `--listen`, `--metrics-listen`                | pool sizes, `database.*`                                     |
+| `SMS_ENVELOPE_SIGNING_KEY_FILE` and `..._NEXT_...` (paths)    | the hash pepper, `security.*`                                |
+| `SMS_WORKER_ROLES`, `SMS_WORKER_ID`, `SMS_WORKER_HEALTH_FILE` | idempotency and rate limits, `api.*`                         |
+| `RUST_LOG`                                                    | every provider's host, settings and credentials, `providers` |
+| `SMS_CONFIG`, `SMS_PROFILE`                                   | `deployment.*`                                               |
 
 # Loading
 

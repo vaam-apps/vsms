@@ -7,11 +7,11 @@ An absent entry is a provider the deployment does not run, and a deployment with
 none cannot serve (the gateway has nothing to parse delivery receipts with) or
 dispatch (the worker has nothing to send through).
 
-| `code` | `host.url` | `settings` | `credentials` |
-| ------ | ---------- | ---------- | ------------- |
-| `orange_cm` | defaults to `https://api.orange.com` | `sender_number` | `client_id`, `client_secret` |
-| `mtn_cm` | defaults to `https://api.mtn.com` | `service_code`, `tps_ceiling`, `cost_per_segment_xaf`, `sender_id`?, `supports_alphanumeric_sender` | `client_id`, `client_secret` |
-| `aws_sms` | the endpoint override, optional | sending: `region`, `configuration_set`, `tps_ceiling`, `cost_per_segment_xaf`, and optionally `origination_identity`, `message_type`, `supports_alphanumeric_sender`, `time_to_live_seconds`; receiving: `events_topic_arn`; demo builds: `fake_sns_cert_base` | `access_key_id`, `secret_access_key` |
+| `code`      | `host.url`                           | `settings`                                                                                                                                                                                                                                                     | `credentials`                        |
+| ----------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| `orange_cm` | defaults to `https://api.orange.com` | `sender_number`                                                                                                                                                                                                                                                | `client_id`, `client_secret`         |
+| `mtn_cm`    | defaults to `https://api.mtn.com`    | `service_code`, `tps_ceiling`, `cost_per_segment_xaf`, `sender_id`?, `supports_alphanumeric_sender`                                                                                                                                                            | `client_id`, `client_secret`         |
+| `aws_sms`   | the endpoint override, optional      | sending: `region`, `configuration_set`, `tps_ceiling`, `cost_per_segment_xaf`, and optionally `origination_identity`, `message_type`, `supports_alphanumeric_sender`, `time_to_live_seconds`; receiving: `events_topic_arn`; demo builds: `fake_sns_cert_base` | `access_key_id`, `secret_access_key` |
 
 `tps_ceiling` and `cost_per_segment_xaf` have no default on purpose: they are
 commercial terms of a contract, and an invented one either throttles a paid

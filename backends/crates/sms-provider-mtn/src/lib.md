@@ -188,3 +188,5 @@ simplifying decision its own doc names (`callbackUrl` and
 `deliveryReportUrl` set to the same value, since this deployment has no
 Mobile-Originating message handling to route a distinct `callbackUrl`
 into).
+
+<!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->
