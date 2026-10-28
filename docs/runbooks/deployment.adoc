@@ -229,8 +229,11 @@ The build reads the heap once, so expect it to take about as long as a sequentia
 scan of the `heap` figure, and writers wait that long. A table of a few tens of
 megabytes is a stall nobody notices; a table in the gigabytes is not. For one of
 the latter, build the index by hand, concurrently, *before* the deploy. It takes no
-lock that blocks writers, and the migration then finds the index there and does
-nothing (`CREATE INDEX IF NOT EXISTS`):
+lock that blocks writers, and the migration then finds the index there and runs
+no `CREATE INDEX` at all, so it takes no lock on the table either. (It looks the
+index up by name first; a bare `CREATE INDEX IF NOT EXISTS` would still queue for
+the `SHARE` lock before noticing the index exists, behind every open write, and
+block the next ones while it waits.)
 
 [,bash]
 ----
@@ -239,8 +242,10 @@ psql "$DATABASE_URL" -c "CREATE INDEX CONCURRENTLY IF NOT EXISTS webhook_endpoin
 
 Run it as that one statement (`psql -c`, or a session with no open transaction):
 `CONCURRENTLY` cannot run inside a transaction block. If it is interrupted or fails
-it leaves an *invalid* index of the same name behind, which `IF NOT EXISTS` will
-then step over, so check the result before deploying and rebuild if it is not valid:
+it leaves an *invalid* index of the same name behind. Do not deploy over it: the
+migration refuses (it raises an error naming this section, and `sms-migrate` rolls
+it back), because an invalid index serves no query. So check the result before
+deploying and rebuild if it is not valid:
 
 [,bash]
 ----
@@ -252,13 +257,16 @@ psql "$DATABASE_URL" -At -c "
 
 The statement is the migration's own, with `CONCURRENTLY` added
 (`backends/crates/sms-api/tests/webhook_endpoint_due_idx_live_postgres.rs` runs
-it and compares the index it builds with the migration's). The alternative, for a
-large table, is to let the migration build it inside a maintenance window with the
-gateway and workers stopped. The index is read only by a `hooks` worker without the
-envelope signing key, and only while a `sealed` endpoint exists
-(`backends/crates/sms-worker/src/claim.md`); without it such a worker still delivers
-every `hmac` endpoint but reads the whole sealed backlog on each poll. Rolling back
-the migration (`down.sql`) drops this index and nothing else.
+it and compares the index it builds with the migration's). The migration also
+refuses a valid index of that name that has another definition. The alternative,
+for a large table, is to let the migration build it inside a maintenance window with
+the gateway and workers stopped. The index is read by a `hooks` claim whenever it
+asks for one endpoint's attempts at a time, which is when some endpoint's attempts
+must be left out (deactivated, circuit open, or `sealed` for a worker without the
+envelope signing key; `backends/crates/sms-worker/src/claim.md`). Without it every
+`hooks` worker still delivers, but each such claim reads the backlog once per
+endpoint it asks for, on every poll. Rolling back the
+migration (`down.sql`) drops this index and nothing else.
 
 == 2. Build and bring up Postgres + migrations first
 
