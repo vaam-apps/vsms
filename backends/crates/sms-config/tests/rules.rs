@@ -367,7 +367,7 @@ fn a_document_without_security_is_refused_by_the_gateway_and_loads_for_the_worke
         text, without,
         "the fixture base no longer has a security block"
     );
-    let dir = std::env::temp_dir().join(format!("sms-config-no-security-{}", std::process::id()));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("sms-config-no-security");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("application.yml");
     std::fs::write(&path, without).unwrap();

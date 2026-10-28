@@ -11,8 +11,9 @@ pub fn committed_base_alone() -> PathBuf {
     static ALONE: OnceLock<PathBuf> = OnceLock::new();
     ALONE
         .get_or_init(|| {
-            let dir =
-                std::env::temp_dir().join(format!("sms-config-base-alone-{}", std::process::id()));
+            // Cargo's own scratch directory for integration tests, inside the
+            // target directory: nothing to clean up in the system temp dir.
+            let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("sms-config-base-alone");
             std::fs::create_dir_all(&dir).unwrap();
             let target = dir.join("application.yml");
             std::fs::copy(
