@@ -6,6 +6,11 @@
 //! and that `down.sql` takes exactly that away and nothing the global due list or
 //! the lease reclaim need.
 //!
+//! It also proves the way around the build's lock: the statement
+//! `docs/runbooks/deployment.adoc` tells an operator to run by hand beforehand
+//! (`CREATE INDEX CONCURRENTLY IF NOT EXISTS`) lands the same definition, and
+//! `up.sql` is then a no-op, so is the migration run twice (`IF NOT EXISTS`).
+//!
 //! Plain `psql`, like the harness's own migration step, against a scratch database
 //! built from every migration in order.
 
@@ -14,6 +19,12 @@ use std::process::Command;
 
 const SCRATCH: &str = "vsms_mig0011_scratch";
 const INDEX: &str = "webhook_endpoint_due_idx";
+
+/// The statement the deployment runbook gives an operator for a large table, to run
+/// before the deploy. The test runs it, and checks that the runbook still says it.
+const RUNBOOK_STATEMENT: &str = "CREATE INDEX CONCURRENTLY IF NOT EXISTS webhook_endpoint_due_idx \
+     ON webhook_attempts (endpoint_id, next_attempt_at) WHERE state IN ('pending','failed')";
+const RUNBOOK: &str = include_str!("../../../../docs/runbooks/deployment.adoc");
 
 fn migrations_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -131,9 +142,32 @@ async fn the_due_list_of_one_endpoint_is_a_partial_index_that_down_sql_removes_a
         );
     }
 
-    // And going forward again lands the same index.
+    // And going forward again lands the same index, however many times it runs.
     apply(&scratch, &ours.join("up.sql"));
     assert_eq!(index_definition(&scratch, INDEX), definition);
+    apply(&scratch, &ours.join("up.sql"));
+    assert_eq!(
+        index_definition(&scratch, INDEX),
+        definition,
+        "a second run is a no-op (IF NOT EXISTS), not an error"
+    );
+
+    // The operator's way round the build's lock: build by hand, concurrently, then
+    // let the migration find the index there. `psql -c` runs the statement outside a
+    // transaction block, which `CONCURRENTLY` needs.
+    apply(&scratch, &ours.join("down.sql"));
+    must(&scratch, &["-c", RUNBOOK_STATEMENT]);
+    assert_eq!(
+        index_definition(&scratch, INDEX),
+        definition,
+        "the runbook's statement must build exactly the migration's index"
+    );
+    apply(&scratch, &ours.join("up.sql"));
+    assert_eq!(index_definition(&scratch, INDEX), definition);
+    assert!(
+        RUNBOOK.contains(RUNBOOK_STATEMENT),
+        "docs/runbooks/deployment.adoc no longer carries the statement this test runs"
+    );
 
     must(
         &admin,

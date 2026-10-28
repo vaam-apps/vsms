@@ -27,12 +27,19 @@
 -- entries).
 --
 -- Plain `CREATE INDEX`, not `CONCURRENTLY`: `sms-migrate` applies a migration in
--- a transaction, where `CONCURRENTLY` is refused. It holds a lock that blocks
--- writes to `webhook_attempts` while it builds, and `sms-migrate` runs before
--- the workers it would stall are started. The table is not small by contract:
+-- a transaction, where `CONCURRENTLY` is refused. A plain build takes a SHARE
+-- lock on `webhook_attempts`, which blocks every write to it for the whole build,
+-- and on an upgrade those writers are running: the migrate Job is a
+-- `pre-install,pre-upgrade` Helm hook (`deploy/charts/vsms/values.yaml`), so the
+-- previous release's gateway and workers are still up, enqueueing and delivering
+-- attempts, and they stall until the build ends. Nothing purges the table yet:
 -- `WebhookAttempt` declares `@@retain(days: 30)`, but `purge_retention` deletes
--- messages and delivery receipts only, so nothing purges attempts yet and the
--- build takes as long as the table's history. Check its size before deploying.
+-- messages and delivery receipts only, so the build takes as long as the table's
+-- whole history. For a table of any size, build the index by hand with
+-- `CREATE INDEX CONCURRENTLY IF NOT EXISTS` before the deploy; this statement is
+-- then a no-op. `docs/runbooks/deployment.adoc` ("Before deploying: the
+-- `webhook_attempts` index of migration 0011") has the size query and the
+-- statement; the alternative is a maintenance window.
 
-CREATE INDEX webhook_endpoint_due_idx ON webhook_attempts (endpoint_id, next_attempt_at)
+CREATE INDEX IF NOT EXISTS webhook_endpoint_due_idx ON webhook_attempts (endpoint_id, next_attempt_at)
     WHERE state IN ('pending','failed');

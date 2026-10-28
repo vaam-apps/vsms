@@ -202,6 +202,64 @@ rotation moves the empty secret into `prevSecret`), and handing the new secret t
 that endpoint's receiver; a short, non-empty secret signs correctly and is only
 weak, so rotate those at leisure.
 
+=== Before deploying: the `webhook_attempts` index of migration 0011
+
+Migration `0011_webhook_endpoint_due_idx` builds an index on `webhook_attempts`
+with a plain `CREATE INDEX`: `sms-migrate` applies each migration in a
+transaction, where `CONCURRENTLY` is refused. A plain build holds a `SHARE` lock
+on the table, which lets reads through and blocks every insert, update and delete
+until the build ends. On an upgrade the writers are the *previous* release's
+gateway and workers: the Helm `migrate` Job is a `pre-install,pre-upgrade` hook, so
+they are still running and still delivering when it starts, and each stalls on its
+write until the build finishes. Nothing purges `webhook_attempts` yet (the
+`@@retain(days: 30)` on `WebhookAttempt` is not enforced), so the build reads the
+table's whole history. Size it first, on the database the migration is about to run
+on:
+
+[,bash]
+----
+psql "$DATABASE_URL" -c "
+  SELECT pg_size_pretty(pg_relation_size('webhook_attempts'))        AS heap,
+         pg_size_pretty(pg_total_relation_size('webhook_attempts'))  AS with_indexes,
+         (SELECT reltuples::bigint FROM pg_class
+           WHERE oid = 'webhook_attempts'::regclass)                 AS approx_rows"
+----
+
+The build reads the heap once, so expect it to take about as long as a sequential
+scan of the `heap` figure, and writers wait that long. A table of a few tens of
+megabytes is a stall nobody notices; a table in the gigabytes is not. For one of
+the latter, build the index by hand, concurrently, *before* the deploy. It takes no
+lock that blocks writers, and the migration then finds the index there and does
+nothing (`CREATE INDEX IF NOT EXISTS`):
+
+[,bash]
+----
+psql "$DATABASE_URL" -c "CREATE INDEX CONCURRENTLY IF NOT EXISTS webhook_endpoint_due_idx ON webhook_attempts (endpoint_id, next_attempt_at) WHERE state IN ('pending','failed')"
+----
+
+Run it as that one statement (`psql -c`, or a session with no open transaction):
+`CONCURRENTLY` cannot run inside a transaction block. If it is interrupted or fails
+it leaves an *invalid* index of the same name behind, which `IF NOT EXISTS` will
+then step over, so check the result before deploying and rebuild if it is not valid:
+
+[,bash]
+----
+psql "$DATABASE_URL" -At -c "
+  SELECT indisvalid FROM pg_index
+   WHERE indexrelid = 'webhook_endpoint_due_idx'::regclass"
+# t  -> deploy.   f  -> DROP INDEX CONCURRENTLY webhook_endpoint_due_idx;  and run the build again.
+----
+
+The statement is the migration's own, with `CONCURRENTLY` added
+(`backends/crates/sms-api/tests/webhook_endpoint_due_idx_live_postgres.rs` runs
+it and compares the index it builds with the migration's). The alternative, for a
+large table, is to let the migration build it inside a maintenance window with the
+gateway and workers stopped. The index is read only by a `hooks` worker without the
+envelope signing key, and only while a `sealed` endpoint exists
+(`backends/crates/sms-worker/src/claim.md`); without it such a worker still delivers
+every `hmac` endpoint but reads the whole sealed backlog on each poll. Rolling back
+the migration (`down.sql`) drops this index and nothing else.
+
 == 2. Build and bring up Postgres + migrations first
 
 [,bash]
