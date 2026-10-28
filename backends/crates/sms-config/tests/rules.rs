@@ -265,6 +265,34 @@ fn an_unknown_provider_code_lists_the_legal_ones() {
 }
 
 #[test]
+fn a_misspelt_key_in_any_block_is_refused_and_named() {
+    // One fixture per block, because each block declares its own refusal and a
+    // test on the document alone would pass with the others missing.
+    for (fixture, misspelt) in [
+        ("shape-unknown-key-in-deployment", "livemodee"),
+        ("shape-unknown-key-in-security", "hash_peper"),
+        ("shape-unknown-key-in-api", "idempotency_ttl"),
+        ("shape-unknown-key-in-bucket", "brust"),
+        ("shape-unknown-key-in-database", "max_connections"),
+    ] {
+        let message = shape_message(fixture);
+        assert!(message.contains(misspelt), "{fixture}: {message}");
+    }
+}
+
+#[test]
+fn a_misspelt_key_at_every_level_of_a_provider_is_refused_and_named() {
+    for (fixture, misspelt) in [
+        ("shape-provider-unknown-entry-key", "enabled"),
+        ("shape-provider-unknown-host-key", "uri"),
+        ("shape-provider-unknown-setting", "tps_ceilling"),
+    ] {
+        let message = shape_message(fixture);
+        assert!(message.contains(misspelt), "{fixture}: {message}");
+    }
+}
+
+#[test]
 fn an_unknown_key_inside_a_provider_is_refused() {
     assert!(shape_message("shape-provider-unknown-key").contains("client_secrett"));
 }

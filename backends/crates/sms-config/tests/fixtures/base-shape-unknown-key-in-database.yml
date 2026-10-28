@@ -1,0 +1,2 @@
+database:
+  max_connections: 5

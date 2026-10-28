@@ -1,0 +1,4 @@
+providers:
+  - code: orange_cm
+    host:
+      uri: https://api.orange.com

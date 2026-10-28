@@ -1,0 +1,3 @@
+providers:
+  - code: orange_cm
+    enabled: false
