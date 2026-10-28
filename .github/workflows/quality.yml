@@ -148,7 +148,7 @@ jobs:
       # invalid YAML on purpose: `an_unparseable_overlay_is_a_load_error`
       # proves the loader answers a typed error, not a panic. yamllint cannot
       # pass a file whose whole point is that it does not parse.
-      filter-regex-exclude: '(^|/)(AGENTS|CLAUDE)\.md$|^frontends/packages/sms-client/|^backends/migrations/|(^|/)\.agents/skills/|(^|/)deploy/charts/[^/]+/templates/|^backends/crates/sms-config/tests/fixtures/base-malformed-yaml\.yml$'
+      filter-regex-exclude: '(^|/)(AGENTS|CLAUDE)\.md$|^frontends/packages/sms-client/|^backends/migrations/|(^|/)\.agents/skills/|(^|/)deploy/charts/[^/]+/templates/|(^|/)backends/crates/sms-config/tests/fixtures/base-malformed-yaml\.yml$'
     secrets:
       app-client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
       app-private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
