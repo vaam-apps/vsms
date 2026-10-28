@@ -49,7 +49,13 @@ mod tests {
     fn debug_never_prints_the_value() {
         let secret: Secret = serde_yaml_ng::from_str("hunter2-hunter2-hunter2").unwrap();
         let printed = format!("{secret:?}");
-        assert!(!printed.contains("hunter2"), "{printed}");
-        assert_eq!(secret.expose(), "hunter2-hunter2-hunter2");
+        assert!(
+            !printed.contains("hunter2"),
+            "Debug must print the redaction, never the value"
+        );
+        assert!(
+            secret.expose() == "hunter2-hunter2-hunter2",
+            "expose must return the text as written"
+        );
     }
 }

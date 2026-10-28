@@ -94,7 +94,10 @@ fn the_base_document_alone_loads_with_no_providers() {
 fn every_provider_loads_with_every_key_set() {
     let config = load("valid-all-providers").unwrap();
     let orange = config.providers.orange_cm.expect("orange");
-    assert_eq!(orange.client_secret.expose(), "orange-secret");
+    assert!(
+        orange.client_secret.expose() == "orange-secret",
+        "the Orange client secret must reach the adapter as written"
+    );
     assert_eq!(orange.base_url, "https://api.orange.example");
 
     let mtn = config.providers.mtn_cm.expect("mtn");
@@ -169,13 +172,18 @@ fn a_sandbox_may_carry_literal_secrets() {
 fn a_secret_never_reaches_a_debug_print() {
     let config = load("valid-all-providers").unwrap();
     let printed = format!("{config:?}");
-    for secret in [
-        "orange-secret",
-        "mtn-secret",
-        "aws-secret",
-        "fixture-pepper",
+    for (which, secret) in [
+        ("the Orange client secret", "orange-secret"),
+        ("the MTN client secret", "mtn-secret"),
+        ("the AWS secret access key", "aws-secret"),
+        ("the hash pepper", "fixture-pepper"),
     ] {
-        assert!(!printed.contains(secret), "{secret} leaked: {printed}");
+        // The message names the key, never the value or the printout: a
+        // failure here is exactly the case where the printout holds a secret.
+        assert!(
+            !printed.contains(secret),
+            "{which} reached the Debug output"
+        );
     }
 }
 
