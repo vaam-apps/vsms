@@ -130,7 +130,7 @@ EOF
 export SMS_CONFIG=/tmp/vsms-config/application.yml SMS_PROFILE=local
 ----
 
-The base file reads the pepper as `${SMS_HASH_PEPPER}`, which step 5 exported. Now, in separate terminals (the exports above reach both):
+The base file reads the pepper as `${SMS_HASH_PEPPER}`, which step 5 exported. Only the gateway loads it: the worker does not read `security.*` and starts without the variable, so leaving the export in its terminal is harmless and not needed. Now, in separate terminals:
 
 [,bash]
 ----

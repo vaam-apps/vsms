@@ -13,6 +13,21 @@ production-shaped stack with a real Caddy TLS edge, backups, and Prometheus).
 Read ``compose.demo.yaml``'s own header comment for the full three-way
 comparison.
 
+[WARNING]
+====
+*This showcase is broken until the next release is cut.* `compose.demo.yaml`
+pins the published `v0.9.0` images, which predate the YAML configuration
+(VSC-1). They read their providers, pool sizes and pepper from flags and
+variables that this file no longer sets, and they ignore `SMS_CONFIG` and
+`SMS_PROFILE`, so the stack does not come up as designed (not exercised: the
+images this file needs are not yet published). The file is already written for the next release's images; release-please moves
+every default tag in it (the `x-release-please-version` comments) when that
+release is cut, and it works again from then on. Until then use
+xref:local-development.adoc[Local development] (`just demo`, which builds from
+source), or build the images from this commit and pass their tag as
+`VSMS_IMAGE_TAG`, `VSMS_DEMO_IMAGE_TAG` and `VSMS_FAKE_ORANGE_IMAGE_TAG`.
+====
+
 == Prerequisites
 
 Docker and the Compose plugin (`docker compose version`). Nothing else --

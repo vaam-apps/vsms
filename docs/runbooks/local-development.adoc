@@ -244,7 +244,7 @@ just ci           # the ENTIRE CI gate -- needs only docker/compose/just; see do
 | The gateway has no `ConsoleKey` for this browser's key yet: pair it with `pair-console-key` (above). A browser clock more than five minutes off the stack's is refused the same way; the page says so past two minutes.
 
 | A hash-related failure after mixing runs
-| `SMS_HASH_PEPPER` differs between processes. Every service in `compose.dev.yaml` is pinned to the same hardcoded demo value in that file -- nothing detects a mismatch if you've overridden one service's environment by hand and not another's.
+| `SMS_HASH_PEPPER` differs between the processes that compute a hash. `sms-gateway` is the one service in `compose.dev.yaml` that carries it (`sms-worker` does not load `security.*` and is given none), pinned to a hardcoded demo value in that file -- nothing detects a mismatch if you've run `send_test_message` or another gateway under a different one.
 
 | `sms-gateway` or `sms-worker` exits at start naming a variable, a flag or a YAML key
 | The YAML configuration (`config/application.yml` plus the `dev` profile, `docs/architecture.md` section 9.4) refused something before the process touched the database. A variable or flag from an earlier release is *refused, not ignored*: the message names the key that replaced it (`ORANGE_CM_CLIENT_ID` is now `providers[code=orange_cm].credentials.client_id`). Unset the variable in your shell, or move the value into `config/application-dev.yml`.
