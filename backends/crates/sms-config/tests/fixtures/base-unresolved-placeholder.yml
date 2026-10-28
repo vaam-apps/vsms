@@ -1,0 +1,2 @@
+security:
+  hash_pepper: ${A_VARIABLE_NOBODY_SETS}

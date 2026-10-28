@@ -1,0 +1,14 @@
+deployment:
+  livemode: true
+  public_base_url: https://sms.example.com
+providers:
+  - code: mtn_cm
+    credentials:
+      client_id: mtn-id
+      client_secret: ${MTN_CLIENT_SECRET}
+    settings:
+      service_code: "131"
+      tps_ceiling: 20
+      cost_per_segment_xaf: "15.00"
+    host:
+      url: http://api.mtn.com

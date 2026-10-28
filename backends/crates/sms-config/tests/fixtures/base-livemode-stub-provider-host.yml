@@ -1,0 +1,12 @@
+deployment:
+  livemode: true
+  public_base_url: https://sms.example.com
+providers:
+  - code: orange_cm
+    credentials:
+      client_id: orange-id
+      client_secret: ${ORANGE_CM_CLIENT_SECRET}
+    settings:
+      sender_number: "+2370000"
+    host:
+      url: https://sms-fake-orange.internal

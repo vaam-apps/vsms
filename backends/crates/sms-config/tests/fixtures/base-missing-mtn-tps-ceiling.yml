@@ -1,0 +1,8 @@
+providers:
+  - code: mtn_cm
+    credentials:
+      client_id: mtn-id
+      client_secret: placeholder
+    settings:
+      service_code: "131"
+      cost_per_segment_xaf: "15"

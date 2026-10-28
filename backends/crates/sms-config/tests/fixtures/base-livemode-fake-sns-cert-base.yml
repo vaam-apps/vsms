@@ -1,0 +1,8 @@
+deployment:
+  livemode: true
+  public_base_url: https://sms.example.com
+providers:
+  - code: aws_sms
+    settings:
+      events_topic_arn: arn:aws:sns:eu-west-1:123456789012:vsms-events
+      fake_sns_cert_base: https://certs.example.com/

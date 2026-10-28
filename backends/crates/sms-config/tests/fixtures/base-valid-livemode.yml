@@ -1,0 +1,27 @@
+deployment:
+  livemode: true
+  public_base_url: https://sms.example.com
+providers:
+  - code: orange_cm
+    credentials:
+      client_id: orange-id
+      client_secret: ${ORANGE_CM_CLIENT_SECRET}
+    settings:
+      sender_number: "+2370000"
+  - code: mtn_cm
+    credentials:
+      client_id: mtn-id
+      client_secret: ${MTN_CLIENT_SECRET}
+    settings:
+      service_code: "131"
+      tps_ceiling: 20
+      cost_per_segment_xaf: "15.00"
+  - code: aws_sms
+    credentials:
+      access_key_id: AKIDEXAMPLE
+      secret_access_key: ${AWS_SMS_SECRET_ACCESS_KEY}
+    settings:
+      region: eu-west-1
+      configuration_set: vsms-events
+      tps_ceiling: 10
+      cost_per_segment_xaf: "30"

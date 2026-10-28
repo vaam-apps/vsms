@@ -1,0 +1,5 @@
+deployment:
+  livemode: true
+  public_base_url: https://sms.example.com
+security:
+  hash_pepper: a-literal-pepper-that-is-long-enough-to-pass-length

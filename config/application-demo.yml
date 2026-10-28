@@ -1,0 +1,17 @@
+# The `demo` profile: `compose.demo.yaml`, pulled from GHCR, against the fake
+# Orange. No real Orange account exists for the showcase.
+#
+# Only what differs from application.yml. `providers` replaces the base's list.
+
+deployment:
+  name: vsms-demo
+
+providers:
+  - code: orange_cm
+    host:
+      url: http://sms-fake-orange:8090
+    credentials:
+      client_id: placeholder
+      client_secret: placeholder
+    settings:
+      sender_number: "+2370000"

@@ -1,0 +1,11 @@
+providers:
+  - code: aws_sms
+    credentials:
+      access_key_id: AKIDEXAMPLE
+      secret_access_key: ${AWS_SMS_SECRET_ACCESS_KEY}
+    settings:
+      region: eu-west-1
+      configuration_set: vsms-events
+      tps_ceiling: 10
+      cost_per_segment_xaf: "30"
+      message_type: urgent

@@ -92,6 +92,9 @@ jobs:
             rust: &rust
               - 'backends/**'
               - 'schemas/**'
+              # `sms-config`'s tests load every committed profile and hold the
+              # base file to the old flag defaults (VSC-1).
+              - 'config/**'
               - '.xtask/**'
               - 'sdks/rust/**'
               - 'examples/rust/**'
@@ -173,6 +176,8 @@ jobs:
             # only image-related content is the call into images.yml).
             images:
               - 'backends/**'
+              # Every image bakes `config/` at /config (VSC-1).
+              - 'config/**'
               - 'frontends/**'
               - 'sdks/**'
               - 'schemas/**'
@@ -847,6 +852,12 @@ jobs:
       # introduced by adding an argument, in any crate, so it needs a
       # workspace-wide check and not only the one binary's own test.
       - run: cargo xtask secret-env-args
+
+      # VSC-1: a livemode profile under config/ must write every secret as a
+      # `${VAR}` placeholder. `sms-config` refuses a literal at boot, against
+      # one deployment's merged files; this refuses it in the pull request that
+      # commits it, with no YAML parser and no build of the workspace.
+      - run: cargo xtask config-literal-secrets
 
       # R2: the diagram everyone reads and the transition table the trigger
       # enforces must agree. Drift shows up in production as an SM001 on an

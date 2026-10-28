@@ -1,0 +1,7 @@
+providers:
+  - code: orange_cm
+    credentials:
+      client_id: ${ORANGE_CM_CLIENT_ID}
+      client_secret: ${ORANGE_CM_CLIENT_SECRET}
+    settings:
+      sender_number: "+2370000"

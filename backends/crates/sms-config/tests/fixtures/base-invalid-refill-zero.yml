@@ -1,0 +1,3 @@
+api:
+  rate_limit:
+    refill_per_second: 0.0
