@@ -342,7 +342,6 @@ fn spawn_hooks_worker(
         .args(["--roles", "hooks"])
         .args(["--database-url", database_url])
         .args(config.args())
-        .env(config::PEPPER_VAR, config::PEPPER)
         .args(["--worker-id", worker_id])
         .args(["--metrics-listen", "127.0.0.1:0"])
         .arg("--envelope-signing-key-file")

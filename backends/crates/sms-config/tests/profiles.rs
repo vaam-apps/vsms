@@ -8,7 +8,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use sms_config::Config;
+use sms_config::{Binary, Config, DEFAULT_PROFILE};
+
+mod common;
 
 fn config_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config")
@@ -80,8 +82,10 @@ fn env_from(text: &str) -> BTreeMap<String, String> {
 fn load(profile: &str) -> Config {
     let env = env_for(profile);
     let base = config_dir().join("application.yml");
-    Config::load_with_env(Some(&base), profile, &|name| env.get(name).cloned())
-        .unwrap_or_else(|error| panic!("config/application-{profile}.yml does not load: {error}"))
+    Config::load_with_env(Some(&base), profile, Binary::Gateway, &|name| {
+        env.get(name).cloned()
+    })
+    .unwrap_or_else(|error| panic!("config/application-{profile}.yml does not load: {error}"))
 }
 
 #[test]
@@ -92,9 +96,9 @@ fn the_profiles_directory_is_not_empty() {
 
 #[test]
 fn the_base_file_loads_on_its_own() {
-    let env = env_for("no-such-profile");
-    let base = config_dir().join("application.yml");
-    let config = Config::load_with_env(Some(&base), "no-such-profile", &|name| {
+    let env = env_for(DEFAULT_PROFILE);
+    let base = common::committed_base_alone();
+    let config = Config::load_with_env(Some(&base), DEFAULT_PROFILE, Binary::Gateway, &|name| {
         env.get(name).cloned()
     })
     .unwrap();
@@ -175,9 +179,12 @@ fn the_commented_provider_examples_in_prod_are_valid_when_enabled() {
 
     let base = std::fs::read_to_string(dir.join("application.yml")).unwrap();
     let env = env_from(&format!("{base}\n{uncommented}"));
-    let config = Config::load_with_env(Some(&dir.join("application.yml")), "prod", &|name| {
-        env.get(name).cloned()
-    })
+    let config = Config::load_with_env(
+        Some(&dir.join("application.yml")),
+        "prod",
+        Binary::Gateway,
+        &|name| env.get(name).cloned(),
+    )
     .unwrap_or_else(|error| panic!("the prod examples do not load once enabled: {error}"));
     assert!(config.providers.orange_cm.is_some());
     assert!(config.providers.mtn_cm.is_some());

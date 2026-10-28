@@ -33,6 +33,9 @@ and every provider's credentials are `config/application*.yml`
 The provider registry is built from `sms_config::Providers`; an `aws_sms` entry
 that only has `events_topic_arn` is the gateway's half and registers nothing
 here. The flags that carried those values are refused before clap parses, naming
-the YAML key that replaced each (`sms_config::RETIRED`).
+the YAML key that replaced each (`sms_config::RETIRED`). The worker loads the
+document as `sms_config::Binary::Worker`, which leaves out `security.*`: it never
+computes a hash, so it neither needs nor is given `SMS_HASH_PEPPER`. A profile
+that names no file is refused, naming the file it expected.
 
 <!-- markdownlint-disable-file MD041 -- rustdoc sidecar: include_str!'d as module docs, so it opens with prose, not a heading; at the end so the first paragraph stays rustdoc's summary line -->

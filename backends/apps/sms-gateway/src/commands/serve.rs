@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use cratestack::FilterExpr;
 use cratestack::sqlx::postgres::PgPoolOptions;
 use sms_api::schema::{Cratestack, provider as provider_filter};
-use sms_config::Providers;
+use sms_config::{Binary, Providers};
 use sms_provider::SmsProvider;
 use tracing::info;
 
@@ -109,10 +109,11 @@ async fn build_dlr_router(
     db: &Cratestack,
     sys: &cratestack::CratestackContext,
     providers_config: &Providers,
+    profile: &str,
 ) -> Result<axum::Router> {
     let mut providers = Vec::new();
 
-    if let Some(aws_sms) = aws_sms_receiver(providers_config.aws_sms.as_ref())? {
+    if let Some(aws_sms) = aws_sms_receiver(providers_config.aws_sms.as_ref(), profile)? {
         let provider: Arc<dyn SmsProvider> = Arc::new(aws_sms);
         let provider_row_id = resolve_provider_row_id(db, sys, provider.as_ref()).await?;
         providers.push(dlr::DlrProvider {
@@ -160,12 +161,15 @@ async fn build_dlr_router(
 /// told to trust a certificate authority that is not AWS's.
 fn aws_sms_receiver(
     aws: Option<&sms_config::AwsSms>,
+    profile: &str,
 ) -> Result<Option<sms_provider_aws_sms::AwsSmsProvider>> {
     let Some(aws) = aws else {
         return Ok(None);
     };
     #[cfg(feature = "fake-aws")]
     {
+        // Only the release build's refusal below names the profile.
+        let _ = profile;
         tracing::warn!(
             "this sms-gateway was built with the `fake-aws` feature, for demos and tests only; a release image is never built with it"
         );
@@ -175,8 +179,11 @@ fn aws_sms_receiver(
     }
     #[cfg(not(feature = "fake-aws"))]
     if aws.fake_sns_cert_base.is_some() {
+        // The profile is named because the usual cause is the wrong one: a
+        // release image run without SMS_PROFILE loads the `dev` profile, whose
+        // overlay points at the local fakes.
         anyhow::bail!(
-            "providers[code=aws_sms].settings.fake_sns_cert_base is set, but this sms-gateway was built without the `fake-aws` feature and cannot be told to trust a fake SNS certificate authority. Remove the key."
+            "providers[code=aws_sms].settings.fake_sns_cert_base is set, but this sms-gateway was built without the `fake-aws` feature and cannot be told to trust a fake SNS certificate authority. Remove the key. The `{profile}` profile is loaded; if that is not the profile you meant, set SMS_PROFILE (or pass --profile)."
         );
     }
     aws.events_topic_arn
@@ -222,7 +229,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // and nothing has been connected to yet.
     let config = args
         .config
-        .load()
+        .load(Binary::Gateway)
         .context("loading the YAML configuration")?;
     info!(
         deployment = %config.deployment.name,
@@ -236,7 +243,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // loudly on a missing/too-short pepper at startup, not at the first
     // `sendMessage` call. The loader refuses a missing or unset value; this is
     // the length check it can't express.
-    let pepper = sms_api::HashPepper::new(config.security.hash_pepper.expose().to_owned())
+    let pepper = sms_api::HashPepper::new(config.security()?.hash_pepper.expose().to_owned())
         .context("security.hash_pepper is invalid — see sms_api::pepper's module doc")?;
 
     // VS-3: the same fail-fast stance for the signed transport's keys. A
@@ -266,7 +273,7 @@ pub(crate) async fn serve_command(args: ServeArgs) -> Result<()> {
     // own module doc for the full mechanism.
     sms_api::webhooks::register_subscribers(&db);
 
-    let dlr_router = build_dlr_router(&db, &sys, &config.providers).await?;
+    let dlr_router = build_dlr_router(&db, &sys, &config.providers, &args.config.profile).await?;
     // #157: /readyz needs the same pooled handle every other router
     // shares — cloned here, before `sms_api::router` takes `db` by value as
     // its own last use.
@@ -408,9 +415,12 @@ mod tests {
     fn the_yaml_defaults_are_the_ones_sms_api_documents() {
         let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../../config/application.yml");
-        let config = sms_config::Config::load_with_env(Some(&base), "no-such-profile", &|name| {
-            (name == "SMS_HASH_PEPPER").then(|| "p".repeat(48))
-        })
+        let config = sms_config::Config::load_with_env(
+            Some(&base),
+            sms_config::DEFAULT_PROFILE,
+            sms_config::Binary::Gateway,
+            &|name| (name == "SMS_HASH_PEPPER").then(|| "p".repeat(48)),
+        )
         .expect("the committed base file loads");
 
         assert_eq!(
@@ -441,8 +451,15 @@ mod tests {
             events_topic_arn: Some("arn:aws:sns:eu-west-1:123456789012:vsms-events".to_owned()),
             fake_sns_cert_base: Some("http://sms-fake-aws:8095/".to_owned()),
         };
-        let error = super::aws_sms_receiver(Some(&aws)).err().expect("refused");
-        assert!(error.to_string().contains("fake_sns_cert_base"), "{error}");
+        let error = super::aws_sms_receiver(Some(&aws), "dev")
+            .err()
+            .expect("refused");
+        let message = error.to_string();
+        assert!(message.contains("fake_sns_cert_base"), "{message}");
+        assert!(
+            message.contains("`dev` profile") && message.contains("SMS_PROFILE"),
+            "{message}"
+        );
     }
 
     #[cfg(not(feature = "fake-aws"))]
@@ -453,8 +470,18 @@ mod tests {
             events_topic_arn: Some("arn:aws:sns:eu-west-1:123456789012:vsms-events".to_owned()),
             fake_sns_cert_base: None,
         };
-        assert!(super::aws_sms_receiver(Some(&aws)).ok().flatten().is_some());
-        assert!(super::aws_sms_receiver(None).ok().flatten().is_none());
+        assert!(
+            super::aws_sms_receiver(Some(&aws), "dev")
+                .ok()
+                .flatten()
+                .is_some()
+        );
+        assert!(
+            super::aws_sms_receiver(None, "dev")
+                .ok()
+                .flatten()
+                .is_none()
+        );
     }
 
     /// The `fake-aws` build's receiver accepts a receipt `sms-fake-aws`

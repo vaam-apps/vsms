@@ -16,6 +16,10 @@ fn worker(extra: &[&str], env: &[(&str, &str)]) -> Output {
 }
 
 fn worker_on(profile: &str, extra: &[&str], env: &[(&str, &str)]) -> Output {
+    worker_with(&base(), profile, extra, env)
+}
+
+fn worker_with(config: &Path, profile: &str, extra: &[&str], env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sms-worker"));
     command
         .args(["--roles", "dispatch"])
@@ -24,14 +28,12 @@ fn worker_on(profile: &str, extra: &[&str], env: &[(&str, &str)]) -> Output {
         .args(["--database-url", "not a database url"])
         .args(["--metrics-listen", "127.0.0.1:0"])
         .arg("--config")
-        .arg(base())
+        .arg(config)
         .args(["--profile", profile])
         .args(extra)
-        .env_clear()
-        .env(
-            "SMS_HASH_PEPPER",
-            "worker-cutover-pepper-over-the-minimum-length",
-        );
+        // No SMS_HASH_PEPPER: the worker does not read `security.*`, and the
+        // control test below is what proves it starts without.
+        .env_clear();
     for (name, value) in env {
         command.env(name, value);
     }
@@ -94,12 +96,38 @@ fn a_loadable_configuration_gets_past_the_loader_to_the_database() {
 
 #[test]
 fn dispatch_without_any_provider_names_the_yaml_to_edit() {
-    // `application.yml` alone configures no provider (`--profile` has no
-    // overlay file of that name).
-    let output = worker_on("no-such-profile", &[], &[]);
+    // `application.yml` alone configures no provider: it is copied beside no
+    // overlay, and the default profile may run on the base alone.
+    let dir = std::env::temp_dir().join(format!("sms-worker-base-alone-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(base(), dir.join("application.yml")).unwrap();
+    let output = worker_with(&dir.join("application.yml"), "dev", &[], &[]);
+    std::fs::remove_dir_all(&dir).ok();
     assert!(!output.status.success());
     assert!(
         stderr(&output).contains("`providers` entry"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn a_profile_with_no_file_is_refused_naming_the_file() {
+    let output = worker_on("prodd", &[], &[]);
+    assert!(!output.status.success());
+    let text = stderr(&output);
+    assert!(text.contains("application-prodd.yml"), "{text}");
+    assert!(text.contains("SMS_PROFILE"), "{text}");
+}
+
+#[test]
+fn the_worker_still_refuses_a_retired_variable_with_no_pepper_in_its_environment() {
+    // The pepper is not loaded for the worker; the retired-variable check still
+    // reads the whole document.
+    let output = worker(&[], &[("ORANGE_CM_CLIENT_ID", "left-over")]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("providers[code=orange_cm].credentials.client_id"),
         "{}",
         stderr(&output)
     );

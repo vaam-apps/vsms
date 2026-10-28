@@ -441,7 +441,6 @@ fn spawn_hooks_worker(database_url: &str, worker_id: &str) -> KillOnDrop {
         .args(["--roles", "hooks"])
         .args(["--database-url", database_url])
         .args(config.args())
-        .env(config::PEPPER_VAR, config::PEPPER)
         .args(["--worker-id", worker_id])
         .arg("--envelope-signing-key-file")
         .arg(write_signing_key())

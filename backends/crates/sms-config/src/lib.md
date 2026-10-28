@@ -16,16 +16,22 @@ and in the environment. The split is vpay's, and the loader is modelled on
 # Loading
 
 [`Config::load`] merges the base file with its profile overlay (figment: maps
-merge key by key, a list in the overlay replaces the base's list wholesale),
-refuses a retired variable, resolves `${VAR}` placeholders against the
+merge key by key, a list in the overlay replaces the base's list wholesale; a
+profile with no overlay file is refused, except the default), refuses a retired
+variable, resolves `${VAR}` placeholders against the
 environment, round-trips the result through `serde_yaml_ng` into the typed
 model, and validates it. A `${VAR}` the environment does not set is an error,
-never an empty string. There is no implicit path:
+never an empty string. The caller says which [`Binary`] it is: the worker does
+not load `security.*`, so it does not need the pepper. There is no implicit
+path:
 
 ```rust
-use sms_config::{Config, ConfigError};
+use sms_config::{Binary, Config, ConfigError};
 
-assert_eq!(Config::load(None, "dev").unwrap_err(), ConfigError::MissingPath);
+assert_eq!(
+    Config::load(None, "dev", Binary::Gateway).unwrap_err(),
+    ConfigError::MissingPath
+);
 ```
 
 # The hard cutover

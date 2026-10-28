@@ -9,7 +9,7 @@ pub mod retired;
 mod secret;
 
 pub use cli::{ConfigArgs, DEFAULT_PROFILE};
-pub use config::Config;
+pub use config::{Binary, Config};
 pub use error::ConfigError;
 pub use model::{Api, Bucket, Database, Deployment, Security};
 pub use provider::{

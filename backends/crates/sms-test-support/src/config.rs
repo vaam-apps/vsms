@@ -6,9 +6,10 @@
 //! real base file next to it, so the spawned process runs on the repository's
 //! own defaults rather than a second copy of them that could drift.
 //!
-//! The base file reads the pepper as `${SMS_HASH_PEPPER}`, so the spawned
-//! process needs [`PEPPER_VAR`] set to [`PEPPER`] (the worker included: it reads
-//! the same document and never uses the value).
+//! The base file reads the pepper as `${SMS_HASH_PEPPER}`, so a spawned
+//! `sms-gateway` needs [`PEPPER_VAR`] set to [`PEPPER`]. A spawned `sms-worker`
+//! does not: it never loads `security.*`, and the suites that spawn one leave the
+//! variable out on purpose, which is what keeps that true.
 
 use std::path::{Path, PathBuf};
 

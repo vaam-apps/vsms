@@ -6,18 +6,19 @@
 //! out of the committed base file. Changing either without the other fails here,
 //! so a default moves on purpose or not at all.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use sms_config::{Config, MTN_DEFAULT_BASE_URL, ORANGE_DEFAULT_BASE_URL};
+use sms_config::{Binary, Config, DEFAULT_PROFILE, MTN_DEFAULT_BASE_URL, ORANGE_DEFAULT_BASE_URL};
 
-fn base() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config/application.yml")
-}
+mod common;
 
 fn base_config() -> Config {
-    Config::load_with_env(Some(&base()), "no-such-profile", &|name| {
-        (name == "SMS_HASH_PEPPER").then(|| "p".repeat(48))
-    })
+    Config::load_with_env(
+        Some(&common::committed_base_alone()),
+        DEFAULT_PROFILE,
+        Binary::Gateway,
+        &|name| (name == "SMS_HASH_PEPPER").then(|| "p".repeat(48)),
+    )
     .expect("the committed base file loads on its own")
 }
 
@@ -79,7 +80,8 @@ fn the_optional_provider_flags_default_as_they_did() {
         "ORANGE_CM_CLIENT_SECRET",
         "MTN_CLIENT_SECRET",
     ]);
-    let config = Config::load_with_env(Some(&dir), "valid-defaults", &env).unwrap();
+    let config =
+        Config::load_with_env(Some(&dir), "valid-defaults", Binary::Gateway, &env).unwrap();
     // `MTN_SUPPORTS_ALPHANUMERIC_SENDER`, `default_value_t = false`.
     assert!(
         !config
@@ -96,7 +98,7 @@ fn the_optional_provider_flags_default_as_they_did() {
         "MTN_CLIENT_SECRET",
         "AWS_SMS_SECRET_ACCESS_KEY",
     ]);
-    let aws = Config::load_with_env(Some(&dir), "valid-livemode", &env)
+    let aws = Config::load_with_env(Some(&dir), "valid-livemode", Binary::Gateway, &env)
         .unwrap()
         .providers
         .aws_sms

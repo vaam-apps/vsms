@@ -8,10 +8,26 @@ use figment::providers::{Format, Yaml};
 use figment::value::Value;
 use serde::Deserialize;
 
+use crate::cli::DEFAULT_PROFILE;
 use crate::error::ConfigError;
 use crate::model::{Api, Bucket, Database, Deployment, Security};
 use crate::provider::{Providers, RawProvider, validate_providers};
 use crate::retired;
+
+/// Which process is loading the document.
+///
+/// Both binaries read the same file, but not the same part of it: the worker
+/// never touches the hash pepper, so it neither resolves nor requires
+/// `security.*`. Handing the pepper to a process that never uses it would be a
+/// least-privilege regression the loader can simply decline to cause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Binary {
+    /// `sms-gateway serve` and `sms-gateway mtn-subscribe-dlr`: the whole
+    /// document.
+    Gateway,
+    /// `sms-worker`: everything but `security`.
+    Worker,
+}
 
 /// The loaded, resolved and validated configuration of one process.
 ///
@@ -20,8 +36,10 @@ use crate::retired;
 pub struct Config {
     /// `deployment:`.
     pub deployment: Deployment,
-    /// `security:`.
-    pub security: Security,
+    /// `security:` - `Some` for [`Binary::Gateway`], `None` for
+    /// [`Binary::Worker`], which does not read or resolve the block. Use
+    /// [`Config::security`] to ask for it.
+    pub security: Option<Security>,
     /// `api:`.
     pub api: Api,
     /// `database:`.
@@ -40,7 +58,10 @@ pub struct Config {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 struct Raw {
     deployment: Deployment,
-    security: Security,
+    // Absent for the worker (the loader removes the block before it resolves
+    // placeholders), required for the gateway (`validate` says so).
+    #[serde(default)]
+    security: Option<Security>,
     api: Api,
     database: Database,
     providers: Vec<RawProvider>,
@@ -55,16 +76,22 @@ const STUB_MARKERS: [&str; 5] = ["wiremock", "stub", "mock", "localhost", "fake"
 const SECRET_CREDENTIAL_KEYS: [&str; 2] = ["client_secret", "secret_access_key"];
 
 impl Config {
-    /// Loads `path`, overlays `application-<profile>.yml` beside it if that file
-    /// exists, refuses retired variables, resolves `${VAR}` placeholders against
-    /// the process environment and validates the result.
+    /// Loads `path`, overlays `application-<profile>.yml` beside it, refuses
+    /// retired variables, resolves `${VAR}` placeholders against the process
+    /// environment and validates the result.
+    ///
+    /// A profile with no overlay file is an error naming the file it expected
+    /// ([`ConfigError::UnknownProfile`]), except [`DEFAULT_PROFILE`], which may
+    /// run on the base file alone.
     ///
     /// # Errors
     ///
     /// See [`ConfigError`]. A failure here means the caller must exit without
     /// serving: this never returns a half-valid configuration.
-    pub fn load(path: Option<&Path>, profile: &str) -> Result<Self, ConfigError> {
-        Self::load_with_env(path, profile, &|name: &str| std::env::var(name).ok())
+    pub fn load(path: Option<&Path>, profile: &str, binary: Binary) -> Result<Self, ConfigError> {
+        Self::load_with_env(path, profile, binary, &|name: &str| {
+            std::env::var(name).ok()
+        })
     }
 
     /// As [`Config::load`], with the environment injected. `std::env::set_var` is
@@ -78,6 +105,7 @@ impl Config {
     pub fn load_with_env(
         path: Option<&Path>,
         profile: &str,
+        binary: Binary,
         env: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Self, ConfigError> {
         let base_path = path.ok_or(ConfigError::MissingPath)?;
@@ -86,10 +114,15 @@ impl Config {
         }
 
         let mut figment = Figment::new().merge(Yaml::file(base_path));
-        if let Some(overlay) = profile_overlay_path(base_path, profile)
-            && overlay.is_file()
-        {
-            figment = figment.merge(Yaml::file(overlay));
+        if let Some(overlay) = profile_overlay_path(base_path, profile) {
+            if overlay.is_file() {
+                figment = figment.merge(Yaml::file(overlay));
+            } else if profile != DEFAULT_PROFILE {
+                return Err(ConfigError::UnknownProfile {
+                    profile: profile.to_owned(),
+                    expected: overlay.display().to_string(),
+                });
+            }
         }
         let mut document: Value = figment.extract().map_err(|error| ConfigError::Load {
             path: base_path.display().to_string(),
@@ -103,6 +136,16 @@ impl Config {
         collect_placeholders(&document, &mut referenced);
         retired::check_env(&referenced, env)?;
         let literal_secrets = literal_secret_keys(&document);
+        require_text_secrets(&document)?;
+
+        // The worker never reads `security`. Dropping the block here, after the
+        // retired-variable check has seen its placeholders and before they
+        // resolve, is what lets it start without the pepper in its environment.
+        if binary == Binary::Worker
+            && let Value::Dict(_, dict) = &mut document
+        {
+            dict.remove("security");
+        }
 
         resolve_placeholders(&mut document, env)?;
 
@@ -114,10 +157,20 @@ impl Config {
         let raw: Raw = serde_yaml_ng::from_str(&text)
             .map_err(|error| ConfigError::Shape(error.to_string()))?;
 
-        Self::validate(raw, &literal_secrets)
+        Self::validate(raw, binary, &literal_secrets)
     }
 
-    fn validate(raw: Raw, literal_secrets: &[String]) -> Result<Self, ConfigError> {
+    /// The `security:` block, for the process that loaded it.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::SecurityNotLoaded`] when this configuration was loaded for
+    /// [`Binary::Worker`], which never reads the block.
+    pub fn security(&self) -> Result<&Security, ConfigError> {
+        self.security.as_ref().ok_or(ConfigError::SecurityNotLoaded)
+    }
+
+    fn validate(raw: Raw, binary: Binary, literal_secrets: &[String]) -> Result<Self, ConfigError> {
         let Raw {
             deployment,
             security,
@@ -127,6 +180,9 @@ impl Config {
         } = raw;
         let livemode = deployment.livemode;
 
+        if binary == Binary::Gateway && security.is_none() {
+            return Err(ConfigError::Shape("missing field `security`".to_owned()));
+        }
         require_text("deployment.name", &deployment.name)?;
         check_url(
             "deployment.public_base_url",
@@ -298,21 +354,13 @@ fn is_whole_placeholder(text: &str) -> bool {
         })
 }
 
-/// The keys of secrets written as a literal: `security.hash_pepper`, and each
-/// provider's `credentials.client_secret` / `credentials.secret_access_key`.
-fn literal_secret_keys(document: &Value) -> Vec<String> {
+/// Every secret the document writes, with the key it is written under:
+/// `security.hash_pepper`, and each provider's `credentials.client_secret` /
+/// `credentials.secret_access_key`.
+fn secret_entries(document: &Value) -> Vec<(String, &Value)> {
     let mut found = Vec::new();
-    let literal = |value: &Value| {
-        value
-            .as_str()
-            .is_none_or(|text| !is_whole_placeholder(text))
-    };
-
-    if document
-        .find_ref("security.hash_pepper")
-        .is_some_and(literal)
-    {
-        found.push("security.hash_pepper".to_owned());
+    if let Some(pepper) = document.find_ref("security.hash_pepper") {
+        found.push(("security.hash_pepper".to_owned(), pepper));
     }
     let providers = document
         .find_ref("providers")
@@ -327,12 +375,45 @@ fn literal_secret_keys(document: &Value) -> Vec<String> {
             continue;
         };
         for key in SECRET_CREDENTIAL_KEYS {
-            if credentials.get(key).is_some_and(literal) {
-                found.push(format!("providers[code={code}].credentials.{key}"));
+            if let Some(value) = credentials.get(key) {
+                found.push((format!("providers[code={code}].credentials.{key}"), value));
             }
         }
     }
     found
+}
+
+/// The keys of secrets written as a literal.
+fn literal_secret_keys(document: &Value) -> Vec<String> {
+    secret_entries(document)
+        .into_iter()
+        .filter(|(_, value)| {
+            value
+                .as_str()
+                .is_none_or(|text| !is_whole_placeholder(text))
+        })
+        .map(|(key, _)| key)
+        .collect()
+}
+
+/// A secret that YAML reads as a number or a boolean (`client_secret: 123456`)
+/// is refused here, naming the key and nothing else.
+///
+/// Left to serde, the same value would come back as `invalid type: integer
+/// `123456`, expected a string`, which prints the secret. Converting it to text
+/// instead would be worse: figment has already normalised the number (`0123`
+/// is no longer what the operator wrote), so the process would run on a secret
+/// nobody typed.
+fn require_text_secrets(document: &Value) -> Result<(), ConfigError> {
+    for (key, value) in secret_entries(document) {
+        if matches!(value, Value::Num(..) | Value::Bool(..)) {
+            return Err(invalid(
+                &key,
+                "a secret must be a quoted YAML string (YAML read it as a number or a boolean)",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Replaces every `${VAR}` in a string leaf with what `env` returns.
@@ -340,16 +421,37 @@ fn resolve_placeholders(
     value: &mut Value,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<(), ConfigError> {
+    resolve_at(value, &mut String::new(), env)
+}
+
+/// How much of a malformed placeholder's name an error may repeat. A literal
+/// secret that happens to contain `${` is what lands here, so the fragment is
+/// capped and never includes the text around it.
+const FRAGMENT_LIMIT: usize = 32;
+
+fn resolve_at(
+    value: &mut Value,
+    path: &mut String,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), ConfigError> {
+    let outer = path.len();
     match value {
-        Value::String(_, text) => *text = resolve_string(text, env)?,
+        Value::String(_, text) => *text = resolve_string(path, text, env)?,
         Value::Array(_, items) => {
-            for item in items.iter_mut() {
-                resolve_placeholders(item, env)?;
+            for (index, item) in items.iter_mut().enumerate() {
+                path.push_str(&["[", &index.to_string(), "]"].concat());
+                resolve_at(item, path, env)?;
+                path.truncate(outer);
             }
         }
         Value::Dict(_, dict) => {
-            for child in dict.values_mut() {
-                resolve_placeholders(child, env)?;
+            for (name, child) in dict.iter_mut() {
+                if !path.is_empty() {
+                    path.push('.');
+                }
+                path.push_str(name);
+                resolve_at(child, path, env)?;
+                path.truncate(outer);
             }
         }
         Value::Char(..) | Value::Bool(..) | Value::Num(..) | Value::Empty(..) => {}
@@ -357,18 +459,37 @@ fn resolve_placeholders(
     Ok(())
 }
 
-fn resolve_string(text: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<String, ConfigError> {
+/// Resolves one string leaf, `key` being where it was written. A malformed
+/// placeholder is reported by key and fragment, never by the whole value: the
+/// value may be a sandbox literal secret.
+fn resolve_string(
+    key: &str,
+    text: &str,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Result<String, ConfigError> {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find("${") {
         out.push_str(&rest[..start]);
         let after = &rest[start + 2..];
         let Some(end) = after.find('}') else {
-            return Err(ConfigError::MalformedPlaceholder(text.to_owned()));
+            return Err(ConfigError::MalformedPlaceholder {
+                key: key.to_owned(),
+                fragment: "${ with no closing }".to_owned(),
+            });
         };
         let name = &after[..end];
         if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Err(ConfigError::MalformedPlaceholder(text.to_owned()));
+            let shown: String = name.chars().take(FRAGMENT_LIMIT).collect();
+            let ellipsis = if name.chars().count() > FRAGMENT_LIMIT {
+                "..."
+            } else {
+                ""
+            };
+            return Err(ConfigError::MalformedPlaceholder {
+                key: key.to_owned(),
+                fragment: format!("${{{shown}{ellipsis}}}"),
+            });
         }
         let resolved =
             env(name).ok_or_else(|| ConfigError::UnresolvedPlaceholder(name.to_owned()))?;

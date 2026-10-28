@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use crate::{Config, ConfigError};
+use crate::{Binary, Config, ConfigError};
 
 /// The two options every binary that reads the YAML takes. Flattened into
 /// `sms-gateway serve`, `sms-gateway mtn-subscribe-dlr` and `sms-worker`; the
@@ -15,8 +15,8 @@ pub struct ConfigArgs {
     pub config: Option<PathBuf>,
 
     /// Deployment profile: overlays `application-<profile>.yml`, beside the
-    /// base file, when that file exists. It selects a file and never a code
-    /// path.
+    /// base file. A profile with no such file is an error, except the default
+    /// one. It selects a file and never a code path.
     #[arg(long, env = "SMS_PROFILE", default_value = DEFAULT_PROFILE)]
     pub profile: String,
 }
@@ -27,13 +27,13 @@ pub struct ConfigArgs {
 pub const DEFAULT_PROFILE: &str = "dev";
 
 impl ConfigArgs {
-    /// Loads the configuration these arguments name, against the real
-    /// environment.
+    /// Loads the configuration these arguments name, for `binary`, against the
+    /// real environment.
     ///
     /// # Errors
     ///
     /// See [`ConfigError`].
-    pub fn load(&self) -> Result<Config, ConfigError> {
-        Config::load(self.config.as_deref(), &self.profile)
+    pub fn load(&self, binary: Binary) -> Result<Config, ConfigError> {
+        Config::load(self.config.as_deref(), &self.profile, binary)
     }
 }

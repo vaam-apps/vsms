@@ -237,7 +237,7 @@ fn spawn_heartbeat(path: std::path::PathBuf, shutdown: CancellationToken) {
 fn load_configuration(cli: &Cli, roles: &[Role]) -> Result<(sms_config::Config, ProviderRegistry)> {
     let config = cli
         .config
-        .load()
+        .load(sms_config::Binary::Worker)
         .context("loading the YAML configuration")?;
     info!(
         deployment = %config.deployment.name,

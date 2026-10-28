@@ -44,7 +44,7 @@ use sms_api::auth::{Principal, PrincipalKind};
 use sms_api::schema::{
     self, Cratestack, Encoding, Message, MessageClass, MessageState, OperatorCode,
 };
-use sms_test_support::config::{self, TestConfig};
+use sms_test_support::config::TestConfig;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -395,7 +395,6 @@ fn spawn_worker(database_url: &str, orange_base_url: &str, worker_id: &str) -> K
         .args(["--roles", "dispatch"])
         .args(["--database-url", database_url])
         .args(config.args())
-        .env(config::PEPPER_VAR, config::PEPPER)
         .args(["--worker-id", worker_id])
         // Ephemeral metrics port: the default is a fixed 127.0.0.1:9091 and
         // `cargo test` runs test binaries in parallel, so two suites that each

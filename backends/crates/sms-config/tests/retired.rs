@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use sms_config::{Config, ConfigError, RETIRED};
+use sms_config::{Binary, Config, ConfigError, RETIRED};
 
 /// Every `#[arg(long, env = ...)]` that `sms-gateway serve`,
 /// `sms-gateway mtn-subscribe-dlr` and `sms-worker` declared at `a6ac007`, minus
@@ -156,9 +156,12 @@ fn every_retired_key_is_a_key_the_model_reads() {
             overlay_setting(retired.key),
         )
         .unwrap();
-        let result = Config::load_with_env(Some(&dir.join("application.yml")), "probe", &|name| {
-            (name == "SMS_HASH_PEPPER").then(|| "p".repeat(48))
-        });
+        let result = Config::load_with_env(
+            Some(&dir.join("application.yml")),
+            "probe",
+            Binary::Gateway,
+            &|name| (name == "SMS_HASH_PEPPER").then(|| "p".repeat(48)),
+        );
         // Anything but a `Shape` error means the key was understood: it may
         // still be an incomplete provider, which is a different rule.
         if let Err(ConfigError::Shape(message)) = &result {

@@ -17,6 +17,26 @@ pub enum ConfigError {
     #[error("config file not found: {0}")]
     FileNotFound(String),
 
+    /// `--profile` / `SMS_PROFILE` names a profile with no overlay file. Loading
+    /// the base alone instead would boot a process on whatever the base happens
+    /// to configure, and a typo (`prodd`) would look exactly like a choice. The
+    /// default profile is exempt: it may run on the base file alone.
+    #[error(
+        "profile {profile:?} names no file: expected {expected}. Set SMS_PROFILE (or pass \
+         --profile) to a profile that has an application-<profile>.yml beside the base file"
+    )]
+    UnknownProfile {
+        /// The profile as given.
+        profile: String,
+        /// The overlay file that was looked for.
+        expected: String,
+    },
+
+    /// [`crate::Config::security`] on a configuration loaded for the worker,
+    /// which does not read the `security` block.
+    #[error("`security` was not loaded: this configuration was loaded for sms-worker")]
+    SecurityNotLoaded,
+
     /// The base file or the profile overlay exists but would not parse.
     #[error("failed to load {path}: {reason}")]
     Load {
@@ -27,8 +47,15 @@ pub enum ConfigError {
     },
 
     /// A `${` with no closing `}`, or a name that is not `[A-Za-z0-9_]+`.
-    #[error("malformed ${{VAR}} placeholder in {0:?}")]
-    MalformedPlaceholder(String),
+    /// Carries the key and the offending fragment only: the string around it
+    /// may be a literal secret, and an error message is a log line.
+    #[error("malformed ${{VAR}} placeholder in `{key}`: {fragment}")]
+    MalformedPlaceholder {
+        /// The YAML key the string was written under.
+        key: String,
+        /// The offending `${...}` text, capped, without the string around it.
+        fragment: String,
+    },
 
     /// A `${VAR}` names a variable the environment does not set. Never an empty
     /// string: a secret that quietly resolved to nothing is the failure this

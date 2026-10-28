@@ -60,7 +60,9 @@ pub(crate) async fn mtn_subscribe_dlr_command(args: MtnSubscribeDlrArgs) -> Resu
         target_system,
     } = args;
 
-    let config = config.load().context("loading the YAML configuration")?;
+    let config = config
+        .load(sms_config::Binary::Gateway)
+        .context("loading the YAML configuration")?;
     let Some(mtn) = config.providers.mtn_cm else {
         bail!(
             "the configuration has no `providers` entry with `code: mtn_cm`, so there are no \

@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use sms_config::{Config, ConfigError, RETIRED};
+use sms_config::{Binary, Config, ConfigError, DEFAULT_PROFILE, RETIRED};
 
 fn base() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/base.yml")
@@ -70,7 +70,9 @@ fn env_with(profile: &str, extra: &[(&str, &str)]) -> BTreeMap<String, String> {
 }
 
 fn load_in(profile: &str, env: &BTreeMap<String, String>) -> Result<Config, ConfigError> {
-    Config::load_with_env(Some(&base()), profile, &|name| env.get(name).cloned())
+    Config::load_with_env(Some(&base()), profile, Binary::Gateway, &|name| {
+        env.get(name).cloned()
+    })
 }
 
 fn load(profile: &str) -> Result<Config, ConfigError> {
@@ -85,7 +87,7 @@ fn refused(profile: &str) -> ConfigError {
 
 #[test]
 fn the_base_document_alone_loads_with_no_providers() {
-    let config = load("no-such-profile").expect("the base loads when its overlay does not exist");
+    let config = load(DEFAULT_PROFILE).expect("the base loads when its overlay does not exist");
     assert!(config.providers.is_empty());
     assert_eq!(config.deployment.name, "fixture");
 }
@@ -192,7 +194,8 @@ fn a_secret_never_reaches_a_debug_print() {
 #[test]
 fn no_path_is_refused() {
     let env = env_with("dev", &[]);
-    let error = Config::load_with_env(None, "dev", &|name| env.get(name).cloned()).unwrap_err();
+    let error = Config::load_with_env(None, "dev", Binary::Gateway, &|name| env.get(name).cloned())
+        .unwrap_err();
     assert_eq!(error, ConfigError::MissingPath);
 }
 
@@ -200,8 +203,10 @@ fn no_path_is_refused() {
 fn a_missing_base_file_is_named() {
     let env = env_with("dev", &[]);
     let typo = Path::new("config/aplication.yml");
-    let error =
-        Config::load_with_env(Some(typo), "dev", &|name| env.get(name).cloned()).unwrap_err();
+    let error = Config::load_with_env(Some(typo), "dev", Binary::Gateway, &|name| {
+        env.get(name).cloned()
+    })
+    .unwrap_err();
     assert_eq!(
         error,
         ConfigError::FileNotFound("config/aplication.yml".to_owned())
@@ -228,17 +233,182 @@ fn an_unset_placeholder_is_fatal_and_named() {
 fn an_unclosed_placeholder_is_malformed() {
     assert!(matches!(
         refused("malformed-placeholder"),
-        ConfigError::MalformedPlaceholder(_)
+        ConfigError::MalformedPlaceholder { .. }
     ));
+}
+
+#[test]
+fn a_malformed_placeholder_names_its_key_and_never_the_value() {
+    // A sandbox may carry a literal secret, and a literal secret may contain
+    // `${`. The error is a log line: it gets the key and the fragment.
+    let error = refused("malformed-secret-unclosed");
+    let ConfigError::MalformedPlaceholder { key, fragment } = &error else {
+        panic!("expected MalformedPlaceholder, got another error");
+    };
+    assert_eq!(key, "providers[0].credentials.client_secret");
+    assert_eq!(fragment, "${ with no closing }");
+    for printed in [error.to_string(), format!("{error:?}")] {
+        assert!(
+            !printed.contains("zq9"),
+            "the unclosed-placeholder error leaked the secret around it"
+        );
+    }
+
+    let error = refused("malformed-secret-bad-name");
+    let ConfigError::MalformedPlaceholder { fragment, .. } = &error else {
+        panic!("expected MalformedPlaceholder, got another error");
+    };
+    assert_eq!(fragment, "${bad name}");
+    for printed in [error.to_string(), format!("{error:?}")] {
+        assert!(
+            !printed.contains("zq9")
+                && !printed.contains("leading")
+                && !printed.contains("trailing"),
+            "the bad-name error leaked the secret around the placeholder"
+        );
+    }
+}
+
+#[test]
+fn a_secret_yaml_reads_as_a_number_is_refused_without_echoing_it() {
+    let error = refused("numeric-secret");
+    assert_eq!(
+        error,
+        ConfigError::InvalidValue {
+            key: "providers[code=orange_cm].credentials.client_secret".to_owned(),
+            reason: "a secret must be a quoted YAML string (YAML read it as a number or a boolean)"
+                .to_owned(),
+        }
+    );
+    for printed in [error.to_string(), format!("{error:?}")] {
+        assert!(
+            !printed.contains("4242"),
+            "the numeric-secret error leaked the secret"
+        );
+    }
 }
 
 #[test]
 fn a_set_but_empty_variable_resolves_to_an_empty_string_not_an_error() {
     // The pepper's length is `HashPepper`'s rule in the gateway; the loader's
     // is only that a name the environment sets is not "unresolved".
-    let env = env_with("no-such-profile", &[("SMS_HASH_PEPPER", "")]);
-    let config = load_in("no-such-profile", &env).unwrap();
-    assert!(config.security.hash_pepper.is_blank());
+    let env = env_with(DEFAULT_PROFILE, &[("SMS_HASH_PEPPER", "")]);
+    let config = load_in(DEFAULT_PROFILE, &env).unwrap();
+    assert!(config.security().unwrap().hash_pepper.is_blank());
+}
+
+// --- profiles ----------------------------------------------------------------
+
+#[test]
+fn a_profile_with_no_file_is_refused_naming_the_file_it_expected() {
+    let error = load_in("prodd", &env_for(DEFAULT_PROFILE)).unwrap_err();
+    let ConfigError::UnknownProfile { profile, expected } = &error else {
+        panic!("expected UnknownProfile, got {error:?}");
+    };
+    assert_eq!(profile, "prodd");
+    assert!(expected.ends_with("base-prodd.yml"), "{expected}");
+    let message = error.to_string();
+    assert!(message.contains("\"prodd\""), "{message}");
+    assert!(message.contains("base-prodd.yml"), "{message}");
+    assert!(message.contains("SMS_PROFILE"), "{message}");
+}
+
+#[test]
+fn the_default_profile_may_run_on_the_base_alone() {
+    // `dev` is what a process loads when nothing names a profile, and the
+    // fixtures directory has no `base-dev.yml`.
+    load(DEFAULT_PROFILE).expect("the default profile needs no overlay file");
+}
+
+// --- the worker does not load the pepper -------------------------------------
+
+fn load_for(
+    binary: Binary,
+    profile: &str,
+    env: &BTreeMap<String, String>,
+) -> Result<Config, ConfigError> {
+    Config::load_with_env(Some(&base()), profile, binary, &|name| {
+        env.get(name).cloned()
+    })
+}
+
+#[test]
+fn the_worker_loads_with_the_pepper_unset_and_the_gateway_refuses() {
+    let mut env = env_for("valid-all-providers");
+    assert!(env.remove("SMS_HASH_PEPPER").is_some(), "the base reads it");
+
+    let worker = load_for(Binary::Worker, "valid-all-providers", &env)
+        .expect("the worker never reads security.*");
+    assert!(worker.security.is_none());
+    assert_eq!(worker.security(), Err(ConfigError::SecurityNotLoaded));
+    assert!(worker.providers.orange_cm.is_some(), "the rest still loads");
+
+    assert_eq!(
+        load_for(Binary::Gateway, "valid-all-providers", &env).unwrap_err(),
+        ConfigError::UnresolvedPlaceholder("SMS_HASH_PEPPER".to_owned())
+    );
+}
+
+#[test]
+fn a_worker_whose_environment_still_has_the_pepper_is_no_trouble() {
+    // An old compose file or chart still hands it over; the YAML reads it as a
+    // placeholder, which is a secret's source and not a leftover.
+    let env = env_for("valid-all-providers");
+    assert!(env.contains_key("SMS_HASH_PEPPER"));
+    let worker = load_for(Binary::Worker, "valid-all-providers", &env).unwrap();
+    assert!(worker.security.is_none(), "set or not, the worker drops it");
+}
+
+#[test]
+fn a_document_without_security_is_refused_by_the_gateway_and_loads_for_the_worker() {
+    let text = std::fs::read_to_string(base()).unwrap();
+    let without = text.replace("security:\n  hash_pepper: ${SMS_HASH_PEPPER}\n", "");
+    assert_ne!(
+        text, without,
+        "the fixture base no longer has a security block"
+    );
+    let dir = std::env::temp_dir().join(format!("sms-config-no-security-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("application.yml");
+    std::fs::write(&path, without).unwrap();
+
+    let load = |binary| Config::load_with_env(Some(&path), DEFAULT_PROFILE, binary, &|_| None);
+    assert_eq!(
+        load(Binary::Gateway).unwrap_err(),
+        ConfigError::Shape("missing field `security`".to_owned())
+    );
+    assert!(load(Binary::Worker).is_ok());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_worker_still_refuses_a_retired_variable() {
+    for retired in RETIRED {
+        if retired.env == "SMS_HASH_PEPPER" {
+            continue; // the placeholder form is the exempt one, above
+        }
+        let env = env_with(DEFAULT_PROFILE, &[(retired.env, "anything")]);
+        assert_eq!(
+            load_for(Binary::Worker, DEFAULT_PROFILE, &env).unwrap_err(),
+            ConfigError::RetiredEnv {
+                var: retired.env.to_owned(),
+                key: retired.key.to_owned(),
+            },
+            "{} set in the worker's environment",
+            retired.env
+        );
+    }
+}
+
+#[test]
+fn the_worker_still_refuses_a_literal_pepper_under_livemode() {
+    // The rule reads the file as written, and the file is shared: a literal
+    // pepper in a livemode document is a leak whichever binary reads it.
+    let env = env_for("livemode-literal-pepper");
+    assert!(matches!(
+        load_for(Binary::Worker, "livemode-literal-pepper", &env),
+        Err(ConfigError::LiteralSecret { ref key }) if key == "security.hash_pepper"
+    ));
 }
 
 // --- shape rules -----------------------------------------------------------
@@ -546,9 +716,9 @@ fn every_retired_variable_is_refused_naming_its_yaml_key() {
         if retired.env == "SMS_HASH_PEPPER" {
             continue; // the base reads it as a placeholder; see the next tests
         }
-        let env = env_with("no-such-profile", &[(retired.env, "anything")]);
+        let env = env_with(DEFAULT_PROFILE, &[(retired.env, "anything")]);
         // The plain base reads no retired variable as a placeholder.
-        let error = load_in("no-such-profile", &env).unwrap_err();
+        let error = load_in(DEFAULT_PROFILE, &env).unwrap_err();
         assert_eq!(
             error,
             ConfigError::RetiredEnv {
@@ -563,9 +733,9 @@ fn every_retired_variable_is_refused_naming_its_yaml_key() {
 
 #[test]
 fn a_retired_variable_set_to_the_empty_string_is_still_refused() {
-    let env = env_with("no-such-profile", &[("MTN_TPS_CEILING", "")]);
+    let env = env_with(DEFAULT_PROFILE, &[("MTN_TPS_CEILING", "")]);
     assert!(matches!(
-        load_in("no-such-profile", &env),
+        load_in(DEFAULT_PROFILE, &env),
         Err(ConfigError::RetiredEnv { ref var, .. }) if var == "MTN_TPS_CEILING"
     ));
 }
@@ -589,7 +759,7 @@ fn a_retired_variable_the_yaml_reads_as_a_placeholder_is_a_secrets_source() {
 
 #[test]
 fn a_retired_variable_that_is_unset_is_no_trouble() {
-    load("no-such-profile").unwrap();
+    load(DEFAULT_PROFILE).unwrap();
 }
 
 #[test]
