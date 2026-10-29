@@ -284,7 +284,7 @@ async fn a_caller_with_no_dashboard_read_scope_is_denied() {
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db` — the "sanctioned way to invoke a procedure from
     // non-HTTP code" per that function's own doc comment.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_without_dashboard_read(&app_id);
     let args = dashboard_summary::Args {};
     let error = dashboard_summary::invoke_with_db(&db, &args, &ctx, |authorized| {
@@ -336,7 +336,7 @@ async fn operator_stats_excludes_uncertain_from_both_numerator_and_denominator()
 
     // cratestack 0.7.13 (cratestack#512): see the identical comment on the
     // test above.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_dashboard_read(&app_id);
     let args = dashboard_summary::Args {};
     let summary = dashboard_summary::invoke_with_db(&db, &args, &ctx, |authorized| {
@@ -378,7 +378,7 @@ async fn the_current_hour_bucket_splits_gsm7_and_ucs2_correctly() {
     seed_message(&db, &app_id, OperatorCode::orange, Encoding::ucs2).await;
 
     // cratestack 0.7.13 (cratestack#512): see the identical comment above.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_dashboard_read(&app_id);
     let args = dashboard_summary::Args {};
     let summary = dashboard_summary::invoke_with_db(&db, &args, &ctx, |authorized| {
@@ -432,7 +432,7 @@ async fn message_based_tiles_are_scoped_to_the_callers_own_app() {
     // matching the pre-existing shape, rather than sharing one instance.
     let ctx_b = app_caller_with_dashboard_read(&app_b);
     let args_b = dashboard_summary::Args {};
-    let procedures_b = Procedures::new(test_pepper());
+    let procedures_b = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let summary_b = dashboard_summary::invoke_with_db(&db, &args_b, &ctx_b, |authorized| {
         procedures_b.dashboard_summary(&db, &ctx_b, args_b.clone(), authorized)
     })
@@ -447,7 +447,7 @@ async fn message_based_tiles_are_scoped_to_the_callers_own_app() {
 
     let ctx_a = app_caller_with_dashboard_read(&app_a);
     let args_a = dashboard_summary::Args {};
-    let procedures_a = Procedures::new(test_pepper());
+    let procedures_a = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let summary_a = dashboard_summary::invoke_with_db(&db, &args_a, &ctx_a, |authorized| {
         procedures_a.dashboard_summary(&db, &ctx_a, args_a.clone(), authorized)
     })
@@ -481,7 +481,7 @@ async fn job_backlog_and_outbox_depth_move_when_rows_are_seeded() {
     // seed between "before" and "after".
     let ctx = app_caller_with_dashboard_read(&app_id);
     let args = dashboard_summary::Args {};
-    let before_procedures = Procedures::new(test_pepper());
+    let before_procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let before = dashboard_summary::invoke_with_db(&db, &args, &ctx, |authorized| {
         before_procedures.dashboard_summary(&db, &ctx, args.clone(), authorized)
     })
@@ -491,7 +491,7 @@ async fn job_backlog_and_outbox_depth_move_when_rows_are_seeded() {
     seed_job(&db, "dashboard_summary_test_job").await;
     seed_webhook_attempt(&db, &endpoint.id).await;
 
-    let after_procedures = Procedures::new(test_pepper());
+    let after_procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let after = dashboard_summary::invoke_with_db(&db, &args, &ctx, |authorized| {
         after_procedures.dashboard_summary(&db, &ctx, args.clone(), authorized)
     })

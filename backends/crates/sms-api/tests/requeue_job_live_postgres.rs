@@ -204,7 +204,7 @@ async fn requeuing_a_dead_job_resets_it_to_pending_with_a_fresh_attempts_counter
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db` — the "sanctioned way to invoke a procedure from
     // non-HTTP code" per that function's own doc comment.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_job_enqueue();
     let args = requeue_job::Args {
         args: schema::RequeueJobInput {
@@ -245,7 +245,7 @@ async fn requeuing_a_dead_job_resets_it_to_pending_with_a_fresh_attempts_counter
 async fn requeuing_a_non_dead_job_is_a_conflict_not_a_crash() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     for (label, state) in [
         ("pending", JobState::pending),
@@ -312,7 +312,7 @@ async fn requeuing_an_unknown_job_id_is_refused() {
     // `Forbidden` expectation (see the doc comment above) the real,
     // production-accurate outcome rather than an artifact of the direct
     // call.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_job_enqueue();
     let args = requeue_job::Args {
         args: schema::RequeueJobInput {
@@ -369,7 +369,7 @@ async fn requeue_denies_a_caller_with_no_job_enqueue_scope() {
     // checks first — `kind == "app"` already admits this caller at both
     // (`schema.cstack`'s `requeueJob` `@allow` and `Job.detail`'s own
     // `@@allow`, per the doc comment above), so this reaches Layer 2.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_without_job_enqueue();
     let args = requeue_job::Args {
         args: schema::RequeueJobInput {
@@ -425,7 +425,7 @@ async fn a_stale_version_is_a_conflict_not_a_lost_update() {
     //
     // cratestack 0.7.13 (cratestack#512): see the identical comment on the
     // headline test above.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = app_caller_with_job_enqueue();
     let args = requeue_job::Args {
         args: schema::RequeueJobInput {

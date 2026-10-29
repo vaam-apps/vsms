@@ -13,8 +13,8 @@ between `sealed` and `hmac`), (#43) `replayWebhookAttempt`, (#56) `requeueJob`,
 **With `auth.methods` not permitting `hmac_webhooks` (VSA-1)**, `rotateWebhookSecret`
 and a `switchWebhookDeliveryMode` to `hmac` answer 422 (`auth_method_disabled`)
 before they read anything; a switch to `sealed` is the way out and is unaffected.
-`Procedures::with_hmac_webhooks` sets it (`Procedures::new` permits, an absent
-key's meaning, and the router always sets it); `hmac_gate.md` has the whole
+`Procedures::new` takes it as an argument, with no default (`Permitted`, an absent
+key's meaning, would fail open for a caller that forgot to say); `hmac_gate.md` has the whole
 switch, including the generated `POST` and `PATCH` it cannot reach from here.
 `cancelMessage` and `enqueueJob` touch the job queue or a mutation this
 milestone doesn't build yet; each returns a clearly-labelled error

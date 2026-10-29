@@ -169,7 +169,7 @@ async fn a_provisioned_user_has_no_credential_and_a_console_key_can_be_paired_to
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db` — the "sanctioned way to invoke a procedure from
     // non-HTTP code" per that function's own doc comment.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = owner_with_user_manage();
     let args = provision_user::Args {
         args: schema::ProvisionUserInput {
@@ -244,7 +244,7 @@ async fn provisioning_the_same_email_twice_is_a_conflict() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     seed_role(&db, "console_identity_dup_role", &["user:manage"]).await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     let email = format!("dup-{}@example.test", unique_suffix());
     let args = || provision_user::Args {
@@ -297,7 +297,7 @@ fn test_msisdn(suffix: &str) -> String {
 async fn recording_an_opt_out_makes_it_findable_by_the_same_number() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let msisdn = test_msisdn("001");
 
     // cratestack 0.7.13 (cratestack#512): calling the trait method directly
@@ -346,7 +346,7 @@ async fn recording_an_opt_out_makes_it_findable_by_the_same_number() {
 async fn searching_an_unrecorded_number_finds_nothing_even_with_other_rows_present() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     // Seed three unrelated opt-outs first, so an unfiltered fallback would
     // have something to wrongly return.
@@ -403,7 +403,7 @@ async fn searching_an_unrecorded_number_finds_nothing_even_with_other_rows_prese
 async fn a_support_role_caller_can_record_an_opt_out_the_bare_model_policy_would_refuse() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     // cratestack 0.7.13 (cratestack#512): calling the trait method directly
     // now requires an `Authorized` witness, obtainable only through
@@ -435,7 +435,7 @@ async fn a_support_role_caller_can_record_an_opt_out_the_bare_model_policy_would
 async fn recording_or_searching_denies_a_caller_with_no_optout_manage_permission() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     // cratestack 0.7.13 (cratestack#512): calling the trait method directly
     // now requires an `Authorized` witness, obtainable only through
@@ -495,7 +495,7 @@ async fn recording_or_searching_denies_a_caller_with_no_optout_manage_permission
 async fn recording_an_opt_out_stamps_a_current_opted_out_at() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     let before = Utc::now();
     // cratestack 0.7.13 (cratestack#512): calling the trait method directly

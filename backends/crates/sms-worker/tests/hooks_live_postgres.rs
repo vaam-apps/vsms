@@ -2989,6 +2989,7 @@ async fn replay(db: &Cratestack, attempt_id: &str) -> schema::WebhookAttempt {
     let procedures = sms_api::Procedures::new(
         sms_api::HashPepper::new("hooks-live-postgres-test-pepper-well-over-the-minimum-length")
             .expect("a pepper over the minimum length"),
+        sms_api::HmacWebhooks::Permitted,
     );
     let args = replay_webhook_attempt::Args {
         args: schema::ReplayWebhookAttemptInput {

@@ -152,9 +152,9 @@ pub struct Procedures {
     dashboard_cache: std::sync::Arc<TtlCache<String, schema::DashboardSummary>>,
     /// VSA-1: whether `auth.methods` permits `hmac_webhooks`. `rotateWebhookSecret`
     /// and a `switchWebhookDeliveryMode` to `hmac` refuse (422,
-    /// `auth_method_disabled`) when it does not. [`Self::new`] permits it, which is
-    /// what an absent `auth.methods` means; the router always sets it explicitly
-    /// ([`Self::with_hmac_webhooks`]).
+    /// `auth_method_disabled`) when it does not. A constructor argument with no
+    /// default: a default of `Permitted` would fail open for a caller that forgot to
+    /// say, so every construction site states it (the router passes the deployment's).
     hmac_webhooks: HmacWebhooks,
 }
 
@@ -167,23 +167,20 @@ impl Procedures {
     /// `pepper` is real secret material — see `pepper.rs`'s module doc.
     /// There is no default: every caller (the router, every live-Postgres
     /// test, `examples/send_test_message.rs`) must supply one explicitly.
+    ///
+    /// `hmac_webhooks` is `auth.methods`' answer for `hmac_webhooks` (VSA-1), and
+    /// has no default for the same reason: `Permitted` is the answer a deployment
+    /// that never wrote the key gets, and a caller that simply omitted the argument
+    /// would have turned the method on, silently, in a deployment that turned it off.
     #[must_use]
-    pub fn new(pepper: HashPepper) -> Self {
+    pub fn new(pepper: HashPepper, hmac_webhooks: HmacWebhooks) -> Self {
         Self {
             app_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_mins(1))),
             operator_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_mins(5))),
             pepper,
             dashboard_cache: std::sync::Arc::new(TtlCache::new(std::time::Duration::from_secs(15))),
-            hmac_webhooks: HmacWebhooks::Permitted,
+            hmac_webhooks,
         }
-    }
-
-    /// Whether `auth.methods` permits `hmac_webhooks` (VSA-1). The default is
-    /// [`HmacWebhooks::Permitted`], an absent key's meaning; see [`HmacWebhooks`].
-    #[must_use]
-    pub fn with_hmac_webhooks(mut self, hmac_webhooks: HmacWebhooks) -> Self {
-        self.hmac_webhooks = hmac_webhooks;
-        self
     }
 
     /// `{HASH_SCHEME}:{hex}` — see `pepper.rs`'s `hmac_sha256_hex` for the
@@ -2725,8 +2722,8 @@ mod tests {
     fn keyed_hash_hex_uses_this_procedures_own_pepper() {
         let pepper_a = HashPepper::new("a".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
         let pepper_b = HashPepper::new("b".repeat(crate::pepper::MIN_PEPPER_BYTES)).unwrap();
-        let procedures_a = Procedures::new(pepper_a.clone());
-        let procedures_b = Procedures::new(pepper_b);
+        let procedures_a = Procedures::new(pepper_a.clone(), HmacWebhooks::Permitted);
+        let procedures_b = Procedures::new(pepper_b, HmacWebhooks::Permitted);
 
         let hash = procedures_a.keyed_hash_hex("+237677123456");
         assert!(hash.starts_with("hmac-sha256-v1:"));

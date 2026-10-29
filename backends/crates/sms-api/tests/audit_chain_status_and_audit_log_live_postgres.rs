@@ -123,7 +123,7 @@ async fn audit_log_finds_a_freshly_audited_write_filtered_by_model() {
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db` — the "sanctioned way to invoke a procedure from
     // non-HTTP code" per that function's own doc comment.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = owner_with_audit_read();
     let args = audit_log::Args {
         args: schema::AuditLogQuery {
@@ -175,7 +175,7 @@ async fn audit_log_finds_a_freshly_audited_write_filtered_by_model() {
 async fn audit_log_denies_a_caller_with_no_audit_read_permission() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     // cratestack 0.7.13 (cratestack#512): calling the trait method directly
     // now requires an `Authorized` witness, obtainable only through
@@ -214,7 +214,7 @@ async fn audit_log_denies_a_caller_with_no_audit_read_permission() {
 async fn audit_chain_status_reports_no_anchor_on_a_never_anchored_database() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     // cratestack 0.7.13 (cratestack#512): see the identical comment on
     // `audit_log_finds_a_freshly_audited_write_filtered_by_model` above.

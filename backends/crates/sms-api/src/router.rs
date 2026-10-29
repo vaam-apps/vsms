@@ -479,7 +479,7 @@ pub fn router(
     // no `@computed` field.
     Ok(schema::axum::router(
         db,
-        Procedures::new(pepper).with_hmac_webhooks(hmac_webhooks),
+        Procedures::new(pepper, hmac_webhooks),
         (),
         ROUTER_CODEC,
         auth,

@@ -174,7 +174,7 @@ async fn rotating_moves_the_current_secret_to_prev_and_mints_a_fresh_one() {
     // now requires an `Authorized` witness, obtainable only through
     // `invoke_with_db` — the "sanctioned way to invoke a procedure from
     // non-HTTP code" per that function's own doc comment.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = owner_with_webhook_manage();
     let args = rotate_webhook_secret::Args {
         args: schema::EndpointInput {
@@ -226,7 +226,7 @@ async fn rotating_twice_shifts_the_overlap_window_forward() {
     let db = db().await;
     let app_id = seed_app(&db).await;
     let endpoint = seed_endpoint(&db, &app_id, "generation-zero-secret-0123456789abcdef").await;
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
 
     let args = || rotate_webhook_secret::Args {
         args: schema::EndpointInput {
@@ -288,7 +288,7 @@ async fn rotating_an_unknown_endpoint_id_is_not_found() {
 
     // cratestack 0.7.13 (cratestack#512): see the identical comment on the
     // test above.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = owner_with_webhook_manage();
     let args = rotate_webhook_secret::Args {
         args: schema::EndpointInput {
@@ -334,7 +334,7 @@ async fn rotate_denies_a_caller_with_no_webhook_manage_permission() {
     // `hasRole('developer')` already admits this caller there
     // (`schema.cstack`'s `rotateWebhookSecret` `@allow`), so this stays a
     // genuine Layer 2 (`require_permission`) denial, not a Layer 1 one.
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = developer_without_permission();
     let args = rotate_webhook_secret::Args {
         args: schema::EndpointInput {
@@ -390,7 +390,7 @@ async fn rotating_a_sealed_endpoint_is_refused_and_changes_nothing() {
         .await
         .expect("seeding a sealed endpoint");
 
-    let procedures = Procedures::new(test_pepper());
+    let procedures = Procedures::new(test_pepper(), sms_api::HmacWebhooks::Permitted);
     let ctx = owner_with_webhook_manage();
     let args = rotate_webhook_secret::Args {
         args: schema::EndpointInput {
