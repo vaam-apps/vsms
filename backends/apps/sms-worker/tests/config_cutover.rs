@@ -94,15 +94,32 @@ fn a_loadable_configuration_gets_past_the_loader_to_the_database() {
     assert!(text.contains("connecting to Postgres"), "{text}");
 }
 
+/// A scratch directory under the target directory, removed on drop (so also when
+/// an assertion fails first).
+struct Scratch(PathBuf);
+
+impl Scratch {
+    fn new(tag: &str) -> Self {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("sms-worker-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("creating the scratch directory");
+        Self(dir)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
 #[test]
 fn dispatch_without_any_provider_names_the_yaml_to_edit() {
     // `application.yml` alone configures no provider: it is copied beside no
     // overlay, and the default profile may run on the base alone.
-    let dir = std::env::temp_dir().join(format!("sms-worker-base-alone-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::copy(base(), dir.join("application.yml")).unwrap();
-    let output = worker_with(&dir.join("application.yml"), "dev", &[], &[]);
-    std::fs::remove_dir_all(&dir).ok();
+    let dir = Scratch::new("base-alone");
+    std::fs::copy(base(), dir.0.join("application.yml")).unwrap();
+    let output = worker_with(&dir.0.join("application.yml"), "dev", &[], &[]);
     assert!(!output.status.success());
     assert!(
         stderr(&output).contains("`providers` entry"),

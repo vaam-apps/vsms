@@ -422,7 +422,17 @@ async fn wait_until_ready(base_url: &str, child: &mut Child) {
 
 /// Kills the wrapped child if the test panics before an explicit `kill()`
 /// — same convention as `kill9_reclaim_live.rs`'s own `KillOnDrop`.
-struct KillOnDrop(Child);
+/// It also owns the child's `TestConfig`: the directory is removed when that is
+/// dropped, which happens after the child is reaped, never while it may still be
+/// reading its configuration.
+struct KillOnDrop(
+    Child,
+    #[expect(
+        dead_code,
+        reason = "held for its Drop, which removes the configuration directory"
+    )]
+    TestConfig,
+);
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
@@ -441,6 +451,7 @@ fn spawn_hooks_worker(database_url: &str, worker_id: &str) -> KillOnDrop {
         .args(["--roles", "hooks"])
         .args(["--database-url", database_url])
         .args(config.args())
+        .env_remove(config::PEPPER_VAR)
         .args(["--worker-id", worker_id])
         .arg("--envelope-signing-key-file")
         .arg(write_signing_key())
@@ -453,7 +464,7 @@ fn spawn_hooks_worker(database_url: &str, worker_id: &str) -> KillOnDrop {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("spawning the real sms-worker binary");
-    KillOnDrop(child)
+    KillOnDrop(child, config)
 }
 
 /// Polls the receiver's own `/__test__/results` until it reports at least
