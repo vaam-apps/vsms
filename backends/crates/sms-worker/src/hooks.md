@@ -113,6 +113,64 @@ waiting for one; an endpoint whose circuit is open is counted, because the
 circuit is a pause that ends by itself. `backends/apps/sms-worker` logs one at
 start.
 
+# When `hmac_webhooks` is off (VSA-1)
+
+`auth.methods` is deployment configuration (`sms-config`, `auth.md`), and a
+deployment that does not permit `hmac_webhooks` (vaam's `[keypair]`) must not
+send with a shared secret, whatever rows exist. `WorkerContext::hmac_webhooks`
+carries the answer. `deliver_one` checks it right after reading the endpoint:
+an `hmac` endpoint's attempt is **parked** ([`park_hmac`]) and nothing is sent.
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: event subscribed
+    pending --> delivering: claim (attempts + 1)
+    delivering --> failed: park_hmac (attempts restored, lastError delivery_mode_disabled, nextAttemptAt + 1 h)
+    failed --> delivering: claim, the hour having passed (method permitted again: delivered; still off: parked again)
+    failed --> pending: replayWebhookAttempt
+```
+
+What the park does, and the reason for each choice (the owner asked for a stated
+choice where the ticket left one open):
+
+- **`failed`, with the reason in `lastError`**, which starts with
+  `delivery_mode_disabled`. Not `dead`: dead is the end of the line for an attempt
+  that ran out of tries, and this one used none. Not left `pending`: a row nothing
+  says anything about is the silent failure this repository does not ship, and the
+  console's delivery log shows `lastError`.
+- **Replayable**, because `failed` is what `replayWebhookAttempt` accepts and
+  nothing else about the row is touched. A replay with the method still off is
+  parked again at the next claim.
+- **Not counted toward the dead-letter limit.** The claim added one to
+  `attempts`; the park takes it back. No `write_outcome` runs, so `maxAttempts` is
+  not consulted. The day the method is permitted again the attempt has every try
+  it had. (The alternative, leaving it counted, would age a month of parked
+  deliveries into `dead` one failure after the method came back.)
+- **Not on the endpoint's breaker.** `record_endpoint_failure` is not called: no
+  request was made, so the endpoint did nothing wrong, the reasoning
+  [`Outcome::MalformedPayload`] already records for our own bugs. `circuitOpenUntil`
+  and `consecutiveFailures` are as they were, and no success resets them either.
+  There is no reason it must trip: the breaker protects an endpoint from our
+  retries, and a parked attempt makes none.
+- **Rests an hour** ([`PARK_INTERVAL`]) rather than being due at once, or the
+  worker would rewrite every parked row each second. After an hour a claim looks
+  again: if the method is permitted by then (changing `auth.methods` is a
+  restart) the delivery goes out on its own, and if not it is parked again.
+  The cost with the method off is one small write per parked attempt per hour.
+- **Claimed first, then parked, not left unclaimed** the way a keyless worker
+  leaves a sealed attempt ([`crate::claim::ServedModes`]). A worker that cannot
+  send a sealed attempt is missing a *key*, which a different worker has, so
+  recording nothing is honest: the attempt waits for that worker. Nobody can send
+  this one, and the operator has to be told why: writing the reason onto the row is
+  how the console shows it.
+- **The sealed attempts beside them are unaffected** and delivered as before: the
+  gate is per endpoint, on the endpoint's own mode.
+
+A `warn` names the endpoint, at most every ten minutes, and `run` logs once at
+start how many `hmac` endpoints exist (`sms_api::HmacBoot`,
+the line `serve` logs too). The API side, which refuses to create, switch to or
+rotate one, is `sms-api`'s `hmac_gate.md`.
+
 # Redirects
 
 `build_http_client` builds an `HttpClients` pair. The `sealed` client follows

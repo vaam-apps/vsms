@@ -130,6 +130,7 @@ fn worker_context(db: &Cratestack) -> WorkerContext {
             Arc::new(NeverCalledProvider) as Arc<dyn sms_provider::SmsProvider>,
         )])),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     }
 }
 

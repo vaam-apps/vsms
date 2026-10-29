@@ -611,6 +611,7 @@ async fn build_gate_harness(
             (fixture.mtn_key.clone(), mtn_provider),
         ])),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
     GateHarness { ctx, mtn_server }
 }

@@ -628,6 +628,7 @@ async fn build_harness(policy: FaultPolicy, token_policy: TokenPolicy) -> Harnes
             submit_provider,
         )])),
         webhook_sealer: None,
+        hmac_webhooks: sms_api::HmacWebhooks::Permitted,
     };
 
     Harness {

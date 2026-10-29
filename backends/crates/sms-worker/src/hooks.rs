@@ -7,13 +7,14 @@ use chrono::{DateTime, Duration, Utc};
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use reqwest::StatusCode;
 use sms_api::auth::system_context;
+use sms_api::hmac_gate::{DELIVERY_MODE_DISABLED, HmacBoot};
 use sms_api::map_database_error;
 use sms_api::schema::{
     AttemptState, UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, WebhookAttempt,
     WebhookDeliveryMode, WebhookEndpoint, webhook_endpoint,
 };
 use sms_webhook::Sealer;
-use tracing::{error, warn};
+use tracing::{error, info, warn};
 
 use crate::WorkerContext;
 use crate::breaker::{self, BreakerPolicy};
@@ -73,6 +74,19 @@ fn backoff_for(attempts: i64) -> Duration {
     let index = (attempts - 1).max(0) as usize;
     BACKOFF_SCHEDULE[index.min(BACKOFF_SCHEDULE.len() - 1)]
 }
+
+/// How long an attempt parked because `hmac_webhooks` is off ([`park_hmac`]) rests
+/// before a worker looks at it again: long enough that a backlog is rewritten once
+/// an hour and not once a poll, short enough that switching the method back on
+/// (a restart) delivers what waited within the hour, without anyone replaying it.
+/// An operator who does not want to wait replays it (`replayWebhookAttempt`).
+const PARK_INTERVAL: Duration = Duration::hours(1);
+
+/// How often one endpoint's parked-delivery warning repeats ([`park_hmac`]).
+const PARK_WARNING_EVERY: StdDuration = StdDuration::from_mins(10);
+
+/// Which endpoints have said so recently ([`park_hmac`]).
+static PARK_WARNINGS: LazyLock<Throttle> = LazyLock::new(|| Throttle::new(PARK_WARNING_EVERY));
 
 /// The `system` context this role does all its work under — see
 /// [`sms_api::auth::system_context`] for the shared constructor and the
@@ -208,6 +222,29 @@ impl Default for SealedBacklogWatch {
 /// other role.
 pub async fn run(ctx: WorkerContext, worker: &str) {
     let sys = sys(worker);
+    // VSA-1: how many `hmac` endpoints there are and what this worker does about
+    // them, once, in the words `serve` uses (`HmacBoot`).
+    match HmacBoot::read(&ctx.db, &sys, ctx.hmac_webhooks).await {
+        Ok(boot) if boot.is_warning() => {
+            warn!(
+                worker,
+                hmac_endpoints = boot.count,
+                hmac_webhooks = false,
+                "{}",
+                boot.message()
+            );
+        }
+        Ok(boot) => {
+            info!(
+                worker,
+                hmac_endpoints = boot.count,
+                hmac_webhooks = boot.hmac.is_permitted(),
+                "{}",
+                boot.message()
+            );
+        }
+        Err(error) => warn!(worker, %error, "counting hmac webhook endpoints at boot failed"),
+    }
     let http = build_http_client();
     let backlog = SealedBacklogWatch::new();
     let mut interval = tokio::time::interval(POLL_INTERVAL);
@@ -350,6 +387,13 @@ async fn deliver_one(
         }
     };
 
+    // VSA-1: `auth.methods` does not permit `hmac_webhooks`. Nothing is sent, and
+    // nothing is counted against the attempt or the endpoint (`park_hmac`).
+    if endpoint.deliveryMode == WebhookDeliveryMode::hmac && !ctx.hmac_webhooks.is_permitted() {
+        park_hmac(ctx, sys, &attempt, &endpoint, Utc::now()).await;
+        return;
+    }
+
     // Claimed as `hmac`, sealed by the time it is read: an operator switched the
     // endpoint (`switchWebhookDeliveryMode`) while this worker held the row, which
     // the claim cannot see. This worker cannot send it, and a failure written here
@@ -389,6 +433,80 @@ async fn deliver_one(
 
     let outcome = send(http, sealer, &endpoint, &attempt, &body, now).await;
     write_outcome(ctx, sys, &attempt, &endpoint, outcome, now).await;
+}
+
+/// Parks an attempt this worker will not send: `auth.methods` does not permit
+/// `hmac_webhooks`, so an `hmac` endpoint's delivery is refused by this
+/// deployment, not failed by the endpoint.
+///
+/// `delivering -> failed`, `lastError` starting with
+/// [`DELIVERY_MODE_DISABLED`], `nextAttemptAt` an hour away ([`PARK_INTERVAL`]),
+/// which is what makes the rest of this true:
+///
+/// - **Replayable.** `failed` is a state `replayWebhookAttempt` accepts, and
+///   nothing else was changed, so it works exactly as for any failed delivery.
+///   (With the method still off, the replayed attempt is parked again at its
+///   next claim; that is the answer to "send this", not a loop, since the park
+///   rests an hour.)
+/// - **Not counted.** The claim counted this attempt (`attempts + 1`); the park
+///   puts that back. An attempt parked for a month has the `attempts` it had, so
+///   the day the method returns it has its full `maxAttempts`, and the dead-letter
+///   limit is about the endpoint's behaviour, which nothing here observed.
+///   (After a crash-reclaim, whose claim counted nothing, it takes one off a
+///   count the crashed worker made, never below zero: one attempt under, which
+///   only ever grants a retry.)
+/// - **Off the endpoint's breaker.** No `record_endpoint_failure`: no request was
+///   made, so the endpoint failed at nothing, exactly as for
+///   [`Outcome::MalformedPayload`]. An endpoint left in this state for a month
+///   comes back with a closed circuit and `consecutiveFailures` as it was.
+/// - **Not hot.** A `failed` attempt with no `nextAttemptAt` is due at once and
+///   would be rewritten every poll.
+///
+/// Not `dead`: dead is for an attempt that has run out of tries, and this one has
+/// used none.
+async fn park_hmac(
+    ctx: &WorkerContext,
+    sys: &CratestackContext,
+    attempt: &WebhookAttempt,
+    endpoint: &WebhookEndpoint,
+    now: DateTime<Utc>,
+) {
+    if PARK_WARNINGS.admit(&endpoint.id, Instant::now()) {
+        warn!(
+            endpoint_id = %endpoint.id, app_id = %endpoint.appId,
+            "auth.methods does not permit hmac_webhooks: this hmac endpoint's deliveries are \
+             parked, not sent. Switch the endpoint to sealed (switchWebhookDeliveryMode), \
+             delete it, or permit hmac_webhooks and restart"
+        );
+    }
+    if let Err(error) = ctx
+        .db
+        .webhook_attempt()
+        .update(attempt.id.clone())
+        .set(UpdateWebhookAttemptInput {
+            state: Some(AttemptState::failed),
+            attempts: Some((attempt.attempts - 1).max(0)),
+            lastStatusCode: Some(None),
+            lastError: Some(Some(format!(
+                "{DELIVERY_MODE_DISABLED}: this deployment's auth.methods does not permit \
+                 hmac_webhooks, so nothing is sent to an hmac endpoint; the delivery waits \
+                 (replayable) until the endpoint is sealed or the method is permitted"
+            ))),
+            nextAttemptAt: Some(Some(now + PARK_INTERVAL)),
+            leaseOwner: Some(None),
+            leaseUntil: Some(None),
+            ..Default::default()
+        })
+        .if_match(attempt.version)
+        .run(sys)
+        .await
+    {
+        log_write_failure(
+            &attempt.id,
+            AttemptState::failed,
+            &map_database_error(error),
+        );
+    }
 }
 
 /// Whether `endpoint` is one this worker cannot deliver: it is `sealed` and there

@@ -56,6 +56,11 @@ pub struct WorkerContext {
     /// missing key, how many are waiting (`hooks::SealedBacklogWatch`).
     /// No other role reads it, so a `dispatch`-only node needs no key.
     pub webhook_sealer: Option<sms_webhook::Sealer>,
+    /// Whether `auth.methods` permits `hmac_webhooks` (VSA-1). With
+    /// [`HmacWebhooks::Disabled`] `hooks` sends nothing to an `hmac` endpoint: it
+    /// parks the attempt (`hooks.md`, "When `hmac_webhooks` is off"). No other
+    /// role reads it.
+    pub hmac_webhooks: sms_api::HmacWebhooks,
 }
 
 /// A role `sms-worker` can run. §7.1's table, verbatim.
@@ -428,6 +433,7 @@ mod tests {
             db: sms_api::schema::Cratestack::builder(pool).build(),
             providers: Arc::new(providers),
             webhook_sealer: None,
+            hmac_webhooks: sms_api::HmacWebhooks::Permitted,
         }
     }
 

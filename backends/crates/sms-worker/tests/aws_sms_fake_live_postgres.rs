@@ -450,6 +450,7 @@ async fn harness(policy: FaultPolicy, with_orange: bool) -> Harness {
             db: state.db.clone(),
             providers: Arc::new(registry),
             webhook_sealer: None,
+            hmac_webhooks: sms_api::HmacWebhooks::Permitted,
         },
         aws,
         aws_row_id,
