@@ -1,7 +1,7 @@
 Outbound webhook delivery in its two modes. An endpoint's `deliveryMode` says
 which: `sealed` (VS-8, recommended) or `hmac` (the original scheme, #41). Both
-are always available; a deployment will later be able to switch `hmac` off
-(VSA-1). Pure and schema-free; `backends/crates/sms-worker`'s `hooks` role is
+available unless the deployment's `auth.methods` leaves `hmac_webhooks` out
+(VSA-1: then nothing is sent in `hmac` mode). Pure and schema-free; `backends/crates/sms-worker`'s `hooks` role is
 the caller.
 
 | Mode     | What authenticates a delivery                                                  | Per-endpoint secret    | Receiver verifies with                         | Lives in    |

@@ -2,9 +2,10 @@ The `hmac` delivery mode (`#41`) — HMAC-SHA256 over a canonical string,
 with a Unix timestamp folded into the signed bytes to bound replay to
 event freshness. It is the older of an endpoint's two delivery modes and
 the one every receiver that predates VS-8 verifies; the other is the
-sealed request in the crate root. Both are always available, and an
+sealed request in the crate root. Both are available, and an
 endpoint's `deliveryMode` chooses between them (`sealed` is the
-recommended one; a deployment will later be able to switch this one off).
+recommended one; a deployment whose `auth.methods` leaves `hmac_webhooks` out
+sends nothing in this one, VSA-1).
 Pure, with one deliberate exception
 ([`generate_secret`], which reads OS randomness): no schema coupling,
 no clock reads — every function that needs "now" takes it as a

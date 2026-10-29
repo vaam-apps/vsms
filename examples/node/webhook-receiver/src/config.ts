@@ -17,8 +17,8 @@ export const DEFAULT_AUDIENCE = "webhook-receiver-example";
  * - `sealed` (the default, and the recommended one): a sealed request signed
  *   with the gateway's own key. Nothing secret is configured.
  * - `hmac`: the original `X-Sms-Signature` HMAC under the endpoint's own secret,
- *   for a receiver that has not moved to the seal. A deployment will later be
- *   able to switch this mode off (VSA-1).
+ *   for a receiver that has not moved to the seal. A deployment can
+ *   switch this mode off (`auth.methods`, VSA-1).
  */
 export type ReceiverMode = "sealed" | "hmac";
 

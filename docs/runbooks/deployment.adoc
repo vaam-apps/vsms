@@ -257,6 +257,61 @@ rotation moves the empty secret into `prevSecret`), and handing the new secret t
 that endpoint's receiver; a short, non-empty secret signs correctly and is only
 weak, so rotate those at leisure.
 
+=== Narrowing the authentication methods (`auth.methods`)
+
+vsms serves more than one application, so which ways of authenticating a
+deployment accepts is configuration (VSA-1, owner ruling R5;
+`docs/architecture.md`, section 4.9). The key is in the same document as the rest,
+in your overlay (`config/application-prod.yml`, or `config.overlay` in the chart):
+
+[,yaml]
+----
+auth:
+  methods: [keypair]            # vaam's shape
+  # methods: [keypair, hmac_webhooks]   # keep the shared-secret webhooks
+----
+
+*Absent means all four*, which is what every deployment had before the key
+existed, so an upgrade changes nothing until you write it. An empty list, a null
+(`methods:` with every item commented out), an unknown name, a duplicate, a list
+without `keypair`, and the two methods this release does not have
+(`machine_tokens`, `human_login`) are each refused at start, naming the rule. The
+change takes a restart of the gateway _and_ the worker, like any other key in the
+file.
+
+*Before you turn `hmac_webhooks` off,* count what it leaves behind:
+
+[,bash]
+----
+psql "$DATABASE_URL" -c "
+  SELECT e.id, e.app_id, e.active,
+         count(a.*) FILTER (WHERE a.state IN ('pending', 'failed', 'delivering')) AS waiting
+    FROM webhook_endpoints e LEFT JOIN webhook_attempts a ON a.endpoint_id = e.id
+   WHERE e.delivery_mode = 'hmac'
+   GROUP BY e.id ORDER BY waiting DESC"
+----
+
+Each of those endpoints stays, but is no longer sent to: its attempts are *parked*
+-- state `failed`, `last_error` starting `delivery_mode_disabled`, `next_attempt_at`
+an hour out -- and not counted against the endpoint's `max_attempts` or its circuit
+breaker. The way out for a receiver is `switchWebhookDeliveryMode` to `sealed`
+(an operator with `webhook:manage`; the receiver then needs an opener, see
+`docs/integrating.md`). An endpoint nobody will move can be deactivated or deleted
+as before. To resume parked deliveries, permit `hmac_webhooks` again and restart
+the worker: the next claim after the hour delivers them, or replay one to send it
+at once.
+
+At start, `sms-gateway serve` logs the permitted and served methods and whether the
+key was written (`authentication methods`), and the gateway and every `hooks` worker
+log how many `hmac` endpoints exist: an `info` line normally, a `warn` when the
+method is off and endpoints remain. Check the gateway's answer, which needs no
+credential:
+
+[,bash]
+----
+curl -s https://$SMS_GATEWAY_DOMAIN/.well-known/vsms-auth     # {"methods":["keypair"]}
+----
+
 === Before deploying: the `webhook_attempts` index of migration 0011
 
 Migration `0011_webhook_endpoint_due_idx` builds an index on `webhook_attempts`

@@ -1737,7 +1737,7 @@ sequenceDiagram
 - **Replay protection is a table, not a cache.** `EnvelopeNonce` (forward migration `0008`) holds one row per accepted `cti`, behind a unique index, so two replicas receiving one request record it once between them. An expired row that has not been swept yet is deleted and the insert retried once; the worker's `sweep_envelope_nonces` job deletes expired rows in bounded batches.
 - **The server holds two Ed25519 keys**, `--envelope-signing-key-file` (signs every answer) and `--envelope-next-signing-key-file` (promoted by the next rotation), both PKCS#8 PEM and both required; the same key twice is refused and `serve` does not boot without them. They are the only keys it needs: it takes no issuer and no signing key of an identity provider (VS-4). `sms-gateway server-keys` prints the two public keys a client pins, so a rotation is: check that clients already pin today's `next` (the key being promoted), promote it, hand out the newly minted `next`, retire the old key. There is no unsigned or "optional" mode.
 - **Outside the layer:** `/dlr/*` (provider callbacks, which authenticate themselves), `/healthz` and `/readyz`, and nothing else. The OpenID Provider's routes (`/token`, `/jwks.json`, discovery, `/login`, `/login/sso/*`) are deleted (VS-4): a request for one is the router's 404, and `the_deleted_openid_provider_routes_are_not_served` requests each from a real `sms-gateway serve`.
-- **Layer order, outside in:** per-source rate limit, envelope, per-principal rate limit (charged to `client:<id>` or `user:<id>`), idempotency (fingerprinted on the verified principal), the owner-grant guard, the four RBAC layers, the generated router.
+- **Layer order, outside in:** per-source rate limit, envelope, per-principal rate limit (charged to `client:<id>` or `user:<id>`), idempotency (fingerprinted on the verified principal), the owner-grant guard, the four RBAC layers, the `hmac_webhooks` gate (§4.9), the generated router. Beside the router, outside the envelope: `/dlr/*`, `/healthz`, `/readyz` and `GET /.well-known/vsms-auth` (§4.9).
 
 
 ### 4.1 Transport
@@ -1784,7 +1784,7 @@ For the record, since earlier revisions of this section described all of it:
 
 ### 4.4 Outbound webhooks: sealed or HMAC, per endpoint
 
-An endpoint's `deliveryMode` (§2.7) says how its deliveries are authenticated. Both modes are always available; **`sealed` is the recommended one**, and `hmac` is the original scheme, kept because vsms serves other apps besides vaam and a receiver that verifies `X-Sms-Signature` today keeps working untouched. A deployment will later be able to switch `hmac` off (VSA-1, the `auth.methods` setting); until then nothing does.
+An endpoint's `deliveryMode` (§2.7) says how its deliveries are authenticated. Both modes are always available; **`sealed` is the recommended one**, and `hmac` is the original scheme, kept because vsms serves other apps besides vaam and a receiver that verifies `X-Sms-Signature` today keeps working untouched. A deployment can switch `hmac` off with `auth.methods` (§4.9, VSA-1); vaam will, and then no endpoint can be created, switched or re-keyed in that mode and the worker sends none.
 
 |                               | `sealed` (recommended)                                                                                    | `hmac` (legacy)                                                               |
 | ----------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
@@ -1947,6 +1947,69 @@ What CrateStack does **not** give you: signed audit chains, immutable storage, H
 - MSISDN hash pepper: encrypted store, loaded at boot, never plaintext in the database. Written in the YAML as `security.hash_pepper: ${SMS_HASH_PEPPER}` (§9.4): the file holds the placeholder, never the value. An `hmac` webhook endpoint's secret is a column (`WebhookEndpoint.secret`, `@sensitive` so audit snapshots redact it); a `sealed` endpoint has no secret (§4.4).
 - Envelope signing keys: two Ed25519 PKCS#8 PEM files (`--envelope-signing-key-file`, `--envelope-next-signing-key-file`), mounted read-only for uid 65532 (`0400` and owned by it in `deploy/docker-compose.yml`, `0440` with `fsGroup: 65532` in the Helm chart), never in the database. Rotate by promoting `next` (§4.0). The worker's `hooks` role loads the `current` one too, to seal webhook deliveries (§4.4).
 - No secret ever appears in an API response. `@server_only` enforces that mechanically, with one deliberate exception: an `hmac` webhook endpoint's `secret`/`prevSecret` are returned to the three roles that can write the endpoint (§2.7).
+
+### 4.9 Authentication methods are deployment configuration (VSA-1)
+
+vsms serves more than one application, and which ways of authenticating a deployment accepts is a property of the deployment, not of the binary (owner ruling R5, 2026-10-27). It is one YAML key, the same in vpay:
+
+```yaml
+auth:
+  methods: [keypair, hmac_webhooks]   # absent means all four
+```
+
+| Method           | What it permits                                                                                   | State in this release                                                 |
+| ---------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `keypair`        | requests signed by a registered key and the sealed answers (§4.0, §4.2, §4.3)                     | served; the envelope layer stays `Required`                           |
+| `machine_tokens` | `Authorization: Bearer` from the deployment's own OpenID Provider                                 | **not restored** (VSA-3): permitted by the default, served by nothing |
+| `hmac_webhooks`  | webhook endpoints delivered with `X-Sms-Signature` (`deliveryMode: hmac`, §4.4) and their secrets | served, and gated by this switch                                      |
+| `human_login`    | a person's password or SSO sign-in to the console                                                 | **not restored** (VSA-4): permitted by the default, served by nothing |
+
+**Absent means all four**, so a configuration written before the key existed gets what it always got, and every deployment of an app other than vaam keeps working untouched. vaam writes `methods: [keypair]` (its overlay is `deploy/values/vsms.<mode>.yaml` in `vaam-apps`, not here). The rules, one `sms_config::ConfigError` variant each, are `backends/crates/sms-config/src/auth.md`'s:
+
+1. an empty list or a null (`methods:` with every item commented out reads as a null, not as absent: the operator was narrowing the list, and all four is the opposite of what they meant) is refused (`NoAuthMethods`);
+2. an unknown name is refused (`UnknownAuthMethod`);
+3. a duplicate is refused (`DuplicateAuthMethod`);
+4. naming `machine_tokens` or `human_login` is refused (`AuthMethodUnavailable`): they are not restored, and a list that names one promises a door that is not there. VSA-3 and VSA-4 change one function each (`AuthMethod::is_restored`) and the rule goes with them;
+5. a list that permits nothing able to authenticate a caller is refused (`NoWayIn`). Today that is every list without `keypair`: `[hmac_webhooks]` alone would be a gateway that answers every request with the unsigned 401. (Owner ruling R5 lets `keypair` be off once a legacy method is served; nothing is yet.)
+
+vpay has a sixth, a block present for a method that is not permitted (`AuthMethodDisabled`). vsms has no such block yet: `keypair` has no YAML (its keys are database rows), `hmac_webhooks` has none either (endpoints are rows, so the gate is at run time, not at boot), and the `op:` and `human_login:` blocks do not exist, so the loader already refuses them as unknown keys. The rule arrives with the first of them.
+
+**Permitted is not served.** `AuthMethods::served` is what a client may be told: the permitted methods this release has code for. The absent default permits four and serves two.
+
+```mermaid
+sequenceDiagram
+    participant C as Console or SDK
+    participant G as sms-gateway (outside the envelope)
+    C->>G: GET /.well-known/vsms-auth (unsigned)
+    G-->>C: {"methods": ["keypair", "hmac_webhooks"]}
+    Note over C: lists what the deployment offers, not what a caller may use
+```
+
+`GET /.well-known/vsms-auth` is merged beside `/healthz`, outside the envelope: a client has to be able to ask before it knows how to sign, and the answer is a list of public names. vpay's `/.well-known/vpay-auth` has the same shape. `serve` also logs, at boot, the permitted and served methods and whether the key was written, so an operator who believes they narrowed the list sees that they did not.
+
+#### With `hmac_webhooks` off
+
+```mermaid
+sequenceDiagram
+    participant O as Operator (webhook:manage)
+    participant G as Gateway (RBAC, then the gate)
+    participant P as Procedures
+    participant H as hooks worker
+    participant E as hmac endpoint's receiver
+    O->>G: POST /webhook_endpoints {deliveryMode: hmac}
+    G-->>O: 422 auth_method_disabled, nothing written
+    O->>P: switchWebhookDeliveryMode to hmac / rotateWebhookSecret
+    P-->>O: 422 auth_method_disabled, nothing read
+    O->>P: switchWebhookDeliveryMode to sealed
+    P-->>O: 200, the way out
+    H->>H: claim an attempt of an hmac endpoint
+    H->>H: park it: failed, delivery_mode_disabled, attempts given back, rests an hour
+    Note over H,E: nothing is sent, the breaker is not touched
+```
+
+- **The API.** Creating an endpoint with `deliveryMode: hmac`, updating one to `hmac` or giving it a `secret` or `prevSecret`, `switchWebhookDeliveryMode` to `hmac` and `rotateWebhookSecret` all answer **422**, the envelope's `code` `VALIDATION_ERROR` (cratestack gives every 422 that one code) and a message that starts with the stable word **`auth_method_disabled:`**, which a client matches the way it matches `idempotency_key_conflict`. The two procedures check a flag. The generated `POST` and `PATCH` are not ours (and do not pass their errors through `map_database_error`), so a layer, `sms_api::hmac_gate::enforce_hmac_gate`, decodes the body with the router's own codec into the handler's own input type, as the owner-grant guard does for `User`, and fails closed on a body it cannot read. It sits under the RBAC layers, so a caller without `webhook:manage` hears that first. A sealed create, an update that touches neither the mode nor a secret, a switch to `sealed` and a `DELETE` still work, so an operator can clean up what the method left behind. A test fails when the schema grows a write route under `/webhook_endpoints` that is neither guarded nor classified. The CHECKs of `0010_sealed_webhooks` remain the backstop for every other writer, `psql` included.
+- **The worker.** `hooks` sends nothing to an `hmac` endpoint. It claims the attempt and **parks** it: `delivering -> failed` with `lastError` starting `delivery_mode_disabled`, `nextAttemptAt` an hour away. It is **replayable** (`failed` is what `replayWebhookAttempt` accepts), **not counted** toward the dead-letter limit (the claim's `attempts + 1` is given back, so a month of parking leaves the attempt every try it had) and **off the endpoint's breaker** (no request was made, so none failed). It is not `dead`, which is for an attempt that ran out of tries, and it is not left `pending`, which would say nothing. It rests an hour rather than being due at once, or the worker would rewrite every parked row each second; when the method is permitted again (changing `auth.methods` is a restart) the next claim delivers it. `sealed` attempts beside it are delivered as before. `backends/crates/sms-worker/src/hooks.md`, "When `hmac_webhooks` is off", has each choice and its reason.
+- **Boot.** `serve` and every `hooks` worker log how many `hmac` endpoints exist: an `info` line when the method is permitted or nothing is left behind, a `warn` when endpoints remain and the method is off, naming what to do (switch them to `sealed`, or delete them).
 
 ---
 
@@ -2854,6 +2917,7 @@ The Helm chart ships no profile: it renders `config.overlay` into a ConfigMap an
 | `deployment.name`                                  | `vsms`                  | label for logs; must not be blank                                                       |
 | `deployment.livemode`                              | `false`                 | turns on the rules below; selects no code path                                          |
 | `deployment.public_base_url`                       | `http://localhost:8080` | validated and logged; reserved for the issuer a future token realm would derive from it |
+| `auth.methods`                                     | absent (all four)       | which ways of authenticating are permitted (§4.9)                                       |
 | `security.hash_pepper`                             | `${SMS_HASH_PEPPER}`    | at least 32 bytes, checked by `sms_api::HashPepper`                                     |
 | `api.idempotency_ttl_secs`                         | `86400`                 | at least 1                                                                              |
 | `api.rate_limit.{burst, refill_per_second}`        | `120`, `2.0`            | burst at least 1, refill positive                                                       |
@@ -2913,7 +2977,7 @@ The authoritative list is `sms_config::RETIRED`. Each binary's tests fail if its
 
 **Adding a key.** Add the field to the model with its default in `config/application.yml` (not in Rust), a fixture for each rule it has, a row above, and, if it replaces a flag, an entry in `RETIRED`. Nothing may be added that no code reads.
 
-**Not here yet.** The auth methods (`auth.methods`, VSA-1) are one more field of the document, between `deployment` and `security`. Until it exists an `auth:` key is refused by the unknown-key rule, so a deployment cannot believe it narrowed something it did not.
+**`auth.methods`** (VSA-1, §4.9) is the one key whose absence means something: absent permits every method, so the base file carries it as a comment and a test (`defaults.rs`) fails if it is ever written there. A misspelt `auth_methods:`, or an `auth:` nested under another block, is an unknown key, so a deployment cannot believe it narrowed something it did not.
 
 ---
 
