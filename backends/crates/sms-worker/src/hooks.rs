@@ -7,7 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
 use reqwest::StatusCode;
 use sms_api::auth::system_context;
-use sms_api::hmac_gate::{DELIVERY_MODE_DISABLED, HmacBoot};
+use sms_api::hmac_gate::HmacBoot;
 use sms_api::map_database_error;
 use sms_api::schema::{
     AttemptState, UpdateWebhookAttemptInput, UpdateWebhookEndpointInput, WebhookAttempt,
@@ -18,7 +18,7 @@ use tracing::{error, info, warn};
 
 use crate::WorkerContext;
 use crate::breaker::{self, BreakerPolicy};
-use crate::claim::{ServedModes, claim_webhook_attempts, count_sealed_attempts_waiting};
+use crate::claim::{ServedModes, claim_webhook_attempts, count_attempts_waiting};
 use crate::throttle::Throttle;
 
 /// How often this loop polls for claimable attempts. Same order of
@@ -74,19 +74,6 @@ fn backoff_for(attempts: i64) -> Duration {
     let index = (attempts - 1).max(0) as usize;
     BACKOFF_SCHEDULE[index.min(BACKOFF_SCHEDULE.len() - 1)]
 }
-
-/// How long an attempt parked because `hmac_webhooks` is off ([`park_hmac`]) rests
-/// before a worker looks at it again: long enough that a backlog is rewritten once
-/// an hour and not once a poll, short enough that switching the method back on
-/// (a restart) delivers what waited within the hour, without anyone replaying it.
-/// An operator who does not want to wait replays it (`replayWebhookAttempt`).
-const PARK_INTERVAL: Duration = Duration::hours(1);
-
-/// How often one endpoint's parked-delivery warning repeats ([`park_hmac`]).
-const PARK_WARNING_EVERY: StdDuration = StdDuration::from_mins(10);
-
-/// Which endpoints have said so recently ([`park_hmac`]).
-static PARK_WARNINGS: LazyLock<Throttle> = LazyLock::new(|| Throttle::new(PARK_WARNING_EVERY));
 
 /// The `system` context this role does all its work under — see
 /// [`sms_api::auth::system_context`] for the shared constructor and the
@@ -196,7 +183,8 @@ impl SealedBacklogWatch {
         if ctx.webhook_sealer.is_some() || !self.every.admit("sealed-backlog", now) {
             return Ok(None);
         }
-        let waiting = count_sealed_attempts_waiting(&ctx.db, sys, Utc::now()).await?;
+        let waiting =
+            count_attempts_waiting(&ctx.db, sys, Utc::now(), WebhookDeliveryMode::sealed).await?;
         let waiting = usize::try_from(waiting).unwrap_or(0);
         if waiting > 0 {
             warn!(
@@ -216,6 +204,79 @@ impl Default for SealedBacklogWatch {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// How often a worker whose deployment does not permit `hmac_webhooks` repeats
+/// what it is holding back.
+pub const HMAC_BACKLOG_WARNING_EVERY: StdDuration = StdDuration::from_mins(5);
+
+/// With `auth.methods` not permitting `hmac_webhooks` (VSA-1) no worker claims an
+/// `hmac` endpoint's attempt ([`ServedModes::SealedOnly`], [`ServedModes::Neither`]),
+/// so those attempts stay `pending`, uncounted, and nothing in the claim loop says
+/// so. This is what does, the sealed backlog's twin: every
+/// [`HMAC_BACKLOG_WARNING_EVERY`] it counts the due attempts of active `hmac`
+/// endpoints and `warn`s with the number and the two ways out. A subscriber keeps
+/// creating attempts for every active endpoint, so the number grows by the event
+/// rate until an operator acts; the line is what makes that visible.
+pub struct HmacBacklogWatch {
+    every: Throttle,
+}
+
+impl HmacBacklogWatch {
+    /// A watch that has not reported yet, so its first call asks.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            every: Throttle::new(HMAC_BACKLOG_WARNING_EVERY),
+        }
+    }
+
+    /// Counts the `hmac` attempts `ctx` holds back and warns if there are any.
+    /// `None` when there was nothing to ask: `hmac_webhooks` is permitted (the
+    /// worker serves them), or the last question was less than
+    /// [`HMAC_BACKLOG_WARNING_EVERY`] ago. `Some(count)` when it asked, `0`
+    /// meaning nothing is held and nothing was said.
+    ///
+    /// # Errors
+    ///
+    /// Whatever the count returns; the interval is spent either way, so a
+    /// database that is down is asked again in five minutes, not every poll.
+    pub async fn report(
+        &self,
+        ctx: &WorkerContext,
+        sys: &CratestackContext,
+        now: Instant,
+    ) -> Result<Option<usize>, CratestackError> {
+        if ctx.hmac_webhooks.is_permitted() || !self.every.admit("hmac-backlog", now) {
+            return Ok(None);
+        }
+        let held =
+            count_attempts_waiting(&ctx.db, sys, Utc::now(), WebhookDeliveryMode::hmac).await?;
+        let held = usize::try_from(held).unwrap_or(0);
+        if held > 0 {
+            warn!(
+                held,
+                "hmac webhook deliveries are held back: auth.methods does not permit \
+                 hmac_webhooks, so no worker claims them. They stay pending, uncounted, and are \
+                 delivered once the method is permitted again and the workers restarted. Or \
+                 switch the endpoints to sealed (switchWebhookDeliveryMode), after which the \
+                 pending attempts are delivered sealed, or delete them"
+            );
+        }
+        Ok(Some(held))
+    }
+}
+
+impl Default for HmacBacklogWatch {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// What this worker serves: the envelope signing key it holds and what
+/// `auth.methods` says of `hmac_webhooks` ([`ServedModes::of`]).
+fn served_modes(ctx: &WorkerContext) -> ServedModes {
+    ServedModes::of(ctx.webhook_sealer.is_some(), ctx.hmac_webhooks)
 }
 
 /// Never returns on its own, matching [`crate::run`]'s contract for every
@@ -245,8 +306,18 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
         }
         Err(error) => warn!(worker, %error, "counting hmac webhook endpoints at boot failed"),
     }
+    if served_modes(&ctx).serves_nothing() {
+        warn!(
+            worker,
+            "this hooks worker serves no webhook delivery: it holds no envelope signing key \
+             (--envelope-signing-key-file), so it cannot send sealed endpoints, and auth.methods \
+             does not permit hmac_webhooks, so it sends no hmac endpoint. Every attempt stays \
+             pending until a worker with the key runs, or hmac_webhooks is permitted again"
+        );
+    }
     let http = build_http_client();
     let backlog = SealedBacklogWatch::new();
+    let held = HmacBacklogWatch::new();
     let mut interval = tokio::time::interval(POLL_INTERVAL);
     loop {
         interval.tick().await;
@@ -255,6 +326,9 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
         }
         if let Err(error) = backlog.report(&ctx, &sys, Instant::now()).await {
             error!(%error, "counting the sealed attempts this worker cannot serve failed");
+        }
+        if let Err(error) = held.report(&ctx, &sys, Instant::now()).await {
+            error!(%error, "counting the hmac attempts this deployment holds back failed");
         }
     }
 }
@@ -272,13 +346,15 @@ pub async fn run(ctx: WorkerContext, worker: &str) {
 ///
 /// Each claimed row is delivered by its endpoint's own `deliveryMode`
 /// ([`send`]): `hmac` needs nothing but the endpoint's secret, `sealed` needs
-/// `ctx.webhook_sealer`. A process without the signing key therefore claims
-/// `hmac` attempts only ([`ServedModes::HmacOnly`]); it never takes a `sealed`
-/// one, so nothing about one is written until a worker that holds the key
-/// does, and [`SealedBacklogWatch`] says that they are waiting. An endpoint
-/// switched to `sealed` after the claim leaves its attempt `delivering` for
-/// a worker that has the key, without a failure written (`deliver_one`).
-/// `backends/apps/sms-worker` says so at start when `hooks` runs without a key.
+/// `ctx.webhook_sealer`. What a process claims is [`served_modes`]: a process
+/// without the signing key claims `hmac` attempts only ([`ServedModes::HmacOnly`])
+/// and one whose `auth.methods` does not permit `hmac_webhooks` (VSA-1) `sealed`
+/// attempts only ([`ServedModes::SealedOnly`]). It never takes an attempt of the
+/// other mode, so nothing about one is written until a worker that can serve it
+/// does, and [`SealedBacklogWatch`] and [`HmacBacklogWatch`] say that they are
+/// waiting. An endpoint switched out of a served mode after the claim leaves its
+/// attempt `delivering` for a worker that can serve it, without a failure written
+/// (`deliver_one`). `hooks::run` says so at start when the worker serves nothing.
 ///
 /// # Errors
 ///
@@ -289,12 +365,7 @@ pub async fn tick(
     worker: &str,
     http: &HttpClients,
 ) -> Result<(), CratestackError> {
-    let served = if ctx.webhook_sealer.is_some() {
-        ServedModes::Both
-    } else {
-        ServedModes::HmacOnly
-    };
-    let claimed = claim_webhook_attempts(&ctx.db, sys, worker, BUDGET, served).await?;
+    let claimed = claim_webhook_attempts(&ctx.db, sys, worker, BUDGET, served_modes(ctx)).await?;
     deliver_claimed(ctx, sys, http, claimed).await;
     Ok(())
 }
@@ -387,27 +458,24 @@ async fn deliver_one(
         }
     };
 
-    // VSA-1: `auth.methods` does not permit `hmac_webhooks`. Nothing is sent, and
-    // nothing is counted against the attempt or the endpoint (`park_hmac`).
-    if endpoint.deliveryMode == WebhookDeliveryMode::hmac && !ctx.hmac_webhooks.is_permitted() {
-        park_hmac(ctx, sys, &attempt, &endpoint, Utc::now()).await;
-        return;
-    }
-
-    // Claimed as `hmac`, sealed by the time it is read: an operator switched the
-    // endpoint (`switchWebhookDeliveryMode`) while this worker held the row, which
-    // the claim cannot see. This worker cannot send it, and a failure written here
-    // would be a lie: the attempt was counted at the claim, so it would burn
-    // `maxAttempts` (`dead` for a `maxAttempts` of 1) and feed the breaker for a
-    // request never made. Leave it `delivering`, as for a missing endpoint above:
-    // the lease expires, a keyless reclaim skips it (the claim reads the mode
-    // afresh) and a worker that holds the key resumes the attempt without a second count.
-    if cannot_serve(&endpoint, sealer) {
+    // Claimed in a mode this worker serves, switched out of it by the time it is
+    // read: an operator switched the endpoint (`switchWebhookDeliveryMode`) while
+    // this worker held the row, which the claim cannot see. This worker cannot send
+    // it (a `sealed` endpoint without the key, or an `hmac` one with `hmac_webhooks`
+    // off), and a failure written here would be a lie: the attempt was counted at
+    // the claim, so it would burn `maxAttempts` (`dead` for a `maxAttempts` of 1)
+    // and feed the breaker for a request never made. Leave it `delivering`, as for a
+    // missing endpoint above: the lease expires, a reclaim by a worker that cannot
+    // serve the mode skips it (the claim reads the mode afresh) and one that can
+    // resumes the attempt without a second count.
+    if !served_modes(ctx).serves(endpoint.deliveryMode) {
         warn!(
             attempt_id = %attempt.id, endpoint_id = %endpoint.id,
-            "claimed attempt's endpoint was switched to sealed after the claim and this worker \
-             holds no envelope signing key (--envelope-signing-key-file); leaving delivering \
-             for a worker that has it"
+            delivery_mode = ?endpoint.deliveryMode,
+            "claimed attempt's endpoint was switched to a delivery mode this worker does not \
+             serve after the claim (sealed without --envelope-signing-key-file, or hmac with \
+             auth.methods not permitting hmac_webhooks); leaving delivering for a worker that \
+             does"
         );
         return;
     }
@@ -433,87 +501,6 @@ async fn deliver_one(
 
     let outcome = send(http, sealer, &endpoint, &attempt, &body, now).await;
     write_outcome(ctx, sys, &attempt, &endpoint, outcome, now).await;
-}
-
-/// Parks an attempt this worker will not send: `auth.methods` does not permit
-/// `hmac_webhooks`, so an `hmac` endpoint's delivery is refused by this
-/// deployment, not failed by the endpoint.
-///
-/// `delivering -> failed`, `lastError` starting with
-/// [`DELIVERY_MODE_DISABLED`], `nextAttemptAt` an hour away ([`PARK_INTERVAL`]),
-/// which is what makes the rest of this true:
-///
-/// - **Replayable.** `failed` is a state `replayWebhookAttempt` accepts, and
-///   nothing else was changed, so it works exactly as for any failed delivery.
-///   (With the method still off, the replayed attempt is parked again at its
-///   next claim; that is the answer to "send this", not a loop, since the park
-///   rests an hour.)
-/// - **Not counted.** The claim counted this attempt (`attempts + 1`); the park
-///   puts that back. An attempt parked for a month has the `attempts` it had, so
-///   the day the method returns it has its full `maxAttempts`, and the dead-letter
-///   limit is about the endpoint's behaviour, which nothing here observed.
-///   (After a crash-reclaim, whose claim counted nothing, it takes one off a
-///   count the crashed worker made, never below zero: one attempt under, which
-///   only ever grants a retry.)
-/// - **Off the endpoint's breaker.** No `record_endpoint_failure`: no request was
-///   made, so the endpoint failed at nothing, exactly as for
-///   [`Outcome::MalformedPayload`]. An endpoint left in this state for a month
-///   comes back with a closed circuit and `consecutiveFailures` as it was.
-/// - **Not hot.** A `failed` attempt with no `nextAttemptAt` is due at once and
-///   would be rewritten every poll.
-///
-/// Not `dead`: dead is for an attempt that has run out of tries, and this one has
-/// used none.
-async fn park_hmac(
-    ctx: &WorkerContext,
-    sys: &CratestackContext,
-    attempt: &WebhookAttempt,
-    endpoint: &WebhookEndpoint,
-    now: DateTime<Utc>,
-) {
-    if PARK_WARNINGS.admit(&endpoint.id, Instant::now()) {
-        warn!(
-            endpoint_id = %endpoint.id, app_id = %endpoint.appId,
-            "auth.methods does not permit hmac_webhooks: this hmac endpoint's deliveries are \
-             parked, not sent. Switch the endpoint to sealed (switchWebhookDeliveryMode), \
-             delete it, or permit hmac_webhooks and restart"
-        );
-    }
-    if let Err(error) = ctx
-        .db
-        .webhook_attempt()
-        .update(attempt.id.clone())
-        .set(UpdateWebhookAttemptInput {
-            state: Some(AttemptState::failed),
-            attempts: Some((attempt.attempts - 1).max(0)),
-            lastStatusCode: Some(None),
-            lastError: Some(Some(format!(
-                "{DELIVERY_MODE_DISABLED}: this deployment's auth.methods does not permit \
-                 hmac_webhooks, so nothing is sent to an hmac endpoint; the delivery waits \
-                 (replayable) until the endpoint is sealed or the method is permitted"
-            ))),
-            nextAttemptAt: Some(Some(now + PARK_INTERVAL)),
-            leaseOwner: Some(None),
-            leaseUntil: Some(None),
-            ..Default::default()
-        })
-        .if_match(attempt.version)
-        .run(sys)
-        .await
-    {
-        log_write_failure(
-            &attempt.id,
-            AttemptState::failed,
-            &map_database_error(error),
-        );
-    }
-}
-
-/// Whether `endpoint` is one this worker cannot deliver: it is `sealed` and there
-/// is no `sealer`. The claim never hands such a row over ([`ServedModes`]) except
-/// when the mode changed after it, which [`deliver_one`] handles.
-fn cannot_serve(endpoint: &WebhookEndpoint, sealer: Option<&Sealer>) -> bool {
-    endpoint.deliveryMode == WebhookDeliveryMode::sealed && sealer.is_none()
 }
 
 /// The actual HTTP POST, in the endpoint's own delivery mode. Split from
@@ -578,7 +565,7 @@ async fn send(
 /// "No signing key in this process" is not one of them: a worker without the key
 /// never claims a sealed attempt ([`crate::claim::ServedModes`]), and one whose
 /// endpoint was switched to `sealed` after the claim is stopped before it gets
-/// here (`cannot_serve`, in `deliver_one`), so that case is left to a worker that
+/// here (`ServedModes::serves`, in `deliver_one`), so that case is left to a worker that
 /// has the key rather than failed. The audience and the URL are held by the
 /// database for a row written through the API: the CHECKs are a pattern, and it is
 /// the pattern **together with `@uri`**, which every write through the API passes,
@@ -1571,7 +1558,7 @@ mod tests {
 
     /// `send` itself, handed a sealed endpoint and no signer, is an ordinary
     /// failure that names the flag: nothing is built. `deliver_one` never gets that
-    /// far (`cannot_serve` stops a sealed endpoint at a worker with no key before
+    /// far (`ServedModes::serves` stops a sealed endpoint at a worker with no key before
     /// the attempt is counted against it, and the claim does not hand one over,
     /// [`crate::claim::ServedModes`]), so this is the second line of defence for a
     /// caller that skips both, not a path a worker takes.

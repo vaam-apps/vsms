@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration, Utc};
 use cratestack::{CratestackContext, CratestackError, FilterExpr};
+use sms_api::HmacWebhooks;
 use sms_api::schema::{
     AttemptState, Cratestack, Job, JobState, Message, MessageState, UpdateJobInput,
     UpdateMessageInput, UpdateWebhookAttemptInput, WebhookAttempt, WebhookDeliveryMode,
@@ -546,30 +547,62 @@ const HOOKS_LEASE: Duration = Duration::seconds(30);
 /// Which `WebhookEndpoint.deliveryMode`s the claiming worker can deliver.
 ///
 /// A `sealed` delivery needs the envelope signing key
-/// (`--envelope-signing-key-file`); an `hmac` one needs nothing but the row. A
-/// worker without the key must not **claim** a sealed attempt at all: claiming
-/// writes the row (`delivering`, a lease, an attempt counted), and a worker that
-/// then cannot send it has either failed an attempt that never reached the
-/// endpoint or invented a bookkeeping state to hide that. So the mode is decided
-/// where the rows are chosen, from the endpoints read first: a worker asks for
-/// the attempts of the endpoints it can serve, or, when every endpoint is one, for
-/// the oldest due attempts of any (`webhook_candidates`), and a sealed backlog it
-/// will not take cannot crowd the `hmac` rows it will out of a window.
+/// (`--envelope-signing-key-file`); an `hmac` one needs nothing but the row, and
+/// a deployment whose `auth.methods` does not permit `hmac_webhooks` (VSA-1)
+/// delivers none. A worker must not **claim** an attempt it will not send at all:
+/// claiming writes the row (`delivering`, a lease, an attempt counted), and a
+/// worker that then cannot send it has either failed an attempt that never
+/// reached the endpoint or invented a bookkeeping state to hide that. So the mode
+/// is decided where the rows are chosen, from the endpoints read first: a worker
+/// asks for the attempts of the endpoints it can serve, or, when every endpoint is
+/// one, for the oldest due attempts of any (`webhook_candidates`), and a backlog it
+/// will not take cannot crowd the rows it will out of a window. What it leaves is
+/// `pending`, uncounted and off the endpoint's breaker, for the next claim by a
+/// worker that can serve it (or by this one, once the method is permitted again).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServedModes {
-    /// The worker holds the signing key: `hmac` and `sealed` attempts alike.
+    /// The worker holds the signing key and `hmac_webhooks` is permitted: `hmac`
+    /// and `sealed` attempts alike.
     Both,
-    /// The worker holds no signing key: `hmac` attempts only.
+    /// No signing key, `hmac_webhooks` permitted: `hmac` attempts only.
     HmacOnly,
+    /// The signing key, but `auth.methods` does not permit `hmac_webhooks`:
+    /// `sealed` attempts only.
+    SealedOnly,
+    /// No signing key and `hmac_webhooks` not permitted: nothing. The worker
+    /// claims no attempt at all and says so at start (`hooks::run`).
+    Neither,
 }
 
 impl ServedModes {
-    /// Whether a worker serving these modes can deliver an endpoint's mode.
-    fn serves(self, mode: WebhookDeliveryMode) -> bool {
-        match self {
-            Self::Both => true,
-            Self::HmacOnly => mode == WebhookDeliveryMode::hmac,
+    /// What a worker serves, from the two facts that decide it: whether it holds
+    /// the envelope signing key, and what `auth.methods` says of `hmac_webhooks`.
+    #[must_use]
+    pub const fn of(holds_signing_key: bool, hmac: HmacWebhooks) -> Self {
+        match (holds_signing_key, hmac.is_permitted()) {
+            (true, true) => Self::Both,
+            (false, true) => Self::HmacOnly,
+            (true, false) => Self::SealedOnly,
+            (false, false) => Self::Neither,
         }
+    }
+
+    /// Whether a worker serving these modes can deliver an endpoint's mode.
+    #[must_use]
+    pub const fn serves(self, mode: WebhookDeliveryMode) -> bool {
+        match (self, mode) {
+            (Self::Both, _)
+            | (Self::HmacOnly, WebhookDeliveryMode::hmac)
+            | (Self::SealedOnly, WebhookDeliveryMode::sealed) => true,
+            (Self::HmacOnly | Self::SealedOnly | Self::Neither, _) => false,
+        }
+    }
+
+    /// Whether this worker delivers nothing, so a `hooks` role running on it is
+    /// idle by configuration.
+    #[must_use]
+    pub const fn serves_nothing(self) -> bool {
+        matches!(self, Self::Neither)
     }
 
     /// Whether a claim by this worker may take `endpoint`'s attempts at `now`: it
@@ -627,7 +660,7 @@ fn endpoint_is_active() -> FilterExpr {
 /// read next depends on them. One mechanism, for both modes:
 ///
 /// - **Every endpoint is claimable by this worker** (`ServedModes::can_claim`:
-///   active, circuit closed, and for a keyless worker `hmac`): the endpoint
+///   active, circuit closed, and a mode this worker serves): the endpoint
 ///   condition would remove nothing, so the selection is one time-ordered read of
 ///   `webhook_due_idx` and one of `webhook_attempts_lease_reclaim_idx`
 ///   ([`time_ordered_candidates`]), each stopped by `LIMIT` at `budget` rows, whatever
@@ -635,7 +668,8 @@ fn endpoint_is_active() -> FilterExpr {
 ///   every deployment until an operator switches an endpoint to `sealed`, and every
 ///   healthy keyed one.
 /// - **Otherwise** some endpoint's attempts must not be taken (deactivated, circuit
-///   open, or `sealed` for a keyless worker), and a time-ordered read cannot leave
+///   open, or a mode this worker does not serve: `sealed` without the key, `hmac`
+///   with `hmac_webhooks` off), and a time-ordered read cannot leave
 ///   them out: it fetches the oldest rows of any endpoint, and an unhealthy
 ///   endpoint with `budget` or more due attempts, which nothing purges, is then all
 ///   of that window on every poll, so the claim would return nothing for every
@@ -774,7 +808,7 @@ async fn per_endpoint_candidates(
 /// and drop any candidate whose endpoint `served` cannot claim from now —
 /// inactive, circuit-open (§8.5: "stops attempting that endpoint... rows are
 /// still created as `pending`, so nothing is lost — they're just not
-/// attempted") or, for a keyless worker, no longer `hmac`. Not what keeps an
+/// attempted") or no longer a mode the worker serves. Not what keeps an
 /// unhealthy endpoint's backlog out of the window — `webhook_candidates` does
 /// that, before reading a row — but the check that holds at the last moment before
 /// the leases: the shortest the race between an operator's change and the claim can
@@ -847,27 +881,30 @@ pub async fn claim_webhook_attempts(
     lease_candidates(db, sys, worker, now, candidates).await
 }
 
-/// How many `sealed` attempts are waiting for a worker that holds the signing key:
-/// due, or abandoned by a crashed worker, whose endpoint delivers `sealed` and is
-/// **active**. A worker without the key counts them to say so
-/// ([`ServedModes::HmacOnly`] never claims one), with a `COUNT(*)` rather than the
-/// rows, which carry payloads.
+/// How many attempts of `mode` endpoints are being held back from workers:
+/// due, or abandoned by a crashed worker, whose endpoint delivers `mode` and is
+/// **active**. A worker counts them to say so, with a `COUNT(*)` rather than the
+/// rows, which carry payloads. For `sealed` they wait for a worker that holds the
+/// signing key ([`ServedModes::HmacOnly`] and [`ServedModes::Neither`] never claim
+/// one); for `hmac` they wait for `auth.methods` to permit `hmac_webhooks`
+/// again ([`ServedModes::SealedOnly`] and [`ServedModes::Neither`]).
 ///
 /// A deactivated endpoint's attempts are left out: no worker claims them, with the
-/// key or without it, so they say nothing about the key, and counting them made a
-/// deployment with one deactivated sealed endpoint warn for as long as its rows
-/// exist. An endpoint whose circuit is open is counted: the circuit is a pause
-/// that ends by itself, after which its attempts are exactly what a keyless worker
-/// cannot take. (It is also what a filter over a relation cannot say: it offers
-/// `is_null` for an optional timestamp and no comparison.)
+/// key or without it, so they say nothing about the key or the method, and counting
+/// them made a deployment with one deactivated sealed endpoint warn for as long as
+/// its rows exist. An endpoint whose circuit is open is counted: the circuit is a
+/// pause that ends by itself, after which its attempts are exactly what such a
+/// worker cannot take. (It is also what a filter over a relation cannot say: it
+/// offers `is_null` for an optional timestamp and no comparison.)
 ///
 /// # Errors
 ///
 /// Whatever the aggregate returns.
-pub async fn count_sealed_attempts_waiting(
+pub async fn count_attempts_waiting(
     db: &Cratestack,
     sys: &CratestackContext,
     now: DateTime<Utc>,
+    mode: WebhookDeliveryMode,
 ) -> Result<i64, CratestackError> {
     db.webhook_attempt()
         .aggregate()
@@ -875,7 +912,7 @@ pub async fn count_sealed_attempts_waiting(
         .where_expr(
             due_attempts(now)
                 .or(expired_leases(now))
-                .and(endpoint_delivers(WebhookDeliveryMode::sealed))
+                .and(endpoint_delivers(mode))
                 .and(endpoint_is_active()),
         )
         .run(sys)
@@ -960,5 +997,44 @@ impl Claimable for WebhookAttempt {
                 unreachable!("candidates() only returns pending/failed/delivering, got {other:?}")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MODES: [WebhookDeliveryMode; 2] =
+        [WebhookDeliveryMode::hmac, WebhookDeliveryMode::sealed];
+
+    /// The four rows of the table `hooks.md` prints: what a worker serves is the
+    /// signing key it holds and what `auth.methods` says of `hmac_webhooks`, and
+    /// nothing else.
+    #[test]
+    fn what_a_worker_serves_is_its_key_and_the_hmac_method() {
+        let served = |key, hmac| {
+            let modes = ServedModes::of(key, hmac);
+            (
+                modes,
+                MODES.map(|mode| modes.serves(mode)),
+                modes.serves_nothing(),
+            )
+        };
+        assert_eq!(
+            served(true, HmacWebhooks::Permitted),
+            (ServedModes::Both, [true, true], false)
+        );
+        assert_eq!(
+            served(false, HmacWebhooks::Permitted),
+            (ServedModes::HmacOnly, [true, false], false)
+        );
+        assert_eq!(
+            served(true, HmacWebhooks::Disabled),
+            (ServedModes::SealedOnly, [false, true], false)
+        );
+        assert_eq!(
+            served(false, HmacWebhooks::Disabled),
+            (ServedModes::Neither, [false, false], true)
+        );
     }
 }

@@ -37,8 +37,9 @@ deployment:
 # VSA-4) are permitted and served by nothing. A deployment that serves one
 # application and wants fewer says so; vaam's overlay is `methods: [keypair]`.
 # With `hmac_webhooks` off, creating, updating, switching or rotating an `hmac`
-# endpoint answers 422 (`auth_method_disabled`) and the worker parks what is
-# already queued for one (`delivery_mode_disabled`) instead of sending it.
+# endpoint answers 422 (`auth_method_disabled`) and no worker claims what is
+# already queued for one: it stays `pending`, uncounted, and is delivered once
+# the method is permitted again (or, if the endpoint is switched to `sealed`, sealed).
 # Naming `machine_tokens` or `human_login` is refused until they exist, and so is
 # an empty or null list, a duplicate, an unknown name and any list without
 # `keypair` (docs/architecture.md, section 4.9). Not written here, on purpose:

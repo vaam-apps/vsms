@@ -291,15 +291,24 @@ psql "$DATABASE_URL" -c "
    GROUP BY e.id ORDER BY waiting DESC"
 ----
 
-Each of those endpoints stays, but is no longer sent to: its attempts are *parked*
--- state `failed`, `last_error` starting `delivery_mode_disabled`, `next_attempt_at`
-an hour out -- and not counted against the endpoint's `max_attempts` or its circuit
-breaker. The way out for a receiver is `switchWebhookDeliveryMode` to `sealed`
-(an operator with `webhook:manage`; the receiver then needs an opener, see
-`docs/integrating.md`). An endpoint nobody will move can be deactivated or deleted
-as before. To resume parked deliveries, permit `hmac_webhooks` again and restart
-the worker: the next claim after the hour delivers them, or replay one to send it
-at once.
+Each of those endpoints stays, but is no longer sent to: no worker claims its
+attempts, so they stay *pending*, untouched, and are not counted against the
+endpoint's `max_attempts` or its circuit breaker. They keep accumulating, one per
+event, until you act, and the `waiting` column above is how many there are. Each
+`hooks` worker with the method off warns every five minutes with `held=<count>`.
+The way out for a receiver is `switchWebhookDeliveryMode` to `sealed` (an operator
+with `webhook:manage`; the receiver then needs an opener, see
+`docs/integrating.md`): the attempts that waited are then delivered *sealed*, since
+the mode is read for each attempt when it is delivered. An endpoint nobody will move
+can be deactivated (its attempts then wait for no worker and are no longer counted
+in the warning) or deleted as before. To resume the deliveries as they were, permit
+`hmac_webhooks` again and restart the workers: the next claim delivers them, with
+no replay.
+
+A `hooks` worker with the method off and no `--envelope-signing-key-file` serves
+nothing, `hmac` or `sealed`, and says so at start. It still starts, because the
+configuration is the whole deployment's and another worker of it may hold the key;
+if none does, mount `--envelope-signing-key-file` on a `hooks` worker.
 
 At start, `sms-gateway serve` logs the permitted and served methods and whether the
 key was written (`authentication methods`), and the gateway and every `hooks` worker

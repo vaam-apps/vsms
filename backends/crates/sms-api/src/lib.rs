@@ -52,7 +52,7 @@ pub mod worker_roles;
 
 pub use auth::{Principal, PrincipalKind, SignedAuth, system_context};
 pub use errors::{is_illegal_transition, map_database_error};
-pub use hmac_gate::{AUTH_METHOD_DISABLED, DELIVERY_MODE_DISABLED, HmacBoot, HmacWebhooks};
+pub use hmac_gate::{AUTH_METHOD_DISABLED, HmacBoot, HmacWebhooks};
 pub use pepper::{HashPepper, PepperError, hmac_sha256_hex};
 pub use procedures::Procedures;
 pub use rbac::require_permission;

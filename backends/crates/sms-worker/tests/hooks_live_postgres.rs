@@ -31,7 +31,7 @@ use sms_test_support::webhook_receiver::WebhookReceiver;
 use sms_webhook::{CONTRACT_SHA, Sealer};
 use sms_worker::WorkerContext;
 use sms_worker::claim::{
-    ServedModes, claim_batch, claim_webhook_attempts, count_sealed_attempts_waiting,
+    ServedModes, claim_batch, claim_webhook_attempts, count_attempts_waiting,
     filter_by_endpoint_health,
 };
 use sms_worker::hooks;
@@ -2616,7 +2616,7 @@ async fn claim_past_an_unhealthy_backlog(
         ServedModes::Both => {
             claim_batch::<WebhookAttempt>(&db, &sys(), "keyed-worker", CLAIM_BUDGET).await
         }
-        ServedModes::HmacOnly => {
+        ServedModes::HmacOnly | ServedModes::SealedOnly | ServedModes::Neither => {
             claim_webhook_attempts(&db, &sys(), "keyless-worker", CLAIM_BUDGET, served).await
         }
     }
@@ -2912,7 +2912,7 @@ async fn a_deactivated_endpoints_attempts_do_not_count_as_waiting_for_the_key() 
         .await;
     }
     let waiting = || async {
-        count_sealed_attempts_waiting(&db, &sys(), Utc::now())
+        count_attempts_waiting(&db, &sys(), Utc::now(), WebhookDeliveryMode::sealed)
             .await
             .expect("counting")
     };
@@ -2958,6 +2958,11 @@ async fn a_deactivated_endpoints_attempts_do_not_count_as_waiting_for_the_key() 
 }
 
 // --- auth.methods without hmac_webhooks (VSA-1) -----------------------------
+//
+// With the method off an `hmac` endpoint is excluded from the claim, the way a
+// `sealed` one is for a worker without the signing key: nothing is written for
+// its attempts, so they stay `pending`, uncounted and off the breaker, and are
+// delivered at the first claim after the method is permitted again.
 
 /// `ctx` with `hmac_webhooks` as `auth.methods` says.
 fn with_hmac(ctx: WorkerContext, hmac: sms_api::HmacWebhooks) -> WorkerContext {
@@ -2965,6 +2970,12 @@ fn with_hmac(ctx: WorkerContext, hmac: sms_api::HmacWebhooks) -> WorkerContext {
         hmac_webhooks: hmac,
         ..ctx
     }
+}
+
+/// The deployment's `auth.methods` without `hmac_webhooks`, on a worker that
+/// holds the signing key: it serves `sealed` only ([`ServedModes::SealedOnly`]).
+fn hmac_off(db: &Cratestack) -> WorkerContext {
+    with_hmac(worker_context(db.clone()), sms_api::HmacWebhooks::Disabled)
 }
 
 /// The paths a receiver was asked for, in order.
@@ -2978,9 +2989,11 @@ async fn requested_paths(server: &MockServer) -> Vec<String> {
         .collect()
 }
 
-/// `replayWebhookAttempt` as an operator holding `webhook:manage` calls it.
-async fn replay(db: &Cratestack, attempt_id: &str) -> schema::WebhookAttempt {
-    use sms_api::schema::procedures::{ProcedureRegistry, replay_webhook_attempt};
+/// `switchWebhookDeliveryMode` to `sealed`, as an operator holding `webhook:manage`
+/// calls it on a deployment whose `auth.methods` does not permit `hmac_webhooks`:
+/// the way out of `hmac`, and the one switch that method leaves open.
+async fn switch_to_sealed(db: &Cratestack, endpoint_id: &str, audience: &str) {
+    use sms_api::schema::procedures::{ProcedureRegistry, switch_webhook_delivery_mode};
     let mut ctx = owner();
     ctx.extensions.insert(
         "perms".to_owned(),
@@ -2989,34 +3002,35 @@ async fn replay(db: &Cratestack, attempt_id: &str) -> schema::WebhookAttempt {
     let procedures = sms_api::Procedures::new(
         sms_api::HashPepper::new("hooks-live-postgres-test-pepper-well-over-the-minimum-length")
             .expect("a pepper over the minimum length"),
-        sms_api::HmacWebhooks::Permitted,
+        sms_api::HmacWebhooks::Disabled,
     );
-    let args = replay_webhook_attempt::Args {
-        args: schema::ReplayWebhookAttemptInput {
-            attemptId: attempt_id.to_owned(),
+    let args = switch_webhook_delivery_mode::Args {
+        args: schema::SwitchWebhookDeliveryModeInput {
+            endpointId: endpoint_id.to_owned(),
+            mode: WebhookDeliveryMode::sealed,
+            audience: Some(audience.to_owned()),
         },
     };
-    replay_webhook_attempt::invoke_with_db(db, &args, &ctx, |db, authorized| {
+    switch_webhook_delivery_mode::invoke_with_db(db, &args, &ctx, |db, authorized| {
         let (p, c, a) = (procedures.clone(), ctx.clone(), args.clone());
-        async move { p.replay_webhook_attempt(&db, &c, a, authorized).await }
+        async move { p.switch_webhook_delivery_mode(&db, &c, a, authorized).await }
     })
     .await
-    .expect("replaying the parked attempt")
+    .expect("switching the endpoint to sealed");
 }
 
-/// The whole contract, in one story: with the method off the worker sends
-/// nothing to an `hmac` endpoint and parks the attempt (`failed`,
-/// `delivery_mode_disabled`, replayable, not counted, off the breaker) while a
-/// `sealed` one beside it is delivered; the parked attempt is not rewritten on
-/// the next poll; an operator's replay works; and with the method permitted again
-/// it is delivered, with every try it had.
+/// The whole contract, in one story, through `hooks::tick`: with the method off an
+/// `hmac` attempt is never claimed (still `pending`, `attempts` 0, no `lastError`,
+/// the row not written, the endpoint's breaker as it was) while a `sealed` one
+/// beside it is delivered, poll after poll; and with the method permitted again the
+/// next claim delivers it, with every try it had.
 ///
-/// The `hmac` endpoint's `maxAttempts` is 1 on purpose: a park that counted would
-/// have to go `dead` (the Nth failure of an N-attempt endpoint), so `failed` with
-/// `attempts` 0 is the proof it did not.
+/// The `hmac` endpoint's `maxAttempts` is 1 on purpose: an attempt that was claimed
+/// and counted would be one failure from `dead`, so `attempts` 0 and `pending` are
+/// the proof nothing counted it.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn with_hmac_off_the_worker_parks_an_hmac_attempt_and_still_delivers_a_sealed_one() {
+async fn with_hmac_off_an_hmac_attempt_is_never_claimed_and_a_sealed_one_beside_it_is_delivered() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
     let suffix = unique_suffix();
@@ -3040,53 +3054,40 @@ async fn with_hmac_off_the_worker_parks_an_hmac_attempt_and_still_delivers_a_sea
         &app_id,
         &format!("{}/hmac-hook", server.uri()),
         1,
-        "whsec_parked_0123456789abcdef0123456789abcdef",
+        "whsec_held_0123456789abcdef0123456789abcdef",
         None,
     )
     .await;
     let sealed_attempt = seed_attempt(&db, &sealed.id, "cmsgS", "message.delivered", "{}").await;
     let hmac_attempt = seed_attempt(&db, &hmac.id, "cmsgH", "message.delivered", "{}").await;
 
-    let off = with_hmac(worker_context(db.clone()), sms_api::HmacWebhooks::Disabled);
-    hooks::tick(&off, &sys(), "test-worker", &http_client())
-        .await
-        .expect("tick succeeds");
+    let off = hmac_off(&db);
+    for _ in 0..2 {
+        hooks::tick(&off, &sys(), "test-worker", &http_client())
+            .await
+            .expect("tick succeeds");
+    }
 
-    // Sealed: delivered, as ever.
     assert_eq!(
         reread_attempt(&db, &sealed_attempt.id).await.state,
-        AttemptState::succeeded
+        AttemptState::succeeded,
+        "the sealed attempt beside it is delivered as ever"
     );
-    // Hmac: nothing was sent.
     assert_eq!(
         requested_paths(&server).await,
         ["/hook"],
         "nothing may reach the hmac endpoint"
     );
 
-    // ... and the attempt is parked, not failed, not dead, not counted.
-    let parked = reread_attempt(&db, &hmac_attempt.id).await;
-    assert_eq!(parked.state, AttemptState::failed);
-    assert!(
-        parked
-            .lastError
-            .as_deref()
-            .is_some_and(|reason| reason.starts_with("delivery_mode_disabled")),
-        "{:?}",
-        parked.lastError
-    );
+    let held = reread_attempt(&db, &hmac_attempt.id).await;
+    assert_eq!(held.state, AttemptState::pending, "{held:#?}");
     assert_eq!(
-        parked.attempts, 0,
-        "the claim's count is given back, so a park never reaches maxAttempts"
+        held.attempts, 0,
+        "never claimed, so never counted: maxAttempts is untouched"
     );
-    assert_eq!(parked.lastStatusCode, None);
-    assert!(parked.leaseOwner.is_none() && parked.leaseUntil.is_none());
-    let rests_until = parked.nextAttemptAt.expect("a parked attempt rests");
-    assert!(
-        rests_until > Utc::now() + Duration::minutes(50),
-        "it rests about an hour, not until the next poll: {rests_until}"
-    );
-    // Off the endpoint's breaker: no request was made, so none failed.
+    assert_eq!(held.version, hmac_attempt.version, "the row is not written");
+    assert!(held.lastError.is_none() && held.lastStatusCode.is_none());
+    assert!(held.leaseOwner.is_none() && held.leaseUntil.is_none());
     let endpoint_after = reread_endpoint(&db, &hmac.id).await;
     assert_eq!(endpoint_after.consecutiveFailures, 0);
     assert!(endpoint_after.circuitOpenUntil.is_none());
@@ -3095,62 +3096,48 @@ async fn with_hmac_off_the_worker_parks_an_hmac_attempt_and_still_delivers_a_sea
         "the endpoint is not written"
     );
 
-    // Not hot: the next poll leaves it exactly as it is.
-    hooks::tick(&off, &sys(), "test-worker", &http_client())
-        .await
-        .expect("tick succeeds");
-    let again = reread_attempt(&db, &hmac_attempt.id).await;
-    assert_eq!(
-        again.version, parked.version,
-        "a parked attempt is not rewritten"
-    );
-
-    // Replayable: failed -> pending, and with the method still off it is parked
-    // again at its next claim.
-    let replayed = replay(&db, &hmac_attempt.id).await;
-    assert_eq!(replayed.state, AttemptState::pending);
-    hooks::tick(&off, &sys(), "test-worker", &http_client())
-        .await
-        .expect("tick succeeds");
-    assert_eq!(
-        reread_attempt(&db, &hmac_attempt.id).await.state,
-        AttemptState::failed
-    );
-    assert_eq!(requested_paths(&server).await, ["/hook"]);
-
-    // The method is permitted again (a restart): a replay is delivered on the
-    // next poll, with every try it had.
-    replay(&db, &hmac_attempt.id).await;
+    // The method is permitted again (a restart): the very next claim delivers it,
+    // with no hour's wait and no replay.
     let on = with_hmac(worker_context(db.clone()), sms_api::HmacWebhooks::Permitted);
     hooks::tick(&on, &sys(), "test-worker", &http_client())
         .await
         .expect("tick succeeds");
     let delivered = reread_attempt(&db, &hmac_attempt.id).await;
-    assert_eq!(delivered.state, AttemptState::succeeded);
-    assert_eq!(delivered.attempts, 1);
+    assert_eq!(delivered.state, AttemptState::succeeded, "{delivered:#?}");
+    assert_eq!(delivered.attempts, 1, "every try it had, one spent");
     assert_eq!(requested_paths(&server).await, ["/hook", "/hmac-hook"]);
 }
 
-/// A crashed worker's abandoned `hmac` attempt (`delivering`, lease expired) is
-/// reclaimed and parked like any other, and `attempts` is not taken below zero.
+/// A crashed worker's abandoned `hmac` attempt (`delivering`, lease expired) is no
+/// more claimable than a pending one while the method is off: it keeps its lease
+/// owner and its count, and a worker of a deployment that permits the method resumes
+/// it without counting it twice.
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres — see module docs"]
-async fn with_hmac_off_a_crash_reclaimed_hmac_attempt_is_parked_too() {
+async fn with_hmac_off_a_crash_abandoned_hmac_attempt_is_not_reclaimed_until_the_method_returns() {
     let _guard = TEST_MUTEX.lock().await;
     let db = isolated_db().await;
     let suffix = unique_suffix();
     let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hmac-hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
     let hmac = seed_hmac_endpoint(
         &db,
         &app_id,
-        "https://example.test/hmac-hook",
+        &format!("{}/hmac-hook", server.uri()),
         8,
-        "whsec_parked_0123456789abcdef0123456789abcdef",
+        "whsec_held_0123456789abcdef0123456789abcdef",
         None,
     )
     .await;
     let attempt = seed_attempt(&db, &hmac.id, "cmsgR", "message.delivered", "{}").await;
-    db.webhook_attempt()
+    let abandoned = db
+        .webhook_attempt()
         .update(attempt.id.clone())
         .set(UpdateWebhookAttemptInput {
             state: Some(AttemptState::delivering),
@@ -3164,17 +3151,421 @@ async fn with_hmac_off_a_crash_reclaimed_hmac_attempt_is_parked_too() {
         .await
         .expect("simulating a stale delivering lease");
 
-    let off = with_hmac(worker_context(db.clone()), sms_api::HmacWebhooks::Disabled);
+    hooks::tick(&hmac_off(&db), &sys(), "test-worker", &http_client())
+        .await
+        .expect("tick succeeds");
+    let still = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(still.version, abandoned.version, "{still:#?}");
+    assert_eq!(still.state, AttemptState::delivering);
+    assert_eq!(still.leaseOwner.as_deref(), Some("crashed-worker"));
+    assert_eq!(still.attempts, 1);
+    assert!(requested_paths(&server).await.is_empty());
+
+    let on = with_hmac(worker_context(db.clone()), sms_api::HmacWebhooks::Permitted);
+    hooks::tick(&on, &sys(), "test-worker", &http_client())
+        .await
+        .expect("tick succeeds");
+    let resumed = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(resumed.state, AttemptState::succeeded, "{resumed:#?}");
+    assert_eq!(resumed.attempts, 1, "resumed, not counted twice");
+}
+
+/// What a claim by a worker serving `served` takes, as sorted `aggregateId`s,
+/// from the table as it stands.
+async fn claimed_by(db: &Cratestack, served: ServedModes) -> Vec<String> {
+    let mut got: Vec<String> =
+        claim_webhook_attempts(db, &sys(), "held-worker", CLAIM_BUDGET, served)
+            .await
+            .expect("the claim")
+            .into_iter()
+            .map(|attempt| attempt.aggregateId)
+            .collect();
+    got.sort();
+    got
+}
+
+/// The per-endpoint fan-out, when some endpoint is unclaimable: an `hmac` endpoint
+/// holding [`UNHEALTHY_BACKLOG`] due attempts older than everyone's, and two
+/// `sealed` ones holding 5 and 3 newer. A worker serving `sealed` only takes
+/// exactly those 8, in one claim, past the 70 (a window of the oldest rows would be
+/// the `hmac` endpoint's alone, and nothing would be delivered for anyone); the 70
+/// are not touched. A worker serving nothing takes nothing from the same table.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_claim_with_hmac_off_leaves_a_deep_hmac_backlog_and_takes_the_sealed_endpoints_behind_it()
+{
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    psql("DELETE FROM webhook_endpoints").await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let hmac = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/hmac",
+        8,
+        "whsec_fanout_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let s1 = seed_endpoint(
+        &db,
+        &format!("{suffix}-1"),
+        &app_id,
+        "https://hooks.example.test/s1",
+        8,
+    )
+    .await;
+    let s2 = seed_endpoint(
+        &db,
+        &format!("{suffix}-2"),
+        &app_id,
+        "https://hooks.example.test/s2",
+        8,
+    )
+    .await;
+    bulk_due(&hmac.id, "hm", UNHEALTHY_BACKLOG, 120).await;
+    bulk_due(&s1.id, "s1", 5, 30).await;
+    bulk_due(&s2.id, "s2", 3, 20).await;
+
+    assert!(
+        claimed_by(&db, ServedModes::Neither).await.is_empty(),
+        "a worker serving nothing claims nothing, behind any backlog"
+    );
+    let mut sealed: Vec<String> = (1..=5)
+        .map(|k| format!("bulk-s1-{k}"))
+        .chain((1..=3).map(|k| format!("bulk-s2-{k}")))
+        .collect();
+    sealed.sort();
+    assert_eq!(
+        claimed_by(&db, ServedModes::SealedOnly).await,
+        sealed,
+        "the sealed endpoints' attempts, within one claim, past {UNHEALTHY_BACKLOG} older hmac ones"
+    );
+    assert_eq!(
+        psql(
+            "SELECT count(*) FROM webhook_attempts \
+             WHERE aggregate_id LIKE 'bulk-hm-%' AND state = 'pending' AND attempts = 0 \
+               AND lease_owner IS NULL"
+        )
+        .await,
+        UNHEALTHY_BACKLOG.to_string(),
+        "and the hmac endpoint's attempts are not touched"
+    );
+    psql("DELETE FROM webhook_endpoints").await;
+}
+
+/// The single time-ordered query, when every endpoint is one the worker serves: a
+/// worker serving `sealed` only over a table of `sealed` endpoints takes the oldest
+/// due attempts of any, and a worker serving nothing over the same table takes none
+/// (an empty set of claimable endpoints is no query at all).
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn a_claim_with_hmac_off_over_sealed_endpoints_only_is_the_time_ordered_query() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    psql("DELETE FROM webhook_endpoints").await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let s1 = seed_endpoint(
+        &db,
+        &format!("{suffix}-1"),
+        &app_id,
+        "https://hooks.example.test/s1",
+        8,
+    )
+    .await;
+    let s2 = seed_endpoint(
+        &db,
+        &format!("{suffix}-2"),
+        &app_id,
+        "https://hooks.example.test/s2",
+        8,
+    )
+    .await;
+    bulk_due(&s1.id, "s1", 5, 30).await;
+    bulk_due(&s2.id, "s2", 3, 20).await;
+
+    assert!(claimed_by(&db, ServedModes::Neither).await.is_empty());
+    assert_eq!(
+        claimed_by(&db, ServedModes::HmacOnly).await,
+        Vec::<String>::new()
+    );
+    let mut all: Vec<String> = (1..=5)
+        .map(|k| format!("bulk-s1-{k}"))
+        .chain((1..=3).map(|k| format!("bulk-s2-{k}")))
+        .collect();
+    all.sort();
+    assert_eq!(claimed_by(&db, ServedModes::SealedOnly).await, all);
+    psql("DELETE FROM webhook_endpoints").await;
+}
+
+/// The re-read just before the leases drops an `hmac` endpoint's attempt for a
+/// worker serving `sealed` only, and keeps it for one that serves both: the second
+/// line of the claim filter, for the milliseconds between the endpoints' read and
+/// the leases (an endpoint switched to `hmac` by another deployment's workers, say).
+/// Driven through the seam: the candidate is chosen, then filtered.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn the_reread_before_the_leases_drops_an_hmac_candidate_when_hmac_is_off() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/seam",
+        8,
+        "whsec_seam_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgSeam", "message.delivered", "{}").await;
+    let candidates = vec![reread_attempt(&db, &attempt.id).await];
+
+    for (served, kept) in [
+        (ServedModes::Both, 1),
+        (ServedModes::HmacOnly, 1),
+        (ServedModes::SealedOnly, 0),
+        (ServedModes::Neither, 0),
+    ] {
+        let got = filter_by_endpoint_health(
+            &db,
+            &sys(),
+            candidates.clone(),
+            Utc::now(),
+            CLAIM_BUDGET,
+            served,
+        )
+        .await
+        .expect("filtering");
+        assert_eq!(got.len(), kept, "{served:?}");
+    }
+}
+
+/// `HmacBacklogWatch`, the sealed watch's twin: with the method off it counts the
+/// due attempts of **active** `hmac` endpoints (a crashed worker's abandoned one
+/// included; a deactivated endpoint's, a sealed endpoint's and nothing at all not)
+/// and `warn`s with `held=N`, at most every five minutes. A worker of a deployment
+/// that permits the method has nothing to say.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn with_hmac_off_a_worker_says_how_many_hmac_attempts_it_holds_back_every_five_minutes() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let (logs, _guard_logs) = capture_logs();
+    let watch = hooks::HmacBacklogWatch::new();
+    let start = std::time::Instant::now();
+
+    assert_eq!(
+        watch.report(&hmac_off(&db), &sys(), start).await.unwrap(),
+        Some(0),
+        "nothing held: the query runs and says nothing"
+    );
+    assert!(!logs.text().contains("WARN"), "{}", logs.text());
+
+    let active = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/active",
+        8,
+        "whsec_watch_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let mut attempts = Vec::new();
+    for n in 0..4 {
+        attempts.push(
+            seed_attempt(
+                &db,
+                &active.id,
+                &format!("cmsgW{n}"),
+                "message.delivered",
+                "{}",
+            )
+            .await,
+        );
+    }
+    // Counted: an attempt a crashed worker left `delivering`, lease expired.
+    db.webhook_attempt()
+        .update(attempts[0].id.clone())
+        .set(UpdateWebhookAttemptInput {
+            state: Some(AttemptState::delivering),
+            leaseOwner: Some(Some("crashed-worker".to_owned())),
+            leaseUntil: Some(Some(Utc::now() - Duration::seconds(5))),
+            ..Default::default()
+        })
+        .if_match(attempts[0].version)
+        .run(&sys())
+        .await
+        .expect("abandoning one hmac attempt");
+    // Not counted: a deactivated hmac endpoint's attempts, and a sealed endpoint's.
+    let inactive = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        "https://hooks.example.test/inactive",
+        8,
+        "whsec_off_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    seed_attempt(&db, &inactive.id, "cmsgW9", "message.delivered", "{}").await;
+    psql(&format!(
+        "UPDATE webhook_endpoints SET active = false WHERE id = '{}'",
+        inactive.id
+    ))
+    .await;
+    let sealed = seed_endpoint(&db, &suffix, &app_id, "https://hooks.example.test/s", 8).await;
+    seed_attempt(&db, &sealed.id, "cmsgW8", "message.delivered", "{}").await;
+
+    let interval = hooks::HMAC_BACKLOG_WARNING_EVERY;
+    assert_eq!(
+        watch
+            .report(&hmac_off(&db), &sys(), start + interval / 2)
+            .await
+            .unwrap(),
+        None,
+        "not due: no query, no line"
+    );
+    assert!(!logs.text().contains("WARN"), "{}", logs.text());
+
+    let count = watch
+        .report(&hmac_off(&db), &sys(), start + interval)
+        .await
+        .unwrap();
+    assert_eq!(count, Some(4));
+    let text = logs.text();
+    assert_eq!(text.matches("WARN").count(), 1, "{text}");
+    assert!(text.contains("held=4"), "{text}");
+    assert!(text.contains("hmac_webhooks"), "{text}");
+
+    assert_eq!(
+        hooks::HmacBacklogWatch::new()
+            .report(&worker_context(db.clone()), &sys(), start + interval)
+            .await
+            .unwrap(),
+        None,
+        "a deployment that permits the method serves them: nothing to report"
+    );
+}
+
+/// After `switchWebhookDeliveryMode` to `sealed`, the attempts that waited for the
+/// method are delivered **sealed**: the switch rewrites the endpoint row only, and
+/// the claim, `deliver_one` and `send` read the endpoint's mode afresh for every
+/// attempt. A real `EnvelopeLayer` pinned to vsms's key and the endpoint's new
+/// audience accepts exactly the bytes sent, and the body carries the sealed
+/// envelope's fields.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_hmac_attempt_held_back_is_delivered_sealed_after_the_endpoint_is_switched() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let endpoint = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hook", server.uri()),
+        8,
+        "whsec_switch_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &endpoint.id, "cmsgSw", "message.delivered", "{}").await;
+
+    let off = hmac_off(&db);
+    hooks::tick(&off, &sys(), "test-worker", &http_client())
+        .await
+        .expect("tick succeeds");
+    assert!(requested_paths(&server).await.is_empty(), "held back");
+    assert_eq!(
+        reread_attempt(&db, &attempt.id).await.state,
+        AttemptState::pending
+    );
+
+    let audience = format!("switched-{suffix}");
+    switch_to_sealed(&db, &endpoint.id, &audience).await;
     hooks::tick(&off, &sys(), "test-worker", &http_client())
         .await
         .expect("tick succeeds");
 
-    let parked = reread_attempt(&db, &attempt.id).await;
-    assert_eq!(parked.state, AttemptState::failed);
-    assert_eq!(parked.attempts, 0);
+    let delivered = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(delivered.state, AttemptState::succeeded, "{delivered:#?}");
+    assert_eq!(delivered.attempts, 1);
+    let requests = server.received_requests().await.expect("recorded");
+    assert_eq!(requests.len(), 1);
+    let headers = wire_headers(&requests[0]);
     assert!(
-        parked
-            .lastError
-            .is_some_and(|reason| reason.starts_with("delivery_mode_disabled"))
+        headers
+            .iter()
+            .any(|(name, value)| name == "content-type" && value.starts_with("application/cose")),
+        "sealed, not signed: {headers:?}"
+    );
+    assert!(
+        headers.iter().all(|(name, _)| !name.starts_with("x-sms")),
+        "{headers:?}"
+    );
+    let receiver = receiver_for(&audience);
+    let verdict = receiver.deliver("/hook", &headers, &requests[0].body).await;
+    assert_eq!(verdict.status, 200);
+    let envelope: serde_json::Value = serde_json::from_str(&receiver.bodies()[0]).unwrap();
+    assert_eq!(envelope["id"], attempt.id);
+    assert_eq!(envelope["endpointId"], endpoint.id);
+}
+
+/// The delivery step's own guard, for a row that got past the claim: an `hmac`
+/// attempt claimed under a context that permits the method and delivered under one
+/// that does not (`deliver_claimed` is the seam, the way an operator's change lands
+/// between the two halves of a tick). Nothing is sent, and nothing is written but
+/// what the claim already wrote: the attempt stays `delivering`, counted once, for
+/// the lease to expire and a worker that serves `hmac` to resume it.
+#[tokio::test]
+#[ignore = "needs a live, fully migrated Postgres — see module docs"]
+async fn an_hmac_attempt_that_got_past_the_claim_is_not_sent_by_a_worker_with_hmac_off() {
+    let _guard = TEST_MUTEX.lock().await;
+    let db = isolated_db().await;
+    let suffix = unique_suffix();
+    let app_id = seed_app(&db, &suffix).await;
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/hmac-hook"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+    let hmac = seed_hmac_endpoint(
+        &db,
+        &app_id,
+        &format!("{}/hmac-hook", server.uri()),
+        1,
+        "whsec_guard_0123456789abcdef0123456789abcdef",
+        None,
+    )
+    .await;
+    let attempt = seed_attempt(&db, &hmac.id, "cmsgG", "message.delivered", "{}").await;
+
+    let claimed = claim_webhook_attempts(&db, &sys(), "test-worker", 20, ServedModes::Both)
+        .await
+        .expect("the claim");
+    assert_eq!(claimed.len(), 1);
+    hooks::deliver_claimed(&hmac_off(&db), &sys(), &http_client(), claimed).await;
+
+    assert!(requested_paths(&server).await.is_empty(), "nothing is sent");
+    let left = reread_attempt(&db, &attempt.id).await;
+    assert_eq!(left.state, AttemptState::delivering, "{left:#?}");
+    assert_eq!(left.attempts, 1, "counted once, at the claim, and no more");
+    assert_eq!(
+        reread_endpoint(&db, &hmac.id).await.consecutiveFailures,
+        0,
+        "and off the breaker"
     );
 }

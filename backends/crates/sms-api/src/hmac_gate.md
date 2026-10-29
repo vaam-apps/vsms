@@ -47,8 +47,9 @@ and the setting is a deployment's, in YAML.
 # The worker
 
 The same flag reaches `sms-worker` (`WorkerContext::hmac_webhooks`): a delivery
-to an `hmac` endpoint is **parked** and not sent. `sms-worker`'s `hooks.md`
-has the semantics and the reason each choice was made.
+to an `hmac` endpoint is **not claimed**: the attempt stays `pending`, untouched,
+until the method is permitted again. `sms-worker`'s `hooks.md` has the semantics
+and the reason each choice was made.
 
 # Boot
 

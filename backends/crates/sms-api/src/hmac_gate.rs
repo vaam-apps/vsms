@@ -17,10 +17,6 @@ use crate::schema::{self, Cratestack, WebhookDeliveryMode, webhook_endpoint};
 /// switches on this instead (the way `idempotency_key_conflict` is matched).
 pub const AUTH_METHOD_DISABLED: &str = "auth_method_disabled";
 
-/// The reason the worker records on an `hmac` delivery it parks
-/// (`WebhookAttempt.lastError` starts with it).
-pub const DELIVERY_MODE_DISABLED: &str = "delivery_mode_disabled";
-
 /// Whether this deployment permits `hmac_webhooks` (`auth.methods`, VSA-1).
 ///
 /// A two-valued type rather than a `bool` because the router takes it beside
@@ -32,7 +28,7 @@ pub enum HmacWebhooks {
     /// absent): behaviour is what it was before the key existed.
     Permitted,
     /// `auth.methods` does not: nothing creates, switches to or rotates an
-    /// `hmac` endpoint, and the worker sends none.
+    /// `hmac` endpoint, and no worker claims one's attempts.
     Disabled,
 }
 
@@ -229,7 +225,7 @@ pub async fn count_hmac_endpoints(
 /// the crate that emits it, and the worker's default filter
 /// (`sms_worker=info,sms_worker_bin=info`, also set by the compose file and the
 /// chart) does not include `sms_api`: a line emitted from here would be filtered
-/// out of exactly the process that parks the deliveries.
+/// out of exactly the process that holds the deliveries back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HmacBoot {
     /// What `auth.methods` says.
@@ -257,7 +253,7 @@ impl HmacBoot {
     }
 
     /// Whether an operator needs to act: `hmac` endpoints exist and the method is
-    /// off, so their deliveries are parked and nothing more can be done to their
+    /// off, so their deliveries wait and nothing more can be done to their
     /// mode or secret until they are switched to sealed or deleted. Every other
     /// case is information: the method permitted (so an operator sees what turning
     /// it off would cost) or off with nothing left behind.
@@ -277,12 +273,12 @@ impl HmacBoot {
                 "no hmac webhook endpoints exist and auth.methods does not permit hmac_webhooks"
                     .to_owned()
             }
-            (HmacWebhooks::Disabled, _) => format!(
-                "auth.methods does not permit hmac_webhooks but hmac webhook endpoints exist: \
-                 their deliveries are parked as failed ({DELIVERY_MODE_DISABLED}), not sent. \
-                 Switch them to sealed (switchWebhookDeliveryMode) or delete them; a parked \
-                 delivery is replayable"
-            ),
+            (HmacWebhooks::Disabled, _) => "auth.methods does not permit hmac_webhooks but hmac \
+                 webhook endpoints exist: no worker claims their deliveries, which stay pending, \
+                 uncounted, and are delivered once the method is permitted again. Switch the \
+                 endpoints to sealed (switchWebhookDeliveryMode), after which the pending ones \
+                 are delivered sealed, or delete them"
+                .to_owned(),
         }
     }
 }
@@ -448,8 +444,8 @@ mod tests {
         assert!(!boot(HmacWebhooks::Disabled, 0).is_warning());
         assert!(!boot(HmacWebhooks::Permitted, 3).is_warning());
         assert!(!boot(HmacWebhooks::Permitted, 0).is_warning());
-        let parked = boot(HmacWebhooks::Disabled, 3).message();
-        assert!(parked.contains(DELIVERY_MODE_DISABLED), "{parked}");
+        let held = boot(HmacWebhooks::Disabled, 3).message();
+        assert!(held.contains("stay pending, uncounted"), "{held}");
     }
 
     #[test]

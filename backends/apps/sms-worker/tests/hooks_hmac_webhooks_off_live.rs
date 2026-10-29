@@ -1,14 +1,16 @@
 //! `auth.methods` without `hmac_webhooks` (VSA-1), through the real binary.
 //!
-//! `sms-worker`'s `hooks` role parks an `hmac` attempt when its
+//! `sms-worker`'s `hooks` role claims no `hmac` attempt when its
 //! `WorkerContext::hmac_webhooks` says the method is off, and
 //! `backends/crates/sms-worker/tests/hooks_live_postgres.rs` proves that for a
 //! context built by hand. This proves the other half, which no in-process test
 //! can: that the spawned `sms-worker` reads `auth.methods` from its YAML
-//! configuration and hands the answer to the role. Two real workers, one per
-//! configuration, over the same shape of backlog: with the key `[keypair]` the
-//! `hmac` attempt is parked and the endpoint receives nothing; with the key
-//! absent the very same attempt is delivered.
+//! configuration and hands the answer to the role. Real workers, one per
+//! configuration, over the same shape of backlog: with the key `[keypair]` (and no
+//! signing key, so the worker serves nothing, and says so at start) the `hmac`
+//! attempt stays `pending`, uncounted, and the endpoint receives nothing; a worker
+//! started afterwards on a configuration without the key delivers that very
+//! attempt at its first claim.
 //!
 //! ```bash
 //! cargo build -p sms-worker-bin
@@ -209,10 +211,15 @@ async fn settled(db: &Cratestack, id: &str) -> schema::WebhookAttempt {
     }
 }
 
+/// How long a worker polls before the held-back assertions are made: the poll is
+/// one second, so this is several claims. The worker's first poll is immediate, and
+/// the boot line it logs first is read after it is killed.
+const POLLS: Duration = Duration::from_secs(4);
+
 #[tokio::test]
 #[ignore = "needs a live, fully migrated Postgres and the built sms-worker binary — see module \
             docs"]
-async fn a_real_worker_parks_an_hmac_attempt_when_the_yaml_says_keypair_only() {
+async fn a_real_worker_holds_an_hmac_attempt_back_when_the_yaml_says_keypair_only() {
     let _guard = TEST_MUTEX.lock().await;
     let db = db().await;
     let database_url = sms_test_support::database_url().await;
@@ -226,30 +233,36 @@ async fn a_real_worker_parks_an_hmac_attempt_when_the_yaml_says_keypair_only() {
     let count = hmac_endpoints(&db).await;
 
     let worker = spawn_hooks_worker(&database_url, "off", "auth:\n  methods: [keypair]\n");
-    let parked = settled(&db, &attempt.id).await;
+    tokio::time::sleep(POLLS).await;
+    let held = reread(&db, &attempt.id).await;
     let log = worker.kill_and_read_log();
 
-    assert_eq!(parked.state, AttemptState::failed, "{parked:#?}");
-    assert!(
-        parked
-            .lastError
-            .as_deref()
-            .is_some_and(|reason| reason.starts_with("delivery_mode_disabled")),
-        "{:?}",
-        parked.lastError
-    );
-    assert_eq!(parked.attempts, 0);
+    assert_eq!(held.state, AttemptState::pending, "{held:#?}");
+    assert_eq!(held.attempts, 0, "never claimed, so never counted");
+    assert_eq!(held.version, attempt.version, "the row is not written");
+    assert!(held.lastError.is_none() && held.leaseOwner.is_none());
     assert_eq!(
         server.received_requests().await.unwrap().len(),
         0,
         "nothing may be sent to an hmac endpoint"
     );
-    // The boot line: how many hmac endpoints exist, and that they are parked.
+    // The boot lines: how many hmac endpoints exist and that they wait, and that
+    // this worker (no signing key, no hmac) serves nothing at all.
     assert!(
         log.contains(&format!("hmac_endpoints={count}")) && log.contains("hmac_webhooks=false"),
         "the hooks worker did not log its hmac endpoint count at boot: {log}"
     );
-    assert!(log.contains("delivery_mode_disabled"), "{log}");
+    assert!(log.contains("stay pending, uncounted"), "{log}");
+    assert!(log.contains("serves no webhook delivery"), "{log}");
+
+    // The method is permitted again (the key deleted, a restart): the first claim
+    // of the next worker delivers the attempt that waited, with no replay.
+    let restarted = spawn_hooks_worker(&database_url, "back", "");
+    let delivered = settled(&db, &attempt.id).await;
+    restarted.kill_and_read_log();
+    assert_eq!(delivered.state, AttemptState::succeeded, "{delivered:#?}");
+    assert_eq!(delivered.attempts, 1);
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
 }
 
 /// The control: the same shape of backlog, the key absent. Without it the test

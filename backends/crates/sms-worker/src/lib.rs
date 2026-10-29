@@ -52,14 +52,15 @@ pub struct WorkerContext {
     /// signing key (VS-8). `Some` exactly when this process was given the key
     /// (`--envelope-signing-key-file`). An `hmac` endpoint (VS-8R) needs no key
     /// and is delivered without one; with `None` this process claims no `sealed`
-    /// endpoint's attempt (`claim::ServedModes::HmacOnly`) and warns, naming the
+    /// endpoint's attempt (`claim::ServedModes`) and warns, naming the
     /// missing key, how many are waiting (`hooks::SealedBacklogWatch`).
     /// No other role reads it, so a `dispatch`-only node needs no key.
     pub webhook_sealer: Option<sms_webhook::Sealer>,
     /// Whether `auth.methods` permits `hmac_webhooks` (VSA-1). With
-    /// [`HmacWebhooks::Disabled`] `hooks` sends nothing to an `hmac` endpoint: it
-    /// parks the attempt (`hooks.md`, "When `hmac_webhooks` is off"). No other
-    /// role reads it.
+    /// [`sms_api::HmacWebhooks::Disabled`] `hooks` claims no `hmac` endpoint's attempt
+    /// (`claim::ServedModes`), exactly as it claims no `sealed` one without the
+    /// signing key: the attempts stay `pending` and `hooks::HmacBacklogWatch` says
+    /// how many (`hooks.md`, "When `hmac_webhooks` is off"). No other role reads it.
     pub hmac_webhooks: sms_api::HmacWebhooks,
 }
 
