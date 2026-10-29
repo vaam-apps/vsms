@@ -21,8 +21,8 @@ profile with no overlay file is refused, except the default), refuses a retired
 variable, resolves `${VAR}` placeholders against the
 environment, round-trips the result through `serde_yaml_ng` into the typed
 model, and validates it. A `${VAR}` the environment does not set is an error,
-never an empty string. The caller says which [`Binary`] it is: the worker does
-not load `security.*`, so it does not need the pepper. There is no implicit
+never an empty string. The caller says which [`Binary`] it is: only the gateway
+loads `security.*`, so only it needs the pepper. There is no implicit
 path:
 
 ```rust

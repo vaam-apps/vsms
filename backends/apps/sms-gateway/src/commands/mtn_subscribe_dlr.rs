@@ -61,7 +61,7 @@ pub(crate) async fn mtn_subscribe_dlr_command(args: MtnSubscribeDlrArgs) -> Resu
     } = args;
 
     let config = config
-        .load(sms_config::Binary::Gateway)
+        .load(sms_config::Binary::ProviderTool)
         .context("loading the YAML configuration")?;
     let Some(mtn) = config.providers.mtn_cm else {
         bail!(

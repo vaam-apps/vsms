@@ -222,7 +222,8 @@ fn an_unparseable_overlay_is_a_load_error() {
 }
 
 #[test]
-fn an_unset_placeholder_is_fatal_and_named() {
+fn an_unset_whole_placeholder_is_fatal_and_names_its_variable() {
+    // The variable's name is not the secret, and it is what the operator needs.
     assert_eq!(
         refused("unresolved-placeholder"),
         ConfigError::UnresolvedPlaceholder("A_VARIABLE_NOBODY_SETS".to_owned())
@@ -230,43 +231,82 @@ fn an_unset_placeholder_is_fatal_and_named() {
 }
 
 #[test]
-fn an_unclosed_placeholder_is_malformed() {
-    assert!(matches!(
+fn an_unclosed_placeholder_in_a_secret_is_refused_by_key() {
+    assert_eq!(
         refused("malformed-placeholder"),
-        ConfigError::MalformedPlaceholder { .. }
-    ));
+        ConfigError::SecretNotAPlaceholder {
+            key: "security.hash_pepper".to_owned()
+        }
+    );
+}
+
+/// What an error may print is the key and nothing of the value: `Display` and
+/// `Debug` are both log lines, and each part of the value is checked
+/// separately so that a leak of any one fails by name.
+fn assert_value_absent(error: &ConfigError, parts: &[&str]) {
+    for (how, printed) in [
+        ("Display", error.to_string()),
+        ("Debug", format!("{error:?}")),
+    ] {
+        for part in parts {
+            assert!(
+                !printed.contains(part),
+                "{how} of {error:?} repeats {part:?} from the secret's value"
+            );
+        }
+    }
 }
 
 #[test]
-fn a_malformed_placeholder_names_its_key_and_never_the_value() {
+fn a_secret_with_a_malformed_placeholder_is_named_by_key_and_never_echoed() {
     // A sandbox may carry a literal secret, and a literal secret may contain
-    // `${`. The error is a log line: it gets the key and the fragment.
+    // `${`. The error is a log line: it gets the key, no fragment, no name.
     let error = refused("malformed-secret-unclosed");
-    let ConfigError::MalformedPlaceholder { key, fragment } = &error else {
-        panic!("expected MalformedPlaceholder, got another error");
-    };
-    assert_eq!(key, "providers[0].credentials.client_secret");
-    assert_eq!(fragment, "${ with no closing }");
-    for printed in [error.to_string(), format!("{error:?}")] {
-        assert!(
-            !printed.contains("zq9"),
-            "the unclosed-placeholder error leaked the secret around it"
-        );
-    }
+    assert_eq!(
+        error,
+        ConfigError::SecretNotAPlaceholder {
+            key: "providers[code=orange_cm].credentials.client_secret".to_owned()
+        }
+    );
+    assert_value_absent(&error, &["zq9", "not-a-real-secret", "unclosed"]);
 
     let error = refused("malformed-secret-bad-name");
-    let ConfigError::MalformedPlaceholder { fragment, .. } = &error else {
-        panic!("expected MalformedPlaceholder, got another error");
-    };
-    assert_eq!(fragment, "${bad name}");
-    for printed in [error.to_string(), format!("{error:?}")] {
-        assert!(
-            !printed.contains("zq9")
-                && !printed.contains("leading")
-                && !printed.contains("trailing"),
-            "the bad-name error leaked the secret around the placeholder"
-        );
-    }
+    assert_eq!(
+        error,
+        ConfigError::SecretNotAPlaceholder {
+            key: "providers[code=orange_cm].credentials.client_secret".to_owned()
+        }
+    );
+    assert_value_absent(&error, &["zq9", "leading", "trailing", "bad name"]);
+}
+
+#[test]
+fn a_livemode_literal_secret_with_an_unset_placeholder_leaks_neither_part() {
+    // Resolve runs before the literal-secret refusal, so a livemode literal that
+    // happens to hold `${NAME}` used to be echoed as "references ${NAME}".
+    let error = refused("secret-embedded-unresolved");
+    assert_eq!(
+        error,
+        ConfigError::SecretNotAPlaceholder {
+            key: "providers[code=orange_cm].credentials.client_secret".to_owned()
+        }
+    );
+    assert_value_absent(
+        &error,
+        &["zq9", "leading", "trailing", "A_VARIABLE_NOBODY_SETS"],
+    );
+}
+
+#[test]
+fn a_malformed_placeholder_outside_a_secret_keeps_its_fragment_and_a_consistent_key() {
+    let error = refused("malformed-setting-bad-name");
+    assert_eq!(
+        error,
+        ConfigError::MalformedPlaceholder {
+            key: "providers[code=orange_cm].settings.sender_number".to_owned(),
+            fragment: "${bad name}".to_owned(),
+        }
+    );
 }
 
 #[test]
@@ -333,15 +373,18 @@ fn load_for(
 }
 
 #[test]
-fn the_worker_loads_with_the_pepper_unset_and_the_gateway_refuses() {
+fn only_the_gateway_needs_the_pepper() {
     let mut env = env_for("valid-all-providers");
     assert!(env.remove("SMS_HASH_PEPPER").is_some(), "the base reads it");
 
-    let worker = load_for(Binary::Worker, "valid-all-providers", &env)
-        .expect("the worker never reads security.*");
-    assert!(worker.security.is_none());
-    assert_eq!(worker.security(), Err(ConfigError::SecurityNotLoaded));
-    assert!(worker.providers.orange_cm.is_some(), "the rest still loads");
+    // The worker hashes nothing, and neither does `mtn-subscribe-dlr`.
+    for binary in [Binary::Worker, Binary::ProviderTool] {
+        let loaded = load_for(binary, "valid-all-providers", &env)
+            .unwrap_or_else(|error| panic!("{binary:?} never reads security.*: {error}"));
+        assert!(loaded.security.is_none(), "{binary:?}");
+        assert_eq!(loaded.security(), Err(ConfigError::SecurityNotLoaded));
+        assert!(loaded.providers.orange_cm.is_some(), "the rest still loads");
+    }
 
     assert_eq!(
         load_for(Binary::Gateway, "valid-all-providers", &env).unwrap_err(),

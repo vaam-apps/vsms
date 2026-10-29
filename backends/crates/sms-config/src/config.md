@@ -17,13 +17,24 @@ The steps, in order, and why they are in this order:
    acted on under `deployment.livemode`. A secret YAML reads as a number or a
    boolean (`client_secret: 123456`) is refused here by key, because serde's own
    error for it would print the value.
-5. **The worker drops `security`.** [`Binary::Worker`] removes the block after
-   steps 3 and 4 have seen it and before step 6 resolves it, so `sms-worker`
-   neither requires nor receives `SMS_HASH_PEPPER`. The gateway ([`Binary::Gateway`])
-   keeps the block and refuses to start without the pepper.
-6. `${VAR}` placeholders resolve; one the environment lacks is fatal. A
-   malformed one is reported by YAML key and the offending `${...}` fragment,
-   never by the string around it, which may be a sandbox literal secret.
+5. **Only the gateway keeps `security`.** [`Binary::Worker`] and
+   [`Binary::ProviderTool`] (`sms-gateway mtn-subscribe-dlr`, which calls a
+   provider and hashes nothing) remove the block after steps 3 and 4 have seen
+   it and before step 6 resolves it, so neither requires nor receives
+   `SMS_HASH_PEPPER`. The gateway ([`Binary::Gateway`]) keeps the block and
+   refuses to start without the pepper.
+6. `${VAR}` placeholders resolve; one the environment lacks is fatal. The
+   secret keys are known by now (step 4), so a failure is reported according to
+   where it happened. Under a secret key, a value that is not exactly one
+   `${VAR}` and fails to resolve (an unclosed `${`, a bad name, or a placeholder
+   the environment does not set, with text around it) is
+   [`ConfigError::SecretNotAPlaceholder`]: the key path and nothing else, no
+   fragment and no variable name, because the string is a literal secret or has
+   one around its placeholder, and resolve runs before the livemode refusal of a
+   literal. A whole `${VAR}` that is unset still names `VAR`, which is a
+   variable name and not the secret. Anywhere else a malformed placeholder is
+   reported by YAML key and the offending `${...}` fragment, capped. Both name a
+   provider the one way, `providers[code=orange_cm]`.
 7. The document is deserialised with every block refusing unknown keys.
 8. The cross-field rules run: livemode's `https` and stub-host rules, the
    numeric ranges, each provider's required keys.

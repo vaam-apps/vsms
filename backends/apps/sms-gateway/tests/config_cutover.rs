@@ -144,6 +144,10 @@ fn a_loadable_configuration_gets_past_the_loader_to_the_keys() {
 
 #[test]
 fn mtn_subscribe_dlr_without_an_mtn_entry_says_so() {
+    // No pepper in the environment, on purpose: the command registers a URL with
+    // MADAPI and hashes nothing, so it loads as `Binary::ProviderTool` and must
+    // get as far as the missing `mtn_cm` entry. Loaded as the gateway, it would
+    // stop at `${SMS_HASH_PEPPER}` first.
     let output = Command::new(env!("CARGO_BIN_EXE_sms-gateway"))
         .arg("mtn-subscribe-dlr")
         .arg("--config")
@@ -151,7 +155,6 @@ fn mtn_subscribe_dlr_without_an_mtn_entry_says_so() {
         .args(["--profile", "demo"])
         .args(["--delivery-report-url", "https://sms.example.cm/dlr/mtn_cm"])
         .env_clear()
-        .env("SMS_HASH_PEPPER", PEPPER)
         .output()
         .expect("running sms-gateway mtn-subscribe-dlr");
     assert!(!output.status.success());
